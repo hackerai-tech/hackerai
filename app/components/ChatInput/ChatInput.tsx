@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -23,6 +24,7 @@ import {
 } from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
+  getDraftContentById,
   removeDraft,
   removeDraftAttachments,
   upsertDraftAttachments,
@@ -34,6 +36,7 @@ import {
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
@@ -950,6 +953,8 @@ const ChatInputContent = ({
       | "submit_accepted"
       | "submit_refused"
       | "submit_error"
+      | "submit_unconfirmed"
+      | "submit_canceled"
       | "blocked"
       | "exit",
     reason?:
@@ -959,7 +964,10 @@ const ChatInputContent = ({
       | "send_disabled"
       | "empty"
       | "uploading"
-      | "not_ready",
+      | "not_ready"
+      | "saved_message"
+      | "start_response_lost"
+      | "lookup_unavailable",
   ) => {
     captureAuthenticatedEvent("agent_goal_composer_action", {
       goal_ui_version: 2,
@@ -1058,6 +1066,9 @@ const ChatInputContent = ({
       setSubmissionPending(true);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
+      const submittedDraftAttachments = JSON.stringify(
+        getDraftAttachmentsById(draftId),
+      );
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
@@ -1071,16 +1082,26 @@ const ChatInputContent = ({
           );
         finishPredictionSubmission(accepted !== false);
         if (accepted !== false) setGoalMode(false);
-        if (!isMountedRef.current) return;
         const unchanged =
           getInput() === submittedInput &&
-          getUploadedFiles() === submittedFiles;
+          (getUploadedFiles() === submittedFiles ||
+            (getUploadedFiles().length === 0 && submittedFiles.length === 0));
         // The chat handler can already have cleared the accepted submission.
         const alreadyCleared =
           getInput() === "" && getUploadedFiles().length === 0;
         const sameDraft =
           prevDraftIdRef.current === draftId ||
           (draftId === "new" && prevDraftIdRef.current === chatId);
+        if (
+          accepted !== false &&
+          (!sameDraft || !isMountedRef.current) &&
+          clearDraftOnSubmit &&
+          getDraftContentById(draftId) === submittedInput &&
+          JSON.stringify(getDraftAttachmentsById(draftId)) ===
+            submittedDraftAttachments
+        )
+          removeDraft(draftId);
+        if (!isMountedRef.current) return;
         if (
           accepted === false ||
           !sameDraft ||
@@ -1101,9 +1122,37 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
-        if (goalMode) captureGoalComposerAction("submit_error");
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
+        if (error instanceof GoalSubmissionUnconfirmedError) {
+          captureGoalComposerAction(
+            "submit_unconfirmed",
+            error.messagePersisted === true
+              ? "saved_message"
+              : error.messagePersisted === false
+                ? "start_response_lost"
+                : "lookup_unavailable",
+          );
+          // The linked originating chat makes this safe after navigation or
+          // unmount; a missing handle must never silently invite a duplicate.
+          toast.info(`${error.message} Your draft is kept.`, {
+            action: {
+              label: "Check chat",
+              onClick: () =>
+                error.chatId
+                  ? window.location.assign(
+                      `/c/${encodeURIComponent(error.chatId)}`,
+                    )
+                  : window.location.reload(),
+            },
+          });
+          return;
+        }
+        if (error instanceof Error && error.name === "AbortError") {
+          if (goalMode) captureGoalComposerAction("submit_canceled");
+          return;
+        }
+        if (goalMode) captureGoalComposerAction("submit_error");
         console.error("Failed to submit message:", error);
       } finally {
         isSubmittingRef.current = false;

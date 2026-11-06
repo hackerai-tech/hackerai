@@ -41,6 +41,7 @@ import {
 } from "@/lib/goals/timing";
 import { defaultGoalCriterion, type GoalState } from "@/lib/goals/contracts";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 
 const stateLabels: Record<GoalState, string> = {
   queued: "Queued",
@@ -250,6 +251,10 @@ export function AgentGoalPanel({
       setReply("");
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
+      if (e instanceof GoalSubmissionUnconfirmedError) {
+        toast.info(`${e.message} Your reply is kept.`);
+        return;
+      }
       const message = e instanceof Error ? e.message : "Goal could not resume";
       setFormError(message);
       toast.error(message);

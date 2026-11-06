@@ -62,9 +62,14 @@ import {
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
 import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import {
+  GoalSubmissionUnconfirmedError,
+  isGoalAdmissionRefused,
+} from "@/lib/chat/goal-submission";
+import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
   resumeAgentLongStream,
+  type AgentLongRunStarted,
 } from "@/lib/chat/agent-long-transport";
 import {
   areMessagesEquivalentForConvexSync,
@@ -91,6 +96,7 @@ import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/age
 import { toast } from "sonner";
 import {
   addAuthenticatedExceptionStep,
+  captureAuthenticatedEvent,
   getPostHogRequestHeaders,
 } from "@/lib/analytics/client";
 import {
@@ -499,7 +505,21 @@ function ForkAutoSendEffect({
 
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
-    void onSubmit(new Event("submit") as unknown as React.FormEvent);
+    void Promise.resolve(
+      onSubmit(new Event("submit") as unknown as React.FormEvent),
+    ).catch((error: unknown) => {
+      if (error instanceof GoalSubmissionUnconfirmedError) {
+        captureAuthenticatedEvent("agent_goal_composer_action", {
+          action: "submit_unconfirmed",
+          composer_layout: "unknown",
+          goal_ui_version: 2,
+          reason: "fork_autosend",
+        });
+        toast.info(error.message);
+      } else if (!(error instanceof Error && error.name === "AbortError")) {
+        console.error("Failed to submit restored task:", error);
+      }
+    });
   }, [
     chatId,
     input,
@@ -1005,6 +1025,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     resolve: () => void;
     error?: Error;
     aborted?: boolean;
+    rejected?: boolean;
+    requestSent?: boolean;
+    stopped?: boolean;
     accepted: boolean;
   };
   const goalAdmissionRef = useRef<GoalAdmission | null>(null);
@@ -1067,50 +1090,70 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           const request =
             typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
           const queuedMessageId = request?.messages?.at(-1)?.id;
+          const pendingGoal = goalAdmissionRef.current;
+          if (
+            pendingGoal &&
+            pendingGoal.chatId === request?.chatId &&
+            pendingGoal.id === queuedMessageId
+          )
+            pendingGoal.requestSent = true;
+          let recordedRunId: string | undefined;
+          const recordAdmission = (run: AgentLongRunStarted) => {
+            const pending = goalAdmissionRef.current;
+            if (
+              pending &&
+              pending.chatId === request?.chatId &&
+              pending.id === queuedMessageId &&
+              run.chatId === pending.chatId &&
+              !pending.stopped &&
+              !(
+                hasManuallyStoppedRef.current &&
+                pending.chatId === activeChatIdRef.current
+              )
+            )
+              pending.resolve();
+            if (recordedRunId === run.runId) return;
+            if (
+              hasManuallyStoppedRef.current ||
+              requestGeneration !== agentLongRequestGenerationRef.current ||
+              (run.chatId !== undefined &&
+                run.chatId !== activeChatIdRef.current)
+            ) {
+              return;
+            }
+            if (
+              typeof request?.chatId === "string" &&
+              typeof queuedMessageId === "string"
+            ) {
+              queuedAdmissionRef.current(request.chatId, queuedMessageId);
+            }
+            // Only expose the saved-task route after attachment staging and
+            // user-message persistence have succeeded.
+            if (
+              finalizeNewChatRoute({
+                chatId: activeChatIdRef.current,
+                isAbort: false,
+                isExistingChat: isExistingChatRef.current,
+              })
+            ) {
+              removeDraft("new");
+              setIsExistingChat(true);
+            }
+            setAgentLongRunId(run.runId);
+            if (run.runCorrelationToken) {
+              agentLongRunCorrelationRef.current = {
+                runId: run.runId,
+                token: run.runCorrelationToken,
+              };
+            }
+
+            recordedRunId = run.runId;
+          };
           return fetchAgentLongStream(
             init,
-            (run) => {
-              const pendingGoal = goalAdmissionRef.current;
-              if (
-                pendingGoal &&
-                pendingGoal.chatId === request?.chatId &&
-                pendingGoal?.id === queuedMessageId
-              )
-                pendingGoal.resolve();
-              if (
-                requestGeneration !== agentLongRequestGenerationRef.current ||
-                (run.chatId !== undefined &&
-                  run.chatId !== activeChatIdRef.current)
-              ) {
-                return;
-              }
-              if (
-                typeof request?.chatId === "string" &&
-                typeof queuedMessageId === "string"
-              ) {
-                queuedAdmissionRef.current(request.chatId, queuedMessageId);
-              }
-              // Only expose the saved-task route after attachment staging and
-              // user-message persistence have succeeded.
-              if (
-                finalizeNewChatRoute({
-                  chatId: activeChatIdRef.current,
-                  isAbort: false,
-                  isExistingChat: isExistingChatRef.current,
-                })
-              ) {
-                removeDraft("new");
-                setIsExistingChat(true);
-              }
-              setAgentLongRunId(run.runId);
-              if (run.runCorrelationToken) {
-                agentLongRunCorrelationRef.current = {
-                  runId: run.runId,
-                  token: run.runCorrelationToken,
-                };
-              }
-            },
+            recordAdmission,
             handleAgentLongRunClosed,
+            recordAdmission,
           );
         }
         if (init?.method !== "GET") {
@@ -1463,6 +1506,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         goalAdmissionRef.current?.chatId === chatId &&
         !goalAdmissionRef.current.accepted
       ) {
+        goalAdmissionRef.current.rejected =
+          isGoalAdmissionRefused(displayError);
         goalAdmissionRef.current.error =
           displayError instanceof ChatSDKError
             ? new Error(
@@ -1528,6 +1573,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       },
       options?: { body?: Record<string, unknown> },
     ) => {
+      const disabledReason = computerSendDisabledReasonRef.current;
+      if (disabledReason) throw new Error(disabledReason);
       if (goalAdmissionRef.current)
         throw new Error("A goal is already starting.");
       const id = uuidv4();
@@ -1574,6 +1621,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           );
         }
       } catch (error) {
+        // Stream setup can reject in the same turn as admission. Once the
+        // exact message was admitted, a consumer error cannot undo that send.
+        if (accepted) return;
+        const stopped =
+          pending.stopped ||
+          (hasManuallyStoppedRef.current && activeChatIdRef.current === chatId);
+        const rejected = pending.rejected || isGoalAdmissionRefused(error);
+        let persisted: boolean | undefined;
         if (
           isChatMountedRef.current &&
           activeChatIdRef.current === chatId &&
@@ -1582,7 +1637,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           // Failed requests can leave an optimistic bubble. Remove it only after
           // confirming it was never persisted; unknown outcomes stay visible.
           let persistenceTimeout: ReturnType<typeof setTimeout> | undefined;
-          let persisted: boolean | undefined;
           try {
             persisted = await Promise.race([
               convex
@@ -1602,20 +1656,37 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             clearTimeout(persistenceTimeout);
           }
           if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
-            if (persisted === false)
+            if (persisted === false && (!pending.requestSent || rejected))
               setMessages((current) =>
                 current.filter((item) => item.id !== id),
               );
             clearError?.();
           }
         }
+        // A late acknowledgement may arrive while the lookup is in flight.
+        if (accepted) return;
+        if (
+          !stopped &&
+          !rejected &&
+          (pending.requestSent ||
+            (!(error instanceof Error && error.name === "AbortError") &&
+              persisted !== false))
+        )
+          throw new GoalSubmissionUnconfirmedError(persisted, chatId);
         throw error;
       } finally {
         if (goalAdmissionRef.current === pending)
           goalAdmissionRef.current = null;
       }
     },
-    [chatId, sendMessage, convex, setMessages, clearError],
+    [
+      chatId,
+      sendMessage,
+      convex,
+      setMessages,
+      clearError,
+      computerSendDisabledReasonRef,
+    ],
   );
   const regenerate = useCallback<typeof regenerateUnchecked>(
     (...args) => {
@@ -2567,6 +2638,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
+      if (goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.stopped = true;
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
