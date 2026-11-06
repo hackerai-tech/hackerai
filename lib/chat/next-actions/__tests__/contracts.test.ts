@@ -483,3 +483,36 @@ test("keeps reply evidence and marks incomplete tool history under a large tool 
   expect(sources[0].text).toContain("Final task complete.");
   expect(sources[0].text.length).toBeLessThanOrEqual(4000);
 });
+
+test("keeps terminal execution before its later confirmation in prediction context", () => {
+  const [source] = buildPredictionSources([
+    {
+      id: "done",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: { success: true },
+        },
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          input: { questions: [{ question: "Confirm your choice?" }] },
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Continue",
+          },
+        },
+        {
+          type: "text",
+          text: "Both answers received. The command ran. Goal complete.",
+        },
+      ],
+    },
+  ]);
+  expect(source.text.indexOf('"name":"run_terminal_cmd"')).toBeLessThan(
+    source.text.indexOf('"name":"wait_for_user"'),
+  );
+});

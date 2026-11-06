@@ -1,10 +1,12 @@
 /** Tool history for predictions is evidence of activity, not an execution transcript.
  * Keep names/states and actual wait replies; never forward commands, file content,
  * credentials, approval tokens, or arbitrary tool payloads. */
-export function predictionToolEvents(parts: unknown[]): string[] {
-  const waits: string[] = [];
-  const others: string[] = [];
-  for (const value of parts) {
+type ToolEvent = { text: string; order: number };
+
+export function predictionToolEvents(parts: unknown[]): ToolEvent[] {
+  const waits: ToolEvent[] = [];
+  const others: ToolEvent[] = [];
+  for (const [order, value] of parts.entries()) {
     const part = record(value);
     if (!part) continue;
     const name =
@@ -48,11 +50,11 @@ export function predictionToolEvents(parts: unknown[]): string[] {
           event.reply = bounded(output.reply, 240);
         }
       }
-      waits.push(JSON.stringify(event));
-    } else others.push(JSON.stringify(event));
+      waits.push({ text: JSON.stringify(event), order });
+    } else others.push({ text: JSON.stringify(event), order });
   }
   // Preserve the latest interaction even when many intervening tools ran.
-  // These are activity records, not a reconstructed chronological transcript.
+  // Selection priority differs from display order; rendering restores part order.
   return [...waits.reverse(), ...others.reverse()];
 }
 
@@ -81,22 +83,27 @@ function bounded(text: string, size: number): string {
 /** Keep whole JSON records and explicitly mark missing events, rather than
  * clipping an event into something that could be mistaken for complete evidence. */
 export function renderPredictionToolContext(
-  events: string[],
+  events: ToolEvent[],
   budget: number,
 ): string {
   if (!events.length) return "";
   const prefix =
-    "Tool activity (partial records; not a complete transcript):\n";
+    "Tool activity (original order within this turn; payloads omitted):\n";
   const omitted =
     "\n[Additional tool events omitted; do not infer they did not happen.]";
-  const kept: string[] = [];
+  const kept: ToolEvent[] = [];
   let available = budget - prefix.length - omitted.length;
   for (const event of events) {
-    if (event.length + 1 > available) continue;
+    if (event.text.length + 1 > available) continue;
     kept.push(event);
-    available -= event.length + 1;
+    available -= event.text.length + 1;
   }
   return (
-    prefix + kept.join("\n") + (kept.length < events.length ? omitted : "")
+    prefix +
+    kept
+      .sort((a, b) => a.order - b.order)
+      .map((event) => event.text)
+      .join("\n") +
+    (kept.length < events.length ? omitted : "")
   );
 }
