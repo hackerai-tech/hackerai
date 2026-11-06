@@ -977,13 +977,15 @@ const ChatInputContent = ({
     (isWaitingForReply
       ? uploadedFiles.length > 0
         ? "Remove attachments to reply"
-        : undefined
+        : pendingUserWait
+          ? undefined
+          : sendDisabledReason
       : sendDisabledReason) ??
     (isWaitingForReply ? undefined : goalSendDisabledReason) ??
     (status === "ready" && editingQueuedMessageId
       ? "Finish editing the queued message before sending a new request"
       : undefined) ??
-    (user && !isWaitingForReply
+    (user && !pendingUserWait
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 

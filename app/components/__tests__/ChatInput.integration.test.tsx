@@ -1977,6 +1977,68 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it.each(["wait", "goal"])(
+      "respects computer restrictions for %s questions",
+      async (kind) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        const questions = [
+          {
+            id: "answer",
+            header: "Answer",
+            question: "What next?",
+            options: [],
+          },
+        ];
+        render(
+          <TestWrapper>
+            <ChatInput
+              chatId="restricted-questions"
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+              sendDisabledReason="Reconnect your computer"
+              {...(kind === "wait"
+                ? {
+                    pendingUserWait: {
+                      runId: "run",
+                      toolCallId: "call",
+                      status: "waiting" as const,
+                      questions,
+                    },
+                  }
+                : { pendingGoalQuestions: { generation: 1, questions } })}
+            />
+          </TestWrapper>,
+        );
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Continue" },
+        });
+        const submit = screen.getByRole("button", {
+          name: "Submit answer",
+          exact: true,
+        });
+        if (kind === "goal") {
+          expect(submit).toBeDisabled();
+          fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+          expect(mockOnSubmit).not.toHaveBeenCalled();
+        } else {
+          await waitFor(() => expect(submit).toBeEnabled());
+          fireEvent.click(submit);
+          await waitFor(() =>
+            expect(mockOnSubmit).toHaveBeenCalledWith(
+              expect.anything(),
+              "Continue",
+              true,
+            ),
+          );
+        }
+      },
+    );
+
     it("replaces the composer with an approval selector while awaiting approval", async () => {
       render(
         <TestWrapper>

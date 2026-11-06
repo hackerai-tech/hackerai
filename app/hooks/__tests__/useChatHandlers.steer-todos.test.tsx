@@ -194,48 +194,55 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
-  it("sends a pending Agent reply as text even when it looks like a goal command", async () => {
-    mockInput = "/goal pause";
-    const { result } = renderHook(() =>
-      useChatHandlers({
-        chatId: "chat-1",
-        messages,
-        sendMessage: mockSendMessage,
-        stop: mockStop,
-        regenerate: jest.fn(),
-        setMessages: mockSetMessages,
-        isExistingChat: true,
-        status: "streaming",
-        goalState: "needs_input",
-        pendingUserWait: {
-          runId: "run-1",
-          toolCallId: "tool-1",
-          status: "waiting",
-        },
-        isSendingNowRef: { current: false },
-        hasManuallyStoppedRef: { current: false },
-      }),
-    );
-    await act(async () => {
-      expect(
-        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
-      ).toBe(true);
-    });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/agent/reply",
-      expect.objectContaining({
-        body: JSON.stringify({
+  it.each([false, true])(
+    "sends a pending Agent reply literally and preserves unrelated drafts (structured=%s)",
+    async (structured) => {
+      mockInput = structured ? "Unsent ordinary draft" : "/goal pause";
+      const { result } = renderHook(() =>
+        useChatHandlers({
           chatId: "chat-1",
-          runId: "run-1",
-          toolCallId: "tool-1",
-          text: "/goal pause",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          goalState: "needs_input",
+          pendingUserWait: {
+            runId: "run-1",
+            toolCallId: "tool-1",
+            status: "waiting",
+          },
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
         }),
-      }),
-    );
-    expect(mockSendMessage).not.toHaveBeenCalled();
-    expect(mockClearInput).toHaveBeenCalledTimes(1);
-  });
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit(
+            { preventDefault: jest.fn() } as any,
+            structured ? "/goal pause" : undefined,
+            structured,
+          ),
+        ).toBe(true);
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent/reply",
+        expect.objectContaining({
+          body: JSON.stringify({
+            chatId: "chat-1",
+            runId: "run-1",
+            toolCallId: "tool-1",
+            text: "/goal pause",
+          }),
+        }),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).toHaveBeenCalledTimes(structured ? 0 : 1);
+    },
+  );
 
   it("does not clear a reply draft after the chat unmounts", async () => {
     mockInput = "Use option A";
@@ -2412,7 +2419,7 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
   it("treats a structured Goal answer as literal text even when it resembles a command", async () => {
-    mockInput = "";
+    mockInput = "Unsent ordinary draft";
     mockAgentPermissionMode = "ask_approval";
     mockMessageQueue = [];
     jest.mocked(global.fetch).mockResolvedValue({
@@ -2441,6 +2448,8 @@ describe("useChatHandlers steer todo handoff", () => {
         }),
       }),
     );
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
   });
 
   it.each(["needs_input", "blocked"])(

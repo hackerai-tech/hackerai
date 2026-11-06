@@ -783,6 +783,8 @@ export const useChatHandlers = ({
       }
     }
     const clearSubmittedDraft = () => {
+      // Structured answers own a separate request-scoped draft in the panel.
+      if (structuredReply) return;
       const currentFiles = getUploadedFiles();
       if (
         currentChatIdRef.current === chatId &&
