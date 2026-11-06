@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cloudflareParameters, cloudflarePreviewUrls } from "./cloudflare";
 
 export const captchaKind = z.enum(["recaptcha_v2", "hcaptcha", "turnstile"]);
 export type CaptchaKind = z.infer<typeof captchaKind>;
@@ -14,6 +15,7 @@ export const browserChallengeObservation = z.object({
         observationId: z.string().regex(/^[a-f0-9]{32}$/),
         tokenPresent: z.boolean(),
         invisible: z.boolean(),
+        managed: cloudflareParameters.optional(),
       }),
     )
     .max(10),
@@ -60,6 +62,7 @@ export function isSupportedCaptchaDemo(
   url: string,
   widget: CaptchaWidget,
 ): boolean {
+  if (widget.managed) return false;
   const expected = Object.hasOwn(SOLVER_DEMOS, url)
     ? SOLVER_DEMOS[url]
     : undefined;
@@ -108,6 +111,12 @@ export function isSupportedCaptchaTarget(
       ? process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS
       : undefined),
 ): boolean {
+  if (widget.managed)
+    return (
+      widget.kind === "turnstile" &&
+      process.env.HACKERAI_ENVIRONMENT === "preview" &&
+      cloudflarePreviewUrls("PREVIEW").includes(url)
+    );
   if (isSupportedCaptchaDemo(url, widget)) return true;
   if (!configuration || configuration.length > 16384) return false;
   try {
@@ -128,6 +137,10 @@ export function isSupportedCaptchaTarget(
  */
 export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
   const widgets = [];
+  const managed = window[Symbol.for('hackerai.cloudflareChallenge')];
+  if (managed && !managed.delivered) widgets.push({kind:'turnstile', siteKey:managed.siteKey,
+    observationId:managed.observationId, tokenPresent:false, invisible:false,
+    managed:{action:managed.action, data:managed.data, pagedata:managed.pagedata, userAgent:managed.userAgent}});
   for (const element of document.querySelectorAll("[data-sitekey]")) {
     if (widgets.length === 10) break;
     const kind = element.matches(".g-recaptcha") ? "recaptcha_v2"
@@ -152,9 +165,14 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
     url: location.href,
     documentId: String(performance.timeOrigin),
     widgets,
-    interstitial: !!document.querySelector(
+    interstitial: !!managed || !!document.querySelector(
       '#challenge-running, #challenge-stage, form#challenge-form',
-    ),
+    ) || (!!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]') &&
+      /^(Just a moment|Cloudflare Security)/i.test(document.title)) ||
+      (!document.querySelector('form') && !!document.querySelector('iframe[title="Widget containing a Cloudflare security challenge"]') &&
+        /Performing security verification|Verifying you are human/.test(document.querySelector('h2')?.textContent ?? '')) ||
+      (!!document.querySelector('a[href*="cloudflare.com"][href*="challenge"]') &&
+        /Performing security verification|Verifying you are human/.test(document.body?.innerText ?? '')),
   };
 })()`;
 
@@ -164,6 +182,17 @@ export function buildDeliverCaptchaScript(
   widget: CaptchaWidget,
   token: string,
 ): string {
+  if (widget.managed)
+    return `((expected, widget, token) => {
+    if (location.href !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status:'page_changed'};
+    const current = window[Symbol.for('hackerai.cloudflareChallenge')];
+    if (!current || current.delivered || current.siteKey !== widget.siteKey ||
+        current.observationId !== widget.observationId || typeof current.callback !== 'function')
+      return {status:'page_changed'};
+    current.delivered = true;
+    current.callback(token);
+    return {status:'token_delivered', websiteAccepted:false};
+  })(${JSON.stringify({ url: observation.url, documentId: observation.documentId })}, ${JSON.stringify({ siteKey: widget.siteKey, observationId: widget.observationId })}, ${JSON.stringify(token)})`;
   // The script travels exclusively over protected process stdin.
   return `((expected, widget, token) => {
     if (location.href !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status: 'page_changed'};

@@ -108,6 +108,52 @@ it("passes response material only through stdin and returns the bounded result",
   );
 });
 
+it("applies a managed challenge user agent only over protected stdin to an owned page", async () => {
+  const { sessions, run, handle } = await owner();
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+  );
+  handle.wait.mockResolvedValueOnce({
+    exitCode: 0,
+    stdout: JSON.stringify({ result: { status: "token_delivered" } }),
+  });
+  await browser.deliverCloudflare!(
+    "solver-user-agent",
+    {
+      url: "https://approved.example/",
+      documentId: "123",
+      originalUserAgent: "original-agent",
+    },
+    "protected-script",
+  );
+  expect(handle.sendStdin).toHaveBeenCalledWith(
+    JSON.stringify({
+      userAgent: "solver-user-agent",
+      url: "https://approved.example/",
+      documentId: "123",
+      originalUserAgent: "original-agent",
+      script: "protected-script",
+      sessionName: "default",
+    }),
+  );
+  expect(JSON.stringify(run.mock.calls)).not.toContain("solver-user-agent");
+  await sessions.cleanup();
+  await expect(
+    browser.deliverCloudflare!(
+      "must-not-send",
+      {
+        url: "https://approved.example/",
+        documentId: "123",
+        originalUserAgent: "original-agent",
+      },
+      "must-not-run",
+    ),
+  ).rejects.toThrow();
+  expect(handle.sendStdin).not.toHaveBeenCalledWith(
+    expect.stringContaining("must-not-send"),
+  );
+});
+
 it("refuses inspection when the active name changed after the triggering snapshot", async () => {
   const { sessions, sandbox, run, read, handle } = await owner();
   read.mockResolvedValue("another-session");

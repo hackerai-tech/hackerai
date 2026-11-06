@@ -10,6 +10,12 @@ const providerResponse = z.object({
     .object({
       gRecaptchaResponse: z.string().min(1).max(16384).optional(),
       token: z.string().min(1).max(16384).optional(),
+      userAgent: z
+        .string()
+        .min(1)
+        .max(1024)
+        .regex(/^[\x20-\x7e]+$/)
+        .optional(),
     })
     .optional(),
   cost: z
@@ -18,7 +24,11 @@ const providerResponse = z.object({
     .optional(),
 });
 
-export type CaptchaSolution = { token: string; costDollars: number };
+export type CaptchaSolution = {
+  token: string;
+  costDollars: number;
+  userAgent?: string;
+};
 class RetryableCaptchaPollError extends Error {}
 export interface CaptchaSolver {
   solve(
@@ -95,6 +105,11 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
                 : "TurnstileTaskProxyless",
           websiteURL: url,
           websiteKey: widget.siteKey,
+          ...(widget.managed && {
+            action: widget.managed.action,
+            data: widget.managed.data,
+            pagedata: widget.managed.pagedata,
+          }),
         },
       });
       if (!created.taskId)
@@ -166,12 +181,17 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         if (
           result.status !== "ready" ||
           !token ||
+          (widget.managed && !result.solution?.userAgent) ||
           !Number.isFinite(costDollars) ||
           costDollars < 0 ||
           costDollars > 1
         )
           throw new Error("CAPTCHA provider returned an invalid solution.");
-        return { token, costDollars };
+        return {
+          token,
+          costDollars,
+          ...(widget.managed && { userAgent: result.solution!.userAgent }),
+        };
       }
     },
   };

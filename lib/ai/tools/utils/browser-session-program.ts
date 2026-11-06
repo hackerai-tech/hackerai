@@ -47,6 +47,12 @@ if action == 'prepare':
     (root / 'sockets').mkdir(mode=0o700)
     (root / 'state').mkdir(mode=0o700)
     (root / 'config.json').write_text('{}')
+    if len(sys.argv) > 6 and sys.argv[6]:
+        init_script = sys.argv[6]
+        if len(init_script) > 16384:
+            raise RuntimeError('Invalid challenge initialization')
+        (root / 'cloudflare.js').write_text(init_script)
+        (root / 'config.json').write_text(json.dumps({'initScripts':[str(root / 'cloudflare.js')]}))
     if len(sys.argv) > 5 and sys.argv[5] == 'gate':
         real = shutil.which('agent-browser')
         if not real:
@@ -185,6 +191,70 @@ elif action == 'status':
             if not line or len(line) > 65536:
                 raise RuntimeError('Invalid browser status')
             print(json.dumps(json.loads(line)))
+elif action == 'cloudflare':
+    validate()
+    request = json.loads(sys.stdin.read(65537))
+    deadline = float(sys.argv[3])
+    if time.time() >= deadline:
+        raise RuntimeError('Browser ownership expired')
+    ua = request['userAgent']
+    original_ua = request['originalUserAgent']
+    script = request['script']
+    if not isinstance(original_ua,str) or not 1 <= len(original_ua) <= 1024 or any(ord(c) < 32 or ord(c) > 126 for c in original_ua) or not isinstance(script,str) or len(script) > 32768:
+        raise RuntimeError('Invalid managed delivery')
+    import signal
+    def cancel(signum, frame):
+        raise InterruptedError('Managed delivery cancelled')
+    signal.signal(signal.SIGTERM, cancel)
+    if not isinstance(ua, str) or not 1 <= len(ua) <= 1024 or any(ord(c) < 32 or ord(c) > 126 for c in ua):
+        raise RuntimeError('Invalid browser user agent')
+    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        if (root / 'paused').exists() or (root / 'verify-required').exists() or time.time() >= deadline:
+            raise RuntimeError('Browser is unavailable')
+        name = (root / 'active-session').read_text().strip()
+        if name != request['sessionName'] or not name or len(name) > 80 or any(c in name for c in '/\x00\r\n'):
+            raise RuntimeError('Browser identity changed')
+        path = root / 'sockets' / (name + '.sock')
+        info = path.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError('Browser unavailable')
+        def call(command):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(5)
+                connection.connect(str(path))
+                connection.sendall((json.dumps(command) + '\n').encode())
+                with connection.makefile('rb') as response:
+                    line = response.readline(32769)
+                    if not line or len(line) > 32768:
+                        raise RuntimeError('Invalid browser response')
+                    result = json.loads(line)
+                    if result.get('success') is not True:
+                        raise RuntimeError('Browser operation failed')
+                    return result.get('data', {})
+        expected = json.dumps({'url':request['url'], 'documentId':request['documentId']})
+        script = '(e => location.href === e.url && String(performance.timeOrigin) === e.documentId)(' + expected + ')'
+        if call({'id':'captcha-identity', 'action':'evaluate', 'script':script}).get('result') is not True:
+            raise RuntimeError('Browser page changed')
+        delivered = False
+        try:
+            call({'id':'captcha-useragent', 'action':'useragent', 'userAgent':ua})
+            result = call({'id':'captcha-deliver', 'action':'evaluate', 'script':request['script']}).get('result')
+            if not isinstance(result,dict) or result.get('status') not in ('page_changed','token_delivered'):
+                raise RuntimeError('Invalid managed delivery result')
+            delivered = result['status'] == 'token_delivered'
+            print(json.dumps({'result':result}))
+        finally:
+            if not delivered:
+                try:
+                    call({'id':'captcha-restore-useragent','action':'useragent','userAgent':original_ua})
+                except Exception:
+                    pass  # Ownership cleanup still closes this run's browser.
+
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 elif action in ('pause', 'resume'):
     validate()
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
@@ -215,15 +285,17 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
-  action: "prepare" | "cleanup" | "pause" | "resume" | "status",
+  action: "prepare" | "cleanup" | "pause" | "resume" | "status" | "cloudflare",
   directory: string,
   expiresAt: number,
   gate = false,
+  initScript?: string,
 ): string {
   const args = [BROWSER_SESSION_PROGRAM, action, directory];
   if (action === "prepare") {
     args.push(String(expiresAt / 1000), BROWSER_SESSION_PROGRAM);
-    if (gate) args.push("gate");
+    args.push(gate ? "gate" : "", initScript ?? "");
   }
+  if (action === "cloudflare") args.push(String(expiresAt / 1000));
   return `python3 -c ${args.map(quote).join(" ")}`;
 }

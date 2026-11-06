@@ -10,6 +10,7 @@ import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
 import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
+import { cloudflareInitScript } from "../../captcha/cloudflare";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -67,6 +68,10 @@ export class BrowserSessions {
     private readonly handoffScope?: BrowserHandoffScope,
     private readonly onOwnershipLost?: () => void,
     private readonly enableConnectedChallenges = false,
+    private readonly cloudflare?: {
+      urls: string[];
+      enabled: () => Promise<boolean>;
+    },
   ) {}
 
   hasHandoffScope(): boolean {
@@ -123,6 +128,11 @@ export class BrowserSessions {
   ): Promise<{
     identity: string;
     evaluate: (script: string) => Promise<unknown>;
+    deliverCloudflare?: (
+      userAgent: string,
+      page: { url: string; documentId: string; originalUserAgent: string },
+      script: string,
+    ) => Promise<unknown>;
   }> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Browser session ownership has ended.");
@@ -195,6 +205,44 @@ export class BrowserSessions {
     await assertOwned();
     return {
       identity: `${session.sessionId}:${name}`,
+      deliverCloudflare: async (userAgent, page, script) => {
+        await assertOwned();
+        const handle = await sandbox.commands.run(
+          browserSessionCommand(
+            "cloudflare",
+            session.directory,
+            this.expiresAt,
+          ),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            stdin: true,
+            background: true,
+            timeoutMs: 10000,
+          },
+        );
+        try {
+          await assertOwned();
+          await withCancellation(
+            handle.sendStdin(
+              JSON.stringify({ userAgent, ...page, script, sessionName: name }),
+            ),
+            signal,
+          );
+          await withCancellation(handle.closeStdin(), signal);
+          const result = await withCancellation(handle.wait(), signal);
+          if (
+            result.exitCode !== 0 ||
+            result.stdout.length > 1024 ||
+            JSON.parse(result.stdout).result === undefined
+          )
+            throw new Error();
+          return JSON.parse(result.stdout).result;
+        } catch {
+          await handle.kill().catch(() => false);
+          signal.throwIfAborted();
+          throw new Error("Managed browser challenge delivery failed.");
+        }
+      },
       evaluate: async (script) => {
         await assertOwned();
         // A status probe never starts a daemon. Refuse eval after idle shutdown.
@@ -334,24 +382,35 @@ export class BrowserSessions {
     const gate = this.hasHandoffScope();
     let session = this.sessions.get(sandboxId);
     if (!session) {
-      // Short enough for Unix socket paths, random across factories/runs, and
-      // memory-backed so checkpoints are not part of the reusable workspace.
+      // Publish the preparation promise before awaiting rollout I/O, so two
+      // commands preparing the same sandbox retain one owner and namespace.
       const directory = `/dev/shm/hackerai-browser-${randomBytes(12).toString("hex")}`;
-      const ready = sandbox.commands
-        .run(
-          browserSessionCommand("prepare", directory, this.expiresAt, gate),
-          {
-            ...buildSandboxCommandOptions(sandbox),
-            timeoutMs: 20_000,
-          },
-        )
-        .then((result) => {
-          if (result.exitCode !== 0)
-            throw new Error("Could not prepare private browser sessions.");
-          if (gate && !result.stdout?.trim())
-            throw new Error("Browser command gate is unavailable.");
-          return gate ? result.stdout.trim() : undefined;
-        });
+      const ready = (async () => {
+        const cloudflareUrls =
+          this.cloudflare?.urls.length &&
+          (await this.cloudflare.enabled().catch(() => false))
+            ? this.cloudflare.urls
+            : [];
+        if (this.closed)
+          throw new Error("Browser session ownership has ended.");
+        const result = await sandbox.commands.run(
+          browserSessionCommand(
+            "prepare",
+            directory,
+            this.expiresAt,
+            gate,
+            cloudflareUrls.length
+              ? cloudflareInitScript(cloudflareUrls)
+              : undefined,
+          ),
+          { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20000 },
+        );
+        if (result.exitCode !== 0)
+          throw new Error("Could not prepare private browser sessions.");
+        if (gate && !result.stdout?.trim())
+          throw new Error("Browser command gate is unavailable.");
+        return gate ? result.stdout.trim() : undefined;
+      })();
       session = {
         sessionId: randomBytes(16).toString("hex"),
         sandbox,

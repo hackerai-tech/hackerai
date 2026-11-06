@@ -27,6 +27,88 @@ const observation = {
 };
 const originalEnv = process.env;
 const originalFetch = global.fetch;
+
+it.each([true, false])(
+  "uses managed Cloudflare solving only with a transport that can apply the returned user agent: %s",
+  async (supported) => {
+    process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
+    process.env.HACKERAI_ENVIRONMENT = "preview";
+    process.env.CAPTCHA_CLOUDFLARE_PREVIEW_URLS = JSON.stringify([
+      "https://dash.cloudflare.com/sign-up",
+    ]);
+    const data = {
+      ...observation,
+      url: "https://dash.cloudflare.com/sign-up",
+      interstitial: true,
+      widgets: [
+        {
+          ...observation.widgets[0],
+          kind: "turnstile",
+          managed: {
+            action: "managed",
+            data: "opaque",
+            pagedata: "opaque-page",
+            userAgent: "original-browser",
+          },
+        },
+      ],
+    };
+    const evaluate = jest
+      .fn()
+      .mockResolvedValueOnce(data)
+      .mockResolvedValue({ status: "token_delivered" });
+    const deliverCloudflare = jest.fn(async () => ({
+      status: "token_delivered",
+    }));
+    const { context, journal } = setup();
+    context.browserSessions = {
+      getChallengeBrowser: async () => ({
+        identity: "owner",
+        evaluate,
+        ...(supported && { deliverCloudflare }),
+      }),
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
+    const solve = jest.fn(async () => ({
+      token: "private-response",
+      costDollars: 0.00145,
+      userAgent: "solver-browser",
+    }));
+    const handler = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      () => ({ solve }),
+      journal,
+    );
+    const result = await handler();
+    if (supported) {
+      expect(result).toMatchObject({
+        status: "token_delivered",
+        websiteAccepted: false,
+      });
+      expect(deliverCloudflare).toHaveBeenCalledWith(
+        "solver-browser",
+        expect.objectContaining({
+          url: data.url,
+          documentId: data.documentId,
+          originalUserAgent: "original-browser",
+        }),
+        expect.any(String),
+      );
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(result)).not.toMatch(
+        /opaque|private-response|solver-browser/,
+      );
+      evaluate.mockResolvedValueOnce(data);
+      expect(await handler()).toMatchObject({ reason: "attempt_limit" });
+      expect(solve).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toMatchObject({ reason: "unsupported_transport" });
+      expect(solve).not.toHaveBeenCalled();
+      expect(journal.reserve).not.toHaveBeenCalled();
+    }
+  },
+);
 const cloneObservation = () => ({
   ...observation,
   widgets: observation.widgets.map((widget) => ({ ...widget })),

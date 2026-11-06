@@ -153,7 +153,7 @@ export function createBrowserChallengeHandler(
         });
       const widget = pending[0];
       if (
-        observation.interstitial ||
+        (observation.interstitial && !widget?.managed) ||
         pending.length !== 1 ||
         !widget ||
         !isSupportedCaptchaTarget(observation.url, widget) ||
@@ -162,6 +162,11 @@ export function createBrowserChallengeHandler(
         return respond({
           status: "handoff_required",
           reason: "unsupported_challenge",
+        });
+      if (widget.managed && !browser.deliverCloudflare)
+        return respond({
+          status: "handoff_required",
+          reason: "unsupported_transport",
         });
       const key = process.env.TWOCAPTCHA_API_KEY;
       if (!key)
@@ -199,12 +204,27 @@ export function createBrowserChallengeHandler(
       costRecorded = true;
       signal.throwIfAborted();
       deliveryStarted = true;
+      const deliveryScript = buildDeliverCaptchaScript(
+        observation,
+        widget,
+        solution.token,
+      );
+      if (widget.managed && !solution.userAgent)
+        throw new Error("Missing managed challenge user agent.");
       const delivered = z
         .object({ status: z.enum(["page_changed", "token_delivered"]) })
         .parse(
-          await browser.evaluate(
-            buildDeliverCaptchaScript(observation, widget, solution.token),
-          ),
+          widget.managed
+            ? await browser.deliverCloudflare!(
+                solution.userAgent!,
+                {
+                  url: observation.url,
+                  documentId: observation.documentId,
+                  originalUserAgent: widget.managed.userAgent,
+                },
+                deliveryScript,
+              )
+            : await browser.evaluate(deliveryScript),
         );
       record("browser_captcha_solver_result", {
         outcome: delivered.status,

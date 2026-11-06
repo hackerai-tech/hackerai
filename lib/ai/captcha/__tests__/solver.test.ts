@@ -13,6 +13,57 @@ const mockFetch = jest.fn();
 const originalFetch = global.fetch;
 const reply = (data: unknown) => ({ ok: true, json: async () => data });
 
+it("sends managed challenge parameters and preserves the returned user agent", async () => {
+  const previous = process.env;
+  const url = "https://dash.cloudflare.com/sign-up";
+  process.env = {
+    ...previous,
+    HACKERAI_ENVIRONMENT: "preview",
+    CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
+  };
+  try {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    mockFetch.mockResolvedValueOnce(
+      reply({
+        errorId: 0,
+        status: "ready",
+        cost: "0.00145",
+        solution: { token: "private-token", userAgent: "solver-browser" },
+      }),
+    );
+    const pending = createTwoCaptchaSolver("key").solve(
+      url,
+      {
+        ...widget,
+        kind: "turnstile",
+        managed: {
+          action: "managed",
+          data: "opaque-data",
+          pagedata: "opaque-page-data",
+          userAgent: "original-browser",
+        },
+      },
+      new AbortController().signal,
+    );
+    await jest.advanceTimersByTimeAsync(5000);
+    await expect(pending).resolves.toEqual({
+      token: "private-token",
+      costDollars: 0.00145,
+      userAgent: "solver-browser",
+    });
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).task).toEqual({
+      type: "TurnstileTaskProxyless",
+      websiteURL: url,
+      websiteKey: widget.siteKey,
+      action: "managed",
+      data: "opaque-data",
+      pagedata: "opaque-page-data",
+    });
+  } finally {
+    process.env = previous;
+  }
+});
+
 beforeEach(() => {
   jest.useFakeTimers();
   // Node's native AbortSignal.timeout does not use Jest's fake clock.
