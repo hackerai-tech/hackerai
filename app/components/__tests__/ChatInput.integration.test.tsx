@@ -1881,6 +1881,7 @@ describe("ChatInput - Integration Tests", () => {
                 { value: "beta", label: "Beta" },
               ],
             },
+            { id: "note", header: "Note", question: "Any note?", options: [] },
           ];
           const ui = (
             <TestWrapper>
@@ -1907,6 +1908,8 @@ describe("ChatInput - Integration Tests", () => {
           fireEvent.keyDown(document.body, { key: "1" });
           act(() => jest.advanceTimersByTime(1000));
           expect(mockOnSubmit).not.toHaveBeenCalled();
+          expect(screen.getByText("Alpha or Beta?")).toBeVisible();
+          expect(screen.queryByText("Any note?")).not.toBeInTheDocument();
           expect(screen.getByRole("button", { name: /Alpha/ })).toHaveAttribute(
             "aria-pressed",
             "true",
@@ -1920,8 +1923,15 @@ describe("ChatInput - Integration Tests", () => {
           expect(
             await screen.findByRole("button", { name: /Beta/ }),
           ).toHaveAttribute("aria-pressed", "true");
+          fireEvent.click(
+            screen.getByRole("button", { name: "Next", exact: true }),
+          );
+          expect(screen.getByText("Any note?")).toBeVisible();
+          fireEvent.change(screen.getByPlaceholderText("Type your answer…"), {
+            target: { value: "Confirmed" },
+          });
           const submit = screen.getByRole("button", {
-            name: "Submit answer",
+            name: "Submit answers",
             exact: true,
           });
           expect(
@@ -1931,7 +1941,7 @@ describe("ChatInput - Integration Tests", () => {
           await waitFor(() =>
             expect(mockOnSubmit).toHaveBeenCalledWith(
               expect.anything(),
-              multiSelect ? "Alpha, Beta" : "Beta",
+              `Alpha or Beta?\n${multiSelect ? "Alpha, Beta" : "Beta"}\n\nAny note?\nConfirmed`,
               true,
             ),
           );

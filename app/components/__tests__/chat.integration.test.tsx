@@ -1953,6 +1953,13 @@ describe("Chat Component Integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
       expect(mockSendMessage).not.toHaveBeenCalled();
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      // A reply in another tab publishes Goal admission before the run id.
+      for (const state of ["queued", "running"]) {
+        mockSavedGoal = { ...mockSavedGoal, state };
+        await act(async () => rerender(view()));
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      }
       mockSavedGoal = { ...mockSavedGoal, state: "achieved" };
       await act(async () => rerender(view()));
       await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));

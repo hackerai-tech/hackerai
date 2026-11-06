@@ -348,6 +348,66 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it.each(["rejected", "network", "success", "newer-stop"])(
+    "preserves Stop intent across a %s wait reply",
+    async (outcome) => {
+      mockInput = "Beta";
+      const hasManuallyStoppedRef = { current: true };
+      let resolveReply!: (value: Response) => void;
+      let rejectReply!: (error: Error) => void;
+      jest.mocked(global.fetch).mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve, reject) => {
+            resolveReply = resolve;
+            rejectReply = reject;
+          }),
+      );
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          pendingUserWait: {
+            runId: "run-1",
+            toolCallId: "tool-1",
+            status: "waiting",
+          },
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef,
+        }),
+      );
+      let submission!: Promise<boolean>;
+      await act(async () => {
+        submission = result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as any);
+      });
+      expect(hasManuallyStoppedRef.current).toBe(true);
+      if (outcome === "newer-stop") {
+        await act(async () => {
+          await result.current.handleStop();
+        });
+      }
+      await act(async () => {
+        if (outcome === "network") rejectReply(new Error("Connection lost"));
+        else
+          resolveReply({
+            ok: outcome !== "rejected",
+            status: outcome === "rejected" ? 500 : 200,
+          } as Response);
+        expect(await submission).toBe(
+          outcome === "success" || outcome === "newer-stop",
+        );
+      });
+      expect(hasManuallyStoppedRef.current).toBe(outcome !== "success");
+    },
+  );
+
   it("does not clear a reply draft after the chat unmounts", async () => {
     mockInput = "Use option A";
     let resolveReply!: (response: Response) => void;

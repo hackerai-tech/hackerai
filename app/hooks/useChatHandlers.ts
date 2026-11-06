@@ -813,8 +813,8 @@ export const useChatHandlers = ({
 
     setIsAutoResuming(false);
 
-    // Reset manual stop flag when user submits a new message
-    hasManuallyStoppedRef.current = false;
+    // A failed wait reply must not restart work held by an earlier Stop.
+    if (!pendingUserWait) hasManuallyStoppedRef.current = false;
     resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
@@ -905,6 +905,12 @@ export const useChatHandlers = ({
           if (replyConflict && structuredReply)
             throw new AgentReplyConflictError();
           return false;
+        }
+        if (
+          currentChatIdRef.current === chatId &&
+          stopGenerationRef.current === stopGeneration
+        ) {
+          hasManuallyStoppedRef.current = false;
         }
         clearSubmittedDraft();
         return true;

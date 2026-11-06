@@ -107,7 +107,7 @@ describe("SubmitStopButton paid mode colors", () => {
       </TooltipProvider>,
     );
     // The hotkey library is mocked globally. Test our policy at its options
-    // boundary; actual browser shortcut behavior is verified in Preview.
+    // boundary. This does not establish native clipboard behavior.
     const options = jest.mocked(useHotkeys).mock.calls.at(-1)![2];
     expect(options).toMatchObject({
       enabled: true,
