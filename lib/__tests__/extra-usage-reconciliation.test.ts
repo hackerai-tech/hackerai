@@ -1,6 +1,7 @@
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@/convex/_generated/api";
 import { deductFromBalance, deductFromTeamBalance } from "../extra-usage";
+import { phLogger } from "@/lib/posthog/server";
 
 const mockAction = jest.fn();
 const mockQuery = jest.fn();
@@ -12,12 +13,14 @@ jest.mock("@/lib/db/convex-client", () => ({
     return { action: mockAction, query: mockQuery, mutation: mockMutation };
   },
 }));
-jest.mock("@/lib/posthog/server", () => ({ phLogger: { error: jest.fn() } }));
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { error: jest.fn(), info: jest.fn() },
+}));
 
 type Receipt = NonNullable<
   FunctionReturnType<typeof api.settlementReceipts.getForBackend>
 >;
-const operationId = "wallet-v1:synthetic-reconciliation:step:1";
+const operationId = "wallet-v1:00000000-0000-4000-8000-000000000001:step:1";
 const userId = "synthetic-user";
 const settlementId = "synthetic-reconciliation";
 const organizationId = "synthetic-org";
@@ -92,6 +95,19 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
       ...(team && { organization_id: organizationId }),
     });
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "Extra usage deduction reconciliation",
+      {
+        event: "extra_usage_deduction_reconciliation",
+        reconciliation_diagnostic_version: 1,
+        scope: team ? "team" : "personal",
+        settlement_operation_id: operationId,
+        reconciliation_outcome: "completed_receipt_verified",
+        verified_result_success: true,
+      },
+    );
   });
 
   it.each(["missing", "pending-empty", "pending-applied"])(
@@ -107,6 +123,17 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
       expect(mockAction).toHaveBeenCalledTimes(1);
       expect(mockQuery).toHaveBeenCalledTimes(1);
       expect(mockMutation).not.toHaveBeenCalled();
+      expect(phLogger.info).toHaveBeenCalledTimes(1);
+      expect(phLogger.info).toHaveBeenCalledWith(
+        "Extra usage deduction reconciliation",
+        {
+          event: "extra_usage_deduction_reconciliation",
+          reconciliation_diagnostic_version: 1,
+          scope: team ? "team" : "personal",
+          settlement_operation_id: operationId,
+          reconciliation_outcome: "unknown_noreplay",
+        },
+      );
     },
   );
 
@@ -135,6 +162,13 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
     await expect(deduct(team)).resolves.toEqual(saved.result);
     expect(mockAction).toHaveBeenCalledTimes(1);
     expect(mockMutation).not.toHaveBeenCalled();
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "Extra usage deduction reconciliation",
+      expect.objectContaining({
+        reconciliation_outcome: "completed_receipt_verified",
+        verified_result_success: false,
+      }),
+    );
   });
 });
 
@@ -212,10 +246,77 @@ it("bounds an unresponsive read, aborts its scoped client and ignores a late res
   expect(mockQuery).toHaveBeenCalledTimes(1);
   expect(mockMutation).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "Extra usage deduction reconciliation",
+    expect.objectContaining({ reconciliation_outcome: "unknown_noreplay" }),
+  );
 });
 
 it("does not query receipts when the action returns normally", async () => {
   mockAction.mockResolvedValue(result);
   await expect(deduct(false)).resolves.toEqual(result);
   expect(mockQuery).not.toHaveBeenCalled();
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it.each([
+  { team: false, verified: false },
+  { team: false, verified: true },
+  { team: true, verified: false },
+  { team: true, verified: true },
+])(
+  "keeps exact results and RPC counts when telemetry throws (team=$team, verified=$verified)",
+  async ({ team, verified }) => {
+    const saved = receipt(team);
+    mockQuery.mockResolvedValue(verified ? saved : null);
+    jest.mocked(phLogger.info).mockImplementation(() => {
+      throw new Error("telemetry unavailable");
+    });
+    await expect(deduct(team)).resolves.toEqual(
+      verified ? saved.result : unknown,
+    );
+    expect(mockAction).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  "private/customer-content",
+  `${operationId}\n`,
+  `${operationId}${"9".repeat(100)}`,
+])(
+  "omits an unsafe operation ID from added diagnostics: %j",
+  async (arbitraryId) => {
+    await expect(
+      deductFromBalance(userId, 20, settlementId, arbitraryId),
+    ).resolves.toEqual(unknown);
+    expect(mockAction.mock.calls[0][1].settlementOperationId).toBe(arbitraryId);
+    expect(mockQuery.mock.calls[0][1].operation_id).toBe(arbitraryId);
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "Extra usage deduction reconciliation",
+      {
+        event: "extra_usage_deduction_reconciliation",
+        reconciliation_diagnostic_version: 1,
+        scope: "personal",
+        reconciliation_outcome: "unknown_noreplay",
+      },
+    );
+  },
+);
+
+it("retains an opaque final-operation ID for joining its outcome", async () => {
+  const finalId = operationId.replace(":step:1", ":final");
+  await expect(
+    deductFromBalance(userId, 20, settlementId, finalId),
+  ).resolves.toEqual(unknown);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "Extra usage deduction reconciliation",
+    expect.objectContaining({ settlement_operation_id: finalId }),
+  );
+  expect(mockAction).toHaveBeenCalledTimes(1);
+  expect(mockQuery).toHaveBeenCalledTimes(1);
+  expect(mockMutation).not.toHaveBeenCalled();
 });

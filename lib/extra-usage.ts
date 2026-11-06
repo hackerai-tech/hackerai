@@ -151,6 +151,41 @@ export interface DeductBalanceResult {
   poolDisabled?: boolean;
 }
 
+/** Report caller reconciliation, never receipt contents or a second exception. */
+function logDeductionReconciliation(
+  scope: "personal" | "team",
+  settlementOperationId: string,
+  verifiedResultSuccess: boolean | undefined,
+) {
+  try {
+    // Only the generated wallet UUID grammar is safe to join in diagnostics.
+    // Omit arbitrary caller IDs without changing the actual RPC arguments.
+    const safeOperationId =
+      settlementOperationId.length <= 80 &&
+      /^[a-z0-9:-]+$/i.test(settlementOperationId) &&
+      /^wallet-v1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:step:[0-9]{1,16}|final)$/i.test(
+        settlementOperationId,
+      );
+    phLogger.info("Extra usage deduction reconciliation", {
+      event: "extra_usage_deduction_reconciliation",
+      reconciliation_diagnostic_version: 1,
+      scope,
+      ...(safeOperationId && {
+        settlement_operation_id: settlementOperationId,
+      }),
+      reconciliation_outcome:
+        verifiedResultSuccess === undefined
+          ? "unknown_noreplay"
+          : "completed_receipt_verified",
+      ...(verifiedResultSuccess !== undefined && {
+        verified_result_success: verifiedResultSuccess,
+      }),
+    });
+  } catch {
+    // Optional telemetry must not change the financial result or trigger replay.
+  }
+}
+
 /** Read once after a lost acknowledgement. Never resume or replay a wallet action. */
 async function reconcileCompletedDeduction({
   userId,
@@ -421,6 +456,11 @@ export async function deductFromBalance(
       usageSettlementId,
       settlementOperationId,
     });
+    logDeductionReconciliation(
+      "personal",
+      settlementOperationId,
+      completed?.success,
+    );
     if (completed) return completed;
     // Do NOT report as insufficientFunds — this was a service error, not an
     // empty balance. Returning insufficientFunds: false lets the caller
@@ -569,6 +609,11 @@ export async function deductFromTeamBalance(
       usageSettlementId,
       settlementOperationId,
     });
+    logDeductionReconciliation(
+      "team",
+      settlementOperationId,
+      completed?.success,
+    );
     if (completed) return completed;
     return {
       success: false,
