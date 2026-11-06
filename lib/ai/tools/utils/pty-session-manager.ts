@@ -19,7 +19,6 @@ import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import type { AgentApprovalSandboxIdentity } from "@/types";
 import type { TerminalExecutionRecord } from "./terminal-execution-record";
-import { phLogger } from "@/lib/posthog/server";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -44,6 +43,12 @@ const RECORD_CHECKPOINT_WAIT_MS = 2_000;
 
 type RecordCheckpointIssueReason =
   "save_unacknowledged" | "checkpoint_threw" | "wait_deadline";
+
+export type RecordCheckpointIssue = {
+  terminalSessionId: string;
+  sessionKind: "pty" | "command";
+  reason: RecordCheckpointIssueReason;
+};
 
 export interface PtySession {
   readonly sessionId: string;
@@ -96,6 +101,7 @@ export interface CreateSessionOpts {
     artifactPaths: string[];
     save: (record: TerminalExecutionRecord) => Promise<string | null>;
     prune: () => Promise<void>;
+    reportCheckpointIssue?: (issue: RecordCheckpointIssue) => void;
     /** High-overhead transports may persist only at lifecycle boundaries. */
     checkpointOnStart?: boolean;
     checkpointOnOutput?: boolean;
@@ -340,13 +346,10 @@ export class PtySessionManager {
     if (session.reportedRecordCheckpointIssues.has(reason)) return;
     session.reportedRecordCheckpointIssues.add(reason);
     try {
-      phLogger.info("terminal_record_checkpoint_unconfirmed", {
-        terminal_scope_id: session.chatId,
-        terminal_session_id: session.sessionId,
-        session_kind: session.kind,
+      session.executionRecord?.reportCheckpointIssue?.({
+        terminalSessionId: session.sessionId,
+        sessionKind: session.kind,
         reason,
-        diagnostic_version: 1,
-        diagnostic_scope: "first_reason_per_terminal_session",
       });
     } catch {
       // Diagnostics must not change persistence, coalescing, or cancellation.

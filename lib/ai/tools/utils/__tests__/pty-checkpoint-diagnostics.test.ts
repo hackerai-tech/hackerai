@@ -1,7 +1,11 @@
 import { phLogger } from "@/lib/posthog/server";
 import { createCommandSessionHandle } from "../command-session-handle";
 import { PtySessionManager, type PtySession } from "../pty-session-manager";
-import type { TerminalExecutionRecord } from "../terminal-execution-record";
+import {
+  createTerminalRecordStore,
+  type TerminalExecutionRecord,
+} from "../terminal-execution-record";
+import type { AnySandbox } from "@/types";
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn() },
@@ -28,6 +32,11 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   ) {
     const kill = jest.fn(async () => true);
     const handle = createCommandSessionHandle({ kill });
+    const store = createTerminalRecordStore(
+      { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
+      "PRIVATE_USER",
+      "opaque-chat",
+    );
     const session = await manager.create("opaque-chat", {
       createHandle: async () => handle,
       cols: 120,
@@ -44,6 +53,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
         pruneOnStart: false,
         save,
         prune: async () => {},
+        reportCheckpointIssue: store.reportCheckpointIssue,
       },
     });
     sessions.push({ manager, session });
