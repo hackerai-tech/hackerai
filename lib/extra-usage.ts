@@ -159,14 +159,17 @@ function logDeductionReconciliation(
   verifiedResultSuccess: boolean | undefined,
 ) {
   try {
-    // Shape cannot establish provenance. Fingerprint bounded wallet IDs for
-    // joining the original capture offline; never add a caller ID in plaintext.
+    // Shape cannot establish provenance. Fingerprint bounded UUID operation
+    // forms for offline joins; never add a caller ID in plaintext.
     const safeOperationId =
       settlementOperationId.length <= 80 &&
       /^[a-z0-9:-]+$/i.test(settlementOperationId) &&
-      /^wallet-v1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:step:[0-9]{1,16}|final)$/i.test(
+      (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         settlementOperationId,
-      );
+      ) ||
+        /^wallet-v1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:step:[0-9]{1,16}|final)$/i.test(
+          settlementOperationId,
+        ));
     phLogger.info("Extra usage deduction reconciliation", {
       event: "extra_usage_deduction_reconciliation",
       reconciliation_diagnostic_version: 1,

@@ -317,7 +317,8 @@ it("fingerprints an opaque final-operation ID for joining its outcome", async ()
   expect(phLogger.info).toHaveBeenCalledWith(
     "Extra usage deduction reconciliation",
     expect.objectContaining({
-      settlement_operation_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      settlement_operation_fingerprint:
+        "4b34c6526c1a49c3a4c6fbcde08ae30531166a1c3376702b1b619a2cd9e4d60d",
     }),
   );
   expect(mockAction).toHaveBeenCalledTimes(1);
@@ -347,3 +348,52 @@ it("never logs sensitive-looking digits even inside a wallet-shaped caller ID", 
   expect(mockQuery).toHaveBeenCalledTimes(1);
   expect(mockMutation).not.toHaveBeenCalled();
 });
+
+it.each([
+  { team: false, source: "default" },
+  { team: true, source: "default" },
+  { team: false, source: "admission" },
+  { team: true, source: "admission" },
+])(
+  "correlates $source UUID outcomes without plaintext (team=$team)",
+  async ({ team, source }) => {
+    const generatedId = "00000000-0000-4000-8000-000000000002";
+    const uuid = jest.spyOn(crypto, "randomUUID").mockReturnValue(generatedId);
+    try {
+      const suppliedId = source === "admission" ? generatedId : undefined;
+      await expect(
+        team
+          ? deductFromTeamBalance(
+              organizationId,
+              userId,
+              20,
+              undefined,
+              suppliedId,
+            )
+          : deductFromBalance(userId, 20, undefined, suppliedId),
+      ).resolves.toEqual(unknown);
+      expect(uuid).toHaveBeenCalledTimes(source === "default" ? 1 : 0);
+      expect(mockAction.mock.calls[0][1].settlementOperationId).toBe(
+        generatedId,
+      );
+      expect(mockQuery.mock.calls[0][1].operation_id).toBe(generatedId);
+      expect(phLogger.info).toHaveBeenCalledTimes(1);
+      expect(phLogger.info).toHaveBeenCalledWith(
+        "Extra usage deduction reconciliation",
+        {
+          event: "extra_usage_deduction_reconciliation",
+          reconciliation_diagnostic_version: 1,
+          scope: team ? "team" : "personal",
+          settlement_operation_fingerprint:
+            "e79acd97ac88086665d85a762f43d533a45195b6bac5961a993e6ed362471439",
+          reconciliation_outcome: "unknown_noreplay",
+        },
+      );
+      expect(mockAction).toHaveBeenCalledTimes(1);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockMutation).not.toHaveBeenCalled();
+    } finally {
+      uuid.mockRestore();
+    }
+  },
+);
