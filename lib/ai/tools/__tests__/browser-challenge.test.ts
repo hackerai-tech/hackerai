@@ -389,8 +389,9 @@ it("does not create a paid task if stopped while the provider initializes", asyn
   const pending = run(tool, "solve", controller.signal);
   await started;
   controller.abort(new Error("stopped"));
-  initialize({ solve });
   await expect(pending).rejects.toThrow("stopped");
+  initialize({ solve });
+  await Promise.resolve();
   expect(solve).not.toHaveBeenCalled();
   expect(onToolCost).not.toHaveBeenCalled();
   expect(evaluate).toHaveBeenCalledTimes(1);

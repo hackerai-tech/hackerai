@@ -21,6 +21,22 @@ import { CAPTCHA_RUNTIME_GUIDANCE } from "./guidance";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
 
+// Module loading cannot be canceled, but Stop must release its waiter. A late
+// initialization only constructs the adapter; it must never start a paid task.
+function waitForProvider(
+  work: CaptchaSolver | Promise<CaptchaSolver>,
+  signal: AbortSignal,
+): Promise<CaptchaSolver> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    Promise.resolve(work)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 export function createBrowserChallengeHandler(
   context: ToolContext,
   environment: string | undefined,
@@ -156,7 +172,7 @@ export function createBrowserChallengeHandler(
           reason: "attempt_budget_unavailable",
         });
       signal.throwIfAborted();
-      const solver = await solverFactory(key);
+      const solver = await waitForProvider(solverFactory(key), signal);
       signal.throwIfAborted();
       taskStarted = true;
       record("browser_captcha_solver_attempt", { captcha_kind: widget.kind });
