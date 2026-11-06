@@ -145,6 +145,7 @@ test("generates from owned bounded persisted context and emits no content in ana
 test.each([
   "wrong owner",
   "active",
+  "waiting for reply",
   "canceled",
   "error",
   "old",
@@ -155,6 +156,8 @@ test.each([
 ])("does not generate for %s", async (condition) => {
   if (condition === "wrong owner") chat.user_id = "someone-else";
   if (condition === "active") chat.active_trigger_run_id = "run";
+  if (condition === "waiting for reply")
+    chat.active_agent_user_wait = { runId: "run", toolCallId: "wait" };
   if (condition === "canceled") chat.canceled_at = Date.now();
   if (condition === "error") chat.finish_reason = "error";
   if (condition === "old") chat.last_run_finished_at = Date.now() - 3600_000;
@@ -174,6 +177,7 @@ test.each([
   const expectedStatus: Record<string, number> = {
     "wrong owner": 404,
     active: 409,
+    "waiting for reply": 409,
     canceled: 409,
     error: 409,
     "stale message": 409,
@@ -321,7 +325,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 3,
+    validationVersion: 4,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -336,25 +340,29 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
-test("does not restore legacy prediction formats or make a model call", async () => {
-  saved = {
-    consumed: false,
-    batch: {
-      batchId: "legacy",
-      messageId: "answer",
-      mode: "ask",
-      suggestions: ["Explain the evidence."],
-    },
-  };
-  const result = await POST(
-    request({ chatId, messageId: "answer", restoreOnly: true } as never),
-  );
-  expect(await result.json()).toEqual({ suggestions: [] });
-  expect(generateNextActions).not.toHaveBeenCalled();
-  expect(reserve).not.toHaveBeenCalled();
-  expect(mutation).not.toHaveBeenCalled();
-  expect(capture).not.toHaveBeenCalled();
-});
+test.each([undefined, 3])(
+  "does not restore legacy prediction version %s or make a model call",
+  async (validationVersion) => {
+    saved = {
+      consumed: false,
+      batch: {
+        batchId: "legacy",
+        validationVersion,
+        messageId: "answer",
+        mode: "ask",
+        suggestions: ["Explain the evidence."],
+      },
+    };
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly: true } as never),
+    );
+    expect(await result.json()).toEqual({ suggestions: [] });
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+  },
+);
 
 test("does not expose an legacy batch returned by a concurrent save", async () => {
   mutation.mockResolvedValueOnce({
@@ -371,7 +379,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 3 }),
+      batch: expect.objectContaining({ validationVersion: 4 }),
     }),
   );
 });

@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
       !chat.active_stream_id &&
       !chat.active_trigger_run_id &&
       !chat.active_agent_approval_pending &&
+      !chat.active_agent_user_wait &&
       !chat.canceled_at;
     if (!completed) return empty(409);
     const history = await convex.query(api.messages.getMessagesPageForBackend, {
@@ -136,7 +137,7 @@ export async function POST(req: NextRequest) {
       return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
-      prompt_version: "natural-single-reply-v4",
+      prompt_version: "tool-aware-single-reply-v5",
       draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
       provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,
