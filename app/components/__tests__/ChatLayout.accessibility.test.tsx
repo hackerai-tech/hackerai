@@ -15,6 +15,7 @@ jest.mock("next/dynamic", () => ({
   __esModule: true,
   default: () => () => null,
 }));
+jest.mock("../KeyboardShortcuts", () => ({ KeyboardShortcuts: () => null }));
 jest.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
 }));

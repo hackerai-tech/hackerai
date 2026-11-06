@@ -10,6 +10,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import Header from "@/app/components/Header";
 import ChatHeader from "@/app/components/ChatHeader";
+import { KeyboardShortcuts } from "@/app/components/KeyboardShortcuts";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -241,6 +242,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
 
   return (
     <SharedChatProvider>
+      {!authLoading && user && <KeyboardShortcuts />}
       <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Header for unlogged users */}
         {!authLoading && !user && (

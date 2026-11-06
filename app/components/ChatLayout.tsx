@@ -10,6 +10,7 @@ import { useChats } from "../hooks/useChats";
 import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
+import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import {
   loadSettingsDialog,
@@ -118,6 +119,12 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Portaled dialogs manage their own focus and Escape key.
+      if (
+        e.defaultPrevented ||
+        (e.target instanceof Element && !panelRef.current?.contains(e.target))
+      )
+        return;
       if (e.key === "Escape") {
         closeTaskSidebarOverlay();
         return;
@@ -189,6 +196,9 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-0 flex-1 w-full overflow-hidden">
+      <KeyboardShortcuts
+        onToggleMobileSidebar={() => setChatSidebarOpen(!chatSidebarOpen)}
+      />
       {/* Chat Sidebar - Desktop: only mount once isMobile is resolved to avoid flash on mobile */}
       {isMobile === false && (
         <div
@@ -230,6 +240,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
             role="dialog"
             aria-modal="true"
             aria-label="Task sidebar"
+            data-shortcuts-scope="navigation"
             tabIndex={-1}
             className={`h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out ${
               isMobile

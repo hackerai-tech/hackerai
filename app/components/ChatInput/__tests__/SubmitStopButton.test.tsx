@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { jest } from "@jest/globals";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -84,6 +84,63 @@ describe("SubmitStopButton paid mode colors", () => {
     },
   );
 
+  it("preserves Ctrl+C and only stops with the advertised chord while running", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false, true);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, {
+      key: ">",
+      code: "Period",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stop from a terminal or behind a dialog", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", false, true);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, {
+      key: ">",
+      code: "Period",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    dialog.remove();
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm";
+    document.body.append(terminal);
+    fireEvent.keyDown(terminal, {
+      key: ">",
+      code: "Period",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    terminal.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
+
+  it("ignores Stop while idle", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false);
+    fireEvent.keyDown(window, {
+      key: ">",
+      code: "Period",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
   it("disables sending while offline without hiding the composer action", () => {
     render(
       <TooltipProvider>

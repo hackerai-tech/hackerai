@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,13 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
 import { useStartNewChat } from "../hooks/useStartNewChat";
 import { MessageSearchDialog } from "./MessageSearchDialog";
+import { useShortcutPlatform } from "@/hooks/use-shortcut-platform";
+import {
+  formatShortcut,
+  hasOpenShortcutOverlay,
+  isShortcutTargetBlocked,
+  matchesShortcut,
+} from "@/lib/keyboard-shortcuts";
 import type { SubscriptionTier } from "@/types";
 
 const SIDEBAR_PLAN_LABELS: Record<SubscriptionTier, string | null> = {
@@ -95,13 +102,10 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   // This handles the case where user opens search without opening sidebar first
   useChats(isSearchOpen);
 
-  // Detect if user is on Mac
-  const isMac = useMemo(
-    () => /macintosh|mac os x/i.test(navigator.userAgent),
-    [],
-  );
-
-  const searchShortcutLabel = isMac ? "⌘K" : "Ctrl+K";
+  const isMac = useShortcutPlatform();
+  const searchShortcutLabel = formatShortcut("search", isMac);
+  const sidebarShortcutLabel = formatShortcut("sidebar", isMac);
+  const newTaskShortcutLabel = formatShortcut("newTask", isMac);
   const planLabel = isCheckingProPlan
     ? null
     : SIDEBAR_PLAN_LABELS[subscription];
@@ -110,7 +114,12 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   // Add keyboard shortcut for search (Cmd/Ctrl + K)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if (
+        matchesShortcut(e, "search", isMac) &&
+        !isSearchOpen &&
+        !isShortcutTargetBlocked(e) &&
+        !hasOpenShortcutOverlay()
+      ) {
         e.preventDefault();
         setIsSearchOpen(true);
       }
@@ -120,7 +129,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [isMac, isSearchOpen]);
 
   const handleNewChat = () => {
     startNewChat();
@@ -158,7 +167,11 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 <SidebarIcon className="size-[18px]" />
               </Button>
             </TooltipTrigger>
-            <SidebarActionTooltip label="Toggle sidebar" side="right" />
+            <SidebarActionTooltip
+              label="Toggle sidebar"
+              shortcut={sidebarShortcutLabel}
+              side="right"
+            />
           </Tooltip>
 
           {/* Sidebar Actions - Collapsed */}
@@ -177,7 +190,11 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                     <SquarePen className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
-                <SidebarActionTooltip label="New task" side="right" />
+                <SidebarActionTooltip
+                  label="New task"
+                  shortcut={newTaskShortcutLabel}
+                  side="right"
+                />
               </Tooltip>
             </div>
 
@@ -292,7 +309,10 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 <PanelLeft className="size-[18px]" />
               </Button>
             </TooltipTrigger>
-            <SidebarActionTooltip label="Toggle sidebar" />
+            <SidebarActionTooltip
+              label="Toggle sidebar"
+              shortcut={sidebarShortcutLabel}
+            />
           </Tooltip>
         </div>
       </div>
@@ -311,6 +331,9 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
               New task
             </div>
+            <kbd className="text-xs font-sans text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
+              {newTaskShortcutLabel}
+            </kbd>
           </Button>
         </div>
 

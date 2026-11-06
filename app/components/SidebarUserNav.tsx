@@ -9,6 +9,7 @@ import {
   LogOut,
   Sparkle,
   LifeBuoy,
+  Keyboard,
   ChevronRight,
   ChevronDown,
   Settings,
@@ -33,6 +34,10 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -47,6 +52,11 @@ import {
   openSettingsDialog,
   preloadSettingsDialog,
 } from "@/lib/utils/settings-dialog";
+import {
+  formatShortcut,
+  openKeyboardShortcuts,
+} from "@/lib/keyboard-shortcuts";
+import { useShortcutPlatform } from "@/hooks/use-shortcut-platform";
 import { ReferralRewardDialog } from "./ReferralRewardDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
@@ -137,6 +147,7 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
 
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
+  const isMac = useShortcutPlatform();
   const { subscription } = useGlobalState();
   const [rateLimitsExpanded, setRateLimitsExpanded] = useState(false);
   const [referralDialogOpen, setReferralDialogOpen] = useState(false);
@@ -536,20 +547,27 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuSeparator />
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <DropdownMenuItem className="gap-4 cursor-pointer py-1.5">
-                <LifeBuoy className="h-4 w-4 text-foreground" />
-                <span>Help</span>
-                <ChevronRight className="ml-auto h-4 w-4" />
-              </DropdownMenuItem>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              side={isMobile ? "top" : "right"}
-              align={isMobile ? "center" : "start"}
-              sideOffset={isMobile ? 8 : 4}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-4 cursor-pointer py-1.5">
+              <LifeBuoy className="h-4 w-4 text-foreground" />
+              <span>Help</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent
+              sideOffset={4}
+              collisionPadding={8}
               className="rounded-2xl"
             >
+              <DropdownMenuItem
+                onSelect={() => requestAnimationFrame(openKeyboardShortcuts)}
+                className="gap-3 py-1.5"
+              >
+                <Keyboard className="h-4 w-4 text-foreground" />
+                <span>Keyboard shortcuts</span>
+                <DropdownMenuShortcut>
+                  {formatShortcut("shortcuts", isMac)}
+                </DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleHelpCenter} className="py-1.5">
                 <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
                 <span>Help Center</span>
@@ -570,8 +588,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <XIcon className="mr-2 h-4 w-4 text-foreground" />
                 <span>Social</span>
               </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
 
           <DropdownMenuItem
             data-testid="logout-button"
