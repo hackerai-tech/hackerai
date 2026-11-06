@@ -1,5 +1,10 @@
 import type { NextRequest } from "next/server";
 jest.mock("next/server", () => ({}));
+jest.mock("convex/browser", () =>
+  jest.requireActual(
+    "../../../../node_modules/convex/dist/cjs/browser/index.js",
+  ),
+);
 class MockResponse {
   readonly status: number;
   constructor(
@@ -28,7 +33,7 @@ jest.mock("@/lib/goals/server", () => ({
   reconcileGoal: jest.fn(),
 }));
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ mutation: mockMutation }),
+  getConvexClient: jest.fn(() => ({ mutation: mockMutation })),
 }));
 jest.mock("@/lib/db/actions", () => ({
   getChatById: (...args: unknown[]) => mockChat(...args),
@@ -117,22 +122,22 @@ describe("goal status transport recovery", () => {
   it.each([false, true])(
     "%s: recovers one reset or fails closed on exhaustion",
     async (exhausted) => {
-      const { createServiceFetch } =
+      const { createServiceConvexClient } =
         require("@/lib/db/service-client") as typeof import("@/lib/db/service-client");
       const { Response: FetchResponse } = jest.requireActual(
         "next/dist/compiled/@edge-runtime/primitives/fetch",
       );
       const nativeAbort = require("node:util").transferableAbortController();
       const originals = Object.fromEntries(
-        ["Response", "AbortController", "AbortSignal"].map((name) => [
-          name,
-          Object.getOwnPropertyDescriptor(globalThis, name)!,
-        ]),
+        ["Response", "AbortController", "AbortSignal", "crypto", "fetch"].map(
+          (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)!],
+        ),
       );
       for (const [name, value] of Object.entries({
         Response: FetchResponse,
         AbortController: nativeAbort.constructor,
         AbortSignal: nativeAbort.signal.constructor,
+        crypto: require("node:crypto").webcrypto,
       }))
         Object.defineProperty(globalThis, name, {
           value,
@@ -140,7 +145,12 @@ describe("goal status transport recovery", () => {
           writable: true,
         });
       let attempts = 0;
-      const transport = jest.fn(async () => {
+      const bodies: Array<{
+        path: string;
+        args: Array<Record<string, unknown>>;
+      }> = [];
+      const transport = jest.fn(async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
         if (++attempts === 1 || exhausted)
           throw new TypeError("fetch failed", {
             cause: Object.assign(new Error("read reset"), {
@@ -148,26 +158,23 @@ describe("goal status transport recovery", () => {
             }),
           });
         return new FetchResponse(
-          '{"status":"success","value":null,"logLines":[]}',
+          '{"status":"success","value":{"state":"paused","generation":5},"logLines":[]}',
         );
       });
-      const read = createServiceFetch(
-        "https://fixture.convex.cloud",
-        transport,
-      );
+      const originalServiceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+      process.env.CONVEX_SERVICE_ROLE_KEY = "synthetic-goal-recovery-key";
+      Object.defineProperty(globalThis, "fetch", {
+        value: transport,
+        writable: true,
+        configurable: true,
+      });
+      const client = createServiceConvexClient("https://fixture.convex.cloud");
+      const { getConvexClient } = require("@/lib/db/convex-client");
+      getConvexClient.mockReturnValue(client);
       const goals = require("@/lib/goals/server");
       goals.goalEnabled.mockResolvedValue(true);
-      goals.reconcileGoal.mockImplementationOnce(async () => {
-        await read("https://fixture.convex.cloud/api/query", {
-          method: "POST",
-          body: JSON.stringify({
-            path: "agentGoals:getForBackend",
-            format: "convex_encoded_json",
-            args: [{}],
-          }),
-        });
-        return { state: "paused", generation: 5 };
-      });
+      const productionGoals = jest.requireActual("@/lib/goals/server");
+      goals.reconcileGoal.mockImplementationOnce(productionGoals.reconcileGoal);
       mockMutation.mockClear();
       mockCancel.mockClear();
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -184,11 +191,25 @@ describe("goal status transport recovery", () => {
             goal: { state: "paused", generation: 5 },
           });
         expect(transport).toHaveBeenCalledTimes(2);
+        expect(getConvexClient).toHaveBeenCalled();
+        for (const body of bodies) {
+          expect(body.path).toBe("agentGoals:getForBackend");
+          expect(body.args[0]).toMatchObject({
+            userId: "owner",
+            chatId: "chat",
+          });
+        }
         expect(mockMutation).not.toHaveBeenCalled();
         expect(mockCancel).not.toHaveBeenCalled();
       } finally {
-        for (const [name, descriptor] of Object.entries(originals))
-          Object.defineProperty(globalThis, name, descriptor);
+        for (const [name, descriptor] of Object.entries(originals)) {
+          if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+          else Reflect.deleteProperty(globalThis, name);
+        }
+        if (originalServiceKey === undefined)
+          delete process.env.CONVEX_SERVICE_ROLE_KEY;
+        else process.env.CONVEX_SERVICE_ROLE_KEY = originalServiceKey;
+        getConvexClient.mockImplementation(() => ({ mutation: mockMutation }));
         warn.mockRestore();
         info.mockRestore();
       }

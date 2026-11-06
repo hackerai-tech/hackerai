@@ -629,6 +629,7 @@ export const finalizeStartedAgentRun = async ({
   }
 };
 
+/** Share recovery across admission reads without replaying persistence or run dispatch. */
 export const createAgentTriggerPost = ({
   endpoint,
 }: {

@@ -32,6 +32,7 @@ const controlRequest = z.discriminatedUnion("action", [
   }),
 ]);
 export const maxDuration = 30;
+/** Own goal-read recovery until the status response finishes, separately from controls. */
 async function handleGet(req: NextRequest) {
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
