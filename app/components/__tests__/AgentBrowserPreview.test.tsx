@@ -1175,7 +1175,7 @@ it("sends ordered takeover input directly to the relay instead of the command AP
   expect(actions.some((body) => body.action === "input")).toBe(false);
 });
 
-it.each(["changed", "unchanged", "failed"])(
+it.each(["changed", "unchanged", "failed", "transient"])(
   "refreshes a quiet takeover image despite relay heartbeats (capture: %s)",
   async (capture) => {
     const captureFails = capture === "failed";
@@ -1191,6 +1191,7 @@ it.each(["changed", "unchanged", "failed"])(
       capture === "unchanged"
         ? frame
         : { ...frame, image: "data:image/png;base64,updated" };
+    let transientAttempts = 0;
     global.fetch = jest.fn(async (url, options) => {
       if (url === "https://relay.example/frames")
         return {
@@ -1205,10 +1206,17 @@ it.each(["changed", "unchanged", "failed"])(
           }),
         };
       if (url === "https://relay.example/input") return response({ ok: true });
-      if (String(url).endsWith("?fresh=1"))
+      if (String(url).endsWith("?fresh=1")) {
+        if (capture === "transient" && transientAttempts++ === 0)
+          return response({ state: "disconnected" }, false);
+        if (capture === "transient" && transientAttempts === 2)
+          return new Promise<Response>((resolve) => {
+            setTimeout(() => resolve(response({ frame: refreshed })), 2000);
+          });
         return captureFails
           ? response({ state: "disconnected" }, false)
           : response({ frame: refreshed });
+      }
       return defaultFetch(url, options);
     });
     await mount();
@@ -1224,6 +1232,10 @@ it.each(["changed", "unchanged", "failed"])(
         stream.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
         await jest.advanceTimersByTimeAsync(1000);
       });
+      if (capture === "transient")
+        expect(
+          screen.queryByText(/Browser preview disconnected/),
+        ).not.toBeInTheDocument();
     }
     if (captureFails) {
       expect(

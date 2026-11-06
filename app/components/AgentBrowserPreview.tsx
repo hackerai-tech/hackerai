@@ -43,7 +43,7 @@ type BrowserInput =
   | { kind: "text"; text: string };
 
 const FRAME_STALE_MS = 10_000;
-const FRAME_REFRESH_MS = 5_000;
+const FRAME_REFRESH_MS = 4_000;
 
 class BrowserRequestError extends Error {
   constructor(
@@ -358,6 +358,12 @@ export function AgentBrowserPreview({
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     const relayActive = !!grant && !!relayUrl;
+    const nextPollDelay = () => {
+      const interval = relayActive ? 1000 : grantRef.current ? 200 : 1600;
+      const untilRefresh =
+        FRAME_REFRESH_MS - (Date.now() - lastFreshFrameAt.current);
+      return untilRefresh > 0 ? Math.min(interval, untilRefresh) : interval;
+    };
     const poll = async () => {
       const fresh =
         lastObservedFrame.current !== null &&
@@ -366,7 +372,7 @@ export function AgentBrowserPreview({
       // A quiet page need not produce screencast frames. Verify it with an
       // actual screenshot, even when the relay keeps sending heartbeats.
       if (relayActive && !fresh) {
-        timer = setTimeout(poll, 1000);
+        timer = setTimeout(poll, nextPollDelay());
         return;
       }
       const epoch = frameEpoch.current;
@@ -383,20 +389,23 @@ export function AgentBrowserPreview({
         // this request. Its image and connection state must win.
         if (stopped || frameEpoch.current !== epoch) return;
         if (!response.ok || !data.frame) {
-          setPreviewState(data.state ?? "disconnected");
+          const transient =
+            response.status >= 500 ||
+            response.status === 408 ||
+            response.status === 429;
+          // A failed watchdog capture is not proof the live relay is lost.
+          // Keep the last verified image usable only within its stale deadline.
+          if (!relayActive || !transient)
+            setPreviewState(data.state ?? "disconnected");
         } else {
           acceptFrame(data.frame as BrowserFrame, fresh);
         }
       } catch {
-        if (!stopped && frameEpoch.current === epoch)
+        if (!stopped && frameEpoch.current === epoch && !relayActive)
           setPreviewState("disconnected");
       } finally {
         clearTimeout(timeout);
-        if (!stopped)
-          timer = setTimeout(
-            poll,
-            relayActive ? 1000 : grantRef.current ? 200 : 1600,
-          );
+        if (!stopped) timer = setTimeout(poll, nextPollDelay());
       }
     };
     void poll();
