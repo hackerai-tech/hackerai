@@ -54,6 +54,8 @@ import {
   Pin,
   PinOff,
   LoaderCircle,
+  MessageCircleQuestionMark,
+  ShieldQuestion,
   Folder,
   FolderInput,
   FolderMinus,
@@ -183,6 +185,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const showActions = Boolean(
     isHovered || isFocusedWithin || isDropdownOpen || isMobile,
   );
+  const showInputStatus =
+    (needsInputReason || isAwaitingApproval) && (!showActions || isMobile);
+  const inputIsApproval =
+    needsInputReason === "approval" ||
+    (!needsInputReason && isAwaitingApproval);
   const showStreamingIndicator =
     isStreaming &&
     !needsInputReason &&
@@ -525,19 +532,23 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          <span className="min-w-0 truncate">{taskTitle}</span>
-          {(needsInputReason || isAwaitingApproval) && (
+          <span className="min-w-0 flex-1 truncate">{taskTitle}</span>
+          {showInputStatus && (
             <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium leading-none text-amber-700 dark:text-amber-300"
+              className={`ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-medium ${inputIsApproval ? "text-amber-700 dark:text-amber-300" : "text-indigo-600 dark:text-indigo-300"}`}
               data-testid="chat-item-needs-input"
               data-reason={needsInputReason ?? "approval"}
               aria-hidden="true"
             >
-              <span
-                className="size-1.5 rounded-full bg-current"
-                aria-hidden="true"
-              />
-              Needs input
+              {inputIsApproval ? (
+                <ShieldQuestion className="size-3.5" aria-hidden="true" />
+              ) : (
+                <MessageCircleQuestionMark
+                  className="size-3.5"
+                  aria-hidden="true"
+                />
+              )}
+              {inputIsApproval ? "Approval" : "Input"}
             </span>
           )}
         </span>

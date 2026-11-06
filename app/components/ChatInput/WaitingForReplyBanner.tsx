@@ -20,20 +20,24 @@ export function WaitingForReplyBanner({
 }) {
   return (
     <div
-      className="mx-4 flex min-w-0 items-start gap-2 rounded-[22px_22px_0px_0px] border border-b-0 border-black/8 bg-input-chat px-3 py-2.5 sm:items-center dark:border-border"
+      className="relative mx-3 -mb-3 flex min-w-0 items-center gap-2 rounded-t-xl border border-b-0 border-black/8 bg-input-chat px-3 pb-4 pt-1.5 dark:border-border"
       data-testid="waiting-for-reply-banner"
     >
       <MessageCircleQuestionMark
         aria-hidden="true"
-        className="mt-0.5 size-4 shrink-0 text-foreground sm:mt-0"
+        className="size-3.5 shrink-0 text-indigo-600 dark:text-indigo-300"
       />
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-foreground">
-          Agent is waiting for your reply
+        <p className="text-xs font-medium leading-5 text-foreground">
+          {submitting ? "Sending reply…" : "Waiting for your reply"}
         </p>
         <p
           id={WAITING_FOR_REPLY_DESCRIPTION_ID}
-          className="text-xs leading-5 text-muted-foreground"
+          className={
+            hasAttachments
+              ? "text-xs leading-5 text-muted-foreground"
+              : "sr-only"
+          }
         >
           {hasAttachments
             ? "Remove attachments to reply. This reply accepts text only."
@@ -50,9 +54,9 @@ export function WaitingForReplyBanner({
           onClick={onStop}
           disabled={stopping}
           aria-label="Stop agent instead of replying"
-          className="min-h-9 shrink-0 rounded-full px-3 text-xs sm:min-h-7"
+          className="-mr-1 min-h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground sm:h-6 sm:min-h-6"
         >
-          {stopping ? "Stopping…" : "Stop agent"}
+          {stopping ? "Stopping…" : "Stop"}
         </Button>
       )}
     </div>

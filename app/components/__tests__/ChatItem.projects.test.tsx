@@ -469,7 +469,7 @@ describe("ChatItem project actions", () => {
     ).toHaveClass("pr-9");
   });
 
-  it("shows a readable input badge without a completion dot", () => {
+  it("shows the input status without a completion dot", () => {
     markSidebarTaskVisited("chat-1", 1_000);
     render(
       <ChatItem
@@ -481,7 +481,7 @@ describe("ChatItem project actions", () => {
     );
 
     expect(screen.getByTestId("chat-item-needs-input")).toHaveTextContent(
-      "Needs input",
+      "Input",
     );
     expect(screen.getByTestId("chat-item-needs-input")).toHaveAttribute(
       "data-reason",

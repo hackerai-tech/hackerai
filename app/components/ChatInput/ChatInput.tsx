@@ -1297,7 +1297,7 @@ const ChatInputContent = ({
 
           {user && (
             <div
-              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels && !isWaitingForReply ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
             >
               <TodoPanel status={status} />
 

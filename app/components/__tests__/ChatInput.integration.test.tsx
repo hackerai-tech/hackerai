@@ -1857,7 +1857,7 @@ describe("ChatInput - Integration Tests", () => {
 
         expect(
           await screen.findByTestId("waiting-for-reply-banner"),
-        ).toHaveTextContent("Agent is waiting for your reply");
+        ).toHaveTextContent("Waiting for your reply");
         const input = screen.getByRole("textbox");
         expect(input).toHaveAttribute(
           "aria-describedby",
