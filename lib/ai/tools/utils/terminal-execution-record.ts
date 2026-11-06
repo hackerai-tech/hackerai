@@ -20,6 +20,8 @@ import {
   writeOwnerOnlyPosixFile,
 } from "./owner-only-posix-file";
 import { pruneLocalTerminalRecords } from "./local-terminal-retention";
+import { phLogger } from "@/lib/posthog/server";
+import type { RecordCheckpointIssue } from "./pty-session-manager";
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -161,6 +163,18 @@ export function createTerminalRecordStore(
   };
 
   return {
+    /** Keep server logging behind the adapter used by the shared session manager. */
+    reportCheckpointIssue(issue: RecordCheckpointIssue): void {
+      phLogger.info("terminal_record_checkpoint_unconfirmed", {
+        // Scope IDs can be client-controlled; reuse the store's opaque digest.
+        terminal_scope_fingerprint: scope,
+        terminal_session_id: issue.terminalSessionId,
+        session_kind: issue.sessionKind,
+        reason: issue.reason,
+        diagnostic_version: 1,
+        diagnostic_scope: "first_reason_per_terminal_session",
+      });
+    },
     checkpointOnStart: true,
     checkpointOnOutput: true,
     pruneOnStart: true,
