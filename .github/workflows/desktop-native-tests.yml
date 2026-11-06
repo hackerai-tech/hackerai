@@ -5,12 +5,14 @@ on:
     paths:
       - "packages/desktop/src-tauri/**"
       - ".github/workflows/desktop-native-tests.yml"
+      - ".github/scripts/prefer-ubuntu-apt-mirror.sh"
       - ".github/scripts/test-windows-packaged-upgrade.py"
   push:
     branches: [main]
     paths:
       - "packages/desktop/src-tauri/**"
       - ".github/workflows/desktop-native-tests.yml"
+      - ".github/scripts/prefer-ubuntu-apt-mirror.sh"
       - ".github/scripts/test-windows-packaged-upgrade.py"
 
 permissions:
@@ -36,6 +38,7 @@ jobs:
           workspaces: packages/desktop/src-tauri -> target
       - name: Install native dependencies
         run: |
+          bash .github/scripts/prefer-ubuntu-apt-mirror.sh
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Test Linux native cancellation and command handling

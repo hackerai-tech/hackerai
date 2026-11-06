@@ -5,6 +5,7 @@ on:
     paths:
       - "packages/desktop/src-tauri/**"
       - ".github/scripts/test-linux-packaged-upgrade.py"
+      - ".github/scripts/prefer-ubuntu-apt-mirror.sh"
       - ".github/scripts/prepare-desktop-release.sh"
       - ".github/workflows/desktop-build.yml"
       - ".github/workflows/desktop-upgrade-tests.yml"
@@ -41,15 +42,7 @@ jobs:
           workspaces: packages/desktop/src-tauri -> target
       - name: Install package build dependencies
         run: |
-          # Azure's mirror can remain reachable while downloads stall. Prefer
-          # Ubuntu's archive on x64 while retaining the runner's fallbacks.
-          if [ "$RUNNER_ARCH" = X64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
-            printf '%s\tpriority:%s\n' \
-              'https://archive.ubuntu.com/ubuntu/' 1 \
-              'http://azure.archive.ubuntu.com/ubuntu/' 2 \
-              'https://security.ubuntu.com/ubuntu/' 3 \
-              | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
-          fi
+          bash .github/scripts/prefer-ubuntu-apt-mirror.sh
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils file
       - name: Install desktop tooling
