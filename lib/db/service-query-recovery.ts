@@ -15,6 +15,7 @@ export const serviceQueryRecoveryRuntime = globalThis as typeof globalThis & {
 
 const recoverableQueries = new Set([
   "agentGoals:getForBackend",
+  "chats:getChatById",
   "localSandbox:listConnectionsForBackend",
   "localSandbox:resolveEnvironmentPreferenceForBackend",
   "browserHandoffs:getForBackend",
