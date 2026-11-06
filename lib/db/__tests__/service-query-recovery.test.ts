@@ -194,6 +194,38 @@ it("recovers an actual SDK read after a reset, retaining scoped proofs and its r
   ).not.toContain(secret);
 });
 
+it("recovers a signed goal read while preserving owner and chat arguments", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)).args[0]);
+    if (bodies.length === 1) throw reset();
+    return new Response(
+      JSON.stringify({ status: "success", value: null, logLines: [] }),
+    );
+  });
+  const client = createServiceConvexClient(deployment);
+  await expect(
+    runWithServiceQueryRecovery(() =>
+      client.query(makeFunctionReference<"query">("agentGoals:getForBackend"), {
+        serviceKey: secret,
+        userId: "owner",
+        chatId: "owned-chat",
+      }),
+    ),
+  ).resolves.toBeNull();
+  expect(bodies).toHaveLength(2);
+  for (const body of bodies) {
+    expect(body).toMatchObject({ userId: "owner", chatId: "owned-chat" });
+    expect(
+      await verifyServiceArgs(
+        { deployment, name: "agentGoals:getForBackend", type: "query" },
+        body,
+        secret,
+      ),
+    ).toBe(true);
+  }
+});
+
 it("reserves only two retries across concurrent reads and nested scopes", async () => {
   globalThis.fetch = jest.fn(async () => {
     throw reset();
@@ -201,9 +233,14 @@ it("reserves only two retries across concurrent reads and nested scopes", async 
   const client = createServiceConvexClient(deployment);
   const results = await runWithServiceQueryRecovery(() =>
     Promise.allSettled(
-      Array.from({ length: 5 }, () =>
+      Array.from({ length: 5 }, (_, index) =>
         runWithServiceQueryRecovery(() =>
-          client.query(reference, { serviceKey: secret }),
+          client.query(
+            index % 2
+              ? makeFunctionReference<"query">("agentGoals:getForBackend")
+              : reference,
+            { serviceKey: secret },
+          ),
         ),
       ),
     ),
@@ -226,9 +263,15 @@ it("limits each RPC to one retry even when the run has another credit", async ()
   expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 });
 
-it.each(["mutation", "action", "query_at_ts"])(
-  "never replays %s, even with an eligible function name",
-  async (endpoint) => {
+it.each(
+  ["mutation", "action", "query_at_ts"].flatMap((endpoint) =>
+    ["localSandbox:listConnectionsForBackend", "agentGoals:getForBackend"].map(
+      (name) => [endpoint, name],
+    ),
+  ),
+)(
+  "never replays %s, even with eligible function %s",
+  async (endpoint, name) => {
     const failure = reset();
     const transport = jest.fn(async () => {
       throw failure;
@@ -239,7 +282,7 @@ it.each(["mutation", "action", "query_at_ts"])(
         fetch(`${deployment}/api/${endpoint}`, {
           method: "POST",
           body: JSON.stringify({
-            path: "localSandbox:listConnectionsForBackend",
+            path: name,
             format: "convex_encoded_json",
             args: [{}],
           }),

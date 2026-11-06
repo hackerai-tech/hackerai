@@ -37,7 +37,7 @@ jest.mock("@/lib/api/agent-approval-session", () => ({
   cancelAgentTriggerRun: (...args: unknown[]) => mockCancel(...args),
   closeAgentApprovalSession: jest.fn(),
 }));
-import { POST } from "../route";
+import { GET, POST } from "../route";
 const mockMutation = jest.fn(),
   mockChat = jest.fn(),
   mockCancel = jest.fn();
@@ -111,4 +111,87 @@ describe("goal control admission", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ state: "paused", generation: 5 });
   });
+});
+
+describe("goal status transport recovery", () => {
+  it.each([false, true])(
+    "%s: recovers one reset or fails closed on exhaustion",
+    async (exhausted) => {
+      const { createServiceFetch } =
+        require("@/lib/db/service-client") as typeof import("@/lib/db/service-client");
+      const { Response: FetchResponse } = jest.requireActual(
+        "next/dist/compiled/@edge-runtime/primitives/fetch",
+      );
+      const nativeAbort = require("node:util").transferableAbortController();
+      const originals = Object.fromEntries(
+        ["Response", "AbortController", "AbortSignal"].map((name) => [
+          name,
+          Object.getOwnPropertyDescriptor(globalThis, name)!,
+        ]),
+      );
+      for (const [name, value] of Object.entries({
+        Response: FetchResponse,
+        AbortController: nativeAbort.constructor,
+        AbortSignal: nativeAbort.signal.constructor,
+      }))
+        Object.defineProperty(globalThis, name, {
+          value,
+          configurable: true,
+          writable: true,
+        });
+      let attempts = 0;
+      const transport = jest.fn(async () => {
+        if (++attempts === 1 || exhausted)
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(new Error("read reset"), {
+              code: "ECONNRESET",
+            }),
+          });
+        return new FetchResponse(
+          '{"status":"success","value":null,"logLines":[]}',
+        );
+      });
+      const read = createServiceFetch(
+        "https://fixture.convex.cloud",
+        transport,
+      );
+      const goals = require("@/lib/goals/server");
+      goals.goalEnabled.mockResolvedValue(true);
+      goals.reconcileGoal.mockImplementationOnce(async () => {
+        await read("https://fixture.convex.cloud/api/query", {
+          method: "POST",
+          body: JSON.stringify({
+            path: "agentGoals:getForBackend",
+            format: "convex_encoded_json",
+            args: [{}],
+          }),
+        });
+        return { state: "paused", generation: 5 };
+      });
+      mockMutation.mockClear();
+      mockCancel.mockClear();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const response = await GET({
+          nextUrl: new URL("https://fixture.test/api/agent-goal?chatId=chat"),
+          signal: nativeAbort.signal,
+        } as unknown as NextRequest);
+        expect(response.status).toBe(exhausted ? 503 : 200);
+        if (!exhausted)
+          expect(await response.json()).toEqual({
+            enabled: true,
+            goal: { state: "paused", generation: 5 },
+          });
+        expect(transport).toHaveBeenCalledTimes(2);
+        expect(mockMutation).not.toHaveBeenCalled();
+        expect(mockCancel).not.toHaveBeenCalled();
+      } finally {
+        for (const [name, descriptor] of Object.entries(originals))
+          Object.defineProperty(globalThis, name, descriptor);
+        warn.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
 });
