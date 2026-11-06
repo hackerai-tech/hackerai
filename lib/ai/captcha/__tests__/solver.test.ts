@@ -111,6 +111,102 @@ it("never retries an ambiguous paid creation failure or exposes provider errors"
   expect(mockFetch).toHaveBeenCalledTimes(1);
 });
 
+it.each(["network", "http_503", "http_429", "body_timeout"])(
+  "recovers a transient %s poll using the same paid task",
+  async (failure) => {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    if (failure === "body_timeout") {
+      mockFetch.mockImplementationOnce(async (_url, options) => ({
+        ok: true,
+        status: 200,
+        json: () =>
+          new Promise((_resolve, reject) =>
+            options.signal.addEventListener(
+              "abort",
+              () => reject(options.signal.reason),
+              { once: true },
+            ),
+          ),
+      }));
+    } else if (failure === "network")
+      mockFetch.mockRejectedValueOnce(new Error("private transport failure"));
+    else
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: failure === "http_503" ? 503 : 429,
+      });
+    mockFetch.mockResolvedValueOnce(
+      reply({
+        errorId: 0,
+        status: "ready",
+        cost: "0.00299",
+        solution: { gRecaptchaResponse: "response" },
+      }),
+    );
+    const pending = createTwoCaptchaSolver("provider-key").solve(
+      demo,
+      widget,
+      new AbortController().signal,
+    );
+    await jest.advanceTimersByTimeAsync(
+      failure === "body_timeout" ? 25_000 : 10_000,
+    );
+    await expect(pending).resolves.toEqual({
+      token: "response",
+      costDollars: 0.00299,
+    });
+    const calls = mockFetch.mock.calls;
+    expect(calls.filter(([url]) => url.endsWith("/createTask"))).toHaveLength(
+      1,
+    );
+    expect(
+      calls
+        .filter(([url]) => url.endsWith("/getTaskResult"))
+        .map(([, options]) => JSON.parse(options.body).taskId),
+    ).toEqual([123, 123]);
+  },
+);
+
+it("bounds transient poll failures and never recreates the paid task", async () => {
+  mockFetch
+    .mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }))
+    .mockRejectedValue(new Error("private-network-detail"));
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    demo,
+    widget,
+    new AbortController().signal,
+  );
+  const rejected = expect(pending).rejects.toThrow(
+    "CAPTCHA result read failed.",
+  );
+  await jest.advanceTimersByTimeAsync(15_000);
+  await rejected;
+  expect(mockFetch.mock.calls.map(([url]) => url.split("/").at(-1))).toEqual([
+    "createTask",
+    "getTaskResult",
+    "getTaskResult",
+    "getTaskResult",
+  ]);
+});
+
+it("cancels a transient polling retry without another read", async () => {
+  mockFetch
+    .mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }))
+    .mockRejectedValue(new Error("private-network-detail"));
+  const controller = new AbortController();
+  const pending = createTwoCaptchaSolver("provider-key").solve(
+    demo,
+    widget,
+    controller.signal,
+  );
+  const rejected = expect(pending).rejects.toThrow("stopped");
+  await jest.advanceTimersByTimeAsync(5000);
+  controller.abort(new Error("stopped"));
+  await rejected;
+  await jest.advanceTimersByTimeAsync(10_000);
+  expect(mockFetch).toHaveBeenCalledTimes(2);
+});
+
 it.each([
   { errorId: 1, errorDescription: "provider-key" },
   { errorId: 0, status: "ready", solution: {}, cost: "0.003" },

@@ -19,6 +19,7 @@ const providerResponse = z.object({
 });
 
 export type CaptchaSolution = { token: string; costDollars: number };
+class RetryableCaptchaPollError extends Error {}
 export interface CaptchaSolver {
   solve(
     url: string,
@@ -52,6 +53,7 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
         payload: Record<string, unknown>,
       ) => {
         deadline.throwIfAborted();
+        let transient = true;
         try {
           const response = await fetch(`https://api.2captcha.com/${method}`, {
             method: "POST",
@@ -60,12 +62,22 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
             body: JSON.stringify({ clientKey: apiKey, ...payload }),
             signal: AbortSignal.any([deadline, AbortSignal.timeout(15_000)]),
           });
+          transient = response.status === 429 || response.status >= 500;
           if (!response.ok) throw new Error();
-          const parsed = providerResponse.safeParse(await response.json());
+          transient = true;
+          const body = await response.json();
+          transient = false;
+          const parsed = providerResponse.safeParse(body);
           if (!parsed.success || parsed.data.errorId !== 0) throw new Error();
           return parsed.data;
-        } catch {
+        } catch (error) {
           deadline.throwIfAborted();
+          if (
+            method === "getTaskResult" &&
+            transient &&
+            !(error instanceof SyntaxError)
+          )
+            throw new RetryableCaptchaPollError("CAPTCHA result read failed.");
           // Provider/network errors can contain credentials or response tokens.
           throw new Error(
             "CAPTCHA provider request failed. Do not automatically retry.",
@@ -101,11 +113,24 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           }
         }
       }
+      let consecutivePollFailures = 0;
       for (;;) {
         await abortableDelay(5000, deadline);
-        const result = await request("getTaskResult", {
-          taskId: created.taskId,
-        });
+        let result;
+        try {
+          result = await request("getTaskResult", { taskId: created.taskId });
+          consecutivePollFailures = 0;
+        } catch (error) {
+          // Reading an existing task cannot create another charge. Retry only
+          // transport errors, 429 or 5xx, at most twice consecutively and always
+          // inside the same deadline. Provider errors and malformed data fail.
+          if (
+            error instanceof RetryableCaptchaPollError &&
+            ++consecutivePollFailures <= 2
+          )
+            continue;
+          throw error;
+        }
         if (result.status === "processing") continue;
         const token =
           widget.kind === "recaptcha_v2" || widget.kind === "hcaptcha"
