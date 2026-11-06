@@ -98,7 +98,7 @@ export function cloudflareReleaseScript(approvedUrls: string[]): string {
     if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
     const current = window[Symbol.for('hackerai.cloudflareChallenge')];
     if (!current || current.delivered || typeof current.release !== 'function') return false;
-    current.release(); return true;
+    return current.release() === true;
   })()`;
 }
 
@@ -139,13 +139,14 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
         const args = Array.from(arguments);
         args[1] = {...options};
         captured.release = () => {
-          if (window[key] !== captured || captured.delivered) return;
+          if (window[key] !== captured || captured.delivered) return false;
           disabled = true;
           clearInterval(timer);
           api.render = original;
           delete window[key];
-          if (!target.isConnected || (typeof container === 'string' && document.querySelector(container) !== target)) return;
+          if (!target.isConnected || (typeof container === 'string' && document.querySelector(container) !== target)) return false;
           original.apply(receiver, args);
+          return true;
         };
         return 'hackerai-' + observationId;
       };

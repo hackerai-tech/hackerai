@@ -171,8 +171,23 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           Number.isFinite(costDollars) &&
           costDollars >= 0 &&
           costDollars <= 1
-        )
-          await onCostKnown?.(created.taskId, costDollars);
+        ) {
+          // The task is already durably registered for reconciliation. Keep
+          // local expense reporting, but a failed/slow idempotent journal write
+          // must not discard a paid solution or hold Stop past its deadline.
+          const wait = new AbortController();
+          try {
+            await Promise.race([
+              Promise.resolve()
+                .then(() => onCostKnown?.(created.taskId!, costDollars))
+                .catch(() => undefined),
+              abortableDelay(2000, AbortSignal.any([deadline, wait.signal])),
+            ]);
+          } finally {
+            wait.abort();
+          }
+          deadline.throwIfAborted();
+        }
         const solution = z
           .record(z.string(), z.unknown())
           .safeParse(result.solution);

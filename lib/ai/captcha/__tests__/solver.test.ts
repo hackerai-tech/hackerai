@@ -602,3 +602,64 @@ it.each([
     expect(mockFetch).not.toHaveBeenCalled();
   },
 );
+
+it.each(["rejected", "slow", "stop", "deadline"])(
+  "keeps a paid solution and cancellation independent of a %s cost journal write",
+  async (outcome) => {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    mockFetch.mockResolvedValueOnce(
+      reply({
+        errorId: 0,
+        status: "ready",
+        solution: { gRecaptchaResponse: "private-response" },
+        cost: "0.00145",
+      }),
+    );
+    const controller = new AbortController();
+    let finishWrite!: () => void;
+    const recordCost = jest.fn(() =>
+      outcome === "rejected"
+        ? Promise.reject(new Error("journal unavailable"))
+        : new Promise<void>((resolve) => {
+            finishWrite = resolve;
+          }),
+    );
+    let settled: unknown;
+    const pending = createTwoCaptchaSolver("key")
+      .solve(demo, widget, controller.signal, undefined, recordCost)
+      .then(
+        (value) => {
+          settled = value;
+        },
+        (error) => {
+          settled = error;
+        },
+      );
+    try {
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(recordCost).toHaveBeenCalledTimes(1);
+      if (outcome === "stop" || outcome === "deadline")
+        controller.abort(
+          outcome === "stop"
+            ? new Error("stopped")
+            : new DOMException("deadline", "TimeoutError"),
+        );
+      await jest.advanceTimersByTimeAsync(outcome === "slow" ? 2001 : 1);
+      if (outcome === "stop" || outcome === "deadline") {
+        expect(settled).toBeInstanceOf(Error);
+        expect((settled as Error).name).toBe(
+          outcome === "stop" ? "Error" : "TimeoutError",
+        );
+      } else
+        expect(settled).toEqual({
+          token: "private-response",
+          costDollars: 0.00145,
+        });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(recordCost).toHaveBeenCalledWith(123, 0.00145);
+    } finally {
+      finishWrite?.(); // An already-started idempotent write may finish later.
+      await pending;
+    }
+  },
+);

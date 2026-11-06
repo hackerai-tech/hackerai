@@ -60,7 +60,7 @@ function render() {
   return { api, options, original, callback };
 }
 
-it.each(["cleared", "replaced", "stop"])(
+it.each(["cleared", "replaced", "detached", "stop"])(
   "verifies the actual managed outcome and restores a new challenge without another solve: %s",
   async (outcome) => {
     const { api, options, callback, original } = render();
@@ -69,7 +69,12 @@ it.each(["cleared", "replaced", "stop"])(
       if (outcome === "cleared")
         document.body.innerHTML =
           '<form><h1>Sign in</h1><input type="password"></form>';
-      else api.render(document.body, options);
+      else {
+        const container = document.createElement("div");
+        document.body.append(container);
+        api.render(container, options);
+        if (outcome === "detached") container.remove();
+      }
     });
     process.env = {
       ...originalEnv,
@@ -143,9 +148,14 @@ it.each(["cleared", "replaced", "stop"])(
         status: "handoff_required",
         reason: "managed_gate_not_cleared",
         responseDelivered: true,
-        manualWidgetRestored: true,
+        manualWidgetRestored: outcome !== "detached",
       });
-      expect(original).toHaveBeenCalledWith(document.body, options);
+      if (outcome === "detached") expect(original).not.toHaveBeenCalled();
+      else
+        expect(original).toHaveBeenCalledWith(
+          expect.any(HTMLDivElement),
+          options,
+        );
       expect(page[key]).toBeUndefined();
       await handler();
     }
