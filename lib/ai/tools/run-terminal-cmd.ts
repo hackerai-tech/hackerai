@@ -1,4 +1,5 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
+import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
@@ -294,14 +295,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const terminalTool = tool({
     ...runTerminalCmdTool,
     ...(context.checkBrowserChallenge && {
-      description: `${runTerminalCmdTool.description ?? ""}
-Automatic CAPTCHA fallback:
-- Use the installed agent-browser directly. For one Cloud browser, keep the runtime's isolated default session; for named sessions, use a short unique name (at most 24 characters) on EVERY browser command. Do not run version/help/skills checks unless an actual command fails with a syntax or availability error.
-- After opening the page, run a standalone foreground agent-browser snapshot -i, with no pipes, redirection, waits or appended commands. Supported pending CAPTCHAs may be solved in that same browser. Read result.browserChallenge in THIS tool result: it is runtime metadata, not shell stdout, and cannot be recovered by grepping terminal logs.
-- If no challenge status is returned, inspect the snapshot. If the widget is visibly loading, wait once for an observed readiness condition, then run another standalone snapshot. Do not poll snapshots or inspect logs looking for a missing status. For snapshot_required, execute its suggested command once, alone.
-- After token_delivered, take one fresh standalone snapshot and check whether a callback already submitted the form. Submit the ordinary form only if it has not been submitted, then verify website acceptance. If submission may have occurred but its outcome is unknown, stop for human verification instead of resubmitting. Delivery alone is not success. Use targeted reads; avoid full DOM inventories. Batch known, dependent steps such as a submission followed by an observed-result wait and targeted read in one foreground call, stopping on errors. Never batch or format the snapshot that triggers fallback.
-- Capture requested pre-submission or diagnostic screenshots at the requested stage; do not delay them until the form is submitted. For final acceptance evidence, verify the result first. Batch visual-only token redaction and capture, then view the returned image once. Never clear or overwrite response fields to redact them. Do not add file/ls checks after a successful screenshot or create screenshots unless needed for the task. Close only your browser session when the task is finished; keep it open while human takeover is needed or pending.
-- Never call external CAPTCHA APIs or obtain solver credentials yourself; never repeat a paid attempt. For unsupported, failed or uncertain challenges in the current Cloud browser, use browser_handoff. On Local, Desktop or remote connections, that tool cannot hand over the connected browser: stop and explain that manual verification is required and in-app takeover is unavailable for that browser. Do not switch to a Cloud browser to request handoff.`,
+      description: `${runTerminalCmdTool.description ?? ""}\n${CAPTCHA_TOOL_HINT}`,
     }),
     execute: async (
       {

@@ -8,6 +8,14 @@ pending challenge can receive one 2Captcha attempt. The result appears in
 `result.browserChallenge`; the Agent must submit the normal form and verify the
 website's response. Token delivery alone is not acceptance.
 
+Eligible terminal tools include only a short CAPTCHA hint. Detailed workflow
+guidance is returned once per handler/run after the owned page reports a pending
+challenge, including unsupported challenges. Ordinary pages and inspection
+failures before detection receive no detailed guide. The provider module is
+initialized only after challenge validation and durable admission; cancellation
+is rechecked after initialization before any paid task is created. No CAPTCHA
+MCP schemas or extra model-facing tools are loaded.
+
 If a snapshot includes output formatting such as `| tail`, the terminal result
 asks the Agent to repeat the snapshot alone. That formatting command never
 starts a paid solve.

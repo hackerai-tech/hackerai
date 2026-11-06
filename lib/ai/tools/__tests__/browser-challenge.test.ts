@@ -58,11 +58,12 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
     registerTask: jest.fn(async () => {}),
     recordCost: jest.fn(async () => {}),
   };
+  const solverFactory = jest.fn(() => ({ solve }));
   const tool = createBrowserChallengeHandler(
     context,
     environment,
     undefined,
-    () => ({ solve }),
+    solverFactory,
     journal,
   );
   return {
@@ -73,6 +74,7 @@ function setup(environment = "PREVIEW", overrides: Partial<ToolContext> = {}) {
     evaluate,
     getChallengeBrowser,
     onToolCost,
+    solverFactory,
   };
 }
 const run = (
@@ -99,17 +101,23 @@ beforeEach(() => {
 it("automatically solves only a detected supported challenge once in the existing browser", async () => {
   process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
   process.env.HACKERAI_ENVIRONMENT = "preview";
-  const { tool, solve, evaluate } = setup();
+  const { tool, solve, evaluate, solverFactory } = setup();
   evaluate.mockResolvedValueOnce({ ...cloneObservation(), widgets: [] });
   expect(await run(tool, "inspect")).toEqual({
     status: "no_pending_challenge",
   });
   expect(solve).not.toHaveBeenCalled();
-  expect(await run(tool, "inspect")).toMatchObject({
+  expect(solverFactory).not.toHaveBeenCalled();
+  const detected = await run(tool, "inspect");
+  expect(detected).toMatchObject({
     status: "token_delivered",
     websiteAccepted: false,
+    guidance: expect.any(String),
   });
-  expect(await run(tool, "inspect")).toMatchObject({ reason: "attempt_limit" });
+  const repeated = await run(tool, "inspect");
+  expect(repeated).toMatchObject({ reason: "attempt_limit" });
+  expect(repeated).not.toHaveProperty("guidance");
+  expect(solverFactory).toHaveBeenCalledTimes(1);
   expect(solve).toHaveBeenCalledTimes(1);
 });
 
@@ -168,6 +176,7 @@ it("detects without spending, exposes no site key and respects a disabled flag",
     interstitial: false,
     message: expect.any(String),
     visionGuidance: expect.any(String),
+    guidance: expect.any(String),
   });
   expect(solve).not.toHaveBeenCalled();
   flag.mockResolvedValue(false);
@@ -217,6 +226,7 @@ it("requests handoff without contacting a provider when no solver key exists", a
   await expect(run(tool, "solve")).resolves.toEqual({
     status: "handoff_required",
     reason: "solver_not_configured",
+    guidance: expect.any(String),
   });
   expect(solve).not.toHaveBeenCalled();
 });
@@ -283,6 +293,7 @@ it("does not retry an ambiguous paid failure, and hands off with a sanitized res
   await expect(run(tool, "solve")).resolves.toEqual({
     status: "handoff_required",
     reason: "challenge_operation_failed",
+    guidance: expect.any(String),
   });
   await expect(run(tool, "solve")).resolves.toMatchObject({
     reason: "attempt_limit",
@@ -342,6 +353,49 @@ it("does not deliver a late response after Stop", async () => {
   expect(evaluate).toHaveBeenCalledTimes(1);
 });
 
+it("does not load guidance or the provider when inspection fails before detecting a challenge", async () => {
+  const { tool, getChallengeBrowser, solverFactory } = setup();
+  getChallengeBrowser.mockRejectedValue(new Error("browser unavailable"));
+  const result = await run(tool, "solve");
+  expect(result).toMatchObject({
+    status: "handoff_required",
+    reason: "challenge_operation_failed",
+  });
+  expect(result).not.toHaveProperty("guidance");
+  expect(solverFactory).not.toHaveBeenCalled();
+});
+
+it("does not create a paid task if stopped while the provider initializes", async () => {
+  const { context, journal, solve, evaluate, onToolCost } = setup();
+  const controller = new AbortController();
+  let ready!: () => void;
+  let initialize!: (value: { solve: typeof solve }) => void;
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const factory = jest.fn(() => {
+    ready();
+    return new Promise<{ solve: typeof solve }>((resolve) => {
+      initialize = resolve;
+    });
+  });
+  const tool = createBrowserChallengeHandler(
+    context,
+    "PREVIEW",
+    undefined,
+    factory,
+    journal,
+  );
+  const pending = run(tool, "solve", controller.signal);
+  await started;
+  controller.abort(new Error("stopped"));
+  initialize({ solve });
+  await expect(pending).rejects.toThrow("stopped");
+  expect(solve).not.toHaveBeenCalled();
+  expect(onToolCost).not.toHaveBeenCalled();
+  expect(evaluate).toHaveBeenCalledTimes(1);
+});
+
 it.each([
   "non-demo",
   "hcaptcha",
@@ -367,6 +421,7 @@ it.each([
     await expect(run(tool, "solve")).resolves.toEqual({
       status: "handoff_required",
       reason: "unsupported_challenge",
+      guidance: expect.any(String),
     });
     expect(solve).not.toHaveBeenCalled();
   },

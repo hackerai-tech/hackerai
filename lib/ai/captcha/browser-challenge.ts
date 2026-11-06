@@ -16,7 +16,8 @@ import {
   isCaptchaDemo,
   isSupportedCaptchaTarget,
 } from "./detection";
-import { createTwoCaptchaSolver, type CaptchaSolver } from "./solver";
+import type { CaptchaSolver } from "./solver";
+import { CAPTCHA_RUNTIME_GUIDANCE } from "./guidance";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
 
@@ -25,11 +26,15 @@ export function createBrowserChallengeHandler(
   environment: string | undefined,
   runSignal?: AbortSignal,
   // Injection supports deterministic tests without any paid network requests.
-  solverFactory: (key: string) => CaptchaSolver = createTwoCaptchaSolver,
+  solverFactory: (
+    key: string,
+  ) => CaptchaSolver | Promise<CaptchaSolver> = async (key) =>
+    (await import("./solver")).createTwoCaptchaSolver(key),
   journal?: CaptchaJournal,
 ) {
   let solveStarted = false;
   let active = false;
+  let guidanceSent = false;
   // Internal browser workflow, never a model-facing tool or model input.
   return async (abortSignal?: AbortSignal) => {
     const signals = [runSignal, abortSignal].filter(
@@ -53,6 +58,12 @@ export function createBrowserChallengeHandler(
           "Another browser challenge check is in progress. Do not retry paid solving.",
       };
     active = true;
+    let challengeDetected = false;
+    const respond = <T extends { status: string }>(result: T) => {
+      if (!challengeDetected || guidanceSent) return result;
+      guidanceSent = true;
+      return { ...result, guidance: CAPTCHA_RUNTIME_GUIDANCE };
+    };
     let deliveryStarted = false;
     let taskStarted = false;
     let costRecorded = false;
@@ -92,13 +103,14 @@ export function createBrowserChallengeHandler(
       const pending = observation.widgets.filter((w) => !w.tokenPresent);
       if (!pending.length && !observation.interstitial)
         return { status: "no_pending_challenge" };
+      challengeDetected = true;
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
         interstitial: observation.interstitial,
       });
       const autoSolve = captchaAutomaticSolvingEnabled(environment);
       if (!autoSolve)
-        return {
+        return respond({
           status: "challenge_detected",
           widgets: pending.map(({ kind, invisible }) => ({
             kind,
@@ -116,7 +128,7 @@ export function createBrowserChallengeHandler(
               pending[0].kind === "hcaptcha") && {
               visionGuidance: CAPTCHA_VISION_GUIDANCE,
             }),
-        };
+        });
       const widget = pending[0];
       if (
         observation.interstitial ||
@@ -125,28 +137,30 @@ export function createBrowserChallengeHandler(
         !isSupportedCaptchaTarget(observation.url, widget) ||
         widget.invisible
       )
-        return {
+        return respond({
           status: "handoff_required",
           reason: "unsupported_challenge",
-        };
+        });
       const key = process.env.TWOCAPTCHA_API_KEY;
       if (!key)
-        return {
+        return respond({
           status: "handoff_required",
           reason: "solver_not_configured",
-        };
+        });
       if (solveStarted)
-        return { status: "handoff_required", reason: "attempt_limit" };
+        return respond({ status: "handoff_required", reason: "attempt_limit" });
       solveStarted = true; // Includes failures and concurrent calls; no paid retry.
       if (!journal || !(await journal.reserve(widget.kind)))
-        return {
+        return respond({
           status: "handoff_required",
           reason: "attempt_budget_unavailable",
-        };
+        });
+      signal.throwIfAborted();
+      const solver = await solverFactory(key);
       signal.throwIfAborted();
       taskStarted = true;
       record("browser_captcha_solver_attempt", { captcha_kind: widget.kind });
-      const solution = await solverFactory(key).solve(
+      const solution = await solver.solve(
         observation.url,
         widget,
         signal,
@@ -175,14 +189,16 @@ export function createBrowserChallengeHandler(
         captcha_kind: widget.kind,
         cost_dollars: solution.costDollars,
       });
-      return delivered.status === "token_delivered"
-        ? {
-            status: "token_delivered",
-            websiteAccepted: false,
-            message:
-              "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Token delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.",
-          }
-        : { status: "handoff_required", reason: "page_changed" };
+      return respond(
+        delivered.status === "token_delivered"
+          ? {
+              status: "token_delivered",
+              websiteAccepted: false,
+              message:
+                "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Token delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.",
+            }
+          : { status: "handoff_required", reason: "page_changed" },
+      );
     } catch {
       if (taskStarted)
         record("browser_captcha_solver_result", {
@@ -193,7 +209,7 @@ export function createBrowserChallengeHandler(
         });
       signal.throwIfAborted();
       // Never forward provider responses, solver keys, tokens or script text.
-      return {
+      return respond({
         status: "handoff_required",
         reason: deliveryStarted
           ? "delivery_outcome_unknown"
@@ -202,7 +218,7 @@ export function createBrowserChallengeHandler(
           message:
             "Delivery may have occurred. Inspect the same browser page before any further action; do not repeat the solve.",
         }),
-      };
+      });
     } finally {
       active = false;
     }

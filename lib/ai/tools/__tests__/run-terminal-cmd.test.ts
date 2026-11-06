@@ -267,6 +267,17 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("keeps optional CAPTCHA instructions within a small initial context budget", () => {
+    const { context } = makeContext({ sandbox: null });
+    const normal = createRunTerminalCmd(context);
+    context.checkBrowserChallenge = jest.fn();
+    const eligible = createRunTerminalCmd(context);
+    const overhead =
+      (eligible.description?.length ?? 0) - (normal.description?.length ?? 0);
+    expect(overhead).toBeGreaterThan(0);
+    expect(overhead).toBeLessThanOrEqual(200);
+  });
+
   test.each([
     ["agent-browser snapshot -i", 0, true],
     ["agent-browser --session owned snapshot --json", 0, true],
@@ -300,7 +311,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         },
       };
       const { context } = makeContext({ sandbox });
-      const challenge = { status: "token_delivered", websiteAccepted: false };
+      const challenge = {
+        status: "token_delivered",
+        websiteAccepted: false,
+        guidance: "detected challenge instructions",
+      };
       context.checkBrowserChallenge = jest.fn(async () => challenge);
       const tool = createRunTerminalCmd(context);
       const result = await runTool(tool, {
@@ -318,7 +333,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         });
         expect(await getModelOutput(tool, result)).toMatchObject({
           type: "text",
-          value: expect.stringContaining('"websiteAccepted":false'),
+          value: expect.stringContaining(
+            '"guidance":"detected challenge instructions"',
+          ),
         });
       } else {
         expect(result).not.toHaveProperty("result.browserChallenge");
