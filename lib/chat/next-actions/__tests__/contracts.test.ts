@@ -516,3 +516,32 @@ test("keeps terminal execution before its later confirmation in prediction conte
     source.text.indexOf('"name":"wait_for_user"'),
   );
 });
+
+test("preserves a short older reply within the total budget after several long messages", () => {
+  const sources = buildPredictionSources([
+    ...Array.from({ length: 5 }, (_, i) =>
+      message(`long-${i}`, "x".repeat(5000)),
+    ),
+    {
+      id: "older-reply",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Yes",
+          },
+        },
+      ],
+    },
+  ]);
+  expect(
+    sources.reduce((total, source) => total + source.text.length, 0),
+  ).toBeLessThanOrEqual(12000);
+  expect(sources.find((source) => source.id === "older-reply")?.text).toContain(
+    '"reply":"Yes"',
+  );
+});

@@ -112,20 +112,19 @@ export function buildPredictionSources(
   for (const [index, message] of messages.entries()) {
     // Reserve context for every recent turn instead of dropping the user's
     // earlier scope/intent after three long assistant messages.
-    const reserved = messages
-      .slice(index + 1)
-      .reduce(
-        (sum, older) =>
-          sum +
-          Math.min(
-            1_000,
-            older.text.length +
-              older.findings.length +
-              older.tools.map((event) => event.text).join("\n").length +
-              (older.text && older.findings ? 1 : 0),
-          ),
-        0,
-      );
+    const reserved = messages.slice(index + 1).reduce(
+      (sum, older) =>
+        sum +
+        (older.tools.length
+          ? 1_000 // Include renderer overhead and room for an older reply.
+          : Math.min(
+              1_000,
+              older.text.length +
+                older.findings.length +
+                (older.text && older.findings ? 1 : 0),
+            )),
+      0,
+    );
     const budget = Math.min(4_000, remaining - reserved);
     // Findings cannot crowd out the final answer, including on older turns
     // with a smaller budget. Clip each original span only once so an omission

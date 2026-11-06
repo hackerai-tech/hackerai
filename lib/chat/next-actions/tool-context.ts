@@ -91,6 +91,7 @@ export function renderPredictionToolContext(
     "Tool activity (original order within this turn; payloads omitted):\n";
   const omitted =
     "\n[Additional tool events omitted; do not infer they did not happen.]";
+  if (budget < prefix.length + omitted.length) return "";
   const kept: ToolEvent[] = [];
   let available = budget - prefix.length - omitted.length;
   for (const event of events) {
