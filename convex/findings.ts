@@ -980,24 +980,38 @@ export const listReportsForBackend = query({
       };
     }
     const search = args.search?.trim();
-    const page = search
-      ? await ctx.db
-          .query("findings")
-          .withSearchIndex("search_findings", (q) => {
-            let b = q
-              .search("search_text", search)
-              .eq("user_id", args.userId)
-              .eq("chat_id", args.chatId);
-            if (args.status) b = b.eq("status", args.status);
-            return b;
-          })
-          .paginate(args.paginationOpts)
-      : await getFindingsByFacets(ctx, args.userId, {
+    const reportQuery = search
+      ? ctx.db.query("findings").withSearchIndex("search_findings", (q) => {
+          let b = q
+            .search("search_text", search)
+            .eq("user_id", args.userId)
+            .eq("chat_id", args.chatId);
+          if (args.status) b = b.eq("status", args.status);
+          return b;
+        })
+      : getFindingsByFacets(ctx, args.userId, {
           chatId: args.chatId,
           status: args.status,
-        })
-          .order("desc")
-          .paginate(args.paginationOpts);
+        }).order("desc");
+    let page;
+    try {
+      page = await reportQuery.paginate(args.paginationOpts);
+    } catch (error) {
+      // A malformed model-supplied cursor needs a new first-page request, not a retry.
+      if (
+        args.paginationOpts.cursor !== null &&
+        error instanceof Error &&
+        error.message === "Failed to parse cursor"
+      ) {
+        return {
+          success: false as const,
+          error: "validation" as const,
+          message:
+            "The report cursor is invalid. Start again without a cursor and use only the next_cursor returned for the same search and status filters.",
+        };
+      }
+      throw error;
+    }
     return {
       success: true as const,
       reports: page.page.map((f) => ({
