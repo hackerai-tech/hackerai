@@ -223,7 +223,6 @@ test.each([
   (text) => {
     expect(
       parsePredictedNextAction({
-        claims_unseen_observation: false,
         suggestion: text,
       }),
     ).toEqual([text]);
@@ -233,19 +232,19 @@ test.each([
 test.each([
   null,
   {},
-  { claims_unseen_observation: false, suggestion: null },
-  { claims_unseen_observation: false, suggestion: "" },
-  { claims_unseen_observation: false, suggestion: "  " },
-  { claims_unseen_observation: false, suggestion: 3 },
-  { claims_unseen_observation: false, suggestion: ["one", "two"] },
-  { claims_unseen_observation: false, suggestion: "ok", extra: true },
-  { claims_unseen_observation: false, suggestion: "x".repeat(241) },
-  { claims_unseen_observation: false, suggestion: "one\ntwo" },
-  { claims_unseen_observation: false, suggestion: "one\ttwo" },
-  { claims_unseen_observation: false, suggestion: "one\u2028two" },
-  { claims_unseen_observation: false, suggestion: "/goal inspect" },
-  { claims_unseen_observation: false, suggestion: "/approve" },
-  { claims_unseen_observation: false, suggestion: "Please /goal inspect" },
+  { suggestion: null },
+  { suggestion: "" },
+  { suggestion: "  " },
+  { suggestion: 3 },
+  { suggestion: ["one", "two"] },
+  { suggestion: "ok", extra: true },
+  { suggestion: "x".repeat(241) },
+  { suggestion: "one\ntwo" },
+  { suggestion: "one\ttwo" },
+  { suggestion: "one\u2028two" },
+  { suggestion: "/goal inspect" },
+  { suggestion: "/approve" },
+  { suggestion: "Please /goal inspect" },
 ])("rejects malformed or composer-control predictions: %p", (output) => {
   expect(parsePredictedNextAction(output)).toEqual([]);
 });
@@ -253,26 +252,14 @@ test.each([
 test("trims a single bounded prediction and preserves ordinary paths", () => {
   expect(
     parsePredictedNextAction({
-      claims_unseen_observation: false,
       suggestion: "  Explain /goal/notes.txt  ",
     }),
   ).toEqual(["Explain /goal/notes.txt"]);
   expect(
     parsePredictedNextAction({
-      claims_unseen_observation: false,
       suggestion: "x".repeat(240),
     }),
   ).toEqual(["x".repeat(240)]);
-});
-
-test("suppresses unseen observations even when the model still writes a draft", () => {
-  expect(
-    parsePredictedNextAction({
-      claims_unseen_observation: true,
-      suggestion: "The measured result is 17.",
-    }),
-  ).toEqual([]);
-  expect(parsePredictedNextAction({ suggestion: "Which format?" })).toEqual([]);
 });
 
 test.each([

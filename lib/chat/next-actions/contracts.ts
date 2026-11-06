@@ -30,7 +30,6 @@ export type CompletedPredictionTurn = { chatId: string; messageId: string };
 
 export const predictedNextActionSchema = z
   .object({
-    claims_unseen_observation: z.boolean(),
     suggestion: z.string().max(240).nullable(),
   })
   .strict();
@@ -143,12 +142,7 @@ export function buildPredictionSources(
 /** A prediction is editable user text; it never establishes facts or grants access. */
 export function parsePredictedNextAction(output: unknown): string[] {
   const parsed = predictedNextActionSchema.safeParse(output);
-  if (
-    !parsed.success ||
-    parsed.data.claims_unseen_observation ||
-    parsed.data.suggestion === null
-  )
-    return [];
+  if (!parsed.success || parsed.data.suggestion === null) return [];
   const text = parsed.data.suggestion.trim();
   if (!text || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text))
     return [];

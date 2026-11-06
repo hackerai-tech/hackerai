@@ -20,10 +20,7 @@ const draft =
   "I have written permission for the training portal; keep the review within that scope.";
 function completion(output: unknown, cost: number | undefined = 0.001) {
   return {
-    output: {
-      claims_unseen_observation: false,
-      ...(output as Record<string, unknown>),
-    },
+    output,
     usage: {
       inputTokens: 100,
       outputTokens: 20,
@@ -75,23 +72,6 @@ test("returns one editable reply with one provider call and its receipt", async 
     }),
   );
   expect(options.tools).toBeUndefined();
-});
-
-test("suppresses a draft classified as depending on unseen evidence in the same call", async () => {
-  jest.mocked(generateText).mockResolvedValueOnce(
-    completion({
-      claims_unseen_observation: true,
-      suggestion: "The measured result is 17.",
-    }),
-  );
-  const result = await generateNextActions(
-    sources,
-    new AbortController().signal,
-  );
-  expect(result.suggestions).toEqual([]);
-  expect(result.providerCalls).toBe(1);
-  expect(result.cost).toBe(0.001);
-  expect(generateText).toHaveBeenCalledTimes(1);
 });
 
 test("a null prediction abstains without a second model call", async () => {
