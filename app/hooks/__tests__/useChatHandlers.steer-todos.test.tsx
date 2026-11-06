@@ -2676,6 +2676,8 @@ describe("useChatHandlers steer todo handoff", () => {
       parts: ChatMessage["parts"];
     };
     expect(getConvexSize(saved.parts as any)).toBeLessThanOrEqual(850 * 1024);
+    expect(saved.parts).toHaveLength(parts.length);
+    expect(saved.parts.at(-1)).toEqual(parts.at(-1));
     expect(parts[0]).toEqual({ type: "data-value", data: Array(7900).fill(0) });
   });
 
