@@ -2608,9 +2608,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           .reverse()
           .find((part) => part?.type === "tool-wait_for_user")
       : undefined;
+  // Once persisted, absence means released, not an unpublished stream update.
+  // Retain prior identities too: a later wait must not revive an earlier part.
+  const observedUserWaitsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (storedPendingUserWait)
+      observedUserWaitsRef.current.add(
+        `${chatId}:${storedPendingUserWait.runId}:${storedPendingUserWait.toolCallId}`,
+      );
+  }, [chatId, storedPendingUserWait]);
+  const streamedWaitKey = `${chatId}:${agentLongRunId || activeTriggerRunId}:${lastWaitPart?.toolCallId}`;
   const pendingUserWait: ActiveAgentUserWait | undefined =
     storedPendingUserWait ??
-    (lastWaitPart?.state === "input-available" &&
+    (status === "streaming" &&
+    !hasManuallyStoppedRef.current &&
+    !observedUserWaitsRef.current.has(streamedWaitKey) &&
+    lastWaitPart?.state === "input-available" &&
     typeof lastWaitPart.toolCallId === "string" &&
     (agentLongRunId || activeTriggerRunId)
       ? {

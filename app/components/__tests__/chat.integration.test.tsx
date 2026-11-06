@@ -78,6 +78,11 @@ let mockRestoredChat:
       finish_reason?: string;
       active_stream_id?: string;
       active_trigger_run_id?: string;
+      active_agent_user_wait?: {
+        runId: string;
+        toolCallId: string;
+        status: "waiting";
+      };
     }
   | undefined;
 let mockDesktopState: Partial<
@@ -1272,6 +1277,55 @@ describe("Chat Component Integration", () => {
         })?.autoReview,
       ).toBeUndefined();
     });
+  });
+
+  it("does not resurrect a cleared wait from stale streamed parts or run IDs", async () => {
+    mockRouteParams = { id: "wait-chat" };
+    mockRestoredChat = {
+      id: "wait-chat",
+      default_model_slug: "agent",
+      active_trigger_run_id: "run-wait",
+    };
+    const part = {
+      type: "tool-wait_for_user",
+      toolCallId: "wait-1",
+      state: "input-available",
+      input: {},
+    };
+    const stream = {
+      ...mockUseChat(),
+      status: "streaming",
+      messages: [{ id: "response", role: "assistant", parts: [part] }],
+    };
+    mockUseChat.mockReturnValue(stream);
+    const view = () => (
+      <TestWrapper>
+        <Chat autoResume={false} />
+      </TestWrapper>
+    );
+    const { rerender } = render(view());
+    expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-1");
+    mockRestoredChat.active_agent_user_wait = {
+      runId: "run-wait",
+      toolCallId: "wait-1",
+      status: "waiting",
+    };
+    await act(async () => rerender(view()));
+    delete mockRestoredChat.active_agent_user_wait;
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
+
+    // A genuinely new tool call can still appear before its subscription.
+    part.toolCallId = "wait-2";
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-2");
+    mockChatHandlerArgs.hasManuallyStoppedRef.current = true;
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
+    mockChatHandlerArgs.hasManuallyStoppedRef.current = false;
+    mockUseChat.mockReturnValue({ ...stream, status: "ready" });
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
   });
 
   it("waits for the saved chat mode before restoring predictions", async () => {
