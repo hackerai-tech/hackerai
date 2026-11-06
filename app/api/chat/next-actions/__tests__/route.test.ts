@@ -321,7 +321,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 2,
+    validationVersion: 3,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -336,7 +336,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
-test("does not restore legacy unverified hints or make a model call", async () => {
+test("does not restore legacy prediction formats or make a model call", async () => {
   saved = {
     consumed: false,
     batch: {
@@ -356,7 +356,7 @@ test("does not restore legacy unverified hints or make a model call", async () =
   expect(capture).not.toHaveBeenCalled();
 });
 
-test("does not expose an unverified legacy batch returned by a concurrent save", async () => {
+test("does not expose an legacy batch returned by a concurrent save", async () => {
   mutation.mockResolvedValueOnce({
     batchId: "legacy-concurrent",
     messageId: "answer",
@@ -366,17 +366,17 @@ test("does not expose an unverified legacy batch returned by a concurrent save",
   expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
 });
 
-test("saves the verification version alongside new drafts", async () => {
+test("saves the prediction version alongside new drafts", async () => {
   await POST(request());
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 2 }),
+      batch: expect.objectContaining({ validationVersion: 3 }),
     }),
   );
 });
 
-test("emits partial known spend and unknown-call coverage on unavailable verification", async () => {
+test("emits partial known spend and unknown-call coverage on unavailable generation", async () => {
   jest.mocked(generateNextActions).mockResolvedValueOnce({
     suggestions: [],
     unavailable: true,

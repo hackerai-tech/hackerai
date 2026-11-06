@@ -9,31 +9,21 @@ jest.mock("@/lib/ai/providers", () => ({
   myProvider: { languageModel: () => "deepseek-test-model" },
 }));
 const sources = [
+  { id: "u", role: "user" as const, text: "Help me plan a scoped review." },
   {
-    id: "question",
-    role: "user" as const,
-    text: "Compare ways to debug a toy application.",
-  },
-  {
-    id: "answer",
+    id: "a",
     role: "assistant" as const,
-    text: "The language and operating system have not been specified.",
+    text: "Do you have written permission, and which system is approved?",
   },
 ];
 const draft =
-  "Compare general debugging approaches without assuming a runtime.";
-const output = {
-  suggestions: [
-    {
-      text: draft,
-      sourceMessageId: "answer",
-      evidenceQuote: "The language and operating system",
-    },
-  ],
-};
-function completion(value: unknown, cost: number | undefined = 0.001) {
+  "I have written permission for the training portal; keep the review within that scope.";
+function completion(output: unknown, cost: number | undefined = 0.001) {
   return {
-    output: value,
+    output: {
+      needs_unseen_evidence: false,
+      ...(output as Record<string, unknown>),
+    },
     usage: {
       inputTokens: 100,
       outputTokens: 20,
@@ -45,11 +35,10 @@ function completion(value: unknown, cost: number | undefined = 0.001) {
 }
 beforeEach(() => jest.resetAllMocks());
 
-test("verifies grounded drafts and accounts for both provider calls", async () => {
+test("returns one editable reply with one provider call and its receipt", async () => {
   jest
     .mocked(generateText)
-    .mockResolvedValueOnce(completion(output))
-    .mockResolvedValueOnce(completion({ safe_indices: [0] }, 0.0002));
+    .mockResolvedValueOnce(completion({ suggestion: draft }));
   const result = await generateNextActions(
     sources,
     new AbortController().signal,
@@ -57,112 +46,42 @@ test("verifies grounded drafts and accounts for both provider calls", async () =
   expect(result).toEqual(
     expect.objectContaining({
       suggestions: [draft],
-      providerCalls: 2,
-      pricedProviderCalls: 2,
+      providerCalls: 1,
+      pricedProviderCalls: 1,
       unknownProviderCalls: 0,
-      inputTokens: 200,
-      outputTokens: 40,
+      cost: 0.001,
+      knownCost: 0.001,
+      inputTokens: 100,
+      outputTokens: 20,
       unavailable: false,
     }),
   );
-  expect(result.cost).toBeCloseTo(0.0012, 12);
-  expect(result.knownCost).toBeCloseTo(0.0012, 12);
-  const options = jest.mocked(generateText).mock.calls[1][0];
-  expect(options.abortSignal).toBe(
-    jest.mocked(generateText).mock.calls[0][0].abortSignal,
+  expect(generateText).toHaveBeenCalledTimes(1);
+  const options = jest.mocked(generateText).mock.calls[0][0];
+  expect(JSON.parse(options.prompt as string)).toEqual(
+    sources.map(({ role, text }) => ({ role, text })),
   );
-  expect(JSON.parse(options.prompt as string)).toEqual({
-    sources,
-    latest_user_message: sources[0],
-    drafts: [draft],
-  });
   expect(options).toEqual(
     expect.objectContaining({
+      maxOutputTokens: 160,
       maxRetries: 0,
-      maxOutputTokens: 80,
-      timeout: 4000,
+      timeout: 8000,
       providerOptions: {
         openrouter: {
           reasoning: { enabled: false },
-          provider: { require_parameters: true, sort: "latency" },
+          provider: { require_parameters: true, sort: "throughput" },
         },
       },
     }),
   );
+  expect(options.tools).toBeUndefined();
 });
 
-test("fails closed when verification rejects every draft", async () => {
-  jest
-    .mocked(generateText)
-    .mockResolvedValueOnce(completion(output))
-    .mockResolvedValueOnce(completion({ safe_indices: [] }));
-  const result = await generateNextActions(
-    sources,
-    new AbortController().signal,
-  );
-  expect(result.suggestions).toEqual([]);
-  expect(result.unavailable).toBe(false);
-  expect(result.providerCalls).toBe(2);
-});
-
-test("never reports a partly priced batch as fully priced after verifier failure", async () => {
-  jest
-    .mocked(generateText)
-    .mockResolvedValueOnce(completion(output))
-    .mockRejectedValueOnce(new Error("private provider payload"));
-  const result = await generateNextActions(
-    sources,
-    new AbortController().signal,
-  );
-  expect(result).toEqual(
-    expect.objectContaining({
-      suggestions: [],
-      unavailable: true,
-      providerCalls: 2,
-      pricedProviderCalls: 1,
-      unknownProviderCalls: 1,
-      knownCost: 0.001,
-      cost: undefined,
-    }),
-  );
-  expect(JSON.stringify(result)).not.toContain("private provider payload");
-});
-
-test("keeps successful suggestions but marks missing provider cost as unknown", async () => {
-  // Explicitly omit cost rather than invoke the fixture's default argument.
-  const withoutCost = completion({ safe_indices: [0] });
-  (withoutCost as { usage: { raw: object } }).usage.raw = {};
-  jest
-    .mocked(generateText)
-    .mockReset()
-    .mockResolvedValueOnce(completion(output))
-    .mockResolvedValueOnce(withoutCost);
-  const result = await generateNextActions(
-    sources,
-    new AbortController().signal,
-  );
-  expect(result).toEqual(
-    expect.objectContaining({
-      suggestions: [draft],
-      providerCalls: 2,
-      pricedProviderCalls: 1,
-      unknownProviderCalls: 1,
-      knownCost: 0.001,
-      cost: undefined,
-    }),
-  );
-});
-
-test("empty or ungrounded generation makes no verifier call", async () => {
+test("suppresses a draft classified as depending on unseen evidence in the same call", async () => {
   jest.mocked(generateText).mockResolvedValueOnce(
     completion({
-      suggestions: [
-        {
-          text: draft,
-          sourceMessageId: "absent",
-          evidenceQuote: "The language and operating system",
-        },
-      ],
+      needs_unseen_evidence: true,
+      suggestion: "The measured result is 17.",
     }),
   );
   const result = await generateNextActions(
@@ -171,39 +90,89 @@ test("empty or ungrounded generation makes no verifier call", async () => {
   );
   expect(result.suggestions).toEqual([]);
   expect(result.providerCalls).toBe(1);
+  expect(result.cost).toBe(0.001);
   expect(generateText).toHaveBeenCalledTimes(1);
 });
 
-test("does not begin model work for an already aborted caller", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  const result = await generateNextActions(sources, controller.signal);
+test("a null prediction abstains without a second model call", async () => {
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(completion({ suggestion: null }));
+  const result = await generateNextActions(
+    sources,
+    new AbortController().signal,
+  );
   expect(result.suggestions).toEqual([]);
-  expect(result.providerCalls).toBe(0);
+  expect(result.unavailable).toBe(false);
+  expect(result.providerCalls).toBe(1);
+  expect(generateText).toHaveBeenCalledTimes(1);
+});
+
+test("an explicit conversational stop spends no provider tokens", async () => {
+  const result = await generateNextActions(
+    [{ id: "u", role: "user", text: "Define the term, then stop." }],
+    new AbortController().signal,
+  );
+  expect(result).toEqual(
+    expect.objectContaining({
+      suggestions: [],
+      providerCalls: 0,
+      pricedProviderCalls: 0,
+      unknownProviderCalls: 0,
+      knownCost: 0,
+      unavailable: false,
+    }),
+  );
   expect(generateText).not.toHaveBeenCalled();
 });
 
-test("does not begin verification after the caller aborts generation", async () => {
-  const controller = new AbortController();
+test("keeps a successful reply while reporting missing provider cost as unknown", async () => {
+  const r = completion({ suggestion: draft });
+  (r as { usage: { raw: object } }).usage.raw = {};
+  jest.mocked(generateText).mockResolvedValueOnce(r);
+  expect(
+    await generateNextActions(sources, new AbortController().signal),
+  ).toEqual(
+    expect.objectContaining({
+      suggestions: [draft],
+      providerCalls: 1,
+      pricedProviderCalls: 0,
+      unknownProviderCalls: 1,
+      cost: undefined,
+      knownCost: 0,
+    }),
+  );
+});
+
+test("does not start work for an aborted caller", async () => {
+  const c = new AbortController();
+  c.abort();
+  expect((await generateNextActions(sources, c.signal)).providerCalls).toBe(0);
+  expect(generateText).not.toHaveBeenCalled();
+});
+
+test("cancellation after provider completion hides the reply without losing priced spend", async () => {
+  const c = new AbortController();
   jest.mocked(generateText).mockImplementationOnce(async () => {
-    controller.abort();
-    return completion(output);
+    c.abort();
+    return completion({ suggestion: draft });
   });
-  const result = await generateNextActions(sources, controller.signal);
-  expect(result).toEqual(
+  expect(await generateNextActions(sources, c.signal)).toEqual(
     expect.objectContaining({
       suggestions: [],
       unavailable: true,
       providerCalls: 1,
       pricedProviderCalls: 1,
-      knownCost: 0.001,
+      unknownProviderCalls: 0,
+      cost: 0.001,
     }),
   );
-  expect(generateText).toHaveBeenCalledTimes(1);
 });
 
-test("unavailable generation records an attempted call with unknown cost", async () => {
-  jest.mocked(generateText).mockRejectedValueOnce(new Error("private"));
+test("provider failures expose no private error details and keep unknown spend", async () => {
+  jest
+    .mocked(generateText)
+    .mockRejectedValueOnce(new Error("private provider payload"));
   const result = await generateNextActions(
     sources,
     new AbortController().signal,
@@ -218,34 +187,5 @@ test("unavailable generation records an attempted call with unknown cost", async
       cost: undefined,
     }),
   );
-});
-
-test("verification selects existing drafts without reordering or fabricating them", async () => {
-  const second = "Explain how to choose the minimum debugging evidence.";
-  jest
-    .mocked(generateText)
-    .mockResolvedValueOnce(
-      completion({
-        suggestions: [
-          ...output.suggestions,
-          { ...output.suggestions[0], text: second },
-        ],
-      }),
-    )
-    .mockResolvedValueOnce(completion({ safe_indices: [1, 0, 1] }));
-  expect(
-    (await generateNextActions(sources, new AbortController().signal))
-      .suggestions,
-  ).toEqual([draft, second]);
-});
-
-test("an index outside the actual draft list cannot expose a suggestion", async () => {
-  jest
-    .mocked(generateText)
-    .mockResolvedValueOnce(completion(output))
-    .mockResolvedValueOnce(completion({ safe_indices: [2] }));
-  expect(
-    (await generateNextActions(sources, new AbortController().signal))
-      .suggestions,
-  ).toEqual([]);
+  expect(JSON.stringify(result)).not.toContain("private provider payload");
 });
