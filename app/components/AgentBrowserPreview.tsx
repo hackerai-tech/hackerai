@@ -358,6 +358,7 @@ export function AgentBrowserPreview({
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
     const relayActive = !!grant && !!relayUrl;
+    let captureFailures = 0;
     const nextPollDelay = () => {
       const interval = relayActive ? 1000 : grantRef.current ? 200 : 1600;
       const untilRefresh =
@@ -376,6 +377,7 @@ export function AgentBrowserPreview({
         return;
       }
       const epoch = frameEpoch.current;
+      let captureFailed = false;
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 8_000);
       try {
@@ -389,6 +391,7 @@ export function AgentBrowserPreview({
         // this request. Its image and connection state must win.
         if (stopped || frameEpoch.current !== epoch) return;
         if (!response.ok || !data.frame) {
+          captureFailed = fresh;
           const transient =
             response.status >= 500 ||
             response.status === 408 ||
@@ -398,14 +401,24 @@ export function AgentBrowserPreview({
           if (!relayActive || !transient)
             setPreviewState(data.state ?? "disconnected");
         } else {
+          captureFailures = 0;
           acceptFrame(data.frame as BrowserFrame, fresh);
         }
       } catch {
-        if (!stopped && frameEpoch.current === epoch && !relayActive)
-          setPreviewState("disconnected");
+        if (!stopped && frameEpoch.current === epoch) {
+          captureFailed = fresh;
+          if (!relayActive) setPreviewState("disconnected");
+        }
       } finally {
         clearTimeout(timeout);
-        if (!stopped) timer = setTimeout(poll, nextPollDelay());
+        if (!stopped) {
+          // Fast failures must not turn the watchdog into a screenshot loop.
+          // Retry promptly once, then back off without renewing image freshness.
+          const delay = captureFailed
+            ? 1000 * 2 ** Math.min(captureFailures++, 3)
+            : nextPollDelay();
+          timer = setTimeout(poll, delay);
+        }
       }
     };
     void poll();

@@ -1238,6 +1238,12 @@ it.each(["changed", "unchanged", "failed", "transient"])(
         ).not.toBeInTheDocument();
     }
     if (captureFails) {
+      // Fast persistent failures must not hammer the sandbox every second.
+      expect(
+        (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
+          String(url).endsWith("?fresh=1"),
+        ).length,
+      ).toBeLessThan(10);
       expect(
         screen.getByText(/Browser preview disconnected/),
       ).toBeInTheDocument();
