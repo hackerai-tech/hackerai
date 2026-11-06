@@ -88,3 +88,21 @@ it("prevents disabled selections and clears the selected appearance when custom 
     "false",
   );
 });
+
+it("does not change an answer from number keys inside an open dialog", () => {
+  render(
+    <>
+      <UserInputQuestionPanel
+        {...props}
+        answer={{ selectedValues: [], customAnswer: "Keep this answer" }}
+      />
+      <div role="dialog">
+        <button>Dialog action</button>
+      </div>
+    </>,
+  );
+  fireEvent.keyDown(screen.getByRole("button", { name: "Dialog action" }), {
+    key: "1",
+  });
+  expect(props.onSelect).not.toHaveBeenCalled();
+});

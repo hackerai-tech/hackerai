@@ -2522,6 +2522,42 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
   });
+  it("lets a Goal answer resume ahead of held queued work", async () => {
+    mockInput = "Ordinary draft";
+    mockAgentPermissionMode = "ask_approval";
+    mockMessageQueue = [
+      { id: "held-followup", text: "Later task", timestamp: Date.now() },
+    ];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+    } as Response);
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit(
+          { preventDefault: jest.fn() } as any,
+          "Beta",
+          true,
+        ),
+      ).toBe(true);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Beta" }),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: {
+            action: "resume",
+            expectedGeneration: 4,
+            resumeOnReply: true,
+          },
+        }),
+      }),
+    );
+    expect(mockMessageQueue).toHaveLength(1);
+    expect(mockClearInput).not.toHaveBeenCalled();
+  });
+
   it("treats a structured Goal answer as literal text even when it resembles a command", async () => {
     mockInput = "Unsent ordinary draft";
     mockAgentPermissionMode = "ask_approval";

@@ -1856,9 +1856,13 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
     });
 
-    it.each(["wait", "goal"])(
-      "requires explicit submission for a %s single choice and keeps selection after reload",
-      async (kind) => {
+    it.each(
+      ["wait", "goal"].flatMap((kind) =>
+        [false, true].map((multiSelect) => ({ kind, multiSelect })),
+      ),
+    )(
+      "requires explicit submission for $kind choices (multiSelect=$multiSelect) and retains selection after reload",
+      async ({ kind, multiSelect }) => {
         jest.useFakeTimers();
         try {
           mockSandboxState = {
@@ -1871,6 +1875,7 @@ describe("ChatInput - Integration Tests", () => {
               id: "label",
               header: "Label",
               question: "Alpha or Beta?",
+              multiSelect,
               options: [
                 { value: "alpha", label: "Alpha" },
                 { value: "beta", label: "Beta" },
@@ -1898,7 +1903,8 @@ describe("ChatInput - Integration Tests", () => {
             </TestWrapper>
           );
           const view = render(ui);
-          fireEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+          await screen.findByRole("button", { name: /Alpha/ });
+          fireEvent.keyDown(document.body, { key: "1" });
           act(() => jest.advanceTimersByTime(1000));
           expect(mockOnSubmit).not.toHaveBeenCalled();
           expect(screen.getByRole("button", { name: /Alpha/ })).toHaveAttribute(
@@ -1906,6 +1912,9 @@ describe("ChatInput - Integration Tests", () => {
             "true",
           );
           fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
+          act(() => jest.advanceTimersByTime(1000));
+          expect(screen.getByText("Alpha or Beta?")).toBeVisible();
+          expect(mockOnSubmit).not.toHaveBeenCalled();
           view.unmount();
           render(ui);
           expect(
@@ -1922,7 +1931,7 @@ describe("ChatInput - Integration Tests", () => {
           await waitFor(() =>
             expect(mockOnSubmit).toHaveBeenCalledWith(
               expect.anything(),
-              "Beta",
+              multiSelect ? "Alpha, Beta" : "Beta",
               true,
             ),
           );

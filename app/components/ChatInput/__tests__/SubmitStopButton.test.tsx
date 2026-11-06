@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { jest } from "@jest/globals";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SubmitStopButton } from "../SubmitStopButton";
+import { useHotkeys } from "react-hotkeys-hook";
 
 Object.defineProperty(globalThis, "ResizeObserver", {
   configurable: true,
@@ -94,24 +95,32 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(screen.getByLabelText("Send message")).toBeDisabled();
   });
 
-  it("lets users copy from the reply field without stopping the Agent", async () => {
-    const onStop = jest.fn();
-    const user = userEvent.setup();
+  it("preserves copy in reply fields and selected page text without disabling the Stop shortcut", () => {
     render(
       <TooltipProvider>
-        <textarea aria-label="Reply draft" defaultValue="Use option A" />
+        <p>Question text</p>
         <SubmitStopButton
           {...defaultProps}
           chatMode="agent"
           isReplyingToAgent
-          onStop={onStop}
         />
       </TooltipProvider>,
     );
-    const draft = screen.getByRole("textbox", { name: "Reply draft" });
-    await user.click(draft);
-    await user.keyboard("{Control>}c{/Control}");
-    expect(onStop).not.toHaveBeenCalled();
+    // The hotkey library is mocked globally. Test our policy at its options
+    // boundary; actual browser shortcut behavior is verified in Preview.
+    const options = jest.mocked(useHotkeys).mock.calls.at(-1)![2];
+    expect(options).toMatchObject({
+      enabled: true,
+      enableOnFormTags: false,
+      enableOnContentEditable: false,
+    });
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("Question text"));
+    const selection = window.getSelection()!;
+    selection.addRange(range);
+    expect(options.ignoreEventWhen?.()).toBe(true);
+    selection.removeAllRanges();
+    expect(options.ignoreEventWhen?.()).toBe(false);
   });
 
   it("prioritizes the loading reason while destination messages load", async () => {

@@ -111,6 +111,8 @@ export function SubmitStopButton({
       enabled: (isGenerating || isReplyingToAgent) && !hideStop,
       enableOnFormTags: !isReplyingToAgent,
       enableOnContentEditable: !isReplyingToAgent,
+      ignoreEventWhen: () =>
+        isReplyingToAgent && !!window.getSelection()?.toString(),
       preventDefault: true,
       description: "Stop AI generation",
     },
@@ -185,7 +187,9 @@ export function SubmitStopButton({
             <TooltipContent>
               <p>
                 {isReplyingToAgent && !sendDisabledReason
-                  ? "Reply and resume (⏎)"
+                  ? replyActionLabel === "Next"
+                    ? "Next question (⏎)"
+                    : "Reply and resume (⏎)"
                   : getSendButtonTooltip(
                       isOnline,
                       uploadedFiles.some((f) => f.error),

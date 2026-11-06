@@ -1929,6 +1929,35 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
+    it("holds queued work while a Goal needs input and releases it after completion", async () => {
+      mockRouteParams = { id: "goal-queue-chat" };
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockRestoredChat = {
+        id: "goal-queue-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockSavedGoal = {
+        state: "needs_input",
+        generation: 4,
+        objective: "Choose a label",
+        criteria: ["Label received"],
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      mockSavedGoal = { ...mockSavedGoal, state: "achieved" };
+      await act(async () => rerender(view()));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
     it("holds queued work after a wait clears until the resumed run finishes", async () => {
       mockRouteParams = { id: "wait-queue-chat" };
       mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];

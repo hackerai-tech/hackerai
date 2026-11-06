@@ -58,7 +58,9 @@ export function UserInputQuestionPanel({
         return;
       if (
         event.target instanceof Element &&
-        event.target.closest("input, textarea, [contenteditable=true]")
+        event.target.closest(
+          'input, textarea, [contenteditable=true], [role="dialog"], [role="alertdialog"], dialog',
+        )
       )
         return;
       if (!/^[1-9]$/.test(event.key)) return;

@@ -722,7 +722,7 @@ export const useChatHandlers = ({
         status !== "ready" ||
         activeTriggerRunRef?.current ||
         (resumeOnReply && persistedTriggerRunId) ||
-        messageQueue.length
+        (messageQueue.length > 0 && !resumeOnReply)
       ) {
         toast.info(
           "Wait for this chat’s current work and queued messages to settle before starting or resuming a goal.",
