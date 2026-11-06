@@ -311,11 +311,13 @@ export function getStandaloneSnapshotHint(command: string): string | null {
     (words) => words.join(" ") === snapshots[0],
   );
   // A later command could navigate, switch sessions or close the browser.
-  // Only output formatting and a clock check may follow the observed snapshot.
+  // Only output formatting, literal separators and a clock check may follow it.
   if (
     parts
       .slice(snapshotIndex + 1)
-      .some((words) => !["head", "tail", "cat", "date"].includes(words[0]))
+      .some(
+        (words) => !["head", "tail", "cat", "echo", "date"].includes(words[0]),
+      )
   )
     return null;
   // Other shell segments (for example `cd ... &&`) are deliberately omitted.
