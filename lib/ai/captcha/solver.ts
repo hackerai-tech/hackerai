@@ -104,10 +104,29 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
       if (onTaskCreated) {
         for (let attempt = 0; ; attempt++) {
           try {
-            await onTaskCreated(created.taskId);
+            // Start registration even if cancellation raced with creation: its
+            // identity is still needed for billing. Bound only our wait; the
+            // idempotent write can finish after cancellation for reconciliation.
+            const registration = Promise.resolve(onTaskCreated(created.taskId));
+            await new Promise<void>((resolve, reject) => {
+              const abort = () => reject(deadline.reason);
+              if (deadline.aborted) abort();
+              else deadline.addEventListener("abort", abort, { once: true });
+              registration.then(
+                () => {
+                  deadline.removeEventListener("abort", abort);
+                  resolve();
+                },
+                (error) => {
+                  deadline.removeEventListener("abort", abort);
+                  reject(error);
+                },
+              );
+            });
             break;
           } catch (error) {
             // Registration is idempotent; creation is never repeated.
+            deadline.throwIfAborted();
             if (attempt >= 2) throw error;
             await abortableDelay(500 * (attempt + 1), deadline);
           }

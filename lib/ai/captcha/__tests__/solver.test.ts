@@ -326,6 +326,39 @@ it("stops registration retries when canceled and never polls or recreates", asyn
   expect(mockFetch).toHaveBeenCalledTimes(1);
 });
 
+it.each(["deadline", "stop"])(
+  "bounds pending registration on %s without recreating or polling",
+  async (end) => {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    const controller = new AbortController();
+    let finishRegistration!: () => void;
+    const register = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRegistration = resolve;
+        }),
+    );
+    let failure: unknown;
+    const pending = createTwoCaptchaSolver("provider-key")
+      .solve(demo, widget, controller.signal, register)
+      .catch((error) => {
+        failure = error;
+      });
+    await jest.advanceTimersByTimeAsync(1);
+    if (end === "stop") controller.abort(new Error("stopped"));
+    await jest.advanceTimersByTimeAsync(end === "deadline" ? 180_000 : 1);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe(
+      end === "deadline" ? "TimeoutError" : "Error",
+    );
+    finishRegistration(); // The already-started idempotent write may still finish.
+    await pending;
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(register.mock.calls).toEqual([[123]]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  },
+);
+
 it("records a known fee even if the returned token is invalid", async () => {
   mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
   mockFetch.mockResolvedValueOnce(
