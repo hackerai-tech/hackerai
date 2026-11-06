@@ -161,8 +161,9 @@ export function hasExplicitPredictionStop(
     /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+here)?[.!]?\s*$/i.test(
       latest,
     ) ||
-    /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?|I(?:['’]m| am) done)\b/i.test(
+    /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?)\b/i.test(
       latest,
-    )
+    ) ||
+    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(latest)
   );
 }

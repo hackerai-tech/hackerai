@@ -285,3 +285,20 @@ test("a request about stopping a process is not a conversational stop", () => {
     ]),
   ).toBe(false);
 });
+
+test("finishing one step while asking for another is not a conversational stop", () => {
+  expect(
+    hasExplicitPredictionStop([
+      {
+        id: "u",
+        role: "user",
+        text: "I'm done with setup. Explain the next step.",
+      },
+    ]),
+  ).toBe(false);
+  expect(
+    hasExplicitPredictionStop([
+      { id: "u", role: "user", text: "Thanks, I'm done." },
+    ]),
+  ).toBe(true);
+});
