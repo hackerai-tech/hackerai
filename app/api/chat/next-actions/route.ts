@@ -101,6 +101,20 @@ export async function POST(req: NextRequest) {
       history.page[0]?.role !== "assistant"
     )
       return empty(409);
+    // Goal completion is persisted separately from model prose. Do not let a
+    // prediction reopen a finished workflow, including an older saved draft.
+    const goalAchieved = async () => {
+      const answer = await convex.query(api.messages.getLastAssistantMessage, {
+        serviceKey,
+        userId,
+        chatId,
+      });
+      return (
+        answer?.id === messageId &&
+        typeof answer.metadata?.goal?.achievedElapsedMs === "number"
+      );
+    };
+    if (await goalAchieved()) return empty();
     const sources = buildPredictionSources(history.page);
     if (
       !sources.some((source) => source.id === messageId && source.text.trim())
@@ -249,7 +263,7 @@ export async function POST(req: NextRequest) {
       latestHistory.page[0]?.role !== "assistant"
     )
       return empty();
-    if (!result.suggestions.length) return empty();
+    if (!result.suggestions.length || (await goalAchieved())) return empty();
     const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
       serviceKey,
       userId,

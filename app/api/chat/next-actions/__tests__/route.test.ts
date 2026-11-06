@@ -1,4 +1,5 @@
 import { after, type NextRequest } from "next/server";
+import { getFunctionName } from "convex/server";
 import { POST, DELETE } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -33,6 +34,7 @@ const query = jest.fn();
 const mutation = jest.fn();
 let saved: unknown = null;
 let predictionsEnabled = true;
+let achievedElapsedMs: number | undefined;
 const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
@@ -57,6 +59,7 @@ beforeEach(() => {
   shutdown.mockResolvedValue(undefined);
   saved = null;
   predictionsEnabled = true;
+  achievedElapsedMs = undefined;
   mutation.mockImplementation(async (_name, args) => args.batch ?? true);
   chat = {
     id: chatId,
@@ -74,33 +77,39 @@ beforeEach(() => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
   query.mockImplementation(async (_name, args) =>
-    args.userId && !args.chatId
-      ? { enabled: predictionsEnabled }
-      : args.chatId && !args.paginationOpts
-        ? saved
-        : args.paginationOpts
-          ? {
-              page: [
-                {
-                  id: "answer",
-                  role: "assistant",
-                  parts: [
-                    {
-                      type: "text",
-                      text: "Synthetic finding lacks impact evidence.",
-                    },
-                  ],
-                },
-                {
-                  id: "user",
-                  role: "user",
-                  parts: [
-                    { type: "text", text: "Explain this synthetic finding." },
-                  ],
-                },
-              ],
-            }
-          : chat,
+    getFunctionName(_name) === "messages:getLastAssistantMessage"
+      ? {
+          id: "answer",
+          role: "assistant",
+          metadata: { goal: { achievedElapsedMs } },
+        }
+      : args.userId && !args.chatId
+        ? { enabled: predictionsEnabled }
+        : args.chatId && !args.paginationOpts
+          ? saved
+          : args.paginationOpts
+            ? {
+                page: [
+                  {
+                    id: "answer",
+                    role: "assistant",
+                    parts: [
+                      {
+                        type: "text",
+                        text: "Synthetic finding lacks impact evidence.",
+                      },
+                    ],
+                  },
+                  {
+                    id: "user",
+                    role: "user",
+                    parts: [
+                      { type: "text", text: "Explain this synthetic finding." },
+                    ],
+                  },
+                ],
+              }
+            : chat,
   );
   jest.mocked(createRedisClient).mockReturnValue({ eval: reserve } as never);
   reserve.mockResolvedValue(1);
@@ -479,3 +488,33 @@ test.each([false, true])(
     expect(capture).not.toHaveBeenCalled();
   },
 );
+
+test.each([0, 50000])(
+  "completed Goal turns hide both new and saved suggestions (%i ms)",
+  async (elapsed) => {
+    achievedElapsedMs = elapsed;
+    saved = {
+      batch: {
+        batchId: "old",
+        messageId: "answer",
+        mode: "agent",
+        validationVersion: 5,
+        suggestions: ["alpha"],
+      },
+    };
+    expect((await (await POST(request())).json()).suggestions).toEqual([]);
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  },
+);
+
+test("discards a draft if Goal achievement is persisted during prediction", async () => {
+  jest.mocked(generateNextActions).mockImplementationOnce(async () => {
+    achievedElapsedMs = 50000;
+    return { suggestions: ["alpha"], unavailable: false } as Awaited<
+      ReturnType<typeof generateNextActions>
+    >;
+  });
+  expect((await (await POST(request())).json()).suggestions).toEqual([]);
+  expect(mutation).not.toHaveBeenCalled();
+});
