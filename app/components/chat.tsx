@@ -42,6 +42,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
+import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
@@ -2632,6 +2633,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           runId: (agentLongRunId || activeTriggerRunId)!,
           toolCallId: lastWaitPart.toolCallId,
           status: "waiting",
+          questions: userInputQuestionsSchema.safeParse(
+            lastWaitPart.input?.questions,
+          ).data,
         }
       : undefined);
   const hasPendingUserWait = !!pendingUserWait;

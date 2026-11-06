@@ -1279,18 +1279,27 @@ describe("Chat Component Integration", () => {
     });
   });
 
-  it("does not resurrect a cleared wait from stale streamed parts or run IDs", async () => {
+  it("preserves streamed question restrictions without resurrecting cleared waits", async () => {
     mockRouteParams = { id: "wait-chat" };
     mockRestoredChat = {
       id: "wait-chat",
       default_model_slug: "agent",
       active_trigger_run_id: "run-wait",
     };
+    const questions = [
+      {
+        id: "choice",
+        header: "Choice",
+        question: "Alpha?",
+        options: [{ value: "alpha", label: "Alpha" }],
+        allowCustomAnswer: false,
+      },
+    ];
     const part = {
       type: "tool-wait_for_user",
       toolCallId: "wait-1",
       state: "input-available",
-      input: {},
+      input: { questions } as Record<string, unknown>,
     };
     const stream = {
       ...mockUseChat(),
@@ -1305,20 +1314,28 @@ describe("Chat Component Integration", () => {
     );
     const { rerender } = render(view());
     expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-1");
+    expect(mockChatInputProps.pendingUserWait?.questions).toEqual(questions);
+    expect(mockChatInputProps.pendingUserWait?.published).toBeUndefined();
     mockRestoredChat.active_agent_user_wait = {
       runId: "run-wait",
       toolCallId: "wait-1",
       status: "waiting",
     };
     await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.published).toBe(true);
     delete mockRestoredChat.active_agent_user_wait;
     await act(async () => rerender(view()));
     expect(mockChatInputProps.pendingUserWait).toBeUndefined();
 
     // A genuinely new tool call can still appear before its subscription.
     part.toolCallId = "wait-2";
+    part.input = {};
     await act(async () => rerender(view()));
     expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-2");
+    expect(mockChatInputProps.pendingUserWait?.questions).toBeUndefined();
+    part.input = { questions: [{ ...questions[0], options: [] }] };
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.questions).toBeUndefined();
     mockChatHandlerArgs.hasManuallyStoppedRef.current = true;
     await act(async () => rerender(view()));
     expect(mockChatInputProps.pendingUserWait).toBeUndefined();
