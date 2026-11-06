@@ -107,12 +107,12 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
   }
   if (error instanceof TimeoutError) {
     if (error.message.includes("sandbox timeout")) {
-      return "Sandbox has expired. A new sandbox will be created automatically.";
+      return "Sandbox has expired.";
     }
     return "Sandbox operation timed out. The sandbox may be overloaded. Please try again.";
   }
   if (error instanceof NotFoundError) {
-    return "Sandbox was not found or has expired. A new sandbox will be created automatically.";
+    return "Sandbox was not found or has expired.";
   }
   if (error instanceof InvalidArgumentError) {
     return "Invalid sandbox configuration. Please contact HackerAI support.";
