@@ -124,14 +124,10 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
       render.__hackeraiWrapped = true;
       api.render = render;
     };
-    let api = window.turnstile;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'turnstile');
-    if (!descriptor || descriptor.configurable) {
-      Object.defineProperty(window, 'turnstile', {configurable:true, enumerable:true,
-        get:() => api, set:value => {api = value; wrap(api);}});
-    }
-    wrap(api);
-    // Some versions assign render after assigning the API object. Bound the hook.
+    // The vendor checks 'turnstile' in window before loading. Reserving that
+    // property, even with an undefined getter, makes it skip initialization.
+    wrap(window.turnstile);
+    // Wait for the real API before wrapping; do not reserve its global name.
     timer = setInterval(() => wrap(window.turnstile), 10);
     setTimeout(() => clearInterval(timer), 30000);
   })()`;

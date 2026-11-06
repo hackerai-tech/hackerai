@@ -31,6 +31,7 @@ afterEach(() => {
   jest.useRealTimers();
   delete page[key];
   delete page.turnstile;
+  delete page[Symbol.for("hackerai.cloudflareInit")];
   process.env = originalEnv;
 });
 
@@ -42,6 +43,7 @@ function render() {
   const callback = jest.fn();
   const api = { render: original };
   page.turnstile = api;
+  jest.advanceTimersByTime(10);
   const options = {
     sitekey: "0x4-public-site-key",
     action: "managed",
@@ -52,6 +54,28 @@ function render() {
   api.render(document.body, options);
   return { api, options, original, callback };
 }
+
+it("lets the vendor initialize its global before capturing the first managed render", () => {
+  window.eval(cloudflareInitScript([location.href]));
+  const original = jest.fn();
+  // Match the real vendor's duplicate-load guard before it assigns the API.
+  const vendorLoaded = !("turnstile" in window);
+  if (vendorLoaded) page.turnstile = { render: original };
+  expect(vendorLoaded).toBe(true);
+  jest.advanceTimersByTime(10);
+  const api = page.turnstile as {
+    render: (element: unknown, options: unknown) => unknown;
+  };
+  api.render(document.body, {
+    sitekey: "public-managed-key",
+    action: "managed",
+    cData: "opaque",
+    chlPageData: "opaque-page",
+    callback: jest.fn(),
+  });
+  expect(original).not.toHaveBeenCalled();
+  expect(inspect().widgets[0]?.managed).toBeDefined();
+});
 
 it("captures a managed render before it runs and delivers only to its pinned callback once", () => {
   const { api, original, callback } = render();
@@ -140,6 +164,7 @@ it("stops intercepting a replacement API after releasing the earlier managed cha
   };
   const originalReplacement = replacement.render;
   page.turnstile = replacement;
+  jest.advanceTimersByTime(10);
   captured.release();
   expect(replacement.render(document.body, options)).toBe("manual-widget");
   expect(originalReplacement).toHaveBeenCalledWith(document.body, options);
@@ -155,6 +180,7 @@ it("captures a transient Cloudflare challenge URL without approving unrelated qu
     window.eval(cloudflareInitScript([canonical]));
     const callback = jest.fn();
     page.turnstile = { render: jest.fn() };
+    jest.advanceTimersByTime(10);
     (
       page.turnstile as {
         render: (element: unknown, options: unknown) => unknown;
