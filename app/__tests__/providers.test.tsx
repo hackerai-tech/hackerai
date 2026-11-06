@@ -18,6 +18,7 @@ jest.mock("../contexts/GlobalState", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
+  getIdentifiedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
@@ -34,6 +35,7 @@ const { useGlobalState } = jest.requireMock<
 const {
   confirmAuthenticatedAnalyticsUserId,
   getPostHogClient,
+  getIdentifiedAnalyticsUserId,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -41,6 +43,8 @@ const {
 );
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
+const { getUnhandledRejectionDiagnostics } =
+  require("@/lib/posthog/unhandled-rejection-diagnostics") as typeof import("@/lib/posthog/unhandled-rejection-diagnostics");
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
@@ -58,6 +62,7 @@ describe("PostHogProvider", () => {
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
     window.localStorage.clear();
     mockGetPostHogClient.mockReturnValue(null);
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
 
     mockUseGlobalState.mockReturnValue({
       subscription: "pro",
@@ -291,6 +296,78 @@ describe("PostHogProvider", () => {
     expect(config.before_send(ordinaryEvent)).toEqual(ordinaryEvent);
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it("adds bounded context through before_send only while identified consent is active", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      capture: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(mockConfirmAuthenticatedAnalyticsUserId).toHaveBeenCalled(),
+    );
+    window.dispatchEvent(
+      new CustomEvent("unhandledrejection", { detail: { reason: undefined } }),
+    );
+    const entry = {
+      type: "UnhandledRejection",
+      value: "Non-Error promise rejection captured with value: undefined",
+      mechanism: { handled: false, synthetic: true },
+    };
+    const config = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => any;
+    };
+    const retained = config.before_send({
+      event: "$exception",
+      properties: { $exception_list: [entry] },
+    });
+    expect(retained.properties).toMatchObject({
+      hackerai_recent_rejection_count: 1,
+    });
+    expect(retained.properties.$exception_list).toEqual([entry]);
+    expect(posthog.capture).not.toHaveBeenCalled();
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
+    window.dispatchEvent(
+      new CustomEvent("unhandledrejection", { detail: { reason: undefined } }),
+    );
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
+  });
+
+  it("does not install a rejection observer when SDK loading finishes after unmount", async () => {
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((done) => {
+      resolve = done;
+    });
+    mockLoadPostHogClient.mockReturnValue(pending);
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(mockLoadPostHogClient).toHaveBeenCalled());
+    view.unmount();
+    const init = jest.fn();
+    resolve({ init });
+    await pending;
+    expect(init).not.toHaveBeenCalled();
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
   });
 
   it.each(["fr-FR", "es_ES", "invalid locale", "   "])(
