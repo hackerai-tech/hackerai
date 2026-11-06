@@ -1,3 +1,5 @@
+import { trace } from "@opentelemetry/api";
+
 type LogLevel = "info" | "warn" | "error";
 type OtlpValue =
   { stringValue: string } | { doubleValue: number } | { boolValue: boolean };
@@ -8,6 +10,8 @@ type OtlpAttribute = {
 };
 
 type QueuedLogRecord = {
+  traceId?: string;
+  spanId?: string;
   timeUnixNano: string;
   severityNumber: number;
   severityText: string;
@@ -284,6 +288,30 @@ export function registerPostHogLogProvider() {
   // initialized lazily so builds and edge runtimes do not need log setup work.
 }
 
+/** Snapshot only valid opaque IDs while the caller's span is still active. */
+function activeTraceIds(): { traceId?: string; spanId?: string } {
+  try {
+    const span = trace.getActiveSpan()?.spanContext();
+    const traceId = span?.traceId;
+    const spanId = span?.spanId;
+    if (
+      typeof traceId === "string" &&
+      typeof spanId === "string" &&
+      traceId.length === 32 &&
+      spanId.length === 16 &&
+      /^[0-9a-f]{32}$/i.test(traceId) &&
+      /^[0-9a-f]{16}$/i.test(spanId) &&
+      !/^0+$/.test(traceId) &&
+      !/^0+$/.test(spanId)
+    ) {
+      return { traceId: traceId.toLowerCase(), spanId: spanId.toLowerCase() };
+    }
+  } catch {
+    // Optional correlation cannot prevent the original log from being exported.
+  }
+  return {};
+}
+
 export function emitPostHogLog({
   level,
   event,
@@ -293,6 +321,7 @@ export function emitPostHogLog({
   if (!getPostHogToken()) return false;
 
   pendingLogs.push({
+    ...activeTraceIds(),
     timeUnixNano: nowUnixNano(),
     severityNumber: severityNumberFor(level),
     severityText: level.toUpperCase(),
