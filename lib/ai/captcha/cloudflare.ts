@@ -46,12 +46,44 @@ export const cloudflareParameters = z.object({
     .regex(/^[\x20-\x7e]+$/),
 });
 
+/** Cloudflare can add a transient challenge query during navigation. Never
+ * send that signed query to the solver or treat unrelated query values as an
+ * approved target. Authorization still requires the exact configured page.
+ */
+export function cloudflarePageUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      url.username ||
+      url.password ||
+      url.hash ||
+      [...url.searchParams.keys()].some(
+        (key) => !/^__cf_chl_[A-Za-z0-9_]+$/.test(key),
+      )
+    )
+      return undefined;
+    return url.origin + url.pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+export const CLOUDFLARE_PAGE_URL_SCRIPT = String.raw`(() => {
+  const url = new URL(location.href);
+  if (url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => !/^__cf_chl_[A-Za-z0-9_]+$/.test(key))) return null;
+  return url.origin + url.pathname;
+})()`;
+
 /** Install before navigation. Intercept only the approved page's managed
  * challenge; normal widgets retain their original render function. No logging.
  */
 export function cloudflareInitScript(approvedUrls: string[]): string {
   return `(() => {
-    if (window !== top || !${JSON.stringify(approvedUrls)}.includes(location.href)) return;
+    const current = new URL(location.href);
+    if (window !== top || !${JSON.stringify(approvedUrls)}.includes(current.origin + current.pathname)) return;
+    const canonical = ${CLOUDFLARE_PAGE_URL_SCRIPT};
+    window[Symbol.for('hackerai.cloudflareInit')] = {exact:location.href === canonical, queryAllowed:!!canonical};
+    if (!canonical) return;
     const key = Symbol.for('hackerai.cloudflareChallenge');
     let disabled = false;
     let timer;
@@ -59,7 +91,7 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
       if (disabled || !api || typeof api.render !== 'function' || api.render.__hackeraiWrapped) return;
       const original = api.render;
       const render = function(container, options) {
-        if (options?.action !== 'managed' || typeof options.cData !== 'string' ||
+        if (disabled || options?.action !== 'managed' || typeof options.cData !== 'string' ||
             !options.cData || options.cData.length > 2048 ||
             typeof options.chlPageData !== 'string' || !options.chlPageData ||
             options.chlPageData.length > 16384 || typeof options.callback !== 'function' ||

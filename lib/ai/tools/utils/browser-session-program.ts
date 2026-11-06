@@ -242,7 +242,7 @@ elif action == 'cloudflare':
                         raise RuntimeError('Browser operation failed')
                     return result.get('data', {})
         expected = json.dumps({'url':request['url'], 'documentId':request['documentId']})
-        script = '(e => location.href === e.url && String(performance.timeOrigin) === e.documentId)(' + expected + ')'
+        script = '(e => {const u=new URL(location.href); return !u.username && !u.password && !u.hash && [...u.searchParams.keys()].every(k=>/^__cf_chl_[A-Za-z0-9_]+$/.test(k)) && u.origin+u.pathname === e.url && String(performance.timeOrigin) === e.documentId})(' + expected + ')'
         if call({'id':'captcha-identity', 'action':'evaluate', 'script':script}).get('result') is not True:
             raise RuntimeError('Browser page changed')
         delivered = False

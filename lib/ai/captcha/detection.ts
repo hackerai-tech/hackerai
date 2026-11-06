@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { cloudflareParameters, cloudflarePreviewUrls } from "./cloudflare";
+import {
+  cloudflareParameters,
+  cloudflarePreviewUrls,
+  cloudflarePageUrl,
+  CLOUDFLARE_PAGE_URL_SCRIPT,
+} from "./cloudflare";
 
 export const captchaKind = z.enum(["recaptcha_v2", "hcaptcha", "turnstile"]);
 export type CaptchaKind = z.infer<typeof captchaKind>;
@@ -115,7 +120,7 @@ export function isSupportedCaptchaTarget(
     return (
       widget.kind === "turnstile" &&
       process.env.HACKERAI_ENVIRONMENT === "preview" &&
-      cloudflarePreviewUrls("PREVIEW").includes(url)
+      cloudflarePreviewUrls("PREVIEW").includes(cloudflarePageUrl(url) ?? "")
     );
   if (isSupportedCaptchaDemo(url, widget)) return true;
   if (!configuration || configuration.length > 16384) return false;
@@ -162,7 +167,7 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
       invisible: element.getAttribute("data-size") === "invisible"});
   }
   return {
-    url: location.href,
+    url: managed ? ${CLOUDFLARE_PAGE_URL_SCRIPT} : location.href,
     documentId: String(performance.timeOrigin),
     widgets,
     interstitial: !!managed || !!document.querySelector(
@@ -184,7 +189,7 @@ export function buildDeliverCaptchaScript(
 ): string {
   if (widget.managed)
     return `((expected, widget, token) => {
-    if (location.href !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status:'page_changed'};
+      if (${CLOUDFLARE_PAGE_URL_SCRIPT} !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status:'page_changed'};
     const current = window[Symbol.for('hackerai.cloudflareChallenge')];
     if (!current || current.delivered || current.siteKey !== widget.siteKey ||
         current.observationId !== widget.observationId || typeof current.callback !== 'function')
@@ -192,7 +197,7 @@ export function buildDeliverCaptchaScript(
     current.delivered = true;
     current.callback(token);
     return {status:'token_delivered', websiteAccepted:false};
-  })(${JSON.stringify({ url: observation.url, documentId: observation.documentId })}, ${JSON.stringify({ siteKey: widget.siteKey, observationId: widget.observationId })}, ${JSON.stringify(token)})`;
+    })(${JSON.stringify({ url: cloudflarePageUrl(observation.url), documentId: observation.documentId })}, ${JSON.stringify({ siteKey: widget.siteKey, observationId: widget.observationId })}, ${JSON.stringify(token)})`;
   // The script travels exclusively over protected process stdin.
   return `((expected, widget, token) => {
     if (location.href !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status: 'page_changed'};

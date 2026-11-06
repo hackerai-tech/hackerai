@@ -1,4 +1,8 @@
-import { cloudflareInitScript, cloudflarePreviewUrls } from "../cloudflare";
+import {
+  cloudflareInitScript,
+  cloudflarePreviewUrls,
+  cloudflarePageUrl,
+} from "../cloudflare";
 import { createBrowserChallengeHandler } from "../browser-challenge";
 import type { ToolContext } from "@/types";
 import {
@@ -108,6 +112,61 @@ it("restores the real widget for manual verification after an unsuccessful solve
   expect(page[key]).toBeUndefined();
   jest.advanceTimersByTime(100);
   expect(api.render).toBe(original);
+});
+
+it("stops intercepting a replacement API after releasing the earlier managed challenge", () => {
+  const { options } = render();
+  const captured = page[key] as { release: () => void };
+  const replacement = {
+    render: jest.fn(
+      (_element?: unknown, _options?: unknown) => "manual-widget",
+    ),
+  };
+  const originalReplacement = replacement.render;
+  page.turnstile = replacement;
+  captured.release();
+  expect(replacement.render(document.body, options)).toBe("manual-widget");
+  expect(originalReplacement).toHaveBeenCalledWith(document.body, options);
+  expect(page[key]).toBeUndefined();
+});
+
+it("captures a transient Cloudflare challenge URL without approving unrelated query data", () => {
+  const original = location.href;
+  try {
+    history.replaceState(null, "", "?__cf_chl_rt_tk=opaque-challenge-address");
+    const canonical = cloudflarePageUrl(location.href)!;
+    expect(canonical).toBe(location.origin + location.pathname);
+    window.eval(cloudflareInitScript([canonical]));
+    const callback = jest.fn();
+    page.turnstile = { render: jest.fn() };
+    (
+      page.turnstile as {
+        render: (element: unknown, options: unknown) => unknown;
+      }
+    ).render(document.body, {
+      sitekey: "public-managed-key",
+      action: "managed",
+      cData: "opaque",
+      chlPageData: "opaque-page",
+      callback,
+    });
+    const observation = inspect();
+    history.replaceState(null, "", canonical);
+    expect(
+      window.eval(
+        buildDeliverCaptchaScript(
+          observation,
+          observation.widgets[0],
+          "private-solution",
+        ),
+      ),
+    ).toEqual({ status: "token_delivered", websiteAccepted: false });
+    expect(callback).toHaveBeenCalledWith("private-solution");
+    expect(cloudflarePageUrl(canonical + "?token=private")).toBeUndefined();
+    expect(cloudflarePageUrl(canonical + "#private")).toBeUndefined();
+  } finally {
+    history.replaceState(null, "", original);
+  }
 });
 
 it("restores the actual page widget when the handler rejects managed target approval", async () => {

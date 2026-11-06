@@ -20,6 +20,7 @@ import type { CaptchaSolver } from "./solver";
 import { CAPTCHA_RUNTIME_GUIDANCE } from "./guidance";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
+import { cloudflarePageUrl, CLOUDFLARE_PAGE_URL_SCRIPT } from "./cloudflare";
 
 // Module loading cannot be canceled, but Stop must release its waiter. A late
 // initialization only constructs the adapter; it must never start a paid task.
@@ -129,7 +130,7 @@ export function createBrowserChallengeHandler(
       if (managed)
         releaseManaged = () =>
           browser.evaluate(`(() => {
-        if (location.href !== ${JSON.stringify(observation.url)} || String(performance.timeOrigin) !== ${JSON.stringify(observation.documentId)}) return false;
+        if (${CLOUDFLARE_PAGE_URL_SCRIPT} !== ${JSON.stringify(cloudflarePageUrl(observation.url))} || String(performance.timeOrigin) !== ${JSON.stringify(observation.documentId)}) return false;
         const current = window[Symbol.for('hackerai.cloudflareChallenge')];
         if (current?.observationId !== ${JSON.stringify(managed.observationId)} || current.delivered || typeof current.release !== 'function') return false;
         current.release(); return true;
@@ -199,7 +200,7 @@ export function createBrowserChallengeHandler(
       taskStarted = true;
       record("browser_captcha_solver_attempt", { captcha_kind: widget.kind });
       const solution = await solver.solve(
-        observation.url,
+        widget.managed ? cloudflarePageUrl(observation.url)! : observation.url,
         widget,
         signal,
         async (taskId) => {
@@ -229,7 +230,7 @@ export function createBrowserChallengeHandler(
             ? await browser.deliverCloudflare!(
                 solution.userAgent!,
                 {
-                  url: observation.url,
+                  url: cloudflarePageUrl(observation.url)!,
                   documentId: observation.documentId,
                   originalUserAgent: widget.managed.userAgent,
                 },
