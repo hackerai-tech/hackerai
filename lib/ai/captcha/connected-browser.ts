@@ -32,6 +32,7 @@ export class ConnectedChallengeBrowser {
     action: "prepare" | "evaluate" | "cleanup",
     signal?: AbortSignal,
     script?: string,
+    sessionName?: string,
   ) {
     signal?.throwIfAborted();
     try {
@@ -43,6 +44,7 @@ export class ConnectedChallengeBrowser {
             owner: this.owner,
             expiresAt: this.expiresAt,
             script,
+            sessionName,
           }),
           signal,
           timeoutMs: 10_000,
@@ -85,7 +87,7 @@ export class ConnectedChallengeBrowser {
     return env;
   }
 
-  async getBrowser(signal: AbortSignal) {
+  async getBrowser(signal: AbortSignal, sessionName?: string) {
     signal.throwIfAborted();
     if (this.closed || !this.preparation || Date.now() >= this.expiresAt)
       throw new Error("Open an owned browser in this run first.");
@@ -95,7 +97,12 @@ export class ConnectedChallengeBrowser {
       evaluate: async (script: string): Promise<unknown> => {
         signal.throwIfAborted();
         if (this.closed) throw new Error("Browser ownership ended.");
-        const reply = await this.request("evaluate", signal, script);
+        const reply = await this.request(
+          "evaluate",
+          signal,
+          script,
+          sessionName,
+        );
         if (this.closed || reply.ok !== true)
           throw new Error("Browser ownership ended.");
         return reply.result;

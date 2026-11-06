@@ -85,6 +85,7 @@ import {
 import type { AnySandbox } from "@/types";
 import {
   getStandaloneSnapshotHint,
+  getAgentBrowserSnapshotSession,
   isAgentBrowserSnapshotCommand,
 } from "@/lib/utils/agent-browser-command";
 
@@ -144,6 +145,11 @@ type E2BCommandHandle = {
 };
 
 export const createRunTerminalCmd = (context: ToolContext) => {
+  // Private per-invocation execution identity, never serialized into tool output.
+  const challengeTargets = new Map<
+    string,
+    { sandbox: AnySandbox; sessionName: string }
+  >();
   const {
     sandboxManager,
     writer,
@@ -253,7 +259,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     sandbox: AnySandbox,
     command: string,
     interactiveShell = false,
-  ) => {
+  ): Promise<Record<string, string> | undefined> => {
     const env = getAgentBrowserRuntimeEnv(command);
     const required = !!context.browserSessions && (interactiveShell || !!env);
     const gateOnly =
@@ -832,6 +838,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             context.browserSessions?.hasConnectedChallengeScope?.()
               ? await prepareBrowserEnv(sandboxInstance, command)
               : undefined;
+          const snapshot = getAgentBrowserSnapshotSession(command);
+          if (context.checkBrowserChallenge && snapshot) {
+            challengeTargets.set(toolCallId, {
+              sandbox: sandboxInstance,
+              sessionName:
+                snapshot.sessionName ??
+                agentBrowserEnv?.AGENT_BROWSER_SESSION ??
+                "default",
+            });
+          }
           captureAgentBrowserUsage({
             context,
             command,
@@ -1578,45 +1594,52 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       ) => {
         // Terminal tools return one result, never an AsyncIterable.
         const execute = async () => {
-          const output = (await terminalTool.execute!(input, options)) as {
-            result: Record<string, unknown>;
-          };
-          // Only a completed, direct snapshot can initiate automatic fallback.
-          // The page is inspected through the owned browser, never from stdout.
-          if (
-            context.checkBrowserChallenge &&
-            !input.is_background &&
-            !input.interactive &&
-            output.result.exitCode === 0 &&
-            output.result.executionOutcome !== "unknown" &&
-            !output.result.error &&
-            !output.result.approvalDenied
-          ) {
-            if (!isAgentBrowserSnapshotCommand(input.command)) {
-              const snapshot = getStandaloneSnapshotHint(input.command);
-              return snapshot
-                ? {
-                    result: {
-                      ...output.result,
-                      browserChallenge: {
-                        status: "snapshot_required",
-                        message: `To check for automatic CAPTCHA fallback, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
-                      },
-                    },
-                  }
-                : output;
-            }
-            const browserChallenge = await context.checkBrowserChallenge(
-              options.abortSignal,
-            );
+          try {
+            const output = (await terminalTool.execute!(input, options)) as {
+              result: Record<string, unknown>;
+            };
+            // Only a completed, direct snapshot can initiate automatic fallback.
+            // The page is inspected through the owned browser, never from stdout.
             if (
-              browserChallenge.status !== "unavailable" &&
-              browserChallenge.status !== "no_pending_challenge"
+              context.checkBrowserChallenge &&
+              !input.is_background &&
+              !input.interactive &&
+              output.result.exitCode === 0 &&
+              output.result.executionOutcome !== "unknown" &&
+              !output.result.error &&
+              !output.result.approvalDenied
             ) {
-              return { result: { ...output.result, browserChallenge } };
+              if (!isAgentBrowserSnapshotCommand(input.command)) {
+                const snapshot = getStandaloneSnapshotHint(input.command);
+                return snapshot
+                  ? {
+                      result: {
+                        ...output.result,
+                        browserChallenge: {
+                          status: "snapshot_required",
+                          message: `To check for automatic CAPTCHA fallback, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
+                        },
+                      },
+                    }
+                  : output;
+              }
+              const target = challengeTargets.get(options.toolCallId);
+              if (!target) return output;
+              const browserChallenge = await context.checkBrowserChallenge(
+                options.abortSignal,
+                target,
+              );
+              if (
+                browserChallenge.status !== "unavailable" &&
+                browserChallenge.status !== "no_pending_challenge"
+              ) {
+                return { result: { ...output.result, browserChallenge } };
+              }
             }
+            return output;
+          } finally {
+            challengeTargets.delete(options.toolCallId);
           }
-          return output;
         };
         return input.is_background || input.interactive
           ? execute()

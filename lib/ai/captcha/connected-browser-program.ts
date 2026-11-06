@@ -72,6 +72,9 @@ const {spawn} = require('node:child_process');
     // Explicit --session names are legitimate, but inspecting an arbitrary one
     // of several browsers could deliver a response into the wrong document.
     if (entries.length > 32 || (request.action === 'evaluate' && entries.length !== 1)) throw Error();
+    if (request.action === 'evaluate' && request.sessionName !== undefined &&
+        (typeof request.sessionName !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(request.sessionName) ||
+         entries[0] !== request.sessionName + suffix)) throw Error();
     const callDaemon = async (file) => {
       const socketFile = path.join(directory, file);
       const attempts = request.action === 'cleanup' && request.defer === true ? 3 : 1;

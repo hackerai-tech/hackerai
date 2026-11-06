@@ -84,6 +84,27 @@ it("isolates browser namespaces between runs and connected machines", async () =
   await Promise.all([a.cleanup(), b.cleanup()]);
 });
 
+it("uses the snapshot connection and name after another connection becomes active", async () => {
+  const sessions = new BrowserSessions(undefined, undefined, true);
+  const first = connection("snapshot-connection");
+  const second = connection("later-connection");
+  await sessions.prepare(first.sandbox);
+  await sessions.prepare(second.sandbox);
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+    {
+      sandbox: first.sandbox,
+      sessionName: "snapshot-name",
+    },
+  );
+  await browser.evaluate("document.title");
+  expect(JSON.parse(first.run.mock.calls[1][1].stdin).request.sessionName).toBe(
+    "snapshot-name",
+  );
+  expect(second.run).toHaveBeenCalledTimes(1);
+  await sessions.cleanup();
+});
+
 it("does not expose raw transport errors and never retries response delivery", async () => {
   const target = connection();
   const sessions = new BrowserSessions(undefined, undefined, true);

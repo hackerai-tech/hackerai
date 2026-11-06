@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ToolContext } from "@/types";
+import type { ToolContext, AnySandbox } from "@/types";
 import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
@@ -52,7 +52,10 @@ export function createBrowserChallengeHandler(
   let active = false;
   let guidanceSent = false;
   // Internal browser workflow, never a model-facing tool or model input.
-  return async (abortSignal?: AbortSignal) => {
+  return async (
+    abortSignal?: AbortSignal,
+    target?: { sandbox: AnySandbox; sessionName: string },
+  ) => {
     const signals = [runSignal, abortSignal].filter(
       (s): s is AbortSignal => !!s,
     );
@@ -112,7 +115,10 @@ export function createBrowserChallengeHandler(
       }
       signal.throwIfAborted();
       if (enabled !== true) return { status: "unavailable" };
-      const browser = await context.browserSessions.getChallengeBrowser(signal);
+      const browser = await context.browserSessions.getChallengeBrowser(
+        signal,
+        target,
+      );
       const observation = browserChallengeObservation.parse(
         await browser.evaluate(DETECT_CHALLENGES_SCRIPT),
       );

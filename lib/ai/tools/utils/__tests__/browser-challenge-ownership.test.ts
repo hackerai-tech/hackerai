@@ -31,11 +31,12 @@ async function owner() {
     .fn()
     .mockResolvedValueOnce({ exitCode: 0, stdout: "/usr/bin" });
   const read = jest.fn(async () => "default");
-  const preparedEnv = await sessions.prepare({
+  const sandbox = {
     sandboxId: "sandbox",
     commands: { run },
     files: { read },
-  } as unknown as AnySandbox);
+  } as unknown as AnySandbox;
+  const preparedEnv = await sessions.prepare(sandbox);
   run.mockImplementation(async (_command, options) =>
     options.background
       ? handle
@@ -49,6 +50,7 @@ async function owner() {
   );
   return {
     sessions,
+    sandbox,
     handle,
     run,
     read,
@@ -104,6 +106,41 @@ it("passes response material only through stdin and returns the bounded result",
       timeoutMs: 10000,
     }),
   );
+});
+
+it("refuses inspection when the active name changed after the triggering snapshot", async () => {
+  const { sessions, sandbox, run, read, handle } = await owner();
+  read.mockResolvedValue("another-session");
+  await expect(
+    sessions.getChallengeBrowser(new AbortController().signal, {
+      sandbox,
+      sessionName: "snapshotted-session",
+    }),
+  ).rejects.toThrow("snapshot browser session changed");
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(handle.sendStdin).not.toHaveBeenCalled();
+});
+
+it("keeps inspection on the snapshot sandbox after another sandbox is prepared", async () => {
+  const { sessions, sandbox, read } = await owner();
+  read.mockResolvedValue("snapshot-name");
+  const otherRead = jest.fn(async () => "other-name");
+  await sessions.prepare({
+    sandboxId: "other-sandbox",
+    commands: {
+      run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+    },
+    files: { read: otherRead },
+  } as unknown as AnySandbox);
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+    {
+      sandbox,
+      sessionName: "snapshot-name",
+    },
+  );
+  expect(browser.identity).toMatch(/:snapshot-name$/);
+  expect(otherRead).not.toHaveBeenCalled();
 });
 
 it.each(["ended", "human", "waiting", "session changed"])(

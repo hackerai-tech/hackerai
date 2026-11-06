@@ -81,20 +81,36 @@ export class BrowserSessions {
    * JavaScript (including any solver response) goes over stdin, never argv,
    * terminal streaming, checkpoint files or the model's tool result.
    */
-  async getChallengeBrowser(signal: AbortSignal): Promise<{
+  async getChallengeBrowser(
+    signal: AbortSignal,
+    target?: { sandbox: AnySandbox; sessionName: string },
+  ): Promise<{
     identity: string;
     evaluate: (script: string) => Promise<unknown>;
   }> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Browser session ownership has ended.");
-    if (this.connectedTargetSelected) {
-      if (!this.activeConnectedBrowser)
-        throw new Error("Open an owned connected browser first.");
-      return this.activeConnectedBrowser.getBrowser(signal);
+    if (target ? !isE2BSandbox(target.sandbox) : this.connectedTargetSelected) {
+      const connected =
+        target && !isE2BSandbox(target.sandbox)
+          ? this.connectedBrowsers.get(
+              target.sandbox.getConnectionInfo().connectionId,
+            )
+          : this.activeConnectedBrowser;
+      if (!connected) throw new Error("Open an owned connected browser first.");
+      return connected.getBrowser(signal, target?.sessionName);
     }
     const scope = this.handoffScope;
-    const session = [...this.sessions.values()].findLast((s) => s.registered);
-    if (!scope || !session || !isE2BSandbox(session.sandbox) || this.closed)
+    const session =
+      target && isE2BSandbox(target.sandbox)
+        ? this.sessions.get(target.sandbox.sandboxId)
+        : [...this.sessions.values()].findLast((s) => s.registered);
+    if (
+      !scope ||
+      !session?.registered ||
+      !isE2BSandbox(session.sandbox) ||
+      this.closed
+    )
       throw new Error(
         "Open an owned Cloud browser before inspecting challenges.",
       );
@@ -111,6 +127,8 @@ export class BrowserSessions {
     ).trim();
     if (!name || name.length > 80 || /[/\x00\r\n]/.test(name))
       throw new Error("Browser session identity is unavailable.");
+    if (target && name !== target.sessionName)
+      throw new Error("The snapshot browser session changed.");
     const assertOwned = async () => {
       signal.throwIfAborted();
       if (this.closed || Date.now() >= this.expiresAt)

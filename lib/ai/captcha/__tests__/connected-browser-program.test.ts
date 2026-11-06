@@ -118,11 +118,26 @@ it("rejects invalid deadlines and inherited user profiles before creating owners
         servers.push(server);
         server.listen(path.join(root, "sockets", name + ".sock"));
         await once(server, "listening");
+        if (servers.length === 1) {
+          expect(
+            (
+              await run({
+                action: "evaluate",
+                owner,
+                expiresAt: Date.now() + 30_000,
+                script: "document.title",
+                sessionName: "snapshot-that-was-closed",
+              })
+            ).code,
+          ).toBe(1);
+          expect(calls).toEqual([]);
+        }
         const result = await run({
           action: "evaluate",
           owner,
           expiresAt: Date.now() + 30_000,
           script: "document.title",
+          sessionName: "custom-session",
         });
         expect(result.code).toBe(servers.length === 1 ? 0 : 1);
       }

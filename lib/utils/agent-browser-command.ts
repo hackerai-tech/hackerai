@@ -285,6 +285,16 @@ export function isAgentBrowserSnapshotCommand(command: string): boolean {
   return true;
 }
 
+/** Extract only a validated snapshot's explicit session; undefined uses its runtime default. */
+export function getAgentBrowserSnapshotSession(command: string): {
+  sessionName?: string;
+} | null {
+  if (!isAgentBrowserSnapshotCommand(command)) return null;
+  const words = splitShellWords(command.trim());
+  const sessionIndex = words.indexOf("--session");
+  return sessionIndex === -1 ? {} : { sessionName: words[sessionIndex + 1] };
+}
+
 /** Suggest the read-only command when output formatting hid the opt-in trigger.
  * This never authorizes a solver call or executes a rewritten shell command.
  */

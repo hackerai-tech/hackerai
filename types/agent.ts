@@ -691,6 +691,7 @@ export interface ToolContext {
   /** Internal CAPTCHA fallback after a completed browser snapshot; never a model-facing tool. */
   checkBrowserChallenge?: (
     signal?: AbortSignal,
+    target?: { sandbox: AnySandbox; sessionName: string },
   ) => Promise<Record<string, unknown>>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;

@@ -328,6 +328,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         expected ? 1 : 0,
       );
       if (expected) {
+        expect(context.checkBrowserChallenge).toHaveBeenCalledWith(undefined, {
+          sandbox,
+          sessionName: command.includes("--session owned")
+            ? "owned"
+            : "default",
+        });
         expect(result).toMatchObject({
           result: { exitCode: 0, browserChallenge: challenge },
         });
