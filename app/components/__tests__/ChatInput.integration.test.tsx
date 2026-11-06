@@ -292,6 +292,60 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Keyboard and draft edge cases", () => {
+    it.each(["insertText", "deleteContentBackward"])(
+      "preserves a burst of native %s edits without exceeding React's update depth",
+      async (inputType) => {
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              status="ready"
+              chatId="burst-draft"
+            />
+          </TestWrapper>,
+        );
+        const input = (await screen.findByRole(
+          "textbox",
+        )) as HTMLTextAreaElement;
+        const nativeSetValue = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value",
+        )!.set!;
+        const errors: unknown[] = [];
+        const onError = (event: ErrorEvent) => {
+          errors.push(event.error);
+          event.preventDefault();
+        };
+        // Real input events flush each controlled edit. Wrapping the burst in
+        // act() batches them together and conceals the production regression.
+        const environment = globalThis as typeof globalThis & {
+          IS_REACT_ACT_ENVIRONMENT?: boolean;
+        };
+        const previousActEnvironment = environment.IS_REACT_ACT_ENVIRONMENT;
+        window.addEventListener("error", onError);
+        environment.IS_REACT_ACT_ENVIRONMENT = false;
+        let value = "";
+        try {
+          for (let index = 0; index < 120; index++) {
+            value = "x".repeat(
+              inputType === "insertText" ? index + 1 : 240 - index,
+            );
+            nativeSetValue.call(input, value);
+            input.dispatchEvent(
+              new InputEvent("input", { bubbles: true, inputType }),
+            );
+          }
+        } finally {
+          environment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+          window.removeEventListener("error", onError);
+        }
+        expect(errors).toEqual([]);
+        expect(input).toHaveValue(value);
+        expect(getDraftContentById("burst-draft")).toBe(value);
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+      },
+    );
+
     it("restores a saved draft through StrictMode mount effects", async () => {
       window.localStorage.setItem(
         CONVERSATION_DRAFTS_STORAGE_KEY,
@@ -3848,6 +3902,21 @@ describe("ChatInput - Integration Tests", () => {
       }),
     ).not.toBeInTheDocument();
     expect(input).toHaveValue("Explain /goal");
+    // A committed edit revokes the dismissal, even if a later edit restores
+    // exactly the text that was previously dismissed.
+    fireEvent.change(input, { target: { value: "Explain more /goal" } });
+    expect(
+      screen.getByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).toBeVisible();
+    fireEvent.change(input, { target: { value: "Explain /goal" } });
+    expect(
+      screen.getByRole("button", {
+        name: "Goal Set a goal to keep pursuing",
+      }),
+    ).toBeVisible();
+    fireEvent.keyDown(input, { key: "Escape" });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
       expect(mockOnSubmit).toHaveBeenCalledWith(expect.anything(), undefined),

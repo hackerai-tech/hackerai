@@ -862,7 +862,8 @@ const ChatInputContent = ({
   } = useSelectedComputerConnection();
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
   const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
-  const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
+  const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
+    useState<string | null>(null);
   useEffect(() => {
     setGoalEnabled(null);
     // Entitlements and the saved chat mode hydrate after the first render.
@@ -912,7 +913,16 @@ const ChatInputContent = ({
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
-  useEffect(() => setDismissedGoalSuggestion(false), [input]);
+  useEffect(() => {
+    // A no-op setter after every edit leaves synchronous work pending during
+    // native input bursts and can trip React's nested-update limit.
+    if (
+      dismissedGoalSuggestionInput !== null &&
+      dismissedGoalSuggestionInput !== input
+    ) {
+      setDismissedGoalSuggestionInput(null);
+    }
+  }, [input, dismissedGoalSuggestionInput]);
   const goalSuggestionDraft = getGoalSuggestionDraft(input);
   const showGoalSuggestion =
     !showAgentApprovalPrompt &&
@@ -920,7 +930,7 @@ const ChatInputContent = ({
     subscription !== "free" &&
     goalEnabled &&
     !goalMode &&
-    !dismissedGoalSuggestion &&
+    dismissedGoalSuggestionInput !== input &&
     goalSuggestionDraft !== null;
   const goalExposure = useRef(false);
   useEffect(() => {
@@ -1378,7 +1388,7 @@ const ChatInputContent = ({
                 }
                 if (e.key === "Escape") {
                   exitGoalMode("escape");
-                  setDismissedGoalSuggestion(true);
+                  setDismissedGoalSuggestionInput(input);
                 }
               }}
               autoFocus={autoFocus}
