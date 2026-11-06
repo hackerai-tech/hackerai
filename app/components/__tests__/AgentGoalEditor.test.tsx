@@ -561,7 +561,9 @@ describe("simple goal sidebar editor", () => {
         expect(toast.error).not.toHaveBeenCalled();
         if (outcome === "unconfirmed")
           expect(toast.info).toHaveBeenCalledWith(
-            expect.stringContaining("may have started"),
+            expect.stringMatching(
+              /^The goal may have started\.(?!.*draft is kept)/,
+            ),
           );
       } else {
         expect(toast.error).toHaveBeenCalledWith(

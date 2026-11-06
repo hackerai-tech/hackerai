@@ -3732,7 +3732,7 @@ describe("ChatInput - Integration Tests", () => {
         );
         if (reportedOutcome === "unconfirmed") {
           expect(toast.info).toHaveBeenCalledWith(
-            expect.stringContaining("may have started"),
+            expect.stringContaining("Your draft is kept."),
             expect.any(Object),
           );
           expect(toast.error).not.toHaveBeenCalled();

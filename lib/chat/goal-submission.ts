@@ -14,9 +14,7 @@ export class GoalSubmissionUnconfirmedError extends Error {
     public readonly messagePersisted: boolean | undefined,
     public readonly chatId?: string,
   ) {
-    super(
-      "The goal may have started. Reopen this chat to check before sending again. Your draft is kept.",
-    );
+    super("The goal may have started. Check its chat before sending again.");
     this.name = "GoalSubmissionUnconfirmedError";
   }
 }

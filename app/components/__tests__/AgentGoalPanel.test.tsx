@@ -87,7 +87,7 @@ describe("goal controls", () => {
       expect(toast.error).not.toHaveBeenCalled();
       if (outcome === "unconfirmed")
         expect(toast.info).toHaveBeenCalledWith(
-          expect.stringContaining("may have started"),
+          expect.stringContaining("Your reply is kept."),
         );
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },

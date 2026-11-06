@@ -1135,7 +1135,7 @@ const ChatInputContent = ({
           );
           // The linked originating chat makes this safe after navigation or
           // unmount; a missing handle must never silently invite a duplicate.
-          toast.info(error.message, {
+          toast.info(`${error.message} Your draft is kept.`, {
             action: {
               label: "Check chat",
               onClick: () =>

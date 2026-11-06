@@ -252,7 +252,7 @@ export function AgentGoalPanel({
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return;
       if (e instanceof GoalSubmissionUnconfirmedError) {
-        toast.info(e.message);
+        toast.info(`${e.message} Your reply is kept.`);
         return;
       }
       const message = e instanceof Error ? e.message : "Goal could not resume";
