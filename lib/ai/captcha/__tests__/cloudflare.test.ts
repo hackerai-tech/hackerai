@@ -1,10 +1,17 @@
 import { cloudflareInitScript, cloudflarePreviewUrls } from "../cloudflare";
+import { createBrowserChallengeHandler } from "../browser-challenge";
+import type { ToolContext } from "@/types";
 import {
   browserChallengeObservation,
   buildDeliverCaptchaScript,
   DETECT_CHALLENGES_SCRIPT,
   isSupportedCaptchaTarget,
 } from "../detection";
+
+jest.mock("@/lib/posthog/server", () => ({
+  getPostHogBooleanFlagDecisionForUser: jest.fn(async () => true),
+  phLogger: { event: jest.fn() },
+}));
 
 const key = Symbol.for("hackerai.cloudflareChallenge");
 const page = window as unknown as Record<string | symbol, unknown>;
@@ -101,6 +108,40 @@ it("restores the real widget for manual verification after an unsuccessful solve
   expect(page[key]).toBeUndefined();
   jest.advanceTimersByTime(100);
   expect(api.render).toBe(original);
+});
+
+it("restores the actual page widget when the handler rejects managed target approval", async () => {
+  const { original, options } = render();
+  process.env = {
+    ...originalEnv,
+    HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
+    HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
+    CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
+  };
+  const solverFactory = jest.fn();
+  const context = {
+    userID: "qa-user",
+    triggerRunId: "test-run",
+    browserSessions: {
+      getChallengeBrowser: async () => ({
+        identity: "owner",
+        evaluate: async (script: string) => window.eval(script),
+      }),
+    },
+  } as unknown as ToolContext;
+  const result = await createBrowserChallengeHandler(
+    context,
+    "PREVIEW",
+    undefined,
+    solverFactory,
+  )();
+  expect(result).toMatchObject({
+    status: "handoff_required",
+    reason: "unsupported_challenge",
+  });
+  expect(original).toHaveBeenCalledWith(document.body, options);
+  expect(page[key]).toBeUndefined();
+  expect(solverFactory).not.toHaveBeenCalled();
 });
 
 it("leaves unapproved pages and ordinary Turnstile renders unchanged", () => {

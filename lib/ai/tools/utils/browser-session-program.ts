@@ -55,7 +55,7 @@ if action == 'prepare':
             import re
             version = subprocess.run(['agent-browser','--version'],capture_output=True,text=True,timeout=5,check=True)
             match = re.search(r'agent-browser (\d+)\.(\d+)\.(\d+)',version.stdout)
-            supported = match and tuple(map(int,match.groups())) >= (0,41,2)
+            supported = match and tuple(map(int,match.groups())) >= (0,39,3)
         except Exception:
             supported = False
         if len(init_script) <= 16384 and supported:
