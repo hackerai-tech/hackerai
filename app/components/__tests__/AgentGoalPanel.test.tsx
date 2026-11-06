@@ -5,12 +5,13 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { AgentGoalPanel } from "../AgentGoalPanel";
 import { setMockQueryResult } from "@/__mocks__/convex-react";
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
-jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
+jest.mock("sonner", () => ({ toast: { error: jest.fn(), info: jest.fn() } }));
 let mockIsMobile = false;
 jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 const settings = {
@@ -41,42 +42,56 @@ describe("goal controls", () => {
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ enabled: true }) });
   });
-  it("keeps the reply without an error when resume admission is stopped", async () => {
-    const { toast } = require("sonner");
-    toast.error.mockClear();
-    setMockQueryResult({ ...goal, state: "blocked" });
-    const send = jest
-      .fn()
-      .mockRejectedValue(
-        new DOMException("Goal submission stopped", "AbortError"),
+  it.each(["stopped", "unconfirmed"])(
+    "keeps the reply without a failure for %s resume admission",
+    async (outcome) => {
+      const { toast } = require("sonner");
+      toast.error.mockClear();
+      toast.info.mockClear();
+      setMockQueryResult({ ...goal, state: "blocked" });
+      const send = jest
+        .fn()
+        .mockRejectedValue(
+          outcome === "stopped"
+            ? new DOMException("Goal submission stopped", "AbortError")
+            : new GoalSubmissionUnconfirmedError(true, "chat"),
+        );
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={send}
+          settings={settings}
+        />,
       );
-    render(
-      <AgentGoalPanel
-        chatId="chat"
-        exists
-        eligible
-        idle
-        send={send}
-        settings={settings}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
-      target: { value: "Use blue" },
-    });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Resume goal" })).toBeEnabled(),
-    );
-    await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Resume goal" })),
-    );
-    expect(send).toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: "Goal reply" })).toHaveValue(
-      "Use blue",
-    );
-    expect(toast.error).not.toHaveBeenCalled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show goal details" }),
+      );
+      fireEvent.change(screen.getByRole("textbox", { name: "Goal reply" }), {
+        target: { value: "Use blue" },
+      });
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Resume goal" }),
+        ).toBeEnabled(),
+      );
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: "Resume goal" })),
+      );
+      expect(send).toHaveBeenCalled();
+      expect(screen.getByRole("textbox", { name: "Goal reply" })).toHaveValue(
+        "Use blue",
+      );
+      expect(toast.error).not.toHaveBeenCalled();
+      if (outcome === "unconfirmed")
+        expect(toast.info).toHaveBeenCalledWith(
+          expect.stringContaining("may have started"),
+        );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
   it.each(["Clear goal", "Pause goal"])(
     "saves the running response before %s and aborts when stopping fails",
     async (name) => {

@@ -1021,12 +1021,11 @@ export const useChatHandlers = ({
           (error instanceof Error && error.name === "AbortError")
         )
           throw error;
-        if (!(error instanceof Error && error.name === "AbortError"))
-          toast.error(
-            error instanceof Error
-              ? error.message
-              : "Goal could not start. Your draft is saved.",
-          );
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Goal could not start. Your draft is saved.",
+        );
         return false;
       }
     } else {

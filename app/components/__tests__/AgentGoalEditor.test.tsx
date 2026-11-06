@@ -8,12 +8,13 @@ import {
 import { AgentGoalEditor } from "../AgentGoalEditor";
 import { setMockQueryResult } from "@/__mocks__/convex-react";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
 jest.mock("sonner", () => ({
-  toast: { success: jest.fn(), error: jest.fn() },
+  toast: { success: jest.fn(), error: jest.fn(), info: jest.fn() },
 }));
 const goal = {
   _id: "goal",
@@ -509,9 +510,9 @@ describe("simple goal sidebar editor", () => {
       expect(resume).not.toHaveBeenCalled();
     },
   );
-  it.each([false, true])(
-    "reports rejected restart but keeps cancellation silent (aborted=%s)",
-    async (aborted) => {
+  it.each(["rejected", "aborted", "unconfirmed"])(
+    "reports restart outcome without treating uncertainty as failure (%s)",
+    async (outcome) => {
       let saved = false;
       jest.mocked(fetch).mockImplementation(async (_url, init) => {
         if (init?.method === "POST") saved = true;
@@ -541,9 +542,11 @@ describe("simple goal sidebar editor", () => {
           continueGoal={jest
             .fn()
             .mockRejectedValue(
-              aborted
-                ? new DOMException("Goal submission stopped", "AbortError")
-                : new Error("Usage limit reached"),
+              outcome === "unconfirmed"
+                ? new GoalSubmissionUnconfirmedError(true, "chat")
+                : outcome === "aborted"
+                  ? new DOMException("Goal submission stopped", "AbortError")
+                  : new Error("Usage limit reached"),
             )}
         />,
       );
@@ -554,8 +557,12 @@ describe("simple goal sidebar editor", () => {
         screen.getByRole("button", { name: /Save|Update and continue/ }),
       );
       await waitFor(() => expect(close).toHaveBeenCalled());
-      if (aborted) {
+      if (outcome !== "rejected") {
         expect(toast.error).not.toHaveBeenCalled();
+        if (outcome === "unconfirmed")
+          expect(toast.info).toHaveBeenCalledWith(
+            expect.stringContaining("may have started"),
+          );
       } else {
         expect(toast.error).toHaveBeenCalledWith(
           expect.stringContaining("Goal saved"),

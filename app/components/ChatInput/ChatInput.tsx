@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -477,6 +478,7 @@ const ChatInputContent = ({
   const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  const currentChatIdRef = useLatestRef(chatId);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -1083,7 +1085,8 @@ const ChatInputContent = ({
         if (accepted !== false) setGoalMode(false);
         const unchanged =
           getInput() === submittedInput &&
-          getUploadedFiles() === submittedFiles;
+          (getUploadedFiles() === submittedFiles ||
+            (getUploadedFiles().length === 0 && submittedFiles.length === 0));
         // The chat handler can already have cleared the accepted submission.
         const alreadyCleared =
           getInput() === "" && getUploadedFiles().length === 0;
@@ -1131,11 +1134,20 @@ const ChatInputContent = ({
                 ? "start_response_lost"
                 : "lookup_unavailable",
           );
-          if (isMountedRef.current && prevDraftIdRef.current === draftId)
+          if (
+            isMountedRef.current &&
+            currentChatIdRef.current === chatId &&
+            prevDraftIdRef.current === draftId
+          )
             toast.info(error.message, {
               action: {
-                label: "Reload chat",
-                onClick: () => window.location.reload(),
+                label: "Check chat",
+                onClick: () =>
+                  error.chatId
+                    ? window.location.assign(
+                        `/c/${encodeURIComponent(error.chatId)}`,
+                      )
+                    : window.location.reload(),
               },
             });
           return;

@@ -12,6 +12,7 @@ import { goalEditText } from "@/lib/goals/commands";
 import { defaultGoalCriterion, validGoalStart } from "@/lib/goals/contracts";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 
 type Goal = Doc<"agent_goals">;
 export type GoalEditorDraft = {
@@ -268,6 +269,10 @@ export function AgentGoalEditor({
               generation: saved.generation,
             }).catch((cause) => {
               if (cause instanceof Error && cause.name === "AbortError") return;
+              if (cause instanceof GoalSubmissionUnconfirmedError) {
+                toast.info(cause.message);
+                return;
+              }
               toast.error(
                 `Goal saved. Could not continue: ${cause instanceof Error ? cause.message : "Check the chat and Resume when ready."}`,
               );

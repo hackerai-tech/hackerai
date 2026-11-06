@@ -3601,6 +3601,37 @@ describe("ChatInput - Integration Tests", () => {
     },
   );
 
+  it("clears an admitted prompt when navigation replaced an empty attachment list", async () => {
+    let accept!: (value: boolean) => void;
+    mockOnSubmit.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    render(
+      <TestWrapper>
+        <UploadedFilesSetter files={[]} label="Reset empty attachments" />
+        <ChatInput
+          chatId="empty-files-goal"
+          onSubmit={mockOnSubmit}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Accepted prompt" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reset empty attachments" }),
+    );
+    await act(async () => {
+      accept(true);
+    });
+    expect(input).toHaveValue("");
+  });
+
   describe("goal composer analytics", () => {
     afterEach(() => jest.restoreAllMocks());
 

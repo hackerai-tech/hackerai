@@ -66,6 +66,7 @@ import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
   resumeAgentLongStream,
+  type AgentLongRunStarted,
 } from "@/lib/chat/agent-long-transport";
 import {
   areMessagesEquivalentForConvexSync,
@@ -92,6 +93,7 @@ import { getLatestAgentLongAssistantMessageForPartialSave } from "@/lib/chat/age
 import { toast } from "sonner";
 import {
   addAuthenticatedExceptionStep,
+  captureAuthenticatedEvent,
   getPostHogRequestHeaders,
 } from "@/lib/analytics/client";
 import {
@@ -500,7 +502,21 @@ function ForkAutoSendEffect({
 
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
-    void onSubmit(new Event("submit") as unknown as React.FormEvent);
+    void Promise.resolve(
+      onSubmit(new Event("submit") as unknown as React.FormEvent),
+    ).catch((error: unknown) => {
+      if (error instanceof GoalSubmissionUnconfirmedError) {
+        captureAuthenticatedEvent("agent_goal_composer_action", {
+          action: "submit_unconfirmed",
+          composer_layout: "unknown",
+          goal_ui_version: 2,
+          reason: "fork_autosend",
+        });
+        toast.info(error.message);
+      } else if (!(error instanceof Error && error.name === "AbortError")) {
+        console.error("Failed to submit restored task:", error);
+      }
+    });
   }, [
     chatId,
     input,
@@ -1008,6 +1024,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     aborted?: boolean;
     rejected?: boolean;
     requestSent?: boolean;
+    stopped?: boolean;
     accepted: boolean;
   };
   const goalAdmissionRef = useRef<GoalAdmission | null>(null);
@@ -1077,56 +1094,63 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             pendingGoal.id === queuedMessageId
           )
             pendingGoal.requestSent = true;
-          const acknowledgeGoal = (run: { chatId?: string; runId: string }) => {
+          let recordedRunId: string | undefined;
+          const recordAdmission = (run: AgentLongRunStarted) => {
             const pending = goalAdmissionRef.current;
             if (
               pending &&
               pending.chatId === request?.chatId &&
               pending.id === queuedMessageId &&
               run.chatId === pending.chatId &&
-              !hasManuallyStoppedRef.current
+              !pending.stopped &&
+              !(
+                hasManuallyStoppedRef.current &&
+                pending.chatId === activeChatIdRef.current
+              )
             )
               pending.resolve();
+            if (recordedRunId === run.runId) return;
+            if (
+              hasManuallyStoppedRef.current ||
+              requestGeneration !== agentLongRequestGenerationRef.current ||
+              (run.chatId !== undefined &&
+                run.chatId !== activeChatIdRef.current)
+            ) {
+              return;
+            }
+            if (
+              typeof request?.chatId === "string" &&
+              typeof queuedMessageId === "string"
+            ) {
+              queuedAdmissionRef.current(request.chatId, queuedMessageId);
+            }
+            // Only expose the saved-task route after attachment staging and
+            // user-message persistence have succeeded.
+            if (
+              finalizeNewChatRoute({
+                chatId: activeChatIdRef.current,
+                isAbort: false,
+                isExistingChat: isExistingChatRef.current,
+              })
+            ) {
+              removeDraft("new");
+              setIsExistingChat(true);
+            }
+            setAgentLongRunId(run.runId);
+            if (run.runCorrelationToken) {
+              agentLongRunCorrelationRef.current = {
+                runId: run.runId,
+                token: run.runCorrelationToken,
+              };
+            }
+
+            recordedRunId = run.runId;
           };
           return fetchAgentLongStream(
             init,
-            (run) => {
-              acknowledgeGoal(run);
-              if (
-                requestGeneration !== agentLongRequestGenerationRef.current ||
-                (run.chatId !== undefined &&
-                  run.chatId !== activeChatIdRef.current)
-              ) {
-                return;
-              }
-              if (
-                typeof request?.chatId === "string" &&
-                typeof queuedMessageId === "string"
-              ) {
-                queuedAdmissionRef.current(request.chatId, queuedMessageId);
-              }
-              // Only expose the saved-task route after attachment staging and
-              // user-message persistence have succeeded.
-              if (
-                finalizeNewChatRoute({
-                  chatId: activeChatIdRef.current,
-                  isAbort: false,
-                  isExistingChat: isExistingChatRef.current,
-                })
-              ) {
-                removeDraft("new");
-                setIsExistingChat(true);
-              }
-              setAgentLongRunId(run.runId);
-              if (run.runCorrelationToken) {
-                agentLongRunCorrelationRef.current = {
-                  runId: run.runId,
-                  token: run.runCorrelationToken,
-                };
-              }
-            },
+            recordAdmission,
             handleAgentLongRunClosed,
-            acknowledgeGoal,
+            recordAdmission,
           );
         }
         if (init?.method !== "GET") {
@@ -1598,6 +1622,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Stream setup can reject in the same turn as admission. Once the
         // exact message was admitted, a consumer error cannot undo that send.
         if (accepted) return;
+        const stopped =
+          pending.stopped ||
+          (hasManuallyStoppedRef.current && activeChatIdRef.current === chatId);
         const rejected =
           pending.rejected ||
           (error instanceof ChatSDKError && error.type !== "offline");
@@ -1639,11 +1666,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // A late acknowledgement may arrive while the lookup is in flight.
         if (accepted) return;
         if (
-          !(error instanceof Error && error.name === "AbortError") &&
+          !stopped &&
           !rejected &&
-          (pending.requestSent || persisted !== false)
+          (pending.requestSent ||
+            (!(error instanceof Error && error.name === "AbortError") &&
+              persisted !== false))
         )
-          throw new GoalSubmissionUnconfirmedError(persisted);
+          throw new GoalSubmissionUnconfirmedError(persisted, chatId);
         throw error;
       } finally {
         if (goalAdmissionRef.current === pending)
@@ -2609,6 +2638,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
+      if (goalAdmissionRef.current?.chatId === chatId)
+        goalAdmissionRef.current.stopped = true;
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
