@@ -1212,7 +1212,7 @@ const ChatInputContent = ({
         {/* Panels keep their content height and scroll as a stack instead of
             shrinking beneath the next panel. Reserve the input or approval card. */}
         <div
-          className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+          className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
           {isOffline && (
@@ -1307,7 +1307,7 @@ const ChatInputContent = ({
 
           {user && (
             <div
-              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels && !isWaitingForReply ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels && !isWaitingForReply ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && !isWaitingForReply && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
             >
               <TodoPanel status={status} />
 
