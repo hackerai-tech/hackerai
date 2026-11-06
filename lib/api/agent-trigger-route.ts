@@ -1,3 +1,4 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
@@ -628,9 +629,13 @@ export const finalizeStartedAgentRun = async ({
   }
 };
 
-export const createAgentTriggerPost =
-  ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
-  async (req: NextRequest) => {
+/** Share recovery across admission reads without replaying persistence or run dispatch. */
+export const createAgentTriggerPost = ({
+  endpoint,
+}: {
+  endpoint: AgentApiEndpoint;
+}) =>
+  withServiceQueryRecovery(async (req: NextRequest) => {
     const routeStartedAt = Date.now();
     let stage = "parse_request";
     let initialPersistenceStep: InitialChatPersistenceStep | undefined;
@@ -818,6 +823,7 @@ export const createAgentTriggerPost =
         );
       if (existingChat && existingChat.user_id !== userId)
         throw new ChatSDKError("forbidden:chat");
+      stage = "reconcile_goal";
       const existingGoal = existingChat
         ? await reconcileGoal(chatId, userId)
         : null;
@@ -1322,4 +1328,4 @@ export const createAgentTriggerPost =
     } finally {
       clearInterval(slowRequestInterval);
     }
-  };
+  });

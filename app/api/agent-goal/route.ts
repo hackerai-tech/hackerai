@@ -1,3 +1,4 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { z } from "zod";
 import { NextRequest } from "next/server";
@@ -31,7 +32,8 @@ const controlRequest = z.discriminatedUnion("action", [
   }),
 ]);
 export const maxDuration = 30;
-export async function GET(req: NextRequest) {
+/** Own goal-read recovery until the status response finishes, separately from controls. */
+async function handleGet(req: NextRequest) {
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
     const chatId = req.nextUrl.searchParams.get("chatId");
@@ -46,6 +48,8 @@ export async function GET(req: NextRequest) {
       : Response.json({ message: "Goal access unavailable" }, { status: 503 });
   }
 }
+export const GET = withServiceQueryRecovery(handleGet);
+
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await getUserIDAndPro(req);
