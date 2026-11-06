@@ -1547,6 +1547,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       },
       options?: { body?: Record<string, unknown> },
     ) => {
+      const disabledReason = computerSendDisabledReasonRef.current;
+      if (disabledReason) throw new Error(disabledReason);
       if (goalAdmissionRef.current)
         throw new Error("A goal is already starting.");
       const id = uuidv4();
@@ -1596,6 +1598,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Stream setup can reject in the same turn as admission. Once the
         // exact message was admitted, a consumer error cannot undo that send.
         if (accepted) return;
+        const rejected =
+          pending.rejected ||
+          (error instanceof ChatSDKError && error.type !== "offline");
+        let persisted: boolean | undefined;
         if (
           isChatMountedRef.current &&
           activeChatIdRef.current === chatId &&
@@ -1604,7 +1610,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           // Failed requests can leave an optimistic bubble. Remove it only after
           // confirming it was never persisted; unknown outcomes stay visible.
           let persistenceTimeout: ReturnType<typeof setTimeout> | undefined;
-          let persisted: boolean | undefined;
           try {
             persisted = await Promise.race([
               convex
@@ -1624,27 +1629,35 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             clearTimeout(persistenceTimeout);
           }
           if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
-            if (
-              persisted === false &&
-              (!pending.requestSent || pending.rejected)
-            )
+            if (persisted === false && (!pending.requestSent || rejected))
               setMessages((current) =>
                 current.filter((item) => item.id !== id),
               );
             clearError?.();
           }
-          // A late acknowledgement may arrive while the lookup is in flight.
-          if (accepted) return;
-          if ((pending.requestSent || persisted !== false) && !pending.rejected)
-            throw new GoalSubmissionUnconfirmedError(persisted);
         }
+        // A late acknowledgement may arrive while the lookup is in flight.
+        if (accepted) return;
+        if (
+          !(error instanceof Error && error.name === "AbortError") &&
+          !rejected &&
+          (pending.requestSent || persisted !== false)
+        )
+          throw new GoalSubmissionUnconfirmedError(persisted);
         throw error;
       } finally {
         if (goalAdmissionRef.current === pending)
           goalAdmissionRef.current = null;
       }
     },
-    [chatId, sendMessage, convex, setMessages, clearError],
+    [
+      chatId,
+      sendMessage,
+      convex,
+      setMessages,
+      clearError,
+      computerSendDisabledReasonRef,
+    ],
   );
   const regenerate = useCallback<typeof regenerateUnchecked>(
     (...args) => {

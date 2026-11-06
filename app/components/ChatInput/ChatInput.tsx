@@ -1131,12 +1131,13 @@ const ChatInputContent = ({
                 ? "start_response_lost"
                 : "lookup_unavailable",
           );
-          toast.info(error.message, {
-            action: {
-              label: "Reload chat",
-              onClick: () => window.location.reload(),
-            },
-          });
+          if (isMountedRef.current && prevDraftIdRef.current === draftId)
+            toast.info(error.message, {
+              action: {
+                label: "Reload chat",
+                onClick: () => window.location.reload(),
+              },
+            });
           return;
         }
         if (error instanceof Error && error.name === "AbortError") {
