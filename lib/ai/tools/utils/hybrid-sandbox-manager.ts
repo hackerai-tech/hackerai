@@ -1113,8 +1113,7 @@ System Environment:
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
-- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
-${platform === "win32" ? `- Shell: ${WINDOWS_COMMAND_SHELL_GUIDANCE}` : ""}
+- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}${platform === "win32" ? `\n- Shell: ${WINDOWS_COMMAND_SHELL_GUIDANCE}` : ""}
 ${this.workingDirectory ? `- Active project folder: ${serializePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:
