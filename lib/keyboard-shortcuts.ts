@@ -6,7 +6,7 @@ export const SHORTCUTS = {
   sidebar: { label: "Toggle sidebar", key: "s", mod: true, shift: true },
   send: { label: "Send message", key: "Enter" },
   newline: { label: "Insert new line", key: "Enter", shift: true },
-  stop: { label: "Stop response", key: ".", mod: true, shift: true },
+  stop: { label: "Stop response", key: "x", mod: true, shift: true },
 } as const;
 
 export type ShortcutId = keyof typeof SHORTCUTS;
@@ -37,7 +37,6 @@ export function spokenShortcutKey(key: string): string {
     "⌘": "Command",
     "⇧": "Shift",
     Ctrl: "Control",
-    ".": "Period",
     "/": "Slash",
   };
   return names[key] ?? key;
@@ -68,10 +67,8 @@ export function matchesShortcut(
   // Some layouts need Shift to type a literal slash.
   if (id === "shortcuts" && event.key === "/") return true;
   if (event.shiftKey !== Boolean(binding.shift)) return false;
-  // Shift+period produces ">" on US keyboards; other layouts can retain ".".
-  const key = id === "stop" && event.key === ">" ? "." : event.key;
+  const key = event.key;
   if (key.toLowerCase() === binding.key.toLowerCase()) return true;
-  if (id === "stop") return event.code === "Period";
   if (id === "shortcuts") return event.code === "Slash";
   // Keep letter bindings usable with non-Latin layouts, without confusing
   // remapped Latin keys (e.g. Dvorak) with their physical positions.

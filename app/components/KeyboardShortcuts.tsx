@@ -152,7 +152,7 @@ export function KeyboardShortcuts({
                         {shortcutKeys(id, isMac).map((key) => (
                           <kbd
                             key={key}
-                            className={`inline-flex h-6 min-w-6 items-center justify-center rounded-md border bg-muted/60 px-1.5 font-sans text-foreground/80 ${key === "." || key === "/" ? "text-sm font-medium" : "text-xs"}`}
+                            className={`inline-flex h-6 min-w-6 items-center justify-center rounded-md border bg-muted/60 px-1.5 font-sans text-foreground/80 ${key === "/" ? "text-sm font-medium" : "text-xs"}`}
                           >
                             <span aria-hidden="true">{key}</span>
                             <span className="sr-only">

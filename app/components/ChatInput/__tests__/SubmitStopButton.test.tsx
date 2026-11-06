@@ -96,8 +96,8 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(copy.defaultPrevented).toBe(false);
     expect(defaultProps.onStop).not.toHaveBeenCalled();
     fireEvent.keyDown(window, {
-      key: ">",
-      code: "Period",
+      key: "X",
+      code: "KeyX",
       ctrlKey: true,
       shiftKey: true,
     });
@@ -111,8 +111,8 @@ describe("SubmitStopButton paid mode colors", () => {
     dialog.setAttribute("role", "dialog");
     document.body.append(dialog);
     fireEvent.keyDown(window, {
-      key: ">",
-      code: "Period",
+      key: "X",
+      code: "KeyX",
       ctrlKey: true,
       shiftKey: true,
     });
@@ -121,8 +121,8 @@ describe("SubmitStopButton paid mode colors", () => {
     terminal.className = "xterm";
     document.body.append(terminal);
     fireEvent.keyDown(terminal, {
-      key: ">",
-      code: "Period",
+      key: "X",
+      code: "KeyX",
       ctrlKey: true,
       shiftKey: true,
     });
@@ -134,8 +134,8 @@ describe("SubmitStopButton paid mode colors", () => {
     defaultProps.onStop.mockClear();
     renderButton("ask", false);
     fireEvent.keyDown(window, {
-      key: ">",
-      code: "Period",
+      key: "X",
+      code: "KeyX",
       ctrlKey: true,
       shiftKey: true,
     });

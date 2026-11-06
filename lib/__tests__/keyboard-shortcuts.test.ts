@@ -76,12 +76,12 @@ describe("web keyboard bindings", () => {
     ).toBe(true);
   });
 
-  it("matches the actual shifted period event and keeps copy untouched", () => {
+  it("matches Stop with Shift and keeps copy untouched", () => {
     expect(
       matchesShortcut(
         new KeyboardEvent("keydown", {
-          key: ">",
-          code: "Period",
+          key: "X",
+          code: "KeyX",
           ctrlKey: true,
           shiftKey: true,
         }),
@@ -110,6 +110,6 @@ describe("web keyboard bindings", () => {
 
   it("shows platform-appropriate key names", () => {
     expect(shortcutKeys("newTask", true)).toEqual(["⌘", "⇧", "O"]);
-    expect(shortcutKeys("stop", false)).toEqual(["Ctrl", "Shift", "."]);
+    expect(shortcutKeys("stop", false)).toEqual(["Ctrl", "Shift", "X"]);
   });
 });
