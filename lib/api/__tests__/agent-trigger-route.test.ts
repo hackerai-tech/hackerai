@@ -216,6 +216,68 @@ describe("web request correlation at Agent dispatch", () => {
       }),
     } as any);
 
+  it.each([
+    ["/api/agent", undefined],
+    ["/api/agent", null],
+    ["/api/agent", {}],
+    ["/api/agent-long", undefined],
+    ["/api/agent-long", null],
+    ["/api/agent-long", {}],
+  ] as const)(
+    "rejects malformed message parts at %s before persistence or dispatch (%j)",
+    async (endpoint, parts) => {
+      const response = await start(endpoint, "full_access", requestId, {
+        messages: [{ id: "message-1", role: "user", parts }],
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockGetUserIDAndPro).not.toHaveBeenCalled();
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, { id: "earlier-message", role: "assistant" }])(
+    "rejects malformed earlier messages even when the last message is valid (%j)",
+    async (earlierMessage) => {
+      const response = await start("/api/agent", "full_access", requestId, {
+        messages: [
+          earlierMessage,
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "Valid request" }],
+          },
+        ],
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves valid history and empty parts arrays", async () => {
+    const messages = [
+      {
+        id: "earlier-message",
+        role: "assistant",
+        parts: [{ type: "text", text: "Previous response" }],
+      },
+      { id: "message-1", role: "user", parts: [] },
+    ];
+
+    const response = await start("/api/agent", "full_access", requestId, {
+      messages,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ messages }),
+    );
+  });
+
   it.each(dispatchPaths)(
     "routes %s %s to the existing workspace before dispatch",
     async (endpoint, mode) => {
