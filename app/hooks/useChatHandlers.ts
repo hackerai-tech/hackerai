@@ -55,6 +55,9 @@ import {
   type AgentCancellationAction,
 } from "@/lib/analytics/agent-cancellation";
 
+type StopCompactor =
+  typeof import("@/lib/chat/compaction/prune-tool-outputs").compactMessageForStorage;
+
 type StopSnapshot = {
   parts: ChatMessage["parts"];
   diagnostics?: {
@@ -203,6 +206,27 @@ export const useChatHandlers = ({
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
   const stopGenerationRef = useRef(0);
+  const stopCompactorRef = useRef<StopCompactor | undefined>(undefined);
+  const stopCompactorLoadingRef = useRef(false);
+  useEffect(() => {
+    if (
+      (status !== "submitted" && status !== "streaming") ||
+      stopCompactorRef.current ||
+      stopCompactorLoadingRef.current
+    )
+      return;
+    // Start the optional chunk while generating. Stop must never wait for its
+    // network load, including Ask where stream cancellation owns backend Stop.
+    stopCompactorLoadingRef.current = true;
+    void import("@/lib/chat/compaction/prune-tool-outputs")
+      .then(({ compactMessageForStorage }) => {
+        stopCompactorRef.current = compactMessageForStorage;
+      })
+      .catch(() => {})
+      .finally(() => {
+        stopCompactorLoadingRef.current = false;
+      });
+  }, [status]);
   const [sendNowReleaseVersion, setSendNowReleaseVersion] = useState(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
@@ -250,22 +274,20 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const getStopSnapshot = (
-    message: ChatMessage,
-  ): StopSnapshot | Promise<StopSnapshot> => {
+  /** Prepare storage-only parts without awaiting code needed by backend Stop. */
+  const getStopSnapshot = (message: ChatMessage): StopSnapshot => {
     const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
     try {
-      // Match normal saves' storage compaction without loading the tokenizer
-      // for small snapshots or replacing the full response in local state.
       const beforeSizeBytes = getConvexSize(parts as Value);
       if (beforeSizeBytes <= 850 * 1024) return { parts };
       const diagnostics = {
         before_size_bytes: beforeSizeBytes,
         part_count: parts.length,
       };
-      return import("@/lib/chat/compaction/prune-tool-outputs")
-        .then(({ compactMessageForStorage }): StopSnapshot => {
-          const compacted = compactMessageForStorage(
+      const compactor = stopCompactorRef.current;
+      if (compactor) {
+        try {
+          const compacted = compactor(
             { ...message, parts },
             { estimateSizeBytes: (value) => getConvexSize(value as Value) },
           );
@@ -283,18 +305,21 @@ export const useChatHandlers = ({
               pruned_count: compacted.prunedCount,
             },
           };
-        })
-        .catch(() => ({
-          parts,
-          diagnostics: {
-            ...diagnostics,
-            preparation_outcome: "unavailable" as const,
-            after_size_bytes: beforeSizeBytes,
-            pruned_count: 0,
-          },
-        }));
+        } catch {
+          // Keep the existing guarded save if optional preparation fails.
+        }
+      }
+      return {
+        parts,
+        diagnostics: {
+          ...diagnostics,
+          preparation_outcome: "unavailable",
+          after_size_bytes: beforeSizeBytes,
+          pruned_count: 0,
+        },
+      };
     } catch {
-      // Preserve the original sanitized snapshot and server document guard.
+      // Preserve valid sanitized values and the server's document guard.
       return { parts };
     }
   };
@@ -508,13 +533,12 @@ export const useChatHandlers = ({
     }
 
     const lastMessage = stoppedMessages[stoppedMessages.length - 1];
-    const snapshotParts =
+    const snapshot =
       !options?.skipSave && lastMessage?.role === "assistant"
         ? getStopSnapshot(lastMessage)
         : undefined;
-    const snapshot =
-      snapshotParts instanceof Promise ? await snapshotParts : snapshotParts;
     let snapshotDedupeKey: string | undefined;
+    /** SDK acknowledgment can deduplicate; it does not prove these exact parts were inserted. */
     const recordSaveOutcome = (outcome: "acknowledged" | "rejected") => {
       if (!snapshot?.diagnostics) return;
       try {

@@ -2592,6 +2592,9 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
     await act(async () => {
+      await import("@/lib/chat/compaction/prune-tool-outputs");
+    });
+    await act(async () => {
       expect(
         await result.current.handleStop({ requireSavedResponse: true }),
       ).toBe(true);
@@ -2686,6 +2689,9 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
     await act(async () => {
+      await import("@/lib/chat/compaction/prune-tool-outputs");
+    });
+    await act(async () => {
       expect(
         await result.current.handleStop({ requireSavedResponse: true }),
       ).toBe(true);
@@ -2775,6 +2781,9 @@ describe("useChatHandlers steer todo handoff", () => {
           }),
         );
         await act(async () => {
+          await import("@/lib/chat/compaction/prune-tool-outputs");
+        });
+        await act(async () => {
           expect(
             await result.current.handleStop({ requireSavedResponse: true }),
           ).toBe(scenario !== "rejected");
@@ -2824,6 +2833,60 @@ describe("useChatHandlers steer todo handoff", () => {
           delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
         else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
       }
+    },
+  );
+
+  it.each([false, true])(
+    "never waits for a compactor chunk before Ask cancellation (preloaded=%s)",
+    async (preloaded) => {
+      mockChatMode = "ask";
+      const parts = Array.from({ length: 14 }, () => ({
+        type: "data-value",
+        data: Array(7900).fill(0),
+      })) as ChatMessage["parts"];
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: [
+            messages[0],
+            { id: "ask-large-stop", role: "assistant", parts },
+          ],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      if (preloaded)
+        await act(async () => {
+          await import("@/lib/chat/compaction/prune-tool-outputs");
+        });
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop({ requireSavedResponse: true });
+        expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+        expect(mockCancelStream).toHaveBeenCalledTimes(1);
+        expect(
+          mockSaveAssistantMessage.mock.invocationCallOrder[0],
+        ).toBeLessThan(mockCancelStream.mock.invocationCallOrder[0]);
+      });
+      await act(async () => {
+        expect(await stopped).toBe(true);
+      });
+      const outcomes = mockCaptureCancellationEvent.mock.calls
+        .map(
+          ([input]) =>
+            input as { event: string; properties: Record<string, unknown> },
+        )
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0].properties.preparation_outcome).toBe(
+        preloaded ? "compacted" : "unavailable",
+      );
     },
   );
 

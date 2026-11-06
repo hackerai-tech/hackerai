@@ -38,6 +38,7 @@ const STOP_SNAPSHOT_PROPERTIES = new Set([
   "frontend_build_commit",
 ]);
 
+/** Strip SDK-enriched private context from cancellation and Stop diagnostics. */
 export function sanitizeAgentCancellationEvent<
   T extends {
     event?: string;
