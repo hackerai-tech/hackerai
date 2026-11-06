@@ -200,3 +200,14 @@ it("opt-out fences late generation saves and saved restoration without consuming
   ctx.rows.user_customization.predictions_enabled = true;
   expect((await getForBackend.handler(ctx, args)).batch).toEqual(batch);
 });
+
+it("persists the semantic validation version across a save and restoration", async () => {
+  const ctx = context();
+  const verified = { ...batch, validationVersion: 2 };
+  await saveForBackend.handler(ctx, {
+    ...args,
+    finishedAt: 123,
+    batch: verified,
+  });
+  expect((await getForBackend.handler(ctx, args)).batch).toEqual(verified);
+});

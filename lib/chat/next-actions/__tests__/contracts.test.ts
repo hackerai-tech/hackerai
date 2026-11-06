@@ -1,6 +1,7 @@
 import {
   buildPredictionSources,
-  validateGroundedSuggestions,
+  parsePredictedNextAction,
+  hasExplicitPredictionStop,
 } from "../contracts";
 
 const message = (
@@ -160,38 +161,6 @@ test("shortens Unicode without broken surrogate pairs", () => {
   );
 });
 
-test("never treats omitted text or an omission boundary as supporting evidence", () => {
-  const sources = buildPredictionSources([
-    message(
-      "answer",
-      "Start of response. " +
-        "x".repeat(5000) +
-        "HIDDEN_MIDDLE_EVIDENCE" +
-        "y".repeat(5000) +
-        "Final conclusion needs a careful explanation.",
-    ),
-  ]);
-  const suggest = (evidenceQuote: string) => ({
-    text: "Explain the final conclusion.",
-    sourceMessageId: "answer",
-    evidenceQuote,
-  });
-  expect(sources[0].text).not.toContain("HIDDEN_MIDDLE_EVIDENCE");
-  const boundary = sources[0].text.indexOf("[... middle");
-  expect(
-    validateGroundedSuggestions(
-      {
-        suggestions: [
-          suggest("HIDDEN_MIDDLE_EVIDENCE"),
-          suggest(sources[0].text.slice(boundary - 8, boundary + 16)),
-          suggest("Final conclusion needs a careful explanation."),
-        ],
-      },
-      sources,
-    ),
-  ).toEqual(["Explain the final conclusion."]);
-});
-
 test("ignores empty, system, attachment, pending finding and malformed parts", () => {
   expect(
     buildPredictionSources([
@@ -219,174 +188,6 @@ test("ignores empty, system, attachment, pending finding and malformed parts", (
   ).toEqual([]);
 });
 
-test("rejects drafts that pretend the user supplied new evidence and keeps a usable alternative", () => {
-  const sources = [
-    {
-      id: "answer",
-      role: "assistant" as const,
-      text: "There is no browser execution evidence. The exact output context is still missing.",
-    },
-  ];
-  const item = (text: string) => ({
-    text,
-    sourceMessageId: "answer",
-    evidenceQuote: "The exact output context is still missing.",
-  });
-  expect(
-    validateGroundedSuggestions(
-      {
-        suggestions: [
-          item(
-            "Here is the exact output context; assess whether it is exploitable.",
-          ),
-          item("I've uploaded the missing evidence; verify it now."),
-          item(
-            "What specific evidence would distinguish reflection from confirmed execution?",
-          ),
-        ],
-      },
-      sources,
-    ),
-  ).toEqual([
-    "What specific evidence would distinguish reflection from confirmed execution?",
-  ]);
-  expect(
-    validateGroundedSuggestions(
-      { suggestions: [item("I have run the test and attached its output.")] },
-      sources,
-    ),
-  ).toEqual([]);
-});
-
-test("rejects composer commands while retaining ordinary path references", () => {
-  const sources = [
-    {
-      id: "answer",
-      role: "assistant" as const,
-      text: "The existing checklist still needs explanation.",
-    },
-  ];
-  const suggestion = (text: string) => ({
-    text,
-    sourceMessageId: "answer",
-    evidenceQuote: "existing checklist still needs explanation",
-  });
-  for (const text of [
-    "/goal pause",
-    "/clear",
-    "Explain the checklist /goal",
-    "Explain /GOAL the checklist",
-  ]) {
-    expect(
-      validateGroundedSuggestions({ suggestions: [suggestion(text)] }, sources),
-    ).toEqual([]);
-  }
-  const text = "Explain the checklist in /goal/notes.txt.";
-  expect(
-    validateGroundedSuggestions({ suggestions: [suggestion(text)] }, sources),
-  ).toEqual([text]);
-});
-
-test.each([
-  "I'm working within an authorized assessment.",
-  "I have permission; explain what to check next.",
-  "Explain stored XSS. I am authorized to test this site.",
-  "We own the target; prepare a verification plan.",
-  "I've already verified execution; draft the report.",
-  "My company owns this site; proceed with testing.",
-  "Tengo permiso para evaluar el sitio; continúa.",
-  "Explain the issue. My company owns this site.",
-  "What should I check next? Our client has authorized testing.",
-  "Tenemos permisos para evaluar el sitio.",
-  "Estoy autorizado para probar esto.",
-  "J'ai l'autorisation de tester ce site.",
-  "¿Tengo permiso para probar esto? Estoy autorizado para probar esto.",
-  "Est-ce que j’ai la permission de tester ? J'ai l'autorisation de tester ce site.",
-])("rejects factual user updates despite a valid topic quote: %s", (text) => {
-  const sources = [
-    {
-      id: "answer",
-      role: "assistant" as const,
-      text: "XSS can involve stored or reflected input. Are you working within an authorized assessment?",
-    },
-  ];
-  expect(
-    validateGroundedSuggestions(
-      {
-        suggestions: [
-          {
-            text,
-            sourceMessageId: "answer",
-            evidenceQuote: "Are you working within an authorized assessment?",
-          },
-        ],
-      },
-      sources,
-    ),
-  ).toEqual([]);
-});
-
-test("keeps conceptual questions and scope requests without inventing permission", () => {
-  const sources = [
-    {
-      id: "answer",
-      role: "assistant" as const,
-      text: "XSS can involve stored or reflected input. A local practice app is useful for learning.",
-    },
-  ];
-  const texts = [
-    "Explain how stored and reflected XSS differ.",
-    "What scope and permission would be needed before testing?",
-    "How can I use a local practice app to learn this?",
-  ];
-  expect(
-    validateGroundedSuggestions(
-      {
-        suggestions: texts.map((text) => ({
-          text,
-          sourceMessageId: "answer",
-          evidenceQuote: "XSS can involve stored or reflected input.",
-        })),
-      },
-      sources,
-    ),
-  ).toEqual(texts);
-});
-
-test.each([
-  "Can I have a conceptual example?",
-  "Could we have an offline checklist?",
-  "Do I have enough evidence to support a report?",
-  "If I have a local practice app, what should I check?",
-  "What if I'm not authorized yet?",
-  "Did we have enough evidence?",
-  "Will I have to get permission first?",
-  "Must we have written scope?",
-  "Can you tell me whether I have enough evidence to file a report?",
-  "¿Tengo permiso para probar esto?",
-  "Est-ce que j’ai la permission de tester ?",
-])("does not confuse a question with a factual update: %s", (text) => {
-  const source = {
-    id: "answer",
-    role: "assistant" as const,
-    text: "A conceptual example and offline checklist can distinguish observations from evidence.",
-  };
-  expect(
-    validateGroundedSuggestions(
-      {
-        suggestions: [
-          {
-            text,
-            sourceMessageId: "answer",
-            evidenceQuote: "distinguish observations from evidence",
-          },
-        ],
-      },
-      [source],
-    ),
-  ).toEqual([text]);
-});
-
 test("bounds history and excludes reasoning, tool inputs, and unrelated tool outputs", () => {
   const messages = Array.from({ length: 20 }, (_, i) => ({
     id: `m${i}`,
@@ -412,47 +213,92 @@ test("bounds history and excludes reasoning, tool inputs, and unrelated tool out
   );
 });
 
-test("preserves existing finding output as grounding and rejects invented support, links and duplicates", () => {
-  const sources = buildPredictionSources([
-    {
-      id: "answer",
-      role: "assistant",
-      parts: [
-        {
-          type: "text",
-          text: "The synthetic finding lacks evidence of impact.",
-        },
-        {
-          type: "tool-create_vulnerability_report",
-          state: "output-available",
-          output: { finding_id: "existing-finding", success: true },
-        },
-      ],
-    },
-  ]);
-  expect(sources[0].text).toContain("existing-finding");
-  const supported = {
-    text: "Explain what evidence of impact is missing.",
-    sourceMessageId: "answer",
-    evidenceQuote: "lacks evidence of impact",
-  };
+test.each([
+  "I have written permission; the approved scope is the training portal.",
+  "Yes, use the shorter version.",
+  "I’ll paste the redacted text next.",
+  "Prefiero un ejemplo en español.",
+])(
+  "keeps an editable direct reply rather than requiring another question: %s",
+  (text) => {
+    expect(
+      parsePredictedNextAction({
+        suggestion: text,
+      }),
+    ).toEqual([text]);
+  },
+);
+
+test.each([
+  null,
+  {},
+  { suggestion: null },
+  { suggestion: "" },
+  { suggestion: "  " },
+  { suggestion: 3 },
+  { suggestion: ["one", "two"] },
+  { suggestion: "ok", extra: true },
+  { suggestion: "x".repeat(241) },
+  { suggestion: "one\ntwo" },
+  { suggestion: "one\ttwo" },
+  { suggestion: "one\u2028two" },
+  { suggestion: "/goal inspect" },
+  { suggestion: "/approve" },
+  { suggestion: "Please /goal inspect" },
+])("rejects malformed or composer-control predictions: %p", (output) => {
+  expect(parsePredictedNextAction(output)).toEqual([]);
+});
+
+test("trims a single bounded prediction and preserves ordinary paths", () => {
   expect(
-    validateGroundedSuggestions(
-      { suggestions: [supported, supported] },
-      sources,
-    ),
-  ).toEqual([supported.text]);
+    parsePredictedNextAction({
+      suggestion: "  Explain /goal/notes.txt  ",
+    }),
+  ).toEqual(["Explain /goal/notes.txt"]);
   expect(
-    validateGroundedSuggestions(
+    parsePredictedNextAction({
+      suggestion: "x".repeat(240),
+    }),
+  ).toEqual(["x".repeat(240)]);
+});
+
+test.each([
+  "Only define the term, then stop.",
+  "Cancel the review. Do not continue.",
+  "Thanks. No more suggestions.",
+  "Explain it without any follow-ups.",
+])("suppresses a prediction after a clear conversational stop: %s", (text) => {
+  expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
+    true,
+  );
+});
+
+test("a request about stopping a process is not a conversational stop", () => {
+  expect(
+    hasExplicitPredictionStop([
+      { id: "u", role: "user", text: "Explain how to stop a local service." },
+    ]),
+  ).toBe(false);
+  expect(
+    hasExplicitPredictionStop([
+      { id: "u", role: "user", text: "Which stop signal should I send?" },
+    ]),
+  ).toBe(false);
+});
+
+test("finishing one step while asking for another is not a conversational stop", () => {
+  expect(
+    hasExplicitPredictionStop([
       {
-        suggestions: [
-          { ...supported, sourceMessageId: "invented" },
-          { ...supported, evidenceQuote: "a fully confirmed exploitable bug" },
-          { ...supported, text: "Open https://invented.example/report" },
-        ],
+        id: "u",
+        role: "user",
+        text: "I'm done with setup. Explain the next step.",
       },
-      sources,
-    ),
-  ).toEqual([]);
-  expect(validateGroundedSuggestions({ suggestions: [] }, sources)).toEqual([]);
+    ]),
+  ).toBe(false);
+  expect(
+    hasExplicitPredictionStop([
+      { id: "u", role: "user", text: "Thanks, I'm done." },
+    ]),
+  ).toBe(true);
 });
