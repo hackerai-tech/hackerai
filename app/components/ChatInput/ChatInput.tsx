@@ -260,6 +260,7 @@ export const ChatInput = (props: ChatInputProps) => {
         !!props.hasActiveGoalRun ||
         props.status === "submitted" ||
         props.status === "streaming" ||
+        !!props.pendingUserWait ||
         !!activeToolApprovalRequest ||
         !!props.storedApprovalRequest ||
         !!editingQueuedMessageId

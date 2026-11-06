@@ -2125,6 +2125,45 @@ describe("ChatInput - Integration Tests", () => {
         screen.queryByTestId("regional-subscription-offer"),
       ).not.toBeInTheDocument();
     });
+
+    it("keeps a persisted Agent reply available to a free account after reload", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = { subscription: "free", isCheckingProPlan: false };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      render(
+        <TestWrapper>
+          <AgentModeSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            chatId="waiting-chat"
+            hasMessages
+            pendingUserWait={{
+              runId: "run-1",
+              toolCallId: "tool-1",
+              status: "waiting",
+            }}
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        await screen.findByTestId("waiting-for-reply-banner"),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Stop agent instead of replying" }),
+      ).toBeVisible();
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("Submit Behavior Integration", () => {
