@@ -583,14 +583,19 @@ describe("HybridSandboxManager browser automation prompt", () => {
     warnSpy.mockRestore();
   });
 
-  it.each(["win32", "mingw64_nt-10.0-22631"])(
-    "uses Windows paths and browser probe for %s local contexts",
-    async (platform) => {
+  it.each([
+    ["win32", true],
+    ["win32", false],
+    ["mingw64_nt-10.0-22631", true],
+    ["mingw64_nt-10.0-22631", false],
+  ] as const)(
+    "uses Windows paths and shell guidance for %s (desktop=%s)",
+    async (platform, isDesktop) => {
       mockConvexQuery.mockResolvedValue([
         makeConnection({
           connectionId: "desktop-conn",
           name: "Desktop",
-          isDesktop: true,
+          isDesktop,
           capabilities: { commands: true, files: true },
           osInfo: {
             platform,
@@ -604,7 +609,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
       const manager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
-        "desktop",
+        isDesktop ? "desktop" : "desktop-conn",
         "service-key",
         null,
         "pro",
@@ -619,6 +624,12 @@ describe("HybridSandboxManager browser automation prompt", () => {
       expect(context).not.toContain("command -v agent-browser");
       expect(context).toContain("- OS: Windows");
       expect(context).toContain("C:\\temp\\hackerai-upload");
+      // The Windows launcher can choose Git Bash even though osInfo says win32.
+      // Omitting this distinction makes Agent choose syntax from the OS alone.
+      expect(context).toContain(
+        "Git Bash when available, otherwise cmd.exe /C",
+      );
+      expect(context).toContain("echo $BASH_VERSION");
     },
   );
 

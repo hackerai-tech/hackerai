@@ -1,5 +1,6 @@
 import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import { ChatSDKError } from "@/lib/errors";
 import {
@@ -1113,6 +1114,7 @@ System Environment:
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
 - Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
+${platform === "win32" ? `- Shell: ${WINDOWS_COMMAND_SHELL_GUIDANCE}` : ""}
 ${this.workingDirectory ? `- Active project folder: ${serializePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:

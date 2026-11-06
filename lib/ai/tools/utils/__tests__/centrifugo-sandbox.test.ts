@@ -6166,6 +6166,10 @@ describe("CentrifugoSandbox", () => {
         "where agent-browser && agent-browser --version",
       );
       expect(context).not.toContain("command -v agent-browser");
+      expect(context).toContain(
+        "Git Bash when available, otherwise cmd.exe /C",
+      );
+      expect(context).not.toContain("Commands are invoked via cmd.exe /C");
     });
 
     it("safely serializes project folders before adding them to the prompt", () => {
