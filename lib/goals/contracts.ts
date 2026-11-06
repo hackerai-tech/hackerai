@@ -1,3 +1,5 @@
+import type { UserInputQuestion } from "../chat/user-input-questions";
+
 export const GOAL_FLAG = "persistent-agent-goals";
 const GOAL_MAX_EVIDENCE = 64;
 export const GOAL_STATES = [
@@ -54,6 +56,7 @@ export function mergeGoalEvidence<
 }
 
 export type GoalCheckpoint = {
+  questions?: UserInputQuestion[];
   outcome: "continue" | "achieved" | "needs_input" | "blocked" | "wait";
   progress: string;
   evidence: GoalEvidence[];
@@ -66,6 +69,7 @@ export type GoalContract = {
   stopWhen?: string;
 };
 export type GoalJudgment = {
+  questions?: UserInputQuestion[];
   verdict: "done" | "continue" | "needs_input" | "blocked" | "wait";
   reason: string;
   // Optional for compatibility with workers deployed before automatic evaluation.

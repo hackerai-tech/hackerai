@@ -1,3 +1,4 @@
+import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { nextActionsStateValidator } from "./lib/nextActionsState";
 import {
   settlementIdentityFields,
@@ -304,6 +305,7 @@ export default defineSchema({
     ),
     active_agent_user_wait: v.optional(
       v.object({
+        questions: v.optional(userInputQuestionsValidator),
         runId: v.string(),
         toolCallId: v.string(),
         tokenId: v.string(),

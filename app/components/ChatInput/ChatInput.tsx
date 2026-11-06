@@ -1,5 +1,12 @@
 "use client";
 
+import {
+  userInputQuestionsSchema,
+  type UserInputQuestion,
+} from "@/lib/chat/user-input-questions";
+import { useQuestionAnswers } from "./useQuestionAnswers";
+import { UserInputQuestionPanel } from "./UserInputQuestionPanel";
+
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
@@ -83,6 +90,7 @@ interface ChatInputProps {
   onSubmit: (
     e: React.FormEvent,
     inputOverride?: string,
+    structuredReply?: boolean,
   ) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
@@ -101,6 +109,7 @@ interface ChatInputProps {
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
   pendingUserWait?: ActiveAgentUserWait | null;
+  pendingGoalQuestions?: { generation: number; questions: UserInputQuestion[] };
   offlineProtection?: boolean;
   sendDisabledReason?: string;
   isResolvingInitialState?: boolean;
@@ -298,6 +307,7 @@ const ChatInputContent = ({
   restoreDraftAttachments = true,
   storedApprovalRequest,
   pendingUserWait,
+  pendingGoalQuestions,
   offlineProtection = true,
   sendDisabledReason,
   isResolvingInitialState = false,
@@ -390,7 +400,21 @@ const ChatInputContent = ({
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
   const isWaitingForReply =
-    !!user && !!pendingUserWait && !showAgentApprovalPrompt;
+    !!user &&
+    (!!pendingUserWait || !!pendingGoalQuestions) &&
+    !showAgentApprovalPrompt;
+  const questionSource =
+    pendingUserWait?.questions ?? pendingGoalQuestions?.questions;
+  const questions = useMemo(() => {
+    const parsed = userInputQuestionsSchema.safeParse(questionSource);
+    return parsed.success ? parsed.data : [];
+  }, [questionSource]);
+  const questionKey =
+    isWaitingForReply && questions.length && user
+      ? `hackerai-question:${user.id}:${chatId}:${pendingUserWait ? `${pendingUserWait.runId}:${pendingUserWait.toolCallId}` : `goal:${pendingGoalQuestions!.generation}`}`
+      : undefined;
+  const questionAnswers = useQuestionAnswers(questionKey, questions);
+  const hasQuestionPanel = !!questionKey;
   const exposedUserWaitsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!isWaitingForReply || !pendingUserWait) return;
@@ -1063,6 +1087,37 @@ const ChatInputContent = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
+    if (hasQuestionPanel) {
+      if (
+        !questionAnswers.ready ||
+        !questionAnswers.canAdvance ||
+        isOffline ||
+        effectiveSendDisabledReason ||
+        uploadedFiles.length ||
+        submissionPending ||
+        pendingUserWait?.status === "submitting"
+      )
+        return;
+      if (questionAnswers.index < questions.length - 1) {
+        questionAnswers.go(questionAnswers.index + 1);
+        return;
+      }
+      if (!questionAnswers.text) return;
+      isSubmittingRef.current = true;
+      setSubmissionPending(true);
+      try {
+        const accepted = await onSubmit(e, questionAnswers.text, true);
+        if (accepted !== false) questionAnswers.clear();
+      } catch {
+        toast.error(
+          "Could not send your answer. Your choices are saved; try again.",
+        );
+      } finally {
+        isSubmittingRef.current = false;
+        if (isMountedRef.current) setSubmissionPending(false);
+      }
+      return;
+    }
     const isGoalSubmission = goalMode && !isWaitingForReply;
     if (showGoalSuggestion) {
       selectGoal();
@@ -1324,14 +1379,46 @@ const ChatInputContent = ({
                 />
               )}
 
-              {isWaitingForReply && (
-                <WaitingForReplyBanner
-                  submitting={pendingUserWait?.status === "submitting"}
+              {hasQuestionPanel && questionAnswers.question ? (
+                <UserInputQuestionPanel
+                  key={`${questionKey}:${questionAnswers.question.id}`}
+                  question={questionAnswers.question}
+                  answer={questionAnswers.answer}
+                  index={questionAnswers.index}
+                  total={questions.length}
+                  disabled={
+                    !questionAnswers.ready ||
+                    submissionPending ||
+                    isStoppingAgent ||
+                    pendingUserWait?.status === "submitting" ||
+                    isOffline ||
+                    !!effectiveSendDisabledReason
+                  }
+                  canAdvance={questionAnswers.canAdvance}
                   stopping={isStoppingAgent}
-                  hasAttachments={uploadedFiles.length > 0}
-                  hideStop={hideStop}
-                  onStop={() => void handleAgentStop()}
+                  onSelect={questionAnswers.select}
+                  onAdvance={() =>
+                    void handleSubmit({
+                      preventDefault() {},
+                    } as React.FormEvent)
+                  }
+                  onBack={() => questionAnswers.go(questionAnswers.index - 1)}
+                  onStop={
+                    pendingUserWait && !hideStop
+                      ? () => void handleAgentStop()
+                      : undefined
+                  }
                 />
+              ) : (
+                isWaitingForReply && (
+                  <WaitingForReplyBanner
+                    submitting={pendingUserWait?.status === "submitting"}
+                    stopping={isStoppingAgent}
+                    hasAttachments={uploadedFiles.length > 0}
+                    hideStop={hideStop}
+                    onStop={() => void handleAgentStop()}
+                  />
+                )
               )}
             </div>
           )}
@@ -1423,6 +1510,21 @@ const ChatInputContent = ({
             }}
           >
             <ChatInputTextarea
+              answerInput={
+                hasQuestionPanel
+                  ? {
+                      value: questionAnswers.answer.customAnswer,
+                      onChange: questionAnswers.setCustomAnswer,
+                    }
+                  : undefined
+              }
+              disabled={
+                hasQuestionPanel &&
+                (!questionAnswers.ready ||
+                  questionAnswers.question?.allowCustomAnswer === false ||
+                  submissionPending ||
+                  pendingUserWait?.status === "submitting")
+              }
               prediction={nextActions.batch?.suggestions[0]}
               onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
               onPredictionExposed={nextActions.exposed}
@@ -1435,14 +1537,20 @@ const ChatInputContent = ({
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
               placeholder={
-                isWaitingForReply
-                  ? "Reply to continue the Agent…"
-                  : goalMode
-                    ? "Describe your goal, define measurable outcomes for best results"
-                    : placeholder
+                hasQuestionPanel
+                  ? questionAnswers.question?.allowCustomAnswer === false
+                    ? "Choose an option above"
+                    : "Type your own answer, or leave blank to use the selected option"
+                  : isWaitingForReply
+                    ? "Reply to continue the Agent…"
+                    : goalMode
+                      ? "Describe your goal, define measurable outcomes for best results"
+                      : placeholder
               }
               describedBy={
-                isWaitingForReply ? WAITING_FOR_REPLY_DESCRIPTION_ID : undefined
+                isWaitingForReply && !hasQuestionPanel
+                  ? WAITING_FOR_REPLY_DESCRIPTION_ID
+                  : undefined
               }
               isReplyingToAgent={isWaitingForReply}
               onCommandKeyDown={(e) => {
@@ -1517,14 +1625,23 @@ const ChatInputContent = ({
               onSubmit={handleSubmit}
               status={status}
               isUploadingFiles={isUploadingFiles}
-              input={input}
+              input={
+                hasQuestionPanel
+                  ? questionAnswers.canAdvance
+                    ? "answer"
+                    : ""
+                  : input
+              }
               uploadedFiles={uploadedFiles}
               chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={
-                goalMode && !isWaitingForReply && !input.trim()
-                  ? "Describe your goal before sending."
-                  : effectiveSendDisabledReason
+                hasQuestionPanel &&
+                (submissionPending || pendingUserWait?.status === "submitting")
+                  ? "Sending your answer…"
+                  : goalMode && !isWaitingForReply && !input.trim()
+                    ? "Describe your goal before sending."
+                    : effectiveSendDisabledReason
               }
             />
           </div>

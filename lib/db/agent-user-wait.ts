@@ -3,6 +3,8 @@ import "server-only";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "./convex-client";
 
+import type { UserInputQuestion } from "../chat/user-input-questions";
+
 type WaitIdentity = {
   chatId: string;
   userId: string;
@@ -17,7 +19,7 @@ const serviceKey = () => {
 };
 
 export const setActiveAgentUserWait = (
-  input: WaitIdentity & { tokenId?: string },
+  input: WaitIdentity & { tokenId?: string; questions?: UserInputQuestion[] },
 ) =>
   getConvexClient().mutation(api.chats.setActiveAgentUserWait, {
     serviceKey: serviceKey(),

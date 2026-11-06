@@ -1853,6 +1853,86 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
     });
 
+    it.each(["wait", "goal"])(
+      "submits question choices and a custom composer answer for %s, preserving them after failure",
+      async (kind) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        mockOnSubmit.mockResolvedValue(false);
+        const questions = [
+          {
+            id: "scope",
+            header: "Scope",
+            question: "Choose scopes",
+            multiSelect: true,
+            options: [
+              { value: "a", label: "Alpha" },
+              { value: "b", label: "Beta" },
+            ],
+          },
+          {
+            id: "format",
+            header: "Format",
+            question: "Which format?",
+            options: [],
+          },
+        ];
+        render(
+          <TestWrapper>
+            <ChatInput
+              chatId="questions-chat"
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              onSendNow={jest.fn()}
+              status="ready"
+              {...(kind === "wait"
+                ? {
+                    pendingUserWait: {
+                      runId: "run-question",
+                      toolCallId: "tool-question",
+                      status: "waiting" as const,
+                      questions,
+                    },
+                  }
+                : { pendingGoalQuestions: { generation: 4, questions } })}
+            />
+          </TestWrapper>,
+        );
+        const alpha = await screen.findByRole("button", { name: /Alpha/ });
+        await waitFor(() => expect(alpha).toBeEnabled());
+        fireEvent.click(alpha);
+        fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
+        fireEvent.click(
+          screen.getByRole("button", { name: "Next", exact: true }),
+        );
+        const input = screen.getByRole("textbox");
+        fireEvent.change(input, { target: { value: "/goal literal answer" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() =>
+          expect(mockOnSubmit).toHaveBeenCalledWith(
+            expect.anything(),
+            "Choose scopes\nAlpha, Beta\n\nWhich format?\n/goal literal answer",
+            true,
+          ),
+        );
+        expect(input).toHaveValue("/goal literal answer");
+        fireEvent.click(
+          screen.getByRole("button", { name: "Back", exact: true }),
+        );
+        expect(screen.getByRole("button", { name: /Alpha/ })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        expect(screen.getByRole("button", { name: /Beta/ })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+      },
+    );
+
     it("replaces the composer with an approval selector while awaiting approval", async () => {
       render(
         <TestWrapper>

@@ -2411,6 +2411,38 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
   });
+  it("treats a structured Goal answer as literal text even when it resembles a command", async () => {
+    mockInput = "";
+    mockAgentPermissionMode = "ask_approval";
+    mockMessageQueue = [];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+    } as Response);
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit(
+          { preventDefault: jest.fn() } as any,
+          "/goal clear",
+          true,
+        ),
+      ).toBe(true);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "/goal clear" }),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: {
+            action: "resume",
+            expectedGeneration: 4,
+            resumeOnReply: true,
+          },
+        }),
+      }),
+    );
+  });
+
   it.each(["needs_input", "blocked"])(
     "resumes a %s goal with the user's actual reply and original permissions",
     async (state) => {

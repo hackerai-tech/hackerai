@@ -1,3 +1,4 @@
+import { userInputQuestionsValidator } from "./userInputQuestions";
 import { v } from "convex/values";
 export const goalState = v.union(
   v.literal("queued"),
@@ -21,6 +22,7 @@ export const goalEvidence = v.object({
   explanation: v.string(),
 });
 export const goalCheckpoint = v.object({
+  questions: v.optional(userInputQuestionsValidator),
   outcome: v.union(
     v.literal("continue"),
     v.literal("achieved"),
@@ -39,6 +41,7 @@ export const goalContractFields = {
   stopWhen: v.optional(v.string()),
 };
 export const goalJudgment = v.object({
+  questions: v.optional(userInputQuestionsValidator),
   verdict: v.union(
     v.literal("done"),
     v.literal("needs_input"),

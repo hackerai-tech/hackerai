@@ -28,6 +28,7 @@ import { recordComposerChange } from "@/lib/posthog/composer-change-diagnostics"
 import { MAX_AGENT_USER_REPLY_LENGTH } from "@/lib/chat/agent-user-wait";
 
 export interface ChatInputTextareaProps {
+  answerInput?: { value: string; onChange: (value: string) => void };
   prediction?: string;
   onAcceptPrediction?: () => boolean;
   onPredictionExposed?: () => void;
@@ -51,6 +52,7 @@ export interface ChatInputTextareaProps {
 }
 
 export function ChatInputTextarea({
+  answerInput,
   prediction,
   onAcceptPrediction,
   onPredictionExposed,
@@ -73,7 +75,9 @@ export function ChatInputTextarea({
   onBlur,
 }: ChatInputTextareaProps) {
   const predictionDescriptionId = useId();
-  const input = useComposerInput();
+  const hasAnswerInput = !!answerInput;
+  const composerInput = useComposerInput();
+  const input = answerInput?.value ?? composerInput;
   const { setInput, getInput } = useComposerActions();
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
@@ -133,6 +137,7 @@ export function ChatInputTextarea({
 
   // Load draft when draftId changes (chat switch or mount)
   useLayoutEffect(() => {
+    if (hasAnswerInput) return;
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
@@ -147,14 +152,14 @@ export function ChatInputTextarea({
 
     const content = getDraftContentById(draftId);
     setInput(content || "");
-  }, [draftId, setInput]);
+  }, [draftId, setInput, hasAnswerInput]);
 
   // Save each committed edit so navigation or pagehide cannot cancel the
   // latest draft. Accepted submissions still clear it through setInput("").
   useEffect(() => {
     // Restoring a draft updates the provider in a layout effect. Ignore the
     // preceding render's value instead of overwriting that restored draft.
-    if (input !== getInput()) return;
+    if (answerInput || input !== getInput()) return;
     if (input.trim()) {
       upsertDraft(draftId, input);
     } else if (
@@ -165,7 +170,7 @@ export function ChatInputTextarea({
     } else {
       removeDraft(draftId);
     }
-  }, [input, draftId, getInput]);
+  }, [input, draftId, getInput, answerInput]);
 
   // Handle paste events for file uploads and token validation
   useEffect(() => {
@@ -185,7 +190,7 @@ export function ChatInputTextarea({
         const pastedText = clipboardData?.getData("text") ?? "";
         const textarea = textareaRef.current;
         const nextLength =
-          getInput().length -
+          inputRef.current.length -
           ((textarea?.selectionEnd ?? 0) - (textarea?.selectionStart ?? 0)) +
           pastedText.length;
         if (nextLength > MAX_AGENT_USER_REPLY_LENGTH) {
@@ -283,7 +288,8 @@ export function ChatInputTextarea({
             // Record before setInput: React can throw synchronously in the setter.
             recordComposerChange(e.nativeEvent);
             if (e.target.value !== "") onPredictionTyping?.();
-            setInput(e.target.value);
+            if (answerInput) answerInput.onChange(e.target.value);
+            else setInput(e.target.value);
           }}
           aria-label={defaultPlaceholder}
           aria-describedby={

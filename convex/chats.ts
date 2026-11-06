@@ -1,3 +1,5 @@
+import { userInputQuestionsValidator } from "./lib/userInputQuestions";
+import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
@@ -40,6 +42,7 @@ const DELETE_CHAT_SUBAGENT_BATCH_SIZE = 10;
 const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
 const activeAgentUserWaitValidator = v.object({
+  questions: v.optional(userInputQuestionsValidator),
   runId: v.string(),
   toolCallId: v.string(),
   tokenId: v.string(),
@@ -48,6 +51,7 @@ const activeAgentUserWaitValidator = v.object({
   replyHash: v.optional(v.string()),
 });
 const clientAgentUserWaitValidator = v.object({
+  questions: v.optional(userInputQuestionsValidator),
   runId: v.string(),
   toolCallId: v.string(),
   status: v.union(v.literal("waiting"), v.literal("submitting")),
@@ -633,6 +637,9 @@ export const getChatByIdFromClient = query({
                 runId: activeUserWait.runId,
                 toolCallId: activeUserWait.toolCallId,
                 status: activeUserWait.status,
+                ...(activeUserWait.questions
+                  ? { questions: activeUserWait.questions }
+                  : {}),
               },
             }
           : {}),
@@ -1945,6 +1952,7 @@ export const setActiveAgentUserWait = mutation({
     runId: v.string(),
     toolCallId: v.string(),
     tokenId: v.optional(v.string()),
+    questions: v.optional(userInputQuestionsValidator),
   },
   returns: v.union(
     v.literal("acquired"),
@@ -1968,6 +1976,10 @@ export const setActiveAgentUserWait = mutation({
     }
     const active = chat.active_agent_user_wait;
     if (args.tokenId) {
+      const questions =
+        args.questions === undefined
+          ? undefined
+          : userInputQuestionsSchema.parse(args.questions);
       if (active) {
         return active.toolCallId === args.toolCallId &&
           active.tokenId === args.tokenId
@@ -1979,6 +1991,7 @@ export const setActiveAgentUserWait = mutation({
           runId: args.runId,
           toolCallId: args.toolCallId,
           tokenId: args.tokenId,
+          ...(questions ? { questions } : {}),
           status: "waiting" as const,
         },
       });

@@ -2,6 +2,8 @@ import { wait } from "@trigger.dev/sdk";
 import { tool } from "ai";
 import { z } from "zod";
 
+import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
+
 import type { ToolContext } from "@/types";
 import { setActiveAgentUserWait } from "@/lib/db/agent-user-wait";
 import { phLogger } from "@/lib/posthog/server";
@@ -27,9 +29,9 @@ export const createWaitForUserTool = (
 ) =>
   tool({
     description:
-      "Pause this interactive Agent run until the user replies in this chat. Write the question or decision you need as ordinary assistant text first, then call this tool with no arguments. Use it only when you cannot make useful progress without the user's answer. The current run resumes with that reply in the tool result. Do not use it to narrate progress, wait for delegated agents, or end a finished task. The reply may arrive after some time; never repeat the question in the tool call.",
-    inputSchema: z.object({}),
-    execute: async (_input, execution) => {
+      "Pause this interactive Agent run until the user replies in this chat. Provide questions to show an interactive question panel. Give each question a stable unique id, short header, question text, and options with unique values and concise labels/descriptions. Use multiSelect for multiple choices; custom answers are allowed unless allowCustomAnswer is false. Use an empty options array for free-text questions. For a simple prose-only question, write it as assistant text and omit questions. Use it only when you cannot make useful progress without the user's answer. The current run resumes with that reply in the tool result. Do not use it to narrate progress, wait for delegated agents, or end a finished task. The reply may arrive after some time; Do not repeat a structured question in ordinary assistant text.",
+    inputSchema: z.object({ questions: userInputQuestionsSchema.optional() }),
+    execute: async (input, execution) => {
       const runId = context.triggerRunId;
       if (!runId) {
         return {
@@ -52,6 +54,7 @@ export const createWaitForUserTool = (
       const acquired = await setActiveAgentUserWait({
         ...identity,
         tokenId: token.id,
+        ...(input.questions ? { questions: input.questions } : {}),
       });
       if (acquired !== "acquired") {
         return {

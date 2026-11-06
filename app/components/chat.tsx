@@ -3038,6 +3038,23 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
                     pendingUserWait={pendingUserWait}
+                    pendingGoalQuestions={
+                      !pendingUserWait && persistedGoal?.state === "needs_input"
+                        ? {
+                            generation: persistedGoal.generation,
+                            questions: persistedGoal.judgment?.questions ?? [
+                              {
+                                id: "reply",
+                                header: "Your input",
+                                question:
+                                  persistedGoal.reason ||
+                                  "What should the Agent do next?",
+                                options: [],
+                              },
+                            ],
+                          }
+                        : undefined
+                    }
                   />
                 </ComposerOverlay>
               ) : null}

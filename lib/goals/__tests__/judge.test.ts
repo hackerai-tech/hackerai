@@ -71,6 +71,58 @@ describe("independent goal completion check", () => {
     jest.resetAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
   });
+  it("returns structured questions only for a pending user decision", async () => {
+    const questions = [
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Alpha or Beta?",
+        options: [
+          { label: "Alpha", value: "a" },
+          { label: "Beta", value: "b" },
+        ],
+      },
+    ];
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Choose scope",
+        evidence: [],
+        questions,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          id: "r1",
+          role: "assistant",
+          parts: [{ type: "text", text: "Alpha or Beta?" }],
+        },
+      ],
+      "r1",
+      jest.fn(),
+    );
+    expect(result).toMatchObject({ verdict: "needs_input", questions });
+    generate.mockResolvedValue({
+      output: {
+        verdict: "continue",
+        reason: "Work remains",
+        evidence: [],
+        questions,
+      },
+      usage: {},
+    });
+    const continued = await judgeGoalCompletion(
+      goal,
+      messages,
+      "r1",
+      jest.fn(),
+    );
+    expect(continued).not.toHaveProperty("questions");
+  });
+
   it.each(["continue", "uncited_done"])(
     "rechecks %s against the completed updated goal before dispatching more work",
     async (firstVerdict) => {

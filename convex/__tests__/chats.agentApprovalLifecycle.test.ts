@@ -267,6 +267,42 @@ describe("Agent approval lifecycle guards", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("persists structured questions with their current wait identity", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    });
+    const questions = [
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Choose a scope",
+        options: [{ label: "Alpha", value: "a" }],
+      },
+    ];
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        questions,
+      }),
+    ).resolves.toBe("acquired");
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+        questions,
+      },
+    });
+  });
+
   it("accepts only one reply to a current user wait", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc-1",

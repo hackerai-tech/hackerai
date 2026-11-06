@@ -626,6 +626,7 @@ export const useChatHandlers = ({
   const handleSubmit = async (
     e: React.FormEvent,
     inputOverride?: string,
+    structuredReply = false,
   ): Promise<boolean> => {
     e.preventDefault();
     if (sendDisabledReasonRef.current) return false;
@@ -641,7 +642,7 @@ export const useChatHandlers = ({
     let goalCommand;
     let resumeMessage: string | undefined;
     let goalSettings: Record<string, unknown> = {};
-    if (!pendingUserWait) {
+    if (!pendingUserWait && !structuredReply) {
       try {
         goalCommand = parseGoalCommand(input);
       } catch (error) {
