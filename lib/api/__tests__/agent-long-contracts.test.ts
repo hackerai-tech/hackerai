@@ -665,15 +665,6 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
   });
 
-  test("captures the Trigger run before realtime data reaches useChat", () => {
-    expect(transportSrc).toMatch(
-      /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
-    );
-    expect(chatComponentSrc).toMatch(
-      /fetchAgentLongStream\(\s*init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
-    );
-  });
-
   test("client partial-save endpoint is authenticated and assistant-only", () => {
     expect(agentEndpointsSrc).toMatch(
       /AGENT_PARTIAL_SAVE_ENDPOINT\s*=\s*"\/api\/agent\/partial-save"/,

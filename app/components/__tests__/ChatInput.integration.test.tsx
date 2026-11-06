@@ -24,10 +24,12 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
+  upsertDraft,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 const mockGoalCapture = jest.fn<
   (event: string, properties: Record<string, unknown>) => boolean
 >(() => true);
@@ -1857,12 +1859,17 @@ describe("ChatInput - Integration Tests", () => {
       "submits question choices and a custom composer answer for %s, preserving them after failure",
       async (kind) => {
         const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+        const infoToast = jest.spyOn(toast, "info").mockReturnValue(0);
         mockSandboxState = {
           chatMode: "agent",
           subscription: "pro",
           isCheckingProPlan: false,
         };
-        mockOnSubmit.mockResolvedValue(false);
+        if (kind === "goal")
+          mockOnSubmit.mockRejectedValue(
+            new GoalSubmissionUnconfirmedError(true, "questions-chat"),
+          );
+        else mockOnSubmit.mockResolvedValue(false);
         const questions = [
           {
             id: "scope",
@@ -1931,6 +1938,15 @@ describe("ChatInput - Integration Tests", () => {
           ),
         );
         expect(input).toHaveValue("/goal literal answer");
+        if (kind === "goal") {
+          expect(infoToast).toHaveBeenCalledWith(
+            expect.stringContaining("Check its chat before sending again"),
+            expect.objectContaining({
+              action: expect.objectContaining({ label: "Check chat" }),
+            }),
+          );
+          expect(errorToast).toHaveBeenCalledTimes(1);
+        }
         fireEvent.click(
           screen.getByRole("button", { name: "Back", exact: true }),
         );
@@ -1957,6 +1973,7 @@ describe("ChatInput - Integration Tests", () => {
           ],
         ]);
         errorToast.mockRestore();
+        infoToast.mockRestore();
       },
     );
 
@@ -3728,12 +3745,112 @@ describe("ChatInput - Integration Tests", () => {
     ).not.toBeInTheDocument();
   });
 
+  it.each([false, true])(
+    "cleans only the unchanged admitted draft after leaving the composer (newerDraft=%s)",
+    async (newerDraft) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "departing-goal",
+              content: "Original goal",
+              goalMode: true,
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      let accept!: (value: boolean) => void;
+      mockOnSubmit.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            accept = resolve;
+          }),
+      );
+      const view = render(
+        <TestWrapper>
+          <ChatInput
+            chatId="departing-goal"
+            onSubmit={mockOnSubmit}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled(),
+      );
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+      view.unmount();
+      if (newerDraft) upsertDraft("departing-goal", "Newer goal draft");
+      await act(async () => {
+        accept(true);
+      });
+      expect(getDraftContentById("departing-goal")).toBe(
+        newerDraft ? "Newer goal draft" : null,
+      );
+    },
+  );
+
+  it("clears an admitted prompt when navigation replaced an empty attachment list", async () => {
+    let accept!: (value: boolean) => void;
+    mockOnSubmit.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    render(
+      <TestWrapper>
+        <UploadedFilesSetter files={[]} label="Reset empty attachments" />
+        <ChatInput
+          chatId="empty-files-goal"
+          onSubmit={mockOnSubmit}
+          status="ready"
+        />
+      </TestWrapper>,
+    );
+    const input = await screen.findByRole("textbox");
+    fireEvent.change(input, { target: { value: "Accepted prompt" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reset empty attachments" }),
+    );
+    await act(async () => {
+      accept(true);
+    });
+    expect(input).toHaveValue("");
+  });
+
   describe("goal composer analytics", () => {
     afterEach(() => jest.restoreAllMocks());
 
-    it.each(["accepted", "refused", "error"] as const)(
+    it.each([
+      "accepted",
+      "refused",
+      "error",
+      "unconfirmed",
+      "canceled",
+      "unmounted",
+    ] as const)(
       "records %s separately without leaking the objective",
       async (outcome) => {
+        jest.spyOn(toast, "info").mockReturnValue(0);
+        jest.spyOn(toast, "error").mockReturnValue(0);
         const capture = mockGoalCapture;
         jest.mocked(useAuth).mockReturnValue({
           user: { id: "goal-analytics-user" },
@@ -3748,10 +3865,26 @@ describe("ChatInput - Integration Tests", () => {
           ok: true,
           json: async () => ({ enabled: true }),
         });
-        if (outcome === "error")
+        if (outcome === "unconfirmed")
+          mockOnSubmit.mockRejectedValue(
+            new GoalSubmissionUnconfirmedError(true),
+          );
+        else if (outcome === "canceled")
+          mockOnSubmit.mockRejectedValue(
+            new DOMException("Stopped", "AbortError"),
+          );
+        else if (outcome === "error")
           mockOnSubmit.mockRejectedValue(new Error("PRIVATE_ERROR_TEXT"));
         else mockOnSubmit.mockResolvedValue(outcome === "accepted");
-        render(
+        let rejectLate!: (error: Error) => void;
+        if (outcome === "unmounted")
+          mockOnSubmit.mockImplementation(
+            () =>
+              new Promise((_resolve, reject) => {
+                rejectLate = reject;
+              }),
+          );
+        const view = render(
           <TestWrapper>
             <ChatInput onSubmit={mockOnSubmit} status="ready" />
           </TestWrapper>,
@@ -3768,11 +3901,22 @@ describe("ChatInput - Integration Tests", () => {
           await screen.findByRole("menuitem", { name: "Pursue goal" }),
         );
         fireEvent.keyDown(input, { key: "Enter" });
+        if (outcome === "unmounted") {
+          await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+          view.unmount();
+          await act(async () =>
+            rejectLate(
+              new GoalSubmissionUnconfirmedError(true, "originating-chat"),
+            ),
+          );
+        }
+        const reportedOutcome =
+          outcome === "unmounted" ? "unconfirmed" : outcome;
         await waitFor(() =>
           expect(capture).toHaveBeenCalledWith(
             "agent_goal_composer_action",
             expect.objectContaining({
-              action: `submit_${outcome}`,
+              action: `submit_${reportedOutcome}`,
               composer_layout: "desktop",
             }),
           ),
@@ -3782,7 +3926,7 @@ describe("ChatInput - Integration Tests", () => {
         );
         expect(goalEvents.map(([, properties]) => properties.action)).toEqual([
           "submit_attempt",
-          `submit_${outcome}`,
+          `submit_${reportedOutcome}`,
         ]);
         expect(JSON.stringify(capture.mock.calls)).not.toContain(
           "PRIVATE_OBJECTIVE",
@@ -3790,7 +3934,15 @@ describe("ChatInput - Integration Tests", () => {
         expect(JSON.stringify(capture.mock.calls)).not.toContain(
           "PRIVATE_ERROR_TEXT",
         );
-        if (outcome !== "accepted") {
+        if (reportedOutcome === "unconfirmed") {
+          expect(toast.info).toHaveBeenCalledWith(
+            expect.stringContaining("Your draft is kept."),
+            expect.any(Object),
+          );
+          expect(toast.error).not.toHaveBeenCalled();
+        }
+        if (outcome === "canceled") expect(toast.error).not.toHaveBeenCalled();
+        if (outcome !== "accepted" && outcome !== "unmounted") {
           expect(input).toHaveValue("PRIVATE_OBJECTIVE");
           expect(
             screen.getByRole("button", { name: "Exit goal mode" }),

@@ -17,6 +17,7 @@ import {
 import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -1092,12 +1093,16 @@ export const useChatHandlers = ({
           outgoingOptions,
         );
       } catch (error) {
-        if (!(error instanceof Error && error.name === "AbortError"))
-          toast.error(
-            error instanceof Error
-              ? error.message
-              : "Goal could not start. Your draft is saved.",
-          );
+        if (
+          error instanceof GoalSubmissionUnconfirmedError ||
+          (error instanceof Error && error.name === "AbortError")
+        )
+          throw error;
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Goal could not start. Your draft is saved.",
+        );
         return false;
       }
     } else {
