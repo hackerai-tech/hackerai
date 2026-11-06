@@ -2690,9 +2690,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
-    sendDisabledReason: pendingUserWait
-      ? undefined
-      : computerSendDisabledReason,
+    sendDisabledReason: computerSendDisabledReason,
     pendingUserWait,
   });
 

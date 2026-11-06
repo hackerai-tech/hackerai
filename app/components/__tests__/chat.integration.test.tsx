@@ -82,6 +82,7 @@ let mockRestoredChat:
         runId: string;
         toolCallId: string;
         status: "waiting";
+        questions?: import("@/lib/chat/user-input-questions").UserInputQuestion[];
       };
     }
   | undefined;
@@ -1281,8 +1282,10 @@ describe("Chat Component Integration", () => {
 
   it("preserves streamed question restrictions without resurrecting cleared waits", async () => {
     mockRouteParams = { id: "wait-chat" };
+    mockLocalConnections = [];
     mockRestoredChat = {
       id: "wait-chat",
+      sandbox_type: "desktop",
       default_model_slug: "agent",
       active_trigger_run_id: "run-wait",
     };
@@ -1316,13 +1319,17 @@ describe("Chat Component Integration", () => {
     expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-1");
     expect(mockChatInputProps.pendingUserWait?.questions).toEqual(questions);
     expect(mockChatInputProps.pendingUserWait?.published).toBeUndefined();
+    expect(mockChatHandlerArgs.sendDisabledReason).toBeTruthy();
     mockRestoredChat.active_agent_user_wait = {
       runId: "run-wait",
       toolCallId: "wait-1",
       status: "waiting",
+      questions,
     };
     await act(async () => rerender(view()));
     expect(mockChatInputProps.pendingUserWait?.published).toBe(true);
+    expect(mockChatInputProps.pendingUserWait?.questions).toEqual(questions);
+    expect(mockChatHandlerArgs.sendDisabledReason).toBeTruthy();
     delete mockRestoredChat.active_agent_user_wait;
     await act(async () => rerender(view()));
     expect(mockChatInputProps.pendingUserWait).toBeUndefined();

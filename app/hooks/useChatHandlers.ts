@@ -633,7 +633,9 @@ export const useChatHandlers = ({
     structuredReply = false,
   ): Promise<boolean> => {
     e.preventDefault();
-    if (sendDisabledReasonRef.current) return false;
+    // Completing a durable wait does not require this computer. Keep the
+    // original guard for queued sends, edits, retries and every other action.
+    if (sendDisabledReasonRef.current && !pendingUserWait) return false;
     let stopGeneration = stopGenerationRef.current;
     let stoppedGoalForMessage = false;
     const wasSummarizing = isSummarizingRef.current;

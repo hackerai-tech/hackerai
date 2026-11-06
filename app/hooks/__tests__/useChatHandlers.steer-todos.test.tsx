@@ -197,7 +197,7 @@ describe("useChatHandlers steer todo handoff", () => {
   });
 
   it.each([false, true])(
-    "sends a pending Agent reply literally and preserves unrelated drafts (structured=%s)",
+    "allows only the wait reply while the computer is disconnected (structured=%s)",
     async (structured) => {
       mockInput = structured ? "Unsent ordinary draft" : "/goal pause";
       const { result } = renderHook(() =>
@@ -211,6 +211,8 @@ describe("useChatHandlers steer todo handoff", () => {
           isExistingChat: true,
           status: "streaming",
           goalState: "needs_input",
+          sendDisabledReason: "Reconnect your computer",
+          activeTriggerRunRef: { current: "run-1" },
           pendingUserWait: {
             runId: "run-1",
             toolCallId: "tool-1",
@@ -221,6 +223,11 @@ describe("useChatHandlers steer todo handoff", () => {
           hasManuallyStoppedRef: { current: false },
         }),
       );
+      await act(async () => result.current.handleSendNow("queued-1"));
+      expect(mockCancelStream).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
       await act(async () => {
         expect(
           await result.current.handleSubmit(
