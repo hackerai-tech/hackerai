@@ -193,6 +193,9 @@ it("automatically solves only a detected supported challenge once in the existin
   const detected = await run(tool, "inspect");
   expect(detected).toMatchObject({
     status: "token_delivered",
+    provider: "2captcha",
+    providerTaskCreated: true,
+    providerCostUSD: 0.003,
     websiteAccepted: false,
     guidance: expect.any(String),
   });

@@ -244,16 +244,18 @@ export function createBrowserChallengeHandler(
         cost_dollars: solution.costDollars,
       });
       managedDelivered = delivered.status === "token_delivered";
-      return respond(
-        delivered.status === "token_delivered"
+      return respond({
+        provider: "2captcha",
+        providerTaskCreated: true,
+        providerCostUSD: solution.costDollars,
+        ...(delivered.status === "token_delivered"
           ? {
               status: "token_delivered",
               websiteAccepted: false,
-              message:
-                "The runtime delivered the token in this browser. This status is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Token delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.",
+              message: `2Captcha completed one paid task (provider cost ${solution.costDollars} USD), and the runtime delivered its response in this browser. This is tool-result metadata, not terminal stdout; do not search logs or call the solver again. Take one fresh standalone snapshot and check whether a callback already submitted the form. Submit only if it has not been submitted, then verify the server result. Delivery does not prove website acceptance. For rejection or an uncertain submission outcome, do not resubmit: use browser_handoff only for the current Cloud browser. On connected Local, Desktop or remote browsers, stop and explain that manual verification is required and in-app takeover is unavailable.`,
             }
-          : { status: "handoff_required", reason: "page_changed" },
-      );
+          : { status: "handoff_required", reason: "page_changed" }),
+      });
     } catch (error) {
       const solverTimedOut =
         !signal.aborted &&
