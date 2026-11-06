@@ -92,6 +92,17 @@ it("does not deliver a solution after the managed challenge re-renders", () => {
   expect(callback).not.toHaveBeenCalled();
 });
 
+it("restores the real widget for manual verification after an unsuccessful solve", () => {
+  const { api, original, options } = render();
+  const captured = page[key] as { release: () => void };
+  captured.release();
+  expect(original).toHaveBeenCalledWith(document.body, options);
+  expect(api.render).toBe(original);
+  expect(page[key]).toBeUndefined();
+  jest.advanceTimersByTime(100);
+  expect(api.render).toBe(original);
+});
+
 it("leaves unapproved pages and ordinary Turnstile renders unchanged", () => {
   const api = { render: jest.fn() };
   page.turnstile = api;

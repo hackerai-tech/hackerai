@@ -49,10 +49,18 @@ if action == 'prepare':
     (root / 'config.json').write_text('{}')
     if len(sys.argv) > 6 and sys.argv[6]:
         init_script = sys.argv[6]
-        if len(init_script) > 16384:
-            raise RuntimeError('Invalid challenge initialization')
-        (root / 'cloudflare.js').write_text(init_script)
-        (root / 'config.json').write_text(json.dumps({'initScripts':[str(root / 'cloudflare.js')]}))
+        # This optional adapter requires agent-browser's native init-script and
+        # user-agent actions. Legacy workspaces keep ordinary browsing intact.
+        try:
+            import re
+            version = subprocess.run(['agent-browser','--version'],capture_output=True,text=True,timeout=5,check=True)
+            match = re.search(r'agent-browser (\d+)\.(\d+)\.(\d+)',version.stdout)
+            supported = match and tuple(map(int,match.groups())) >= (0,41,2)
+        except Exception:
+            supported = False
+        if len(init_script) <= 16384 and supported:
+            (root / 'cloudflare.js').write_text(init_script)
+            (root / 'config.json').write_text(json.dumps({'initScripts':[str(root / 'cloudflare.js')]}))
     if len(sys.argv) > 5 and sys.argv[5] == 'gate':
         real = shutil.which('agent-browser')
         if not real:

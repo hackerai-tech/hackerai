@@ -53,8 +53,10 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
   return `(() => {
     if (window !== top || !${JSON.stringify(approvedUrls)}.includes(location.href)) return;
     const key = Symbol.for('hackerai.cloudflareChallenge');
+    let disabled = false;
+    let timer;
     const wrap = (api) => {
-      if (!api || typeof api.render !== 'function' || api.render.__hackeraiWrapped) return;
+      if (disabled || !api || typeof api.render !== 'function' || api.render.__hackeraiWrapped) return;
       const original = api.render;
       const render = function(container, options) {
         if (options?.action !== 'managed' || typeof options.cData !== 'string' ||
@@ -68,6 +70,17 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
         window[key] = {siteKey:options.sitekey, observationId, callback:options.callback,
           action:options.action, data:options.cData, pagedata:options.chlPageData,
           userAgent:navigator.userAgent, delivered:false};
+        const captured = window[key];
+        const receiver = this;
+        const args = arguments;
+        captured.release = () => {
+          if (window[key] !== captured || captured.delivered) return;
+          disabled = true;
+          clearInterval(timer);
+          api.render = original;
+          delete window[key];
+          original.apply(receiver, args);
+        };
         return 'hackerai-' + observationId;
       };
       render.__hackeraiWrapped = true;
@@ -81,7 +94,7 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
     }
     wrap(api);
     // Some versions assign render after assigning the API object. Bound the hook.
-    const timer = setInterval(() => wrap(window.turnstile), 10);
+    timer = setInterval(() => wrap(window.turnstile), 10);
     setTimeout(() => clearInterval(timer), 30000);
   })()`;
 }

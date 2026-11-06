@@ -86,6 +86,8 @@ export function createBrowserChallengeHandler(
     let deliveryStarted = false;
     let taskStarted = false;
     let costRecorded = false;
+    let releaseManaged: (() => Promise<unknown>) | undefined;
+    let managedDelivered = false;
     const record = (
       event: string,
       fields: Record<string, string | number | boolean> = {},
@@ -123,6 +125,15 @@ export function createBrowserChallengeHandler(
         await browser.evaluate(DETECT_CHALLENGES_SCRIPT),
       );
       const pending = observation.widgets.filter((w) => !w.tokenPresent);
+      const managed = pending.find((w) => w.managed);
+      if (managed)
+        releaseManaged = () =>
+          browser.evaluate(`(() => {
+        if (location.href !== ${JSON.stringify(observation.url)} || String(performance.timeOrigin) !== ${JSON.stringify(observation.documentId)}) return false;
+        const current = window[Symbol.for('hackerai.cloudflareChallenge')];
+        if (current?.observationId !== ${JSON.stringify(managed.observationId)} || current.delivered || typeof current.release !== 'function') return false;
+        current.release(); return true;
+      })()`);
       if (!pending.length && !observation.interstitial)
         return { status: "no_pending_challenge" };
       challengeDetected = true;
@@ -231,6 +242,7 @@ export function createBrowserChallengeHandler(
         captcha_kind: widget.kind,
         cost_dollars: solution.costDollars,
       });
+      managedDelivered = delivered.status === "token_delivered";
       return respond(
         delivered.status === "token_delivered"
           ? {
@@ -276,6 +288,10 @@ export function createBrowserChallengeHandler(
         }),
       });
     } finally {
+      // A failed/disabled solver must leave the same page usable for human
+      // verification. The page-side fence refuses release after delivery.
+      if (releaseManaged && !managedDelivered && !signal.aborted)
+        await releaseManaged().catch(() => undefined);
       active = false;
     }
   };
