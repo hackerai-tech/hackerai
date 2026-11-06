@@ -143,6 +143,22 @@ it("keeps inspection on the snapshot sandbox after another sandbox is prepared",
   expect(otherRead).not.toHaveBeenCalled();
 });
 
+it("captures a flagless snapshot's sticky name before dispatch and rejects a later switch", async () => {
+  const { sessions, sandbox, read } = await owner();
+  read.mockResolvedValue("original-name");
+  const target = await sessions.captureChallengeTarget(sandbox);
+  expect(target.sessionName).toBe("original-name");
+  const browser = await sessions.getChallengeBrowser(
+    new AbortController().signal,
+    target,
+  );
+  expect(browser.identity).toMatch(/:original-name$/);
+  read.mockResolvedValue("later-name");
+  await expect(
+    sessions.getChallengeBrowser(new AbortController().signal, target),
+  ).rejects.toThrow("snapshot browser session changed");
+});
+
 it.each(["ended", "human", "waiting", "session changed"])(
   "refuses late delivery after %s",
   async (state) => {

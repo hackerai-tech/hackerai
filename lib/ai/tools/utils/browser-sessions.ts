@@ -77,6 +77,32 @@ export class BrowserSessions {
     return this.enableConnectedChallenges;
   }
 
+  /** Resolve a flagless Cloud snapshot before dispatch, while retaining its sticky session. */
+  async captureChallengeTarget(
+    sandbox: AnySandbox,
+    sessionName?: string,
+    runtimeDefault = "default",
+  ) {
+    let name = sessionName ?? runtimeDefault;
+    if (
+      sessionName === undefined &&
+      isE2BSandbox(sandbox) &&
+      runtimeDefault === "default"
+    ) {
+      const session = this.sessions.get(sandbox.sandboxId);
+      if (!session || this.closed) throw new Error("Browser ownership ended.");
+      name = (
+        await sandbox.files.read(`${session.directory}/active-session`, {
+          user: "root",
+          requestTimeoutMs: 8000,
+        })
+      ).trim();
+    }
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(name))
+      throw new Error("Browser session identity is unavailable.");
+    return { sandbox, sessionName: name };
+  }
+
   /** Pin a CAPTCHA operation to an already-open browser owned by this run.
    * JavaScript (including any solver response) goes over stdin, never argv,
    * terminal streaming, checkpoint files or the model's tool result.

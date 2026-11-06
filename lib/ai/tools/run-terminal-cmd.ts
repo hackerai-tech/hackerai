@@ -840,13 +840,22 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               : undefined;
           const snapshot = getAgentBrowserSnapshotSession(command);
           if (context.checkBrowserChallenge && snapshot) {
-            challengeTargets.set(toolCallId, {
-              sandbox: sandboxInstance,
-              sessionName:
-                snapshot.sessionName ??
-                agentBrowserEnv?.AGENT_BROWSER_SESSION ??
-                "default",
-            });
+            const target = context.browserSessions
+              ? await context.browserSessions
+                  .captureChallengeTarget(
+                    sandboxInstance,
+                    snapshot.sessionName,
+                    agentBrowserEnv?.AGENT_BROWSER_SESSION,
+                  )
+                  .catch(() => undefined)
+              : {
+                  sandbox: sandboxInstance,
+                  sessionName:
+                    snapshot.sessionName ??
+                    agentBrowserEnv?.AGENT_BROWSER_SESSION ??
+                    "default",
+                };
+            if (target) challengeTargets.set(toolCallId, target);
           }
           captureAgentBrowserUsage({
             context,
