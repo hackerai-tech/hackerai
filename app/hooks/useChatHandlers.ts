@@ -10,6 +10,7 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_RESUME_ENDPOINT } from "@/lib/api/agent-endpoints";
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -1015,6 +1016,11 @@ export const useChatHandlers = ({
           outgoingOptions,
         );
       } catch (error) {
+        if (
+          error instanceof GoalSubmissionUnconfirmedError ||
+          (error instanceof Error && error.name === "AbortError")
+        )
+          throw error;
         if (!(error instanceof Error && error.name === "AbortError"))
           toast.error(
             error instanceof Error

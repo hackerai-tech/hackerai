@@ -24,10 +24,12 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   getDraftAttachmentsById,
   getDraftContentById,
+  upsertDraft,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
 import { useComposerActions } from "@/app/contexts/ComposerState";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 const mockGoalCapture = jest.fn<
   (event: string, properties: Record<string, unknown>) => boolean
 >(() => true);
@@ -3539,12 +3541,80 @@ describe("ChatInput - Integration Tests", () => {
     ).not.toBeInTheDocument();
   });
 
+  it.each([false, true])(
+    "cleans only the unchanged admitted draft after leaving the composer (newerDraft=%s)",
+    async (newerDraft) => {
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      });
+      window.localStorage.setItem(
+        CONVERSATION_DRAFTS_STORAGE_KEY,
+        JSON.stringify({
+          drafts: [
+            {
+              id: "departing-goal",
+              content: "Original goal",
+              goalMode: true,
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      );
+      let accept!: (value: boolean) => void;
+      mockOnSubmit.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            accept = resolve;
+          }),
+      );
+      const view = render(
+        <TestWrapper>
+          <ChatInput
+            chatId="departing-goal"
+            onSubmit={mockOnSubmit}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled(),
+      );
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+      view.unmount();
+      if (newerDraft) upsertDraft("departing-goal", "Newer goal draft");
+      await act(async () => {
+        accept(true);
+      });
+      expect(getDraftContentById("departing-goal")).toBe(
+        newerDraft ? "Newer goal draft" : null,
+      );
+    },
+  );
+
   describe("goal composer analytics", () => {
     afterEach(() => jest.restoreAllMocks());
 
-    it.each(["accepted", "refused", "error"] as const)(
+    it.each([
+      "accepted",
+      "refused",
+      "error",
+      "unconfirmed",
+      "canceled",
+    ] as const)(
       "records %s separately without leaking the objective",
       async (outcome) => {
+        jest.spyOn(toast, "info").mockReturnValue(0);
+        jest.spyOn(toast, "error").mockReturnValue(0);
         const capture = mockGoalCapture;
         jest.mocked(useAuth).mockReturnValue({
           user: { id: "goal-analytics-user" },
@@ -3559,7 +3629,15 @@ describe("ChatInput - Integration Tests", () => {
           ok: true,
           json: async () => ({ enabled: true }),
         });
-        if (outcome === "error")
+        if (outcome === "unconfirmed")
+          mockOnSubmit.mockRejectedValue(
+            new GoalSubmissionUnconfirmedError(true),
+          );
+        else if (outcome === "canceled")
+          mockOnSubmit.mockRejectedValue(
+            new DOMException("Stopped", "AbortError"),
+          );
+        else if (outcome === "error")
           mockOnSubmit.mockRejectedValue(new Error("PRIVATE_ERROR_TEXT"));
         else mockOnSubmit.mockResolvedValue(outcome === "accepted");
         render(
@@ -3601,6 +3679,14 @@ describe("ChatInput - Integration Tests", () => {
         expect(JSON.stringify(capture.mock.calls)).not.toContain(
           "PRIVATE_ERROR_TEXT",
         );
+        if (outcome === "unconfirmed") {
+          expect(toast.info).toHaveBeenCalledWith(
+            expect.stringContaining("may have started"),
+            expect.any(Object),
+          );
+          expect(toast.error).not.toHaveBeenCalled();
+        }
+        if (outcome === "canceled") expect(toast.error).not.toHaveBeenCalled();
         if (outcome !== "accepted") {
           expect(input).toHaveValue("PRIVATE_OBJECTIVE");
           expect(

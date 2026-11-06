@@ -61,6 +61,7 @@ import {
 } from "@/lib/utils";
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
 import { getBranchErrorMessage } from "@/lib/chat/branch-error";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -1005,6 +1006,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     resolve: () => void;
     error?: Error;
     aborted?: boolean;
+    rejected?: boolean;
+    requestSent?: boolean;
     accepted: boolean;
   };
   const goalAdmissionRef = useRef<GoalAdmission | null>(null);
@@ -1067,16 +1070,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           const request =
             typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
           const queuedMessageId = request?.messages?.at(-1)?.id;
+          const pendingGoal = goalAdmissionRef.current;
+          if (
+            pendingGoal &&
+            pendingGoal.chatId === request?.chatId &&
+            pendingGoal.id === queuedMessageId
+          )
+            pendingGoal.requestSent = true;
+          const acknowledgeGoal = (run: { chatId?: string; runId: string }) => {
+            const pending = goalAdmissionRef.current;
+            if (
+              pending &&
+              pending.chatId === request?.chatId &&
+              pending.id === queuedMessageId &&
+              run.chatId === pending.chatId &&
+              !hasManuallyStoppedRef.current
+            )
+              pending.resolve();
+          };
           return fetchAgentLongStream(
             init,
             (run) => {
-              const pendingGoal = goalAdmissionRef.current;
-              if (
-                pendingGoal &&
-                pendingGoal.chatId === request?.chatId &&
-                pendingGoal?.id === queuedMessageId
-              )
-                pendingGoal.resolve();
+              acknowledgeGoal(run);
               if (
                 requestGeneration !== agentLongRequestGenerationRef.current ||
                 (run.chatId !== undefined &&
@@ -1111,6 +1126,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               }
             },
             handleAgentLongRunClosed,
+            acknowledgeGoal,
           );
         }
         if (init?.method !== "GET") {
@@ -1463,6 +1479,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         goalAdmissionRef.current?.chatId === chatId &&
         !goalAdmissionRef.current.accepted
       ) {
+        goalAdmissionRef.current.rejected =
+          displayError instanceof ChatSDKError &&
+          displayError.type !== "offline";
         goalAdmissionRef.current.error =
           displayError instanceof ChatSDKError
             ? new Error(
@@ -1574,6 +1593,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           );
         }
       } catch (error) {
+        // Stream setup can reject in the same turn as admission. Once the
+        // exact message was admitted, a consumer error cannot undo that send.
+        if (accepted) return;
         if (
           isChatMountedRef.current &&
           activeChatIdRef.current === chatId &&
@@ -1602,12 +1624,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             clearTimeout(persistenceTimeout);
           }
           if (isChatMountedRef.current && activeChatIdRef.current === chatId) {
-            if (persisted === false)
+            if (
+              persisted === false &&
+              (!pending.requestSent || pending.rejected)
+            )
               setMessages((current) =>
                 current.filter((item) => item.id !== id),
               );
             clearError?.();
           }
+          // A late acknowledgement may arrive while the lookup is in flight.
+          if (accepted) return;
+          if ((pending.requestSent || persisted !== false) && !pending.rejected)
+            throw new GoalSubmissionUnconfirmedError(persisted);
         }
         throw error;
       } finally {

@@ -765,6 +765,7 @@ export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
   onRunStarted?: (run: AgentLongRunStarted) => void,
   onRunClosed?: (runId: string) => void,
+  onRunAdmitted?: (run: AgentLongRunStarted) => void,
 ): Promise<Response> => {
   init?.signal?.throwIfAborted();
   const chatId = getChatIdFromRequestInit(init);
@@ -802,6 +803,14 @@ export const fetchAgentLongStream = async (
 
   try {
     const { response, handle } = await start;
+    // Admission survives a detached consumer. Acknowledge the durable result
+    // before checking its signal, while leaving visible stream attachment fenced.
+    if (handle)
+      onRunAdmitted?.({
+        chatId: handle.chatId ?? chatId,
+        runId: handle.runId,
+        runCorrelationToken: handle.runCorrelationToken,
+      });
     linkedAbort.controller.signal.throwIfAborted();
     if (!handle) return response;
     onRunStarted?.({

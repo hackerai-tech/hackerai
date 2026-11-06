@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { useEffect, useRef, useState } from "react";
 import { ConvexError } from "convex/values";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { toast } from "sonner";
 
 jest.mock("uuid", () => ({
@@ -1895,7 +1896,7 @@ describe("Chat Component Integration", () => {
             { text: "Use blue" },
             { body: { goal: { action: "resume" } } },
           ),
-        ).rejects.toThrow("could not start");
+        ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
         expect(mockSetMessages).not.toHaveBeenCalled();
       },
     );
@@ -1955,14 +1956,14 @@ describe("Chat Component Integration", () => {
         expect(settled).toBe(true);
         expect(await rejection).toEqual(
           expect.objectContaining({
-            message: expect.stringContaining("could not start"),
+            name: "GoalSubmissionUnconfirmedError",
           }),
         );
         expect(mockSetMessages).not.toHaveBeenCalled();
         expect(mockClearError).toHaveBeenCalled();
         await expect(
           mockChatHandlerArgs.sendGoalMessage!({ text: "Try again" }),
-        ).rejects.toThrow("could not start");
+        ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
         expect(mockSendMessage).toHaveBeenCalledTimes(2);
       } finally {
         jest.useRealTimers();
@@ -1995,6 +1996,137 @@ describe("Chat Component Integration", () => {
       expect(query).not.toHaveBeenCalled();
       expect(mockClearError).not.toHaveBeenCalled();
     });
+
+    it("keeps a goal accepted when stream setup throws immediately after matching admission", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react").useConvex().query.mockResolvedValue(false);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      mockSendMessage.mockImplementationOnce(() => {
+        const payload = mockSendMessage.mock.calls.at(-1)![0];
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          transport: {
+            fetch: (url: string, init: RequestInit) => Promise<Response>;
+          };
+        };
+        mockFetchAgentLongStream.mockImplementationOnce(
+          async (_init, onRunStarted) => {
+            onRunStarted?.({
+              chatId: "queued-message-id",
+              runId: "admitted-goal-run",
+            });
+            throw new Error("Synthetic stream attachment failure");
+          },
+        );
+        void options.transport
+          .fetch("/api/chat", {
+            method: "POST",
+            body: JSON.stringify({
+              chatId: "queued-message-id",
+              messages: [payload],
+            }),
+          })
+          .catch(() => {});
+        return Promise.reject(new Error("Synthetic stream attachment failure"));
+      });
+      await act(async () => {
+        await expect(
+          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+        ).resolves.toBeUndefined();
+      });
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(require("convex/react").useConvex().query).not.toHaveBeenCalled();
+    });
+
+    it("keeps an issued start unconfirmed when the response is lost before persistence is visible", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      mockFetchAgentLongStream.mockRejectedValueOnce(
+        new TypeError("Load failed"),
+      );
+      mockSendMessage.mockImplementationOnce(async () => {
+        const payload = mockSendMessage.mock.calls.at(-1)![0];
+        const options = mockUseChat.mock.calls.at(-1)![0] as {
+          transport: {
+            fetch: (url: string, init: RequestInit) => Promise<Response>;
+          };
+        };
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "queued-message-id",
+            messages: [payload],
+          }),
+        });
+      });
+      mockSetMessages.mockClear();
+      await act(async () => {
+        await expect(
+          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+        ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
+      });
+      expect(mockSetMessages).not.toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])(
+      "handles detached admission separately from explicit Stop (stopped=%s)",
+      async (stopped) => {
+        mockDesktopState = { chatMode: "agent" };
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        mockSendMessage.mockImplementationOnce(async () => {
+          const payload = mockSendMessage.mock.calls.at(-1)![0];
+          const options = mockUseChat.mock.calls.at(-1)![0] as {
+            transport: {
+              fetch: (url: string, init: RequestInit) => Promise<Response>;
+            };
+            onFinish: (value: { isAbort: boolean; isError: boolean }) => void;
+          };
+          if (stopped) mockChatHandlerArgs.hasManuallyStoppedRef.current = true;
+          mockFetchAgentLongStream.mockImplementationOnce(
+            async (_init, _started, _closed, admitted) => {
+              admitted?.({
+                chatId: "queued-message-id",
+                runId: "detached-goal-run",
+              });
+              throw new DOMException("Detached", "AbortError");
+            },
+          );
+          try {
+            await options.transport.fetch("/api/chat", {
+              method: "POST",
+              body: JSON.stringify({
+                chatId: "queued-message-id",
+                messages: [payload],
+              }),
+            });
+          } catch {
+            options.onFinish({ isAbort: true, isError: false });
+          }
+        });
+        await act(async () => {
+          const sending = mockChatHandlerArgs.sendGoalMessage!({
+            text: "Use blue",
+          });
+          if (stopped)
+            await expect(sending).rejects.toMatchObject({ name: "AbortError" });
+          else await expect(sending).resolves.toBeUndefined();
+        });
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it("resolves goal sends at matching admission without waiting for the response stream", async () => {
       mockDesktopState = { chatMode: "agent" };
