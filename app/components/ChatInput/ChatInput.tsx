@@ -478,7 +478,6 @@ const ChatInputContent = ({
   const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
-  const currentChatIdRef = useLatestRef(chatId);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -1134,22 +1133,19 @@ const ChatInputContent = ({
                 ? "start_response_lost"
                 : "lookup_unavailable",
           );
-          if (
-            isMountedRef.current &&
-            currentChatIdRef.current === chatId &&
-            prevDraftIdRef.current === draftId
-          )
-            toast.info(error.message, {
-              action: {
-                label: "Check chat",
-                onClick: () =>
-                  error.chatId
-                    ? window.location.assign(
-                        `/c/${encodeURIComponent(error.chatId)}`,
-                      )
-                    : window.location.reload(),
-              },
-            });
+          // The linked originating chat makes this safe after navigation or
+          // unmount; a missing handle must never silently invite a duplicate.
+          toast.info(error.message, {
+            action: {
+              label: "Check chat",
+              onClick: () =>
+                error.chatId
+                  ? window.location.assign(
+                      `/c/${encodeURIComponent(error.chatId)}`,
+                    )
+                  : window.location.reload(),
+            },
+          });
           return;
         }
         if (error instanceof Error && error.name === "AbortError") {

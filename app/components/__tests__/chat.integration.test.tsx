@@ -2041,41 +2041,50 @@ describe("Chat Component Integration", () => {
       expect(require("convex/react").useConvex().query).not.toHaveBeenCalled();
     });
 
-    it("keeps an issued start unconfirmed when the response is lost before persistence is visible", async () => {
-      mockDesktopState = { chatMode: "agent" };
-      require("convex/react").useConvex().query.mockResolvedValueOnce(false);
-      render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>,
-      );
-      mockFetchAgentLongStream.mockRejectedValueOnce(
-        new TypeError("Load failed"),
-      );
-      mockSendMessage.mockImplementationOnce(async () => {
-        const payload = mockSendMessage.mock.calls.at(-1)![0];
-        const options = mockUseChat.mock.calls.at(-1)![0] as {
-          transport: {
-            fetch: (url: string, init: RequestInit) => Promise<Response>;
+    it.each(["network", "http500", "stream"])(
+      "keeps an issued start unconfirmed after %s failure before persistence is visible",
+      async (failure) => {
+        mockDesktopState = { chatMode: "agent" };
+        require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        const { ChatSDKError } = require("@/lib/errors");
+        const error =
+          failure === "network"
+            ? new TypeError("Load failed")
+            : new ChatSDKError(
+                failure === "stream" ? "bad_request:stream" : "bad_request:api",
+              );
+        if (failure === "http500") error.statusCode = 500;
+        mockFetchAgentLongStream.mockRejectedValueOnce(error);
+        mockSendMessage.mockImplementationOnce(async () => {
+          const payload = mockSendMessage.mock.calls.at(-1)![0];
+          const options = mockUseChat.mock.calls.at(-1)![0] as {
+            transport: {
+              fetch: (url: string, init: RequestInit) => Promise<Response>;
+            };
           };
-        };
-        await options.transport.fetch("/api/chat", {
-          method: "POST",
-          body: JSON.stringify({
-            chatId: "queued-message-id",
-            messages: [payload],
-          }),
+          await options.transport.fetch("/api/chat", {
+            method: "POST",
+            body: JSON.stringify({
+              chatId: "queued-message-id",
+              messages: [payload],
+            }),
+          });
         });
-      });
-      mockSetMessages.mockClear();
-      await act(async () => {
-        await expect(
-          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
-        ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
-      });
-      expect(mockSetMessages).not.toHaveBeenCalled();
-      expect(mockSendMessage).toHaveBeenCalledTimes(1);
-    });
+        mockSetMessages.mockClear();
+        await act(async () => {
+          await expect(
+            mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+          ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
+        });
+        expect(mockSetMessages).not.toHaveBeenCalled();
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it.each([false, true])(
       "handles detached admission separately from explicit Stop (stopped=%s)",

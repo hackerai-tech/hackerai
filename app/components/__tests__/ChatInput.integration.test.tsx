@@ -3641,6 +3641,7 @@ describe("ChatInput - Integration Tests", () => {
       "error",
       "unconfirmed",
       "canceled",
+      "unmounted",
     ] as const)(
       "records %s separately without leaking the objective",
       async (outcome) => {
@@ -3671,7 +3672,15 @@ describe("ChatInput - Integration Tests", () => {
         else if (outcome === "error")
           mockOnSubmit.mockRejectedValue(new Error("PRIVATE_ERROR_TEXT"));
         else mockOnSubmit.mockResolvedValue(outcome === "accepted");
-        render(
+        let rejectLate!: (error: Error) => void;
+        if (outcome === "unmounted")
+          mockOnSubmit.mockImplementation(
+            () =>
+              new Promise((_resolve, reject) => {
+                rejectLate = reject;
+              }),
+          );
+        const view = render(
           <TestWrapper>
             <ChatInput onSubmit={mockOnSubmit} status="ready" />
           </TestWrapper>,
@@ -3688,11 +3697,22 @@ describe("ChatInput - Integration Tests", () => {
           await screen.findByRole("menuitem", { name: "Pursue goal" }),
         );
         fireEvent.keyDown(input, { key: "Enter" });
+        if (outcome === "unmounted") {
+          await waitFor(() => expect(mockOnSubmit).toHaveBeenCalled());
+          view.unmount();
+          await act(async () =>
+            rejectLate(
+              new GoalSubmissionUnconfirmedError(true, "originating-chat"),
+            ),
+          );
+        }
+        const reportedOutcome =
+          outcome === "unmounted" ? "unconfirmed" : outcome;
         await waitFor(() =>
           expect(capture).toHaveBeenCalledWith(
             "agent_goal_composer_action",
             expect.objectContaining({
-              action: `submit_${outcome}`,
+              action: `submit_${reportedOutcome}`,
               composer_layout: "desktop",
             }),
           ),
@@ -3702,7 +3722,7 @@ describe("ChatInput - Integration Tests", () => {
         );
         expect(goalEvents.map(([, properties]) => properties.action)).toEqual([
           "submit_attempt",
-          `submit_${outcome}`,
+          `submit_${reportedOutcome}`,
         ]);
         expect(JSON.stringify(capture.mock.calls)).not.toContain(
           "PRIVATE_OBJECTIVE",
@@ -3710,7 +3730,7 @@ describe("ChatInput - Integration Tests", () => {
         expect(JSON.stringify(capture.mock.calls)).not.toContain(
           "PRIVATE_ERROR_TEXT",
         );
-        if (outcome === "unconfirmed") {
+        if (reportedOutcome === "unconfirmed") {
           expect(toast.info).toHaveBeenCalledWith(
             expect.stringContaining("may have started"),
             expect.any(Object),
@@ -3718,7 +3738,7 @@ describe("ChatInput - Integration Tests", () => {
           expect(toast.error).not.toHaveBeenCalled();
         }
         if (outcome === "canceled") expect(toast.error).not.toHaveBeenCalled();
-        if (outcome !== "accepted") {
+        if (outcome !== "accepted" && outcome !== "unmounted") {
           expect(input).toHaveValue("PRIVATE_OBJECTIVE");
           expect(
             screen.getByRole("button", { name: "Exit goal mode" }),

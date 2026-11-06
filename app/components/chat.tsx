@@ -61,7 +61,10 @@ import {
 } from "@/lib/utils";
 import { getSafeErrorEventMessage } from "@/lib/utils/error-event";
 import { getBranchErrorMessage } from "@/lib/chat/branch-error";
-import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
+import {
+  GoalSubmissionUnconfirmedError,
+  isGoalAdmissionRefused,
+} from "@/lib/chat/goal-submission";
 import {
   cancelAgentLongRealtimeStreams,
   fetchAgentLongStream,
@@ -1504,8 +1507,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         !goalAdmissionRef.current.accepted
       ) {
         goalAdmissionRef.current.rejected =
-          displayError instanceof ChatSDKError &&
-          displayError.type !== "offline";
+          isGoalAdmissionRefused(displayError);
         goalAdmissionRef.current.error =
           displayError instanceof ChatSDKError
             ? new Error(
@@ -1625,9 +1627,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         const stopped =
           pending.stopped ||
           (hasManuallyStoppedRef.current && activeChatIdRef.current === chatId);
-        const rejected =
-          pending.rejected ||
-          (error instanceof ChatSDKError && error.type !== "offline");
+        const rejected = pending.rejected || isGoalAdmissionRefused(error);
         let persisted: boolean | undefined;
         if (
           isChatMountedRef.current &&
