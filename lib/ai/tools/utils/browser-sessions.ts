@@ -83,6 +83,16 @@ export class BrowserSessions {
     sessionName?: string,
     runtimeDefault = "default",
   ) {
+    // Optional setup can be unavailable while ordinary browsing still works.
+    // Skip automatic inspection then; later ownership/name failures still throw.
+    if (isE2BSandbox(sandbox)) {
+      if (!this.sessions.get(sandbox.sandboxId)?.registered) return undefined;
+    } else if (
+      !this.enableConnectedChallenges ||
+      !sandbox.supportsCommandStdin() ||
+      runtimeDefault === "default"
+    )
+      return undefined;
     let name = sessionName ?? runtimeDefault;
     if (
       sessionName === undefined &&

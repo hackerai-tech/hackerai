@@ -147,7 +147,8 @@ it("captures a flagless snapshot's sticky name before dispatch and rejects a lat
   const { sessions, sandbox, read } = await owner();
   read.mockResolvedValue("original-name");
   const target = await sessions.captureChallengeTarget(sandbox);
-  expect(target.sessionName).toBe("original-name");
+  expect(target).toBeDefined();
+  expect(target!.sessionName).toBe("original-name");
   const browser = await sessions.getChallengeBrowser(
     new AbortController().signal,
     target,
@@ -157,6 +158,16 @@ it("captures a flagless snapshot's sticky name before dispatch and rejects a lat
   await expect(
     sessions.getChallengeBrowser(new AbortController().signal, target),
   ).rejects.toThrow("snapshot browser session changed");
+});
+
+it("skips optional inspection when Cloud viewer registration is unavailable", async () => {
+  mockMutation.mockResolvedValue(false);
+  const { sessions, sandbox, read } = await owner();
+  await expect(
+    sessions.captureChallengeTarget(sandbox, "named"),
+  ).resolves.toBeUndefined();
+  expect(read).not.toHaveBeenCalled();
+  expect(mockQuery).not.toHaveBeenCalled();
 });
 
 it.each(["ended", "human", "waiting", "session changed"])(

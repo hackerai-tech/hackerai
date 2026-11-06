@@ -128,6 +128,9 @@ it("keeps terminal execution available when optional browser setup fails", async
   const sessions = new BrowserSessions(undefined, undefined, true);
   expect(await sessions.prepare(target.sandbox)).toEqual({});
   await expect(
+    sessions.captureChallengeTarget(target.sandbox, "named"),
+  ).resolves.toBeUndefined();
+  await expect(
     sessions.getChallengeBrowser(new AbortController().signal),
   ).rejects.toThrow("Owned connected browser unavailable");
   expect(await sessions.prepare(target.sandbox)).toEqual({});
@@ -141,6 +144,9 @@ it("does not retain the previous connection when switching to an unsupported cli
   const unsupported = connection("second");
   Object.assign(unsupported.sandbox, { supportsCommandStdin: () => false });
   expect(await sessions.prepare(unsupported.sandbox)).toEqual({});
+  await expect(
+    sessions.captureChallengeTarget(unsupported.sandbox, "named"),
+  ).resolves.toBeUndefined();
   await expect(
     sessions.getChallengeBrowser(new AbortController().signal),
   ).rejects.toThrow("Open an owned connected browser first");
