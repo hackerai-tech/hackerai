@@ -46,11 +46,25 @@ import { isPastedTextAttachmentAvailableInMode } from "@/lib/utils/pasted-text-a
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
+} from "@/lib/analytics/client";
 import {
   prepareAgentCancellationTelemetry,
   type AgentCancellationAction,
 } from "@/lib/analytics/agent-cancellation";
+
+type StopSnapshot = {
+  parts: ChatMessage["parts"];
+  diagnostics?: {
+    preparation_outcome: "compacted" | "unchanged" | "unavailable";
+    before_size_bytes: number;
+    after_size_bytes: number;
+    part_count: number;
+    pruned_count: number;
+  };
+};
 
 interface UseChatHandlersProps {
   goalState?: string;
@@ -236,29 +250,52 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const getStopSnapshotParts = (
+  const getStopSnapshot = (
     message: ChatMessage,
-  ): ChatMessage["parts"] | Promise<ChatMessage["parts"]> => {
+  ): StopSnapshot | Promise<StopSnapshot> => {
     const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
     try {
       // Match normal saves' storage compaction without loading the tokenizer
       // for small snapshots or replacing the full response in local state.
-      if (getConvexSize(parts as Value) <= 850 * 1024) return parts;
+      const beforeSizeBytes = getConvexSize(parts as Value);
+      if (beforeSizeBytes <= 850 * 1024) return { parts };
+      const diagnostics = {
+        before_size_bytes: beforeSizeBytes,
+        part_count: parts.length,
+      };
       return import("@/lib/chat/compaction/prune-tool-outputs")
-        .then(
-          ({ compactMessageForStorage }) =>
-            sanitizeForConvexValue(
-              compactMessageForStorage(
-                { ...message, parts },
-                { estimateSizeBytes: (value) => getConvexSize(value as Value) },
-              ).message.parts,
-            ) as ChatMessage["parts"],
-        )
-        .catch(() => parts);
+        .then(({ compactMessageForStorage }): StopSnapshot => {
+          const compacted = compactMessageForStorage(
+            { ...message, parts },
+            { estimateSizeBytes: (value) => getConvexSize(value as Value) },
+          );
+          const savedParts = sanitizeForConvexValue(
+            compacted.message.parts,
+          ) as ChatMessage["parts"];
+          return {
+            parts: savedParts,
+            diagnostics: {
+              ...diagnostics,
+              preparation_outcome: compacted.compacted
+                ? "compacted"
+                : "unchanged",
+              after_size_bytes: getConvexSize(savedParts as Value),
+              pruned_count: compacted.prunedCount,
+            },
+          };
+        })
+        .catch(() => ({
+          parts,
+          diagnostics: {
+            ...diagnostics,
+            preparation_outcome: "unavailable" as const,
+            after_size_bytes: beforeSizeBytes,
+            pruned_count: 0,
+          },
+        }));
     } catch {
-      // Keep valid sanitized values and the server's document guard if sizing
-      // cannot handle a future value type. Chunk failures also fall back above.
-      return parts;
+      // Preserve the original sanitized snapshot and server document guard.
+      return { parts };
     }
   };
 
@@ -473,26 +510,57 @@ export const useChatHandlers = ({
     const lastMessage = stoppedMessages[stoppedMessages.length - 1];
     const snapshotParts =
       !options?.skipSave && lastMessage?.role === "assistant"
-        ? getStopSnapshotParts(lastMessage)
+        ? getStopSnapshot(lastMessage)
         : undefined;
-    const parts =
+    const snapshot =
       snapshotParts instanceof Promise ? await snapshotParts : snapshotParts;
+    let snapshotDedupeKey: string | undefined;
+    const recordSaveOutcome = (outcome: "acknowledged" | "rejected") => {
+      if (!snapshot?.diagnostics) return;
+      try {
+        snapshotDedupeKey ??= uuidv4();
+        const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        // One event per oversized Stop attempt. SDK acknowledgment may be an
+        // idempotent no-op; it does not prove these exact parts were inserted.
+        captureQueuedAuthenticatedEvent({
+          event: "chat_stop_snapshot_save_outcome",
+          dedupeKey: snapshotDedupeKey,
+          properties: {
+            diagnostic_version: 1,
+            ...snapshot.diagnostics,
+            save_outcome: outcome,
+            frontend_build_commit:
+              build && /^[a-f0-9]{40}$/i.test(build)
+                ? build.toLowerCase()
+                : "unknown",
+          },
+        });
+      } catch {
+        // Diagnostic delivery cannot change a save or cancellation outcome.
+      }
+    };
     // Preserve insert-before-cancel ordering: the backend's abort save can be
     // update-only and needs the client snapshot to exist before it patches it.
     const savePromise =
-      parts !== undefined && lastMessage?.role === "assistant"
+      snapshot !== undefined && lastMessage?.role === "assistant"
         ? saveAssistantMessage({
             id: lastMessage.id,
             chatId,
             role: lastMessage.role,
-            parts,
+            parts: snapshot.parts,
             mode: lastMessage.metadata?.mode ?? chatModeRef.current,
             generationStartedAt,
             generationTimeMs,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-            if (options?.requireSaveSuccess) throw error;
           })
+            .then((value) => {
+              recordSaveOutcome("acknowledged");
+              return value;
+            })
+            .catch((error) => {
+              recordSaveOutcome("rejected");
+              console.error("Failed to save message on stop:", error);
+              if (options?.requireSaveSuccess) throw error;
+            })
         : Promise.resolve();
     const cancelPromise = cancelStreamMutation({
       chatId,

@@ -2640,6 +2640,24 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
       mockCancelStream.mock.invocationCallOrder[0],
     );
+    const outcomes = mockCaptureCancellationEvent.mock.calls
+      .map(
+        ([input]) =>
+          input as { event: string; properties: Record<string, unknown> },
+      )
+      .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].properties).toMatchObject({
+      diagnostic_version: 1,
+      preparation_outcome: "compacted",
+      save_outcome: "acknowledged",
+      part_count: 261,
+      before_size_bytes: expect.any(Number),
+      after_size_bytes: expect.any(Number),
+    });
+    expect(JSON.stringify(outcomes)).not.toMatch(
+      /synthetic|private|final answer|chat-1|long-stopped/,
+    );
   });
 
   it("bounds numeric-heavy Stop snapshots using Convex size rather than JSON", async () => {
@@ -2714,6 +2732,101 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
+  it.each(["rejected", "analytics_unavailable"] as const)(
+    "keeps oversized Stop outcomes independent of %s",
+    async (scenario) => {
+      const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT =
+        scenario === "rejected" ? "F".repeat(40) : "private-invalid-build";
+      if (scenario === "rejected")
+        mockSaveAssistantMessage.mockRejectedValueOnce(
+          new Error("private synthetic rejection"),
+        );
+      else
+        mockCaptureCancellationEvent.mockImplementation(
+          (...args: unknown[]) => {
+            if (
+              (args[0] as { event?: string })?.event ===
+              "chat_stop_snapshot_save_outcome"
+            )
+              throw new Error("analytics unavailable");
+          },
+        );
+      try {
+        const parts = Array.from({ length: 14 }, () => ({
+          type: "data-value",
+          data: Array(7900).fill(0),
+        })) as ChatMessage["parts"];
+        const { result } = renderHook(() =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages: [
+              messages[0],
+              { id: "private-snapshot", role: "assistant", parts },
+            ],
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate: jest.fn(),
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        );
+        await act(async () => {
+          expect(
+            await result.current.handleStop({ requireSavedResponse: true }),
+          ).toBe(scenario !== "rejected");
+        });
+        expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+        expect(mockCancelStream).toHaveBeenCalledTimes(1);
+        const outcomes = mockCaptureCancellationEvent.mock.calls
+          .map(
+            ([input]) =>
+              input as { event: string; properties: Record<string, unknown> },
+          )
+          .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+        expect(outcomes).toHaveLength(1);
+        if (scenario === "analytics_unavailable") {
+          const index = mockCaptureCancellationEvent.mock.calls.findIndex(
+            ([input]) =>
+              (input as { event?: string })?.event ===
+              "chat_stop_snapshot_save_outcome",
+          );
+          expect(mockCaptureCancellationEvent.mock.results[index].type).toBe(
+            "throw",
+          );
+        }
+        expect(outcomes[0].properties).toMatchObject({
+          save_outcome: scenario === "rejected" ? "rejected" : "acknowledged",
+          frontend_build_commit:
+            scenario === "rejected" ? "f".repeat(40) : "unknown",
+        });
+        expect(Object.keys(outcomes[0].properties as object).sort()).toEqual(
+          [
+            "diagnostic_version",
+            "preparation_outcome",
+            "before_size_bytes",
+            "after_size_bytes",
+            "part_count",
+            "pruned_count",
+            "save_outcome",
+            "frontend_build_commit",
+          ].sort(),
+        );
+        expect(JSON.stringify(outcomes)).not.toMatch(
+          /private|chat-1|synthetic/,
+        );
+      } finally {
+        mockCaptureCancellationEvent.mockReset();
+        if (originalBuild === undefined)
+          delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+      }
+    },
+  );
+
   it("preserves small Convex-native values and cancellation", async () => {
     const parts = [
       { type: "text", text: "small response" },
@@ -2744,6 +2857,11 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
       expect.objectContaining({ id: "native-values", parts }),
     );
+    expect(
+      mockCaptureCancellationEvent.mock.calls
+        .map(([input]) => input as { event: string })
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome"),
+    ).toHaveLength(0);
     expect(mockCancelStream).toHaveBeenCalledTimes(1);
   });
 
