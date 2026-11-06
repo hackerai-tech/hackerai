@@ -2,8 +2,6 @@ import { captureGoalLifecycle } from "./analytics";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import PostHogClient from "@/app/posthog";
-import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
-import { GOAL_FLAG } from "./contracts";
 import { getCurrentAgentEntitlementContext } from "@/lib/db/actions";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -34,25 +32,6 @@ export async function getGoal(
     userId,
   });
 }
-export async function goalEnabled(
-  userId: string,
-  subscription: string,
-): Promise<boolean> {
-  if (subscription === "free") return false;
-  const posthog = PostHogClient();
-  if (!posthog) return false;
-  try {
-    return (
-      (await getPostHogFlagWithoutExposure(posthog, GOAL_FLAG, userId, {
-        subscription,
-      })) === true
-    );
-  } catch {
-    return false;
-  } finally {
-    await posthog.shutdown().catch(() => undefined);
-  }
-}
 export async function assertGoalExecutionAllowed(
   payload: GoalExecutionContext,
 ) {
@@ -62,9 +41,9 @@ export async function assertGoalExecutionAllowed(
     organizationId: payload.organizationId,
   });
   if (
+    fresh.subscription === "free" ||
     fresh.subscription !== payload.subscription ||
-    fresh.organizationId !== payload.organizationId ||
-    !(await goalEnabled(payload.userId, fresh.subscription))
+    fresh.organizationId !== payload.organizationId
   ) {
     throw new ChatSDKError(
       "forbidden:chat",

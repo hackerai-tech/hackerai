@@ -2,7 +2,7 @@ import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
-import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
 import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
@@ -814,8 +814,7 @@ export const createAgentTriggerPost = ({
           limitRescue ||
           (regenerate &&
             (goalRequest.action !== "resume" ||
-              goalRequest.expectedGeneration === undefined)) ||
-          !(await goalEnabled(userId, subscription)))
+              goalRequest.expectedGeneration === undefined)))
       )
         throw new ChatSDKError(
           "forbidden:chat",
