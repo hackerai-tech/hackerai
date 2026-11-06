@@ -545,3 +545,34 @@ test("preserves a short older reply within the total budget after several long m
     '"reply":"Yes"',
   );
 });
+
+test.each(["Confirmed: " + "r".repeat(230), "Confirmed: " + "\\".repeat(230)])(
+  "keeps an older delivered reply when its question and escaped text strain the budget",
+  (reply) => {
+    const sources = buildPredictionSources([
+      ...Array.from({ length: 5 }, (_, i) =>
+        message(`long-${i}`, "x".repeat(5000)),
+      ),
+      {
+        id: "older",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-wait_for_user",
+            state: "output-available",
+            input: { questions: [{ question: "q".repeat(200) }] },
+            output: { success: true, wait_outcome: "message_arrived", reply },
+          },
+        ],
+      },
+    ]);
+    const text = sources.find((source) => source.id === "older")!.text;
+    expect(text).toContain('"reply":"Confirmed: ');
+    expect(text).toContain('"waitOutcome":"message_arrived"');
+    expect(text).toContain('"questionsOmitted":true');
+    expect(
+      sources.reduce((sum, source) => sum + source.text.length, 0),
+    ).toBeLessThanOrEqual(12000);
+    if (reply.includes("\\")) expect(text).toContain("[truncated]");
+  },
+);

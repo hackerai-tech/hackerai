@@ -1,7 +1,11 @@
 /** Tool history for predictions is evidence of activity, not an execution transcript.
  * Keep names/states and actual wait replies; never forward commands, file content,
  * credentials, approval tokens, or arbitrary tool payloads. */
-type ToolEvent = { text: string; order: number };
+type ToolEvent = {
+  text: string;
+  order: number;
+  wait?: Record<string, unknown>;
+};
 
 export function predictionToolEvents(parts: unknown[]): ToolEvent[] {
   const waits: ToolEvent[] = [];
@@ -50,7 +54,7 @@ export function predictionToolEvents(parts: unknown[]): ToolEvent[] {
           event.reply = bounded(output.reply, 240);
         }
       }
-      waits.push({ text: JSON.stringify(event), order });
+      waits.push({ text: JSON.stringify(event), order, wait: event });
     } else others.push({ text: JSON.stringify(event), order });
   }
   // Preserve the latest interaction even when many intervening tools ran.
@@ -95,9 +99,10 @@ export function renderPredictionToolContext(
   const kept: ToolEvent[] = [];
   let available = budget - prefix.length - omitted.length;
   for (const event of events) {
-    if (event.text.length + 1 > available) continue;
-    kept.push(event);
-    available -= event.text.length + 1;
+    const text = fitToolEvent(event, available - 1);
+    if (!text) continue;
+    kept.push({ ...event, text });
+    available -= text.length + 1;
   }
   return (
     prefix +
@@ -107,4 +112,34 @@ export function renderPredictionToolContext(
       .join("\n") +
     (kept.length < events.length ? omitted : "")
   );
+}
+
+/** Prefer a delivered reply over its question when an older turn has less room.
+ * Measure serialized size so escaped characters cannot overflow the budget. */
+function fitToolEvent(event: ToolEvent, budget: number): string | undefined {
+  if (event.text.length <= budget) return event.text;
+  if (!event.wait || typeof event.wait.reply !== "string") return undefined;
+  const compact = { ...event.wait };
+  if (compact.questions) {
+    delete compact.questions;
+    compact.questionsOmitted = true;
+  }
+  const withoutQuestion = JSON.stringify(compact);
+  if (withoutQuestion.length <= budget) return withoutQuestion;
+  const reply = event.wait.reply;
+  let result: string | undefined;
+  let low = 1;
+  let high = reply.length - 1;
+  while (low <= high) {
+    const length = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify({
+      ...compact,
+      reply: bounded(reply, length),
+    });
+    if (candidate.length <= budget) {
+      result = candidate;
+      low = length + 1;
+    } else high = length - 1;
+  }
+  return result;
 }
