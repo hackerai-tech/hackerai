@@ -163,9 +163,11 @@ export function createTerminalRecordStore(
   };
 
   return {
+    /** Keep server logging behind the adapter used by the shared session manager. */
     reportCheckpointIssue(issue: RecordCheckpointIssue): void {
       phLogger.info("terminal_record_checkpoint_unconfirmed", {
-        terminal_scope_id: scopeId,
+        // Scope IDs can be client-controlled; reuse the store's opaque digest.
+        terminal_scope_fingerprint: scope,
         terminal_session_id: issue.terminalSessionId,
         session_kind: issue.sessionKind,
         reason: issue.reason,

@@ -35,9 +35,9 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     const store = createTerminalRecordStore(
       { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
       "PRIVATE_USER",
-      "opaque-chat",
+      "PRIVATE_SCOPE",
     );
-    const session = await manager.create("opaque-chat", {
+    const session = await manager.create("PRIVATE_SCOPE", {
       createHandle: async () => handle,
       cols: 120,
       rows: 30,
@@ -75,7 +75,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       [
         "terminal_record_checkpoint_unconfirmed",
         {
-          terminal_scope_id: "opaque-chat",
+          terminal_scope_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
           terminal_session_id: session.sessionId,
           session_kind: "command",
           reason: "save_unacknowledged",
@@ -86,7 +86,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       [
         "terminal_record_checkpoint_unconfirmed",
         {
-          terminal_scope_id: "opaque-chat",
+          terminal_scope_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
           terminal_session_id: session.sessionId,
           session_kind: "command",
           reason: "checkpoint_threw",
@@ -161,6 +161,32 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     expect(info).toHaveBeenCalledTimes(1);
   });
 
+  it("reports an unacknowledged save that arrives after its first wait deadline", async () => {
+    let release!: (path: string | null) => void;
+    const save = jest.fn(
+      () => new Promise<string | null>((resolve) => (release = resolve)),
+    );
+    const { manager, session } = await fixture(save);
+    const writing = manager.checkpoint(session);
+    try {
+      await jest.advanceTimersByTimeAsync(2_100);
+      await writing;
+      expect(info.mock.calls.map(([, fields]) => fields?.reason)).toEqual([
+        "wait_deadline",
+      ]);
+      release(null);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(info.mock.calls.map(([, fields]) => fields?.reason)).toEqual([
+        "wait_deadline",
+        "save_unacknowledged",
+      ]);
+    } finally {
+      release(null);
+      await jest.advanceTimersByTimeAsync(0);
+      save.mockResolvedValue(null);
+    }
+  });
+
   it("preserves persistence results when the diagnostic sink throws", async () => {
     info.mockImplementation(() => {
       throw new Error("PRIVATE_SINK_ERROR");
@@ -198,5 +224,10 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       info.mock.calls.map(([, fields]) => fields?.terminal_session_id),
     ).toEqual([first.session.sessionId, second.session.sessionId]);
     expect(first.session.sessionId).not.toBe(second.session.sessionId);
+    expect(
+      new Set(
+        info.mock.calls.map(([, fields]) => fields?.terminal_scope_fingerprint),
+      ).size,
+    ).toBe(1);
   });
 });
