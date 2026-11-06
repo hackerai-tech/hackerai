@@ -1434,29 +1434,32 @@ const ChatInputContent = ({
 
           {/* Hidden selectors take no space; the bottom-anchored composer stays
               in place while the panels above it use the available height. */}
-          {user && isAgent && !showAgentApprovalPrompt && (
-            <div
-              className={`relative z-0 mb-1 min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "hidden" : "flex"}`}
-              data-testid="chat-input-agent-context"
-              aria-hidden={mobileSandboxHidden || undefined}
-              inert={mobileSandboxHidden || undefined}
-              onPointerDownCapture={holdComposerFocusForPointer}
-            >
+          {user &&
+            isAgent &&
+            !showAgentApprovalPrompt &&
+            !isWaitingForReply && (
               <div
-                className="min-w-0 max-w-full"
-                data-testid="chat-input-mobile-sandbox"
+                className={`relative z-0 mb-1 min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "hidden" : "flex"}`}
+                data-testid="chat-input-agent-context"
+                aria-hidden={mobileSandboxHidden || undefined}
+                inert={mobileSandboxHidden || undefined}
+                onPointerDownCapture={holdComposerFocusForPointer}
               >
-                <SandboxSelector
-                  value={sandboxPreference}
-                  onChange={setSandboxPreference}
-                  compact
-                  size="sm"
-                  menuAlign="end"
-                  className="h-8 rounded-full border bg-background/95 shadow-sm backdrop-blur-md"
-                />
+                <div
+                  className="min-w-0 max-w-full"
+                  data-testid="chat-input-mobile-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    compact
+                    size="sm"
+                    menuAlign="end"
+                    className="h-8 rounded-full border bg-background/95 shadow-sm backdrop-blur-md"
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
           {user && (
             <div
@@ -1491,16 +1494,9 @@ const ChatInputContent = ({
                     isOffline ||
                     !!effectiveSendDisabledReason
                   }
-                  canAdvance={questionAnswers.canAdvance}
                   answersLocked={questionAnswers.locked}
                   stopping={isStoppingAgent}
                   onSelect={questionAnswers.select}
-                  onAdvance={() =>
-                    void handleSubmit({
-                      preventDefault() {},
-                    } as React.FormEvent)
-                  }
-                  onBack={() => questionAnswers.go(questionAnswers.index - 1)}
                   onStop={
                     pendingUserWait && !hideStop
                       ? () => void handleAgentStop()
@@ -1638,9 +1634,11 @@ const ChatInputContent = ({
                 hasQuestionPanel
                   ? questionAnswers.question?.allowCustomAnswer === false
                     ? "Choose an option above"
-                    : "Type your own answer, or leave blank to use the selected option"
+                    : questionAnswers.question?.options.length
+                      ? "Choose an option or type your answer…"
+                      : "Type your answer…"
                   : isWaitingForReply
-                    ? "Reply to continue the Agent…"
+                    ? "Type your answer…"
                     : goalMode
                       ? "Describe your goal, define measurable outcomes for best results"
                       : placeholder
@@ -1677,6 +1675,24 @@ const ChatInputContent = ({
               }}
             />
             <ChatInputToolbar
+              replyActionLabel={
+                isWaitingForReply
+                  ? questionAnswers.index < answerQuestions.length - 1
+                    ? "Next"
+                    : answerQuestions.length > 1
+                      ? "Submit answers"
+                      : "Submit answer"
+                  : undefined
+              }
+              replyBack={
+                isWaitingForReply && questionAnswers.index > 0
+                  ? {
+                      onClick: () =>
+                        questionAnswers.go(questionAnswers.index - 1),
+                      disabled: submissionPending || isStoppingAgent,
+                    }
+                  : undefined
+              }
               goalMenu={
                 !isWaitingForReply &&
                 isMobile !== undefined &&
@@ -1734,8 +1750,10 @@ const ChatInputContent = ({
               chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={
-                questionKey && submissionPending
-                  ? "Sending your answer…"
+                questionKey && (submissionPending || isStoppingAgent)
+                  ? isStoppingAgent
+                    ? "Stopping…"
+                    : "Sending your answer…"
                   : goalMode && !isWaitingForReply && !input.trim()
                     ? "Describe your goal before sending."
                     : effectiveSendDisabledReason

@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Check } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  Check,
+  MessageCircleQuestionMark,
+} from "lucide-react";
 import type {
   UserInputQuestion,
   UserInputAnswer,
@@ -16,10 +21,7 @@ export function UserInputQuestionPanel({
   total,
   disabled,
   answersLocked = false,
-  canAdvance,
   onSelect,
-  onAdvance,
-  onBack,
   onStop,
   stopping = false,
 }: {
@@ -29,30 +31,14 @@ export function UserInputQuestionPanel({
   total: number;
   disabled: boolean;
   answersLocked?: boolean;
-  canAdvance: boolean;
   onSelect: (value: string) => void;
-  onAdvance: () => void;
-  onBack: () => void;
   onStop?: () => void;
   stopping?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const advance = useRef(onAdvance);
-  useEffect(() => {
-    advance.current = onAdvance;
-  });
-  useEffect(() => () => clearTimeout(timer.current), [question.id]);
-  useEffect(() => {
-    if (disabled || answersLocked || answer.customAnswer)
-      clearTimeout(timer.current);
-  }, [disabled, answersLocked, answer.customAnswer]);
   const select = (value: string) => {
     if (disabled || answersLocked) return;
     onSelect(value);
-    clearTimeout(timer.current);
-    if (!question.multiSelect)
-      timer.current = setTimeout(() => advance.current(), 200);
   };
   const selectRef = useRef(select);
   useEffect(() => {
@@ -95,8 +81,15 @@ export function UserInputQuestionPanel({
           type="button"
           onClick={() => setCollapsed(!collapsed)}
           aria-expanded={!collapsed}
-          className="flex min-w-0 flex-1 items-center gap-2 py-2 text-left text-xs text-muted-foreground"
+          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
+          <span className="flex shrink-0 items-center gap-1.5 font-medium text-indigo-600 dark:text-indigo-300">
+            <MessageCircleQuestionMark
+              className="size-3.5"
+              aria-hidden="true"
+            />
+            Input
+          </span>
           <span className="truncate">{question.header}</span>
           {collapsed && (
             <span className="min-w-0 flex-1 truncate">{question.question}</span>
@@ -115,7 +108,7 @@ export function UserInputQuestionPanel({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 px-2 text-xs text-muted-foreground"
+            className="h-10 px-2 text-xs text-muted-foreground sm:h-8"
             onClick={onStop}
             disabled={stopping}
           >
@@ -124,8 +117,8 @@ export function UserInputQuestionPanel({
         )}
       </div>
       {!collapsed && (
-        <div className="max-h-[35dvh] overflow-y-auto px-3 pb-1">
-          <div className="min-w-0 break-words px-1 pb-2 text-sm">
+        <div className="max-h-[30dvh] overflow-y-auto overscroll-contain px-3 pb-1">
+          <div className="min-w-0 break-words px-1 pb-1 text-sm">
             <MemoizedMarkdown content={question.question} />
           </div>
           <div className="space-y-0.5">
@@ -140,17 +133,17 @@ export function UserInputQuestionPanel({
                   aria-pressed={selected}
                   disabled={disabled || answersLocked}
                   onClick={() => select(option.value)}
-                  className="flex w-full items-start gap-2.5 rounded-md px-1 py-2 text-left text-foreground/80 outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`flex min-h-11 w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-indigo-500/10 text-foreground" : "text-foreground/80"}`}
                 >
                   <span
                     aria-hidden="true"
-                    className={`mt-0.5 flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? "rounded" : "rounded-full"} ${selected ? "border-foreground bg-foreground text-background" : "border-muted-foreground/60"}`}
+                    className={`mt-0.5 flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? "rounded" : "rounded-full"} ${selected ? "border-indigo-600 bg-indigo-600 text-white dark:border-indigo-300 dark:bg-indigo-300 dark:text-background" : "border-muted-foreground/60"}`}
                   >
                     {selected &&
                       (question.multiSelect ? (
                         <Check className="size-3" />
                       ) : (
-                        <span className="size-1.5 rounded-full bg-background" />
+                        <span className="size-1.5 rounded-full bg-white dark:bg-background" />
                       ))}
                   </span>
                   <span className="min-w-0 flex-1 break-words">
@@ -163,34 +156,12 @@ export function UserInputQuestionPanel({
                       </span>
                     )}
                   </span>
-                  <kbd className="mt-0.5 shrink-0 rounded border px-1 text-[10px] text-muted-foreground">
+                  <kbd className="mt-0.5 hidden shrink-0 rounded border px-1 text-[10px] text-muted-foreground sm:block">
                     {optionIndex + 1}
                   </kbd>
                 </button>
               );
             })}
-          </div>
-          <div className="mt-1 flex items-center justify-end gap-1">
-            {index > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onBack}
-                disabled={disabled}
-              >
-                Back
-              </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onAdvance}
-              disabled={disabled || !canAdvance}
-            >
-              {index + 1 < total ? "Next" : "Submit answer"}
-            </Button>
           </div>
         </div>
       )}

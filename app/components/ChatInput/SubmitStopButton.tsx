@@ -79,6 +79,7 @@ export interface SubmitStopButtonProps {
   isOnline?: boolean;
   sendDisabledReason?: string;
   isReplyingToAgent?: boolean;
+  replyActionLabel?: string;
 }
 
 export function SubmitStopButton({
@@ -98,6 +99,7 @@ export function SubmitStopButton({
   isOnline = true,
   sendDisabledReason,
   isReplyingToAgent = false,
+  replyActionLabel = "Submit answer",
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -162,17 +164,21 @@ export function SubmitStopButton({
                       : !input.trim() && uploadedFiles.length === 0)
                   }
                   variant="default"
-                  className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
+                  className={`${isReplyingToAgent ? "h-10 min-w-0 rounded-full px-4 text-sm sm:h-8" : BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
                   aria-label={
                     isReplyingToAgent
-                      ? "Send reply and resume agent"
+                      ? replyActionLabel
                       : pausesGoal
                         ? "Send message and pause goal"
                         : "Send message"
                   }
                   data-testid="send-button"
                 >
-                  <ArrowUp size={15} strokeWidth={3} />
+                  {isReplyingToAgent ? (
+                    replyActionLabel
+                  ) : (
+                    <ArrowUp size={15} strokeWidth={3} />
+                  )}
                 </Button>
               </div>
             </TooltipTrigger>

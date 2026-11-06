@@ -1857,6 +1857,83 @@ describe("ChatInput - Integration Tests", () => {
     });
 
     it.each(["wait", "goal"])(
+      "requires explicit submission for a %s single choice and keeps selection after reload",
+      async (kind) => {
+        jest.useFakeTimers();
+        try {
+          mockSandboxState = {
+            chatMode: "agent",
+            subscription: "pro",
+            isCheckingProPlan: false,
+          };
+          const questions = [
+            {
+              id: "label",
+              header: "Label",
+              question: "Alpha or Beta?",
+              options: [
+                { value: "alpha", label: "Alpha" },
+                { value: "beta", label: "Beta" },
+              ],
+            },
+          ];
+          const ui = (
+            <TestWrapper>
+              <ChatInput
+                chatId={`explicit-${kind}`}
+                onSubmit={mockOnSubmit}
+                onStop={mockOnStop}
+                status="ready"
+                {...(kind === "wait"
+                  ? {
+                      pendingUserWait: {
+                        runId: "explicit-run",
+                        toolCallId: "explicit-call",
+                        status: "waiting" as const,
+                        questions,
+                      },
+                    }
+                  : { pendingGoalQuestions: { generation: 1, questions } })}
+              />
+            </TestWrapper>
+          );
+          const view = render(ui);
+          fireEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+          act(() => jest.advanceTimersByTime(1000));
+          expect(mockOnSubmit).not.toHaveBeenCalled();
+          expect(screen.getByRole("button", { name: /Alpha/ })).toHaveAttribute(
+            "aria-pressed",
+            "true",
+          );
+          fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
+          view.unmount();
+          render(ui);
+          expect(
+            await screen.findByRole("button", { name: /Beta/ }),
+          ).toHaveAttribute("aria-pressed", "true");
+          const submit = screen.getByRole("button", {
+            name: "Submit answer",
+            exact: true,
+          });
+          expect(
+            screen.getByTestId("chat-input-primary-actions"),
+          ).toContainElement(submit);
+          fireEvent.click(submit);
+          await waitFor(() =>
+            expect(mockOnSubmit).toHaveBeenCalledWith(
+              expect.anything(),
+              "Beta",
+              true,
+            ),
+          );
+          expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+        } finally {
+          jest.useRealTimers();
+        }
+      },
+    );
+
+    it.each(["wait", "goal"])(
       "submits question choices and a custom composer answer for %s, preserving them after failure",
       async (kind) => {
         const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
@@ -2223,7 +2300,7 @@ describe("ChatInput - Integration Tests", () => {
 
         expect(
           await screen.findByTestId("waiting-for-reply-banner"),
-        ).toHaveTextContent("Waiting for your reply");
+        ).toHaveTextContent("Input");
         const input = screen.getByRole("textbox");
         expect(input).toHaveAttribute(
           "aria-describedby",
@@ -2231,7 +2308,7 @@ describe("ChatInput - Integration Tests", () => {
         );
         fireEvent.change(input, { target: { value: "Use the first option" } });
         const send = screen.getByRole("button", {
-          name: "Send reply and resume agent",
+          name: "Submit answer",
         });
         expect(send).toBeEnabled();
         fireEvent.click(send);

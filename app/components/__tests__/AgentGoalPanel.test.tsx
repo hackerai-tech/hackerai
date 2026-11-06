@@ -496,6 +496,44 @@ describe("goal controls", () => {
     },
   );
 
+  it.each([false, true])(
+    "keeps Goal controls accessible without a second reply form when tool wait is %s",
+    async (toolWait) => {
+      setMockQueryResult({
+        ...goal,
+        state: toolWait ? "running" : "needs_input",
+      });
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          waitingForReply={toolWait}
+          send={jest.fn()}
+          onEdit={jest.fn()}
+          settings={settings}
+        />,
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Input");
+      expect(
+        screen.queryByRole("button", { name: "Clear goal" }),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Show goal details" }),
+      );
+      expect(screen.getByRole("button", { name: "Clear goal" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Edit goal" })).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Resume goal" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("textbox", { name: "Goal reply" }),
+      ).not.toBeInTheDocument();
+      await act(async () => {});
+    },
+  );
+
   it.each(["running", "paused", "needs_input", "budget_exhausted"])(
     "keeps useful status context without verification details for an unfinished %s goal",
     async (state) => {

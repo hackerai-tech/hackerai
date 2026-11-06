@@ -29,7 +29,7 @@ export function WaitingForReplyBanner({
       />
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium leading-5 text-foreground">
-          {submitting ? "Sending reply…" : "Waiting for your reply"}
+          {submitting ? "Sending reply…" : "Input"}
         </p>
         <p
           id={WAITING_FOR_REPLY_DESCRIPTION_ID}
