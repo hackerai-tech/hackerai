@@ -1,6 +1,7 @@
 import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
 import { useRef, RefObject, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
+import { getConvexSize, type Value } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
@@ -235,25 +236,28 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const getStopSnapshotParts = async (message: ChatMessage) => {
+  const getStopSnapshotParts = (
+    message: ChatMessage,
+  ): ChatMessage["parts"] | Promise<ChatMessage["parts"]> => {
     const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
     try {
       // Match normal saves' storage compaction without loading the tokenizer
       // for small snapshots or replacing the full response in local state.
-      if (
-        new TextEncoder().encode(JSON.stringify(parts)).byteLength <=
-        850 * 1024
-      ) {
-        return parts;
-      }
-      const { compactMessageForStorage } =
-        await import("@/lib/chat/compaction/prune-tool-outputs");
-      return sanitizeForConvexValue(
-        compactMessageForStorage({ ...message, parts }).message.parts,
-      ) as ChatMessage["parts"];
+      if (getConvexSize(parts as Value) <= 850 * 1024) return parts;
+      return import("@/lib/chat/compaction/prune-tool-outputs")
+        .then(
+          ({ compactMessageForStorage }) =>
+            sanitizeForConvexValue(
+              compactMessageForStorage(
+                { ...message, parts },
+                { estimateSizeBytes: (value) => getConvexSize(value as Value) },
+              ).message.parts,
+            ) as ChatMessage["parts"],
+        )
+        .catch(() => parts);
     } catch {
-      // A chunk-load failure or non-JSON Convex value must not prevent Stop.
-      // Keep the original sanitized snapshot and the server's document guard.
+      // Keep valid sanitized values and the server's document guard if sizing
+      // cannot handle a future value type. Chunk failures also fall back above.
       return parts;
     }
   };
@@ -466,33 +470,35 @@ export const useChatHandlers = ({
       setMessages(stoppedMessages);
     }
 
-    // Start cancellation before snapshot preparation can load or run compaction.
+    const lastMessage = stoppedMessages[stoppedMessages.length - 1];
+    const snapshotParts =
+      !options?.skipSave && lastMessage?.role === "assistant"
+        ? getStopSnapshotParts(lastMessage)
+        : undefined;
+    const parts =
+      snapshotParts instanceof Promise ? await snapshotParts : snapshotParts;
+    // Preserve insert-before-cancel ordering: the backend's abort save can be
+    // update-only and needs the client snapshot to exist before it patches it.
+    const savePromise =
+      parts !== undefined && lastMessage?.role === "assistant"
+        ? saveAssistantMessage({
+            id: lastMessage.id,
+            chatId,
+            role: lastMessage.role,
+            parts,
+            mode: lastMessage.metadata?.mode ?? chatModeRef.current,
+            generationStartedAt,
+            generationTimeMs,
+          }).catch((error) => {
+            console.error("Failed to save message on stop:", error);
+            if (options?.requireSaveSuccess) throw error;
+          })
+        : Promise.resolve();
     const cancelPromise = cancelStreamMutation({
       chatId,
       skipSave: options?.skipSave || undefined,
       todos,
     });
-    const lastMessage = stoppedMessages[stoppedMessages.length - 1];
-    const savePromise =
-      !options?.skipSave && lastMessage?.role === "assistant"
-        ? getStopSnapshotParts(lastMessage)
-            .then((parts) =>
-              saveAssistantMessage({
-                id: lastMessage.id,
-                chatId,
-                role: lastMessage.role,
-                parts,
-                mode: lastMessage.metadata?.mode ?? chatModeRef.current,
-                generationStartedAt,
-                generationTimeMs,
-              }),
-            )
-            .catch((error) => {
-              console.error("Failed to save message on stop:", error);
-              if (options?.requireSaveSuccess) throw error;
-            })
-        : Promise.resolve();
-
     await Promise.all([
       options?.requireCancelSuccess
         ? cancelPromise

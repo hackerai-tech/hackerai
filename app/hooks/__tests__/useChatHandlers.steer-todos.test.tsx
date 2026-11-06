@@ -2637,12 +2637,82 @@ describe("useChatHandlers steer todo handoff", () => {
       ]),
     );
     expect(mockCancelStream).toHaveBeenCalledTimes(1);
-    expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSaveAssistantMessage.mock.invocationCallOrder[0],
+    expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelStream.mock.invocationCallOrder[0],
     );
   });
 
-  it("retains Convex-native values and cancellation when snapshot sizing cannot use JSON", async () => {
+  it("bounds numeric-heavy Stop snapshots using Convex size rather than JSON", async () => {
+    const { getConvexSize } = await import("convex/values");
+    const parts = Array.from({ length: 14 }, () => ({
+      type: "data-value",
+      data: Array(7900).fill(0),
+    })) as ChatMessage["parts"];
+    expect(JSON.stringify(parts).length).toBeLessThan(850 * 1024);
+    expect(getConvexSize(parts as any)).toBeGreaterThan(960 * 1024);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "numeric-stop", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    const saved = mockSaveAssistantMessage.mock.calls[0].at(0) as unknown as {
+      parts: ChatMessage["parts"];
+    };
+    expect(getConvexSize(saved.parts as any)).toBeLessThanOrEqual(850 * 1024);
+    expect(parts[0]).toEqual({ type: "data-value", data: Array(7900).fill(0) });
+  });
+
+  it("preserves a Convex-sized snapshot even when JSON escaping inflates its estimate", async () => {
+    const parts = [
+      { type: "text", text: '"'.repeat(500_000) },
+    ] as ChatMessage["parts"];
+    expect(JSON.stringify(parts).length).toBeGreaterThan(850 * 1024);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "quoted-stop", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ parts }),
+    );
+    expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelStream.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("preserves small Convex-native values and cancellation", async () => {
     const parts = [
       { type: "text", text: "small response" },
       { type: "data-value", data: { counter: 1n } },
