@@ -158,12 +158,18 @@ export function hasExplicitPredictionStop(
   const latest =
     sources.findLast((source) => source.role === "user")?.text ?? "";
   return (
-    /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+here)?[.!]?\s*$/i.test(
+    /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(
       latest,
     ) ||
     /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?)\b/i.test(
       latest,
     ) ||
-    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(latest)
+    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(latest) ||
+    /\b(?:and|then)\s+stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(latest) ||
+    /^(?:thanks[,.!]\s*)?(?:please\s+)?(?:cancel|stop)(?:\s+(?:that|this)(?:\s+(?:task|request|review))?)?[.!]?\s*$/i.test(
+      latest.trim(),
+    ) ||
+    /\bno more on this[.!]?\s*$/i.test(latest) ||
+    /\bdo not suggest (?:a |any )?follow[ -]?ups?\b/i.test(latest)
   );
 }

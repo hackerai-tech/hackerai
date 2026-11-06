@@ -267,6 +267,11 @@ test.each([
   "Cancel the review. Do not continue.",
   "Thanks. No more suggestions.",
   "Explain it without any follow-ups.",
+  "Define a cache miss and stop there.",
+  "Please cancel this review.",
+  "Stop that request.",
+  "Thanks, no more on this.",
+  "Explain a nonce. Do not suggest any follow-ups afterwards.",
 ])("suppresses a prediction after a clear conversational stop: %s", (text) => {
   expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
     true,
@@ -301,4 +306,26 @@ test("finishing one step while asking for another is not a conversational stop",
       { id: "u", role: "user", text: "Thanks, I'm done." },
     ]),
   ).toBe(true);
+});
+
+test.each([
+  "Cancel that approach and use a local fixture instead.",
+  "No more on this. Explain the next topic instead.",
+  "How do I cancel a database query?",
+  "Then stop the service and inspect its log.",
+  "I'm done with setup; help me try the first command.",
+])("keeps an explicit continuation or technical stop request: %s", (text) => {
+  expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
+    false,
+  );
+});
+
+test("a later user request supersedes an earlier cancellation", () => {
+  expect(
+    hasExplicitPredictionStop([
+      { id: "u1", role: "user", text: "Please cancel that task." },
+      { id: "a", role: "assistant", text: "Cancelled." },
+      { id: "u2", role: "user", text: "Explain the other approach." },
+    ]),
+  ).toBe(false);
 });

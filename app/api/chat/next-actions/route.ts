@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
       return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
-      prompt_version: "codex-single-reply-v3",
+      prompt_version: "natural-single-reply-v4",
       draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
       provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,
