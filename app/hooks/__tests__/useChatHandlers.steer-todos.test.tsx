@@ -244,6 +244,73 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it.each([400, 409, 425])(
+    "retains a rejected reply and permits resubmission after HTTP %s",
+    async (status) => {
+      jest.useFakeTimers();
+      try {
+        mockInput = "Keep this answer";
+        jest
+          .mocked(global.fetch)
+          .mockResolvedValue({ ok: false, status } as Response);
+        const { result } = renderHook(() =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages,
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate: jest.fn(),
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            pendingUserWait: {
+              runId: "run-1",
+              toolCallId: "tool-1",
+              status: "waiting",
+            },
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        );
+        let submission!: Promise<boolean>;
+        await act(async () => {
+          submission = result.current.handleSubmit({
+            preventDefault: jest.fn(),
+          } as any);
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        if (status === 425) {
+          for (const [index, delay] of [250, 500, 750].entries()) {
+            expect(fetch).toHaveBeenCalledTimes(index + 1);
+            await act(async () => {
+              await jest.advanceTimersByTimeAsync(delay - 1);
+            });
+            expect(fetch).toHaveBeenCalledTimes(index + 1);
+            await act(async () => {
+              await jest.advanceTimersByTimeAsync(1);
+            });
+          }
+        }
+        expect(await submission).toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(status === 425 ? 4 : 1);
+        expect(mockClearInput).not.toHaveBeenCalled();
+        jest
+          .mocked(global.fetch)
+          .mockResolvedValue({ ok: true, status: 200 } as Response);
+        await act(async () => {
+          expect(
+            await result.current.handleSubmit({
+              preventDefault: jest.fn(),
+            } as any),
+          ).toBe(true);
+        });
+        expect(mockClearInput).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   it("does not clear a reply draft after the chat unmounts", async () => {
     mockInput = "Use option A";
     let resolveReply!: (response: Response) => void;

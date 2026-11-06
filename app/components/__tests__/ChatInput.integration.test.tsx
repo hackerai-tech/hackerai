@@ -2023,8 +2023,10 @@ describe("ChatInput - Integration Tests", () => {
         });
         if (kind === "goal") {
           expect(submit).toBeDisabled();
+          expect(screen.getByRole("textbox")).toHaveValue("Continue");
           fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
           expect(mockOnSubmit).not.toHaveBeenCalled();
+          expect(screen.getByRole("textbox")).toHaveValue("Continue");
         } else {
           await waitFor(() => expect(submit).toBeEnabled());
           fireEvent.click(submit);
