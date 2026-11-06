@@ -3159,7 +3159,10 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.keyDown(input, { key: "Tab" });
       expect(input).toHaveValue("日本語");
       fireEvent.keyDown(input, { key: "Escape", ...compositionEvent });
-      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
     },
   );
 
@@ -3291,7 +3294,10 @@ describe("ChatInput - Integration Tests", () => {
       const first = render(ui());
       const input = await screen.findByRole("textbox");
       expect(input).toHaveValue("Verify this goal");
-      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Send message" }),
@@ -3309,7 +3315,10 @@ describe("ChatInput - Integration Tests", () => {
       mockOnSubmit.mockResolvedValue(true);
       const second = render(ui());
       const restored = await screen.findByRole("textbox");
-      expect(restored).toHaveAttribute("placeholder", "Describe your goal");
+      expect(restored).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Send message" }),
@@ -3325,7 +3334,7 @@ describe("ChatInput - Integration Tests", () => {
       render(ui());
       expect(await screen.findByRole("textbox")).not.toHaveAttribute(
         "placeholder",
-        "Describe your goal",
+        "Describe your goal, define measurable outcomes for best results",
       );
     },
   );
@@ -3397,7 +3406,7 @@ describe("ChatInput - Integration Tests", () => {
     );
     expect(screen.getByRole("textbox")).toHaveAttribute(
       "placeholder",
-      "Describe your goal",
+      "Describe your goal, define measurable outcomes for best results",
     );
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
     await waitFor(() =>
@@ -3605,7 +3614,10 @@ describe("ChatInput - Integration Tests", () => {
       );
       await waitFor(() => expect(input).toHaveFocus());
       expect(input).toHaveValue("Verify the attached file");
-      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
       expect(screen.getByText("goal-context.txt")).toBeVisible();
       expect(mockOnSubmit).not.toHaveBeenCalled();
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
@@ -3686,7 +3698,10 @@ describe("ChatInput - Integration Tests", () => {
     });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(mockOnSubmit).not.toHaveBeenCalled();
-    expect(input).toHaveAttribute("placeholder", "Describe your goal");
+    expect(input).toHaveAttribute(
+      "placeholder",
+      "Describe your goal, define measurable outcomes for best results",
+    );
     fireEvent.change(input, { target: { value: "Create a marker" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() =>
@@ -3750,7 +3765,10 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnSubmit).not.toHaveBeenCalled();
       expect(input).toHaveValue(objective);
       expect(screen.getByText("inline-goal.txt")).toBeVisible();
-      expect(input).toHaveAttribute("placeholder", "Describe your goal");
+      expect(input).toHaveAttribute(
+        "placeholder",
+        "Describe your goal, define measurable outcomes for best results",
+      );
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() =>
         expect(mockOnSubmit).toHaveBeenCalledWith(
@@ -3883,7 +3901,7 @@ describe("ChatInput - Integration Tests", () => {
       ).not.toBeInTheDocument();
       expect(screen.getByRole("textbox")).not.toHaveAttribute(
         "placeholder",
-        "Describe your goal",
+        "Describe your goal, define measurable outcomes for best results",
       );
     },
   );

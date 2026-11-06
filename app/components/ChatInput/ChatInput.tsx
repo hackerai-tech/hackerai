@@ -1366,7 +1366,11 @@ const ChatInputContent = ({
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
-              placeholder={goalMode ? "Describe your goal" : placeholder}
+              placeholder={
+                goalMode
+                  ? "Describe your goal, define measurable outcomes for best results"
+                  : placeholder
+              }
               onCommandKeyDown={(e) => {
                 if (showGoalSuggestion && e.key === "Tab") {
                   e.preventDefault();
