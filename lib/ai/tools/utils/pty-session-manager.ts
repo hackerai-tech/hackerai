@@ -19,6 +19,7 @@ import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import type { AgentApprovalSandboxIdentity } from "@/types";
 import type { TerminalExecutionRecord } from "./terminal-execution-record";
+import { phLogger } from "@/lib/posthog/server";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -40,6 +41,9 @@ const FAILED_COMMAND_CLEANUP_RETRY_MAX_MS = 30_000;
 const MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS = 6;
 const RECORD_CHECKPOINT_INTERVAL_MS = 10_000;
 const RECORD_CHECKPOINT_WAIT_MS = 2_000;
+
+type RecordCheckpointIssueReason =
+  "save_unacknowledged" | "checkpoint_threw" | "wait_deadline";
 
 export interface PtySession {
   readonly sessionId: string;
@@ -120,6 +124,7 @@ interface InternalSession extends PtySession {
   recordQueue: Promise<void>;
   recordWriting: boolean;
   recordDirty: boolean;
+  reportedRecordCheckpointIssues: Set<RecordCheckpointIssueReason>;
   persistedRecordFingerprint?: string;
   persistedRecordAt?: number;
   recordTimer: ReturnType<typeof setTimeout> | null;
@@ -201,6 +206,7 @@ export class PtySessionManager {
         recordQueue: Promise.resolve(),
         recordWriting: false,
         recordDirty: false,
+        reportedRecordCheckpointIssues: new Set(),
         recordTimer: null,
         exitReason: null,
       };
@@ -326,6 +332,27 @@ export class PtySessionManager {
     await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
   }
 
+  /** At most three observations per session; a wait deadline is not a failed write. */
+  private reportRecordCheckpointIssue(
+    session: InternalSession,
+    reason: RecordCheckpointIssueReason,
+  ): void {
+    if (session.reportedRecordCheckpointIssues.has(reason)) return;
+    session.reportedRecordCheckpointIssues.add(reason);
+    try {
+      phLogger.info("terminal_record_checkpoint_unconfirmed", {
+        terminal_scope_id: session.chatId,
+        terminal_session_id: session.sessionId,
+        session_kind: session.kind,
+        reason,
+        diagnostic_version: 1,
+        diagnostic_scope: "first_reason_per_terminal_session",
+      });
+    } catch {
+      // Diagnostics must not change persistence, coalescing, or cancellation.
+    }
+  }
+
   /** Persist bounded evidence before a tool yields or live handles are removed. */
   async checkpoint(session: PtySession, reason?: string): Promise<void> {
     const internal = session as InternalSession;
@@ -387,6 +414,8 @@ export class PtySessionManager {
           record.updatedAt = Date.now();
           const path = await internal.executionRecord!.save(record);
           session.recordPersistenceFailed = !path;
+          if (!path)
+            this.reportRecordCheckpointIssue(internal, "save_unacknowledged");
           if (path) {
             session.recordPath = path;
             // Only acknowledge successful writes; unchanged failed snapshots retry.
@@ -397,6 +426,7 @@ export class PtySessionManager {
       })()
         .catch(() => {
           session.recordPersistenceFailed = true;
+          this.reportRecordCheckpointIssue(internal, "checkpoint_threw");
         })
         .finally(async () => {
           internal.recordWriting = false;
@@ -409,6 +439,7 @@ export class PtySessionManager {
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
           session.recordPersistenceFailed = true;
+          this.reportRecordCheckpointIssue(internal, "wait_deadline");
           resolve();
         }, RECORD_CHECKPOINT_WAIT_MS);
       }),
