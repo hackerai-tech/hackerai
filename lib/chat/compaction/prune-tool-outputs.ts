@@ -575,13 +575,19 @@ const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
 const compactToolPartsToByteLimit = (
   parts: UIMessage["parts"],
   softLimitBytes: number,
-  { includeProtectedTools = false }: { includeProtectedTools?: boolean } = {},
+  {
+    includeProtectedTools = false,
+    estimateSizeBytes = estimateSerializedSizeBytes,
+  }: {
+    includeProtectedTools?: boolean;
+    estimateSizeBytes?: (value: unknown) => number;
+  } = {},
 ): {
   parts: UIMessage["parts"];
   compactedCount: number;
   afterSizeBytes: number;
 } => {
-  let afterSizeBytes = estimateSerializedSizeBytes(parts);
+  let afterSizeBytes = estimateSizeBytes(parts);
   if (afterSizeBytes <= softLimitBytes) {
     return { parts, compactedCount: 0, afterSizeBytes };
   }
@@ -606,10 +612,7 @@ const compactToolPartsToByteLimit = (
     const compactedPart = compactToolPartForStorage(part, {
       includeProtectedTools,
     });
-    if (
-      estimateSerializedSizeBytes(compactedPart) >=
-      estimateSerializedSizeBytes(part)
-    ) {
+    if (estimateSizeBytes(compactedPart) >= estimateSizeBytes(part)) {
       continue;
     }
 
@@ -619,7 +622,7 @@ const compactToolPartsToByteLimit = (
         : currentPart,
     );
     compactedCount++;
-    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+    afterSizeBytes = estimateSizeBytes(compactedParts);
   }
 
   return {
@@ -653,6 +656,7 @@ const compactNonCompletedPartForStorage = (
 const fitSinglePartToByteLimit = (
   part: UIMessage["parts"][number],
   byteLimit: number,
+  estimateSizeBytes: (value: unknown) => number,
 ): UIMessage["parts"][number] | null => {
   if (
     (part.type === "text" || part.type === "reasoning") &&
@@ -668,7 +672,7 @@ const fitSinglePartToByteLimit = (
         ...part,
         text: truncateStorageString(part.text, midpoint),
       } as UIMessage["parts"][number];
-      if (estimateSerializedSizeBytes([candidate]) <= byteLimit) {
+      if (estimateSizeBytes([candidate]) <= byteLimit) {
         best = candidate;
         low = midpoint + 1;
       } else {
@@ -695,7 +699,7 @@ const fitSinglePartToByteLimit = (
           }
         : {}),
     } as UIMessage["parts"][number];
-    if (estimateSerializedSizeBytes([minimalToolPart]) <= byteLimit) {
+    if (estimateSizeBytes([minimalToolPart]) <= byteLimit) {
       return minimalToolPart;
     }
 
@@ -703,14 +707,13 @@ const fitSinglePartToByteLimit = (
   }
 
   const minimalPart = { type: part.type } as UIMessage["parts"][number];
-  return estimateSerializedSizeBytes([minimalPart]) <= byteLimit
-    ? minimalPart
-    : null;
+  return estimateSizeBytes([minimalPart]) <= byteLimit ? minimalPart : null;
 };
 
 const enforceStorageByteLimit = (
   parts: UIMessage["parts"],
   byteLimit: number,
+  estimateSizeBytes: (value: unknown) => number,
 ): {
   parts: UIMessage["parts"];
   compactedCount: number;
@@ -718,6 +721,7 @@ const enforceStorageByteLimit = (
 } => {
   const protectedCompaction = compactToolPartsToByteLimit(parts, byteLimit, {
     includeProtectedTools: true,
+    estimateSizeBytes,
   });
   let compactedParts = protectedCompaction.parts;
   let compactedCount = protectedCompaction.compactedCount;
@@ -730,10 +734,7 @@ const enforceStorageByteLimit = (
   ) {
     const currentPart = compactedParts[index];
     const compactedPart = compactNonCompletedPartForStorage(currentPart);
-    if (
-      estimateSerializedSizeBytes(compactedPart) >=
-      estimateSerializedSizeBytes(currentPart)
-    ) {
+    if (estimateSizeBytes(compactedPart) >= estimateSizeBytes(currentPart)) {
       continue;
     }
 
@@ -741,20 +742,24 @@ const enforceStorageByteLimit = (
       partIndex === index ? compactedPart : part,
     );
     compactedCount++;
-    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+    afterSizeBytes = estimateSizeBytes(compactedParts);
   }
 
   while (compactedParts.length > 1 && afterSizeBytes > byteLimit) {
     compactedParts = compactedParts.slice(1);
     compactedCount++;
-    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+    afterSizeBytes = estimateSizeBytes(compactedParts);
   }
 
   if (compactedParts.length === 1 && afterSizeBytes > byteLimit) {
-    const fittedPart = fitSinglePartToByteLimit(compactedParts[0], byteLimit);
+    const fittedPart = fitSinglePartToByteLimit(
+      compactedParts[0],
+      byteLimit,
+      estimateSizeBytes,
+    );
     compactedParts = fittedPart ? [fittedPart] : [];
     compactedCount++;
-    afterSizeBytes = estimateSerializedSizeBytes(compactedParts);
+    afterSizeBytes = estimateSizeBytes(compactedParts);
   }
 
   return { parts: compactedParts, compactedCount, afterSizeBytes };
@@ -773,12 +778,15 @@ export function compactMessageForStorage<T extends UIMessage>(
   {
     softLimitBytes = STORAGE_MESSAGE_SOFT_LIMIT_BYTES,
     toolOutputTokenBudget = STORAGE_TOOL_OUTPUT_TOKEN_BUDGET,
+    estimateSizeBytes = estimateSerializedSizeBytes,
   }: {
     softLimitBytes?: number;
     toolOutputTokenBudget?: number;
+    /** Use the destination's value encoding when it differs from JSON. */
+    estimateSizeBytes?: (value: unknown) => number;
   } = {},
 ): StorageCompactionResult<T> {
-  const beforeSizeBytes = estimateSerializedSizeBytes(message.parts);
+  const beforeSizeBytes = estimateSizeBytes(message.parts);
   let strippedReportSnapshots = false;
   const snapshotParts =
     message.role === "assistant"
@@ -813,7 +821,7 @@ export function compactMessageForStorage<T extends UIMessage>(
     return stripped as UIMessage["parts"][number];
   });
 
-  let afterSizeBytes = estimateSerializedSizeBytes(parts);
+  let afterSizeBytes = estimateSizeBytes(parts);
   let prunedCount = 0;
 
   if (afterSizeBytes > softLimitBytes) {
@@ -824,30 +832,31 @@ export function compactMessageForStorage<T extends UIMessage>(
     );
     parts = pruneResult.messages[0]?.parts ?? parts;
     prunedCount += pruneResult.prunedCount;
-    afterSizeBytes = estimateSerializedSizeBytes(parts);
+    afterSizeBytes = estimateSizeBytes(parts);
   }
 
   if (afterSizeBytes > softLimitBytes) {
     const pruneResult = pruneToolOutputs([{ ...message, parts }], 0, 0);
     parts = pruneResult.messages[0]?.parts ?? parts;
     prunedCount += pruneResult.prunedCount;
-    afterSizeBytes = estimateSerializedSizeBytes(parts);
+    afterSizeBytes = estimateSizeBytes(parts);
   }
 
   if (afterSizeBytes > softLimitBytes) {
     parts = compactReasoningParts(parts);
-    afterSizeBytes = estimateSerializedSizeBytes(parts);
+    afterSizeBytes = estimateSizeBytes(parts);
   }
 
   if (afterSizeBytes > softLimitBytes) {
     parts = stripStorageOnlyParts(parts);
-    afterSizeBytes = estimateSerializedSizeBytes(parts);
+    afterSizeBytes = estimateSizeBytes(parts);
   }
 
   if (afterSizeBytes > softLimitBytes) {
     const byteCompactionResult = compactToolPartsToByteLimit(
       parts,
       softLimitBytes,
+      { estimateSizeBytes },
     );
     parts = byteCompactionResult.parts;
     prunedCount += byteCompactionResult.compactedCount;
@@ -855,7 +864,11 @@ export function compactMessageForStorage<T extends UIMessage>(
   }
 
   if (afterSizeBytes > softLimitBytes) {
-    const hardLimitResult = enforceStorageByteLimit(parts, softLimitBytes);
+    const hardLimitResult = enforceStorageByteLimit(
+      parts,
+      softLimitBytes,
+      estimateSizeBytes,
+    );
     parts = hardLimitResult.parts;
     prunedCount += hardLimitResult.compactedCount;
     afterSizeBytes = hardLimitResult.afterSizeBytes;

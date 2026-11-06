@@ -264,6 +264,37 @@ describe("PostHogProvider", () => {
       expect(sanitized?.properties).toEqual(allowed);
       expect(JSON.stringify(sanitized)).not.toContain("private");
     }
+    const stopSnapshotProperties = {
+      token: "test-ingestion-token",
+      distinct_id: "user-123",
+      $session_id: "session-123",
+      diagnostic_version: 1,
+      preparation_outcome: "compacted",
+      save_outcome: "acknowledged",
+      before_size_bytes: 1600000,
+      after_size_bytes: 100000,
+      part_count: 260,
+      pruned_count: 250,
+      frontend_build_commit: "a".repeat(40),
+    };
+    const stopSnapshot = config.before_send({
+      event: "chat_stop_snapshot_save_outcome",
+      properties: {
+        ...stopSnapshotProperties,
+        $current_url: "private",
+        $referrer: "private",
+        $pathname: "private",
+        $title: "private",
+        command: "private",
+        output: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set: { content: "private" },
+      $set_once: { content: "private" },
+    });
+    expect(stopSnapshot?.properties).toEqual(stopSnapshotProperties);
+    expect(JSON.stringify(stopSnapshot)).not.toContain("private");
     const summary = config.before_send({
       event: "desktop_ack_delivery_summary",
       properties: {

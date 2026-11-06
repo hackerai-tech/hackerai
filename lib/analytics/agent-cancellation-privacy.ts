@@ -19,6 +19,26 @@ const ALLOWED_PROPERTIES = new Set([
   "hackerai_frontend_build_commit",
 ]);
 
+const STOP_SNAPSHOT_PROPERTIES = new Set([
+  "token",
+  "distinct_id",
+  "$session_id",
+  "$window_id",
+  "$is_identified",
+  "$process_person_profile",
+  "$lib",
+  "$lib_version",
+  "diagnostic_version",
+  "preparation_outcome",
+  "before_size_bytes",
+  "after_size_bytes",
+  "part_count",
+  "pruned_count",
+  "save_outcome",
+  "frontend_build_commit",
+]);
+
+/** Strip SDK-enriched private context from cancellation and Stop diagnostics. */
 export function sanitizeAgentCancellationEvent<
   T extends {
     event?: string;
@@ -27,15 +47,18 @@ export function sanitizeAgentCancellationEvent<
     $set_once?: unknown;
   },
 >(event: T): T {
-  if (
-    event.event !== "agent_run_cancellation_requested" &&
-    event.event !== "agent_run_cancellation_settled"
-  )
-    return event;
+  const allowedProperties =
+    event.event === "chat_stop_snapshot_save_outcome"
+      ? STOP_SNAPSHOT_PROPERTIES
+      : event.event === "agent_run_cancellation_requested" ||
+          event.event === "agent_run_cancellation_settled"
+        ? ALLOWED_PROPERTIES
+        : undefined;
+  if (!allowedProperties) return event;
   if (event.properties) {
     event.properties = Object.fromEntries(
       Object.entries(event.properties).filter(([key]) =>
-        ALLOWED_PROPERTIES.has(key),
+        allowedProperties.has(key),
       ),
     );
   }
