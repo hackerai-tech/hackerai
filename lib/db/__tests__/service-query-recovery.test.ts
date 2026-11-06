@@ -52,7 +52,7 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("synthetic"),
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { warn: jest.fn(), error: jest.fn() },
+  phLogger: { warn: jest.fn(), error: jest.fn(), event: jest.fn() },
 }));
 jest.mock("@/lib/centrifugo/presence-traffic", () => ({
   trackPresenceTraffic: jest.fn(() => () => {}),
@@ -105,6 +105,7 @@ const registeredMiddleware = (tasks.middleware as jest.Mock).mock.calls[0]?.[1];
 let warn: jest.SpyInstance;
 let info: jest.SpyInstance;
 beforeEach(() => {
+  jest.spyOn(console, "error").mockImplementation(() => {});
   warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   info = jest.spyOn(console, "info").mockImplementation(() => {});
 });
@@ -226,6 +227,78 @@ it("recovers a signed goal read while preserving owner and chat arguments", asyn
   }
 });
 
+const terminatedBody = () => {
+  const response = new Response('{"status":"success","value":');
+  jest.spyOn(response, "text").mockRejectedValue(
+    new TypeError("terminated", {
+      cause: Object.assign(new Error("read reset"), { code: "ECONNRESET" }),
+    }),
+  );
+  return response;
+};
+
+const loadChatReader = async () => {
+  const priorKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  try {
+    process.env.CONVEX_SERVICE_ROLE_KEY = secret;
+    return (await import("../actions")).getChatById;
+  } finally {
+    if (priorKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = priorKey;
+  }
+};
+
+it("recovers a terminated chat body through the real helper and native SDK", async () => {
+  const getChatById = await loadChatReader();
+  const id = "00000000-0000-4000-8000-000000000001";
+  const bodies: Record<string, unknown>[] = [];
+  const chat = { id, user_id: "owner", title: "owned", update_time: 1 };
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)).args[0]);
+    if (bodies.length === 1) return terminatedBody();
+    return new Response(
+      JSON.stringify({ status: "success", value: chat, logLines: [] }),
+    );
+  });
+  jest
+    .mocked(convexClient.getConvexClient)
+    .mockReturnValueOnce(createServiceConvexClient(deployment));
+  await expect(
+    runWithServiceQueryRecovery(() => getChatById({ id })),
+  ).resolves.toEqual(chat);
+  expect(bodies).toHaveLength(2);
+  for (const body of bodies) {
+    expect(body.id).toBe(id);
+    expect(
+      await verifyServiceArgs(
+        { deployment, name: "chats:getChatById", type: "query" },
+        body,
+        secret,
+      ),
+    ).toBe(true);
+  }
+  expect(
+    JSON.stringify([...warn.mock.calls, ...info.mock.calls]),
+  ).not.toContain(secret);
+});
+
+it("caps terminated chat reads at two shared extra attempts across helper calls", async () => {
+  const getChatById = await loadChatReader();
+  globalThis.fetch = jest.fn(async () => terminatedBody());
+  const client = createServiceConvexClient(deployment);
+  for (let index = 0; index < 4; index++)
+    jest.mocked(convexClient.getConvexClient).mockReturnValueOnce(client);
+  const results = await runWithServiceQueryRecovery(() =>
+    Promise.allSettled(
+      Array.from({ length: 4 }, (_, index) =>
+        runWithServiceQueryRecovery(() => getChatById({ id: String(index) })),
+      ),
+    ),
+  );
+  expect(results.every((result) => result.status === "rejected")).toBe(true);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+});
+
 it("reserves only two retries across concurrent reads and nested scopes", async () => {
   globalThis.fetch = jest.fn(async () => {
     throw reset();
@@ -236,9 +309,11 @@ it("reserves only two retries across concurrent reads and nested scopes", async 
       Array.from({ length: 5 }, (_, index) =>
         runWithServiceQueryRecovery(() =>
           client.query(
-            index % 2
-              ? makeFunctionReference<"query">("agentGoals:getForBackend")
-              : reference,
+            [
+              reference,
+              makeFunctionReference<"query">("agentGoals:getForBackend"),
+              makeFunctionReference<"query">("chats:getChatById"),
+            ][index % 3],
             { serviceKey: secret },
           ),
         ),
@@ -265,9 +340,11 @@ it("limits each RPC to one retry even when the run has another credit", async ()
 
 it.each(
   ["mutation", "action", "query_at_ts"].flatMap((endpoint) =>
-    ["localSandbox:listConnectionsForBackend", "agentGoals:getForBackend"].map(
-      (name) => [endpoint, name],
-    ),
+    [
+      "localSandbox:listConnectionsForBackend",
+      "agentGoals:getForBackend",
+      "chats:getChatById",
+    ].map((name) => [endpoint, name]),
   ),
 )(
   "never replays %s, even with eligible function %s",
