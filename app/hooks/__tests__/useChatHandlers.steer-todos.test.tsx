@@ -2558,6 +2558,123 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it("compacts an aggregate stopped snapshot without changing the live response", async () => {
+    const { getDocumentSize } = await import("convex/values");
+    const toolParts = Array.from({ length: 260 }, (_, index) => ({
+      type: "tool-run_terminal_cmd",
+      toolCallId: `synthetic-call-${index}`,
+      state: "output-available",
+      input: { command: `printf synthetic-${index}` },
+      output: { output: "synthetic-output-" + "x".repeat(6000), exitCode: 0 },
+    }));
+    const history = [
+      messages[0],
+      {
+        id: "long-stopped-assistant",
+        role: "assistant",
+        parts: [...toolParts, { type: "text", text: "Keep the final answer." }],
+        metadata: { mode: "ask", generationStartedAt: Date.now() - 1000 },
+      },
+    ] as ChatMessage[];
+    const originalParts = JSON.stringify(history[1].parts);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: history,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+    const saved = mockSaveAssistantMessage.mock.calls[0].at(0) as unknown as {
+      id: string;
+      parts: ChatMessage["parts"];
+      mode: string;
+      generationStartedAt: number;
+      generationTimeMs: number;
+    };
+    expect(new TextEncoder().encode(originalParts).byteLength).toBeGreaterThan(
+      1024 * 1024,
+    );
+    expect(
+      getDocumentSize({
+        ...saved,
+        chat_id: "chat-1",
+        user_id: "test-user",
+        update_time: Date.now(),
+      }),
+    ).toBeLessThan(960 * 1024);
+    expect(saved.parts).toContainEqual({
+      type: "text",
+      text: "Keep the final answer.",
+    });
+    expect(saved).toMatchObject({
+      id: history[1].id,
+      mode: "ask",
+      generationStartedAt: history[1].metadata?.generationStartedAt,
+      generationTimeMs: expect.any(Number),
+    });
+    expect(
+      saved.parts
+        .filter((part) => part.type === "tool-run_terminal_cmd")
+        .map((part: any) => part.toolCallId),
+    ).toEqual(toolParts.map((part) => part.toolCallId));
+    expect(JSON.stringify(history[1].parts)).toBe(originalParts);
+    expect(mockSetMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: history[1].id, parts: history[1].parts }),
+      ]),
+    );
+    expect(mockCancelStream).toHaveBeenCalledTimes(1);
+    expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSaveAssistantMessage.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("retains Convex-native values and cancellation when snapshot sizing cannot use JSON", async () => {
+    const parts = [
+      { type: "text", text: "small response" },
+      { type: "data-value", data: { counter: 1n } },
+    ] as ChatMessage["parts"];
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "native-values", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "native-values", parts }),
+    );
+    expect(mockCancelStream).toHaveBeenCalledTimes(1);
+  });
+
   it("reports failure to goal controls when the partial response could not be saved", async () => {
     mockSaveAssistantMessage.mockRejectedValueOnce(
       new Error("Synthetic save failure"),

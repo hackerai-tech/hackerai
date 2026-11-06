@@ -235,8 +235,28 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
-    sanitizeForConvexValue(parts) as ChatMessage["parts"];
+  const getStopSnapshotParts = async (message: ChatMessage) => {
+    const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
+    try {
+      // Match normal saves' storage compaction without loading the tokenizer
+      // for small snapshots or replacing the full response in local state.
+      if (
+        new TextEncoder().encode(JSON.stringify(parts)).byteLength <=
+        850 * 1024
+      ) {
+        return parts;
+      }
+      const { compactMessageForStorage } =
+        await import("@/lib/chat/compaction/prune-tool-outputs");
+      return sanitizeForConvexValue(
+        compactMessageForStorage({ ...message, parts }).message.parts,
+      ) as ChatMessage["parts"];
+    } catch {
+      // A chunk-load failure or non-JSON Convex value must not prevent Stop.
+      // Keep the original sanitized snapshot and the server's document guard.
+      return parts;
+    }
+  };
 
   // A persisted active run takes precedence over the current UI mode. This
   // matters while restoring an approval before mode initialization completes.
@@ -446,29 +466,33 @@ export const useChatHandlers = ({
       setMessages(stoppedMessages);
     }
 
-    // Run cancel and save in parallel - they're independent operations
-    const lastMessage = stoppedMessages[stoppedMessages.length - 1];
-    const savePromise =
-      !options?.skipSave && lastMessage?.role === "assistant"
-        ? saveAssistantMessage({
-            id: lastMessage.id,
-            chatId,
-            role: lastMessage.role,
-            parts: getConvexSafeParts(lastMessage.parts),
-            mode: lastMessage.metadata?.mode ?? chatModeRef.current,
-            generationStartedAt,
-            generationTimeMs,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-            if (options?.requireSaveSuccess) throw error;
-          })
-        : Promise.resolve();
-
+    // Start cancellation before snapshot preparation can load or run compaction.
     const cancelPromise = cancelStreamMutation({
       chatId,
       skipSave: options?.skipSave || undefined,
       todos,
     });
+    const lastMessage = stoppedMessages[stoppedMessages.length - 1];
+    const savePromise =
+      !options?.skipSave && lastMessage?.role === "assistant"
+        ? getStopSnapshotParts(lastMessage)
+            .then((parts) =>
+              saveAssistantMessage({
+                id: lastMessage.id,
+                chatId,
+                role: lastMessage.role,
+                parts,
+                mode: lastMessage.metadata?.mode ?? chatModeRef.current,
+                generationStartedAt,
+                generationTimeMs,
+              }),
+            )
+            .catch((error) => {
+              console.error("Failed to save message on stop:", error);
+              if (options?.requireSaveSuccess) throw error;
+            })
+        : Promise.resolve();
+
     await Promise.all([
       options?.requireCancelSuccess
         ? cancelPromise
