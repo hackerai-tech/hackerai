@@ -325,6 +325,9 @@ it("reports uncertain delivery separately from a provider failure", async () => 
   await expect(run(tool, "solve")).resolves.toMatchObject({
     status: "handoff_required",
     reason: "delivery_outcome_unknown",
+    provider: "2captcha",
+    providerTaskCreated: true,
+    providerCostUSD: 0.003,
   });
   expect(onToolCost).toHaveBeenCalledWith(0.003);
   expect(phLogger.event).toHaveBeenCalledWith(
@@ -547,39 +550,72 @@ it.each([
   },
 );
 
-it("uses the real solver adapter through HTTP polling and private browser delivery", async () => {
-  jest.useFakeTimers();
-  const { context, journal, evaluate, onToolCost } = setup();
-  const fetch = jest.fn();
-  global.fetch = fetch;
-  fetch.mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({ errorId: 0, taskId: 123 }),
-  });
-  fetch.mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({
-      errorId: 0,
-      status: "ready",
-      solution: { gRecaptchaResponse: "private-response" },
-      cost: "0.003",
-    }),
-  });
-  const tool = createBrowserChallengeHandler(
-    context,
-    "PREVIEW",
-    undefined,
-    undefined,
-    journal,
-  );
-  const pending = run(tool, "solve");
-  await jest.advanceTimersByTimeAsync(5000);
-  await expect(pending).resolves.toMatchObject({
-    status: "token_delivered",
-    websiteAccepted: false,
-  });
-  expect(onToolCost).toHaveBeenCalledTimes(1);
-  expect(evaluate).toHaveBeenCalledTimes(2);
-  expect(journal.registerTask).toHaveBeenCalledWith(123);
-  expect(journal.recordCost).toHaveBeenCalledWith(123, 0.003);
-});
+it.each(["ready", "invalid solution", "poll failure", "ambiguous creation"])(
+  "preserves confirmed provider facts through the real solver: %s",
+  async (outcome) => {
+    jest.useFakeTimers();
+    const { context, journal, evaluate, onToolCost } = setup();
+    const fetch = jest.fn();
+    global.fetch = fetch;
+    if (outcome === "ambiguous creation")
+      fetch.mockRejectedValueOnce(new Error("private-provider-detail"));
+    else
+      fetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ errorId: 0, taskId: 123 }),
+      });
+    if (outcome !== "ambiguous creation")
+      fetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          outcome === "poll failure"
+            ? { errorId: 1, errorCode: "ERROR_TASK_NOT_FOUND" }
+            : {
+                errorId: 0,
+                status: "ready",
+                solution:
+                  outcome === "invalid solution"
+                    ? {}
+                    : { gRecaptchaResponse: "private-response" },
+                cost: "0.003",
+              },
+      });
+    const tool = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      undefined,
+      journal,
+    );
+    const pending = run(tool, "solve");
+    await jest.advanceTimersByTimeAsync(5000);
+    const result = await pending;
+    expect(result).toMatchObject(
+      outcome === "ready"
+        ? { status: "token_delivered", websiteAccepted: false }
+        : { status: "handoff_required", reason: "challenge_operation_failed" },
+    );
+    if (outcome === "ambiguous creation") {
+      expect(result).not.toHaveProperty("providerTaskCreated");
+      expect(journal.registerTask).not.toHaveBeenCalled();
+    } else {
+      expect(result).toMatchObject({
+        provider: "2captcha",
+        providerTaskCreated: true,
+      });
+      expect(journal.registerTask).toHaveBeenCalledWith(123);
+    }
+    if (outcome === "ready" || outcome === "invalid solution") {
+      expect(result).toHaveProperty("providerCostUSD", 0.003);
+      expect(journal.recordCost).toHaveBeenCalledWith(123, 0.003);
+    } else {
+      expect(result).not.toHaveProperty("providerCostUSD");
+      expect(journal.recordCost).not.toHaveBeenCalled();
+    }
+    expect(onToolCost).toHaveBeenCalledTimes(outcome === "ready" ? 1 : 0);
+    expect(evaluate).toHaveBeenCalledTimes(outcome === "ready" ? 2 : 1);
+    expect(fetch).toHaveBeenCalledTimes(
+      outcome === "ambiguous creation" ? 1 : 2,
+    );
+  },
+);
