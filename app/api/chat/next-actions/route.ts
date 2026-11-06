@@ -14,7 +14,9 @@ import {
   buildPredictionSources,
   NEXT_ACTIONS_FLAG,
   NEXT_ACTIONS_VERSION,
+  NEXT_ACTIONS_VALIDATION_VERSION,
   nextActionsRequestSchema,
+  type NextActionsBatch,
 } from "@/lib/chat/next-actions/contracts";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
 
@@ -27,6 +29,11 @@ const empty = (status = 200) =>
       headers: { "Cache-Control": "no-store" },
     },
   );
+
+const batchResponse = (batch: NextActionsBatch) =>
+  batch.validationVersion === NEXT_ACTIONS_VALIDATION_VERSION
+    ? NextResponse.json(batch, { headers: { "Cache-Control": "no-store" } })
+    : empty();
 // One generation per completed message, including failed/aborted attempts.
 // Redis holds only reservations; validated results are private chat data.
 // A fixed per-user hourly budget bounds auxiliary spend.
@@ -119,9 +126,7 @@ export async function POST(req: NextRequest) {
     if (saved)
       return saved.consumed || !saved.batch
         ? empty()
-        : NextResponse.json(saved.batch, {
-            headers: { "Cache-Control": "no-store" },
-          });
+        : batchResponse(saved.batch);
     // Returning to a chat only restores existing work; it never spends tokens.
     if (parsed.data.restoreOnly) return empty();
     if (
@@ -131,6 +136,9 @@ export async function POST(req: NextRequest) {
       return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
+      prompt_version: "natural-single-reply-v4",
+      draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
+      provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,
       experiment_version: "next-actions-v1",
       account_metadata_version: 1,
@@ -189,7 +197,11 @@ export async function POST(req: NextRequest) {
       properties: {
         ...properties,
         batch_id: batchId,
-        outcome: result.suggestions.length ? "generated" : "empty",
+        outcome: result.unavailable
+          ? "unavailable"
+          : result.suggestions.length
+            ? "generated"
+            : "empty",
         suggestion_count: result.suggestions.length,
         latency_ms: Date.now() - started,
         input_tokens: result.inputTokens,
@@ -197,6 +209,11 @@ export async function POST(req: NextRequest) {
         model: result.modelId,
         reasoning_tokens: result.reasoningTokens,
         cost_usd: result.cost,
+        known_cost_usd: result.knownCost,
+        provider_calls: result.providerCalls,
+        priced_provider_calls: result.pricedProviderCalls,
+        unknown_provider_calls: result.unknownProviderCalls,
+        models: result.modelIds,
       },
     });
     signal.throwIfAborted();
@@ -238,13 +255,15 @@ export async function POST(req: NextRequest) {
       chatId,
       messageId,
       finishedAt: chat.last_run_finished_at,
-      batch: { batchId, messageId, mode, suggestions: result.suggestions },
+      batch: {
+        batchId,
+        messageId,
+        mode,
+        suggestions: result.suggestions,
+        validationVersion: NEXT_ACTIONS_VALIDATION_VERSION,
+      },
     });
-    return savedBatch
-      ? NextResponse.json(savedBatch, {
-          headers: { "Cache-Control": "no-store" },
-        })
-      : empty();
+    return savedBatch ? batchResponse(savedBatch) : empty();
   } catch {
     // Optional predictions never surface provider/auth/data errors or content.
     return empty();

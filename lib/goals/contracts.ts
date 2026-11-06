@@ -1,6 +1,5 @@
 import type { UserInputQuestion } from "../chat/user-input-questions";
 
-export const GOAL_FLAG = "persistent-agent-goals";
 const GOAL_MAX_EVIDENCE = 64;
 export const GOAL_STATES = [
   "queued",

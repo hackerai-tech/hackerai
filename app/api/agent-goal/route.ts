@@ -1,10 +1,11 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { z } from "zod";
 import { NextRequest } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { goalServiceKey, goalEnabled, reconcileGoal } from "@/lib/goals/server";
+import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
 import { getChatById } from "@/lib/db/actions";
 import {
   cancelAgentTriggerRun,
@@ -31,13 +32,14 @@ const controlRequest = z.discriminatedUnion("action", [
   }),
 ]);
 export const maxDuration = 30;
-export async function GET(req: NextRequest) {
+/** Own goal-read recovery until the status response finishes, separately from controls. */
+async function handleGet(req: NextRequest) {
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
     const chatId = req.nextUrl.searchParams.get("chatId");
     const goal = chatId ? await reconcileGoal(chatId, userId) : null;
     return Response.json({
-      enabled: await goalEnabled(userId, subscription),
+      enabled: subscription !== "free",
       ...(chatId ? { goal: goal?.deletedAt ? null : goal } : {}),
     });
   } catch (e) {
@@ -46,6 +48,8 @@ export async function GET(req: NextRequest) {
       : Response.json({ message: "Goal access unavailable" }, { status: 503 });
   }
 }
+export const GET = withServiceQueryRecovery(handleGet);
+
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await getUserIDAndPro(req);

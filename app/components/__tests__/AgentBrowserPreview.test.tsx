@@ -94,7 +94,7 @@ it("explains a lost control lease and offers recovery only after it expires", as
   await takeControl();
   expect(actions).toEqual([]);
   await act(async () => {
-    jest.advanceTimersByTime(30_001);
+    await jest.advanceTimersByTimeAsync(30_001);
   });
   expect(screen.getByText("Paused for handoff")).toBeInTheDocument();
   expect(screen.queryByText(/If you just reloaded/)).not.toBeInTheDocument();
@@ -1173,6 +1173,211 @@ it("sends ordered takeover input directly to the relay instead of the command AP
     { sequence: 3, inputs: [{ kind: "text", text: "!" }] },
   ]);
   expect(actions.some((body) => body.action === "input")).toBe(false);
+});
+
+it.each(["changed", "unchanged", "failed", "transient"])(
+  "refreshes a quiet takeover image despite relay heartbeats (capture: %s)",
+  async (capture) => {
+    const captureFails = capture === "failed";
+    handleAction = async (body) =>
+      response(
+        body.action === "take"
+          ? { grant: "grant-a", frame, relayUrl: "https://relay.example" }
+          : { frame },
+      );
+    const defaultFetch = (global.fetch as jest.Mock).getMockImplementation()!;
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const refreshed =
+      capture === "unchanged"
+        ? frame
+        : { ...frame, image: "data:image/png;base64,updated" };
+    let transientAttempts = 0;
+    global.fetch = jest.fn(async (url, options) => {
+      if (url === "https://relay.example/frames")
+        return {
+          ok: true,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+              options.signal.addEventListener("abort", () =>
+                controller.close(),
+              );
+            },
+          }),
+        };
+      if (url === "https://relay.example/input") return response({ ok: true });
+      if (String(url).endsWith("?fresh=1")) {
+        if (capture === "transient" && transientAttempts++ === 0)
+          return response({ state: "disconnected" }, false);
+        if (capture === "transient" && transientAttempts === 2)
+          return new Promise<Response>((resolve) => {
+            setTimeout(() => resolve(response({ frame: refreshed })), 2000);
+          });
+        return captureFails
+          ? response({ state: "disconnected" }, false)
+          : response({ frame: refreshed });
+      }
+      return defaultFetch(url, options);
+    });
+    await mount();
+    await takeControl();
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+        key: "x",
+      });
+    });
+    // The stream stays connected but never produces an image after the action.
+    for (let second = 0; second < 30; second++) {
+      await act(async () => {
+        stream.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+      if (capture === "transient")
+        expect(
+          screen.queryByText(/Browser preview disconnected/),
+        ).not.toBeInTheDocument();
+    }
+    if (captureFails) {
+      // Fast persistent failures must not hammer the sandbox every second.
+      expect(
+        (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
+          String(url).endsWith("?fresh=1"),
+        ).length,
+      ).toBeLessThan(10);
+      expect(
+        screen.getByText(/Browser preview disconnected/),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+      expect(
+        screen.getByRole("button", { name: "Send and continue" }),
+      ).toBeDisabled();
+      const sent = (global.fetch as jest.Mock).mock.calls.filter(
+        ([url]) => url === "https://relay.example/input",
+      ).length;
+      await act(async () => {
+        fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+          key: "y",
+        });
+      });
+      expect(
+        (global.fetch as jest.Mock).mock.calls.filter(
+          ([url]) => url === "https://relay.example/input",
+        ),
+      ).toHaveLength(sent);
+    } else {
+      expect(
+        screen.getByAltText("Current Agent browser viewport"),
+      ).toHaveAttribute("src", refreshed.image);
+      expect(
+        screen.queryByText(/Browser preview disconnected/),
+      ).not.toBeInTheDocument();
+      const sent = (global.fetch as jest.Mock).mock.calls.filter(
+        ([url]) => url === "https://relay.example/input",
+      ).length;
+      await act(async () => {
+        fireEvent.keyDown(screen.getByRole("application", { hidden: true }), {
+          key: "y",
+        });
+      });
+      expect(
+        (global.fetch as jest.Mock).mock.calls.filter(
+          ([url]) => url === "https://relay.example/input",
+        ),
+      ).toHaveLength(sent + 1);
+    }
+  },
+);
+
+it("does not overwrite a newer streamed image with a delayed refresh", async () => {
+  handleAction = async (body) =>
+    response(
+      body.action === "take"
+        ? { grant: "grant-a", frame, relayUrl: "https://relay.example" }
+        : { frame },
+    );
+  const defaultFetch = (global.fetch as jest.Mock).getMockImplementation()!;
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let finish!: (result: Response) => void;
+  global.fetch = jest.fn(async (url, options) => {
+    if (url === "https://relay.example/frames")
+      return {
+        ok: true,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            options.signal.addEventListener("abort", () => controller.close());
+          },
+        }),
+      };
+    if (String(url).endsWith("?fresh=1"))
+      return new Promise<Response>((resolve) => {
+        finish = resolve;
+      });
+    return defaultFetch(url, options);
+  });
+  await mount();
+  await takeControl();
+  for (let second = 0; second < 6; second++) {
+    await act(async () => {
+      stream.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'));
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+  }
+  expect(finish).toBeDefined();
+  const newest = { ...frame, image: "data:image/png;base64,newest" };
+  await act(async () => {
+    stream.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify({ type: "frame", frame: newest })}\n\n`,
+      ),
+    );
+  });
+  await act(async () => {
+    finish(response({ frame }));
+  });
+  expect(screen.getByAltText("Current Agent browser viewport")).toHaveAttribute(
+    "src",
+    newest.image,
+  );
+  // Normal streaming stays live without paying for fallback screenshots.
+  const refreshes = () =>
+    (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
+      String(url).endsWith("?fresh=1"),
+    ).length;
+  const before = refreshes();
+  for (let second = 0; second < 12; second++) {
+    await act(async () => {
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify({ type: "frame", frame: { ...newest, image: `${newest.image}${second}` } })}\n\n`,
+        ),
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+  }
+  expect(refreshes()).toBe(before);
+  expect(screen.getByAltText("Current Agent browser viewport")).toHaveAttribute(
+    "src",
+    `${newest.image}11`,
+  );
+});
+
+it("refreshes repeatedly cached passive frames with an authoritative screenshot", async () => {
+  const updated = { ...frame, image: "data:image/png;base64,updated" };
+  const defaultFetch = (global.fetch as jest.Mock).getMockImplementation()!;
+  global.fetch = jest.fn(async (url, options) =>
+    String(url).endsWith("?fresh=1")
+      ? response({ frame: updated })
+      : defaultFetch(url, options),
+  );
+  await mount();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(8000);
+  });
+  expect(screen.getByAltText("Current Agent browser viewport")).toHaveAttribute(
+    "src",
+    updated.image,
+  );
 });
 
 it("reconnects lost control in full screen and preserves the unsent exit note", async () => {
