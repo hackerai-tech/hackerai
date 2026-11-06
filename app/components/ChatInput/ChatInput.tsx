@@ -1149,6 +1149,7 @@ const ChatInputContent = ({
       }
       if (!questionAnswers.text) {
         toast.error("Could not send your answers", {
+          id: `question-answer-limit:${questionKey}`,
           description:
             "Answer every question and shorten long answers so the combined reply fits within 20,000 characters. Your choices are saved.",
         });
