@@ -350,6 +350,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   );
 
   test.each([
+    "agent-browser --session owned snapshot -i 2>&1 | cat",
     "agent-browser --session owned snapshot -i 2>&1 | tail -60; date -u +%s",
     'date -u +"%H:%M:%SZ" && agent-browser --session owned snapshot -i 2>&1 | head -80',
     "cd /home/user && agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",

@@ -315,7 +315,7 @@ export function getStandaloneSnapshotHint(command: string): string | null {
   if (
     parts
       .slice(snapshotIndex + 1)
-      .some((words) => !["head", "tail", "date"].includes(words[0]))
+      .some((words) => !["head", "tail", "cat", "date"].includes(words[0]))
   )
     return null;
   // Other shell segments (for example `cd ... &&`) are deliberately omitted.
