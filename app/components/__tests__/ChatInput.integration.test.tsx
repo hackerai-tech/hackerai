@@ -1856,6 +1856,7 @@ describe("ChatInput - Integration Tests", () => {
     it.each(["wait", "goal"])(
       "submits question choices and a custom composer answer for %s, preserving them after failure",
       async (kind) => {
+        const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
         mockSandboxState = {
           chatMode: "agent",
           subscription: "pro",
@@ -1909,6 +1910,17 @@ describe("ChatInput - Integration Tests", () => {
           screen.getByRole("button", { name: "Next", exact: true }),
         );
         const input = screen.getByRole("textbox");
+        const longAnswer = "x".repeat(20_000);
+        fireEvent.change(input, { target: { value: longAnswer } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(errorToast).toHaveBeenCalledWith(
+          "Could not send your answers",
+          expect.objectContaining({
+            description: expect.stringContaining("20,000"),
+          }),
+        );
+        expect(input).toHaveValue(longAnswer);
         fireEvent.change(input, { target: { value: "/goal literal answer" } });
         fireEvent.keyDown(input, { key: "Enter" });
         await waitFor(() =>
@@ -1930,6 +1942,21 @@ describe("ChatInput - Integration Tests", () => {
           "aria-pressed",
           "true",
         );
+        expect(
+          mockGoalCapture.mock.calls.filter(
+            ([event]) => event === "agent_input_questions_exposed",
+          ),
+        ).toEqual([
+          [
+            "agent_input_questions_exposed",
+            {
+              definition_version: 1,
+              source: kind === "wait" ? "wait_for_user" : "goal",
+              question_count: 2,
+            },
+          ],
+        ]);
+        errorToast.mockRestore();
       },
     );
 

@@ -415,6 +415,19 @@ const ChatInputContent = ({
       : undefined;
   const questionAnswers = useQuestionAnswers(questionKey, questions);
   const hasQuestionPanel = !!questionKey;
+  const exposedQuestionPanelsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!questionKey || exposedQuestionPanelsRef.current.has(questionKey))
+      return;
+    if (
+      captureAuthenticatedEvent("agent_input_questions_exposed", {
+        definition_version: 1,
+        source: pendingUserWait ? "wait_for_user" : "goal",
+        question_count: questions.length,
+      })
+    )
+      exposedQuestionPanelsRef.current.add(questionKey);
+  }, [questionKey, pendingUserWait, questions.length]);
   const exposedUserWaitsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!isWaitingForReply || !pendingUserWait) return;
@@ -1095,6 +1108,7 @@ const ChatInputContent = ({
         effectiveSendDisabledReason ||
         uploadedFiles.length ||
         submissionPending ||
+        isStoppingAgent ||
         pendingUserWait?.status === "submitting"
       )
         return;
@@ -1102,7 +1116,13 @@ const ChatInputContent = ({
         questionAnswers.go(questionAnswers.index + 1);
         return;
       }
-      if (!questionAnswers.text) return;
+      if (!questionAnswers.text) {
+        toast.error("Could not send your answers", {
+          description:
+            "Answer every question and shorten long answers so the combined reply fits within 20,000 characters. Your choices are saved.",
+        });
+        return;
+      }
       isSubmittingRef.current = true;
       setSubmissionPending(true);
       try {
