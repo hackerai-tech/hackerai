@@ -300,8 +300,10 @@ export async function judgeGoalCompletion(
                 // discard a valid verdict or its verified tool evidence.
                 questions: userInputQuestionsSchema
                   .nullable()
-                  .optional()
-                  .catch(undefined),
+                  .catch(null)
+                  .describe(
+                    "Required: for needs_input, extract the unanswered questions and explicitly offered options from assistantResponse. Use null only when no unanswered question exists or the verdict is not needs_input.",
+                  ),
                 evidence: z
                   .array(
                     z.object({
