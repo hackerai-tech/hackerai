@@ -30,7 +30,7 @@ export type CompletedPredictionTurn = { chatId: string; messageId: string };
 
 export const predictedNextActionSchema = z
   .object({
-    needs_unseen_evidence: z.boolean(),
+    claims_unseen_observation: z.boolean(),
     suggestion: z.string().max(240).nullable(),
   })
   .strict();
@@ -145,7 +145,7 @@ export function parsePredictedNextAction(output: unknown): string[] {
   const parsed = predictedNextActionSchema.safeParse(output);
   if (
     !parsed.success ||
-    parsed.data.needs_unseen_evidence ||
+    parsed.data.claims_unseen_observation ||
     parsed.data.suggestion === null
   )
     return [];

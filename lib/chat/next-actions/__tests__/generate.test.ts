@@ -21,7 +21,7 @@ const draft =
 function completion(output: unknown, cost: number | undefined = 0.001) {
   return {
     output: {
-      needs_unseen_evidence: false,
+      claims_unseen_observation: false,
       ...(output as Record<string, unknown>),
     },
     usage: {
@@ -80,7 +80,7 @@ test("returns one editable reply with one provider call and its receipt", async 
 test("suppresses a draft classified as depending on unseen evidence in the same call", async () => {
   jest.mocked(generateText).mockResolvedValueOnce(
     completion({
-      needs_unseen_evidence: true,
+      claims_unseen_observation: true,
       suggestion: "The measured result is 17.",
     }),
   );
