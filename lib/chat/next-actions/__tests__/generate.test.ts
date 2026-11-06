@@ -106,6 +106,31 @@ test("an explicit conversational stop spends no provider tokens", async () => {
   expect(generateText).not.toHaveBeenCalled();
 });
 
+test("quoted stop wording in a question still allows a prediction", async () => {
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(
+      completion({ suggestion: "show me where that setting is" }),
+    );
+  const result = await generateNextActions(
+    [
+      {
+        id: "u",
+        role: "user",
+        text: "What does ‘do not suggest follow-ups’ mean?",
+      },
+      {
+        id: "a",
+        role: "assistant",
+        text: "It disables predicted next messages.",
+      },
+    ],
+    new AbortController().signal,
+  );
+  expect(result.providerCalls).toBe(1);
+  expect(result.suggestions).toEqual(["show me where that setting is"]);
+});
+
 test("keeps a successful reply while reporting missing provider cost as unknown", async () => {
   const r = completion({ suggestion: draft });
   (r as { usage: { raw: object } }).usage.raw = {};

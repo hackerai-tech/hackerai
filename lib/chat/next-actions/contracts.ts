@@ -165,11 +165,13 @@ export function hasExplicitPredictionStop(
       latest,
     ) ||
     /\bI(?:['’]m| am) done[.!]?\s*$/i.test(latest) ||
-    /\b(?:and|then)\s+stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(latest) ||
+    /\b(?:and|then)\s+stop\s+(?:here|there)[.!]?\s*$/i.test(latest) ||
     /^(?:thanks[,.!]\s*)?(?:please\s+)?(?:cancel|stop)(?:\s+(?:that|this)(?:\s+(?:task|request|review))?)?[.!]?\s*$/i.test(
       latest.trim(),
     ) ||
     /\bno more on this[.!]?\s*$/i.test(latest) ||
-    /\bdo not suggest (?:a |any )?follow[ -]?ups?\b/i.test(latest)
+    /(?:^|[.!?;,]\s*|\b(?:but|and)\s+|\n)(?:please\s+)?do not suggest (?:a |any )?follow[ -]?ups?\b/i.test(
+      latest,
+    )
   );
 }
