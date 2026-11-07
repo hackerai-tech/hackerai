@@ -423,6 +423,14 @@ function nearbyDispatchGroup(
       (frames === undefined || (Array.isArray(frames) && frames.length === 0))
     )
       return "synthetic_stackless_error";
+    if (
+      exception.type === "SyntaxError" &&
+      exception.value === "Unexpected end of script" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      (frames === undefined || (Array.isArray(frames) && frames.length === 0))
+    )
+      return "stackless_end_of_script_syntaxerror";
   } catch {
     /* Optional attribution cannot change the retained exception. */
   }

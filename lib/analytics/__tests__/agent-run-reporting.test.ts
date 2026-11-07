@@ -2,11 +2,16 @@ import type { PostHog } from "posthog-node";
 import { ChatSDKError } from "@/lib/errors";
 import {
   agentFailureCategory,
+  agentFailureSignalContext,
   agentRunEventUuid,
   createAgentRunReporting,
 } from "../agent-run-reporting";
 
-function setup() {
+function setup(
+  getFailureSignalContext?: Parameters<
+    typeof createAgentRunReporting
+  >[0]["getFailureSignalContext"],
+) {
   const capture = jest.fn();
   const reporter = createAgentRunReporting({
     posthog: { capture } as unknown as PostHog,
@@ -15,6 +20,7 @@ function setup() {
     chatId: "chat_1",
     subscription: "free",
     endpoint: "/api/agent",
+    getFailureSignalContext,
   });
   const events = () => capture.mock.calls.map(([event]) => event);
   return { reporter, capture, events };
@@ -333,4 +339,139 @@ it("keeps reconnect-required Agent attempts unsuccessful in analytics", () => {
     cost_dollars: null,
     cost_accounting_status: "incomplete",
   });
+});
+
+describe("first-failure signal attribution", () => {
+  it("compares standard reason identities without inspecting private reason contents", () => {
+    const inspect = jest.fn();
+    const reason = new Proxy(
+      {},
+      {
+        get: () => {
+          inspect();
+          return "PRIVATE";
+        },
+        getPrototypeOf: () => {
+          inspect();
+          return null;
+        },
+        ownKeys: () => {
+          inspect();
+          return [];
+        },
+      },
+    );
+    const platform = new AbortController();
+    const stop = new AbortController();
+    expect(
+      agentFailureSignalContext(reason, platform.signal, stop.signal),
+    ).toEqual({
+      trigger_aborted: false,
+      stop_aborted: false,
+      matches_trigger_reason: false,
+      matches_stop_reason: false,
+    });
+    platform.abort(new Error("PRIVATE different reason"));
+    stop.abort(reason);
+    expect(
+      agentFailureSignalContext(reason, platform.signal, stop.signal),
+    ).toEqual({
+      trigger_aborted: true,
+      stop_aborted: true,
+      matches_trigger_reason: false,
+      matches_stop_reason: true,
+    });
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it("preserves first-failure ordering and the error outcome when cancellation arrives during cleanup", () => {
+    const platform = new AbortController();
+    const stop = new AbortController();
+    const { reporter, events } = setup((error) =>
+      agentFailureSignalContext(error, platform.signal, stop.signal),
+    );
+    reporter.setStage("preparation");
+    const error = new Error("PRIVATE failure");
+    reporter.fail(error);
+    platform.abort(error);
+    stop.abort(error);
+    reporter.fail(error, "canceled");
+    reporter.finalize({ canceled: true });
+    reporter.finalize({ canceled: true });
+    const terminal = events().filter((x) => x.event === "hackerai-agent_run");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      failure_stage: "preparation",
+      failure_signal_context_version: 1,
+      failure_trigger_aborted: false,
+      failure_stop_aborted: false,
+      failure_matches_trigger_reason: false,
+      failure_matches_stop_reason: false,
+      finalization_trigger_aborted: true,
+    });
+    expect(terminal[0].properties).not.toHaveProperty("abort_source");
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it("reads four observer primitives once without spreading or retaining its object", () => {
+    const reads = jest.fn();
+    const observed = { private_payload: "PRIVATE canary" };
+    for (const key of [
+      "trigger_aborted",
+      "stop_aborted",
+      "matches_trigger_reason",
+      "matches_stop_reason",
+    ]) {
+      let first = true;
+      Object.defineProperty(observed, key, {
+        enumerable: true,
+        get: () => {
+          reads(key);
+          if (first) {
+            first = false;
+            return true;
+          }
+          return "PRIVATE changed";
+        },
+      });
+    }
+    const { reporter, events } = setup(() => observed as never);
+    reporter.fail(new Error("fixture"));
+    reporter.finalize({ canceled: true });
+    expect(reads).toHaveBeenCalledTimes(4);
+    expect(events()[0].properties).toMatchObject({
+      failure_signal_context_version: 1,
+      failure_trigger_aborted: true,
+      failure_stop_aborted: true,
+      failure_matches_trigger_reason: true,
+      failure_matches_stop_reason: true,
+      finalization_trigger_aborted: true,
+      outcome: "error",
+    });
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it.each(["throws", "invalid"])(
+    "preserves reporting when the optional observer %s",
+    (kind) => {
+      const { reporter, events } = setup(() => {
+        if (kind === "throws") throw new Error("PRIVATE sink");
+        return {
+          trigger_aborted: "PRIVATE",
+          stop_aborted: false,
+          matches_trigger_reason: false,
+          matches_stop_reason: false,
+        } as never;
+      });
+      expect(() => reporter.fail(new Error("PRIVATE original"))).not.toThrow();
+      reporter.finalize({ canceled: false });
+      expect(events()[0].properties.outcome).toBe("error");
+      expect(events()[0].properties).not.toHaveProperty(
+        "failure_signal_context_version",
+      );
+      expect(JSON.stringify(events())).not.toContain("PRIVATE");
+    },
+  );
 });
