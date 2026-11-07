@@ -6,6 +6,12 @@ import {
   type TerminalExecutionRecord,
 } from "../terminal-execution-record";
 import type { AnySandbox } from "@/types";
+import {
+  checkpointCommandContext,
+  PersistenceError,
+  persistenceCommandError,
+} from "../persistence-failure";
+import { LocalFileRequestError } from "../local-sandbox-errors";
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn() },
@@ -29,14 +35,17 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   async function fixture(
     save: (record: TerminalExecutionRecord) => Promise<string | null>,
     manager = new PtySessionManager(),
+    suppliedStore?: ReturnType<typeof createTerminalRecordStore>,
   ) {
     const kill = jest.fn(async () => true);
     const handle = createCommandSessionHandle({ kill });
-    const store = createTerminalRecordStore(
-      { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
-      "PRIVATE_USER",
-      "PRIVATE_SCOPE",
-    );
+    const store =
+      suppliedStore ??
+      createTerminalRecordStore(
+        { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
+        "PRIVATE_USER",
+        "PRIVATE_SCOPE",
+      );
     const session = await manager.create("PRIVATE_SCOPE", {
       createHandle: async () => handle,
       cols: 120,
@@ -60,6 +69,135 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     handle.emitText("PRIVATE_OUTPUT");
     return { manager, session, handle, kill };
   }
+
+  function failingStore(error: unknown) {
+    const write = jest
+      .fn<Promise<void>, [string, string]>()
+      .mockRejectedValue(error);
+    const store = createTerminalRecordStore(
+      {
+        sandboxId: "PRIVATE_SANDBOX",
+        files: { write },
+      } as unknown as AnySandbox,
+      "PRIVATE_USER",
+      "PRIVATE_SCOPE",
+    );
+    return { store, write };
+  }
+
+  it.each([
+    [
+      persistenceCommandError("Failed to write file", {
+        exitCode: 17,
+        stderr: "PRIVATE_STDERR",
+      }),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "write_file",
+        command_exit_code: 17,
+      },
+    ],
+    [
+      persistenceCommandError("Failed to decode file", { exitCode: 1 }),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "decode_file",
+        command_exit_code: 1,
+      },
+    ],
+    [
+      new LocalFileRequestError("timeout", "PRIVATE_TIMEOUT"),
+      {
+        failure_category: "timeout",
+        checkpoint_failure_origin: "local_file_request",
+        command_stage: "none",
+        command_exit_code: "none",
+      },
+    ],
+  ])(
+    "retains finite failed-write context on the existing session diagnostic",
+    async (error, expected) => {
+      const { store } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      for (let i = 0; i < 3; i++) await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          reason: "save_unacknowledged",
+          terminal_session_id: session.sessionId,
+          checkpoint_backend: "cloud",
+          checkpoint_transport: "native_file",
+          file_failure: "none",
+          ...expected,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("does not attribute another session's failure or retain it after successful recovery", async () => {
+    const { store, write } = failingStore(
+      persistenceCommandError("Failed to write file", { exitCode: 4 }),
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    const report = (
+      id: string,
+      reason: "save_unacknowledged" | "wait_deadline" = "save_unacknowledged",
+    ) =>
+      store.reportCheckpointIssue({
+        terminalSessionId: id,
+        sessionKind: "command",
+        reason,
+      });
+    info.mockClear();
+    report("abcdef12");
+    report(session.sessionId, "wait_deadline");
+    for (const [, fields] of info.mock.calls)
+      expect(fields).not.toHaveProperty("failure_category");
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    expect(session.recordPersistenceFailed).toBe(false);
+    info.mockClear();
+    report(session.sessionId);
+    expect(info.mock.calls[0][1]).not.toHaveProperty("failure_category");
+  });
+
+  it("rejects private or malformed command details and never invokes optional error accessors", () => {
+    const error = new PersistenceError("PRIVATE_MESSAGE", "unknown", 1000000);
+    expect(checkpointCommandContext(error)).toEqual({
+      command_stage: "other",
+      command_exit_code: "other",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    Object.defineProperty(error, "message", { get: getter });
+    Object.defineProperty(error, "exitCode", { get: getter });
+    expect(checkpointCommandContext(error)).toEqual({
+      command_stage: "other",
+      command_exit_code: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("keeps malformed record rejection best effort without retaining unrelated context", async () => {
+    const { store } = failingStore(new Error("PRIVATE_FAILURE"));
+    await expect(
+      store.save(null as unknown as TerminalExecutionRecord),
+    ).resolves.toBeNull();
+    store.reportCheckpointIssue({
+      terminalSessionId: "abcdef12",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty("failure_category");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+  });
 
   it("distinguishes unacknowledged saves from thrown writes without leaking record content", async () => {
     const save = jest
