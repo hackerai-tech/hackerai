@@ -1,3 +1,4 @@
+import { goalElapsedMs } from "../../lib/goals/timing";
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../../lib/ai/browser-handoff/constants";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
@@ -35,6 +36,7 @@ function fixture() {
       },
     ],
     browser_handoffs: [],
+    agent_goals: [],
     messages: [],
   };
   const ctx = {
@@ -610,3 +612,112 @@ it.each([
     }
   },
 );
+
+describe("Goal time during human browser input", () => {
+  it("freezes a Goal through handoff, grant recovery and explicit resume", async () => {
+    const f = fixture();
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    const goal: any = {
+      _id: "goal-row",
+      chatId: "chat",
+      userId: "owner",
+      activeRunId: "run-parent",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: 1000,
+      updatedAt: 1000,
+    };
+    f.rows.agent_goals.push(goal);
+    try {
+      await f.register("parent", "run-parent", f.scope.sessionId, 600000);
+      now.mockReturnValue(4000);
+      expect(
+        await browser.requestWaitForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          expectedUpdatedAt: 1000,
+        }),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      now.mockReturnValue(64000);
+      expect(
+        await browser.requestWaitForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          expectedUpdatedAt: 1000,
+        }),
+      ).toBe(true);
+      const grant = "g".repeat(32);
+      expect(
+        await browser.beginTakeoverForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+        }),
+      ).toBe(true);
+      expect(
+        await browser.finishTakeoverForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+          browserSessionName: "default",
+        }),
+      ).toBe(true);
+      expect(
+        await browser.releaseForBackend.handler(f.ctx as any, {
+          ...f.scope,
+          grant,
+        }),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 124000)).toBe(5000);
+      now.mockReturnValue(124000);
+      expect(
+        await browser.beginResumeForBackend.handler(f.ctx as any, f.scope),
+      ).toBe(true);
+      expect(
+        await browser.finishResumeForBackend.handler(f.ctx as any, f.scope),
+      ).toBe(true);
+      expect(goalElapsedMs(goal, 126000)).toBe(7000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("does not restart Goal time when browser control returns while a chat reply is pending", async () => {
+    const f = fixture();
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    const goal: any = {
+      _id: "goal-row",
+      chatId: "chat",
+      userId: "owner",
+      activeRunId: "run-parent",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: undefined,
+      updatedAt: 1000,
+    };
+    f.rows.agent_goals.push(goal);
+    f.rows.chats[0].active_agent_user_wait = {
+      runId: "run-parent",
+      toolCallId: "reply",
+    };
+    try {
+      await f.register("parent", "run-parent", f.scope.sessionId, 600000);
+      const grant = "g".repeat(32);
+      await browser.beginTakeoverForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+      });
+      await browser.finishTakeoverForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+        browserSessionName: "default",
+      });
+      now.mockReturnValue(64000);
+      await browser.beginResumeForBackend.handler(f.ctx as any, {
+        ...f.scope,
+        grant,
+      });
+      await browser.finishResumeForBackend.handler(f.ctx as any, f.scope);
+      expect(goalElapsedMs(goal, 124000)).toBe(2000);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});

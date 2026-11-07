@@ -1413,6 +1413,7 @@ describe("Goal clock during durable user waits", () => {
     ctx.db.query.mockImplementation((table: string) => ({
       withIndex: () => ({
         first: async () => (table === "agent_goals" ? goal : chat),
+        order: () => ({ first: async () => null }),
       }),
     }));
     patch.mockImplementation(async (id: string, fields: object) =>

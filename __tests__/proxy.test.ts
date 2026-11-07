@@ -93,6 +93,58 @@ function createRequest({
 }
 
 describe("proxy", () => {
+  it.each([
+    [
+      "preview",
+      "qa-branch.vercel.app",
+      "https://qa-branch.vercel.app/callback",
+    ],
+    [
+      "preview",
+      "deployment.vercel.app",
+      "https://deployment.vercel.app/callback",
+    ],
+    ["preview", "untrusted.example", "https://deployment.vercel.app/callback"],
+    ["production", "qa-branch.vercel.app", undefined],
+  ])(
+    "keeps auth on a trusted Preview branch origin (%s / %s)",
+    async (environment, host, redirectUri) => {
+      const keys = ["VERCEL_ENV", "VERCEL_URL", "VERCEL_BRANCH_URL"] as const;
+      const previous = Object.fromEntries(
+        keys.map((key) => [key, process.env[key]]),
+      );
+      Object.assign(process.env, {
+        VERCEL_ENV: environment,
+        VERCEL_URL: "deployment.vercel.app",
+        VERCEL_BRANCH_URL: "qa-branch.vercel.app",
+      });
+      mockAuthkit.mockResolvedValue({
+        session: { user: { id: "user" } },
+        headers: new Headers(),
+      });
+      try {
+        const { default: proxy } = await import("../proxy");
+        await proxy(
+          createRequest({
+            pathname: `https://${host}/c/goal-chat`,
+            accept: "text/html",
+            userAgent: "Mozilla/5.0",
+            hasSession: true,
+          }),
+        );
+        expect(mockAuthkit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ redirectUri }),
+        );
+      } finally {
+        for (const key of keys) {
+          if (previous[key] === undefined) delete process.env[key];
+          else process.env[key] = previous[key];
+        }
+      }
+    },
+  );
+
   afterAll(() => {
     if (originalCookiePassword === undefined) {
       delete process.env.WORKOS_COOKIE_PASSWORD;
