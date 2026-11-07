@@ -76,6 +76,7 @@ if not name or len(name) > 80 or '/' in name or '\\x00' in name:
     raise RuntimeError('Invalid browser session name')
 (root / 'active-session').write_text(name)
 def record_wrapper(phase, status=None):
+    """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
     # targets or output; the reader exports session equality, not its name.
     temporary = None

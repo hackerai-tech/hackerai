@@ -38,6 +38,7 @@ let done = false;
 let precondition = 'arguments';
 let argumentsValid = false;
 let rootInfo;
+/** Read only a bounded private receipt and return finite observations, never its session key. */
 function wrapperReceipt() {
   let fd;
   try {
@@ -74,6 +75,7 @@ function wrapperReceipt() {
   } catch { return {}; }
   finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
+/** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
   if (done) return;
   done = true;

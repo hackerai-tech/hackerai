@@ -4,8 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { BROWSER_SESSION_PROGRAM } from "../browser-session-program";
 
-// Execute the actual generated wrapper without provisioning a /dev/shm browser
-// or starting the lifecycle watchdog on the shared host.
+/** Execute the generated wrapper with a controlled CLI, without a browser or watchdog. */
 const exercise = (
   root: string,
   exitCode: number,

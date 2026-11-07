@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { BROWSER_DAEMON_PROGRAM } from "../daemon-program";
 
 const directory = "/dev/shm/hackerai-browser-0123456789abcdef";
+/** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
   options: {
     directory?: string;
