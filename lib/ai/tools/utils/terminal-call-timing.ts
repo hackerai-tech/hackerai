@@ -71,6 +71,15 @@ export function withTerminalCallTiming<
           )
         )
           return;
+        // Correlate only the server-returned short PTY ID, never a requested
+        // session or arbitrary result text. Keep the run/chat IDs in the join.
+        const returnedSession = result?.session;
+        const terminalSessionId =
+          typeof returnedSession === "string" &&
+          returnedSession.length === 8 &&
+          /^[a-f0-9]{8}$/.test(returnedSession)
+            ? returnedSession
+            : null;
         // Never include the command, brief, stdin, output, paths, or error text.
         phLogger.info("terminal_call_finished", {
           event: "terminal_call_finished",
@@ -84,7 +93,8 @@ export function withTerminalCallTiming<
           requested_wait_seconds: input.timeout ?? null,
           tool_elapsed_ms: callTiming.elapsedMs,
           outcome,
-          telemetry_version: 2,
+          telemetry_version: 3,
+          terminal_session_id: terminalSessionId,
           telemetry_sample_rate: diagnostic ? 1 : 0.1,
           telemetry_selection: diagnostic ? "diagnostic" : "sampled",
           result_error: Boolean(result?.error),
