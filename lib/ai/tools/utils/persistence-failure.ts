@@ -112,6 +112,15 @@ export class PersistenceError extends Error {
 export function checkpointCommandContext(error: unknown): {
   command_stage: string;
   command_exit_code: number | "none" | "other";
+  command_exit_code_shape:
+    | "none"
+    | "exit_status"
+    | "sentinel_minus_one"
+    | "negative_integer"
+    | "out_of_range"
+    | "non_integer"
+    | "non_numeric"
+    | "unreadable";
 } {
   let commandStage = "none";
   let exitCode: unknown;
@@ -153,6 +162,24 @@ export function checkpointCommandContext(error: unknown): {
             exitCode <= 255
           ? exitCode
           : "other",
+    // Keep the original code bound; distinguish withheld values without
+    // retaining an arbitrary number or invoking an error accessor.
+    command_exit_code_shape:
+      commandStage === "unreadable"
+        ? "unreadable"
+        : exitCode === undefined
+          ? "none"
+          : typeof exitCode !== "number"
+            ? "non_numeric"
+            : !Number.isInteger(exitCode)
+              ? "non_integer"
+              : exitCode === -1
+                ? "sentinel_minus_one"
+                : exitCode < 0
+                  ? "negative_integer"
+                  : exitCode > 255
+                    ? "out_of_range"
+                    : "exit_status",
   };
 }
 

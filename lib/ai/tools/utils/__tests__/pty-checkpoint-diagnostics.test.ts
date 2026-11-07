@@ -98,6 +98,29 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   }
 
   it.each([
+    ...[
+      [-1, "sentinel_minus_one"],
+      [-9, "negative_integer"],
+      [1_000_000, "out_of_range"],
+      [NaN, "non_integer"],
+      ["PRIVATE_EXIT_CODE", "non_numeric"],
+    ].map(([exitCode, shape]) => [
+      Object.defineProperty(
+        new PersistenceError(
+          "Private terminal artifact operation failed",
+          "unknown",
+        ),
+        "exitCode",
+        { value: exitCode },
+      ),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "private_artifact",
+        command_exit_code: "other",
+        command_exit_code_shape: shape,
+      },
+    ]),
     [
       persistenceCommandError("Failed to write file", {
         exitCode: 17,
@@ -184,6 +207,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     expect(checkpointCommandContext(error)).toEqual({
       command_stage: "other",
       command_exit_code: "other",
+      command_exit_code_shape: "out_of_range",
     });
     const getter = jest.fn(() => {
       throw new Error("PRIVATE_GETTER");
@@ -193,6 +217,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     expect(checkpointCommandContext(error)).toEqual({
       command_stage: "other",
       command_exit_code: "none",
+      command_exit_code_shape: "none",
     });
     expect(getter).not.toHaveBeenCalled();
   });
