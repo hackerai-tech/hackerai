@@ -34,7 +34,10 @@ import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
 import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import * as relayTraffic from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
-import { checkpointFailureOrigin } from "../persistence-failure";
+import {
+  checkpointFailureOrigin,
+  classifyPersistenceFailure,
+} from "../persistence-failure";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
   LocalCommandRelayUnsubscribedError,
@@ -4205,21 +4208,56 @@ describe("CentrifugoSandbox", () => {
       expect(run).not.toHaveBeenCalled();
     });
 
-    it("classifies the actual native write path-conversion guard before file dispatch", async () => {
-      const sandbox = createDesktopSandbox("/tmp/project");
-      (sandbox as any).shellKind = "bash";
-      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
-        stdout: "not a Windows native path",
-        stderr: "",
-        exitCode: 0,
-      });
-      const error = await sandbox.files
-        .write("file.txt", "value")
-        .catch((error: unknown) => error);
-      expect(error).toBeInstanceOf(Error);
-      expect(checkpointFailureOrigin(error)).toBe("windows_path_resolution");
-      expect(mockSubscriptions).toHaveLength(0);
-    });
+    it.each([
+      [0, "", "", "windows_path_empty_output"],
+      [0, "C:\\native\\file\nsecond line", "", "windows_path_output_control"],
+      [0, "/tmp/not-native", "", "windows_path_non_absolute_output"],
+      [
+        127,
+        "",
+        "bash: /usr/bin/cygpath: command not found",
+        "windows_path_missing_utility",
+      ],
+      [
+        1,
+        "",
+        "syntax error near unexpected token",
+        "windows_path_shell_syntax",
+      ],
+      [1, "", "Permission denied: private path", "windows_path_permission"],
+      [
+        1,
+        "private output",
+        "private opaque failure",
+        "windows_path_command_failed",
+      ],
+    ] as const)(
+      "classifies the actual native write conversion result as %s/%s/%s -> %s before file dispatch",
+      async (exitCode, stdout, stderr, origin) => {
+        const sandbox = createDesktopSandbox("/tmp/project");
+        (sandbox as any).shellKind = "bash";
+        jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout,
+          stderr,
+          exitCode,
+        });
+        const error = await sandbox.files
+          .write("file.txt", "value")
+          .catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(Error);
+        expect(checkpointFailureOrigin(error)).toBe(origin);
+        expect((error as Error).message).toBe(
+          "Failed to resolve the Windows file path through Git Bash",
+        );
+        expect((error as Error).name).toBe("Error");
+        expect(classifyPersistenceFailure(error)).toBe("unknown");
+        expect(JSON.stringify(error)).not.toMatch(
+          /private|cygpath|native\\\\file/,
+        );
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+        expect(mockSubscriptions).toHaveLength(0);
+      },
+    );
 
     it.each(["failure", "cancel"])(
       "stops a chunked POSIX write after %s",

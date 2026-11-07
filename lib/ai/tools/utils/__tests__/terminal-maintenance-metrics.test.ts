@@ -5,7 +5,10 @@ import {
   terminalSandboxInstance,
 } from "../terminal-execution-record";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
-import { LocalFileRequestError } from "../local-sandbox-errors";
+import {
+  LocalFileRequestError,
+  NativePathResolutionError,
+} from "../local-sandbox-errors";
 import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 
 type Sample = { name: string; value: number; labels: Record<string, string> };
@@ -265,6 +268,16 @@ test.each([
     "none",
   ],
   [new TypeError("private object or path"), "type_error", "none"],
+  [
+    new NativePathResolutionError("command_failed"),
+    "windows_path_command_failed",
+    "none",
+  ],
+  [
+    new NativePathResolutionError("private-unbounded-reason" as any),
+    "windows_path_resolution",
+    "none",
+  ],
   [new RangeError("private output"), "range_error", "none"],
   [new Error("private opaque error"), "other_error", "none"],
   [

@@ -7,7 +7,10 @@ import {
 } from "@/lib/centrifugo/desktop-file-errors";
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
-import { persistenceCommandError } from "./persistence-failure";
+import {
+  classifyPersistenceFailure,
+  persistenceCommandError,
+} from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -70,6 +73,8 @@ import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
   LocalFileRequestError,
+  NativePathResolutionError,
+  type NativePathResolutionFailure,
   getLocalFileRequestFailure,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
@@ -1826,9 +1831,24 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
       ) {
         // Never guess another file location when conversion fails.
-        throw new Error(
-          "Failed to resolve the Windows file path through Git Bash",
-        );
+        let failure: NativePathResolutionFailure;
+        if (result.exitCode !== 0) {
+          const category = classifyPersistenceFailure(result.stderr);
+          failure =
+            category === "missing_utility" ||
+            category === "shell_syntax" ||
+            category === "permission"
+              ? category
+              : "command_failed";
+        } else {
+          failure =
+            resolved.length === 0
+              ? "empty_output"
+              : /[\r\n\0]/.test(resolved)
+                ? "output_control"
+                : "non_absolute_output";
+        }
+        throw new NativePathResolutionError(failure);
       }
       nativePaths?.set(path, resolved);
       return resolved;

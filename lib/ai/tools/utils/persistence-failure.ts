@@ -1,6 +1,7 @@
 import {
   getLocalFileRequestFailure,
   LocalFileRequestError,
+  NativePathResolutionError,
 } from "./local-sandbox-errors";
 import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 import { ZodError } from "zod";
@@ -9,6 +10,13 @@ const CHECKPOINT_FAILURE_ORIGINS = [
   "local_file_request",
   "desktop_file_bridge",
   "windows_path_resolution",
+  "windows_path_missing_utility",
+  "windows_path_shell_syntax",
+  "windows_path_permission",
+  "windows_path_command_failed",
+  "windows_path_empty_output",
+  "windows_path_output_control",
+  "windows_path_non_absolute_output",
   "command_path_limit",
   "record_validation",
   "type_error",
@@ -37,6 +45,24 @@ export function checkpointFailureOrigin(
   try {
     if (error instanceof LocalFileRequestError) return "local_file_request";
     if (error instanceof DesktopFileBridgeError) return "desktop_file_bridge";
+    if (error instanceof NativePathResolutionError) {
+      switch (error.failure) {
+        case "missing_utility":
+          return "windows_path_missing_utility";
+        case "shell_syntax":
+          return "windows_path_shell_syntax";
+        case "permission":
+          return "windows_path_permission";
+        case "command_failed":
+          return "windows_path_command_failed";
+        case "empty_output":
+          return "windows_path_empty_output";
+        case "output_control":
+          return "windows_path_output_control";
+        case "non_absolute_output":
+          return "windows_path_non_absolute_output";
+      }
+    }
     if (error instanceof ZodError) return "record_validation";
     if (error instanceof TypeError) return "type_error";
     if (error instanceof RangeError) return "range_error";
