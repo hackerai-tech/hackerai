@@ -796,9 +796,9 @@ export class HybridSandboxManager implements SandboxManager {
     }
   }
 
+  /** Reject old evidence when a concurrent lookup changes the selected computer. */
   private selectedComputerLookup(connections: ConnectionInfo[]) {
     const listing = this.connectionListingDiagnostics.get(connections);
-    // A concurrent preference change must not borrow the old selection's facts.
     return listing?.preference === this.sandboxPreference
       ? listing.lookup
       : undefined;

@@ -10,6 +10,7 @@ export type SelectedComputerLookup = {
   presence: "not_checked" | "reliable" | "unavailable";
 };
 
+/** Remove installation/session identifiers before selection evidence is retained. */
 export function selectedComputerPreferenceKind(preference: string) {
   if (preference === "desktop") return "desktop_alias" as const;
   if (preference.startsWith("desktop-environment:"))
@@ -23,6 +24,7 @@ export function selectedComputerPreferenceKind(preference: string) {
 // to ChatSDKError.metadata, which is serialized to the user's message stream.
 const diagnostics = new WeakMap<object, ReturnType<typeof diagnosticFields>>();
 
+/** An unavailable lookup has null facts, rather than false evidence of absence. */
 function diagnosticFields(
   lookup: SelectedComputerLookup | undefined,
   phase: "prompt_context" | "acquisition",
@@ -40,6 +42,7 @@ function diagnosticFields(
   };
 }
 
+/** Keep lookup evidence on the server while preserving the existing wire error. */
 export function selectedComputerOfflineError(
   lookup: SelectedComputerLookup | undefined,
   phase: "prompt_context" | "acquisition",
@@ -52,6 +55,7 @@ export function selectedComputerOfflineError(
   return error;
 }
 
+/** Accept only this process's exact failure, never copied or user-provided metadata. */
 export function selectedComputerFailureDiagnostics(error: unknown) {
   return typeof error === "object" && error !== null
     ? diagnostics.get(error)
