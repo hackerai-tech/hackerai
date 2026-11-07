@@ -264,11 +264,6 @@ test.each([
     "command_path_limit",
     "none",
   ],
-  [
-    new Error("Setup command failed without returning a result"),
-    "setup_no_result",
-    "none",
-  ],
   [new TypeError("private object or path"), "type_error", "none"],
   [new RangeError("private output"), "range_error", "none"],
   [new Error("private opaque error"), "other_error", "none"],

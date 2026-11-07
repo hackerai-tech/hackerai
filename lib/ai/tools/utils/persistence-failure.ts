@@ -10,7 +10,6 @@ const CHECKPOINT_FAILURE_ORIGINS = [
   "desktop_file_bridge",
   "windows_path_resolution",
   "command_path_limit",
-  "setup_no_result",
   "record_validation",
   "type_error",
   "range_error",
@@ -21,6 +20,7 @@ const CHECKPOINT_FAILURE_ORIGINS = [
 export type CheckpointFailureOrigin =
   (typeof CHECKPOINT_FAILURE_ORIGINS)[number];
 
+/** Reject any value outside the fixed checkpoint metric vocabulary. */
 export function parseCheckpointFailureOrigin(
   value: unknown,
 ): CheckpointFailureOrigin | undefined {
@@ -46,8 +46,6 @@ export function checkpointFailureOrigin(
         return "windows_path_resolution";
       case "File path exceeds the local file command limit":
         return "command_path_limit";
-      case "Setup command failed without returning a result":
-        return "setup_no_result";
       default:
         return "other_error";
     }
