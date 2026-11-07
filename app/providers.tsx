@@ -26,6 +26,7 @@ import {
 } from "@/lib/analytics/acquisition";
 
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
+import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
@@ -164,7 +165,9 @@ export function PostHogProvider({
               sanitizeChatPerformanceEvent(
                 sanitizeDesktopAckEvent(
                   sanitizeAgentCancellationEvent(
-                    sanitizeFrontendExceptionUrlProperties(event),
+                    sanitizeDiffViewEvent(
+                      sanitizeFrontendExceptionUrlProperties(event),
+                    ),
                   ),
                 ),
               ),

@@ -295,6 +295,36 @@ describe("PostHogProvider", () => {
     });
     expect(stopSnapshot?.properties).toEqual(stopSnapshotProperties);
     expect(JSON.stringify(stopSnapshot)).not.toContain("private");
+    const diffProperties = {
+      token: "test-ingestion-token",
+      distinct_id: "user-123",
+      $session_id: "session-123",
+      diagnostic_version: 1,
+      diff_view_instance_id: "opaque-instance",
+      stage: "view_rendered",
+      view_mode: "original",
+      instance_observed_computed_before_view: false,
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const diff = config.before_send({
+      event: "diff_view_diagnostic",
+      properties: {
+        ...diffProperties,
+        $current_url: "private",
+        $referrer: "private",
+        $title: "private",
+        $pathname: "private",
+        path: "private",
+        content: "private",
+        language: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set: { content: "private" },
+      $set_once: { content: "private" },
+    });
+    expect(diff?.properties).toEqual(diffProperties);
+    expect(JSON.stringify(diff)).not.toContain("private");
     const summary = config.before_send({
       event: "desktop_ack_delivery_summary",
       properties: {
