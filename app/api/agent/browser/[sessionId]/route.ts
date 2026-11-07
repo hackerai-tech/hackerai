@@ -63,21 +63,110 @@ const unavailable = (error: unknown) => {
   return json({ state: "disconnected" }, 503);
 };
 
+type PreviewGetStage =
+  | "resolve_session"
+  | "connect_sandbox"
+  | "read_active_session"
+  | "capture_frame"
+  | "verify_active_session";
+
+/** One primitive diagnostic per unavailable GET; never retain the private session or frame. */
+const unavailableGet = (
+  error: unknown,
+  stage: PreviewGetStage,
+  request: NextRequest,
+  sessionId: string | undefined,
+  session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
+) => {
+  const response = unavailable(error);
+  if (response.status !== 503) return response;
+  try {
+    const state =
+      error instanceof BrowserPreviewUnavailable
+        ? Object.getOwnPropertyDescriptor(error, "state")?.value
+        : undefined;
+    const requestId = request.headers.get("x-vercel-id");
+    const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    phLogger.info("agent_browser_preview_get_unavailable", {
+      diagnostic_version: 1,
+      failure_stage: stage,
+      preview_state: state === "loading" ? "loading" : "disconnected",
+      failure_kind:
+        error instanceof BrowserPreviewUnavailable
+          ? "preview_unavailable"
+          : error instanceof TypeError
+            ? "type_error"
+            : error instanceof Error
+              ? "other_error"
+              : "thrown_value",
+      fresh_requested: request.nextUrl.searchParams.get("fresh") === "1",
+      web_build_commit:
+        build && /^[a-f0-9]{40}$/i.test(build)
+          ? build.toLowerCase()
+          : "unknown",
+      ...(requestId &&
+      /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+        requestId,
+      )
+        ? { request_id: requestId }
+        : {}),
+      ...(sessionId && /^[a-f0-9]{32}$/.test(sessionId)
+        ? { browser_session_id: sessionId }
+        : {}),
+      ...(session && {
+        handoff_state: [
+          "agent",
+          "waiting",
+          "claiming",
+          "human",
+          "recovery",
+          "resuming",
+          "closed",
+        ].includes(session.state)
+          ? session.state
+          : "unknown",
+        run_active:
+          typeof session.runActive === "boolean"
+            ? session.runActive
+            : "unknown",
+        ...(/^run_[a-z0-9]{20,40}$/.test(session.runId)
+          ? { trigger_run_id: session.runId }
+          : {}),
+      }),
+    });
+    after(async () => {
+      try {
+        await phLogger.flush();
+      } catch {
+        /* Optional delivery cannot alter the response. */
+      }
+    });
+  } catch {
+    // Observability must preserve the original unavailable response and retry policy.
+  }
+  return response;
+};
+
 export const GET = withServiceQueryRecovery(async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
+  let sessionId: string | undefined;
+  let stage: PreviewGetStage = "resolve_session";
   try {
-    resolved = await resolveSession(request, (await params).sessionId);
+    sessionId = (await params).sessionId;
+    resolved = await resolveSession(request, sessionId);
   } catch (error) {
     return error instanceof BrowserAuthenticationError
       ? json({ state: "unauthorized" }, 401)
-      : unavailable(error);
+      : unavailableGet(error, stage, request, sessionId);
   }
   if (!resolved) return json({ state: "expired" }, 404);
   try {
+    stage = "connect_sandbox";
     const sandbox = await connectBrowserSandbox(resolved.session);
+    stage = "read_active_session";
     const browserSessionName = await getActiveBrowserSessionName(
       sandbox,
       resolved.session,
@@ -87,12 +176,14 @@ export const GET = withServiceQueryRecovery(async function GET(
       resolved.session.controlledSessionName !== browserSessionName
     )
       return json({ state: "stale" }, 409);
+    stage = "capture_frame";
     const frame = await captureBrowserFrame(
       sandbox,
       resolved.session,
       browserSessionName,
       request.nextUrl.searchParams.get("fresh") === "1",
     );
+    stage = "verify_active_session";
     if (
       (await getActiveBrowserSessionName(sandbox, resolved.session)) !==
       browserSessionName
@@ -100,7 +191,7 @@ export const GET = withServiceQueryRecovery(async function GET(
       return json({ state: "stale" }, 409);
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
-    return unavailable(error);
+    return unavailableGet(error, stage, request, sessionId, resolved.session);
   }
 });
 
