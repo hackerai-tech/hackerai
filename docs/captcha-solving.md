@@ -46,7 +46,9 @@ protected stdin support remain ineligible. Normal browser commands still work.
 ## Managed Cloudflare in Preview
 
 `CAPTCHA_CLOUDFLARE_PREVIEW_URLS` accepts a JSON array of up to five exact HTTPS
-URLs without credentials, query or fragment. It is ignored outside Preview.
+URLs without credentials, query or fragment. The Trigger worker must also set
+`HACKERAI_ENVIRONMENT=preview`; other values disable managed support and the
+legacy `CAPTCHA_SOLVER_PREVIEW_TARGETS` setting. It is ignored outside Preview.
 An eligible run installs a capture hook before navigation on Cloud, Local,
 Desktop and remote browsers running agent-browser 0.39.3 or newer. The hook
 holds the managed widget until the Agent requests solving or releases it.

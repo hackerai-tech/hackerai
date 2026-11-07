@@ -513,13 +513,22 @@ export class BrowserSessions {
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
     if (current.state.state === "agent" && this.cloudflare?.urls.length) {
-      const target = await this.captureChallengeTarget(current.session.sandbox);
-      if (!target) throw new Error("Browser session ownership has ended.");
-      const browser = await this.getChallengeBrowser(
-        signal ?? new AbortController().signal,
-        target,
-      );
-      await browser.evaluate(cloudflareReleaseScript(this.cloudflare.urls));
+      try {
+        const target = await this.captureChallengeTarget(
+          current.session.sandbox,
+        );
+        if (!target) throw new Error("Browser session ownership has ended.");
+        const browser = await this.getChallengeBrowser(
+          signal ?? new AbortController().signal,
+          target,
+        );
+        await browser.evaluate(cloudflareReleaseScript(this.cloudflare.urls));
+      } catch {
+        // Optional widget recovery must not prevent control of the browser.
+        // Admission below still checks ownership; this does not promise that
+        // the current CAPTCHA is usable or that manual verification can pass.
+        signal?.throwIfAborted();
+      }
       signal?.throwIfAborted();
     }
     const accepted = await withCancellation(

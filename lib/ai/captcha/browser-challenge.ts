@@ -207,17 +207,22 @@ export function createBrowserChallengeHandler(
         if (${CLOUDFLARE_PAGE_URL_SCRIPT} !== ${JSON.stringify(cloudflarePageUrl(observation.url))} || String(performance.timeOrigin) !== ${JSON.stringify(observation.documentId)}) return false;
         const current = window[Symbol.for('hackerai.cloudflareChallenge')];
         if (current?.observationId !== ${JSON.stringify(managed.observationId)} || current.delivered || typeof current.release !== 'function') return false;
-        current.release(); return true;
+        return current.release() === true;
       })()`);
       if (!pending.length && !observation.interstitial)
         return respond({ status: "no_pending_challenge" });
       if (action === "release") {
-        await releaseManaged?.();
+        const restored = managed
+          ? (await releaseManaged?.()) === true
+          : undefined;
         releaseManaged = undefined;
         return respond({
-          status: "released",
+          status: restored === false ? "release_skipped" : "released",
+          ...(managed && { manualWidgetRestored: restored }),
           message:
-            "Automatic solving declined. No new paid task was created; use manual verification if needed.",
+            restored === false
+              ? "Automatic solving declined. No paid task was created. The captured widget could not be restored; do not claim manual verification is ready."
+              : "Automatic solving declined. No new paid task was created; use manual verification if needed.",
         });
       }
       challengeDetected = true;

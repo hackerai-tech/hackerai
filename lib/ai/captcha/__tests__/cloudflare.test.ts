@@ -60,7 +60,14 @@ function render() {
   return { api, options, original, callback };
 }
 
-it.each(["cleared", "replaced", "detached", "stop", "declined"])(
+it.each([
+  "cleared",
+  "replaced",
+  "detached",
+  "stop",
+  "declined",
+  "declined-detached",
+])(
   "verifies the actual managed outcome and restores a new challenge without another solve: %s",
   async (outcome) => {
     const { api, options, callback, original } = render();
@@ -128,12 +135,15 @@ it.each(["cleared", "replaced", "detached", "stop", "declined"])(
     ).toMatchObject({ status: "solve_available", providerTaskCreated: false });
     expect(solve).not.toHaveBeenCalled();
     expect(original).not.toHaveBeenCalled();
-    if (outcome === "declined") {
+    if (outcome.startsWith("declined")) {
+      if (outcome === "declined-detached")
+        document.body.replaceWith(document.createElement("body"));
       expect(await handler.request("release", "owned")).toMatchObject({
-        status: "released",
+        status: outcome === "declined" ? "released" : "release_skipped",
+        manualWidgetRestored: outcome === "declined",
       });
       expect(page[key]).toBeUndefined();
-      expect(original).toHaveBeenCalledTimes(1);
+      expect(original).toHaveBeenCalledTimes(outcome === "declined" ? 1 : 0);
       expect(solve).not.toHaveBeenCalled();
       expect(journal.reserve).not.toHaveBeenCalled();
       return;
