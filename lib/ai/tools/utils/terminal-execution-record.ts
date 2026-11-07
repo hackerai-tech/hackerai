@@ -3,6 +3,7 @@ import {
   checkpointFailureOrigin,
   checkpointCommandContext,
   checkpointCloudErrorContext,
+  checkpointNativeFilesystemErrorContext,
   type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
@@ -265,6 +266,13 @@ export function createTerminalRecordStore(
                       : "native_file",
                     checkpoint_backend: local ? "local" : "cloud",
                     ...checkpointCommandContext(error),
+                    ...(local &&
+                    !ownerOnlyPosix &&
+                    failureOrigin === "local_file_request" &&
+                    fileFailure === "filesystem" &&
+                    failureCategory === "unknown"
+                      ? checkpointNativeFilesystemErrorContext(error)
+                      : {}),
                     ...(!local ? checkpointCloudErrorContext(error) : {}),
                   },
                 }
