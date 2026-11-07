@@ -1977,6 +1977,83 @@ describe("CentrifugoSandbox", () => {
       expect(jest.getTimerCount()).toBe(0);
     });
 
+    it("overwrites an existing legacy Windows file instead of rejecting its second checkpoint", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      (sandbox as any).shellKind = "cmd";
+      let staged = "";
+      let output: Buffer | undefined;
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => {
+          const chunk = /^echo ([A-Za-z0-9+/=]+) (>>?) /.exec(command);
+          if (chunk) staged = chunk[2] === ">" ? chunk[1] : staged + chunk[1];
+          if (command.startsWith("certutil ")) {
+            if (output && !command.split(" ").includes("-f")) {
+              return {
+                stdout: "",
+                stderr: "The file exists",
+                exitCode: -2147024816,
+              };
+            }
+            output = Buffer.from(staged, "base64");
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+      const path = "C:\\temp\\checkpoint (saved).json";
+      await sandbox.files.write(path, "first checkpoint");
+      expect(output).toEqual(Buffer.from("first checkpoint"));
+      const replacement = Buffer.from("updated checkpoint λ\n".repeat(1000));
+      await sandbox.files.write(path, replacement);
+      expect(output).toEqual(replacement);
+    });
+
+    (process.platform === "win32" ? it : it.skip)(
+      "overwrites a real legacy Windows file with repeated checkpoint bytes",
+      async () => {
+        jest.useRealTimers();
+        mkdirSync("C:\\temp", { recursive: true });
+        const directory = mkdtempSync("C:\\temp\\hackerai-checkpoint-");
+        const path = win32.join(directory, "checkpoint (saved).json");
+        const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+        (sandbox as any).shellKind = "cmd";
+        const shell = windowsSystemExecutable("cmd.exe");
+        jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            const spec = buildShellSpawn(shell, "/c", command);
+            return promisify(execFile)(shell, spec.args, {
+              ...spec.options,
+              timeout: 10_000,
+            }).then(
+              (result) => ({
+                stdout: String(result.stdout),
+                stderr: String(result.stderr),
+                exitCode: 0,
+              }),
+              (error) => ({
+                stdout: String(error.stdout ?? ""),
+                stderr: String(error.stderr ?? ""),
+                exitCode: Number(error.code) || -1,
+              }),
+            );
+          });
+        try {
+          await sandbox.files.write(path, "first checkpoint");
+          expect(readFileSync(path)).toEqual(Buffer.from("first checkpoint"));
+          const replacement = Buffer.from(
+            "updated checkpoint λ\n".repeat(1000),
+          );
+          await sandbox.files.write(path, replacement);
+          expect(readFileSync(path)).toEqual(replacement);
+          await sandbox.files.write(path, "final");
+          expect(readFileSync(path)).toEqual(Buffer.from("final"));
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+      30_000,
+    );
+
     it("does not mask a Windows decode failure with successful cleanup", async () => {
       const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
       (sandbox as any).shellKind = "cmd";

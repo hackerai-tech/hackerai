@@ -2722,9 +2722,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               throw persistenceCommandError("Failed to write file", result);
             }
           }
-          // Decode and clean up temp file
+          // files.write replaces existing checkpoints, as the native and POSIX paths do.
+          // certutil otherwise fails with ERROR_FILE_EXISTS on the second write.
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul`,
+            `certutil -f -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
