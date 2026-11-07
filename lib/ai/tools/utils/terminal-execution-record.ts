@@ -204,6 +204,7 @@ export function createTerminalRecordStore(
     checkpointOnOutput: true,
     pruneOnStart: true,
     pathFor,
+    /** Save a recovery snapshot, returning null without replaying failed writes. */
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
