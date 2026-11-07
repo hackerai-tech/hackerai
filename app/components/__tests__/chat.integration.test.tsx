@@ -2002,10 +2002,12 @@ describe("Chat Component Integration", () => {
       expect(
         screen.getByRole("region", { name: "Agent goal" }),
       ).toHaveTextContent("Pursuing goal");
+      // Stop pauses before worker cleanup clears the retained run identity.
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
       mockSavedGoal = {
         ...mockSavedGoal,
         state: "paused",
-        activeRunId: undefined,
+        activeRunId: "run-browser",
       };
       await act(async () => rerender(view()));
       expect(

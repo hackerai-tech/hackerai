@@ -2905,7 +2905,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       waitingForReply={
         !!pendingUserWait ||
         (browserNeedsInput &&
-          !!persistedGoal?.activeRunId &&
+          persistedGoal?.state === "running" &&
+          !!persistedGoal.activeRunId &&
           browserHandoff?.runId === persistedGoal.activeRunId)
       }
       onEdit={() => openSidebar({ kind: "goal", chatId })}
