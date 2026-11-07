@@ -12,13 +12,23 @@ it("loads a delegated TypeScript helper without native type stripping or inherit
   const base = await mkdtemp(path.join(os.tmpdir(), "hackerai-source-helper-"));
   const childProcess = require("node:child_process");
   const realExecFile = childProcess.execFile;
-  const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+  const calls: Array<{
+    args: string[];
+    env: NodeJS.ProcessEnv;
+    uid: number;
+    gid: number;
+  }> = [];
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   const exec = jest
     .spyOn(childProcess, "execFile")
     .mockImplementation((...raw: any[]) => {
       const [file, args, options, callback] = raw;
-      calls.push({ args, env: options.env });
+      calls.push({
+        args,
+        env: options.env,
+        uid: options.uid,
+        gid: options.gid,
+      });
       // Exercise an actual child with Node's TS support disabled. Keep the test
       // process identity so this test does not require privileged CI; a separate
       // Linux runtime check covers the real UID split and credential isolation.
@@ -57,6 +67,8 @@ it("loads a delegated TypeScript helper without native type stripping or inherit
     expect(result.ready).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].env).toEqual({ HOME: base, NODE_ENV: "production" });
+    expect(calls[0].uid).toBe(uid || 65534);
+    expect(calls[0].gid).toBe(gid || 65534);
   } finally {
     getuid.mockRestore();
     platform.mockRestore();
