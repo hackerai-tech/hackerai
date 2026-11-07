@@ -4,7 +4,14 @@ import { Button } from "@/components/ui/button";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { ArrowUp, Square } from "lucide-react";
-import { useHotkeys } from "react-hotkeys-hook";
+import { useEffect } from "react";
+import { useShortcutPlatform } from "@/hooks/use-shortcut-platform";
+import {
+  formatShortcut,
+  hasOpenShortcutOverlay,
+  isShortcutTargetBlocked,
+  matchesShortcut,
+} from "@/lib/keyboard-shortcuts";
 import type { ChatStatus } from "@/types";
 import type { ChatMode } from "@/types/chat";
 import type { UploadedFileState } from "@/types/file";
@@ -97,21 +104,23 @@ export function SubmitStopButton({
   isOnline = true,
   sendDisabledReason,
 }: SubmitStopButtonProps) {
-  useHotkeys(
-    "ctrl+c",
-    (e) => {
-      e.preventDefault();
-      onStop();
-    },
-    {
-      enabled: isGenerating && !hideStop,
-      enableOnFormTags: true,
-      enableOnContentEditable: true,
-      preventDefault: true,
-      description: "Stop AI generation",
-    },
-    [isGenerating, onStop],
-  );
+  const isMac = useShortcutPlatform();
+  useEffect(() => {
+    if (!isGenerating || hideStop) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        matchesShortcut(event, "stop", isMac) &&
+        !isShortcutTargetBlocked(event) &&
+        !hasOpenShortcutOverlay() &&
+        !document.querySelector('[data-shortcuts-scope="navigation"]')
+      ) {
+        event.preventDefault();
+        onStop();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isGenerating, hideStop, isMac, onStop]);
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
@@ -137,7 +146,7 @@ export function SubmitStopButton({
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            <p>Stop (⌃C)</p>
+            <p>Stop ({formatShortcut("stop", isMac)})</p>
           </TooltipContent>
         </TooltipPrimitive.Root>
       )}

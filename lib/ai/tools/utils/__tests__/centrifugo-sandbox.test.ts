@@ -4212,9 +4212,14 @@ describe("CentrifugoSandbox", () => {
       expect(run).not.toHaveBeenCalled();
     });
 
-    it.each([true, false])(
-      "links a Windows file path guard to its actual command receipt (sequenced=%s)",
-      async (sequenced) => {
+    it.each([
+      [true, "exit"],
+      [false, "exit"],
+      [true, "error"],
+      [false, "error"],
+    ] as const)(
+      "links a Windows file path guard to its actual command receipt (sequenced=%s, terminal=%s)",
+      async (sequenced, terminal) => {
         const sandbox = new CentrifugoSandbox(
           "user-1",
           {
@@ -4256,9 +4261,11 @@ describe("CentrifugoSandbox", () => {
         await jest.advanceTimersByTimeAsync(0);
         reply.emit("publication", {
           data: {
-            type: "exit",
+            type: terminal,
             commandId: FIXED_UUID,
-            exitCode: 0,
+            ...(terminal === "exit"
+              ? { exitCode: 0 }
+              : { message: "PRIVATE_ERROR_CANARY" }),
             ...(sequenced && { sequence: 0, outputProtocol: "ack-v1" }),
           },
         });
@@ -4273,16 +4280,17 @@ describe("CentrifugoSandbox", () => {
             event: "windows_native_path_resolution_failed",
             diagnostic_version: 1,
             diagnostic_scope: "first_reason_per_sandbox",
-            reason: "empty_output",
+            reason: terminal === "exit" ? "empty_output" : "command_failed",
             trigger_run_id: "run-originating-operation",
             command_id: FIXED_UUID,
             receipt_available: true,
             acknowledged_output: sequenced,
             terminal_ack_published: sequenced,
             last_received_sequence: sequenced ? 0 : -1,
-            exit_success: true,
+            exit_success: terminal === "exit",
             stdout_bytes: 0,
-            stderr_bytes: 0,
+            stderr_bytes:
+              terminal === "exit" ? 0 : "PRIVATE_ERROR_CANARY".length,
           },
         ]);
         expect(JSON.stringify(records)).not.toMatch(
@@ -6365,6 +6373,10 @@ describe("CentrifugoSandbox", () => {
         "where agent-browser && agent-browser --version",
       );
       expect(context).not.toContain("command -v agent-browser");
+      expect(context).toContain(
+        "Git Bash when available, otherwise cmd.exe /C",
+      );
+      expect(context).not.toContain("Commands are invoked via cmd.exe /C");
     });
 
     it("safely serializes project folders before adding them to the prompt", () => {

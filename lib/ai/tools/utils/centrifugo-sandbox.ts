@@ -8,6 +8,7 @@ import {
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
 import { phLogger } from "@/lib/posthog/server";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import {
   classifyPersistenceFailure,
   persistenceCommandError,
@@ -513,13 +514,12 @@ export class CentrifugoSandbox extends EventEmitter {
       const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
-      const shellInfo = this.connectionInfo.isDesktop
-        ? platform === "win32"
-          ? "Desktop commands use Git Bash when available, otherwise cmd.exe /C. Confirm the active shell before choosing shell-specific syntax."
-          : 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
-        : platform === "win32"
-          ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
-          : `Commands are invoked via /bin/bash -c.`;
+      const shellInfo =
+        platform === "win32"
+          ? WINDOWS_COMMAND_SHELL_GUIDANCE
+          : this.connectionInfo.isDesktop
+            ? 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
+            : `Commands are invoked via /bin/bash -c.`;
       const agentBrowserProbe =
         platform === "win32"
           ? "where agent-browser && agent-browser --version"
@@ -1472,13 +1472,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
-                resolve({
+                const completed = {
                   stdout,
                   stderr: stderr
                     ? `${stderr}\n${message.message}`
                     : message.message,
                   exitCode: -1,
+                };
+                this.commandReceipts.set(completed, {
+                  commandId,
+                  acknowledgedOutput,
+                  terminalAckPublished: terminalCursorPublished,
+                  lastReceivedSequence: lastStreamSequence,
                 });
+                resolve(completed);
               };
               if (acknowledgedOutput && sequence !== undefined)
                 void sendOutputCursor("command_output_ack");
