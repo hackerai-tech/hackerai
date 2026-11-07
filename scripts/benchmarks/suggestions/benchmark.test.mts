@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, symlinkSync, rmSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, win32, posix } from "node:path";
 import {
   buildPredictionSources,
   parsePredictedNextAction,
@@ -10,7 +13,37 @@ import {
   summarize,
   baselineSystem,
   reportedCost,
+  benchmarkDestination,
+  root,
+  retainProviderReceipt,
+  withinRepository,
 } from "./benchmark.ts";
+
+test("containment recognizes genuine parent traversal and sibling drives on both path platforms", () => {
+  for (const paths of [posix, win32]) {
+    const parent = paths === win32 ? "C:\\checkout" : "/checkout";
+    assert(withinRepository(parent, parent, paths));
+    assert(withinRepository(parent, paths.join(parent, "results"), paths));
+    assert(withinRepository(parent, paths.join(parent, "..hidden"), paths));
+    assert(
+      !withinRepository(parent, paths.resolve(parent, "../results"), paths),
+    );
+  }
+  assert(!withinRepository("C:\\checkout", "D:\\results", win32));
+});
+
+test("benchmark results cannot be written into the checkout directly or through a symlink", () => {
+  assert.throws(() => benchmarkDestination(root));
+  assert.throws(() => benchmarkDestination(join(root, "benchmark-results")));
+  const temporary = mkdtempSync(join(tmpdir(), "suggestion-destination-"));
+  try {
+    symlinkSync(root, join(temporary, "checkout"));
+    assert.throws(() => benchmarkDestination(join(temporary, "checkout")));
+    assert.equal(benchmarkDestination(temporary), realpathSync(temporary));
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test("both fixed splits prepare balanced paired requests from actual context and parser", () => {
   assert.equal(fixtures().length, 40);
@@ -103,6 +136,35 @@ test("receipt coverage distinguishes priced calls, unknown calls, noncalls and m
       })),
     ),
   );
+});
+
+test("failed structured outputs retain valid USD while invalid token metadata stays unknown", () => {
+  const receipt = {
+    id: "parse-failed",
+    providerCalls: 1,
+    costUsd: null,
+    latencyMs: 120,
+    output: { suggestion: null },
+    unavailable: true,
+    inputTokens: null,
+    outputTokens: null,
+    reasoningTokens: null,
+    model: null,
+  };
+  retainProviderReceipt(
+    receipt,
+    { raw: { cost: 0.002 }, inputTokens: 100, outputTokens: -1 },
+    { modelId: "test-model" },
+  );
+  const result = summarize([receipt]);
+  assert.equal(result.knownCostUsd, 0.002);
+  assert.equal(result.pricedCalls, 1);
+  assert.equal(result.unavailable, 1);
+  assert.equal(result.input.tokens, 100);
+  assert.equal(result.output.tokens, null);
+  retainProviderReceipt(receipt, undefined, undefined);
+  assert.equal(summarize([receipt]).unknownCalls, 1);
+  assert.equal(summarize([receipt]).unknownModelCalls, 1);
 });
 
 test("benchmark uses application rejection rules instead of treating formatting as quality", () => {

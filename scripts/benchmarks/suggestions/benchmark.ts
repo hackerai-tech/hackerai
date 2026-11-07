@@ -1,8 +1,8 @@
 /** Offline by default. No app API, analytics, DB, billing or flag imports. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { resolve, dirname, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import {
@@ -23,8 +23,37 @@ export type Fixture = {
   rubric: string;
   messages: Parameters<typeof buildPredictionSources>[0];
 };
+/** Pin source/configuration fingerprints in each run manifest. */
 export const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+/** Detect containment using path segments, including Windows drives and separators. */
+export function withinRepository(
+  repository: string,
+  destination: string,
+  paths = { relative, isAbsolute, sep },
+) {
+  const path = paths.relative(repository, destination);
+  return (
+    path === "" ||
+    !(
+      path === ".." ||
+      path.startsWith(".." + paths.sep) ||
+      paths.isAbsolute(path)
+    )
+  );
+}
+/** Keep result files outside the checkout, including through directory symlinks. */
+export function benchmarkDestination(destination: string) {
+  const out = resolve(destination);
+  if (withinRepository(root, out))
+    throw new Error("Keep generated results outside the repository");
+  mkdirSync(out, { recursive: true, mode: 0o700 });
+  const actual = realpathSync(out),
+    repository = realpathSync(root);
+  if (withinRepository(repository, actual))
+    throw new Error("A result-directory symlink points into the repository");
+  return actual;
+}
 export const settings = {
   model: DEEPSEEK_1017_SLUG,
   temperature: 0,
@@ -66,9 +95,11 @@ export function baselineSystem() {
     );
   return system;
 }
+/** Load committed synthetic cases without consulting application/chat services. */
 export function fixtures(): Fixture[] {
   return JSON.parse(readFileSync(resolve(directory, "fixtures.json"), "utf8"));
 }
+/** Freeze a paired, balanced request schedule before observing provider results. */
 export function prepare(split: "tuning" | "holdout") {
   const cases = fixtures().filter((f) => f.split === split);
   if (!cases.length || new Set(cases.map((f) => f.id)).size !== cases.length)
@@ -150,8 +181,10 @@ export type Receipt = {
   reasoningTokens: number | null;
   model: string | null;
 };
+/** Reject non-finite or negative financial and timing measurements. */
 export const finite = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
+/** Preserve explicitly reported free calls without pricing missing USD as zero. */
 export function reportedCost(raw: unknown): number | null {
   const positive = getProviderUsageRawModelCost(raw);
   if (positive !== undefined) return positive;
@@ -160,6 +193,29 @@ export function reportedCost(raw: unknown): number | null {
     ? 0
     : null;
 }
+/** Keep valid price/token receipts even when structured-output parsing fails. */
+export function retainProviderReceipt(
+  receipt: Receipt,
+  usage:
+    | {
+        raw?: unknown;
+        inputTokens?: number;
+        outputTokens?: number;
+        outputTokenDetails?: { reasoningTokens?: number };
+      }
+    | undefined,
+  response: { modelId?: string } | undefined,
+) {
+  const tokens = (value: unknown) =>
+    finite(value) && Number.isInteger(value) ? value : null;
+  receipt.costUsd = reportedCost(usage?.raw);
+  receipt.inputTokens = tokens(usage?.inputTokens);
+  receipt.outputTokens = tokens(usage?.outputTokens);
+  receipt.reasoningTokens = tokens(usage?.outputTokenDetails?.reasoningTokens);
+  receipt.model =
+    typeof response?.modelId === "string" ? response.modelId : null;
+}
+/** Fail closed on contradictory call counts, USD and token metadata. */
 export function validateReceipt(r: Receipt) {
   if (
     !r ||
@@ -180,6 +236,7 @@ export function validateReceipt(r: Receipt) {
   )
     throw new Error("Invalid or contradictory receipt");
 }
+/** Report attempts, known spend and receipt coverage without inventing quality scores. */
 export function summarize(rows: Receipt[]) {
   rows.forEach(validateReceipt);
   if (new Set(rows.map((r) => r.id)).size !== rows.length)
@@ -242,14 +299,12 @@ export function summarize(rows: Receipt[]) {
   };
 }
 
+/** Run the explicitly selected workflow without loading application services. */
 async function main() {
   const [command, destination, split = "tuning"] = process.argv.slice(2);
   if (!destination || !["tuning", "holdout"].includes(split))
     throw new Error("Use prepare|run|review OUT_DIR [tuning|holdout]");
-  const out = resolve(destination);
-  if (out === directory || out.startsWith(root + "/"))
-    throw new Error("Keep generated results outside the repository");
-  mkdirSync(out, { recursive: true, mode: 0o700 });
+  const out = benchmarkDestination(destination);
   if (command === "prepare") {
     const plan = prepare(split as "tuning" | "holdout");
     writeFileSync(resolve(out, "plan.json"), JSON.stringify(plan, null, 2), {
@@ -266,7 +321,7 @@ async function main() {
       throw new Error(
         "Supply a Development OPENROUTER_API_KEY and SUGGESTION_BENCH_LIVE=development explicitly",
       );
-    const { generateText, Output } = await import("ai");
+    const { generateText, Output, NoObjectGeneratedError } = await import("ai");
     const { createOpenRouter } = await import("@openrouter/ai-sdk-provider");
     const { predictedNextActionSchema } =
       await import("../../../lib/chat/next-actions/contracts");
@@ -305,15 +360,13 @@ async function main() {
             output: Output.object({ schema: predictedNextActionSchema }),
             abortSignal: AbortSignal.timeout(settings.timeout),
           });
-          receipt.costUsd = reportedCost(result.usage.raw);
+          retainProviderReceipt(receipt, result.usage, result.response);
           receipt.output = result.output;
-          receipt.inputTokens = result.usage.inputTokens ?? null;
-          receipt.outputTokens = result.usage.outputTokens ?? null;
-          receipt.reasoningTokens =
-            result.usage.outputTokenDetails.reasoningTokens ?? null;
-          receipt.model = result.response.modelId ?? null;
         }
-      } catch {
+      } catch (error) {
+        // Structured-output failure can still carry a billed provider receipt.
+        if (NoObjectGeneratedError.isInstance(error))
+          retainProviderReceipt(receipt, error.usage, error.response);
         receipt.unavailable = true;
       }
       receipt.latencyMs = performance.now() - start;
