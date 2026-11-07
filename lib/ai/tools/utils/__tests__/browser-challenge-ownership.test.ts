@@ -104,6 +104,7 @@ it("passes response material only through stdin and returns the bounded result",
       stdin: true,
       background: true,
       timeoutMs: 10000,
+      envs: expect.objectContaining({ HACKERAI_BROWSER_INSPECTION: "1" }),
     }),
   );
 });

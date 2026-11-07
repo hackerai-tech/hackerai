@@ -337,6 +337,8 @@ export class BrowserSessions {
               AGENT_BROWSER_SOCKET_DIR: env.AGENT_BROWSER_SOCKET_DIR,
               AGENT_BROWSER_CONFIG: env.AGENT_BROWSER_CONFIG,
               AGENT_BROWSER_SESSION: name,
+              // Per-command bookkeeping marker, never a deployment setting.
+              HACKERAI_BROWSER_INSPECTION: "1",
               AGENT_BROWSER_IDLE_TIMEOUT_MS: String(
                 AGENT_BROWSER_IDLE_TIMEOUT_MS,
               ),

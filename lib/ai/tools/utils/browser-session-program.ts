@@ -146,7 +146,8 @@ def record_wrapper(phase, status=None):
 
 record_wrapper('started')
 verify = root / 'verify-required'
-# Keep only a digest of the browser environment from the last successful call.
+# Keep the last successful terminal environment. Server inspections use a
+# narrower launch environment and must not replace the handoff baseline.
 # Session names are normalized above; checkpoint encryption does not route the
 # browser and is omitted by the server's inspection calls.
 environment = {key: value for key, value in os.environ.items()
@@ -174,7 +175,7 @@ if verify.exists():
     record_wrapper('completed', result.returncode)
     sys.exit(result.returncode)
 result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
-if result.returncode == 0:
+if result.returncode == 0 and os.environ.get('HACKERAI_BROWSER_INSPECTION') != '1':
     environment_path.write_text(environment_digest)
     environment_path.chmod(0o600)
 record_wrapper('completed', result.returncode)

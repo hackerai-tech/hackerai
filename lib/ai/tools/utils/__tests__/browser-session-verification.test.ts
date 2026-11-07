@@ -115,7 +115,34 @@ export function verifyBrowserResumeTargets() {
     writeFileSync(ledger, "");
     assert.equal(run(["snapshot", "--cdp", "http://127.0.0.1:6553"]).status, 0);
     assert.match(readFileSync(ledger, "utf8"), /--cdp/);
-    return { rejected, sameSessionSnapshotClearedGate: true };
+    // Server inspection uses its own launch env; it must not replace the
+    // fingerprint established by a successful terminal browser command.
+    const terminalEnv = { AGENT_BROWSER_ARGS: "--terminal-launch-arg" };
+    assert.equal(run(["snapshot", "-i"], terminalEnv).status, 0);
+    const terminalDigest = readFileSync(`${root}/runtime-env-hash`, "utf8");
+    assert.equal(
+      run(["eval", "--stdin", "--json"], { HACKERAI_BROWSER_INSPECTION: "1" })
+        .status,
+      0,
+    );
+    assert.equal(
+      readFileSync(`${root}/runtime-env-hash`, "utf8"),
+      terminalDigest,
+    );
+    lifecycle("resume");
+    assert.equal(run(["snapshot", "-i"]).status, 75);
+    assert.equal(
+      run(["eval", "--stdin", "--json"], { HACKERAI_BROWSER_INSPECTION: "1" })
+        .status,
+      75,
+    );
+    assert.equal(run(["snapshot", "-i"], terminalEnv).status, 0);
+    assert.equal(existsSync(`${root}/verify-required`), false);
+    return {
+      rejected,
+      sameSessionSnapshotClearedGate: true,
+      inspectionPreservedTerminalEnvironment: true,
+    };
   } finally {
     lifecycle("cleanup");
     rmSync(bin, { recursive: true, force: true });
