@@ -1564,6 +1564,9 @@ export const ComputerSidebar: React.FC<{
       closeSidebar();
   }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
 
+  // Keep only the draft controller alive while closed, not browser viewers or polls.
+  if (!sidebarOpen) return null;
+
   if (editorChatId) {
     return (
       <AgentGoalEditor

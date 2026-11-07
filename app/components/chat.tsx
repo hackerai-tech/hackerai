@@ -602,6 +602,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     subscription,
     activeProjectId,
   } = useGlobalState();
+  const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
+    useState(false);
+  useEffect(() => {
+    if (sidebarOpen) setHasOpenedComputerSidebar(true);
+  }, [sidebarOpen]);
+
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
   const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
@@ -660,11 +666,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       // Takeover and its exit prompt render in portals above this dialog.
       if (hasNestedDialogFocus()) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        closeSidebar();
+        // Use the editor's explicit close path so Escape also discards its
+        // draft and respects the disabled close button during a save.
+        const closeGoalEditor = dialog.querySelector<HTMLButtonElement>(
+          'button[aria-label="Close goal editor"]',
+        );
+        if (closeGoalEditor) closeGoalEditor.click();
+        else closeSidebar();
         return;
       }
 
@@ -3188,7 +3201,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             </div>
           </div>
 
-          {/* Keep the controller mounted when switching between split and overlay. */}
+          {/* Load on first open, then retain Goal drafts across browser panel closes. */}
           <div
             ref={computerDialogRef}
             className={
@@ -3220,7 +3233,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
               }
             >
-              {sidebarOpen && (
+              {(sidebarOpen || hasOpenedComputerSidebar) && (
                 <ComputerSidebar
                   key={chatId}
                   stopGoalRunBeforeControl={stopGoalRunBeforeControl}

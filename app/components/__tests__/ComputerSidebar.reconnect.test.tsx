@@ -323,12 +323,22 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(
       screen.queryByRole("textbox", { name: "Goal objective" }),
     ).not.toBeInTheDocument();
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
     mockSidebarContent = goalContent;
     rerender(
       <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
     );
     expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
       "Keep this edit",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close goal editor" }));
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    mockSidebarContent = goalContent;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Original",
     );
   });
   beforeEach(() => {
