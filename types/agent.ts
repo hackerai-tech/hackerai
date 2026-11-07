@@ -688,10 +688,15 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
-  /** Internal CAPTCHA fallback after a completed browser snapshot; never a model-facing tool. */
+  /** Read-only detection after a completed snapshot; never starts a paid task. */
   checkBrowserChallenge?: (
     signal?: AbortSignal,
     target?: { sandbox: AnySandbox; sessionName: string },
+  ) => Promise<Record<string, unknown>>;
+  requestBrowserChallenge?: (
+    action: "solve" | "release",
+    sessionName: string,
+    signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;

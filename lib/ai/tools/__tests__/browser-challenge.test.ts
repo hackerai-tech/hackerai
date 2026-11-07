@@ -181,30 +181,50 @@ beforeEach(() => {
   delete process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW;
 });
 
-it("automatically solves only a detected supported challenge once in the existing browser", async () => {
+it("loads solving only after the agent requests the detected session, once per run", async () => {
   process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
-  process.env.HACKERAI_ENVIRONMENT = "preview";
-  const { tool, solve, evaluate, solverFactory } = setup();
-  evaluate.mockResolvedValueOnce({ ...cloneObservation(), widgets: [] });
-  expect(await run(tool, "inspect")).toEqual({
-    status: "no_pending_challenge",
+  const { tool, solve, solverFactory, journal } = setup();
+  const target = { sandbox: {} as never, sessionName: "owned" };
+  expect(await tool.request("solve", "owned")).toMatchObject({
+    status: "snapshot_required",
   });
-  expect(solve).not.toHaveBeenCalled();
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    status: "solve_available",
+    providerTaskCreated: false,
+    providerCostUSD: 0,
+  });
   expect(solverFactory).not.toHaveBeenCalled();
-  const detected = await run(tool, "inspect");
-  expect(detected).toMatchObject({
+  expect(journal.reserve).not.toHaveBeenCalled();
+  expect(await tool.request("solve", "foreign")).toMatchObject({
+    status: "snapshot_required",
+  });
+  expect(await tool.request("solve", "owned")).toMatchObject({
     status: "token_delivered",
-    provider: "2captcha",
     providerTaskCreated: true,
     providerCostUSD: 0.003,
-    websiteAccepted: false,
-    guidance: expect.any(String),
   });
-  const repeated = await run(tool, "inspect");
-  expect(repeated).toMatchObject({ reason: "attempt_limit" });
-  expect(repeated).not.toHaveProperty("guidance");
+  await tool.request("solve", "owned");
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    reason: "attempt_limit",
+  });
   expect(solverFactory).toHaveBeenCalledTimes(1);
   expect(solve).toHaveBeenCalledTimes(1);
+  expect(journal.reserve).toHaveBeenCalledTimes(1);
+});
+
+it("refuses a stale page decision without loading or charging the solver", async () => {
+  process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
+  const { tool, evaluate, solverFactory, journal } = setup();
+  await tool.inspect(undefined, { sandbox: {} as never, sessionName: "owned" });
+  evaluate.mockResolvedValueOnce({
+    ...cloneObservation(),
+    documentId: "replacement",
+  });
+  expect(await tool.request("solve", "owned")).toMatchObject({
+    status: "page_changed",
+  });
+  expect(solverFactory).not.toHaveBeenCalled();
+  expect(journal.reserve).not.toHaveBeenCalled();
 });
 
 afterEach(() => {

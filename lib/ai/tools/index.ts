@@ -369,7 +369,8 @@ export const createTools = (
           }),
         )
       : undefined;
-  context.checkBrowserChallenge = checkBrowserChallenge;
+  context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
+  context.requestBrowserChallenge = checkBrowserChallenge?.request;
 
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a

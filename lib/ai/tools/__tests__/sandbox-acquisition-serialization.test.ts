@@ -18,7 +18,13 @@ jest.mock("@/lib/db/convex-client", () => ({
 
 jest.mock("../run-terminal-cmd", () => ({
   createRunTerminalCmd: jest.fn((context) => ({
-    execute: async () => context.checkBrowserChallenge?.(),
+    execute: async (input: { action: string }) =>
+      input.action === "inspect"
+        ? context.checkBrowserChallenge?.(undefined, {
+            sandbox: {},
+            sessionName: "default",
+          })
+        : context.requestBrowserChallenge?.("solve", "default"),
   })),
 }));
 jest.mock("../interact-terminal-session", () => ({
@@ -138,6 +144,13 @@ describe("sandbox acquisition serialization", () => {
       expect(preview.tools.browser_challenge).toBeUndefined();
       await expect(
         preview.tools.run_terminal_cmd.execute!(
+          { action: "inspect" },
+          { toolCallId: "inspect", messages: [] },
+        ),
+      ).resolves.toMatchObject({ status: "solve_available" });
+      expect(mockCaptchaSolve).not.toHaveBeenCalled();
+      await expect(
+        preview.tools.run_terminal_cmd.execute!(
           { action: "solve" },
           { toolCallId: "first", messages: [] },
         ),
@@ -147,7 +160,7 @@ describe("sandbox acquisition serialization", () => {
           { action: "solve" },
           { toolCallId: "fallback", messages: [] },
         ),
-      ).resolves.toMatchObject({ reason: "attempt_limit" });
+      ).resolves.toMatchObject({ status: "snapshot_required" });
       expect(mockCaptchaSolve).toHaveBeenCalledTimes(1);
       expect(preview.getCaptchaReceiptPrompt()).toContain("Provider: 2Captcha");
       expect(preview.getCaptchaReceiptPrompt()).toContain("0.003 USD");

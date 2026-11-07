@@ -267,6 +267,45 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test.each(["solve", "release"])(
+    "routes the on-demand %s request without executing a shell command",
+    async (action) => {
+      const { context } = makeContext({});
+      context.requestBrowserChallenge = jest.fn(async () => ({
+        status: "requested",
+      }));
+      const tool = createRunTerminalCmd(context);
+      expect(
+        await runTool(tool, {
+          command: `hackerai-captcha ${action} --session owned`,
+          interactive: false,
+          is_background: false,
+        }),
+      ).toMatchObject({
+        result: { browserChallenge: { status: "requested" } },
+      });
+      expect(context.requestBrowserChallenge).toHaveBeenCalledWith(
+        action,
+        "owned",
+        undefined,
+      );
+      for (const input of [
+        { command: `hackerai-captcha ${action} --session owned; echo extra` },
+        {
+          command: `hackerai-captcha ${action} --session owned`,
+          interactive: true,
+        },
+        {
+          command: `hackerai-captcha ${action} --session owned`,
+          is_background: true,
+        },
+      ])
+        expect(await runTool(tool, input)).toMatchObject({
+          result: { exitCode: 1 },
+        });
+      expect(context.requestBrowserChallenge).toHaveBeenCalledTimes(1);
+    },
+  );
   test("keeps optional CAPTCHA instructions within a small initial context budget", () => {
     const { context } = makeContext({ sandbox: null });
     const normal = createRunTerminalCmd(context);

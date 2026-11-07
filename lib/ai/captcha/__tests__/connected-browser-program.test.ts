@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import os from "node:os";
@@ -43,6 +43,82 @@ function namespace() {
     ),
   };
 }
+
+it.each(["delivered", "stale", "replaced", "failed"])(
+  "delivers managed responses privately and restores the user agent when needed: %s",
+  async (outcome) => {
+    const { owner, root } = namespace();
+    mkdirSync(path.join(root, "sockets"), { recursive: true, mode: 0o700 });
+    const calls: Array<{ id: string; action: string; userAgent?: string }> = [];
+    const server = createServer((socket) => {
+      socket.on("error", () => {});
+      socket.once("data", (bytes) => {
+        const command = JSON.parse(bytes.toString());
+        calls.push(command);
+        const result =
+          command.id === "captcha-identity"
+            ? outcome !== "stale"
+            : command.id === "captcha-deliver"
+              ? {
+                  status:
+                    outcome === "replaced" ? "page_changed" : "token_delivered",
+                }
+              : undefined;
+        socket.end(
+          JSON.stringify({
+            success: !(
+              outcome === "failed" && command.id === "captcha-deliver"
+            ),
+            data: { result },
+          }) + "\n",
+        );
+      });
+    });
+    try {
+      if (process.platform === "win32") {
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+        writeFileSync(
+          path.join(root, "sockets", "owned.port"),
+          String((server.address() as { port: number }).port),
+        );
+      } else {
+        server.listen(path.join(root, "sockets", "owned.sock"));
+        await once(server, "listening");
+      }
+      const result = await run({
+        action: "cloudflare",
+        owner,
+        expiresAt: Date.now() + 30000,
+        sessionName: "owned",
+        identityScript: "true",
+        script: "private-response-token",
+        userAgent: "solver-agent",
+        originalUserAgent: "original-agent",
+      });
+      expect(result.stdout).not.toContain("private-response-token");
+      expect(result.stdout).not.toContain("solver-agent");
+      expect(result.code).toBe(outcome === "failed" ? 1 : 0);
+      expect(calls.map((c) => c.id)).toEqual(
+        outcome === "stale"
+          ? ["captcha-identity"]
+          : [
+              "captcha-identity",
+              "captcha-useragent",
+              "captcha-deliver",
+              ...(outcome === "delivered" ? [] : ["captcha-restore-useragent"]),
+            ],
+      );
+      if (outcome === "replaced" || outcome === "failed")
+        expect(calls.at(-1)?.userAgent).toBe("original-agent");
+      if (outcome === "delivered")
+        expect(JSON.parse(result.stdout).result.status).toBe("token_delivered");
+    } finally {
+      server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it("rejects invalid deadlines and inherited user profiles before creating ownership", async () => {
   for (const input of [

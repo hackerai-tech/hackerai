@@ -60,7 +60,7 @@ function render() {
   return { api, options, original, callback };
 }
 
-it.each(["cleared", "replaced", "detached", "stop"])(
+it.each(["cleared", "replaced", "detached", "stop", "declined"])(
   "verifies the actual managed outcome and restores a new challenge without another solve: %s",
   async (outcome) => {
     const { api, options, callback, original } = render();
@@ -120,7 +120,25 @@ it.each(["cleared", "replaced", "detached", "stop"])(
       journal,
     );
     const controller = new AbortController();
-    const pending = handler(controller.signal);
+    expect(
+      await handler.inspect(undefined, {
+        sandbox: {} as never,
+        sessionName: "owned",
+      }),
+    ).toMatchObject({ status: "solve_available", providerTaskCreated: false });
+    expect(solve).not.toHaveBeenCalled();
+    expect(original).not.toHaveBeenCalled();
+    if (outcome === "declined") {
+      expect(await handler.request("release", "owned")).toMatchObject({
+        status: "released",
+      });
+      expect(page[key]).toBeUndefined();
+      expect(original).toHaveBeenCalledTimes(1);
+      expect(solve).not.toHaveBeenCalled();
+      expect(journal.reserve).not.toHaveBeenCalled();
+      return;
+    }
+    const pending = handler.request("solve", "owned", controller.signal);
     const resultPromise = pending.catch((error) => error);
     if (outcome === "stop") {
       await jest.advanceTimersByTimeAsync(1);

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { cloudflareInitScript, CLOUDFLARE_PAGE_URL_SCRIPT } from "./cloudflare";
 import type { CentrifugoSandbox } from "../tools/utils/centrifugo-sandbox";
 import { augmentCommandPath } from "../tools/utils/sandbox-command-options";
 import {
@@ -17,6 +18,10 @@ export class ConnectedChallengeBrowser {
   constructor(
     private sandbox: CentrifugoSandbox,
     private readonly expiresAt: number,
+    private readonly cloudflare?: {
+      urls: readonly string[];
+      enabled: () => Promise<boolean>;
+    },
   ) {}
 
   reconnect(sandbox: CentrifugoSandbox) {
@@ -29,10 +34,11 @@ export class ConnectedChallengeBrowser {
   }
 
   private async request(
-    action: "prepare" | "evaluate" | "cleanup",
+    action: "prepare" | "evaluate" | "cleanup" | "cloudflare",
     signal?: AbortSignal,
     script?: string,
     sessionName?: string,
+    details?: Record<string, unknown>,
   ) {
     signal?.throwIfAborted();
     try {
@@ -45,9 +51,10 @@ export class ConnectedChallengeBrowser {
             expiresAt: this.expiresAt,
             script,
             sessionName,
+            ...details,
           }),
           signal,
-          timeoutMs: 10_000,
+          timeoutMs: action === "cloudflare" ? 35_000 : 10_000,
         },
       );
       signal?.throwIfAborted();
@@ -64,7 +71,23 @@ export class ConnectedChallengeBrowser {
     if (this.closed || Date.now() >= this.expiresAt)
       throw new Error("Browser ownership ended.");
     if (!this.sandbox.supportsCommandStdin()) return {};
-    this.preparation ??= this.request("prepare").then(({ root, name }) => {
+    this.preparation ??= (async () => {
+      const urls =
+        this.cloudflare?.urls.length &&
+        (await this.cloudflare.enabled().catch(() => false))
+          ? this.cloudflare.urls
+          : [];
+      if (this.closed) throw new Error("Browser ownership ended.");
+      return this.request(
+        "prepare",
+        undefined,
+        undefined,
+        undefined,
+        urls.length
+          ? { initScript: cloudflareInitScript([...urls]) }
+          : undefined,
+      );
+    })().then(({ root, name }) => {
       const paths = this.sandbox.isWindows() ? path.win32 : path.posix;
       if (
         typeof root !== "string" ||
@@ -94,6 +117,30 @@ export class ConnectedChallengeBrowser {
     await this.preparation;
     return {
       identity: this.owner,
+      deliverCloudflare: async (
+        userAgent: string,
+        page: { url: string; documentId: string; originalUserAgent: string },
+        script: string,
+      ): Promise<unknown> => {
+        signal.throwIfAborted();
+        if (this.closed) throw new Error("Browser ownership ended.");
+        const identityScript = `(${CLOUDFLARE_PAGE_URL_SCRIPT} === ${JSON.stringify(page.url)} && String(performance.timeOrigin) === ${JSON.stringify(page.documentId)})`;
+        const reply = await this.request(
+          "cloudflare",
+          signal,
+          script,
+          sessionName,
+          {
+            userAgent,
+            originalUserAgent: page.originalUserAgent,
+            identityScript,
+          },
+        );
+        signal.throwIfAborted();
+        if (this.closed || reply.ok !== true)
+          throw new Error("Browser ownership ended.");
+        return reply.result;
+      },
       evaluate: async (script: string): Promise<unknown> => {
         signal.throwIfAborted();
         if (this.closed) throw new Error("Browser ownership ended.");

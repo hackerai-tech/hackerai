@@ -58,6 +58,7 @@ export function createBrowserChallengeHandler(
   let solveStarted = false;
   let active = false;
   let guidanceSent = false;
+  let capabilityOffered = false;
   let providerAttemptStarted = false;
   let providerTaskCreated = false;
   let knownCostDollars: number | undefined;
@@ -65,10 +66,20 @@ export function createBrowserChallengeHandler(
   let deliveryOutcome: "not_attempted" | "unknown" | "delivered" =
     "not_attempted";
   let managedGateOutcome: "cleared" | "pending" | "unknown" | undefined;
+  type Target = { sandbox: AnySandbox; sessionName: string };
+  type Request = {
+    target: Target;
+    url: string;
+    documentId: string;
+    identity: string;
+  };
+  let pendingRequest: Request | undefined;
   // Internal browser workflow, never a model-facing tool or model input.
   const check = async (
     abortSignal?: AbortSignal,
-    target?: { sandbox: AnySandbox; sessionName: string },
+    target?: Target,
+    action: "inspect" | "solve" | "release" = "solve",
+    expected?: Request,
   ) => {
     const signals = [runSignal, abortSignal].filter(
       (s): s is AbortSignal => !!s,
@@ -95,6 +106,11 @@ export function createBrowserChallengeHandler(
     const respond = <T extends { status: string }>(result: T) => {
       const response = {
         ...result,
+        ...(action === "inspect" &&
+          !providerAttemptStarted && {
+            providerTaskCreated: false,
+            providerCostUSD: 0,
+          }),
         ...(providerTaskCreated && {
           provider: "2captcha",
           providerTaskCreated: true,
@@ -116,6 +132,7 @@ export function createBrowserChallengeHandler(
     };
     let releaseManaged: (() => Promise<unknown>) | undefined;
     let managedDelivered = false;
+    let awaitingDecision = false;
     const record = (
       event: string,
       fields: Record<string, string | number | boolean> = {},
@@ -171,6 +188,17 @@ export function createBrowserChallengeHandler(
       const observation = browserChallengeObservation.parse(
         await browser.evaluate(DETECT_CHALLENGES_SCRIPT),
       );
+      if (
+        expected &&
+        (browser.identity !== expected.identity ||
+          observation.url !== expected.url ||
+          observation.documentId !== expected.documentId)
+      )
+        return respond({
+          status: "page_changed",
+          message:
+            "The detected page changed. Take a fresh snapshot; no paid solve was attempted.",
+        });
       const pending = observation.widgets.filter((w) => !w.tokenPresent);
       const managed = pending.find((w) => w.managed);
       if (managed)
@@ -183,6 +211,15 @@ export function createBrowserChallengeHandler(
       })()`);
       if (!pending.length && !observation.interstitial)
         return respond({ status: "no_pending_challenge" });
+      if (action === "release") {
+        await releaseManaged?.();
+        releaseManaged = undefined;
+        return respond({
+          status: "released",
+          message:
+            "Automatic solving declined. No new paid task was created; use manual verification if needed.",
+        });
+      }
       challengeDetected = true;
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
@@ -210,6 +247,8 @@ export function createBrowserChallengeHandler(
             }),
         });
       const widget = pending[0];
+      if (solveStarted)
+        return respond({ status: "handoff_required", reason: "attempt_limit" });
       if (
         (observation.interstitial && !widget?.managed) ||
         pending.length !== 1 ||
@@ -232,8 +271,26 @@ export function createBrowserChallengeHandler(
           status: "handoff_required",
           reason: "solver_not_configured",
         });
-      if (solveStarted)
-        return respond({ status: "handoff_required", reason: "attempt_limit" });
+      if (action === "inspect") {
+        if (!target) return respond({ status: "unavailable" });
+        pendingRequest = {
+          target,
+          url: observation.url,
+          documentId: observation.documentId,
+          identity: browser.identity,
+        };
+        awaitingDecision = true;
+        if (!capabilityOffered) {
+          capabilityOffered = true;
+          record("browser_captcha_solve_offered", {
+            captcha_kind: widget.kind,
+          });
+        }
+        return respond({
+          status: "solve_available",
+          message: `A supported CAPTCHA blocks this session. Decide whether solving is needed for the user's task. To request one paid 2Captcha attempt, call run_terminal_cmd with exactly: hackerai-captcha solve --session ${target.sessionName}. To decline and restore the widget, use hackerai-captcha release --session ${target.sessionName}. These are runtime commands, not installed shell programs. Use foreground, non-interactive mode with no pipes or appended commands. No paid task has been created.`,
+        });
+      }
       solveStarted = true; // Includes failures and concurrent calls; no paid retry.
       if (!journal || !(await journal.reserve(widget.kind)))
         return respond({
@@ -398,12 +455,34 @@ export function createBrowserChallengeHandler(
     } finally {
       // A failed/disabled solver must leave the same page usable for human
       // verification. The page-side fence refuses release after delivery.
-      if (releaseManaged && !managedDelivered && !signal.aborted)
+      if (
+        releaseManaged &&
+        !managedDelivered &&
+        !awaitingDecision &&
+        !signal.aborted
+      )
         await releaseManaged().catch(() => undefined);
       active = false;
     }
   };
   return Object.assign(check, {
+    inspect: (signal?: AbortSignal, target?: Target) =>
+      check(signal, target, "inspect"),
+    request: (
+      action: "solve" | "release",
+      sessionName: string,
+      signal?: AbortSignal,
+    ) => {
+      if (!pendingRequest || pendingRequest.target.sessionName !== sessionName)
+        return Promise.resolve({
+          status: "snapshot_required",
+          message:
+            "Take a standalone snapshot of this owned session first. No paid solve was attempted.",
+        });
+      const expected = pendingRequest;
+      pendingRequest = undefined;
+      return check(signal, expected.target, action, expected);
+    },
     getReceiptPrompt: () =>
       providerAttemptStarted
         ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`

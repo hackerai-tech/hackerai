@@ -1604,10 +1604,40 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         // Terminal tools return one result, never an AsyncIterable.
         const execute = async () => {
           try {
+            if (/^\s*hackerai-captcha\b/.test(input.command)) {
+              const request =
+                /^hackerai-captcha (solve|release) --session ([A-Za-z0-9_-]{1,80})$/.exec(
+                  input.command.trim(),
+                );
+              if (
+                !request ||
+                input.is_background ||
+                input.interactive ||
+                !context.requestBrowserChallenge
+              )
+                return {
+                  result: {
+                    exitCode: 1,
+                    output:
+                      "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
+                  },
+                };
+              return {
+                result: {
+                  exitCode: 0,
+                  browserChallenge: await context.requestBrowserChallenge(
+                    request[1] as "solve" | "release",
+                    request[2],
+                    options.abortSignal,
+                  ),
+                },
+              };
+            }
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };
-            // Only a completed, direct snapshot can initiate automatic fallback.
+            // A completed direct snapshot discovers the on-demand capability.
+            // Only an explicit runtime request above can initiate a paid solve.
             // The page is inspected through the owned browser, never from stdout.
             if (
               context.checkBrowserChallenge &&
@@ -1626,7 +1656,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         ...output.result,
                         browserChallenge: {
                           status: "snapshot_required",
-                          message: `To check for automatic CAPTCHA fallback, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
+                          message: `To detect a CAPTCHA and load its solving instructions, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
                         },
                       },
                     }

@@ -30,6 +30,44 @@ function connection(id = "connection", desktop = false) {
   return { sandbox, run };
 }
 
+it.each([true, false])(
+  "installs managed capture only for approved connected runs: %s",
+  async (enabled) => {
+    const sessions = new BrowserSessions(undefined, undefined, true, {
+      urls: ["https://managed.example/challenge"],
+      enabled: async () => enabled,
+    });
+    const target = connection();
+    await sessions.prepare(target.sandbox);
+    const prepare = JSON.parse(target.run.mock.calls[0][1].stdin).request;
+    if (enabled)
+      expect(prepare.initScript).toContain("https://managed.example/challenge");
+    else expect(prepare).not.toHaveProperty("initScript");
+    const browser = await sessions.getChallengeBrowser(
+      new AbortController().signal,
+      { sandbox: target.sandbox, sessionName: "owned" },
+    );
+    await browser.deliverCloudflare!(
+      "solver-agent",
+      {
+        url: "https://managed.example/challenge",
+        documentId: "1",
+        originalUserAgent: "original",
+      },
+      "private-response-token",
+    );
+    const [command, options] = target.run.mock.calls[1];
+    expect(command).not.toContain("private-response-token");
+    expect(JSON.parse(options.stdin).request).toMatchObject({
+      action: "cloudflare",
+      sessionName: "owned",
+      script: "private-response-token",
+      userAgent: "solver-agent",
+    });
+    await sessions.cleanup();
+  },
+);
+
 it.each([false, true])(
   "keeps response tokens out of commands and survives reconnect (desktop=%s)",
   async (desktop) => {

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
-const {spawn} = require('node:child_process');
+const {spawn, spawnSync} = require('node:child_process');
 (async () => {
   let root;
   let cleanupAllowed = false;
@@ -37,6 +37,20 @@ const {spawn} = require('node:child_process');
       fs.mkdirSync(path.join(root, 'sockets'), {mode: 0o700});
       fs.mkdirSync(path.join(root, 'state'), {mode: 0o700});
       fs.writeFileSync(path.join(root, 'config.json'), '{}', {mode: 0o600});
+      if (request.initScript !== undefined) {
+        if (typeof request.initScript !== 'string' || request.initScript.length > 16384) throw Error();
+        const version = spawnSync('agent-browser', ['--version'], {
+          shell: process.platform === 'win32', windowsHide:true, timeout:5000,
+          encoding:'utf8', stdio:['ignore','pipe','ignore'], maxBuffer:4096,
+        });
+        const match = version.status === 0 && /agent-browser (\d+)\.(\d+)\.(\d+)/.exec(version.stdout);
+        if (match && (Number(match[1]) > 0 || Number(match[2]) > 39 ||
+            (Number(match[2]) === 39 && Number(match[3]) >= 3))) {
+          const initPath = path.join(root, 'cloudflare.js');
+          fs.writeFileSync(initPath, request.initScript, {mode:0o600});
+          fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({initScripts:[initPath]}), {mode:0o600});
+        }
+      }
       const watchdog = spawn(process.execPath, ['-e', request.bootstrap], {
         detached: true, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
       });
@@ -52,7 +66,7 @@ const {spawn} = require('node:child_process');
       console.log(JSON.stringify({root, name}));
       return;
     }
-    if (!['evaluate', 'cleanup'].includes(request.action)) throw Error();
+    if (!['evaluate', 'cloudflare', 'cleanup'].includes(request.action)) throw Error();
     if (request.action === 'cleanup' && request.defer === true) {
       // A bad deadline must never authorize deleting a still-live namespace.
       if (!Number.isFinite(request.expiresAt) || request.expiresAt > Date.now() + 86400000) throw Error();
@@ -61,7 +75,7 @@ const {spawn} = require('node:child_process');
       if (!fs.existsSync(root)) return;
     }
     validateRoot();
-    if (request.action === 'evaluate' && (!validDeadline ||
+    if (request.action !== 'cleanup' && (!validDeadline ||
         typeof request.script !== 'string' || request.script.length > 65536)) throw Error();
     const command = request.action === 'cleanup'
       ? {id:'captcha-cleanup', action:'close'}
@@ -71,11 +85,14 @@ const {spawn} = require('node:child_process');
     const entries = fs.readdirSync(directory).filter(file => file.endsWith(suffix));
     // Explicit --session names are legitimate, but inspecting an arbitrary one
     // of several browsers could deliver a response into the wrong document.
-    if (entries.length > 32 || (request.action === 'evaluate' && entries.length !== 1)) throw Error();
-    if (request.action === 'evaluate' && request.sessionName !== undefined &&
+    if (entries.length > 32 || (request.action !== 'cleanup' && entries.length !== 1)) throw Error();
+    if (request.action !== 'cleanup' && request.sessionName !== undefined &&
         (typeof request.sessionName !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(request.sessionName) ||
          entries[0] !== request.sessionName + suffix)) throw Error();
-    const callDaemon = async (file) => {
+    let stopped = false;
+    process.on('SIGTERM', () => { stopped = true; });
+    const callDaemon = async (file, command, restoring = false) => {
+      if (request.action !== 'cleanup' && !restoring && (stopped || Date.now() >= request.expiresAt)) throw Error();
       const socketFile = path.join(directory, file);
       const attempts = request.action === 'cleanup' && request.defer === true ? 3 : 1;
       for (let attempt = 0; attempt < attempts; attempt++) {
@@ -122,7 +139,28 @@ const {spawn} = require('node:child_process');
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     };
-    const results = await Promise.allSettled(entries.map(callDaemon));
+    if (request.action === 'cloudflare') {
+      const validUa = value => typeof value === 'string' && value.length > 0 && value.length <= 1024 && /^[\x20-\x7e]+$/.test(value);
+      if (!validUa(request.userAgent) || !validUa(request.originalUserAgent) ||
+          typeof request.identityScript !== 'string' || request.identityScript.length > 8192) throw Error();
+      const file = entries[0];
+      const call = (command, restoring = false) => callDaemon(file, command, restoring);
+      if (await call({id:'captcha-identity',action:'evaluate',script:request.identityScript}) !== true) {
+        console.log(JSON.stringify({ok:true,result:{status:'page_changed'}})); return;
+      }
+      let delivered = false;
+      try {
+        await call({id:'captcha-useragent',action:'useragent',userAgent:request.userAgent});
+        const result = await call({id:'captcha-deliver',action:'evaluate',script:request.script});
+        if (!result || !['page_changed','token_delivered'].includes(result.status)) throw Error();
+        delivered = result.status === 'token_delivered';
+        console.log(JSON.stringify({ok:true,result:{status:result.status}}));
+      } finally {
+        if (!delivered) await call({id:'captcha-restore-useragent',action:'useragent',userAgent:request.originalUserAgent}, true).catch(() => {});
+      }
+      return;
+    }
+    const results = await Promise.allSettled(entries.map(file => callDaemon(file, command)));
     if (results.some(result => result.status === 'rejected')) throw Error();
     cleanupAllowed = request.action === 'cleanup';
     console.log(JSON.stringify({ok:true,result:request.action === 'evaluate' ? results[0].value : undefined}));

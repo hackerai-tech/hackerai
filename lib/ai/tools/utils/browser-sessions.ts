@@ -10,7 +10,10 @@ import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
 import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
-import { cloudflareInitScript } from "../../captcha/cloudflare";
+import {
+  cloudflareInitScript,
+  cloudflareReleaseScript,
+} from "../../captcha/cloudflare";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -362,7 +365,11 @@ export class BrowserSessions {
       const connectionId = sandbox.getConnectionInfo().connectionId;
       let browser = this.connectedBrowsers.get(connectionId);
       if (!browser) {
-        browser = new ConnectedChallengeBrowser(sandbox, this.expiresAt);
+        browser = new ConnectedChallengeBrowser(
+          sandbox,
+          this.expiresAt,
+          this.cloudflare,
+        );
         this.connectedBrowsers.set(connectionId, browser);
       } else browser.reconnect(sandbox);
       this.activeConnectedBrowser = browser;
@@ -505,6 +512,16 @@ export class BrowserSessions {
       throw new Error(
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
+    if (current.state.state === "agent" && this.cloudflare?.urls.length) {
+      const target = await this.captureChallengeTarget(current.session.sandbox);
+      if (!target) throw new Error("Browser session ownership has ended.");
+      const browser = await this.getChallengeBrowser(
+        signal ?? new AbortController().signal,
+        target,
+      );
+      await browser.evaluate(cloudflareReleaseScript(this.cloudflare.urls));
+      signal?.throwIfAborted();
+    }
     const accepted = await withCancellation(
       getConvexClient().mutation(api.browserHandoffs.requestWaitForBackend, {
         serviceKey: scope.serviceKey,

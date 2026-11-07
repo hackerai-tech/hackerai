@@ -159,6 +159,52 @@ it("Stop interrupts the dedicated wait and never reports a successful handoff", 
   expect(jest.getTimerCount()).toBe(0);
 });
 
+it("restores the managed widget in the handoff's browser before requesting control", async () => {
+  const sessions = new BrowserSessions(
+    {
+      userId: "owner",
+      chatId: "chat",
+      runId: "run",
+      agentId: "parent",
+      serviceKey: "test-key",
+    },
+    undefined,
+    false,
+    { urls: ["https://example.com/login"], enabled: async () => true },
+  );
+  const sandboxes = ["first", "last"].map(
+    (sandboxId) =>
+      ({
+        sandboxId,
+        commands: {
+          run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+        },
+        files: { read: jest.fn(async () => sandboxId) },
+      }) as unknown as AnySandbox,
+  );
+  for (const sandbox of sandboxes) await sessions.prepare(sandbox);
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 1,
+  });
+  const release = jest.fn(async () => true);
+  const getBrowser = jest
+    .spyOn(sessions, "getChallengeBrowser")
+    .mockResolvedValue({ identity: "first", evaluate: release });
+  mockMutation.mockImplementation(async () => {
+    expect(release).toHaveBeenCalled();
+    throw new Error("end test after release");
+  });
+  await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
+    "end test after release",
+  );
+  expect(getBrowser).toHaveBeenCalledWith(expect.any(AbortSignal), {
+    sandbox: sandboxes[0],
+    sessionName: "first",
+  });
+});
+
 it.each([undefined, true])(
   "passes the explicit repeat request (%s) through the tool to wait admission",
   async (requestAnotherTakeover) => {
