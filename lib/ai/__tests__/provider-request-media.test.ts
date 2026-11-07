@@ -69,6 +69,10 @@ describe("provider request media counts", () => {
       tool_image_parts: 5,
       other_image_parts: 0,
       url_images: 4,
+      url_expiry_hint_expired_images: 0,
+      url_expiry_hint_near_images: 0,
+      url_expiry_hint_later_images: 0,
+      url_expiry_hint_unknown_images: 4,
       inline_images: 4,
       provider_id_images: 1,
       unknown_images: 0,
@@ -119,7 +123,7 @@ describe("provider request media counts", () => {
     ];
     const counts = getProviderRequestMediaCounts(messages);
 
-    expect(Object.values(counts)).toEqual(Array(11).fill(0));
+    expect(Object.values(counts)).toEqual(Array(15).fill(0));
     expect(JSON.stringify(counts)).not.toContain("private");
   });
 
@@ -146,5 +150,101 @@ describe("provider request media counts", () => {
     });
     expect(Object.values(counts).every(Number.isSafeInteger)).toBe(true);
     expect(JSON.stringify(counts)).not.toMatch(/private|secret|data:|file:/);
+  });
+
+  it("counts expiry hints across SDK URL image blocks without changing inputs", () => {
+    const signed = (date: string, expires = "600") =>
+      `https://private.test/image?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=${date}&X-Amz-Expires=${expires}&X-Amz-Signature=private-signature`;
+    const now = Date.UTC(2026, 10, 7, 9);
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", image: signed("20261107T085000Z") },
+          { type: "image", image: new URL(signed("20261107T085500Z")) },
+          {
+            type: "file",
+            mediaType: "image/png",
+            data: signed("20261107T090000Z"),
+          },
+          { type: "image", image: "data:image/png;base64,cA==" },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "fixture",
+            toolName: "file",
+            output: {
+              type: "content",
+              value: [
+                { type: "image-url", url: signed("20261107T085000Z") },
+                {
+                  type: "file-url",
+                  mediaType: "image/png",
+                  url: signed("20261107T085501Z"),
+                },
+                { type: "image-file-id", fileId: "private-id" },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+    const before = JSON.stringify(messages);
+    const counts = getProviderRequestMediaCounts(messages, now);
+    expect(counts).toMatchObject({
+      url_images: 5,
+      url_expiry_hint_expired_images: 2,
+      url_expiry_hint_near_images: 1,
+      url_expiry_hint_later_images: 2,
+      url_expiry_hint_unknown_images: 0,
+      inline_images: 1,
+      provider_id_images: 1,
+    });
+    expect(JSON.stringify(messages)).toBe(before);
+    expect(JSON.stringify(counts)).not.toMatch(
+      /private|20261107|Signature|https:/,
+    );
+  });
+
+  it("leaves unsupported, ambiguous or invalid expiry hints unknown", () => {
+    const base =
+      "https://private.test/image?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261107T085500Z&X-Amz-Expires=600";
+    const urls = [
+      "https://private.test/unsigned",
+      "https://[invalid",
+      base + "&X-Amz-Date=20261107T085500Z",
+      base + "&X-Amz-Expires=600",
+      base + "&X-Amz-Algorithm=AWS4-HMAC-SHA256",
+      base.replace("AWS4-HMAC-SHA256", "unsupported"),
+      base.replace("20261107T085500Z", "20260230T085500Z"),
+      base.replace("20261107T085500Z", "20261107T090001Z"),
+      base.replace("Expires=600", "Expires=0"),
+      base.replace("Expires=600", "Expires=604801"),
+      base.replace("Expires=600", "Expires=1.5"),
+      base + "&private=" + "x".repeat(8192),
+    ];
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: urls.map((image) => ({ type: "image", image })),
+      },
+    ];
+    const counts = getProviderRequestMediaCounts(
+      messages,
+      Date.UTC(2026, 10, 7, 9),
+    );
+    expect(counts).toMatchObject({
+      url_images: urls.length,
+      url_expiry_hint_unknown_images: urls.length,
+      url_expiry_hint_expired_images: 0,
+      url_expiry_hint_near_images: 0,
+      url_expiry_hint_later_images: 0,
+    });
+    expect(Object.values(counts).every(Number.isSafeInteger)).toBe(true);
+    expect(JSON.stringify(counts)).not.toMatch(/private|Signature|https:/);
   });
 });
