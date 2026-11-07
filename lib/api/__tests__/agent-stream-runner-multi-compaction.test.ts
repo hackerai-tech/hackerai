@@ -227,6 +227,20 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it("keeps Max screenshot tool results on DeepSeek after Muse Wonder text", () => {
+    expect(
+      resolveAgentModelForImageToolResults(
+        "model-muse-wonder",
+        "agent",
+        true,
+        "hackerai-max",
+        false,
+        false,
+        "ultra",
+      ),
+    ).toBe("model-deepseek-v4.1-flash-1017-pro");
+  });
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "keeps paid %s Standard on native GLM through image tool results",
     (subscription) => {

@@ -589,7 +589,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
+ * V4.1 Flash in Agent. Max uses Meta Muse Wonder. Image turns use their existing multimodal routes. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -682,6 +682,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "agent-model-free",
 ]);
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
+  "model-muse-wonder",
   "model-glm-5.3",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -727,6 +728,7 @@ export function isExplicitDeepSeekProSelectionForRetry({
 }
 
 const HIGH_REASONING_MODELS = [
+  "model-muse-wonder",
   DEEPSEEK_1017_MODEL_KEY,
   "model-grok-4.5-pro",
   "model-grok-4.6",
@@ -790,7 +792,10 @@ export function getRetryFallbackModel(
   mode: ChatMode,
   selectedModelOverride?: SelectedModel,
 ): ModelName {
-  if (mode === "agent" && selectedModelOverride === "hackerai-max") {
+  if (
+    modelName === "model-muse-wonder" ||
+    (mode === "agent" && selectedModelOverride === "hackerai-max")
+  ) {
     // Grok is admitted only by the context-aware final recovery decision.
     return DEEPSEEK_1017_MODEL_KEY;
   }
@@ -976,6 +981,8 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
+  "meta/muse-wonder": "model-muse-wonder",
+  "meta/muse-wonder-20261012": "model-muse-wonder",
   "z-ai/glm-5.3": "model-glm-5.3",
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",

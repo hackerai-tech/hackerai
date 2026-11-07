@@ -116,6 +116,13 @@ const GLM_5_2_PRICING: ModelPricing = {
   cacheRead: 0.14,
   cacheWrite: 0.76,
 };
+// OpenRouter Muse Wonder rates verified on 2026-11-07 ($/1M tokens).
+const MUSE_WONDER_PRICING: ModelPricing = {
+  input: 4.0,
+  output: 20.0,
+  cacheRead: 0.2,
+  cacheWrite: 4.0,
+};
 const GLM_5_3_PRICING: ModelPricing = {
   input: 1.4,
   output: 4.4,
@@ -192,6 +199,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "model-glm-5.2": GLM_5_2_PRICING,
   // OpenRouter rates: $1.40 in / $4.40 out / $0.26 cached input per 1M tokens.
   "model-glm-5.3": GLM_5_3_PRICING,
+  "model-muse-wonder": MUSE_WONDER_PRICING,
   "model-glm-5.3-flash": GLM_5_3_FLASH_PRICING,
   "model-glm-5.3-flash-pro": GLM_5_3_FLASH_PRICING,
   "model-glm-5.3-flash-agent": GLM_5_3_FLASH_PRICING,
@@ -214,6 +222,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
   "z-ai/glm-5.2-20260616": GLM_5_2_PRICING,
+  "meta/muse-wonder": MUSE_WONDER_PRICING,
+  "meta/muse-wonder-20261012": MUSE_WONDER_PRICING,
   "z-ai/glm-5.3": GLM_5_3_PRICING,
   "z-ai/glm-5.3-20260816": GLM_5_3_PRICING,
   "z-ai/glm-5.3-flash": GLM_5_3_FLASH_PRICING,

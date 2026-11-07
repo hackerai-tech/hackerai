@@ -26,6 +26,9 @@ const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   "deepseek/deepseek-v4-pro-0813": 1_024_000,
   "z-ai/glm-5.2": 1_048_576,
   "z-ai/glm-5.3": 1_048_576,
+  // Muse Wonder metadata verified via OpenRouter on 2026-11-07.
+  "meta/muse-wonder": 1_048_576,
+  "meta/muse-wonder-20261012": 1_048_576,
   "z-ai/glm-5.3-flash": 1_048_576,
   "moonshotai/kimi-k3": 1_048_576,
   "x-ai/grok-4.5": 500_000,

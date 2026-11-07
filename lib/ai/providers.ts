@@ -1290,6 +1290,7 @@ type OpenRouterInstance = typeof openrouter;
 export const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 export const GLM_5_2_SLUG = "z-ai/glm-5.2";
 export const GLM_5_3_SLUG = "z-ai/glm-5.3";
+export const MUSE_WONDER_SLUG = "meta/muse-wonder";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
@@ -1349,6 +1350,7 @@ const buildProviderMap = (
     "model-opus-4.6": or(KIMI_K3_SLUG),
     "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-glm-5.3": or(GLM_5_3_SLUG),
+    "model-muse-wonder": or(MUSE_WONDER_SLUG),
     "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-agent": or(GLM_5_3_FLASH_SLUG),
@@ -1421,6 +1423,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-opus-4.6": "Moonshot Kimi K3",
   "model-glm-5.2": "Z.ai GLM 5.2",
   "model-glm-5.3": "Z.ai GLM 5.3",
+  "model-muse-wonder": "Meta Muse Wonder",
   "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
@@ -1496,6 +1499,9 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
+    normalized === "model-muse-wonder" ||
+    normalized === MUSE_WONDER_SLUG ||
+    normalized === "meta/muse-wonder-20261012" ||
     normalized === DEEPSEEK_1017_MODEL_KEY ||
     normalized === DEEPSEEK_1017_SLUG ||
     normalized === DEEPSEEK_1017_CANONICAL_SLUG ||
@@ -1544,7 +1550,7 @@ export function resolveAgentTierToProviderKey(
     case "hackerai-pro":
       return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
-      return "model-glm-5.3";
+      return "model-muse-wonder";
   }
 }
 

@@ -1787,3 +1787,66 @@ it("prices the Inference Cyber served identity", () => {
     }),
   ).toBe("deepseek-v4.1-flash-1017-cyber");
 });
+
+describe("Muse Wonder Max routing", () => {
+  const modelName = "model-muse-wonder";
+  it("keeps Muse recovery bounded even without the selection override", () => {
+    expect(getFallbackSlugs(modelName, "agent")).toEqual([]);
+    expect(
+      buildProviderOptions(true, "user", modelName, "agent").openrouter.models,
+    ).toBeUndefined();
+    expect(getRetryFallbackModel(modelName, "agent")).toBe(
+      DEEPSEEK_1017_MODEL_KEY,
+    );
+  });
+
+  it("uses high reasoning and bounded app-side recovery for explicit Agent Max", () => {
+    const options = buildProviderOptions(true, "user", modelName, "agent", {
+      selectedModelOverride: "hackerai-max",
+    });
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "high",
+    });
+    expect(options.openrouter.models).toBeUndefined();
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: modelName,
+        selectedModelOverride: "hackerai-max",
+      }),
+    ).toBe(true);
+    expect(getRetryFallbackModel(modelName, "agent", "hackerai-max")).toBe(
+      DEEPSEEK_1017_MODEL_KEY,
+    );
+    expect(
+      getAgentContextBudget({
+        enabled: true,
+        mode: "agent",
+        subscription: "ultra",
+        modelId: "meta/muse-wonder",
+        fallbackModelIds: getFallbackSlugs(modelName, "agent", {
+          selectedModelOverride: "hackerai-max",
+        }),
+      }),
+    ).toBe(508_288);
+  });
+  it.each(["meta/muse-wonder", "meta/muse-wonder-20261012"])(
+    "accounts for the served Muse model %s after another route",
+    (responseModel) => {
+      expect(
+        resolveServedModelForCostAccounting({
+          modelName: "model-glm-5.3",
+          responseModel,
+        }),
+      ).toBe(modelName);
+    },
+  );
+  it("retains historical GLM attribution when a response reports GLM", () => {
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName,
+        responseModel: "z-ai/glm-5.3-20260816",
+      }),
+    ).toBe("model-glm-5.3");
+  });
+});

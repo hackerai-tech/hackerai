@@ -45,7 +45,7 @@ describe("paid 1017 routing", () => {
         { directGlmVisionEnabled },
       );
       const textModel = selectModel("agent", "ultra", "hackerai-max");
-      expect(textModel).toBe("model-glm-5.3");
+      expect(textModel).toBe("model-muse-wonder");
       const toolImageModel = resolveAgentModelForImageToolResults(
         textModel,
         "agent",

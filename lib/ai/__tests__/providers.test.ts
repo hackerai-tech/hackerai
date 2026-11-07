@@ -104,6 +104,31 @@ describe("enrichOpenRouterStreamError", () => {
 });
 
 describe("provider registry", () => {
+  it("registers Muse Wonder without repointing the historical GLM route", () => {
+    expect(resolveAgentTierToProviderKey("hackerai-max")).toBe(
+      "model-muse-wonder",
+    );
+    expect(
+      (myProvider.languageModel("model-muse-wonder") as { modelId: string })
+        .modelId,
+    ).toBe("meta/muse-wonder");
+    expect(
+      (myProvider.languageModel("model-glm-5.3") as { modelId: string })
+        .modelId,
+    ).toBe("z-ai/glm-5.3");
+    expect(getModelDisplayName("model-muse-wonder")).toBe("Meta Muse Wonder");
+    expect(getModelCutoffDate("model-muse-wonder")).toBeUndefined();
+    for (const model of [
+      "model-muse-wonder",
+      "meta/muse-wonder",
+      "meta/muse-wonder-20261012",
+    ]) {
+      expect(supportsMultimodalToolResults(model)).toBe(true);
+      expect(isKimiModel(model)).toBe(false);
+      expect(isAnthropicModel(model)).toBe(false);
+    }
+  });
+
   it("keeps active routes pointed at their provider slugs", () => {
     expect(
       (myProvider.languageModel("model-abliterated") as { modelId: string })

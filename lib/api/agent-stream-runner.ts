@@ -339,7 +339,9 @@ export const resolveAgentModelForImageToolResults = (
   }
   // Promote only the Max text route; preserve explicit recovery models.
   if (selectedModelOverride === "hackerai-max") {
-    return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
+    return modelName === "model-glm-5.3" || modelName === "model-muse-wonder"
+      ? DEEPSEEK_1017_MODEL_KEY
+      : modelName;
   }
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.

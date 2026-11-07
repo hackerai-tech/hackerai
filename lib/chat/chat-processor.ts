@@ -42,7 +42,7 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
  *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
  *   reasoning; explicit Pro uses max reasoning, including images.
- *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
+ *   Paid plans only use Agent mode. Max uses Meta Muse Wonder for text and
  *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.

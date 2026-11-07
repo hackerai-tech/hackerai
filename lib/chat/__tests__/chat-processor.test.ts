@@ -304,7 +304,7 @@ describe("selectModel", () => {
                 ? DEEPSEEK_1017_MODEL_KEY
                 : hasImage
                   ? DEEPSEEK_1017_MODEL_KEY
-                  : "model-glm-5.3",
+                  : "model-muse-wonder",
             );
           }
           expect(
@@ -321,7 +321,7 @@ describe("selectModel", () => {
             ),
           ).toBe(
             subscription === "ultra" || extraUsageAvailable
-              ? "model-glm-5.3"
+              ? "model-muse-wonder"
               : DEEPSEEK_1017_MODEL_KEY,
           );
         }

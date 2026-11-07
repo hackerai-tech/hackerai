@@ -83,3 +83,13 @@ it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
     expect(getSummarizationThresholdTokens(budget)).toBe(256_000);
   },
 );
+
+it.each(["meta/muse-wonder", "meta/muse-wonder-20261012"])(
+  "retains the verified expanded budget for %s",
+  (modelId) => {
+    expect(getAgentContextBudget({ ...route, modelId })).toBe(508_288);
+    expect(getAgentContextBudget({ ...route, modelId, enabled: false })).toBe(
+      276_000,
+    );
+  },
+);

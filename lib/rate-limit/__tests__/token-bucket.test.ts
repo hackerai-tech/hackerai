@@ -73,6 +73,26 @@ describe("token-bucket", () => {
     expect(calculateRawTokenCost(1_000_000, "output", modelName)).toBe(20_000);
   });
   // ==========================================================================
+  it.each([
+    "model-muse-wonder",
+    "meta/muse-wonder",
+    "meta/muse-wonder-20261012",
+  ])(
+    "prices Muse Wonder input, output, and cached input for %s",
+    (modelName) => {
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(48_000);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(240_000);
+      expect(
+        calculateRawModelUsageCostDollars({
+          modelName,
+          inputTokens: 1_000_000,
+          cacheReadTokens: 500_000,
+          outputTokens: 100_000,
+        }),
+      ).toBeCloseTo(4.1);
+    },
+  );
+
   // calculateTokenCost - Core pricing logic
   // ==========================================================================
   describe("calculateTokenCost", () => {
