@@ -105,7 +105,6 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   const isMac = useShortcutPlatform();
   const searchShortcutLabel = formatShortcut("search", isMac);
   const sidebarShortcutLabel = formatShortcut("sidebar", isMac);
-  const newTaskShortcutLabel = formatShortcut("newTask", isMac);
   const planLabel = isCheckingProPlan
     ? null
     : SIDEBAR_PLAN_LABELS[subscription];
@@ -190,11 +189,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                     <SquarePen className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
-                <SidebarActionTooltip
-                  label="New task"
-                  shortcut={newTaskShortcutLabel}
-                  side="right"
-                />
+                <SidebarActionTooltip label="New task" side="right" />
               </Tooltip>
             </div>
 
@@ -331,9 +326,6 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
               New task
             </div>
-            <kbd className="text-xs font-sans text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100">
-              {newTaskShortcutLabel}
-            </kbd>
           </Button>
         </div>
 
