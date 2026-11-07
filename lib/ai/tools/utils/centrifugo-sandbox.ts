@@ -125,6 +125,19 @@ const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
+/** Classify rejected conversion output without retaining any path or output text. */
+function nativePathOutputShape(value: string) {
+  if (value.startsWith("\uFEFF")) return "leading_bom";
+  if (value.startsWith("\u001b")) return "leading_ansi";
+  if (/^["'](?:[A-Za-z]:[\\/]|\\\\)/.test(value))
+    return "quoted_windows_absolute";
+  if (/^[ \t]+(?:[A-Za-z]:[\\/]|\\\\)/.test(value))
+    return "whitespace_windows_absolute";
+  if (value.startsWith("/")) return "posix_absolute";
+  if (/(?:[A-Za-z]:[\\/]|\\\\)/.test(value)) return "embedded_windows_absolute";
+  return "relative_or_other";
+}
+
 type HttpClient = "curl" | "wget" | "powershell";
 
 const getErrorMessage = (error: unknown): string =>
@@ -1891,6 +1904,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               terminal_ack_published: receipt?.terminalAckPublished,
               last_received_sequence: receipt?.lastReceivedSequence,
               exit_success: result.exitCode === 0,
+              ...(failure === "non_absolute_output" && {
+                stdout_shape_version: 1,
+                stdout_shape: nativePathOutputShape(resolved),
+              }),
               stdout_bytes: Buffer.byteLength(result.stdout, "utf8"),
               stderr_bytes: Buffer.byteLength(result.stderr, "utf8"),
             });
