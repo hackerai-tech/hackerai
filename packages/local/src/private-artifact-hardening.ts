@@ -154,6 +154,11 @@ export async function preparePrivateArtifactStorage(
       const { stdout } = await promisify(execFile)(
         process.execPath,
         [
+          // Source-mode startup uses tsx; never inherit arbitrary parent Node
+          // flags or NODE_OPTIONS into the delegated, credential-free helper.
+          ...(__filename.endsWith(".ts")
+            ? ["--require", require.resolve("tsx/cjs")]
+            : []),
           "-e",
           "require(process.argv[1]).preparePrivateArtifactStorage(JSON.parse(process.argv[2])).then(result => process.stdout.write(JSON.stringify(result))).catch(() => process.exit(1))",
           __filename,
