@@ -42,6 +42,7 @@ import {
 import * as triggerSdk from "@trigger.dev/sdk";
 import { agentUiStream } from "./streams";
 import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
+import { createAgentUiMessageStream } from "@/lib/chat/agent-ui-message-stream";
 import {
   addAgentLongTags,
   getMissingAgentLongTags,
@@ -237,7 +238,6 @@ import {
   isInvalidImageInputError,
   isProviderContentFilterFinishReason,
   isRetriableProviderStreamDisconnectError,
-  isCancellationError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -2486,11 +2486,9 @@ export const agentLongTask = task({
         isUserAborted: () => userStopSignal.signal.aborted,
       });
       runReporting.setStage("preparation");
-      const uiStream = createUIMessageStream({
+      const uiStream = createAgentUiMessageStream({
+        abortSignal: userStopSignal.signal,
         onError: (error) => {
-          if (isCancellationError(error, userStopSignal.signal)) {
-            return "";
-          }
           streamError ??= error;
           runReporting.fail(
             error,
