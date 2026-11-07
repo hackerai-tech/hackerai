@@ -36,6 +36,7 @@ import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import * as relayTraffic from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
+  checkpointCommandContext,
   checkpointFailureOrigin,
   classifyPersistenceFailure,
 } from "../persistence-failure";
@@ -4553,9 +4554,16 @@ describe("CentrifugoSandbox", () => {
             stderr: "",
             exitCode: 0,
           } as any);
-        await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
-          "Failed to detect local shell",
+        const error = await sandbox.files
+          .write("/tmp/test", "safe")
+          .catch((error: unknown) => error);
+        expect(error).toEqual(
+          expect.objectContaining({ message: "Failed to detect local shell" }),
         );
+        expect(checkpointCommandContext(error)).toEqual({
+          command_stage: "detect_shell",
+          command_exit_code: 2,
+        });
         expect(run).toHaveBeenCalledTimes(1);
         await expect(sandbox.detectShell()).resolves.toBe("cmd");
       },

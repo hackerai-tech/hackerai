@@ -1,6 +1,7 @@
 import {
   classifyPersistenceFailure,
   checkpointFailureOrigin,
+  checkpointCommandContext,
   type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
@@ -110,6 +111,10 @@ export function terminalSandboxInstance(sandbox: AnySandbox): string {
   return `e2b:${sandbox.sandboxId}`;
 }
 
+/**
+ * Persist best-effort terminal recovery artifacts within one user/sandbox scope.
+ * Keep failed-write diagnostics bounded and attributable to the same session.
+ */
 export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
@@ -125,6 +130,14 @@ export function createTerminalRecordStore(
   const directory = `${root}/${scope}`;
   const files = asCommonSandbox(sandbox).files;
   const ownerOnlyPosix = usesOwnerOnlyPosixFileTransport(sandbox);
+  // One completed failure, not an unbounded per-session cache. If another
+  // session overtakes it, omit context rather than attributing the wrong write.
+  let lastSaveFailure:
+    | {
+        session: string;
+        fields: Record<string, string | number>;
+      }
+    | undefined;
   const pathFor = (session: string) => {
     if (!/^[a-f0-9]{8}$/.test(session))
       throw new Error("Invalid terminal session ID");
@@ -181,12 +194,17 @@ export function createTerminalRecordStore(
         reason: issue.reason,
         diagnostic_version: 1,
         diagnostic_scope: "first_reason_per_terminal_session",
+        ...(issue.reason === "save_unacknowledged" &&
+        lastSaveFailure?.session === issue.terminalSessionId
+          ? lastSaveFailure.fields
+          : {}),
       });
     },
     checkpointOnStart: true,
     checkpointOnOutput: true,
     pruneOnStart: true,
     pathFor,
+    /** Save a recovery snapshot, returning null without replaying failed writes. */
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
@@ -212,6 +230,8 @@ export function createTerminalRecordStore(
           await files.write(path, content);
         }
         outcome = "success";
+        if (lastSaveFailure?.session === record.session)
+          lastSaveFailure = undefined;
         return path;
       } catch (error) {
         failureOrigin = checkpointFailureOrigin(error);
@@ -224,6 +244,32 @@ export function createTerminalRecordStore(
             fileFailure = parseDesktopFileFailure(error.fileFailure);
         } catch {
           // Optional adapter context must not change a best-effort save result.
+        }
+        try {
+          const session = Object.getOwnPropertyDescriptor(
+            record,
+            "session",
+          )?.value;
+          lastSaveFailure =
+            typeof session === "string" && /^[a-f0-9]{8}$/.test(session)
+              ? {
+                  session,
+                  fields: {
+                    failure_category: failureCategory,
+                    checkpoint_failure_origin: failureOrigin,
+                    file_failure: fileFailure ?? "none",
+                    checkpoint_transport: ownerOnlyPosix
+                      ? "posix_command"
+                      : "native_file",
+                    checkpoint_backend: isCentrifugoSandbox(sandbox)
+                      ? "local"
+                      : "cloud",
+                    ...checkpointCommandContext(error),
+                  },
+                }
+              : undefined;
+        } catch {
+          lastSaveFailure = undefined;
         }
         return null; // Persistence failure must not interrupt or replay a command.
       } finally {

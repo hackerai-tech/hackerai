@@ -108,6 +108,54 @@ export class PersistenceError extends Error {
   }
 }
 
+/** Describe only our fixed command producers; never retain error text or stderr. */
+export function checkpointCommandContext(error: unknown): {
+  command_stage: string;
+  command_exit_code: number | "none" | "other";
+} {
+  let commandStage = "none";
+  let exitCode: unknown;
+  try {
+    if (error instanceof PersistenceError) {
+      commandStage = "other";
+      // Data descriptors avoid invoking error accessors for optional diagnostics.
+      const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+      switch (message) {
+        case "Failed to detect local shell":
+          commandStage = "detect_shell";
+          break;
+        case "Failed to create directory":
+          commandStage = "create_directory";
+          break;
+        case "Failed to write file":
+          commandStage = "write_file";
+          break;
+        case "Failed to decode file":
+          commandStage = "decode_file";
+          break;
+        case "Private terminal artifact operation failed":
+          commandStage = "private_artifact";
+          break;
+      }
+      exitCode = Object.getOwnPropertyDescriptor(error, "exitCode")?.value;
+    }
+  } catch {
+    commandStage = "unreadable";
+  }
+  return {
+    command_stage: commandStage,
+    command_exit_code:
+      exitCode === undefined
+        ? "none"
+        : typeof exitCode === "number" &&
+            Number.isInteger(exitCode) &&
+            exitCode >= 0 &&
+            exitCode <= 255
+          ? exitCode
+          : "other",
+  };
+}
+
 export const classifyPersistenceFailure = (
   error: unknown,
 ): PersistenceFailureCategory => {
