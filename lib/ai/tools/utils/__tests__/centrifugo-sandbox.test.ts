@@ -1,4 +1,5 @@
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import { phLogger } from "@/lib/posthog/server";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
  *
@@ -185,6 +186,7 @@ function startCommand(
 
 describe("CentrifugoSandbox", () => {
   let receiverLog: jest.SpyInstance;
+  let guardLog: jest.SpyInstance;
   const receiverRecords = () =>
     receiverLog.mock.calls
       .map(([value]) => {
@@ -197,6 +199,7 @@ describe("CentrifugoSandbox", () => {
       .filter((record) => record.event === "desktop_command_receiver");
   beforeEach(() => {
     receiverLog = jest.spyOn(console, "info").mockImplementation(() => {});
+    guardLog = jest.spyOn(phLogger, "info").mockImplementation(() => {});
     jest.mocked(relayTraffic.recordRelayReceivedBytes).mockClear();
     mockSubscriptions = [];
     mockClients = [];
@@ -206,6 +209,7 @@ describe("CentrifugoSandbox", () => {
 
   afterEach(() => {
     receiverLog.mockRestore();
+    guardLog.mockRestore();
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
   });
@@ -4207,6 +4211,152 @@ describe("CentrifugoSandbox", () => {
       expect(checkpointFailureOrigin(error)).toBe("command_path_limit");
       expect(run).not.toHaveBeenCalled();
     });
+
+    it.each([
+      [true, "exit"],
+      [false, "exit"],
+      [true, "error"],
+      [false, "error"],
+    ] as const)(
+      "links a Windows file path guard to its actual command receipt (sequenced=%s, terminal=%s)",
+      async (sequenced, terminal) => {
+        const sandbox = new CentrifugoSandbox(
+          "user-1",
+          {
+            ...defaultConnection,
+            isDesktop: true,
+            osInfo: {
+              platform: "win32",
+              arch: "x64",
+              release: "10.0.22631",
+              hostname: "PRIVATE_HOST_CANARY",
+            },
+            capabilities: {
+              commands: true,
+              pty: true,
+              files: true,
+              operationChannels: true,
+            },
+          },
+          defaultConfig,
+          "/tmp/PRIVATE_PATH_CANARY",
+          "run-originating-operation",
+        );
+        (sandbox as any).shellKind = "bash";
+        const command = jest.spyOn(sandbox.commands, "run");
+        const pending = sandbox.files.write(
+          "file.txt",
+          "PRIVATE_CONTENT_CANARY",
+        );
+        const rejected = expect(pending).rejects.toThrow(
+          "Failed to resolve the Windows file path through Git Bash",
+        );
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[0];
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: {
+            type: terminal,
+            commandId: FIXED_UUID,
+            ...(terminal === "exit"
+              ? { exitCode: 0 }
+              : { message: "PRIVATE_ERROR_CANARY" }),
+            ...(sequenced && { sequence: 0, outputProtocol: "ack-v1" }),
+          },
+        });
+        await rejected;
+        const records = guardLog.mock.calls
+          .map(([event, fields]) => ({ event, ...fields }))
+          .filter(
+            (row) => row.event === "windows_native_path_resolution_failed",
+          );
+        expect(records).toEqual([
+          {
+            event: "windows_native_path_resolution_failed",
+            diagnostic_version: 1,
+            diagnostic_scope: "first_reason_per_sandbox",
+            reason: terminal === "exit" ? "empty_output" : "command_failed",
+            trigger_run_id: "run-originating-operation",
+            command_id: FIXED_UUID,
+            receipt_available: true,
+            acknowledged_output: sequenced,
+            terminal_ack_published: sequenced,
+            last_received_sequence: sequenced ? 0 : -1,
+            exit_success: terminal === "exit",
+            stdout_bytes: 0,
+            stderr_bytes:
+              terminal === "exit" ? 0 : "PRIVATE_ERROR_CANARY".length,
+          },
+        ]);
+        expect(JSON.stringify(records)).not.toMatch(
+          /PRIVATE|cygpath|file\.txt/,
+        );
+        expect(command).toHaveBeenCalledTimes(1);
+        expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([false, true])(
+      "bounds Windows file guard diagnostics per reason and preserves failure when logging throws=%s",
+      async (loggingThrows) => {
+        const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH_CANARY");
+        (sandbox as any).shellKind = "bash";
+        const command = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "PRIVATE_STDERR_CANARY",
+          exitCode: 0,
+        });
+        guardLog.mockImplementation((event) => {
+          if (
+            loggingThrows &&
+            event === "windows_native_path_resolution_failed"
+          )
+            throw new Error("logger unavailable");
+        });
+        for (let i = 0; i < 2; i++) {
+          const error = await sandbox.files
+            .write("file.txt", "PRIVATE_CONTENT_CANARY")
+            .catch((error: unknown) => error);
+          expect(checkpointFailureOrigin(error)).toBe(
+            "windows_path_empty_output",
+          );
+        }
+        command.mockResolvedValueOnce({
+          stdout: "PRIVATE_NOT_ABSOLUTE",
+          stderr: "",
+          exitCode: 0,
+        });
+        const error = await sandbox.files
+          .write("file.txt", "PRIVATE_CONTENT_CANARY")
+          .catch((error: unknown) => error);
+        expect(checkpointFailureOrigin(error)).toBe(
+          "windows_path_non_absolute_output",
+        );
+        const records = guardLog.mock.calls
+          .map(([event, fields]) => ({ event, ...fields }))
+          .filter(
+            (row) => row.event === "windows_native_path_resolution_failed",
+          );
+        expect(records.map((row) => row.reason)).toEqual([
+          "empty_output",
+          "non_absolute_output",
+        ]);
+        expect(records.every((row) => row.receipt_available === false)).toBe(
+          true,
+        );
+        expect(records.every((row) => row.command_id === undefined)).toBe(true);
+        expect(JSON.stringify(records)).not.toMatch(
+          /PRIVATE|cygpath|file\.txt/,
+        );
+        expect(command).toHaveBeenCalledTimes(3);
+        expect(mockSubscriptions).toHaveLength(0);
+      },
+    );
 
     it.each([
       [0, "", "", "windows_path_empty_output"],
