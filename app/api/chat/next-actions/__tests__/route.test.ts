@@ -334,7 +334,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 5,
+    validationVersion: 6,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -388,7 +388,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 5 }),
+      batch: expect.objectContaining({ validationVersion: 6 }),
     }),
   );
 });
@@ -498,7 +498,7 @@ test.each([0, 50000])(
         batchId: "old",
         messageId: "answer",
         mode: "agent",
-        validationVersion: 5,
+        validationVersion: 6,
         suggestions: ["alpha"],
       },
     };
