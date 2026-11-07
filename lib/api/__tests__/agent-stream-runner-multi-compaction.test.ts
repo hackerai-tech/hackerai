@@ -5211,7 +5211,7 @@ describe("createAgentStream repeated compaction", () => {
     state.finalMessages[0].parts.push({
       type: "file",
       mediaType: "image/png",
-      url: "https://private.test/diagnostic-fixture",
+      url: "https://private.test/diagnostic-fixture?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20200101T000000Z&X-Amz-Expires=600&X-Amz-Signature=private-signature",
     });
 
     await createAgentStream(
@@ -5233,6 +5233,8 @@ describe("createAgentStream repeated compaction", () => {
           image_parts: 1,
           user_image_parts: 1,
           url_images: 1,
+          url_expiry_hint_expired_images: 1,
+          url_expiry_hint_unknown_images: 0,
           inline_images: 0,
         }),
         serialized_message_bytes: expect.any(Number),
