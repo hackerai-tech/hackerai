@@ -21,6 +21,7 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
+import { scheduleDefinition, scheduleRunStatus } from "./scheduleValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -285,6 +286,37 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  agent_schedules: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    definition: scheduleDefinition,
+    enabled: v.boolean(),
+    revision: v.number(),
+    next_run_at: v.optional(v.number()),
+    active_run_id: v.optional(v.id("schedule_runs")),
+    last_manual_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_enabled_and_next_run_at", ["enabled", "next_run_at"]),
+  schedule_runs: defineTable({
+    schedule_id: v.id("agent_schedules"),
+    user_id: v.string(),
+    occurrence: v.string(),
+    revision: v.number(),
+    dispatcher_id: v.string(),
+    chat_id: v.string(),
+    trigger_run_id: v.optional(v.string()),
+    status: scheduleRunStatus,
+    detail: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_schedule_id", ["schedule_id"])
+    .index("by_status", ["status"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_schedule_and_occurrence", ["schedule_id", "occurrence"]),
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.

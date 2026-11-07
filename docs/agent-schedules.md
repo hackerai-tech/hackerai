@@ -1,0 +1,56 @@
+# Scheduled Agent tasks
+
+Schedules run saved instructions as a **new cloud Agent task**. They do not inherit
+another task's messages, attachments, project folder, or local/desktop connection.
+Saving a schedule authorizes full tool access; the form explains this and normal
+account usage/spending limits before saving.
+
+## Execution and recovery
+
+Convex owns the schedule, next due time, revision, and occurrence receipts.
+Trigger's `dispatch-agent-schedules` clock runs once per minute in each environment;
+its cron window must remain `0m` to avoid the provider's default scheduling window.
+`scheduled-agent-run` claims the occurrence transactionally, checks current
+billing-backed entitlement and the `scheduled-agent-tasks` flag, and starts the
+normal Agent handler with an internally supplied identity. HTTP request bodies
+cannot select that identity or override the fixed cloud/permission settings.
+
+A retry keeps the same receipt, chat ID, message ID, and Agent idempotency key.
+Pause, resume, and edits increment the revision so queued work from older
+revisions cannot start. A run already handed to the Agent continues; users can
+stop it in its normal task. Deleting a schedule preserves its result tasks.
+
+A schedule never starts a second run while its previous run is starting,
+running, or awaiting authoritative completion. An overlapping clock occurrence
+is recorded as skipped. Missed intervals are not replayed as a backlog. Intervals
+restart from the dispatch time; fixed clock schedules use the selected IANA time
+zone. Nonexistent spring-forward times are skipped, and repeated fall-back times
+run only at their first occurrence. One-time schedules disable after being claimed.
+
+Clearing `active_trigger_run_id` proves cleanup, not success. Reconciliation reads
+the actual Trigger terminal outcome before recording finished, failed, or canceled.
+Unavailable status reads preserve an unsettled state. Final dispatcher failure
+checks for an already-started child instead of replaying an uncertain start.
+
+Each account may retain up to 20 schedules. Each schedule retains its latest 200
+run receipts and shows its latest five runs; normal task retention is independent.
+Account deletion fences execution immediately and deletes schedule instructions
+and receipts through the existing bounded cleanup.
+
+## Environment and rollout
+
+The clock and dispatcher use their **worker's configured Convex deployment**;
+callers cannot forward a backend URL into a scheduled run. Verify the worker's
+Convex account/project/deployment and PostHog project independently from Vercel
+before enabling the feature. Preview and Production require separate flag
+definitions. Keep the owning Linear issue's rollout and readout plan current.
+
+The server gates creation, editing, resume, and Run now on paid access and the
+flag. Pause and delete remain available when the rollout is disabled. Every
+execution rechecks entitlement, suspension/deletion fences, and the normal Agent
+usage limits. Deployment must include both new Trigger tasks and Convex functions.
+
+Actual UI exposure is `agent_schedules_viewed`; creation, actual Agent start,
+and opening results are separate events. These events contain counts, timing
+types, or statuses only. Saved names, instructions, outputs, and targets must not
+be added to analytics.

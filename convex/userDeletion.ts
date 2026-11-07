@@ -12,6 +12,8 @@ export const DELETED_USER_ID = "__deleted_user__";
 // account API checks them before removing the external identity.
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
+    "agent_schedules",
+    "schedule_runs",
     "projects",
     "chats",
     "chat_summaries",
@@ -551,7 +553,23 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const schedulesBatch = await collectByIndexBatch<Doc<"agent_schedules">>(
+    ctx,
+    budget,
+    "agent_schedules",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const scheduleRunsBatch = await collectByIndexBatch<Doc<"schedule_runs">>(
+    ctx,
+    budget,
+    "schedule_runs",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const deletionBatches = [
+    schedulesBatch,
+    scheduleRunsBatch,
     projectsBatch,
     chatsBatch,
     filesBatch,
@@ -648,6 +666,8 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
+  await deleteDocs(ctx, stats, "agent_schedules", schedulesBatch.docs, mode);
+  await deleteDocs(ctx, stats, "schedule_runs", scheduleRunsBatch.docs, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);

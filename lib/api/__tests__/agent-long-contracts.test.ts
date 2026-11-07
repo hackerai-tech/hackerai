@@ -1014,7 +1014,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/messages must be an array/);
 
     const parseIdx = routeSrc.indexOf("parseAgentTriggerRequestBody(req)");
-    const authIdx = routeSrc.indexOf("await getUserIDAndPro(req)");
+    const authIdx = routeSrc.indexOf("await resolveIdentity(req)");
     const triggerIdx = routeSrc.indexOf("tasks.trigger", authIdx);
 
     expect(parseIdx).toBeGreaterThan(-1);

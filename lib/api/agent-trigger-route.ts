@@ -632,8 +632,11 @@ export const finalizeStartedAgentRun = async ({
 /** Share recovery across admission reads without replaying persistence or run dispatch. */
 export const createAgentTriggerPost = ({
   endpoint,
+  resolveIdentity = getUserIDAndPro,
 }: {
   endpoint: AgentApiEndpoint;
+  /** Trusted internal callers resolve current billing-backed identity, never request-body identity. */
+  resolveIdentity?: typeof getUserIDAndPro;
 }) =>
   withServiceQueryRecovery(async (req: NextRequest) => {
     const routeStartedAt = Date.now();
@@ -723,7 +726,7 @@ export const createAgentTriggerPost = ({
       diagnosticContext.chatId = chatId.slice(0, 128);
       stage = "authenticate";
       const { userId, subscription, organizationId, freeQuotaSubject } =
-        await getUserIDAndPro(req);
+        await resolveIdentity(req);
       diagnosticContext.userId = userId.slice(0, 128);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
