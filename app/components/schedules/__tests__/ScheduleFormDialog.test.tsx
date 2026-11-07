@@ -76,3 +76,48 @@ it("asks before discarding edited instructions", () => {
     "Edited instructions",
   );
 });
+it("shows the saved interval time while renaming and a new time only after timing changes", () => {
+  jest.useFakeTimers().setSystemTime(new Date("2026-11-07T23:00:00Z"));
+  try {
+    const at = Date.now() + 60000;
+    render(
+      <ScheduleFormDialog
+        initial={{ ...initial, timing: { minutes: 15, type: "interval" } }}
+        editing
+        saved={{ enabled: true, consumed: false, nextRunAt: at }}
+        onSave={jest.fn()}
+        onClose={jest.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Renamed" },
+    });
+    const label = (timestamp: number) =>
+      new Date(timestamp).toLocaleString([], {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+    expect(screen.getByText(label(at))).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Repeat every (minutes)"), {
+      target: { value: "30" },
+    });
+    expect(screen.getByText(label(Date.now() + 1800000))).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+it("describes a paused schedule without promising another run", () => {
+  render(
+    <ScheduleFormDialog
+      initial={{ ...initial, timing: { type: "interval", minutes: 15 } }}
+      editing
+      saved={{ enabled: false, consumed: false, nextRunAt: null }}
+      onSave={jest.fn()}
+      onClose={jest.fn()}
+    />,
+  );
+  expect(
+    screen.getByText(/This schedule will stay paused/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Next run:/)).not.toBeInTheDocument();
+});

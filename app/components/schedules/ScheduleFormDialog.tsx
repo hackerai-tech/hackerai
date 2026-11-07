@@ -31,10 +31,12 @@ import {
 } from "@/components/ui/select";
 import {
   nextScheduledTime,
+  sameScheduleTiming,
   validateSchedule,
   type ScheduleDefinition,
   type ScheduleTiming,
 } from "@/lib/schedules/recurrence";
+import type { AgentSchedule } from "@/lib/schedules/types";
 
 const DAYS = [
   "Sunday",
@@ -68,11 +70,13 @@ export function defaultSchedule(): ScheduleDefinition {
 export function ScheduleFormDialog({
   initial,
   editing,
+  saved,
   onClose,
   onSave,
 }: {
   initial: ScheduleDefinition;
   editing: boolean;
+  saved?: Pick<AgentSchedule, "enabled" | "consumed" | "nextRunAt">;
   onClose: () => void;
   onSave: (value: ScheduleDefinition) => Promise<void>;
 }) {
@@ -100,14 +104,29 @@ export function ScheduleFormDialog({
     }
     onClose();
   };
+  const candidate: ScheduleTiming =
+    timing.type === "once"
+      ? {
+          type: "once",
+          at:
+            initial.timing.type === "once" &&
+            onceAt === localDateTime(initial.timing.at)
+              ? initial.timing.at
+              : new Date(onceAt).getTime(),
+        }
+      : timing;
+  const timingChanged = !sameScheduleTiming(candidate, initial.timing);
+  const enabledAfterSave =
+    !saved ||
+    saved.enabled ||
+    (saved.consumed && candidate.type === "once" && timingChanged);
   let next: number | null = null;
   try {
-    next = nextScheduledTime(
-      timing.type === "once"
-        ? { type: "once", at: new Date(onceAt).getTime() }
-        : timing,
-      Date.now(),
-    );
+    if (enabledAfterSave)
+      next =
+        saved && !timingChanged
+          ? saved.nextRunAt
+          : nextScheduledTime(candidate, Date.now());
   } catch {
     /* inline validation on save */
   }
@@ -117,10 +136,7 @@ export function ScheduleFormDialog({
     try {
       const definition = validateSchedule({
         ...value,
-        timing:
-          timing.type === "once"
-            ? { type: "once", at: new Date(onceAt).getTime() }
-            : timing,
+        timing: candidate,
       });
       if (nextScheduledTime(definition.timing, Date.now()) === null)
         throw new Error("Choose a date and time in the future.");
@@ -376,6 +392,13 @@ export function ScheduleFormDialog({
               </span>
               {timing.type === "weekly" ? ` · ${timing.timezone}` : ""}. Starts
               within about a minute of the scheduled time.
+            </p>
+          )}
+          {!enabledAfterSave && (
+            <p className="text-xs text-muted-foreground">
+              {saved?.consumed && !timingChanged
+                ? "This one-time schedule already ran. Choose a new date and time to run it again."
+                : "This schedule will stay paused after saving. Resume it from the schedule menu to set its next run."}
             </p>
           )}
           {error && (

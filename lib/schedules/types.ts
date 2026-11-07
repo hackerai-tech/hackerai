@@ -17,6 +17,5 @@ export type AgentSchedule = {
 };
 export type SchedulesResponse = {
   enabled: boolean;
-  consumed: boolean;
   schedules: AgentSchedule[];
 };

@@ -15,6 +15,22 @@ export type ScheduleDefinition = {
 export const MIN_INTERVAL_MINUTES = 15;
 export const MAX_SCHEDULES = 20;
 
+/** Database object key order is not part of recurrence identity. */
+export function sameScheduleTiming(
+  a: ScheduleTiming,
+  b: ScheduleTiming,
+): boolean {
+  if (a.type === "once") return b.type === "once" && a.at === b.at;
+  if (a.type === "interval")
+    return b.type === "interval" && a.minutes === b.minutes;
+  return (
+    b.type === "weekly" &&
+    a.time === b.time &&
+    a.timezone === b.timezone &&
+    [...a.weekdays].sort().join() === [...b.weekdays].sort().join()
+  );
+}
+
 export function validateSchedule(input: unknown): ScheduleDefinition {
   if (!input || typeof input !== "object") throw new Error("Enter a schedule.");
   const value = input as Record<string, unknown>;

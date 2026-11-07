@@ -470,6 +470,14 @@ describe("durable schedules", () => {
   });
   it("retains normal task results when removing a schedule", async () => {
     const { ctx, id, tables } = await setup();
+    tables.schedule_runs.push(
+      ...Array.from({ length: 200 }, (_, i) => ({
+        _id: `removed-${i}`,
+        _creationTime: i,
+        schedule_id: id,
+      })),
+      { _id: "unrelated", _creationTime: 201, schedule_id: "another-schedule" },
+    );
     tables.chats.push({
       _id: "chat",
       _creationTime: 1,
@@ -479,12 +487,20 @@ describe("durable schedules", () => {
     await call(remove, ctx, { ...auth, id });
     expect(tables.agent_schedules).toHaveLength(0);
     expect(tables.chats).toHaveLength(1);
+    expect(tables.schedule_runs).toEqual([
+      expect.objectContaining({ _id: "unrelated" }),
+    ]);
   });
 });
 
 it("preserves the next interval when only instructions or name are edited", async () => {
   const { ctx, tables } = store();
   const id = await call(save, ctx, { ...auth, definition });
+  // Persisted Convex objects do not retain the input's property insertion order.
+  tables.agent_schedules[0].definition.timing = {
+    minutes: 15,
+    type: "interval",
+  };
   const due = tables.agent_schedules[0].next_run_at;
   jest.spyOn(Date, "now").mockReturnValue(due - 60000);
   try {

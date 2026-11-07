@@ -318,6 +318,9 @@ export function SchedulesPage() {
           key={form.id ?? "create"}
           initial={form.definition}
           editing={Boolean(form.id)}
+          saved={
+            form.id ? data?.schedules.find((s) => s.id === form.id) : undefined
+          }
           onClose={() => setForm(null)}
           onSave={async (definition) => {
             await perform(

@@ -14,6 +14,7 @@ import {
   MAX_SCHEDULES,
   nextScheduledTime,
   validateSchedule,
+  sameScheduleTiming,
 } from "../lib/schedules/recurrence";
 
 const auth = { serviceKey: v.string(), userId: v.string() };
@@ -129,9 +130,10 @@ export const save = mutation({
     if (next === null) throw new ConvexError("Choose a time in the future.");
     if (args.id) {
       const row = await owned(ctx, args.id, args.userId);
-      const sameTiming =
-        JSON.stringify(row.definition.timing) ===
-        JSON.stringify(definition.timing);
+      const sameTiming = sameScheduleTiming(
+        row.definition.timing,
+        definition.timing,
+      );
       const rearmed =
         row.consumed_at !== undefined &&
         definition.timing.type === "once" &&
