@@ -64,7 +64,7 @@ const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
-let mockSavedGoal: Record<string, unknown> | undefined;
+let mockSavedGoal: Record<string, unknown> | null | undefined;
 let mockLocalConnections:
   Array<{ connectionId: string; isDesktop: boolean }> | undefined;
 let mockChatHandlerArgs: Parameters<
@@ -552,7 +552,7 @@ describe("Chat Component Integration", () => {
     mockIsAtBottom = true;
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
-    mockSavedGoal = undefined;
+    mockSavedGoal = null;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1658,9 +1658,14 @@ describe("Chat Component Integration", () => {
         });
         render(
           <TestWrapper>
+            <RecoveryQueueProbe />
             <Chat autoResume={false} />
           </TestWrapper>,
         );
+        fireEvent.click(
+          screen.getByRole("button", { name: "Queue recovery draft" }),
+        );
+        expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
         const openDetails = () => {
           if (mobile) {
             fireEvent.click(
@@ -1695,6 +1700,7 @@ describe("Chat Component Integration", () => {
           "Use blue",
         );
         expect(screen.getByRole("alert")).toHaveTextContent("The goal changed");
+        expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
         expect(mockSendMessage).toHaveBeenCalledWith(
           expect.objectContaining({
             id: expect.any(String),
@@ -1963,6 +1969,50 @@ describe("Chat Component Integration", () => {
       mockSavedGoal = { ...mockSavedGoal, state: "achieved" };
       await act(async () => rerender(view()));
       await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
+    it("restores held queued messages only in their original chat after navigation", async () => {
+      mockRouteParams = { id: "held-chat" };
+      mockLocalConnections = [];
+      mockRestoredChat = {
+        id: "held-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockSavedGoal = {
+        state: "blocked",
+        generation: 4,
+        objective: "Wait",
+        criteria: ["Gate open"],
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      mockRouteParams = { id: "other-chat" };
+      mockRestoredChat = { ...mockRestoredChat, id: "other-chat" };
+      await act(async () => rerender(view()));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+      mockRouteParams = { id: "held-chat" };
+      mockRestoredChat = { ...mockRestoredChat, id: "held-chat" };
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockSavedGoal = undefined;
+      await act(async () => rerender(view()));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      mockSavedGoal = {
+        state: "blocked",
+        generation: 4,
+        objective: "Wait",
+        criteria: ["Gate open"],
+      };
+      await act(async () => rerender(view()));
+      expect(mockSendMessage).not.toHaveBeenCalled();
     });
 
     it("holds queued work after a wait clears until the resumed run finishes", async () => {

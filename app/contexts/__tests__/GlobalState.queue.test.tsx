@@ -45,4 +45,58 @@ describe("message queue admission", () => {
       "After clear",
     ]);
   });
+  it("isolates chat queues and applies delayed mutations to their original chat", async () => {
+    const { result } = renderHook(() => useGlobalState(), {
+      wrapper: GlobalStateProvider,
+    });
+    await act(async () => result.current.selectMessageQueue("a"));
+    let first: string | undefined;
+    await act(async () => {
+      first = result.current.queueMessage("A");
+    });
+    const finishA = result.current.removeQueuedMessage;
+    const enqueueA = result.current.queueMessage;
+    await act(async () => result.current.selectMessageQueue("b"));
+    expect(result.current.messageQueue).toEqual([]);
+    await act(async () => {
+      result.current.queueMessage("B");
+      finishA(first!);
+      enqueueA("A later");
+    });
+    expect(result.current.messageQueue.map((m) => m.text)).toEqual(["B"]);
+    await act(async () => result.current.selectMessageQueue("a"));
+    expect(result.current.messageQueue.map((m) => m.text)).toEqual(["A later"]);
+  });
+
+  it("never exposes another account's queue", async () => {
+    const auth = require("@workos-inc/authkit-nextjs/components").useAuth;
+    const original = auth();
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(
+      async () => ({ ok: true, json: async () => ({}) }) as Response,
+    );
+    const { result, rerender } = renderHook(() => useGlobalState(), {
+      wrapper: GlobalStateProvider,
+    });
+    try {
+      await act(async () => result.current.selectMessageQueue("same-chat"));
+      await act(async () => {
+        result.current.queueMessage("Private draft");
+      });
+      auth.mockReturnValue({
+        ...original,
+        user: { ...original.user, id: "other-account" },
+      });
+      rerender();
+      expect(result.current.messageQueue).toEqual([]);
+      auth.mockReturnValue(original);
+      rerender();
+      expect(result.current.messageQueue.map((m) => m.text)).toEqual([
+        "Private draft",
+      ]);
+    } finally {
+      auth.mockReturnValue(original);
+      global.fetch = originalFetch;
+    }
+  });
 });

@@ -570,6 +570,7 @@ test.each(["Confirmed: " + "r".repeat(230), "Confirmed: " + "\\".repeat(230)])(
     expect(text).toContain('"reply":"Confirmed: ');
     expect(text).toContain('"waitOutcome":"message_arrived"');
     expect(text).toContain('"questionsOmitted":true');
+    expect(text.length).toBeLessThanOrEqual(600);
     expect(
       sources.reduce((sum, source) => sum + source.text.length, 0),
     ).toBeLessThanOrEqual(12000);

@@ -132,6 +132,8 @@ interface GlobalStateType {
 
   // Message queue state (for Agent mode)
   messageQueue: QueuedMessage[];
+  queueChatId: string | null;
+  selectMessageQueue: (chatId: string) => void;
   queueMessage: (text: string, files?: FileMessagePart[]) => string | undefined;
   updateQueuedMessage: (id: string, text: string) => void;
   editingQueuedMessageId: string | null;
@@ -491,25 +493,33 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setHasUserDismissedRateLimitWarning,
   ] = useState(false);
 
-  // Message queue state (for Agent mode queueing)
-  const [messageQueue, setMessageQueueState] = useState<QueuedMessage[]>([]);
-  // Queue admission must be synchronous even when React batches submissions.
-  // Every queue mutation updates this snapshot before publishing UI state.
-  const messageQueueRef = useRef<QueuedMessage[]>([]);
+  // Keep held work with its account/chat across client-side navigation. This is
+  // session memory, not durable delivery; callbacks retain their original key.
+  const [queueChatId, setQueueChatId] = useState<string | null>(null);
+  const queueKey = JSON.stringify([user?.id ?? null, queueChatId]);
+  const queuesRef = useRef(new Map<string, QueuedMessage[]>());
+  const [, refreshQueues] = useState(0);
+  const messageQueue = queuesRef.current.get(queueKey) ?? [];
   const setMessageQueue = useCallback(
     (
       update: QueuedMessage[] | ((queue: QueuedMessage[]) => QueuedMessage[]),
     ) => {
-      const next =
-        typeof update === "function" ? update(messageQueueRef.current) : update;
-      messageQueueRef.current = next;
-      setMessageQueueState(next);
+      const current = queuesRef.current.get(queueKey) ?? [];
+      const next = typeof update === "function" ? update(current) : update;
+      if (next.length) queuesRef.current.set(queueKey, next);
+      else queuesRef.current.delete(queueKey);
+      refreshQueues((version) => version + 1);
     },
-    [],
+    [queueKey],
   );
   const [editingQueuedMessageId, setEditingQueuedMessageId] = useState<
     string | null
   >(null);
+
+  const selectMessageQueue = useCallback((chatId: string) => {
+    setQueueChatId(chatId);
+    setEditingQueuedMessageId(null);
+  }, []);
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
@@ -1182,7 +1192,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Message queue handlers
   const queueMessage = useCallback(
     (text: string, files?: FileMessagePart[]) => {
-      if (messageQueueRef.current.length >= 10) {
+      if ((queuesRef.current.get(queueKey)?.length ?? 0) >= 10) {
         toast.error("Queue is full", {
           description:
             "Please wait for queued messages to send before adding more.",
@@ -1199,7 +1209,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       setMessageQueue((prev) => [...prev, newMessage]);
       return id;
     },
-    [setMessageQueue],
+    [queueKey, setMessageQueue],
   );
 
   const removeQueuedMessage = useCallback(
@@ -1430,6 +1440,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setHasUserDismissedRateLimitWarning,
 
     messageQueue,
+    queueChatId,
+    selectMessageQueue,
     queueMessage,
     updateQueuedMessage,
     editingQueuedMessageId,

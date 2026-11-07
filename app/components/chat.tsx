@@ -587,7 +587,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     editingQueuedMessageId,
     removeQueuedMessage,
     setQueuedMessageDelivery,
-    clearQueue,
+    queueChatId,
+    selectMessageQueue,
     todos,
     sandboxPreference,
     setSandboxPreference,
@@ -2576,19 +2577,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useLatestRef(messageQueue);
-
-  // Clear queue when navigating to a different chat.
-  // Intentionally reads messageQueueRef at cleanup time (latest value).
-  useEffect(() => {
-    return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      if (messageQueueRef.current.length > 0) {
-        clearQueue();
-      }
-    };
-  }, [chatId, clearQueue, messageQueueRef]);
+  useLayoutEffect(() => {
+    selectMessageQueue(chatId);
+  }, [chatId, selectMessageQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
@@ -2697,6 +2688,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
+      queueChatId === chatId &&
+      (routeChatId ? routeChatId === chatId : !isExistingChat) &&
+      (!isExistingChat ||
+        (hasLoadedCurrentChat && persistedGoal !== undefined)) &&
       status === "ready" &&
       !hasPendingSummarySteer &&
       !hasPendingUserWait &&
@@ -2758,6 +2753,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     activeTriggerRunId,
     shouldUseAgentLong,
     messageQueue,
+    queueChatId,
+    routeChatId,
+    chatId,
+    isExistingChat,
+    hasLoadedCurrentChat,
+    persistedGoal,
     editingQueuedMessageId,
     computerSendDisabledReason,
     isProcessingQueue,
@@ -2901,7 +2902,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       )}
       eligible={chatMode === "agent" && subscription !== "free"}
       idle={
-        status === "ready" && !activeTriggerRunId && messageQueue.length === 0
+        status === "ready" &&
+        !activeTriggerRunId &&
+        (messageQueue.length === 0 ||
+          persistedGoal?.state === "blocked" ||
+          persistedGoal?.state === "needs_input")
       }
       disabledReason={computerSendDisabledReason}
       mobileAccessory={
