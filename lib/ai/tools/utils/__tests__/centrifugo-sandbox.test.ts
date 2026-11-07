@@ -4681,6 +4681,7 @@ describe("CentrifugoSandbox", () => {
         expect(checkpointCommandContext(error)).toEqual({
           command_stage: "detect_shell",
           command_exit_code: 2,
+          command_exit_code_shape: "exit_status",
         });
         expect(run).toHaveBeenCalledTimes(1);
         await expect(sandbox.detectShell()).resolves.toBe("cmd");
