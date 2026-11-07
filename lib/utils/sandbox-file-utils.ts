@@ -1299,7 +1299,13 @@ const summarizeSandboxUploadFailure = (
     kind: file.kind,
     phase,
     error: redactSandboxUploadError(file, error),
-    exitCode: extractCommandExitCode(error),
+    // Native terminal errors use -1 rather than a process exit status. Retain
+    // that sentinel in diagnostics without changing command retry parsing.
+    exitCode:
+      extractCommandExitCode(error) ??
+      (/^[ \t]*exitCode:[ \t]*-1[ \t\r]*$/im.test(errorMessage(error))
+        ? -1
+        : null),
     reason: classifySandboxUploadFailureReason(
       file,
       error,
