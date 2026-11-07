@@ -1,5 +1,30 @@
 import type { DesktopFileFailure } from "@/lib/centrifugo/desktop-file-errors";
 
+export type NativePathResolutionFailure =
+  | "missing_utility"
+  | "shell_syntax"
+  | "permission"
+  | "command_failed"
+  | "empty_output"
+  | "output_control"
+  | "non_absolute_output";
+
+export type NativePathReceiverMode =
+  `${"desktop" | "local" | "unknown"}_${"isolated" | "shared"}`;
+
+/** Retain only a finite conversion hint; the original public message is stable. */
+export class NativePathResolutionError extends Error {
+  constructor(
+    readonly failure: NativePathResolutionFailure,
+    readonly commandContext?: {
+      commandId?: string;
+      receiverMode: NativePathReceiverMode;
+    },
+  ) {
+    super("Failed to resolve the Windows file path through Git Bash");
+  }
+}
+
 export const LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE =
   "LOCAL_COMMAND_RELAY_UNSUBSCRIBED" as const;
 

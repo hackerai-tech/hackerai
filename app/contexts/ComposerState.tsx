@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,6 +12,10 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import {
+  isDraftGoalModeById,
+  setDraftGoalMode,
+} from "@/lib/utils/client-storage";
 
 type ComposerActions = {
   clearInput: () => void;
@@ -97,8 +102,12 @@ export function useComposerGoalMode(draftId: string) {
     );
   }
   const { setDraftId } = goal;
+  useLayoutEffect(() => {
+    if (isDraftGoalModeById(draftId)) setDraftId(draftId);
+  }, [draftId, setDraftId]);
   const setGoalMode = useCallback(
     (enabled: boolean) => {
+      setDraftGoalMode(draftId, enabled);
       setDraftId((current) =>
         enabled ? draftId : current === draftId ? null : current,
       );

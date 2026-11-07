@@ -1,5 +1,6 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
+import { getUnhandledRejectionDiagnostics } from "./unhandled-rejection-diagnostics";
 
 type PostHogEventLike = {
   event?: string;
@@ -371,12 +372,32 @@ function getBrowserNetworkDetails() {
   };
 }
 
+/** Match the SDK's unhandled non-Error shape without trusting its synthetic flag. */
+function isSdkNonErrorUnhandledRejection(properties: Record<string, unknown>) {
+  const list = properties.$exception_list;
+  if (!Array.isArray(list) || list.length !== 1) return false;
+  const exception = list[0];
+  return (
+    exception?.type === "UnhandledRejection" &&
+    typeof exception?.value === "string" &&
+    exception.value.startsWith(
+      "Non-Error promise rejection captured with value: ",
+    ) &&
+    exception?.mechanism?.handled === false
+  );
+}
+
+/** Enrich retained exceptions with bounded build and recent-context diagnostics. */
 export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event: T,
 ): T {
   if (event.event !== "$exception") return event;
 
-  const properties = event.properties ?? {};
+  const properties = { ...event.properties };
+  // Reprocessing an event must not carry another account's old observation.
+  for (const key of Object.keys(properties)) {
+    if (key.startsWith("hackerai_recent_rejection_")) delete properties[key];
+  }
   const strings = collectStrings(properties);
   const frameSources = collectStackFrameSources(properties);
   const category = getExceptionCategory(strings);
@@ -389,6 +410,9 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     hackerai_exception_category: category,
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()
+      : {}),
+    ...(isSdkNonErrorUnhandledRejection(properties)
+      ? getUnhandledRejectionDiagnostics()
       : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
       ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }

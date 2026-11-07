@@ -1,6 +1,7 @@
 import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
 import { useRef, RefObject, useEffect, useState } from "react";
 import { useMutation } from "convex/react";
+import { getConvexSize, type Value } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
@@ -10,6 +11,7 @@ import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_RESUME_ENDPOINT } from "@/lib/api/agent-endpoints";
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -44,11 +46,29 @@ import { isPastedTextAttachmentAvailableInMode } from "@/lib/utils/pasted-text-a
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
+} from "@/lib/analytics/client";
 import {
   prepareAgentCancellationTelemetry,
   type AgentCancellationAction,
 } from "@/lib/analytics/agent-cancellation";
+
+type StopCompactor =
+  typeof import("@/lib/chat/compaction/prune-tool-outputs").compactMessageForStorage;
+
+type StopSnapshot = {
+  parts: ChatMessage["parts"];
+  preparation?: "not_needed" | "measurement_failed";
+  diagnostics?: {
+    preparation_outcome: "compacted" | "unchanged" | "unavailable";
+    before_size_bytes: number;
+    after_size_bytes: number;
+    part_count: number;
+    pruned_count: number;
+  };
+};
 
 interface UseChatHandlersProps {
   goalState?: string;
@@ -187,6 +207,27 @@ export const useChatHandlers = ({
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
   const stopGenerationRef = useRef(0);
+  const stopCompactorRef = useRef<StopCompactor | undefined>(undefined);
+  const stopCompactorLoadingRef = useRef(false);
+  useEffect(() => {
+    if (
+      (status !== "submitted" && status !== "streaming") ||
+      stopCompactorRef.current ||
+      stopCompactorLoadingRef.current
+    )
+      return;
+    // Start the optional chunk while generating. Stop must never wait for its
+    // network load, including Ask where stream cancellation owns backend Stop.
+    stopCompactorLoadingRef.current = true;
+    void import("@/lib/chat/compaction/prune-tool-outputs")
+      .then(({ compactMessageForStorage }) => {
+        stopCompactorRef.current = compactMessageForStorage;
+      })
+      .catch(() => {})
+      .finally(() => {
+        stopCompactorLoadingRef.current = false;
+      });
+  }, [status]);
   const [sendNowReleaseVersion, setSendNowReleaseVersion] = useState(0);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
@@ -234,8 +275,56 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
-    sanitizeForConvexValue(parts) as ChatMessage["parts"];
+  /** Prepare storage-only parts without awaiting code needed by backend Stop. */
+  const getStopSnapshot = (message: ChatMessage): StopSnapshot => {
+    const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
+    try {
+      const beforeSizeBytes = getConvexSize(parts as Value);
+      if (beforeSizeBytes <= 850 * 1024)
+        return { parts, preparation: "not_needed" };
+      const diagnostics = {
+        before_size_bytes: beforeSizeBytes,
+        part_count: parts.length,
+      };
+      const compactor = stopCompactorRef.current;
+      if (compactor) {
+        try {
+          const compacted = compactor(
+            { ...message, parts },
+            { estimateSizeBytes: (value) => getConvexSize(value as Value) },
+          );
+          const savedParts = sanitizeForConvexValue(
+            compacted.message.parts,
+          ) as ChatMessage["parts"];
+          return {
+            parts: savedParts,
+            diagnostics: {
+              ...diagnostics,
+              preparation_outcome: compacted.compacted
+                ? "compacted"
+                : "unchanged",
+              after_size_bytes: getConvexSize(savedParts as Value),
+              pruned_count: compacted.prunedCount,
+            },
+          };
+        } catch {
+          // Keep the existing guarded save if optional preparation fails.
+        }
+      }
+      return {
+        parts,
+        diagnostics: {
+          ...diagnostics,
+          preparation_outcome: "unavailable",
+          after_size_bytes: beforeSizeBytes,
+          pruned_count: 0,
+        },
+      };
+    } catch {
+      // Preserve valid sanitized values and the server's document guard.
+      return { parts, preparation: "measurement_failed" };
+    }
+  };
 
   // A persisted active run takes precedence over the current UI mode. This
   // matters while restoring an approval before mode initialization completes.
@@ -445,24 +534,81 @@ export const useChatHandlers = ({
       setMessages(stoppedMessages);
     }
 
-    // Run cancel and save in parallel - they're independent operations
     const lastMessage = stoppedMessages[stoppedMessages.length - 1];
-    const savePromise =
+    const snapshot =
       !options?.skipSave && lastMessage?.role === "assistant"
+        ? getStopSnapshot(lastMessage)
+        : undefined;
+    let snapshotDedupeKey: string | undefined;
+    /** SDK acknowledgment can deduplicate; it does not prove these exact parts were inserted. */
+    const recordSaveOutcome = (
+      outcome: "acknowledged" | "rejected",
+      error?: unknown,
+    ) => {
+      if (!snapshot || (outcome === "acknowledged" && !snapshot.diagnostics))
+        return;
+      try {
+        snapshotDedupeKey ??= uuidv4();
+        const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        const requestId =
+          outcome === "rejected" && error instanceof Error
+            ? error.message
+                .slice(0, 512)
+                .match(
+                  /^\[CONVEX M\(messages:saveAssistantMessage\)\] \[Request ID: ([a-f0-9]{16})\]/,
+                )?.[1]
+            : undefined;
+        // One event per oversized or rejected Stop attempt. SDK acknowledgment may be an
+        // idempotent no-op; it does not prove these exact parts were inserted.
+        captureQueuedAuthenticatedEvent({
+          event: "chat_stop_snapshot_save_outcome",
+          dedupeKey: snapshotDedupeKey,
+          properties: {
+            diagnostic_version: 1,
+            ...(snapshot.diagnostics ?? {
+              preparation_outcome: snapshot.preparation,
+            }),
+            save_outcome: outcome,
+            ...(outcome === "rejected" && {
+              save_error_code:
+                getConvexErrorCode(error) === "MESSAGE_TOO_LARGE"
+                  ? "message_too_large"
+                  : "other",
+              ...(requestId && { convex_request_id: requestId }),
+            }),
+            frontend_build_commit:
+              build && /^[a-f0-9]{40}$/i.test(build)
+                ? build.toLowerCase()
+                : "unknown",
+          },
+        });
+      } catch {
+        // Diagnostic delivery cannot change a save or cancellation outcome.
+      }
+    };
+    // Preserve insert-before-cancel ordering: the backend's abort save can be
+    // update-only and needs the client snapshot to exist before it patches it.
+    const savePromise =
+      snapshot !== undefined && lastMessage?.role === "assistant"
         ? saveAssistantMessage({
             id: lastMessage.id,
             chatId,
             role: lastMessage.role,
-            parts: getConvexSafeParts(lastMessage.parts),
+            parts: snapshot.parts,
             mode: lastMessage.metadata?.mode ?? chatModeRef.current,
             generationStartedAt,
             generationTimeMs,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-            if (options?.requireSaveSuccess) throw error;
           })
+            .then((value) => {
+              recordSaveOutcome("acknowledged");
+              return value;
+            })
+            .catch((error) => {
+              recordSaveOutcome("rejected", error);
+              console.error("Failed to save message on stop:", error);
+              if (options?.requireSaveSuccess) throw error;
+            })
         : Promise.resolve();
-
     const cancelPromise = cancelStreamMutation({
       chatId,
       skipSave: options?.skipSave || undefined,
@@ -1015,12 +1161,16 @@ export const useChatHandlers = ({
           outgoingOptions,
         );
       } catch (error) {
-        if (!(error instanceof Error && error.name === "AbortError"))
-          toast.error(
-            error instanceof Error
-              ? error.message
-              : "Goal could not start. Your draft is saved.",
-          );
+        if (
+          error instanceof GoalSubmissionUnconfirmedError ||
+          (error instanceof Error && error.name === "AbortError")
+        )
+          throw error;
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Goal could not start. Your draft is saved.",
+        );
         return false;
       }
     } else {

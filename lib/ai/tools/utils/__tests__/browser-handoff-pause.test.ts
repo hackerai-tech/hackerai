@@ -4,6 +4,7 @@ import {
 } from "@/lib/utils/error-utils";
 import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import type { AnySandbox } from "@/types";
+import { getFunctionName } from "convex/server";
 import { createBrowserHandoff } from "../../browser-handoff";
 import {
   BROWSER_SESSION_MAX_LIFETIME_MS,
@@ -550,4 +551,161 @@ it("keeps Stop separate from a later rejected browser safety read", async () => 
   await jest.advanceTimersByTimeAsync(0);
   expect(extractErrorDetails(reason).errorOrigin).toBeUndefined();
   expect(mockQuery).toHaveBeenCalledTimes(1);
+});
+
+describe("browser read summaries", () => {
+  let info: jest.SpyInstance;
+  beforeEach(() => {
+    info = jest.spyOn(console, "info").mockImplementation(() => {});
+  });
+  afterEach(() => info.mockRestore());
+
+  const summaries = () =>
+    info.mock.calls.flatMap(([line]) => {
+      if (typeof line !== "string" || !line.startsWith("{")) return [];
+      const value = JSON.parse(line);
+      return value.event === "browser_handoff_read_summary" ? [value] : [];
+    });
+
+  it("counts logical reads at every browser boundary once without logging private data", async () => {
+    const { sessions, run } = await owner();
+    const notes = [{ id: "note-id", text: "private handoff instructions" }];
+    mockQuery.mockImplementation(async (reference) =>
+      getFunctionName(reference).endsWith("getExitNotesForBackend")
+        ? notes
+        : { state: "agent", runActive: true, updatedAt: 123 },
+    );
+    run.mockResolvedValue({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        success: true,
+        data: { connected: true, port: 9223 },
+      }),
+    });
+    await expect(sessions.canRecoverHumanHandoff()).resolves.toBe(true);
+    await sessions.waitForHumanHandoff();
+    const execute = jest.fn(async () => "done");
+    const guarded = sessions.guardTools({ command: { execute } } as any);
+    await expect(
+      guarded.command.execute!({}, { toolCallId: "tool", messages: [] } as any),
+    ).resolves.toBe("done");
+    await expect(sessions.getExitNotes()).resolves.toEqual(notes);
+    await sessions.cleanup();
+    await sessions.cleanup();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(summaries()).toEqual([
+      {
+        event: "browser_handoff_read_summary",
+        trigger_run_id: "run",
+        agent_id: "parent",
+        summary_phase: "cleanup_start",
+        counts_unit: "logical_query",
+        state_read_calls: 4,
+        state_read_succeeded: 4,
+        state_read_rejected: 0,
+        state_read_pending: 0,
+        note_read_calls: 1,
+        note_read_succeeded: 1,
+        note_read_rejected: 0,
+        note_read_pending: 0,
+      },
+    ]);
+  });
+
+  it("preserves a failed ownership read and never admits the queued tool", async () => {
+    const { sessions } = await owner();
+    const failure = Object.freeze(new TypeError("private transport detail"));
+    mockQuery.mockRejectedValue(failure);
+    const execute = jest.fn();
+    const guarded = sessions.guardTools({ command: { execute } } as any);
+    await expect(
+      guarded.command.execute!({}, { toolCallId: "tool", messages: [] } as any),
+    ).rejects.toBe(failure);
+    await sessions.cleanup();
+    expect(execute).not.toHaveBeenCalled();
+    expect(summaries()).toHaveLength(1);
+    expect(summaries()[0]).toMatchObject({
+      state_read_calls: 1,
+      state_read_succeeded: 0,
+      state_read_rejected: 1,
+      state_read_pending: 0,
+    });
+    expect(JSON.stringify(summaries())).not.toContain(
+      "private transport detail",
+    );
+  });
+
+  it("keeps a detached read pending in the cleanup snapshot after Stop", async () => {
+    const { sessions } = await owner();
+    let settle!: (value: unknown) => void;
+    mockQuery.mockReturnValue(new Promise((resolve) => (settle = resolve)));
+    const stop = new AbortController();
+    const reason = new Error("Stopped by user");
+    const pending = sessions.waitForAgentControl(stop.signal);
+    stop.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    await sessions.cleanup();
+    expect(summaries()).toHaveLength(1);
+    expect(summaries()[0]).toMatchObject({
+      state_read_calls: 1,
+      state_read_succeeded: 0,
+      state_read_rejected: 0,
+      state_read_pending: 1,
+    });
+    settle({ state: "agent", runActive: true });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(summaries()).toHaveLength(1);
+    expect(summaries()[0].state_read_pending).toBe(1);
+  });
+
+  it("does not emit summaries for unused or unscoped browser factories", async () => {
+    const { sessions } = await owner();
+    await sessions.cleanup();
+    const unscoped = new BrowserSessions();
+    await expect(unscoped.getExitNotes()).resolves.toEqual([]);
+    await unscoped.cleanup();
+    expect(summaries()).toEqual([]);
+  });
+
+  it("contains logging failures so they cannot replace browser cleanup", async () => {
+    const { sessions } = await owner();
+    mockQuery.mockResolvedValue({ state: "agent", runActive: true });
+    await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+    info.mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    await expect(sessions.cleanup()).resolves.toBeUndefined();
+  });
+
+  it.each([
+    { runId: "private URL?token=secret", agentId: "a".repeat(129) },
+    { runId: "prefix-private-service-key", agentId: "private-service-key" },
+  ])(
+    "bounds correlation identifiers and omits credentials and user context: %j",
+    async ({ runId, agentId }) => {
+      const sessions = new BrowserSessions({
+        userId: "private-user",
+        chatId: "private-chat",
+        runId,
+        agentId,
+        serviceKey: "private-service-key",
+      });
+      await sessions.prepare({
+        sandboxId: "test",
+        commands: {
+          run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+        },
+      } as unknown as AnySandbox);
+      mockQuery.mockResolvedValue({ state: "agent", runActive: true });
+      await sessions.waitForAgentControl();
+      await sessions.cleanup();
+      expect(summaries()).toHaveLength(1);
+      expect(summaries()[0]).toMatchObject({
+        trigger_run_id: "unknown",
+        agent_id: "unknown",
+      });
+      expect(JSON.stringify(summaries())).not.toMatch(/private|secret|a{129}/);
+    },
+  );
 });

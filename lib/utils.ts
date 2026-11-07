@@ -68,7 +68,9 @@ export async function fetchWithErrorHandlers(
         errorRecord?.metadata && typeof errorRecord.metadata === "object"
           ? (errorRecord.metadata as Record<string, unknown>)
           : undefined;
-      throw new ChatSDKError(code, cause, metadata);
+      const error = new ChatSDKError(code, cause, metadata);
+      error.statusCode = response.status;
+      throw error;
     }
 
     return response;

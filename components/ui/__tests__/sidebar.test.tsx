@@ -80,7 +80,7 @@ describe("SidebarProvider", () => {
       </SidebarProvider>,
     );
 
-    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true, shiftKey: true });
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -100,7 +100,7 @@ describe("SidebarProvider", () => {
       </SidebarProvider>,
     );
 
-    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true, shiftKey: true });
 
     expect(onOpenChange).toHaveBeenCalledWith(true);
     expect(mainSidebarStorage.save).not.toHaveBeenCalled();

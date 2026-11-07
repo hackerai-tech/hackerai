@@ -42,8 +42,31 @@ jobs:
       - name: Test sandbox decoder package integrity
         run: python3 -B -m unittest discover -s docker -p 'test_brotli.py' -v
 
+      - name: Test sandbox scanner archive integrity
+        run: python3 -B -m unittest discover -s docker -p 'test_trivy.py' -v
+
+      - name: Verify native Linux scanner release and offline finding
+        run: |
+          sudo sh docker/install_trivy.sh
+          fixture=$(mktemp -d)
+          trap 'rm -rf "$fixture"' EXIT
+          printf 'FROM alpine:3.20\nUSER root\n' > "$fixture/Dockerfile"
+          sudo unshare --net /usr/local/bin/trivy config --skip-check-update --disable-telemetry --skip-version-check --format json --output "$fixture/result.json" "$fixture"
+          python3 - "$fixture/result.json" <<'PYTHON'
+          import json, sys
+          with open(sys.argv[1]) as report:
+              data = json.load(report)
+          findings = [item["ID"] for result in data.get("Results", [])
+                      for item in result.get("Misconfigurations", [])]
+          assert "DS-0002" in findings, findings
+          print("Verified scanner detects root-user fixture without network access")
+          PYTHON
+
       - name: Type check
         run: pnpm typecheck
+
+      - name: Verify build compiler isolation and failure gate
+        run: node --test scripts/build.test.mjs
 
       - name: Test Linux AppImage child library isolation
         run: |

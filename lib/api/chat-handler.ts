@@ -218,6 +218,7 @@ import {
   isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import {
+  requireChatId,
   requireChatMessagesArray,
   requireOptionalIdentifier,
   requireRetiredTemporaryFieldAbsent,
@@ -324,7 +325,7 @@ export const createChatHandler = () => {
         messages,
         mode: rawMode,
         todos,
-        chatId,
+        chatId: rawChatId,
         regenerate,
         sandboxPreference,
         selectedModel: rawSelectedModel,
@@ -336,7 +337,7 @@ export const createChatHandler = () => {
       } = rawRequestBody as {
         messages: unknown;
         mode: unknown;
-        chatId: string;
+        chatId: unknown;
         todos?: Todo[];
         regenerate?: boolean;
         sandboxPreference?: SandboxPreference;
@@ -348,6 +349,7 @@ export const createChatHandler = () => {
         projectId?: unknown;
       };
       const mode = requireVercelChatMode(rawMode);
+      const chatId = requireChatId(rawChatId);
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",

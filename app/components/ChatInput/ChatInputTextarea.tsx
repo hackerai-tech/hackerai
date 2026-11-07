@@ -10,6 +10,7 @@ import {
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   getDraftContentById,
+  isDraftGoalModeById,
   hasDraftAttachmentsById,
   upsertDraft,
   removeDraft,
@@ -151,7 +152,10 @@ export function ChatInputTextarea({
     if (input !== getInput()) return;
     if (input.trim()) {
       upsertDraft(draftId, input);
-    } else if (hasDraftAttachmentsById(draftId)) {
+    } else if (
+      hasDraftAttachmentsById(draftId) ||
+      isDraftGoalModeById(draftId)
+    ) {
       upsertDraft(draftId, "");
     } else {
       removeDraft(draftId);

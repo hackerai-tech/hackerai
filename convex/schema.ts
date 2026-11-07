@@ -993,6 +993,7 @@ export default defineSchema({
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
     // A saved product preference, not consent or eligibility for a data export.
+    predictions_enabled: v.optional(v.boolean()),
     model_improvement_enabled: v.optional(v.boolean()),
     model_improvement_updated_at: v.optional(v.number()),
     // Legacy MAX Mode flag retained on historical rows. The feature was

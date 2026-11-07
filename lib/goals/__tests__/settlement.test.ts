@@ -6,9 +6,6 @@ jest.mock("@/lib/suspensions", () => ({
   assertUserCanMakeCostIncurringRequest: jest.fn(),
 }));
 jest.mock("@/app/posthog", () => ({ __esModule: true, default: jest.fn() }));
-jest.mock("@/lib/posthog/flag-assignment", () => ({
-  getPostHogFlagWithoutExposure: jest.fn(),
-}));
 jest.mock("../analytics", () => ({ captureGoalLifecycle: jest.fn() }));
 import { getConvexClient } from "@/lib/db/convex-client";
 import { finishGoalRun } from "../server";

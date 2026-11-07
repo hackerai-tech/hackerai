@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "09536cf1481731c790995bd8060db19a3b75ff48",
+  "sourceCommit": "06015506625a78b981ae0b34be40239fc1b389be",
   "license": "Apache-2.0",
   "markdownFileCount": 63,
   "selectableSkillCount": 52,
@@ -61,7 +61,7 @@
     "vulnerabilities/prototype_pollution.md": "06e0b2da334bb6a5faf9126653968905e9cfe17b667f98c1fe859febbac3e4d8",
     "vulnerabilities/race_conditions.md": "cbf58b3849b91e285f614fe3f2cb080bda6afad1a8847645a533cce9403cab0b",
     "vulnerabilities/rce.md": "e248a37c186dc2804f2ef6279713f678aca2224d85549e8ba2094b2fc2506df3",
-    "vulnerabilities/semantic_confusion.md": "5b3ebda3fdb48993b3f2cc5afb797343948b44fac4e5cd23b8e00a0712660f38",
+    "vulnerabilities/semantic_confusion.md": "8d56e4ef328f02ea5336336c19463c633fc5a8a19c0bc6a80826138f84dd0a6e",
     "vulnerabilities/sql_injection.md": "c39e057acccca4f858c425856f6a493c305575086d535059b4a13ebdfbe8f4a0",
     "vulnerabilities/ssrf.md": "5f1f8e228967b0986978fddd119bb50fa4792cfb970c1d3bff9ab2c480b5859a",
     "vulnerabilities/ssti.md": "870f1761369956e06cdc4699df02b2e4c163feff85fea88411475df77f5ab9df",

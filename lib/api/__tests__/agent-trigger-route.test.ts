@@ -38,13 +38,13 @@ const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
 const mockGoalMutation = jest.fn<any>();
+const mockReconcileGoal = jest.fn<any>().mockResolvedValue(null);
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation: mockGoalMutation }),
 }));
 jest.mock("@/lib/goals/server", () => ({
-  goalEnabled: async () => true,
   goalServiceKey: () => "synthetic",
-  reconcileGoal: async () => null,
+  reconcileGoal: mockReconcileGoal,
 }));
 const mockSandboxContext = jest.fn<any>();
 const mockSandboxClose = jest.fn<any>();
@@ -215,6 +215,153 @@ describe("web request correlation at Agent dispatch", () => {
         ...body,
       }),
     } as any);
+
+  it.each([
+    ["/api/agent", false],
+    ["/api/agent-long", false],
+    ["/api/agent", true],
+    ["/api/agent-long", true],
+  ] as const)(
+    "bounds goal read recovery in %s (exhausted=%s) without repeating persistence or dispatch",
+    async (endpoint, exhausted) => {
+      const { createServiceFetch } =
+        require("@/lib/db/service-client") as typeof import("@/lib/db/service-client");
+      const { Response: FetchResponse } = jest.requireActual<any>(
+        "next/dist/compiled/@edge-runtime/primitives/fetch",
+      );
+      const nativeAbort = require("node:util").transferableAbortController();
+      const originals = Object.fromEntries(
+        ["Response", "AbortController", "AbortSignal"].map((name) => [
+          name,
+          Object.getOwnPropertyDescriptor(globalThis, name)!,
+        ]),
+      );
+      for (const [name, value] of Object.entries({
+        Response: FetchResponse,
+        AbortController: nativeAbort.constructor,
+        AbortSignal: nativeAbort.signal.constructor,
+      }))
+        Object.defineProperty(globalThis, name, {
+          value,
+          configurable: true,
+          writable: true,
+        });
+      const transport = jest
+        .fn<typeof fetch>()
+        .mockRejectedValueOnce(
+          new TypeError("fetch failed", {
+            cause: Object.assign(new Error("read reset"), {
+              code: "ECONNRESET",
+            }),
+          }),
+        )
+        .mockImplementation(async () => {
+          if (exhausted)
+            throw new TypeError("fetch failed", {
+              cause: Object.assign(new Error("read reset"), {
+                code: "ECONNRESET",
+              }),
+            });
+          return new FetchResponse(
+            '{"status":"success","value":null,"logLines":[]}',
+          );
+        });
+      const read = createServiceFetch(
+        "https://fixture.convex.cloud",
+        transport,
+      );
+      getChatById.mockResolvedValue({ id: "chat-1", user_id: "user-1" });
+      mockReconcileGoal.mockImplementationOnce(async () => {
+        await read("https://fixture.convex.cloud/api/query", {
+          method: "POST",
+          body: JSON.stringify({
+            path: "agentGoals:getForBackend",
+            format: "convex_encoded_json",
+            args: [{}],
+          }),
+        });
+        return null;
+      });
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const response = await start(endpoint, "full_access", requestId);
+        expect(response.status).toBe(exhausted ? 500 : 200);
+        expect(transport).toHaveBeenCalledTimes(2);
+        expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledTimes(
+          exhausted ? 0 : 1,
+        );
+        expect(mockTriggerTask).toHaveBeenCalledTimes(exhausted ? 0 : 1);
+      } finally {
+        for (const [name, descriptor] of Object.entries(originals))
+          Object.defineProperty(globalThis, name, descriptor);
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["/api/agent", undefined],
+    ["/api/agent", null],
+    ["/api/agent", {}],
+    ["/api/agent-long", undefined],
+    ["/api/agent-long", null],
+    ["/api/agent-long", {}],
+  ] as const)(
+    "rejects malformed message parts at %s before persistence or dispatch (%j)",
+    async (endpoint, parts) => {
+      const response = await start(endpoint, "full_access", requestId, {
+        messages: [{ id: "message-1", role: "user", parts }],
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockGetUserIDAndPro).not.toHaveBeenCalled();
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, { id: "earlier-message", role: "assistant" }])(
+    "rejects malformed earlier messages even when the last message is valid (%j)",
+    async (earlierMessage) => {
+      const response = await start("/api/agent", "full_access", requestId, {
+        messages: [
+          earlierMessage,
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "Valid request" }],
+          },
+        ],
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves valid history and empty parts arrays", async () => {
+    const messages = [
+      {
+        id: "earlier-message",
+        role: "assistant",
+        parts: [{ type: "text", text: "Previous response" }],
+      },
+      { id: "message-1", role: "user", parts: [] },
+    ];
+
+    const response = await start("/api/agent", "full_access", requestId, {
+      messages,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ messages }),
+    );
+  });
 
   it.each(dispatchPaths)(
     "routes %s %s to the existing workspace before dispatch",

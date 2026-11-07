@@ -1,4 +1,9 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  BrowserPreviewUnavailable,
+  getActiveBrowserSessionName,
+} from "@/lib/ai/browser-handoff/server";
 
 const mockStartRelay = jest.fn(async () => {
   if (mockFailure === "relay-start") throw new Error("Relay startup failed");
@@ -8,9 +13,11 @@ const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
 const mockRenewRelay = jest.fn(async (..._args: unknown[]) => undefined);
-const mockCapture = jest.fn(async () => {
+const mockCapture = jest.fn(async (..._args: unknown[]) => {
   if (mockFailure === "capture" || mockFailure === "unpause")
-    throw new Error("Capture failed");
+    throw new Error(
+      "PRIVATE capture failed: https://private.invalid/?token=PRIVATE_TOKEN",
+    );
   return { image: "fresh" };
 });
 const mockResize = jest.fn(async (..._args: unknown[]) => ({
@@ -71,8 +78,13 @@ jest.mock("@/lib/db/convex-client", () => ({
     query: async () => {
       if (mockFailure === "lookup")
         throw new Error("Backend lookup unavailable");
+      if (mockFailure === "missing") return null;
       return {
         sessionId: mockSessionId,
+        runId: `run_${"a".repeat(26)}`,
+        chatId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        directory: "/PRIVATE_BROWSER_DIRECTORY",
+        grant: "PRIVATE_GRANT",
         state: mockState,
         runActive: mockRunActive,
         controlledSessionName: "default",
@@ -82,7 +94,7 @@ jest.mock("@/lib/db/convex-client", () => ({
   }),
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { event: jest.fn(), flush: jest.fn() },
+  phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
   BrowserPreviewUnavailable: class extends Error {
@@ -95,21 +107,28 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   startBrowserRelay: () => mockStartRelay(),
   renewBrowserRelay: (...args: unknown[]) => mockRenewRelay(...args),
   stopBrowserRelays: () => mockStopRelay(),
-  connectBrowserSandbox: async () => ({}),
-  getActiveBrowserSessionName: async () =>
-    mockFailure === "identity" ? "another-browser" : "default",
+  connectBrowserSandbox: async () => {
+    if (mockFailure === "connect") throw new Error("PRIVATE sandbox");
+    return {};
+  },
+  getActiveBrowserSessionName: jest.fn(async () => {
+    if (mockFailure === "read-active")
+      throw new BrowserPreviewUnavailable("loading");
+    return mockFailure === "identity" ? "another-browser" : "default";
+  }),
   setAgentBrowserPaused: (...args: Parameters<typeof mockPause>) =>
     mockPause(...args),
-  captureBrowserFrame: () => mockCapture(),
+  captureBrowserFrame: (...args: unknown[]) => mockCapture(...args),
   getPrivateStreamPort: async () => 1234,
 }));
 
 let post: typeof import("../route").POST;
+let get: typeof import("../route").GET;
 beforeAll(async () => {
   const original = process.env.CONVEX_SERVICE_ROLE_KEY;
   process.env.CONVEX_SERVICE_ROLE_KEY = "test-only-service-key";
   try {
-    post = (await import("../route")).POST;
+    ({ POST: post, GET: get } = await import("../route"));
   } finally {
     if (original === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
     else process.env.CONVEX_SERVICE_ROLE_KEY = original;
@@ -130,6 +149,196 @@ const jsonBody = (value: unknown) =>
       controller.close();
     },
   });
+
+const preview = (
+  fresh: boolean,
+  requestId = "iad1::qa123-1794060000000-abcdef123456",
+) =>
+  get(
+    {
+      headers: new Headers({
+        "x-vercel-id": requestId,
+      }),
+      nextUrl: new URL(
+        `https://preview.example/api/agent/browser/test${fresh ? "?fresh=1" : ""}`,
+      ),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it.each([false, true])(
+  "honors an authenticated fresh screenshot request (fresh: %s)",
+  async (fresh) => {
+    mockFailure = "";
+    mockState = "human";
+    const result = await preview(fresh);
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ frame: { image: "fresh" } });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "default",
+      fresh,
+      undefined,
+      expect.any(Function),
+    );
+  },
+);
+
+it.each([
+  ["auth", 401],
+  ["identity", 409],
+  ["missing", 404],
+])(
+  "does not capture a fresh screenshot after %s validation fails",
+  async (failure, status) => {
+    mockFailure = String(failure);
+    mockState = "human";
+    expect((await preview(true)).status).toBe(status);
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(phLogger.info).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["lookup", "resolve_session", "disconnected"],
+  ["connect", "connect_sandbox", "disconnected"],
+  ["read-active", "read_active_session", "loading"],
+  ["capture", "capture_frame", "disconnected"],
+])(
+  "records one bounded GET diagnostic for %s without changing the response",
+  async (failure, stage, state) => {
+    mockFailure = failure;
+    const response = await preview(true);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({
+        diagnostic_version: 1,
+        failure_stage: stage,
+        preview_state: state,
+        browser_session_id: mockSessionId,
+        fresh_requested: true,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+      }),
+    );
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    if (failure === "lookup")
+      expect(fields).not.toHaveProperty("trigger_run_id");
+    else
+      expect(fields).toMatchObject({
+        trigger_run_id: `run_${"a".repeat(26)}`,
+        run_active: true,
+        handoff_state: "recovery",
+      });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+it("attributes verification failure without replaying a successful capture", async () => {
+  mockFailure = "";
+  mockRunActive = false;
+  jest
+    .mocked(getActiveBrowserSessionName)
+    .mockResolvedValueOnce("default")
+    .mockRejectedValueOnce(new Error("PRIVATE verification"));
+  const response = await preview(false);
+  expect(response.status).toBe(503);
+  expect(mockCapture).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_get_unavailable",
+    expect.objectContaining({
+      failure_stage: "verify_active_session",
+      preview_state: "disconnected",
+      run_active: false,
+    }),
+  );
+});
+
+it("does not add a failure diagnostic to an already closed browser", async () => {
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
+  expect((await preview(false)).status).toBe(410);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["PRIVATE_BUILD", "unknown"],
+  ["A".repeat(40), "a".repeat(40)],
+])("bounds correlation fields for build %s", async (build, expectedBuild) => {
+  const prior = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = build;
+  try {
+    expect(
+      (await preview(true, "PRIVATE_HEADER?token=PRIVATE_TOKEN")).status,
+    ).toBe(503);
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(fields).not.toHaveProperty("request_id");
+    expect(fields).toMatchObject({ web_build_commit: expectedBuild });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  } finally {
+    if (prior === undefined)
+      delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = prior;
+  }
+});
+
+it("keeps a successful frame when optional diagnostics are unavailable", async () => {
+  mockFailure = "";
+  expect((await preview(false)).status).toBe(200);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it("contains asynchronous diagnostic delivery failure after the response", async () => {
+  const response = await preview(false);
+  expect(response.status).toBe(503);
+  const callback = jest.mocked(after).mock.calls[0][0];
+  expect(typeof callback).toBe("function");
+  jest
+    .mocked(phLogger.flush)
+    .mockRejectedValueOnce(new Error("PRIVATE transport"));
+  if (typeof callback === "function")
+    await expect(callback()).resolves.toBeUndefined();
+});
+
+it("preserves a capture failure response when logging throws", async () => {
+  jest.mocked(phLogger.info).mockImplementationOnce(() => {
+    throw new Error("PRIVATE logging failure");
+  });
+  const result = await preview(false);
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+});
+
+it("adds capture suboperation context to the single existing GET failure event", async () => {
+  mockCapture.mockImplementationOnce(async (...args: unknown[]) => {
+    const observe = args[5] as (context: unknown) => void;
+    observe({
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+    });
+    throw new Error("PRIVATE frame stream");
+  });
+  const result = await preview(false);
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_get_unavailable",
+    expect.objectContaining({
+      failure_stage: "capture_frame",
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+    }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+});
 
 const take = () =>
   post(

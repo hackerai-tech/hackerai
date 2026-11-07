@@ -4,6 +4,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
 import { useEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
+import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
 import {
   enrichFrontendExceptionEvent,
   sanitizeFrontendExceptionUrlProperties,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/analytics/acquisition";
 
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
+import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
@@ -57,6 +59,7 @@ function isEnglishLocale(locale: string | null | undefined) {
   }
 }
 
+/** Configure consent-gated analytics and clean up per-account observers. */
 export function PostHogProvider({
   analyticsAllowed,
   children,
@@ -120,6 +123,7 @@ export function PostHogProvider({
     }
 
     let cancelled = false;
+    let stopRejectionDiagnostics: (() => void) | undefined;
 
     void loadPostHogClient()
       .then((posthog) => {
@@ -161,7 +165,9 @@ export function PostHogProvider({
               sanitizeChatPerformanceEvent(
                 sanitizeDesktopAckEvent(
                   sanitizeAgentCancellationEvent(
-                    sanitizeFrontendExceptionUrlProperties(event),
+                    sanitizeDiffViewEvent(
+                      sanitizeFrontendExceptionUrlProperties(event),
+                    ),
                   ),
                 ),
               ),
@@ -253,6 +259,7 @@ export function PostHogProvider({
         }
 
         confirmAuthenticatedAnalyticsUserId(userId!);
+        stopRejectionDiagnostics = startUnhandledRejectionDiagnostics();
         if (!referralHandled.current) {
           referralHandled.current = captureXReferralVisit(posthog);
         }
@@ -277,6 +284,7 @@ export function PostHogProvider({
 
     return () => {
       cancelled = true;
+      stopRejectionDiagnostics?.();
     };
   }, [
     analyticsAllowed,

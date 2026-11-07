@@ -36,6 +36,11 @@ type BrowserHandoffScope = {
   serviceKey: string;
 };
 
+const diagnosticId = (value: string, secret: string) =>
+  /^[A-Za-z0-9:_-]{1,128}$/.test(value) && (!secret || !value.includes(secret))
+    ? value
+    : "unknown";
+
 // Convex HTTP reads can outlive Stop; detach the waiter without admitting work.
 function withCancellation<T>(
   work: Promise<T>,
@@ -66,6 +71,10 @@ export class BrowserSessions {
   private connectedTargetSelected = false;
   private closed = false;
   private cleanupPromise?: Promise<void>;
+  private readonly readCounts = {
+    state: { calls: 0, succeeded: 0, rejected: 0 },
+    notes: { calls: 0, succeeded: 0, rejected: 0 },
+  };
 
   constructor(
     private readonly handoffScope?: BrowserHandoffScope,
@@ -76,6 +85,57 @@ export class BrowserSessions {
       enabled: () => Promise<boolean>;
     },
   ) {}
+
+  private async observeRead<T>(
+    kind: "state" | "notes",
+    read: () => Promise<T>,
+  ): Promise<T> {
+    const counts = this.readCounts[kind];
+    counts.calls++;
+    try {
+      const result = await read();
+      counts.succeeded++;
+      return result;
+    } catch (error) {
+      counts.rejected++;
+      throw error;
+    }
+  }
+
+  private reportReadSummary() {
+    const { state, notes } = this.readCounts;
+    if (!this.handoffScope || state.calls + notes.calls === 0) return;
+    try {
+      // One snapshot per used owner. SDK retries are inside each logical read;
+      // fulfilled reads do not establish control admission or customer recovery.
+      // Stop can detach a pending read, which may settle after this snapshot.
+      console.info(
+        JSON.stringify({
+          event: "browser_handoff_read_summary",
+          trigger_run_id: diagnosticId(
+            this.handoffScope.runId,
+            this.handoffScope.serviceKey,
+          ),
+          agent_id: diagnosticId(
+            this.handoffScope.agentId,
+            this.handoffScope.serviceKey,
+          ),
+          summary_phase: "cleanup_start",
+          counts_unit: "logical_query",
+          state_read_calls: state.calls,
+          state_read_succeeded: state.succeeded,
+          state_read_rejected: state.rejected,
+          state_read_pending: state.calls - state.succeeded - state.rejected,
+          note_read_calls: notes.calls,
+          note_read_succeeded: notes.succeeded,
+          note_read_rejected: notes.rejected,
+          note_read_pending: notes.calls - notes.succeeded - notes.rejected,
+        }),
+      );
+    } catch {
+      // Diagnostics cannot replace cleanup or the original ownership/read error.
+    }
+  }
 
   hasHandoffScope(): boolean {
     return !!this.handoffScope;
@@ -311,11 +371,13 @@ export class BrowserSessions {
       if (!session.registered || !isE2BSandbox(session.sandbox)) continue;
       try {
         const state = await withCancellation(
-          getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
-            serviceKey: scope.serviceKey,
-            userId: scope.userId,
-            sessionId: session.sessionId,
-          }),
+          this.observeRead("state", () =>
+            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
+              serviceKey: scope.serviceKey,
+              userId: scope.userId,
+              sessionId: session.sessionId,
+            }),
+          ),
           signal,
         );
         if (!state?.runActive) continue;
@@ -494,13 +556,12 @@ export class BrowserSessions {
       Promise.all(
         sessions.map(async (session) => ({
           session,
-          state: await getConvexClient(signal).query(
-            api.browserHandoffs.getForBackend,
-            {
+          state: await this.observeRead("state", () =>
+            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
               serviceKey: scope.serviceKey,
               userId: scope.userId,
               sessionId: session.sessionId,
-            },
+            }),
           ),
         })),
       ),
@@ -567,11 +628,13 @@ export class BrowserSessions {
       const states = await withCancellation(
         Promise.all(
           sessions.map((session) =>
-            getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
-              serviceKey: scope.serviceKey,
-              userId: scope.userId,
-              sessionId: session.sessionId,
-            }),
+            this.observeRead("state", () =>
+              getConvexClient(signal).query(api.browserHandoffs.getForBackend, {
+                serviceKey: scope.serviceKey,
+                userId: scope.userId,
+                sessionId: session.sessionId,
+              }),
+            ),
           ),
         ).catch(rethrowBrowserHandoffReadError),
         signal,
@@ -635,13 +698,15 @@ export class BrowserSessions {
       [...this.sessions.values()]
         .filter((session) => session.registered)
         .map((session) =>
-          getConvexClient(signal).query(
-            api.browserHandoffs.getExitNotesForBackend,
-            {
-              serviceKey: scope.serviceKey,
-              userId: scope.userId,
-              sessionId: session.sessionId,
-            },
+          this.observeRead("notes", () =>
+            getConvexClient(signal).query(
+              api.browserHandoffs.getExitNotesForBackend,
+              {
+                serviceKey: scope.serviceKey,
+                userId: scope.userId,
+                sessionId: session.sessionId,
+              },
+            ),
           ),
         ),
     ).catch(rethrowBrowserHandoffReadError);
@@ -651,6 +716,7 @@ export class BrowserSessions {
   /** End ownership once, preventing any subsequent browser preparation. */
   cleanup(): Promise<void> {
     this.closed = true;
+    if (!this.cleanupPromise) this.reportReadSummary();
     this.cleanupPromise ??= this.cleanupAll();
     return this.cleanupPromise;
   }

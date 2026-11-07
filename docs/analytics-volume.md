@@ -173,7 +173,7 @@ text, stdout/stderr, error message, paths or environment values are collected.
 
 ## Terminal call timing logs
 
-`terminal_call_finished` version 2 retains 10% of routine calls, deterministically
+`terminal_call_finished` versions 2 and 3 retain 10% of routine calls, deterministically
 by run/chat and tool-call ID. Routine means a returned zero exit or live session,
 under 30 seconds, without an error, abort, wait expiry, timeout, explicit unknown
 status, unsuccessful result, recovered-record marker or persistence failure.
@@ -191,4 +191,10 @@ remain unsampled.
 Sampling only controls PostHog log capture. Tool execution, thrown errors,
 returned content, and `callTiming` on every tool result are unchanged. Only
 bounded status metadata and timing/counts are logged; error text, commands,
-stdin, session handles, paths, and output are excluded.
+stdin, arbitrary session handles, paths, and output are excluded.
+
+Version 3 adds the returned eight-character lowercase hexadecimal PTY session
+ID, or null for other results. Join it with the run/chat context and checkpoint
+warning, never on the short ID alone. Requested session values are excluded.
+Sampling is unchanged; absent timing records or later generic success cannot
+establish same-session persistence recovery.

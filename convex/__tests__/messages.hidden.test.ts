@@ -497,6 +497,65 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.runQuery).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["other-chat", USER_ID, "chat"],
+    [CHAT_ID, "other-user", "user"],
+    ["other-chat", "other-user", "chat_and_user"],
+  ])(
+    "logs only the ownership mismatch scope while rejecting a normal save (%s/%s)",
+    async (existingChatId, existingUserId, scope) => {
+      setupExistingMessage(
+        makeMessage({
+          id: "reused-message-id",
+          chat_id: existingChatId,
+          user_id: existingUserId,
+          parts: [{ type: "text", text: "PRIVATE_EXISTING_CONTENT" }],
+        }),
+      );
+      const { saveMessage } = await import("../messages");
+      const error = await saveMessage
+        .handler(mockCtx, {
+          serviceKey: SERVICE_KEY,
+          id: "reused-message-id",
+          chatId: CHAT_ID,
+          userId: USER_ID,
+          role: "user" as const,
+          parts: [{ type: "text", text: "PRIVATE_INCOMING_CONTENT" }],
+        })
+        .catch((error: unknown) => error);
+      expect(error).toMatchObject({
+        data: {
+          code: "MESSAGE_SAVE_FAILED",
+          failureStage: "verify_existing_message_ownership",
+          causeData: { code: "MESSAGE_UNAUTHORIZED" },
+        },
+      });
+      const records = jest
+        .mocked(console.error)
+        .mock.calls.map(([value]) => {
+          try {
+            return JSON.parse(String(value));
+          } catch {
+            return {};
+          }
+        })
+        .filter((row) => row.event === "convex_message_save_failed");
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        message_ownership_mismatch: scope,
+        message_ownership_diagnostic_version: 1,
+      });
+      expect(JSON.stringify(records)).not.toMatch(
+        /PRIVATE_|other-chat|other-user/,
+      );
+      expect(JSON.stringify(error)).not.toMatch(
+        /message_ownership_mismatch|message_ownership_diagnostic_version|other-chat|other-user|PRIVATE_/,
+      );
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    },
+  );
+
   it("should not include is_hidden: true on insert when isHidden is not provided", async () => {
     setupExistingMessage(null);
 

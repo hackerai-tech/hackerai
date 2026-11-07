@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNextActions } from "@/app/hooks/useNextActions";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -23,6 +24,7 @@ import {
 } from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
+  getDraftContentById,
   removeDraft,
   removeDraftAttachments,
   upsertDraftAttachments,
@@ -34,6 +36,7 @@ import {
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
@@ -297,6 +300,7 @@ const ChatInputContent = ({
 }: ChatInputProps) => {
   const {
     chatMode,
+    chatModeAccessResolved,
     setChatMode,
     uploadedFiles,
     getUploadedFiles,
@@ -859,24 +863,16 @@ const ChatInputContent = ({
     selectedComputerUnavailable,
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
-  const effectiveSendDisabledReason =
-    (submissionPending ? "Sending message…" : undefined) ??
-    (uploadedFiles.some((file) => file.removing)
-      ? "Wait for the attachment to finish removing."
-      : undefined) ??
-    sendDisabledReason ??
-    (status === "ready" && editingQueuedMessageId
-      ? "Finish editing the queued message before sending a new request"
-      : undefined) ??
-    (user
-      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
-      : undefined);
-
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
-  const [goalEnabled, setGoalEnabled] = useState(false);
-  const [dismissedGoalSuggestion, setDismissedGoalSuggestion] = useState(false);
+  const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
+  const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
+    useState<string | null>(null);
   useEffect(() => {
-    setGoalEnabled(false);
+    setGoalEnabled(null);
+    // Entitlements and the saved chat mode hydrate after the first render.
+    // Do not erase a restored goal draft while that state is unresolved.
+    if (!chatModeAccessResolved || isCheckingProPlan || isResolvingInitialState)
+      return;
     if (chatMode !== "agent" || subscription === "free") {
       setGoalMode(false);
       return;
@@ -887,10 +883,49 @@ const ChatInputContent = ({
       .then((data) => {
         if (!abort.signal.aborted) setGoalEnabled(data?.enabled === true);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!abort.signal.aborted) setGoalEnabled(false);
+      });
     return () => abort.abort();
-  }, [chatId, chatMode, subscription, setGoalMode]);
-  useEffect(() => setDismissedGoalSuggestion(false), [input]);
+  }, [
+    chatId,
+    chatMode,
+    chatModeAccessResolved,
+    isCheckingProPlan,
+    isResolvingInitialState,
+    subscription,
+    setGoalMode,
+  ]);
+  const goalSendDisabledReason =
+    goalMode && !goalEnabled
+      ? goalEnabled === false
+        ? "Goal mode is unavailable. Exit goal mode to send a normal message."
+        : "Checking goal availability…"
+      : undefined;
+  const effectiveSendDisabledReason =
+    (submissionPending ? "Sending message…" : undefined) ??
+    (uploadedFiles.some((file) => file.removing)
+      ? "Wait for the attachment to finish removing."
+      : undefined) ??
+    sendDisabledReason ??
+    goalSendDisabledReason ??
+    (status === "ready" && editingQueuedMessageId
+      ? "Finish editing the queued message before sending a new request"
+      : undefined) ??
+    (user
+      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      : undefined);
+
+  useEffect(() => {
+    // A no-op setter after every edit leaves synchronous work pending during
+    // native input bursts and can trip React's nested-update limit.
+    if (
+      dismissedGoalSuggestionInput !== null &&
+      dismissedGoalSuggestionInput !== input
+    ) {
+      setDismissedGoalSuggestionInput(null);
+    }
+  }, [input, dismissedGoalSuggestionInput]);
   const goalSuggestionDraft = getGoalSuggestionDraft(input);
   const showGoalSuggestion =
     !showAgentApprovalPrompt &&
@@ -898,7 +933,7 @@ const ChatInputContent = ({
     subscription !== "free" &&
     goalEnabled &&
     !goalMode &&
-    !dismissedGoalSuggestion &&
+    dismissedGoalSuggestionInput !== input &&
     goalSuggestionDraft !== null;
   const goalExposure = useRef(false);
   useEffect(() => {
@@ -906,14 +941,65 @@ const ChatInputContent = ({
       goalExposure.current = true;
       captureAuthenticatedEvent("agent_goal_exposed", {
         surface: "goal_slash_command",
+        composer_layout:
+          isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+        goal_ui_version: 2,
       });
     }
-  }, [showGoalSuggestion]);
+  }, [showGoalSuggestion, isMobile]);
+  const captureGoalComposerAction = (
+    action:
+      | "submit_attempt"
+      | "submit_accepted"
+      | "submit_refused"
+      | "submit_error"
+      | "submit_unconfirmed"
+      | "submit_canceled"
+      | "blocked"
+      | "exit",
+    reason?:
+      | "close_button"
+      | "escape"
+      | "offline"
+      | "send_disabled"
+      | "empty"
+      | "uploading"
+      | "not_ready"
+      | "saved_message"
+      | "start_response_lost"
+      | "lookup_unavailable",
+  ) => {
+    captureAuthenticatedEvent("agent_goal_composer_action", {
+      goal_ui_version: 2,
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      action,
+      ...(reason ? { reason } : {}),
+      has_draft: !!input.trim(),
+      has_attachments: uploadedFiles.length > 0,
+      is_new_chat: draftId === "new",
+      ...(chatId ? { chat_id: chatId } : {}),
+    });
+  };
+  const exitGoalMode = (reason: "close_button" | "escape") => {
+    if (goalMode) captureGoalComposerAction("exit", reason);
+    setGoalMode(false);
+  };
   const selectGoal = () => {
     if (goalSuggestionDraft === null) return;
+    captureAuthenticatedEvent("agent_goal_selected", {
+      surface: "goal_slash_command",
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      goal_ui_version: 2,
+    });
     setGoalMode(true);
     setInput(goalSuggestionDraft);
   };
+  const predictionPreference = useQuery(
+    api.userCustomization.getPredictionPreference,
+    user ? {} : "skip",
+  );
   const nextActions = useNextActions({
     userId: user?.id,
     chatId,
@@ -931,6 +1017,7 @@ const ChatInputContent = ({
       getUploadedFiles().length > 0 ||
       getDraftAttachmentsById(draftId).length > 0,
     blocked:
+      predictionPreference?.enabled !== true ||
       goalMode ||
       hasActiveGoalRun ||
       pauseGoalOnSend ||
@@ -957,6 +1044,11 @@ const ChatInputContent = ({
       effectiveSendDisabledReason ||
       (goalMode && !input.trim())
     ) {
+      if (goalMode)
+        captureGoalComposerAction(
+          "blocked",
+          isOffline ? "offline" : !input.trim() ? "empty" : "send_disabled",
+        );
       return;
     }
 
@@ -968,11 +1060,15 @@ const ChatInputContent = ({
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      if (goalMode) captureGoalComposerAction("submit_attempt");
       isSubmittingRef.current = true;
       const finishPredictionSubmission = nextActions.prepareSubmission();
       setSubmissionPending(true);
       const submittedInput = getInput();
       const submittedFiles = getUploadedFiles();
+      const submittedDraftAttachments = JSON.stringify(
+        getDraftAttachmentsById(draftId),
+      );
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
@@ -980,17 +1076,32 @@ const ChatInputContent = ({
           e,
           goalMode ? `/goal start ${input}` : undefined,
         );
+        if (goalMode)
+          captureGoalComposerAction(
+            accepted === false ? "submit_refused" : "submit_accepted",
+          );
         finishPredictionSubmission(accepted !== false);
-        if (!isMountedRef.current) return;
+        if (accepted !== false) setGoalMode(false);
         const unchanged =
           getInput() === submittedInput &&
-          getUploadedFiles() === submittedFiles;
+          (getUploadedFiles() === submittedFiles ||
+            (getUploadedFiles().length === 0 && submittedFiles.length === 0));
         // The chat handler can already have cleared the accepted submission.
         const alreadyCleared =
           getInput() === "" && getUploadedFiles().length === 0;
         const sameDraft =
           prevDraftIdRef.current === draftId ||
           (draftId === "new" && prevDraftIdRef.current === chatId);
+        if (
+          accepted !== false &&
+          (!sameDraft || !isMountedRef.current) &&
+          clearDraftOnSubmit &&
+          getDraftContentById(draftId) === submittedInput &&
+          JSON.stringify(getDraftAttachmentsById(draftId)) ===
+            submittedDraftAttachments
+        )
+          removeDraft(draftId);
+        if (!isMountedRef.current) return;
         if (
           accepted === false ||
           !sameDraft ||
@@ -999,8 +1110,6 @@ const ChatInputContent = ({
           isSubmittingAttachmentsRef.current = false;
           return;
         }
-        setGoalMode(false);
-
         if (clearDraftOnSubmit) {
           uploadedFilesRef.current = [];
           removeDraft(draftId);
@@ -1015,11 +1124,45 @@ const ChatInputContent = ({
       } catch (error) {
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
+        if (error instanceof GoalSubmissionUnconfirmedError) {
+          captureGoalComposerAction(
+            "submit_unconfirmed",
+            error.messagePersisted === true
+              ? "saved_message"
+              : error.messagePersisted === false
+                ? "start_response_lost"
+                : "lookup_unavailable",
+          );
+          // The linked originating chat makes this safe after navigation or
+          // unmount; a missing handle must never silently invite a duplicate.
+          toast.info(`${error.message} Your draft is kept.`, {
+            action: {
+              label: "Check chat",
+              onClick: () =>
+                error.chatId
+                  ? window.location.assign(
+                      `/c/${encodeURIComponent(error.chatId)}`,
+                    )
+                  : window.location.reload(),
+            },
+          });
+          return;
+        }
+        if (error instanceof Error && error.name === "AbortError") {
+          if (goalMode) captureGoalComposerAction("submit_canceled");
+          return;
+        }
+        if (goalMode) captureGoalComposerAction("submit_error");
         console.error("Failed to submit message:", error);
       } finally {
         isSubmittingRef.current = false;
         if (isMountedRef.current) setSubmissionPending(false);
       }
+    } else if (goalMode) {
+      captureGoalComposerAction(
+        "blocked",
+        isUploadingFiles ? "uploading" : !input.trim() ? "empty" : "not_ready",
+      );
     }
   };
 
@@ -1282,15 +1425,21 @@ const ChatInputContent = ({
               chatMode={chatMode}
               onEnterSubmit={handleSubmit}
               minRows={isCentered ? 3 : 1}
-              placeholder={goalMode ? "Describe your goal" : placeholder}
+              placeholder={
+                goalMode
+                  ? "Describe your goal, define measurable outcomes for best results"
+                  : placeholder
+              }
               onCommandKeyDown={(e) => {
                 if (showGoalSuggestion && e.key === "Tab") {
                   e.preventDefault();
                   selectGoal();
                 }
                 if (e.key === "Escape") {
-                  setGoalMode(false);
-                  setDismissedGoalSuggestion(true);
+                  // Dismiss composer UI before the global Stop shortcut.
+                  if (goalMode || showGoalSuggestion) e.preventDefault();
+                  exitGoalMode("escape");
+                  setDismissedGoalSuggestionInput(input);
                 }
               }}
               autoFocus={autoFocus}
@@ -1310,13 +1459,16 @@ const ChatInputContent = ({
             />
             <ChatInputToolbar
               goalMenu={
-                isMobile === true &&
+                isMobile !== undefined &&
                 user &&
                 chatMode === "agent" &&
                 subscription !== "free" &&
                 goalEnabled
                   ? {
                       active: goalMode,
+                      layout: isMobile === true ? "mobile" : "desktop",
+                      hasDraft: !!input.trim(),
+                      hasAttachments: uploadedFiles.length > 0,
                       onSelect: () => {
                         setGoalMode(true);
                       },
@@ -1331,7 +1483,7 @@ const ChatInputContent = ({
                 goalMode ? (
                   <GoalModeButton
                     compact={isMobile === true}
-                    onClear={() => setGoalMode(false)}
+                    onClear={() => exitGoalMode("close_button")}
                   />
                 ) : undefined
               }

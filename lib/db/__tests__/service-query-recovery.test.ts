@@ -11,6 +11,8 @@ import {
 } from "../service-client";
 import { runWithServiceQueryRecovery } from "../service-query-recovery.node";
 import { verifyServiceArgs } from "../service-proof";
+import * as convexClient from "../convex-client";
+import { BrowserSessions } from "@/lib/ai/tools/utils/browser-sessions";
 
 jest.mock("@trigger.dev/sdk", () => ({ tasks: { middleware: jest.fn() } }));
 jest.mock("next/server", () => ({
@@ -30,6 +32,10 @@ jest.mock("@/lib/auth/get-user-id", () => ({
   }),
 }));
 jest.mock("server-only", () => ({}), { virtual: true });
+jest.mock("../convex-client", () => {
+  const actual = jest.requireActual("../convex-client");
+  return { ...actual, getConvexClient: jest.fn(actual.getConvexClient) };
+});
 jest.mock("@/lib/cloud-recovery/service", () => ({
   recoveryView: jest.fn().mockResolvedValue({ status: "none" }),
   confirmRecovery: jest.fn(),
@@ -46,7 +52,7 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("synthetic"),
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { warn: jest.fn(), error: jest.fn() },
+  phLogger: { warn: jest.fn(), error: jest.fn(), event: jest.fn() },
 }));
 jest.mock("@/lib/centrifugo/presence-traffic", () => ({
   trackPresenceTraffic: jest.fn(() => () => {}),
@@ -99,12 +105,61 @@ const registeredMiddleware = (tasks.middleware as jest.Mock).mock.calls[0]?.[1];
 let warn: jest.SpyInstance;
 let info: jest.SpyInstance;
 beforeEach(() => {
+  jest.spyOn(console, "error").mockImplementation(() => {});
   warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   info = jest.spyOn(console, "info").mockImplementation(() => {});
 });
 afterEach(() => {
   globalThis.fetch = originalFetch;
   jest.restoreAllMocks();
+});
+
+it("counts an SDK-retried browser state query as one logical successful read", async () => {
+  let stateAttempts = 0;
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    const { path } = JSON.parse(String(init?.body));
+    let value: unknown = null;
+    if (path === "browserHandoffs:registerForBackend") value = true;
+    if (path === "browserHandoffs:getForBackend") {
+      if (++stateAttempts === 1) throw reset();
+      value = { state: "agent", runActive: true };
+    }
+    return new Response(
+      JSON.stringify({ status: "success", value, logLines: [] }),
+    );
+  });
+  const client = createServiceConvexClient(deployment);
+  jest
+    .mocked(convexClient.getConvexClient)
+    .mockReturnValueOnce(client)
+    .mockReturnValueOnce(client)
+    .mockReturnValueOnce(client);
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run_fixture",
+    agentId: "parent",
+    serviceKey: secret,
+  });
+  await runWithServiceQueryRecovery(async () => {
+    await sessions.prepare({
+      sandboxId: "fixture",
+      commands: { run: async () => ({ exitCode: 0, stdout: "/usr/bin" }) },
+    } as any);
+    await expect(sessions.waitForAgentControl()).resolves.toBe(false);
+    await sessions.cleanup();
+  });
+  expect(stateAttempts).toBe(2);
+  const summaries = info.mock.calls
+    .map(([line]) => JSON.parse(String(line)))
+    .filter((entry) => entry.event === "browser_handoff_read_summary");
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toMatchObject({
+    state_read_calls: 1,
+    state_read_succeeded: 1,
+    state_read_rejected: 0,
+    state_read_pending: 0,
+  });
 });
 
 it("recovers an actual SDK read after a reset, retaining scoped proofs and its result", async () => {
@@ -140,6 +195,110 @@ it("recovers an actual SDK read after a reset, retaining scoped proofs and its r
   ).not.toContain(secret);
 });
 
+it("recovers a signed goal read while preserving owner and chat arguments", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)).args[0]);
+    if (bodies.length === 1) throw reset();
+    return new Response(
+      JSON.stringify({ status: "success", value: null, logLines: [] }),
+    );
+  });
+  const client = createServiceConvexClient(deployment);
+  await expect(
+    runWithServiceQueryRecovery(() =>
+      client.query(makeFunctionReference<"query">("agentGoals:getForBackend"), {
+        serviceKey: secret,
+        userId: "owner",
+        chatId: "owned-chat",
+      }),
+    ),
+  ).resolves.toBeNull();
+  expect(bodies).toHaveLength(2);
+  for (const body of bodies) {
+    expect(body).toMatchObject({ userId: "owner", chatId: "owned-chat" });
+    expect(
+      await verifyServiceArgs(
+        { deployment, name: "agentGoals:getForBackend", type: "query" },
+        body,
+        secret,
+      ),
+    ).toBe(true);
+  }
+});
+
+const terminatedBody = () => {
+  const response = new Response('{"status":"success","value":');
+  jest.spyOn(response, "text").mockRejectedValue(
+    new TypeError("terminated", {
+      cause: Object.assign(new Error("read reset"), { code: "ECONNRESET" }),
+    }),
+  );
+  return response;
+};
+
+const loadChatReader = async () => {
+  const priorKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  try {
+    process.env.CONVEX_SERVICE_ROLE_KEY = secret;
+    return (await import("../actions")).getChatById;
+  } finally {
+    if (priorKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = priorKey;
+  }
+};
+
+it("recovers a terminated chat body through the real helper and native SDK", async () => {
+  const getChatById = await loadChatReader();
+  const id = "00000000-0000-4000-8000-000000000001";
+  const bodies: Record<string, unknown>[] = [];
+  const chat = { id, user_id: "owner", title: "owned", update_time: 1 };
+  globalThis.fetch = jest.fn(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)).args[0]);
+    if (bodies.length === 1) return terminatedBody();
+    return new Response(
+      JSON.stringify({ status: "success", value: chat, logLines: [] }),
+    );
+  });
+  jest
+    .mocked(convexClient.getConvexClient)
+    .mockReturnValueOnce(createServiceConvexClient(deployment));
+  await expect(
+    runWithServiceQueryRecovery(() => getChatById({ id })),
+  ).resolves.toEqual(chat);
+  expect(bodies).toHaveLength(2);
+  for (const body of bodies) {
+    expect(body.id).toBe(id);
+    expect(
+      await verifyServiceArgs(
+        { deployment, name: "chats:getChatById", type: "query" },
+        body,
+        secret,
+      ),
+    ).toBe(true);
+  }
+  expect(
+    JSON.stringify([...warn.mock.calls, ...info.mock.calls]),
+  ).not.toContain(secret);
+});
+
+it("caps terminated chat reads at two shared extra attempts across helper calls", async () => {
+  const getChatById = await loadChatReader();
+  globalThis.fetch = jest.fn(async () => terminatedBody());
+  const client = createServiceConvexClient(deployment);
+  for (let index = 0; index < 4; index++)
+    jest.mocked(convexClient.getConvexClient).mockReturnValueOnce(client);
+  const results = await runWithServiceQueryRecovery(() =>
+    Promise.allSettled(
+      Array.from({ length: 4 }, (_, index) =>
+        runWithServiceQueryRecovery(() => getChatById({ id: String(index) })),
+      ),
+    ),
+  );
+  expect(results.every((result) => result.status === "rejected")).toBe(true);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+});
+
 it("reserves only two retries across concurrent reads and nested scopes", async () => {
   globalThis.fetch = jest.fn(async () => {
     throw reset();
@@ -147,9 +306,16 @@ it("reserves only two retries across concurrent reads and nested scopes", async 
   const client = createServiceConvexClient(deployment);
   const results = await runWithServiceQueryRecovery(() =>
     Promise.allSettled(
-      Array.from({ length: 5 }, () =>
+      Array.from({ length: 5 }, (_, index) =>
         runWithServiceQueryRecovery(() =>
-          client.query(reference, { serviceKey: secret }),
+          client.query(
+            [
+              reference,
+              makeFunctionReference<"query">("agentGoals:getForBackend"),
+              makeFunctionReference<"query">("chats:getChatById"),
+            ][index % 3],
+            { serviceKey: secret },
+          ),
         ),
       ),
     ),
@@ -172,9 +338,17 @@ it("limits each RPC to one retry even when the run has another credit", async ()
   expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 });
 
-it.each(["mutation", "action", "query_at_ts"])(
-  "never replays %s, even with an eligible function name",
-  async (endpoint) => {
+it.each(
+  ["mutation", "action", "query_at_ts"].flatMap((endpoint) =>
+    [
+      "localSandbox:listConnectionsForBackend",
+      "agentGoals:getForBackend",
+      "chats:getChatById",
+    ].map((name) => [endpoint, name]),
+  ),
+)(
+  "never replays %s, even with eligible function %s",
+  async (endpoint, name) => {
     const failure = reset();
     const transport = jest.fn(async () => {
       throw failure;
@@ -185,7 +359,7 @@ it.each(["mutation", "action", "query_at_ts"])(
         fetch(`${deployment}/api/${endpoint}`, {
           method: "POST",
           body: JSON.stringify({
-            path: "localSandbox:listConnectionsForBackend",
+            path: name,
             format: "convex_encoded_json",
             args: [{}],
           }),
@@ -580,7 +754,10 @@ describe("read-only browser and recovery GET requests", () => {
     // Give each request a client bound to that test's transport, as a fresh worker would.
     const { setConvexUrl } = await import("../convex-client");
     setConvexUrl(deployment);
-    return reader.call({ signal } as NextRequest);
+    return reader.call({
+      signal,
+      nextUrl: new URL("https://preview.example/api/agent/browser/test"),
+    } as NextRequest);
   }
   it.each(readers)(
     "recovers the $name SDK read and preserves request context",

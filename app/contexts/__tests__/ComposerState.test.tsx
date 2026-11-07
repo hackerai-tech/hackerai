@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -9,6 +9,38 @@ import {
 } from "../ComposerState";
 
 describe("ComposerStateProvider", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("restores goal intent after a full provider remount, isolated to its draft", () => {
+    function Draft({ id }: { id: string }) {
+      const [enabled, setEnabled] = useComposerGoalMode(id);
+      return (
+        <>
+          <output>{enabled ? "Goal mode" : "Normal message"}</output>
+          <button onClick={() => setEnabled(true)}>Select goal</button>
+          <button onClick={() => setEnabled(false)}>Exit goal</button>
+        </>
+      );
+    }
+    const view = (id: string) => (
+      <ComposerStateProvider>
+        <Draft id={id} />
+      </ComposerStateProvider>
+    );
+    const first = render(view("chat-a"));
+    fireEvent.click(screen.getByRole("button", { name: "Select goal" }));
+    first.unmount();
+    const second = render(view("chat-a"));
+    expect(screen.getByRole("status")).toHaveTextContent("Goal mode");
+    second.rerender(view("chat-b"));
+    expect(screen.getByRole("status")).toHaveTextContent("Normal message");
+    second.rerender(view("chat-a"));
+    expect(screen.getByRole("status")).toHaveTextContent("Goal mode");
+    fireEvent.click(screen.getByRole("button", { name: "Exit goal" }));
+    second.unmount();
+    render(view("chat-a"));
+    expect(screen.getByRole("status")).toHaveTextContent("Normal message");
+  });
   it("keeps goal mode across responsive remounts and clears it when exiting", () => {
     function Draft({ id }: { id: string }) {
       const [enabled, setEnabled] = useComposerGoalMode(id);

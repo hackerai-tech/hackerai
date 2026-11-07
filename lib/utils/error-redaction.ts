@@ -10,6 +10,30 @@ const SENSITIVE_FIELD_PATTERN =
 // Cover authorization credentials outside a key/value diagnostic as well.
 const BEARER_CREDENTIAL_PATTERN = /\bBearer[ \t]+[\w.~+/=-]+/gi;
 
+// These fixed Unicode whitespace characters can appear URI- or JSON-encoded
+// before a key. Only constants enter the pattern; diagnostic text never does.
+const ENCODED_UNICODE_WHITESPACE = Array.from(
+  "\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff",
+)
+  .flatMap((character) => [
+    encodeURIComponent(character),
+    String.raw`\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  ])
+  .map((encoded) =>
+    encoded.replace(
+      /[a-f]/gi,
+      (hex) => `[${hex.toLowerCase()}${hex.toUpperCase()}]`,
+    ),
+  )
+  .join("|");
+
+// Null markers retain stripped control boundaries and are transparent inside
+// a key. Encoded ASCII boundaries exclude identifier characters.
+const PROVIDER_KEY_CANDIDATE_PATTERN = new RegExp(
+  String.raw`(?:(?<![A-Za-z0-9_-])|(?<=\\[nrtbf]|(?:%|\\u00)(?:[01][\da-fA-F]|2[\da-cA-Ce-fE-F]|3[a-fA-F]|40|5[b-eB-E]|60|7[b-fB-F])|${ENCODED_UNICODE_WHITESPACE}))s\x00*k\x00*-[A-Za-z0-9_\x00-]+`,
+  "g",
+);
+
 // Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
   /(?<![\w-])(["']?\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+)\b["']?)(\s*[:=]\s*)(?:\\"(?:\\.|[^"\\])*(?:\\"|$)|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,}]+)/g;
@@ -33,8 +57,20 @@ export const stripControlSequencesFromErrorMessage = (
     .replace(ANSI_ESCAPE_PATTERN, "")
     .replace(CONTROL_CHARACTER_PATTERN, "");
 
-export const redactSensitiveErrorMessage = (message: string): string =>
-  stripControlSequencesFromErrorMessage(message)
+export const redactSensitiveErrorMessage = (message: string): string => {
+  // Discover complete keys before normalization can erase their boundaries.
+  const marked = message
+    .replace(ANSI_ESCAPE_PATTERN, "\0")
+    .replace(CONTROL_CHARACTER_PATTERN, "\0");
+  const keys = new Set(
+    Array.from(marked.matchAll(PROVIDER_KEY_CANDIDATE_PATTERN), (match) =>
+      match[0].replaceAll("\0", ""),
+    ).filter((key) => key.length >= 23),
+  );
+
+  // Preserve whole-URL and credential-field handling before replacing any key
+  // text that might itself be a field name or part of a URL.
+  let redacted = stripControlSequencesFromErrorMessage(message)
     .replace(URL_PATTERN, (url) => {
       if (!SIGNED_URL_CREDENTIAL_PATTERN.test(url)) return url;
 
@@ -51,6 +87,14 @@ export const redactSensitiveErrorMessage = (message: string): string =>
     })
     .replace(BEARER_CREDENTIAL_PATTERN, `Bearer ${REDACTED_VALUE}`);
 
+  // Longest first prevents a shared prefix leaving a longer key's suffix behind.
+  // Once identified as a key, remove every occurrence, including echoed copies.
+  for (const key of [...keys].sort((a, b) => b.length - a.length)) {
+    redacted = redacted.replaceAll(key, REDACTED_VALUE);
+  }
+  return redacted;
+};
+
 export const stringifyRedactedError = (error: unknown): string => {
   const message =
     error instanceof Error
@@ -59,7 +103,29 @@ export const stringifyRedactedError = (error: unknown): string => {
         ? error
         : (() => {
             try {
-              return JSON.stringify(error) ?? "Unknown error occurred";
+              const propertyNames = new Map<string, string>();
+              const serialized = JSON.stringify(error, (key, value) => {
+                const redactedKey = redactSensitiveErrorMessage(key);
+                if (redactedKey !== key) {
+                  propertyNames.set(
+                    JSON.stringify(key),
+                    JSON.stringify(redactedKey),
+                  );
+                }
+                // Use the existing field rule while the raw property name is
+                // available, before renaming it can hide a sensitive suffix.
+                const field = `${JSON.stringify(stripControlSequencesFromErrorMessage(key))}:0`;
+                if (field.search(SENSITIVE_FIELD_PATTERN) >= 0)
+                  return REDACTED_VALUE;
+                return typeof value === "string"
+                  ? redactSensitiveErrorMessage(value)
+                  : value;
+              });
+              let redacted = serialized ?? "Unknown error occurred";
+              for (const [name, replacement] of propertyNames) {
+                redacted = redacted.replaceAll(name, replacement);
+              }
+              return redacted;
             } catch {
               return String(error);
             }

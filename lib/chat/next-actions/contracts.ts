@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
+// Legacy field name: this versions the saved prediction format/behavior, not truth or authorization.
+export const NEXT_ACTIONS_VALIDATION_VERSION = 3;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
@@ -17,6 +19,7 @@ export const nextActionsResponseSchema = z.object({
   batchId: z.string(),
   messageId: z.string(),
   mode: z.enum(["ask", "agent"]),
+  validationVersion: z.number().int().optional(),
   suggestions: z.array(z.string().trim().min(1).max(240)).max(3),
 });
 export type NextActionsBatch = z.infer<typeof nextActionsResponseSchema>;
@@ -25,17 +28,11 @@ export const emptyNextActionsResponseSchema = z.object({
 });
 export type CompletedPredictionTurn = { chatId: string; messageId: string };
 
-export const generatedNextActionsSchema = z.object({
-  suggestions: z
-    .array(
-      z.object({
-        text: z.string().trim().min(1).max(240),
-        sourceMessageId: z.string(),
-        evidenceQuote: z.string().min(12).max(240),
-      }),
-    )
-    .max(3),
-});
+export const predictedNextActionSchema = z
+  .object({
+    suggestion: z.string().max(240).nullable(),
+  })
+  .strict();
 
 type ContextMessage = {
   id: string;
@@ -142,64 +139,45 @@ export function buildPredictionSources(
   return sources.reverse();
 }
 
-export function validateGroundedSuggestions(
-  output: unknown,
+/** A prediction is editable user text; it never establishes facts or grants access. */
+export function parsePredictedNextAction(output: unknown): string[] {
+  const parsed = predictedNextActionSchema.safeParse(output);
+  if (!parsed.success || parsed.data.suggestion === null) return [];
+  const text = parsed.data.suggestion.trim();
+  if (!text || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text))
+    return [];
+  // Composer commands have their own explicit entry flow; a prediction cannot select one.
+  if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
+  return [text];
+}
+
+/** Avoid spending or showing a new draft after an explicit conversational stop. */
+export function hasExplicitPredictionStop(
   sources: PredictionSource[],
-): string[] {
-  const parsed = generatedNextActionsSchema.safeParse(output);
-  if (!parsed.success) return [];
-  const seen = new Set<string>();
-  return parsed.data.suggestions.flatMap((item) => {
-    const source = sources.find((source) => source.id === item.sourceMessageId);
-    // Quotes are checked against exactly the bounded context the model saw.
-    if (
-      !source?.text
-        .split(OMITTED_TEXT)
-        .some((part) => part.includes(item.evidenceQuote))
+): boolean {
+  const latest =
+    sources.findLast((source) => source.role === "user")?.text ?? "";
+  // Quoted examples are not direct stop instructions. Apostrophes within
+  // words are preserved, including contractions inside a quoted example.
+  const instruction = latest.replace(
+    /"[^"\n]*"|“[^”\n]*”|‘(?:[^’\n]|’(?=[\p{L}\p{N}_]))*’(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])'(?:[^'\n]|'(?=[\p{L}\p{N}_]))*'(?![\p{L}\p{N}_])/gu,
+    " ",
+  );
+  return (
+    /(?:[,;.!?]\s*|\n)(?:and\s+)?(?:then\s+)?stop(?:\s+(?:here|there))?[.!]?\s*$/i.test(
+      instruction,
+    ) ||
+    /\b(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:add (?:another|any|more) (?:question|suggestion)|continue)|without (?:any )?follow[ -]?ups?)\b/i.test(
+      instruction,
+    ) ||
+    /\bI(?:['’]m| am) done[.!]?\s*$/i.test(instruction) ||
+    /\b(?:and|then)\s+stop\s+(?:here|there)[.!]?\s*$/i.test(instruction) ||
+    /^(?:thanks[,.!]\s*)?(?:please\s+)?(?:cancel|stop)(?:\s+(?:that|this)(?:\s+(?:task|request|review))?)?[.!]?\s*$/i.test(
+      instruction.trim(),
+    ) ||
+    /\bno more on this[.!]?\s*$/i.test(instruction) ||
+    /(?:^|[.!?;,]\s*|\b(?:but|and)\s+|\n)(?:please\s+)?do not suggest (?:a |any )?follow[ -]?ups?\b/i.test(
+      instruction,
     )
-      return [];
-    const text = item.text.replace(/\s+/g, " ").trim();
-    // Modal questions ask for something; they do not assert a user fact.
-    const factualText = text
-      .replace(
-        /\b(?:can|could|may|might|should|would|will|shall|must|do|did|if|whether)\s+(?:i|we)\b/gi,
-        " ",
-      )
-      .replace(/¿[^¿?]*\?/g, " ")
-      .replace(/(?:^|[.!?;:]\s+)est-ce que\b[^?]*\?/gi, " ");
-    // Editable predictions must not become composer control commands on send.
-    // A standalone /goal token also selects goal mode inside an ordinary draft.
-    if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
-    // A real evidence quote does not make an invented user update true. Drop
-    // the observed placeholder/completed-action forms instead of making Tab
-    // insert a draft that falsely claims new evidence or work was supplied.
-    if (
-      /^(?:here (?:is|are)\b|i(?:['’]ve| have| just)? (?:attached|uploaded|provided|ran|run|tested|verified|checked)\b)/i.test(
-        text,
-      ) ||
-      // A supported topic quote (especially an assistant's question) cannot
-      // support filling in facts for the user. Drop observed factual-update
-      // forms even if the model puts the claim after an otherwise valid request.
-      /\b(?:i(?:['’](?:m|ve)|\s+(?:am|have|own|work|ran|tested|verified|checked|attached|uploaded|provided))|we(?:['’](?:re|ve)|\s+(?:are|have|own|work|ran|tested|verified|checked|attached|uploaded|provided)))\b/i.test(
-        factualText,
-      ) ||
-      /(?:^|[.!?;:]\s+)(?:my|our)\s+.{0,80}\b(?:owns?|is|has|are|have)\b/i.test(
-        text,
-      ) ||
-      // These are bounded observed claim forms, not a semantic verifier for
-      // every language. The prompt must also avoid unsupported factual updates.
-      /\b(?:(?:tengo|tenemos)\s+(?:permisos?|autorizaci[oó]n)|(?:estoy|estamos)\s+autorizad[oa]s?|soy\s+(?:el\s+|la\s+)?dueñ[oa])\b/i.test(
-        factualText,
-      ) ||
-      /\b(?:j['’]ai|nous avons)\s+(?:la permission|l['’]autorisation)\b/i.test(
-        factualText,
-      )
-    )
-      return [];
-    // Suggestions are plain editable questions, never fabricated artifact links.
-    if (/[<>]|https?:\/\/|www\./i.test(text) || seen.has(text.toLowerCase()))
-      return [];
-    seen.add(text.toLowerCase());
-    return [text];
-  });
+  );
 }

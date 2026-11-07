@@ -12,10 +12,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import {
   captureAuthenticatedEvent,
@@ -25,6 +26,9 @@ import {
 export interface AttachmentButtonProps {
   goalMenu?: {
     active: boolean;
+    layout: "desktop" | "mobile";
+    hasDraft?: boolean;
+    hasAttachments?: boolean;
     onSelect: () => void;
     onFocusComposer: () => void;
   };
@@ -40,8 +44,11 @@ export const AttachmentButton = ({
   const { subscription, isCheckingProPlan } = useGlobalState();
   const [popoverOpen, setPopoverOpen] = useState(false);
   const capturedImpressionRef = useRef(false);
-  const goalExposureRef = useRef(false);
+  const goalExposureRef = useRef(new Set<string>());
+  const selectedMenuItemRef = useRef<"camera" | "files" | "goal" | null>(null);
   const focusComposerOnCloseRef = useRef(false);
+  const goalLabelId = useId();
+  const goalDescriptionId = useId();
 
   useEffect(() => {
     if (!popoverOpen || capturedImpressionRef.current) return;
@@ -76,14 +83,47 @@ export const AttachmentButton = ({
   };
 
   if (goalMenu && subscription !== "free" && !isCheckingProPlan) {
+    const mobile = goalMenu.layout === "mobile";
+    const analytics = {
+      surface: "composer_plus_menu",
+      composer_layout: goalMenu.layout,
+      goal_ui_version: 2,
+      goal_mode_active: goalMenu.active,
+      has_draft: goalMenu.hasDraft ?? false,
+      has_attachments: goalMenu.hasAttachments ?? false,
+    };
+    const selectItem = (item: "camera" | "files" | "goal") => {
+      selectedMenuItemRef.current = item;
+      captureAuthenticatedEvent("composer_plus_menu_action", {
+        ...analytics,
+        action: item,
+      });
+    };
+    const rowClass = mobile
+      ? "min-h-12 gap-3 rounded-xl px-3 text-base"
+      : "min-h-9 gap-2.5 rounded-lg px-2.5 py-2 text-sm";
+    const iconClass = mobile
+      ? "flex size-9 shrink-0 items-center justify-center rounded-full bg-muted"
+      : "flex size-4 shrink-0 items-center justify-center text-muted-foreground";
     return (
       <DropdownMenu
         onOpenChange={(open) => {
-          if (!open || goalExposureRef.current) return;
-          goalExposureRef.current = true;
-          captureAuthenticatedEvent("agent_goal_exposed", {
-            surface: "composer_plus_menu",
-          });
+          if (open) {
+            selectedMenuItemRef.current = null;
+            captureAuthenticatedEvent("composer_plus_menu_action", {
+              ...analytics,
+              action: "opened",
+            });
+            if (!goalExposureRef.current.has(goalMenu.layout)) {
+              goalExposureRef.current.add(goalMenu.layout);
+              captureAuthenticatedEvent("agent_goal_exposed", analytics);
+            }
+          } else if (selectedMenuItemRef.current === null) {
+            captureAuthenticatedEvent("composer_plus_menu_action", {
+              ...analytics,
+              action: "dismissed",
+            });
+          }
         }}
       >
         <DropdownMenuTrigger asChild>
@@ -104,7 +144,7 @@ export const AttachmentButton = ({
           align="start"
           sideOffset={8}
           collisionPadding={12}
-          className="w-60 rounded-2xl p-2"
+          className={mobile ? "w-60 rounded-2xl p-2" : "w-72 rounded-xl p-1"}
           data-chat-input-agent-menu
           onCloseAutoFocus={(event) => {
             if (!focusComposerOnCloseRef.current) return;
@@ -113,46 +153,79 @@ export const AttachmentButton = ({
             goalMenu.onFocusComposer();
           }}
         >
+          {mobile && (
+            <DropdownMenuItem
+              className={rowClass}
+              onSelect={() => {
+                selectItem("camera");
+                onAttachClick("camera");
+              }}
+            >
+              <span className={iconClass}>
+                <Camera className="size-5" />
+              </span>
+              Camera
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
-            className="min-h-12 gap-3 rounded-xl px-3 text-base"
-            onSelect={() => onAttachClick("camera")}
-          >
-            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
-              <Camera className="size-5" />
-            </span>
-            Camera
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="min-h-12 gap-3 rounded-xl px-3 text-base"
-            onSelect={() => onAttachClick("files")}
-          >
-            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
-              <Paperclip className="size-5" />
-            </span>
-            Photos &amp; files
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="min-h-12 gap-3 rounded-xl px-3 text-base"
+            className={rowClass}
             onSelect={() => {
+              selectItem("files");
+              focusComposerOnCloseRef.current = !mobile;
+              onAttachClick("files");
+            }}
+          >
+            <span className={iconClass}>
+              <Paperclip className={mobile ? "size-5" : "size-4"} />
+            </span>
+            {mobile ? "Photos & files" : "Add photos & files"}
+          </DropdownMenuItem>
+          {!mobile && <DropdownMenuSeparator />}
+          <DropdownMenuItem
+            className={rowClass}
+            aria-labelledby={mobile ? undefined : goalLabelId}
+            aria-describedby={mobile ? undefined : goalDescriptionId}
+            onSelect={() => {
+              selectItem("goal");
               focusComposerOnCloseRef.current = true;
               if (!goalMenu.active) {
-                captureAuthenticatedEvent("agent_goal_selected", {
-                  surface: "composer_plus_menu",
-                });
+                captureAuthenticatedEvent("agent_goal_selected", analytics);
                 goalMenu.onSelect();
               }
-              // Keep focus in the tap gesture for mobile software keyboards.
+              // Preserve the synchronous mobile keyboard focus path.
               goalMenu.onFocusComposer();
             }}
           >
-            <span className="flex size-9 items-center justify-center rounded-full bg-muted">
-              <GoalTargetIcon className="size-5" />
+            <span className={iconClass}>
+              <GoalTargetIcon className={mobile ? "size-5" : "size-4"} />
             </span>
-            Pursue goal
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <span id={goalLabelId}>
+                  Pursue goal
+                  {goalMenu.active && <span className="sr-only">, on</span>}
+                </span>
+                {!mobile && (
+                  <span
+                    aria-hidden="true"
+                    className="ml-auto text-xs text-muted-foreground"
+                  >
+                    /goal
+                  </span>
+                )}
+              </span>
+              {!mobile && (
+                <span
+                  id={goalDescriptionId}
+                  className="mt-0.5 block text-xs leading-relaxed text-muted-foreground"
+                >
+                  Let Agent keep working toward a result.
+                </span>
+              )}
+            </span>
             {goalMenu.active && (
               <>
-                <Check className="ml-auto size-4" aria-hidden="true" />
-                <span className="sr-only">, on</span>
+                <Check className="ml-auto size-4 shrink-0" aria-hidden="true" />
               </>
             )}
           </DropdownMenuItem>

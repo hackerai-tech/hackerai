@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "09536cf1481731c790995bd8060db19a3b75ff48",
+  "sourceCommit": "06015506625a78b981ae0b34be40239fc1b389be",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -601,11 +601,11 @@
       "category": "vulnerabilities",
       "filename": "semantic_confusion",
       "name": "semantic-confusion",
-      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
-      "contentBytes": 12511,
+      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, email and IDNA identity drift, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
+      "contentBytes": 14778,
       "internal": false,
       "sourcePath": "vulnerabilities/semantic_confusion.md",
-      "sourceSha256": "5b3ebda3fdb48993b3f2cc5afb797343948b44fac4e5cd23b8e00a0712660f38"
+      "sourceSha256": "8d56e4ef328f02ea5336336c19463c633fc5a8a19c0bc6a80826138f84dd0a6e"
     },
     {
       "id": "vulnerabilities/sql_injection",

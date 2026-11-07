@@ -135,6 +135,7 @@ const QueuedMessageRow = ({
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
       return;
     if (event.key === "Escape") {
+      event.preventDefault();
       cancelEditing();
     } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();

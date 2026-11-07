@@ -694,12 +694,14 @@ const summarizeProviderOptions = (
   };
 };
 
+/** Measure input shape; current UI references leave this boundary only as counts. */
 const buildProviderRequestDiagnostics = (args: {
   modelName: string;
   requestedSlug?: string;
   stepIndex: number;
   source: ProviderRequestDiagnostics["source"];
   messages: ModelMessage[];
+  sourceUiMessages: readonly UIMessage[];
   providerOptions: unknown;
   activeTools: readonly unknown[] | undefined;
   availableToolCount: number;
@@ -737,7 +739,11 @@ const buildProviderRequestDiagnostics = (args: {
     message_count: args.messages.length,
     role_counts: roleCounts,
     content_part_counts: contentPartCounts,
-    media_counts: getProviderRequestMediaCounts(args.messages),
+    media_counts: getProviderRequestMediaCounts(
+      args.messages,
+      undefined,
+      args.sourceUiMessages,
+    ),
     last_message_role:
       typeof lastMessage?.role === "string" ? lastMessage.role : undefined,
     last_message_content_types: summarizeContentTypes(lastMessage?.content),
@@ -1803,6 +1809,7 @@ export async function createAgentStream(
     });
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
+  /** Snapshot the current request for the shared Ask and Agent diagnostic consumers. */
   const recordProviderRequestDiagnostics = (args: {
     modelName: string;
     requestedSlug?: string;
@@ -1829,6 +1836,7 @@ export async function createAgentStream(
       stepIndex: args.stepIndex,
       source: args.source,
       messages: args.messages,
+      sourceUiMessages: state.finalMessages,
       providerOptions: args.providerOptions,
       activeTools: args.activeTools,
       availableToolCount: Object.keys(ctx.tools).length,

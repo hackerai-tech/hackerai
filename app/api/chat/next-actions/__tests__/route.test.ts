@@ -32,6 +32,7 @@ jest.mock("@/lib/experiments/regional-subscription-first.server", () => ({
 const query = jest.fn();
 const mutation = jest.fn();
 let saved: unknown = null;
+let predictionsEnabled = true;
 const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
@@ -55,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   shutdown.mockResolvedValue(undefined);
   saved = null;
+  predictionsEnabled = true;
   mutation.mockImplementation(async (_name, args) => args.batch ?? true);
   chat = {
     id: chatId,
@@ -72,31 +74,33 @@ beforeEach(() => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
   query.mockImplementation(async (_name, args) =>
-    args.chatId && !args.paginationOpts
-      ? saved
-      : args.paginationOpts
-        ? {
-            page: [
-              {
-                id: "answer",
-                role: "assistant",
-                parts: [
-                  {
-                    type: "text",
-                    text: "Synthetic finding lacks impact evidence.",
-                  },
-                ],
-              },
-              {
-                id: "user",
-                role: "user",
-                parts: [
-                  { type: "text", text: "Explain this synthetic finding." },
-                ],
-              },
-            ],
-          }
-        : chat,
+    args.userId && !args.chatId
+      ? { enabled: predictionsEnabled }
+      : args.chatId && !args.paginationOpts
+        ? saved
+        : args.paginationOpts
+          ? {
+              page: [
+                {
+                  id: "answer",
+                  role: "assistant",
+                  parts: [
+                    {
+                      type: "text",
+                      text: "Synthetic finding lacks impact evidence.",
+                    },
+                  ],
+                },
+                {
+                  id: "user",
+                  role: "user",
+                  parts: [
+                    { type: "text", text: "Explain this synthetic finding." },
+                  ],
+                },
+              ],
+            }
+          : chat,
   );
   jest.mocked(createRedisClient).mockReturnValue({ eval: reserve } as never);
   reserve.mockResolvedValue(1);
@@ -107,6 +111,12 @@ beforeEach(() => {
     modelId: "deepseek/deepseek-v4.1-flash-1017",
     reasoningTokens: 0,
     cost: 0.0001,
+    knownCost: 0.0001,
+    providerCalls: 2,
+    pricedProviderCalls: 2,
+    unknownProviderCalls: 0,
+    modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
+    unavailable: false,
   });
 });
 
@@ -188,6 +198,12 @@ test("provider failure and a new run during generation suppress predictions", as
       modelId: "deepseek/deepseek-v4.1-flash-1017",
       reasoningTokens: 0,
       cost: 0,
+      knownCost: 0,
+      providerCalls: 0,
+      pricedProviderCalls: 0,
+      unknownProviderCalls: 0,
+      modelIds: [],
+      unavailable: false,
     };
   });
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -214,6 +230,12 @@ test.each([
         modelId: "deepseek/deepseek-v4.1-flash-1017",
         reasoningTokens: 0,
         cost: 0,
+        knownCost: 0,
+        providerCalls: 0,
+        pricedProviderCalls: 0,
+        unknownProviderCalls: 0,
+        modelIds: [],
+        unavailable: false,
       };
     });
     expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -299,6 +321,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
+    validationVersion: 3,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -311,6 +334,78 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(generateNextActions).not.toHaveBeenCalled();
   expect(reserve).not.toHaveBeenCalled();
   expect(capture).not.toHaveBeenCalled();
+});
+
+test("does not restore legacy prediction formats or make a model call", async () => {
+  saved = {
+    consumed: false,
+    batch: {
+      batchId: "legacy",
+      messageId: "answer",
+      mode: "ask",
+      suggestions: ["Explain the evidence."],
+    },
+  };
+  const result = await POST(
+    request({ chatId, messageId: "answer", restoreOnly: true } as never),
+  );
+  expect(await result.json()).toEqual({ suggestions: [] });
+  expect(generateNextActions).not.toHaveBeenCalled();
+  expect(reserve).not.toHaveBeenCalled();
+  expect(mutation).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+});
+
+test("does not expose an legacy batch returned by a concurrent save", async () => {
+  mutation.mockResolvedValueOnce({
+    batchId: "legacy-concurrent",
+    messageId: "answer",
+    mode: "ask",
+    suggestions: ["Explain the evidence."],
+  });
+  expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
+});
+
+test("saves the prediction version alongside new drafts", async () => {
+  await POST(request());
+  expect(mutation).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      batch: expect.objectContaining({ validationVersion: 3 }),
+    }),
+  );
+});
+
+test("emits partial known spend and unknown-call coverage on unavailable generation", async () => {
+  jest.mocked(generateNextActions).mockResolvedValueOnce({
+    suggestions: [],
+    unavailable: true,
+    inputTokens: undefined,
+    outputTokens: undefined,
+    reasoningTokens: undefined,
+    modelId: "deepseek/deepseek-v4.1-flash-1017",
+    modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
+    providerCalls: 2,
+    pricedProviderCalls: 1,
+    unknownProviderCalls: 1,
+    knownCost: 0.0001,
+    cost: undefined,
+  });
+  expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "contextual_next_actions_generated",
+      properties: expect.objectContaining({
+        outcome: "unavailable",
+        cost_usd: undefined,
+        known_cost_usd: 0.0001,
+        provider_calls: 2,
+        priced_provider_calls: 1,
+        unknown_provider_calls: 1,
+      }),
+    }),
+  );
+  expect(mutation).not.toHaveBeenCalled();
 });
 
 test.each(["consumed", "absent", "control", "disabled"])(
@@ -357,3 +452,22 @@ test("consumption is bound to the authenticated user rather than caller identity
   );
   expect(generateNextActions).not.toHaveBeenCalled();
 });
+
+test.each([false, true])(
+  "opt-out blocks generation and restoration (restoreOnly=%s) before spend or content",
+  async (restoreOnly) => {
+    predictionsEnabled = false;
+    saved = {
+      consumed: false,
+      batch: { suggestions: ["Never restore while disabled"] },
+    };
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly } as never),
+    );
+    expect(await result.json()).toEqual({ suggestions: [] });
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+  },
+);
