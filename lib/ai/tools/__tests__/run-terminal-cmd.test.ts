@@ -395,6 +395,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     'date -u +"%H:%M:%SZ" && agent-browser --session owned snapshot -i 2>&1 | head -80',
     "cd /home/user && agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
     "cd /home/user && agent-browser --session owned get count iframe 2>&1 | tail -5; echo ----; agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
+    'agent-browser --session owned snapshot 2>&1 | head -80; echo "=== URL/TITLE ==="; agent-browser --session owned get url 2>&1; agent-browser --session owned get title 2>&1',
   ])(
     "a formatted snapshot guides the Agent without paying: %s",
     async (formattedCommand) => {
@@ -415,7 +416,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         status: "token_delivered",
       }));
       const tool = createRunTerminalCmd(context);
-      const command = "agent-browser --session owned snapshot -i";
+      const command = `agent-browser --session owned snapshot${formattedCommand.includes("snapshot -i") ? " -i" : ""}`;
       const formatted = await runTool(tool, {
         command: formattedCommand,
         is_background: false,

@@ -311,12 +311,18 @@ export function getStandaloneSnapshotHint(command: string): string | null {
     (words) => words.join(" ") === snapshots[0],
   );
   // A later command could navigate, switch sessions or close the browser.
-  // Only output formatting, literal separators and a clock check may follow it.
+  // Only output formatting, literal separators, a clock check, or read-only
+  // URL/title reads may follow it. These common diagnostic bundles still need
+  // a fresh standalone snapshot before the on-demand capability is offered.
   if (
     parts
       .slice(snapshotIndex + 1)
       .some(
-        (words) => !["head", "tail", "cat", "echo", "date"].includes(words[0]),
+        (words) =>
+          !["head", "tail", "cat", "echo", "date"].includes(words[0]) &&
+          !/^agent-browser(?: --session [A-Za-z0-9_-]{1,80})? get (?:url|title)$/.test(
+            words.join(" "),
+          ),
       )
   )
     return null;
