@@ -17,6 +17,8 @@ export const scheduledAgentRun = schemaTask({
     revision: z.number().int().positive(),
     at: z.number().int().positive().optional(),
     manual: z.boolean().optional(),
+    manualRequestId: z.string().optional(),
+    receiptId: z.string().optional(),
   }),
   id: "scheduled-agent-run",
   maxDuration: 300,
@@ -27,7 +29,7 @@ export const scheduledAgentRun = schemaTask({
       revision: payload.revision,
       ...(payload.at !== undefined ? { at: payload.at } : {}),
       manual: payload.manual === true,
-      dispatcherId: ctx.run.id,
+      dispatcherId: payload.manualRequestId ?? ctx.run.id,
     });
   },
   onCancel: async ({ payload, ctx }) => {
@@ -37,7 +39,7 @@ export const scheduledAgentRun = schemaTask({
       revision: payload.revision,
       ...(payload.at !== undefined ? { at: payload.at } : {}),
       manual: payload.manual === true,
-      dispatcherId: ctx.run.id,
+      dispatcherId: payload.manualRequestId ?? ctx.run.id,
     });
   },
   retry: {
@@ -52,6 +54,8 @@ export const scheduledAgentRun = schemaTask({
       revision: number;
       at?: number;
       manual?: boolean;
+      manualRequestId?: string;
+      receiptId?: string;
     },
     { ctx },
   ) => {
@@ -59,12 +63,31 @@ export const scheduledAgentRun = schemaTask({
     const db = getConvexClient();
     const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
     const id = payload.scheduleId as Id<"agent_schedules">;
+    const dispatcherId = payload.manualRequestId ?? ctx.run.id;
     const schedule = await db.query(api.schedules.getForDispatch, {
       serviceKey,
       id,
     });
-    if (!schedule || schedule.revision !== payload.revision)
+    if (!schedule || schedule.revision !== payload.revision) {
+      if (payload.receiptId)
+        await db.mutation(api.schedules.finishDispatch, {
+          serviceKey,
+          id: payload.receiptId as Id<"schedule_runs">,
+          dispatcherId,
+          status: "skipped",
+          detail: "Schedule changed before the run started.",
+        });
+      if (!payload.receiptId)
+        await db.mutation(api.schedules.failDispatcher, {
+          serviceKey,
+          scheduleId: id,
+          revision: payload.revision,
+          ...(payload.at !== undefined ? { at: payload.at } : {}),
+          manual: payload.manual === true,
+          dispatcherId,
+        });
       return { status: "stale" };
+    }
     const claim = await db.mutation(api.schedules.claim, {
       serviceKey,
       id,
@@ -72,19 +95,30 @@ export const scheduledAgentRun = schemaTask({
       revision: payload.revision,
       ...(payload.at !== undefined ? { at: payload.at } : {}),
       manual: payload.manual === true,
-      dispatcherId: ctx.run.id,
+      dispatcherId,
+      dispatcherRunId: ctx.run.id,
       chatId: randomUUID(),
     });
-    if (!claim) return { status: "skipped" };
+    if (!claim) {
+      await db.mutation(api.schedules.failDispatcher, {
+        serviceKey,
+        scheduleId: id,
+        revision: payload.revision,
+        ...(payload.at !== undefined ? { at: payload.at } : {}),
+        manual: payload.manual === true,
+        dispatcherId,
+      });
+      return { status: "skipped" };
+    }
     const finish = (
-      status: "started" | "failed" | "skipped",
+      status: "started" | "failed" | "skipped" | "uncertain_start",
       detail?: string,
       triggerRunId?: string,
     ) =>
       db.mutation(api.schedules.finishDispatch, {
         serviceKey,
         id: claim.id,
-        dispatcherId: ctx.run.id,
+        dispatcherId,
         status,
         ...(detail ? { detail } : {}),
         ...(triggerRunId ? { triggerRunId } : {}),
@@ -142,6 +176,16 @@ export const scheduledAgentRun = schemaTask({
         }),
       },
     );
+    if (
+      !(await db.mutation(api.schedules.beginDispatch, {
+        serviceKey,
+        id: claim.id,
+        dispatcherId,
+      }))
+    ) {
+      await finish("skipped", "Schedule changed before the run started.");
+      return { status: "stale" };
+    }
     const response = await createAgentTriggerPost({
       endpoint: "/api/agent",
       resolveIdentity: async () => ({
@@ -153,10 +197,12 @@ export const scheduledAgentRun = schemaTask({
     if (!response.ok) {
       // Keep failure details content-free. The normal Agent route owns detailed diagnostics.
       await finish(
-        "failed",
-        response.status === 429
-          ? "Usage limit reached. Try again after your limit resets."
-          : "Could not start the Agent. Check your account and try Run now.",
+        response.status >= 500 ? "uncertain_start" : "failed",
+        response.status >= 500
+          ? "Could not confirm whether this Agent started. Check its task before replacing this schedule."
+          : response.status === 429
+            ? "Usage limit reached. Try again after your limit resets."
+            : "Could not start the Agent. Check your account and try Run now.",
       );
       return { status: "failed" };
     }
@@ -200,6 +246,25 @@ export const dispatchAgentSchedules = schedules.task({
         },
       );
     }
-    return { dispatched: due.length };
+    const queued = await getConvexClient().query(api.schedules.queuedManual, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    });
+    for (const request of queued) {
+      await tasks.trigger<typeof scheduledAgentRun>(
+        "scheduled-agent-run",
+        {
+          scheduleId: request.scheduleId,
+          revision: request.revision,
+          manual: true,
+          manualRequestId: request.requestId,
+          receiptId: request.id,
+        },
+        {
+          idempotencyKey: `schedule-manual:${request.id}`,
+          idempotencyKeyTTL: "24h",
+        },
+      );
+    }
+    return { dispatched: due.length + queued.length };
   },
 });

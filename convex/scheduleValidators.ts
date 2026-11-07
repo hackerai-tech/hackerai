@@ -21,6 +21,9 @@ export const scheduleDefinition = v.object({
   model: scheduleModel,
 });
 export const scheduleRunStatus = v.union(
+  v.literal("queued"),
+  v.literal("uncertain_start"),
+  v.literal("unconfirmed"),
   v.literal("starting"),
   v.literal("started"),
   v.literal("finished"),

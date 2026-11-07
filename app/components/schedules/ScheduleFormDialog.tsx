@@ -9,6 +9,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -373,50 +383,42 @@ export function ScheduleFormDialog({
               {error}
             </p>
           )}
-          {discard ? (
-            <div className="rounded-lg border p-3">
-              <p className="mb-2 text-sm">Discard your unsaved changes?</p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setDiscard(false)}
-                >
-                  Keep editing
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  onClick={onClose}
-                >
-                  Discard changes
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={close}
-                disabled={pending}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={pending}>
-                {pending && <Loader2 className="size-4 animate-spin" />}
-                {pending
-                  ? "Saving…"
-                  : editing
-                    ? "Save changes"
-                    : "Create schedule"}
-              </Button>
-            </div>
-          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={close}
+              disabled={pending}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending && <Loader2 className="size-4 animate-spin" />}
+              {pending
+                ? "Saving…"
+                : editing
+                  ? "Save changes"
+                  : "Create schedule"}
+            </Button>
+          </div>
         </form>
       </DialogContent>
+      <AlertDialog open={discard} onOpenChange={setDiscard}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard your unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your edits will be lost. The saved schedule will stay as it is.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction onClick={onClose}>
+              Discard changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

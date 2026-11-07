@@ -11,10 +11,12 @@ export type AgentSchedule = {
   id: string;
   definition: ScheduleDefinition;
   enabled: boolean;
+  consumed: boolean;
   nextRunAt: number | null;
   runs: ScheduleRun[];
 };
 export type SchedulesResponse = {
   enabled: boolean;
+  consumed: boolean;
   schedules: AgentSchedule[];
 };

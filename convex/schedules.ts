@@ -40,16 +40,22 @@ async function runState(
   ctx: QueryCtx | MutationCtx,
   run: Doc<"schedule_runs">,
 ) {
-  if (!run.trigger_run_id) return run.status;
   const chat = await ctx.db
     .query("chats")
     .withIndex("by_chat_id", (q) => q.eq("id", run.chat_id))
     .unique();
-  if (!chat || chat.deletion_started_at) return "deleted";
-  if (run.trigger_run_id && chat.active_trigger_run_id === run.trigger_run_id)
-    return "running";
-  if (chat.canceled_at) return "canceled";
-  return run.status === "started" ? "finishing" : run.status;
+  const hasTask = Boolean(
+    chat && chat.user_id === run.user_id && !chat.deletion_started_at,
+  );
+  if (!run.trigger_run_id) return { status: run.status, hasTask };
+  if (!hasTask) return { status: "deleted", hasTask: false };
+  if (chat?.active_trigger_run_id === run.trigger_run_id)
+    return { status: "running", hasTask };
+  if (chat?.canceled_at) return { status: "canceled", hasTask };
+  return {
+    status: run.status === "started" ? "finishing" : run.status,
+    hasTask,
+  };
 }
 
 export const list = query({
@@ -60,6 +66,7 @@ export const list = query({
       id: v.id("agent_schedules"),
       definition: scheduleDefinition,
       enabled: v.boolean(),
+      consumed: v.boolean(),
       nextRunAt: v.union(v.number(), v.null()),
       runs: v.array(
         v.object({
@@ -85,6 +92,7 @@ export const list = query({
         id: s._id,
         definition: s.definition,
         enabled: s.enabled,
+        consumed: s.consumed_at !== undefined,
         nextRunAt: s.next_run_at ?? null,
         runs: await Promise.all(
           (
@@ -96,10 +104,7 @@ export const list = query({
           ).map(async (r) => ({
             id: r._id,
             chatId: r.chat_id,
-            hasTask:
-              Boolean(r.trigger_run_id) &&
-              (await runState(ctx, r)) !== "deleted",
-            status: await runState(ctx, r),
+            ...(await runState(ctx, r)),
             detail: r.detail ?? null,
             createdAt: r.created_at,
           })),
@@ -124,11 +129,25 @@ export const save = mutation({
     if (next === null) throw new ConvexError("Choose a time in the future.");
     if (args.id) {
       const row = await owned(ctx, args.id, args.userId);
+      const sameTiming =
+        JSON.stringify(row.definition.timing) ===
+        JSON.stringify(definition.timing);
+      const rearmed =
+        row.consumed_at !== undefined &&
+        definition.timing.type === "once" &&
+        !sameTiming;
+      const enabled = row.enabled || rearmed;
       await ctx.db.patch(row._id, {
         definition,
         organization_id: args.organizationId,
         revision: row.revision + 1,
-        next_run_at: row.enabled ? next : undefined,
+        enabled,
+        consumed_at: rearmed ? undefined : row.consumed_at,
+        next_run_at: enabled
+          ? sameTiming && row.next_run_at !== undefined
+            ? row.next_run_at
+            : next
+          : undefined,
         updated_at: now,
       });
       return row._id;
@@ -247,6 +266,8 @@ export const claim = mutation({
     revision: v.number(),
     at: v.optional(v.number()),
     manual: v.boolean(),
+    queueOnly: v.optional(v.boolean()),
+    dispatcherRunId: v.optional(v.string()),
     dispatcherId: v.string(),
     chatId: v.string(),
   },
@@ -268,11 +289,22 @@ export const claim = mutation({
         q.eq("schedule_id", s._id).eq("occurrence", occurrence),
       )
       .unique();
-    if (existing)
-      return existing.dispatcher_id === args.dispatcherId &&
-        existing.status === "starting"
-        ? { id: existing._id, chatId: existing.chat_id }
-        : null;
+    if (existing) {
+      if (
+        args.queueOnly ||
+        existing.dispatcher_id !== args.dispatcherId ||
+        !["queued", "starting"].includes(existing.status)
+      )
+        return null;
+      if (existing.status === "queued")
+        await ctx.db.patch(existing._id, {
+          status: "starting",
+          dispatcher_run_id: args.dispatcherRunId,
+        });
+      return { id: existing._id, chatId: existing.chat_id };
+    }
+    if (args.queueOnly && !args.manual)
+      throw new ConvexError("Only Run now can be queued manually.");
     if (!args.manual && !s.enabled) return null;
     if (
       !args.manual &&
@@ -284,8 +316,10 @@ export const claim = mutation({
         "Wait a minute before running this schedule again.",
       );
     const active = s.active_run_id ? await ctx.db.get(s.active_run_id) : null;
-    const activeState = active ? await runState(ctx, active) : null;
+    const activeState = active ? (await runState(ctx, active)).status : null;
     const busy =
+      (activeState === "queued" && active?.revision === s.revision) ||
+      activeState === "uncertain_start" ||
       activeState === "starting" ||
       activeState === "running" ||
       activeState === "started" ||
@@ -298,8 +332,9 @@ export const claim = mutation({
       occurrence,
       revision: s.revision,
       dispatcher_id: args.dispatcherId,
+      dispatcher_run_id: args.dispatcherRunId,
       chat_id: args.chatId,
-      status: busy ? "skipped" : "starting",
+      status: busy ? "skipped" : args.queueOnly ? "queued" : "starting",
       detail: busy ? "Previous run is still in progress." : undefined,
       created_at: now,
     });
@@ -308,7 +343,9 @@ export const claim = mutation({
       : nextScheduledTime(s.definition.timing, now);
     await ctx.db.patch(s._id, {
       next_run_at: next ?? undefined,
-      ...(!args.manual && next === null ? { enabled: false } : {}),
+      ...(!args.manual && next === null
+        ? { enabled: false, consumed_at: now }
+        : {}),
       ...(!busy ? { active_run_id: runId } : {}),
       ...(args.manual ? { last_manual_at: now } : {}),
       updated_at: now,
@@ -337,7 +374,7 @@ export const finishDispatch = mutation({
     validateServiceKey(args.serviceKey);
     const r = await ctx.db.get(args.id);
     if (!r || r.dispatcher_id !== args.dispatcherId) return null;
-    if (r.status === "started") return null;
+    if (!["queued", "starting"].includes(r.status)) return null;
     await ctx.db.patch(r._id, {
       status: args.status,
       trigger_run_id: args.triggerRunId,
@@ -356,6 +393,7 @@ export const failDispatcher = mutation({
     at: v.optional(v.number()),
     manual: v.boolean(),
     dispatcherId: v.string(),
+    onlyCheck: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -372,22 +410,28 @@ export const failDispatcher = mutation({
     if (
       !row ||
       row.dispatcher_id !== args.dispatcherId ||
-      row.status !== "starting"
+      !["queued", "starting"].includes(row.status)
     )
       return null;
+    await ctx.db.patch(row._id, { last_checked_at: Date.now() });
+    if (args.onlyCheck) return null;
     // If the child started before its receipt write failed, retain the real run.
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
       .unique();
-    if (chat?.active_trigger_run_id || chat?.last_run_finished_at) {
+    if (chat?.active_trigger_run_id) {
       await ctx.db.patch(row._id, {
         status: "started",
         trigger_run_id: chat.active_trigger_run_id,
       });
     } else {
       await ctx.db.patch(row._id, {
-        status: "failed",
+        status: chat?.last_run_finished_at
+          ? "unconfirmed"
+          : row.dispatch_requested_at !== undefined
+            ? "uncertain_start"
+            : "failed",
         detail:
           "The run could not be confirmed. Check its task before trying again.",
       });
@@ -406,13 +450,18 @@ export const unsettled = query({
     const rows = args.userId
       ? await ctx.db
           .query("schedule_runs")
-          .withIndex("by_user_and_status", (q) =>
-            q.eq("user_id", args.userId!).eq("status", "started"),
+          .withIndex("by_user_status_and_last_check", (q) =>
+            q
+              .eq("user_id", args.userId!)
+              .eq("status", "started")
+              .lt("last_checked_at", Date.now() - 30000),
           )
           .take(50)
       : await ctx.db
           .query("schedule_runs")
-          .withIndex("by_status", (q) => q.eq("status", "started"))
+          .withIndex("by_status_and_last_check", (q) =>
+            q.eq("status", "started").lt("last_checked_at", Date.now() - 30000),
+          )
           .take(50);
     return rows.flatMap((r) =>
       r.trigger_run_id ? [{ id: r._id, triggerRunId: r.trigger_run_id }] : [],
@@ -428,6 +477,8 @@ export const recordOutcome = mutation({
       v.literal("finished"),
       v.literal("failed"),
       v.literal("canceled"),
+      v.literal("unconfirmed"),
+      v.literal("pending"),
     ),
   },
   returns: v.null(),
@@ -440,13 +491,123 @@ export const recordOutcome = mutation({
       row.status !== "started"
     )
       return null;
+    await ctx.db.patch(row._id, { last_checked_at: Date.now() });
+    if (args.status === "pending") return null;
+    if (args.status === "unconfirmed") {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
+        .unique();
+      // Cleanup proves execution ended, while its outcome remains unknown. Never unlock a still-active task.
+      if (
+        chat &&
+        !chat.deletion_started_at &&
+        (!chat.last_run_finished_at || chat.active_trigger_run_id)
+      )
+        return null;
+    }
     await ctx.db.patch(row._id, {
       status: args.status,
       detail:
-        args.status === "failed"
-          ? "The Agent run failed. Open its task for any saved output, or try Run now."
-          : undefined,
+        args.status === "unconfirmed"
+          ? "The result could not be confirmed. Open its task to inspect any saved output."
+          : args.status === "failed"
+            ? "The Agent run failed. Open its task for any saved output, or try Run now."
+            : undefined,
     });
     return null;
+  },
+});
+
+/** Durable manual outbox: the API can acknowledge a real receipt before external dispatch. */
+export const queuedManual = query({
+  args: { serviceKey: v.string() },
+  returns: v.array(
+    v.object({
+      id: v.id("schedule_runs"),
+      scheduleId: v.id("agent_schedules"),
+      revision: v.number(),
+      requestId: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("schedule_runs")
+      .withIndex("by_status_and_last_check", (q) => q.eq("status", "queued"))
+      .take(50);
+    return rows.map((r) => ({
+      id: r._id,
+      scheduleId: r.schedule_id,
+      revision: r.revision,
+      requestId: r.dispatcher_id,
+    }));
+  },
+});
+
+export const beginDispatch = mutation({
+  args: {
+    serviceKey: v.string(),
+    id: v.id("schedule_runs"),
+    dispatcherId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db.get(args.id);
+    if (
+      !row ||
+      row.status !== "starting" ||
+      row.dispatcher_id !== args.dispatcherId
+    )
+      return false;
+    const schedule = await ctx.db.get(row.schedule_id);
+    if (
+      !schedule ||
+      schedule.revision !== row.revision ||
+      (await isUserDeletionFenced(ctx.db, row.user_id))
+    )
+      return false;
+    await ctx.db.patch(row._id, { dispatch_requested_at: Date.now() });
+    return true;
+  },
+});
+/** Repair abandoned dispatcher receipts only after its real terminal state is read. */
+export const abandonedDispatches = query({
+  args: { serviceKey: v.string() },
+  returns: v.array(
+    v.object({
+      scheduleId: v.id("agent_schedules"),
+      revision: v.number(),
+      at: v.optional(v.number()),
+      manual: v.boolean(),
+      dispatcherId: v.string(),
+      dispatcherRunId: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("schedule_runs")
+      .withIndex("by_status_and_last_check", (q) =>
+        q.eq("status", "starting").lt("last_checked_at", Date.now() - 60000),
+      )
+      .take(50);
+    return rows.flatMap((row) =>
+      row.created_at < Date.now() - 600000 && row.dispatcher_run_id
+        ? [
+            {
+              scheduleId: row.schedule_id,
+              revision: row.revision,
+              manual: row.occurrence.startsWith("manual:"),
+              ...(row.occurrence.startsWith("manual:")
+                ? {}
+                : { at: Number(row.occurrence.split(":")[1]) }),
+              dispatcherId: row.dispatcher_id,
+              dispatcherRunId: row.dispatcher_run_id,
+            },
+          ]
+        : [],
+    );
   },
 });

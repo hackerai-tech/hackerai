@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexError } from "convex/values";
-import { tasks } from "@trigger.dev/sdk";
+import { randomUUID } from "node:crypto";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -14,7 +14,6 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
 import { phLogger } from "@/lib/posthog/server";
-import type { scheduledAgentRun } from "@/trigger/schedules";
 
 export const maxDuration = 60;
 const serviceKey = () => process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -23,7 +22,16 @@ function errorResponse(error: unknown) {
   if (error instanceof ConvexError && typeof error.data === "string") {
     return NextResponse.json(
       { message: error.data },
-      { status: error.data === "Schedule not found." ? 404 : 400 },
+      {
+        status:
+          error.data === "Schedule not found."
+            ? 404
+            : error.data.startsWith("Wait a minute")
+              ? 429
+              : error.data.includes("already has a run")
+                ? 409
+                : 400,
+      },
     );
   }
   console.error("Schedule request failed", {
@@ -165,16 +173,23 @@ export async function PATCH(req: NextRequest) {
           { message: "Schedule not found." },
           { status: 404 },
         );
-      const handle = await tasks.trigger<typeof scheduledAgentRun>(
-        "scheduled-agent-run",
-        { scheduleId: id, revision: schedule.revision, manual: true },
-        {
-          idempotencyKey: `schedule-manual:${id}:${Math.floor(Date.now() / 60000)}`,
-          idempotencyKeyTTL: "2m",
-        },
-      );
+      const requestId = randomUUID();
+      const receipt = await db.mutation(api.schedules.claim, {
+        ...ctx.args,
+        id,
+        revision: schedule.revision,
+        manual: true,
+        queueOnly: true,
+        dispatcherId: requestId,
+        chatId: randomUUID(),
+      });
+      if (!receipt)
+        return NextResponse.json(
+          { message: "Schedule changed. Refresh and try again." },
+          { status: 409 },
+        );
       return NextResponse.json(
-        { accepted: true, requestId: handle.id },
+        { accepted: true, requestId: receipt.id },
         { status: 202 },
       );
     }

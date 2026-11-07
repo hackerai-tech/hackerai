@@ -44,6 +44,7 @@ jest.mock("@/convex/_generated/api", () => ({
       finishDispatch: "finish",
       failDispatcher: "fail",
       due: "due",
+      beginDispatch: "begin",
     },
   },
 }));
@@ -73,7 +74,11 @@ beforeEach(() => {
   mockQuery.mockResolvedValue(schedule);
   mockMutation.mockImplementation((fn: string) =>
     Promise.resolve(
-      fn === "claim" ? { id: "receipt", chatId: "stable-chat" } : null,
+      fn === "claim"
+        ? { id: "receipt", chatId: "stable-chat" }
+        : fn === "begin"
+          ? true
+          : null,
     ),
   );
   mockEntitlement.mockResolvedValue({

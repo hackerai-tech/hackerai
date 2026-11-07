@@ -295,6 +295,7 @@ export default defineSchema({
     next_run_at: v.optional(v.number()),
     active_run_id: v.optional(v.id("schedule_runs")),
     last_manual_at: v.optional(v.number()),
+    consumed_at: v.optional(v.number()),
     created_at: v.number(),
     updated_at: v.number(),
   })
@@ -306,6 +307,9 @@ export default defineSchema({
     occurrence: v.string(),
     revision: v.number(),
     dispatcher_id: v.string(),
+    dispatcher_run_id: v.optional(v.string()),
+    dispatch_requested_at: v.optional(v.number()),
+    last_checked_at: v.optional(v.number()),
     chat_id: v.string(),
     trigger_run_id: v.optional(v.string()),
     status: scheduleRunStatus,
@@ -314,8 +318,12 @@ export default defineSchema({
   })
     .index("by_user_id", ["user_id"])
     .index("by_schedule_id", ["schedule_id"])
-    .index("by_status", ["status"])
-    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_status_and_last_check", ["status", "last_checked_at"])
+    .index("by_user_status_and_last_check", [
+      "user_id",
+      "status",
+      "last_checked_at",
+    ])
     .index("by_schedule_and_occurrence", ["schedule_id", "occurrence"]),
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),

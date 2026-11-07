@@ -44,9 +44,6 @@ jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockQuery, mutation: mockMutation }),
 }));
-jest.mock("@trigger.dev/sdk", () => ({
-  tasks: { trigger: (...args: unknown[]) => mockTrigger(...args) },
-}));
 jest.mock("@/convex/_generated/api", () => ({
   api: {
     schedules: {
@@ -55,6 +52,7 @@ jest.mock("@/convex/_generated/api", () => ({
       setEnabled: "setEnabled",
       getForDispatch: "getForDispatch",
       remove: "remove",
+      claim: "claim",
     },
   },
 }));
@@ -63,6 +61,7 @@ import { GET, POST, PATCH, DELETE } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { canUseSchedules } from "@/lib/schedules/access";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import { ConvexError } from "convex/values";
 import { ChatSDKError } from "@/lib/errors";
 const mockQuery = jest.fn(),
   mockMutation = jest.fn(),
@@ -96,7 +95,11 @@ describe("schedule HTTP boundary", () => {
       organizationId: "org",
     });
     (canUseSchedules as jest.Mock).mockResolvedValue(true);
-    mockMutation.mockResolvedValue("saved");
+    mockMutation.mockImplementation((fn) =>
+      Promise.resolve(
+        fn === "claim" ? { id: "receipt", chatId: "c" } : "saved",
+      ),
+    );
     mockQuery.mockResolvedValue([]);
     mockTrigger.mockResolvedValue({ id: "dispatcher" });
   });
@@ -186,10 +189,32 @@ describe("schedule HTTP boundary", () => {
     );
     expect(response.status).toBe(202);
     expect(await response.json()).toMatchObject({ accepted: true });
-    expect(mockTrigger).toHaveBeenCalledWith(
-      "scheduled-agent-run",
-      { scheduleId: "s", revision: 3, manual: true },
-      expect.anything(),
+    expect(mockMutation).toHaveBeenCalledWith(
+      "claim",
+      expect.objectContaining({
+        id: "s",
+        userId: "owner",
+        revision: 3,
+        manual: true,
+        queueOnly: true,
+      }),
     );
+  });
+});
+
+it("returns an immediate throttle error instead of promising another task", async () => {
+  (getUserIDAndPro as jest.Mock).mockResolvedValue({
+    userId: "owner",
+    subscription: "pro",
+  });
+  (canUseSchedules as jest.Mock).mockResolvedValue(true);
+  mockQuery.mockResolvedValue({ userId: "owner", revision: 1 });
+  mockMutation.mockRejectedValueOnce(
+    new ConvexError("Wait a minute before running this schedule again."),
+  );
+  const response = await PATCH(request("PATCH", { id: "s", action: "run" }));
+  expect(response.status).toBe(429);
+  expect(await response.json()).toMatchObject({
+    message: expect.stringContaining("Wait a minute"),
   });
 });

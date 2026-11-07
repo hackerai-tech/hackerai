@@ -19,6 +19,7 @@ import {
   finishDispatch,
   failDispatcher,
   recordOutcome,
+  beginDispatch,
 } from "../schedules";
 import { assertUserCanAccessChatHistory } from "../lib/suspensionGuards";
 
@@ -55,6 +56,7 @@ function store() {
           eq: (a: any, b: any) => a === b,
           gt: (a: any, b: any) => a > b,
           lte: (a: any, b: any) => a <= b,
+          lt: (a: any, b: any) => a === undefined || a < b,
         }))
           q[op] = (field: string, value: any) => {
             filters.push((r) => test(r[field], value));
@@ -342,4 +344,163 @@ describe("durable schedules", () => {
     expect(tables.agent_schedules).toHaveLength(0);
     expect(tables.chats).toHaveLength(1);
   });
+});
+
+it("preserves the next interval when only instructions or name are edited", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const due = tables.agent_schedules[0].next_run_at;
+  jest.spyOn(Date, "now").mockReturnValue(due - 60000);
+  try {
+    await call(save, ctx, {
+      ...auth,
+      id,
+      definition: {
+        ...definition,
+        name: "Renamed",
+        prompt: "Updated instructions",
+      },
+    });
+    expect(tables.agent_schedules[0].next_run_at).toBe(due);
+  } finally {
+    jest.restoreAllMocks();
+  }
+});
+it("atomically reserves Run now and lets the worker reuse that queued receipt", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const args = {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "manual-request",
+    chatId: "stable",
+  };
+  const queued = await call(claim, ctx, { ...args, queueOnly: true });
+  expect(tables.schedule_runs[0].status).toBe("queued");
+  await expect(
+    call(claim, ctx, {
+      ...args,
+      dispatcherId: "second-request",
+      queueOnly: true,
+    }),
+  ).rejects.toThrow();
+  expect(await call(claim, ctx, { ...args, chatId: "different" })).toEqual(
+    queued,
+  );
+  expect(tables.schedule_runs[0].status).toBe("starting");
+});
+it("keeps a live task fenced when the provider outcome is unavailable", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const run = await call(claim, ctx, {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "request",
+    chatId: "chat",
+  });
+  await call(finishDispatch, ctx, {
+    serviceKey: "service",
+    id: run.id,
+    dispatcherId: "request",
+    status: "started",
+    triggerRunId: "child",
+  });
+  tables.chats.push({
+    _id: "c",
+    _creationTime: 1,
+    id: "chat",
+    user_id: "owner",
+    active_trigger_run_id: "child",
+  });
+  await call(recordOutcome, ctx, {
+    serviceKey: "service",
+    id: run.id,
+    triggerRunId: "child",
+    status: "unconfirmed",
+  });
+  expect(tables.schedule_runs[0].status).toBe("started");
+  tables.chats[0].active_trigger_run_id = undefined;
+  tables.chats[0].last_run_finished_at = Date.now();
+  await call(recordOutcome, ctx, {
+    serviceKey: "service",
+    id: run.id,
+    triggerRunId: "child",
+    status: "unconfirmed",
+  });
+  expect(tables.schedule_runs[0].status).toBe("unconfirmed");
+});
+it("rearms a consumed one-time schedule when its date is edited", async () => {
+  const { ctx, tables } = store();
+  const firstAt = Date.now() + 60000;
+  const id = await call(save, ctx, {
+    ...auth,
+    definition: { ...definition, timing: { type: "once", at: firstAt } },
+  });
+  jest.spyOn(Date, "now").mockReturnValue(firstAt);
+  try {
+    await call(claim, ctx, {
+      ...auth,
+      id,
+      revision: 1,
+      manual: false,
+      at: firstAt,
+      dispatcherId: "clock",
+      chatId: "chat",
+    });
+    expect(tables.agent_schedules[0].consumed_at).toBe(firstAt);
+    const later = firstAt + 60000;
+    await call(save, ctx, {
+      ...auth,
+      id,
+      definition: { ...definition, timing: { type: "once", at: later } },
+    });
+    expect(tables.agent_schedules[0]).toMatchObject({
+      enabled: true,
+      next_run_at: later,
+      consumed_at: undefined,
+    });
+  } finally {
+    jest.restoreAllMocks();
+  }
+});
+
+it("keeps an ambiguous start fenced instead of replaying it", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const args = {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "request",
+    chatId: "chat",
+  };
+  const receipt = await call(claim, ctx, args);
+  expect(
+    await call(beginDispatch, ctx, {
+      serviceKey: "service",
+      id: receipt.id,
+      dispatcherId: "request",
+    }),
+  ).toBe(true);
+  await call(failDispatcher, ctx, {
+    serviceKey: "service",
+    scheduleId: id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "request",
+  });
+  expect(tables.schedule_runs[0].status).toBe("uncertain_start");
+  jest.spyOn(Date, "now").mockReturnValue(Date.now() + 61000);
+  try {
+    await expect(
+      call(claim, ctx, { ...args, dispatcherId: "replacement" }),
+    ).rejects.toThrow("already has a run");
+  } finally {
+    jest.restoreAllMocks();
+  }
 });

@@ -15,6 +15,11 @@ billing-backed entitlement and the `scheduled-agent-tasks` flag, and starts the
 normal Agent handler with an internally supplied identity. HTTP request bodies
 cannot select that identity or override the fixed cloud/permission settings.
 
+Run now atomically reserves a queued receipt before the HTTP response acknowledges
+it. The clock drains this durable outbox, so a provider outage cannot silently
+lose an acknowledged request. Concurrent requests receive an immediate busy or
+throttle response.
+
 A retry keeps the same receipt, chat ID, message ID, and Agent idempotency key.
 Pause, resume, and edits increment the revision so queued work from older
 revisions cannot start. A run already handed to the Agent continues; users can
@@ -25,12 +30,19 @@ running, or awaiting authoritative completion. An overlapping clock occurrence
 is recorded as skipped. Missed intervals are not replayed as a backlog. Intervals
 restart from the dispatch time; fixed clock schedules use the selected IANA time
 zone. Nonexistent spring-forward times are skipped, and repeated fall-back times
-run only at their first occurrence. One-time schedules disable after being claimed.
+run only at their first occurrence. One-time schedules disable after being claimed;
+editing a consumed schedule to a future one-time date rearms it. Editing only a
+name or instructions preserves an interval's existing next run.
 
 Clearing `active_trigger_run_id` proves cleanup, not success. Reconciliation reads
 the actual Trigger terminal outcome before recording finished, failed, or canceled.
-Unavailable status reads preserve an unsettled state. Final dispatcher failure
+Status reads are throttled per receipt and rotate the reconciliation batch. If
+the provider outcome is unavailable, independently verified task cleanup permits
+an **unconfirmed** result without claiming success; a still-active task remains
+fenced. Final dispatcher failure
 checks for an already-started child instead of replaying an uncertain start.
+An ambiguous start remains fenced as **Start unconfirmed** until it can be
+verified. A failed status read never authorizes an automatic replacement run.
 
 Each account may retain up to 20 schedules. Each schedule retains its latest 200
 run receipts and shows its latest five runs; normal task retention is independent.

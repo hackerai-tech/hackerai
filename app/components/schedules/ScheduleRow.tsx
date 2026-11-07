@@ -26,6 +26,9 @@ import { describeTiming } from "@/lib/schedules/recurrence";
 import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 
 const LABELS: Record<string, string> = {
+  queued: "Queued",
+  uncertain_start: "Start unconfirmed",
+  unconfirmed: "Unconfirmed",
   starting: "Starting",
   started: "Started",
   running: "Running",
@@ -90,11 +93,15 @@ export function ScheduleRow({
   const latest = schedule.runs[0];
   const busy =
     latest &&
-    ["starting", "started", "running", "finishing"].includes(latest.status);
-  const completed =
-    !schedule.enabled &&
-    schedule.definition.timing.type === "once" &&
-    schedule.runs.length > 0;
+    [
+      "queued",
+      "starting",
+      "started",
+      "running",
+      "finishing",
+      "uncertain_start",
+    ].includes(latest.status);
+  const completed = !schedule.enabled && schedule.consumed;
   return (
     <li className="p-4 sm:p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">

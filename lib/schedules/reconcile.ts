@@ -10,13 +10,42 @@ export async function reconcileScheduleRuns(userId?: string) {
     serviceKey,
     ...(userId ? { userId } : {}),
   });
-  // Bounded batches avoid bursting the provider API for an account's recent runs.
+  if (!userId) {
+    const abandoned = await db.query(api.schedules.abandonedDispatches, {
+      serviceKey,
+    });
+    for (const { dispatcherRunId, ...receipt } of abandoned) {
+      let terminal = false;
+      try {
+        const run = await runs.retrieve(dispatcherRunId);
+        terminal = [
+          "COMPLETED",
+          "FAILED",
+          "CANCELED",
+          "CRASHED",
+          "SYSTEM_FAILURE",
+          "EXPIRED",
+          "TIMED_OUT",
+        ].includes(run.status);
+      } catch {
+        /* Preserve ambiguous dispatcher state. */
+      }
+      await db.mutation(api.schedules.failDispatcher, {
+        serviceKey,
+        ...receipt,
+        onlyCheck: !terminal,
+      });
+    }
+  }
   for (let start = 0; start < pending.length; start += 5) {
     await Promise.all(
       pending.slice(start, start + 5).map(async (row) => {
+        let status:
+          "finished" | "failed" | "canceled" | "unconfirmed" | "pending" =
+          "pending";
         try {
           const run = await runs.retrieve(row.triggerRunId);
-          const status =
+          status =
             run.status === "COMPLETED"
               ? "finished"
               : run.status === "CANCELED"
@@ -29,17 +58,17 @@ export async function reconcileScheduleRuns(userId?: string) {
                       "TIMED_OUT",
                     ].includes(run.status)
                   ? "failed"
-                  : null;
-          if (status)
-            await db.mutation(api.schedules.recordOutcome, {
-              serviceKey,
-              id: row.id,
-              triggerRunId: row.triggerRunId,
-              status,
-            });
+                  : "pending";
         } catch {
-          // Preserve unknown state; failed status reads never imply completion.
+          // The backend only settles an unknown outcome after independently verified task cleanup.
+          status = "unconfirmed";
         }
+        await db.mutation(api.schedules.recordOutcome, {
+          serviceKey,
+          id: row.id,
+          triggerRunId: row.triggerRunId,
+          status,
+        });
       }),
     );
   }

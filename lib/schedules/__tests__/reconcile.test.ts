@@ -6,7 +6,12 @@ jest.mock("@/lib/db/convex-client", () => ({
 }));
 jest.mock("@/convex/_generated/api", () => ({
   api: {
-    schedules: { unsettled: "unsettled", recordOutcome: "recordOutcome" },
+    schedules: {
+      unsettled: "unsettled",
+      recordOutcome: "recordOutcome",
+      abandonedDispatches: "abandoned",
+      failDispatcher: "fail",
+    },
   },
 }));
 import { reconcileScheduleRuns } from "../reconcile";
@@ -15,7 +20,11 @@ const mockRetrieve = jest.fn(),
   mockMutation = jest.fn();
 beforeEach(() => {
   jest.clearAllMocks();
-  mockQuery.mockResolvedValue([{ id: "receipt", triggerRunId: "run" }]);
+  mockQuery.mockImplementation((fn) =>
+    Promise.resolve(
+      fn === "unsettled" ? [{ id: "receipt", triggerRunId: "run" }] : [],
+    ),
+  );
 });
 it.each([
   ["COMPLETED", "finished"],
@@ -37,10 +46,16 @@ it.each([
 it("preserves an unknown outcome when a status request fails", async () => {
   mockRetrieve.mockRejectedValue(Error("unavailable"));
   await reconcileScheduleRuns();
-  expect(mockMutation).not.toHaveBeenCalled();
+  expect(mockMutation).toHaveBeenCalledWith(
+    "recordOutcome",
+    expect.objectContaining({ status: "unconfirmed" }),
+  );
 });
 it("does not label a running or waiting Agent completed", async () => {
   mockRetrieve.mockResolvedValue({ status: "WAITING" });
   await reconcileScheduleRuns();
-  expect(mockMutation).not.toHaveBeenCalled();
+  expect(mockMutation).toHaveBeenCalledWith(
+    "recordOutcome",
+    expect.objectContaining({ status: "pending" }),
+  );
 });
