@@ -13,6 +13,7 @@ import ChatHeader from "@/app/components/ChatHeader";
 import { KeyboardShortcuts } from "@/app/components/KeyboardShortcuts";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useComposerInput } from "@/app/contexts/ComposerState";
 import { useEffect, useRef, useState } from "react";
@@ -112,6 +113,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
     messages: undefined,
   }));
   const loadGenerationRef = useRef(0);
+  const sidebarOpenerRef = useRef<HTMLElement | null>(null);
 
   // Validate shareId format before making database query
   const isValidUUID = UUID_REGEX.test(shareId);
@@ -328,16 +330,37 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         {isMobile && <SharedComputerSidebarMobile messages={messages || []} />}
 
         {/* Overlay Chat Sidebar - Mobile screens for logged users */}
-        {isMobile && !authLoading && user && chatSidebarOpen && (
-          <div
-            className="fixed inset-0 z-50 bg-background"
-            data-shortcuts-scope="navigation"
-          >
-            <MainSidebar
-              isMobileOverlay
-              onClose={() => setChatSidebarOpen(false)}
-            />
-          </div>
+        {isMobile && !authLoading && user && (
+          <Sheet open={chatSidebarOpen} onOpenChange={setChatSidebarOpen}>
+            <SheetContent
+              side="left"
+              className="w-80 max-w-full gap-0 [&>button]:hidden"
+              data-shortcuts-scope="navigation"
+              aria-describedby={undefined}
+              onOpenAutoFocus={() => {
+                sidebarOpenerRef.current =
+                  document.activeElement as HTMLElement;
+              }}
+              onCloseAutoFocus={(event) => {
+                event.preventDefault();
+                const opener = sidebarOpenerRef.current;
+                if (opener?.isConnected && opener !== document.body)
+                  opener.focus();
+                else
+                  document
+                    .querySelector<HTMLElement>(
+                      'button[aria-label="Open sidebar"]',
+                    )
+                    ?.focus();
+              }}
+            >
+              <SheetTitle className="sr-only">Task sidebar</SheetTitle>
+              <MainSidebar
+                isMobileOverlay
+                onClose={() => setChatSidebarOpen(false)}
+              />
+            </SheetContent>
+          </Sheet>
         )}
       </div>
     </SharedChatProvider>

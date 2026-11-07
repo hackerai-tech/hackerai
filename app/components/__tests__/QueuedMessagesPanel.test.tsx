@@ -2,6 +2,8 @@ import "@testing-library/jest-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import type { QueuedMessage } from "@/types/chat";
+import { SubmitStopButton } from "../ChatInput/SubmitStopButton";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const messages: QueuedMessage[] = [
   {
@@ -17,6 +19,54 @@ const messages: QueuedMessage[] = [
 ];
 
 describe("QueuedMessagesPanel", () => {
+  it("cancels a queued edit with Escape while leaving the response running", async () => {
+    const onStop = jest.fn();
+    render(
+      <TooltipProvider>
+        <QueuedMessagesPanel
+          messages={[messages[0]]}
+          onSendNow={jest.fn()}
+          onEdit={jest.fn()}
+          onEditingMessageChange={jest.fn()}
+          onDelete={jest.fn()}
+          isStreaming
+        />
+        <SubmitStopButton
+          isGenerating
+          hideStop={false}
+          onStop={onStop}
+          onSubmit={jest.fn()}
+          status="streaming"
+          isUploadingFiles={false}
+          input=""
+          uploadedFiles={[]}
+          chatMode="agent"
+        />
+      </TooltipProvider>,
+    );
+    fireEvent.keyDown(
+      screen.getByRole("button", {
+        name: "More options for queued message: do ping now",
+      }),
+      { key: "Enter" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Edit message" }),
+    );
+    fireEvent.keyDown(
+      screen.getByRole("textbox", { name: "Edit queued message" }),
+      { key: "Escape" },
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Edit queued message" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Stop generation" }),
+    ).toBeInTheDocument();
+    expect(onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
   it("shows a single queued message directly with compact steer actions", async () => {
     const onSendNow = jest.fn();
     const onDelete = jest.fn();
