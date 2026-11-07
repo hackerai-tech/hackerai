@@ -160,6 +160,64 @@ it("Stop interrupts the dedicated wait and never reports a successful handoff", 
   expect(jest.getTimerCount()).toBe(0);
 });
 
+it.each(["restored", "failed", "stopped"])(
+  "keeps managed release scoped and handoff available: %s",
+  async (outcome) => {
+    const sessions = new BrowserSessions(
+      {
+        userId: "owner",
+        chatId: "chat",
+        runId: "run",
+        agentId: "parent",
+        serviceKey: "test-key",
+      },
+      undefined,
+      false,
+      { urls: ["https://example.com/login"], enabled: async () => true },
+    );
+    const sandboxes = ["first", "last"].map(
+      (sandboxId) =>
+        ({
+          sandboxId,
+          commands: {
+            run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+          },
+          files: { read: jest.fn(async () => sandboxId) },
+        }) as unknown as AnySandbox,
+    );
+    for (const sandbox of sandboxes) await sessions.prepare(sandbox);
+    mockQuery.mockResolvedValue({
+      state: "agent",
+      runActive: true,
+      updatedAt: 1,
+    });
+    const controller = new AbortController();
+    const release = jest.fn(async () => {
+      if (outcome === "stopped") controller.abort(new Error("stopped"));
+      if (outcome !== "restored") throw new Error("release unavailable");
+      return true;
+    });
+    const getBrowser = jest
+      .spyOn(sessions, "getChallengeBrowser")
+      .mockResolvedValue({ identity: "first", evaluate: release });
+    mockMutation.mockImplementation(async () => {
+      expect(release).toHaveBeenCalled();
+      throw new Error("end test after release");
+    });
+    mockMutation.mockClear();
+    await expect(
+      sessions.waitForHumanHandoff(controller.signal),
+    ).rejects.toThrow(
+      outcome === "stopped" ? "stopped" : "end test after release",
+    );
+    expect(mockMutation).toHaveBeenCalledTimes(outcome === "stopped" ? 0 : 1);
+    expect(getBrowser).toHaveBeenCalledWith(expect.any(AbortSignal), {
+      sandbox: sandboxes[0],
+      sessionName: "first",
+    });
+  },
+);
+
 it.each([undefined, true])(
   "passes the explicit repeat request (%s) through the tool to wait admission",
   async (requestAnotherTakeover) => {

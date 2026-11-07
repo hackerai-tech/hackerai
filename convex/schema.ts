@@ -6,6 +6,7 @@ import {
 } from "./lib/settlementReceiptValidators";
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
+import { captchaKind, captchaAttemptState } from "./captchaValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -362,6 +363,28 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["user_id"],
     }),
+
+  // Provider expense audit, not a customer wallet ledger. No URLs, widget keys,
+  // cookies, API credentials or solutions are retained here.
+  captcha_attempts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    run_id: v.string(),
+    kind: captchaKind,
+    state: captchaAttemptState,
+    task_id: v.optional(v.number()),
+    cost_dollars: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    reconciliation_polls: v.number(),
+  })
+    .index("by_run_id", ["run_id"])
+    .index("by_user_id", ["user_id"]),
+  captcha_daily_limits: defineTable({
+    bucket: v.string(),
+    day: v.string(),
+    attempts: v.number(),
+  }).index("by_bucket_and_day", ["bucket", "day"]),
 
   // One private cloud Chromium owner per Agent tool factory. Browser paths and
   // sandbox identifiers are returned only to service-authenticated functions.

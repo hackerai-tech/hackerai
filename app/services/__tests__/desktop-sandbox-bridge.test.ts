@@ -407,6 +407,21 @@ describe("desktop capability registration", () => {
     );
   });
 
+  it("advertises stdin only after native support is confirmed", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_command_stdin_support" ? true : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({ commandStdin: true }),
+      }),
+    );
+    await bridge.stop();
+  });
+
   it("selects command-based files when the legacy file transport is broken, and reprobes on reconnect", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
@@ -1110,6 +1125,41 @@ describe("heartbeat backpressure", () => {
 // ── targetConnectionId filtering ──────────────────────────────────────
 
 describe("targetConnectionId filtering", () => {
+  it("passes stdin as native IPC data without adding it to the command", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    let invoked!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      invoked = resolve;
+    });
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "execute_stream_command") {
+        capturedChannel?.onmessage?.({ type: "exit", exitCode: 0 });
+        invoked();
+      }
+    };
+    getPublicationHandler()({
+      data: {
+        type: "command",
+        commandId: "stdin-command",
+        command: "node helper.js",
+        stdin: "private-response",
+        stdinEncoding: "utf8",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await dispatched;
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.objectContaining({
+        command: "node helper.js",
+        stdin: "private-response",
+        stdinEncoding: "utf8",
+      }),
+    );
+    await bridge.stop();
+  });
   it("handles command when targetConnectionId matches this connection", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();

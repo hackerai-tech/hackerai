@@ -56,8 +56,11 @@ explicit window URL, distinct QA identifier and disabled updater. Changing this
 JSON does **not** change the binary's frontend or permissions. Verify the actual
 loaded URL with Computer Use after launch.
 
-For native tests against Preview, use `environment: "preview"`, the exact
-HTTPS Vercel deployment origin and `worker.environment: "preview"`. Independently
+For native tests against Preview, use `environment: "preview"`, either a
+locally built loopback frontend or the exact HTTPS Vercel deployment origin,
+and `worker.environment: "preview"`. Prefer the local frontend to avoid a separate
+Vercel login in the native WebView. `serve` also supports this local frontend
+with Preview services; it still binds only to loopback. Independently
 verify the designated HackerAI Developer Convex account/project/deployment and
 matching Trigger Preview before writing the record. The runner cannot infer
 that mapping from hostnames or the word Preview. It deliberately makes no cloud
@@ -104,7 +107,8 @@ the supervisor, which would prevent cleanup. Processes that intentionally daemon
 or escape the owned process group require separate ownership and cleanup; the
 runner is designed for the foreground native executable and `next start`.
 
-`serve` binds the configured loopback host and port. A busy port causes failure;
+`serve` requires an HTTP URL and binds the configured loopback host and port.
+A busy port causes failure;
 it never stops the existing server. The recorded Next build-ID hash identifies
 which prebuilt output was launched, but does not attest its source commit or
 build-time public environment. Verify those from the build record before reuse.

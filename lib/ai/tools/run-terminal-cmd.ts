@@ -1,4 +1,5 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
+import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
@@ -82,6 +83,11 @@ import {
   terminalSandboxInstance,
 } from "./utils/terminal-execution-record";
 import type { AnySandbox } from "@/types";
+import {
+  getStandaloneSnapshotHint,
+  getAgentBrowserSnapshotSession,
+  isAgentBrowserSnapshotCommand,
+} from "@/lib/utils/agent-browser-command";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -139,6 +145,11 @@ type E2BCommandHandle = {
 };
 
 export const createRunTerminalCmd = (context: ToolContext) => {
+  // Private per-invocation execution identity, never serialized into tool output.
+  const challengeTargets = new Map<
+    string,
+    { sandbox: AnySandbox; sessionName: string }
+  >();
   const {
     sandboxManager,
     writer,
@@ -248,7 +259,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     sandbox: AnySandbox,
     command: string,
     interactiveShell = false,
-  ) => {
+  ): Promise<Record<string, string> | undefined> => {
     const env = getAgentBrowserRuntimeEnv(command);
     const required = !!context.browserSessions && (interactiveShell || !!env);
     const gateOnly =
@@ -289,6 +300,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
   const terminalTool = tool({
     ...runTerminalCmdTool,
+    ...(context.checkBrowserChallenge && {
+      description: `${runTerminalCmdTool.description ?? ""}\n${CAPTCHA_TOOL_HINT}`,
+    }),
     execute: async (
       {
         command,
@@ -489,9 +503,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           });
           // A persistent shell can launch the browser in a later send, including
           // through a script. Establish its ownership before any input runs.
-          const agentBrowserEnv = isE2B
-            ? await prepareBrowserEnv(sandbox, command, true)
-            : undefined;
+          const agentBrowserEnv =
+            isE2B || context.browserSessions?.hasConnectedChallengeScope?.()
+              ? await prepareBrowserEnv(sandbox, command, true)
+              : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -516,6 +531,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cols,
                   rows,
                   cwd: sandbox.getWorkingDirectory(),
+                  ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -817,9 +833,30 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
-          const agentBrowserEnv = isE2BSandbox(sandboxInstance)
-            ? await prepareBrowserEnv(sandboxInstance, command)
-            : undefined;
+          const agentBrowserEnv =
+            isE2BSandbox(sandboxInstance) ||
+            context.browserSessions?.hasConnectedChallengeScope?.()
+              ? await prepareBrowserEnv(sandboxInstance, command)
+              : undefined;
+          const snapshot = getAgentBrowserSnapshotSession(command);
+          if (context.checkBrowserChallenge && snapshot) {
+            const target = context.browserSessions
+              ? await context.browserSessions
+                  .captureChallengeTarget(
+                    sandboxInstance,
+                    snapshot.sessionName,
+                    agentBrowserEnv?.AGENT_BROWSER_SESSION,
+                  )
+                  .catch(() => undefined)
+              : {
+                  sandbox: sandboxInstance,
+                  sessionName:
+                    snapshot.sessionName ??
+                    agentBrowserEnv?.AGENT_BROWSER_SESSION ??
+                    "default",
+                };
+            if (target) challengeTargets.set(toolCallId, target);
+          }
           captureAgentBrowserUsage({
             context,
             command,
@@ -1161,6 +1198,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStdout: forwardCommandOutput,
                     onStderr: forwardCommandOutput,
                   },
+              agentBrowserEnv,
             );
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
@@ -1175,7 +1213,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               : isE2BSandbox(sandboxInstance)
                 ? {
                     ...commonOptions,
-                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                     signal: abortSignal,
                   }
                 : commonOptions;
@@ -1565,10 +1602,86 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         options,
       ) => {
         // Terminal tools return one result, never an AsyncIterable.
-        const execute = async () =>
-          (await terminalTool.execute!(input, options)) as {
-            result: Record<string, unknown>;
-          };
+        const execute = async () => {
+          try {
+            if (/^\s*hackerai-captcha\b/.test(input.command)) {
+              const request =
+                /^hackerai-captcha (solve|release) --session ([A-Za-z0-9_-]{1,80})$/.exec(
+                  input.command.trim(),
+                );
+              if (
+                !request ||
+                input.is_background ||
+                input.interactive ||
+                !context.requestBrowserChallenge
+              )
+                return {
+                  result: {
+                    exitCode: 1,
+                    output:
+                      "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
+                  },
+                };
+              return {
+                result: {
+                  exitCode: 0,
+                  browserChallenge: await context.requestBrowserChallenge(
+                    request[1] as "solve" | "release",
+                    request[2],
+                    options.abortSignal,
+                  ),
+                },
+              };
+            }
+            const output = (await terminalTool.execute!(input, options)) as {
+              result: Record<string, unknown>;
+            };
+            // A completed direct snapshot discovers the on-demand capability.
+            // Only an explicit runtime request above can initiate a paid solve.
+            // The page is inspected through the owned browser, never from stdout.
+            if (
+              context.checkBrowserChallenge &&
+              !input.is_background &&
+              !input.interactive &&
+              output.result.exitCode === 0 &&
+              output.result.executionOutcome !== "unknown" &&
+              !output.result.error &&
+              !output.result.approvalDenied
+            ) {
+              if (!isAgentBrowserSnapshotCommand(input.command)) {
+                const snapshot = getStandaloneSnapshotHint(input.command);
+                return snapshot
+                  ? {
+                      result: {
+                        ...output.result,
+                        browserChallenge: {
+                          status: "snapshot_required",
+                          message: `To detect a CAPTCHA and load its solving instructions, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
+                        },
+                      },
+                    }
+                  : output;
+              }
+              const target = challengeTargets.get(options.toolCallId);
+              if (!target) return output;
+              const browserChallenge = await context.checkBrowserChallenge(
+                options.abortSignal,
+                target,
+              );
+              if (
+                (browserChallenge.status !== "unavailable" &&
+                  browserChallenge.status !== "no_pending_challenge") ||
+                ("providerTaskCreated" in browserChallenge &&
+                  browserChallenge.providerTaskCreated === true)
+              ) {
+                return { result: { ...output.result, browserChallenge } };
+              }
+            }
+            return output;
+          } finally {
+            challengeTargets.delete(options.toolCallId);
+          }
+        };
         return input.is_background || input.interactive
           ? execute()
           : trackForegroundCommand(context, execute);

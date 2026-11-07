@@ -1,6 +1,14 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
+import { createBrowserChallengeHandler } from "../captcha/browser-challenge";
+import { createCaptchaJournal } from "../captcha/journal";
+import {
+  isCaptchaEligible,
+  captchaAutomaticSolvingEnabled,
+  captchaFlag,
+} from "../captcha/policy";
+import { cloudflarePreviewUrls } from "../captcha/cloudflare";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -57,7 +65,10 @@ import {
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
-import { phLogger } from "@/lib/posthog/server";
+import {
+  phLogger,
+  getPostHogBooleanFlagDecisionForUser,
+} from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -272,6 +283,38 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
+        isCaptchaEligible(runtimePolicy.environment, userID),
+        {
+          urls:
+            serviceKey &&
+            !requestToolApproval &&
+            (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
+            isCaptchaEligible(runtimePolicy.environment, userID)
+              ? cloudflarePreviewUrls(runtimePolicy.environment)
+              : [],
+          enabled: async () => {
+            if (!captchaAutomaticSolvingEnabled(runtimePolicy.environment))
+              return false;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              return (
+                (await Promise.race([
+                  getPostHogBooleanFlagDecisionForUser(
+                    captchaFlag(runtimePolicy.environment!),
+                    userID,
+                    undefined,
+                    { sendFeatureFlagEvents: false },
+                  ),
+                  new Promise<false>((resolve) => {
+                    timer = setTimeout(() => resolve(false), 1000);
+                  }),
+                ])) === true
+              );
+            } finally {
+              clearTimeout(timer);
+            }
+          },
+        },
       )
     : undefined;
   const context: ToolContext = {
@@ -304,6 +347,30 @@ export const createTools = (
     onSandboxResourceMetrics,
     auxiliaryVision,
   };
+
+  // Keep attempt accounting across model fallback/schema rebuilds in this run.
+  const checkBrowserChallenge =
+    browserSessions &&
+    serviceKey &&
+    triggerRunId &&
+    !requestToolApproval &&
+    (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
+    isCaptchaEligible(runtimePolicy.environment, userID)
+      ? createBrowserChallengeHandler(
+          context,
+          runtimePolicy.environment,
+          runtimePolicy.signal,
+          undefined,
+          createCaptchaJournal({
+            serviceKey,
+            userId: userID,
+            chatId,
+            runId: triggerRunId,
+          }),
+        )
+      : undefined;
+  context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
+  context.requestBrowserChallenge = checkBrowserChallenge?.request;
 
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
@@ -472,6 +539,8 @@ export const createTools = (
   };
 
   return {
+    getCaptchaReceiptPrompt: () =>
+      checkBrowserChallenge?.getReceiptPrompt() ?? "",
     cloudNetworkPrompt: createCloudNetworkPrompt(
       userID,
       () =>
