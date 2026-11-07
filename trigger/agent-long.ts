@@ -3142,7 +3142,7 @@ export const agentLongTask = task({
                           : undefined,
                       pauseActiveTime: runtimeBudget.pause,
                       resumeActiveTime: runtimeBudget.resume,
-                      abortRun: () => userStopSignal.abort(),
+                      abortRun: () => stopSignal.abort("wait_for_user"),
                       revalidateAfterSuspend: revalidateAfterUserWait,
                     }),
                   }),
