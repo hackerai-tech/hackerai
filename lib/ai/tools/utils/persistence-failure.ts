@@ -156,6 +156,75 @@ export function checkpointCommandContext(error: unknown): {
   };
 }
 
+/** Retain fixed cloud SDK error labels/status only, never its private message. */
+export function checkpointCloudErrorContext(error: unknown): {
+  cloud_error_kind: string;
+  cloud_http_status: number | "none" | "other";
+} {
+  let kind = "other_error";
+  let status: unknown;
+  try {
+    if (typeof error !== "object" || error === null) kind = "thrown_value";
+    else {
+      // E2B 2.x errors expose these as data properties. Do not invoke getters.
+      const name = Object.getOwnPropertyDescriptor(error, "name")?.value;
+      switch (name) {
+        case "FileNotFoundError":
+          kind = "file_not_found";
+          break;
+        case "SandboxNotFoundError":
+          kind = "sandbox_not_found";
+          break;
+        case "NotFoundError":
+          kind = "not_found";
+          break;
+        case "TimeoutError":
+          kind = "timeout";
+          break;
+        case "InvalidArgumentError":
+          kind = "invalid_argument";
+          break;
+        case "NotEnoughSpaceError":
+          kind = "no_space";
+          break;
+        case "AuthenticationError":
+          kind = "authentication";
+          break;
+        case "RateLimitError":
+          kind = "rate_limit";
+          break;
+        case "ServiceBusyError":
+          kind = "service_busy";
+          break;
+        case "SandboxError":
+          kind = "sandbox_error";
+          break;
+      }
+      if (
+        kind === "other_error" &&
+        Object.getOwnPropertyDescriptor(error, "message")?.value ===
+          "Expected to receive information about written file"
+      )
+        kind = "empty_write_response";
+      status = Object.getOwnPropertyDescriptor(error, "statusCode")?.value;
+    }
+  } catch {
+    kind = "unreadable_error";
+  }
+  return {
+    cloud_error_kind: kind,
+    cloud_http_status:
+      status === undefined
+        ? "none"
+        : typeof status === "number" &&
+            Number.isInteger(status) &&
+            status >= 100 &&
+            status <= 599
+          ? status
+          : "other",
+  };
+}
+
 export const classifyPersistenceFailure = (
   error: unknown,
 ): PersistenceFailureCategory => {

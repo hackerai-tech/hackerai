@@ -2,6 +2,7 @@ import {
   classifyPersistenceFailure,
   checkpointFailureOrigin,
   checkpointCommandContext,
+  checkpointCloudErrorContext,
   type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
@@ -246,6 +247,7 @@ export function createTerminalRecordStore(
           // Optional adapter context must not change a best-effort save result.
         }
         try {
+          const local = isCentrifugoSandbox(sandbox);
           const session = Object.getOwnPropertyDescriptor(
             record,
             "session",
@@ -261,10 +263,9 @@ export function createTerminalRecordStore(
                     checkpoint_transport: ownerOnlyPosix
                       ? "posix_command"
                       : "native_file",
-                    checkpoint_backend: isCentrifugoSandbox(sandbox)
-                      ? "local"
-                      : "cloud",
+                    checkpoint_backend: local ? "local" : "cloud",
                     ...checkpointCommandContext(error),
+                    ...(!local ? checkpointCloudErrorContext(error) : {}),
                   },
                 }
               : undefined;
