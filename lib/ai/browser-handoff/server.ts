@@ -10,6 +10,8 @@ import { browserBridgeCommand } from "./bridge-program";
 import {
   browserDaemonCommand,
   BROWSER_DAEMON_PRECONDITION_REASONS,
+  BROWSER_WRAPPER_ACTIONS,
+  BROWSER_WRAPPER_AGES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -234,6 +236,12 @@ export type BrowserCaptureFailureContext = {
   capture_precondition_reason?: (typeof BROWSER_DAEMON_PRECONDITION_REASONS)[number];
   capture_precondition_error?:
     "missing" | "permission" | "not_directory" | "other";
+  capture_wrapper_receipt_version?: 1;
+  capture_wrapper_action?: (typeof BROWSER_WRAPPER_ACTIONS)[number];
+  capture_wrapper_phase?: "started" | "completed";
+  capture_wrapper_exit_code?: number | "none" | "other";
+  capture_wrapper_session_matches?: boolean;
+  capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
 };
 
 /**
@@ -366,7 +374,14 @@ export async function captureBrowserFrame(
         "none";
       const precondition: Pick<
         BrowserCaptureFailureContext,
-        "capture_precondition_reason" | "capture_precondition_error"
+        | "capture_precondition_reason"
+        | "capture_precondition_error"
+        | "capture_wrapper_receipt_version"
+        | "capture_wrapper_action"
+        | "capture_wrapper_phase"
+        | "capture_wrapper_exit_code"
+        | "capture_wrapper_session_matches"
+        | "capture_wrapper_age"
       > = {};
       try {
         if (error instanceof CommandExitError) {
@@ -386,7 +401,12 @@ export async function captureBrowserFrame(
             value <= 255
               ? value
               : "other";
-          if (stage === "stream_status" && code === 2) {
+          if (
+            stage === "stream_status" &&
+            typeof code === "number" &&
+            code >= 2 &&
+            code <= 6
+          ) {
             // Only this controlled helper's bounded failure JSON is eligible;
             // never inspect frame command output or retain raw SDK text.
             const stdout =
@@ -395,7 +415,10 @@ export async function captureBrowserFrame(
             if (typeof stdout === "string" && stdout.length <= 512) {
               const parsed = JSON.parse(stdout);
               const reason = parsed?.diagnostic_reason;
-              if (BROWSER_DAEMON_PRECONDITION_REASONS.includes(reason)) {
+              if (
+                code === 2 &&
+                BROWSER_DAEMON_PRECONDITION_REASONS.includes(reason)
+              ) {
                 precondition.capture_precondition_reason = reason;
                 const failure = parsed?.diagnostic_error;
                 if (
@@ -405,6 +428,30 @@ export async function captureBrowserFrame(
                   failure === "other"
                 )
                   precondition.capture_precondition_error = failure;
+              }
+              const phase = parsed?.wrapper_phase;
+              const exit = parsed?.wrapper_exit;
+              if (
+                parsed?.wrapper_receipt_version === 1 &&
+                BROWSER_WRAPPER_ACTIONS.includes(parsed.wrapper_action) &&
+                (phase === "started" || phase === "completed") &&
+                typeof parsed.wrapper_session_matches === "boolean" &&
+                BROWSER_WRAPPER_AGES.includes(parsed.wrapper_age) &&
+                (phase === "started"
+                  ? exit === "none"
+                  : exit === "other" ||
+                    (typeof exit === "number" &&
+                      Number.isInteger(exit) &&
+                      exit >= 0 &&
+                      exit <= 255))
+              ) {
+                precondition.capture_wrapper_receipt_version = 1;
+                precondition.capture_wrapper_action = parsed.wrapper_action;
+                precondition.capture_wrapper_phase = phase;
+                precondition.capture_wrapper_exit_code = exit;
+                precondition.capture_wrapper_session_matches =
+                  parsed.wrapper_session_matches;
+                precondition.capture_wrapper_age = parsed.wrapper_age;
               }
             }
           }

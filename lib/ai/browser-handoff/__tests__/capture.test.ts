@@ -31,6 +31,88 @@ const location = {
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
+it.each([2, 3])(
+  "carries only validated wrapper context from the failed status helper (%s)",
+  async (exitCode) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        wrapper_receipt_version: 1,
+        wrapper_action: "close",
+        wrapper_phase: "completed",
+        wrapper_exit: 37,
+        wrapper_session_matches: false,
+        wrapper_age: "lt60s",
+        session: "PRIVATE_NAME",
+        command: "PRIVATE_COMMAND",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: exitCode,
+      capture_wrapper_receipt_version: 1,
+      capture_wrapper_action: "close",
+      capture_wrapper_phase: "completed",
+      capture_wrapper_exit_code: 37,
+      capture_wrapper_session_matches: false,
+      capture_wrapper_age: "lt60s",
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it("rejects a partially invalid wrapper receipt without retaining its private fields", async () => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      wrapper_receipt_version: 1,
+      wrapper_action: "open",
+      wrapper_phase: "completed",
+      wrapper_exit: 0,
+      wrapper_session_matches: "PRIVATE",
+      wrapper_age: "lt60s",
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed).toHaveBeenCalledWith({
+    capture_stage: "stream_status",
+    capture_error_kind: "command_exit",
+    capture_command_exit_code: 2,
+    capture_precondition_reason: "socket_stat",
+    capture_precondition_error: "missing",
+  });
+});
+
 it.each([
   [
     JSON.stringify({
