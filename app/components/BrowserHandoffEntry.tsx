@@ -15,9 +15,11 @@ import { isSidebarTerminal } from "@/types/chat";
 export function BrowserHandoffEntry({
   chatId,
   messages,
+  persistedMessages,
 }: {
   chatId: string;
   messages: Message[];
+  persistedMessages?: Message[];
 }) {
   const [preference, setPreference] = useState<{
     chatId: string;
@@ -52,17 +54,21 @@ export function BrowserHandoffEntry({
     api.browserHandoffs.getForUser,
     isAuthenticated && chatId ? { chatId, agentId: "parent" } : "skip",
   );
-  const browserTool = useMemo(
-    () =>
-      extractAllSidebarContent(messages)
+  const browserTool = useMemo(() => {
+    // A saved handoff can arrive before its live tool chunk. Keep takeover
+    // reachable without replacing the SDK's in-flight messages.
+    for (const source of [messages, persistedMessages]) {
+      if (!source) continue;
+      const tool = extractAllSidebarContent(source)
         .reverse()
         .find(
           (content) =>
             isSidebarTerminal(content) &&
             /\bagent-browser\b/.test(content.command),
-        ),
-    [messages],
-  );
+        );
+      if (tool) return tool;
+    }
+  }, [messages, persistedMessages]);
 
   const showingGoalEditor =
     sidebarContent &&

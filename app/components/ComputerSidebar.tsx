@@ -394,6 +394,12 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     onNavigate: onNavigate ? navigateManually : undefined,
   });
 
+  const missingBrowserSelection =
+    currentIndex === -1 &&
+    !!sidebarContent &&
+    isSidebarTerminal(sidebarContent) &&
+    !!detectAgentBrowserUsage(sidebarContent.command);
+
   const handleJumpToLive = useCallback(() => {
     const latestTool = toolExecutions.at(-1);
     if (!latestTool || !onNavigate) return;
@@ -502,6 +508,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return;
     }
 
+    // Browser control has its own authenticated session lifecycle. A command
+    // opened from persisted history can be absent from the live stream; do not
+    // close or replace its preview while the user is taking control.
+    if (missingBrowserSelection) {
+      return;
+    }
+
     // currentIndex === -1 means the current sidebarContent is not found in toolExecutions
     // This happens when the message containing this tool was deleted
     const timeoutId = window.setTimeout(() => {
@@ -517,6 +530,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return () => window.clearTimeout(timeoutId);
   }, [
     currentIndex,
+    missingBrowserSelection,
     sidebarOpen,
     sidebarContent,
     status,
@@ -747,7 +761,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
-                liveSelection={isAtLive && isFollowingLive}
+                liveSelection={
+                  (isAtLive || missingBrowserSelection) && isFollowingLive
+                }
                 browserRequested={
                   !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
                 }

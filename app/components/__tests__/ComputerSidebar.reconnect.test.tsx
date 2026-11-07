@@ -353,6 +353,7 @@ describe("ComputerSidebar reconnect behavior", () => {
   it("carries an explicit waiting-session takeover through the real sidebar viewer", async () => {
     const originalFetch = global.fetch;
     const actions: string[] = [];
+    const onNavigate = jest.fn();
     const frame = {
       image: "data:image/png;base64,test",
       width: 800,
@@ -378,6 +379,9 @@ describe("ComputerSidebar reconnect behavior", () => {
           sidebarOpen
           closeSidebar={mockCloseSidebar}
           browserChatId="chat"
+          messages={[otherToolMessage]}
+          status="ready"
+          onNavigate={onNavigate}
           sidebarContent={{
             ...activeSidebarContent,
             command: "agent-browser snapshot -i",
@@ -393,6 +397,7 @@ describe("ComputerSidebar reconnect behavior", () => {
         screen.getByRole("button", { name: "Exit takeover" }),
       ).toBeEnabled();
       expect(actions).toEqual(["take"]);
+      expect(onNavigate).not.toHaveBeenCalled();
       view.unmount();
       expect(actions).toEqual(["take", "release"]);
     } finally {
@@ -723,6 +728,39 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(closeSidebar).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
   });
+
+  it.each([{ messages: [] }, { messages: [otherToolMessage] }])(
+    "retains a persisted browser selection while live tools are missing (%#)",
+    ({ messages }) => {
+      const closeSidebar = jest.fn();
+      const onNavigate = jest.fn();
+      render(
+        <ComputerSidebarBase
+          sidebarOpen
+          sidebarContent={{
+            command: "agent-browser snapshot -i",
+            output: "",
+            isExecuting: false,
+            toolCallId: "persisted-browser",
+            browserTakeoverRequest: {
+              requestId: "request",
+              sessionId: "session",
+            },
+          }}
+          closeSidebar={closeSidebar}
+          messages={messages}
+          onNavigate={onNavigate}
+          status="ready"
+        />,
+      );
+      act(() => jest.advanceTimersByTime(6_000));
+      expect(closeSidebar).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+        "agent-browser snapshot -i",
+      );
+    },
+  );
 
   it("waits before navigating away from genuinely missing content", () => {
     const closeSidebar = jest.fn();

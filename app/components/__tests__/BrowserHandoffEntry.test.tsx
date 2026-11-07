@@ -237,3 +237,60 @@ it("keeps takeover reachable while the Goal editor is open", () => {
     }),
   );
 });
+
+it("keeps persisted takeover reachable when the live message stream has not caught up", () => {
+  mockSession = {
+    state: "waiting",
+    sessionId: "persisted-session",
+    updatedAt: 9,
+  };
+  render(
+    <BrowserHandoffEntry
+      chatId="chat"
+      messages={[]}
+      persistedMessages={messages}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Agent needs your input",
+  );
+  expect(mockOpenSidebar).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({
+      toolCallId: "current-browser",
+      browserTakeoverRequest: {
+        sessionId: "persisted-session",
+        requestId: expect.any(String),
+      },
+    }),
+  );
+});
+
+it("prefers live browser progress over an older persisted browser command", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 10 };
+  const liveMessages = [
+    {
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-shell",
+          toolCallId: "live-browser",
+          state: "input-available",
+          input: { action: "exec", command: "agent-browser screenshot" },
+        },
+      ],
+    },
+  ];
+  render(
+    <BrowserHandoffEntry
+      chatId="chat"
+      messages={liveMessages}
+      persistedMessages={messages}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({ toolCallId: "live-browser" }),
+  );
+});

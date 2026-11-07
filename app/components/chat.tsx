@@ -3139,6 +3139,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                         <BrowserHandoffEntry
                           chatId={chatId}
                           messages={messages}
+                          persistedMessages={serverMessages}
                         />
                       ) : undefined
                     }
