@@ -4177,6 +4177,8 @@ export const agentLongTask = task({
                 runTimingTracker.startModelStream();
               },
               onModelStreamFinish: runTimingTracker.finishModelStream,
+              onMemoryActivity: (activity) =>
+                memoryTelemetry.recordActivity(activity),
               onModelChunk: () => {
                 if (
                   routingExperimentContext &&
