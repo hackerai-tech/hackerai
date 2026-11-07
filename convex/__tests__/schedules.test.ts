@@ -10,6 +10,9 @@ jest.mock("../lib/utils", () => ({
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn().mockResolvedValue(undefined),
 }));
+import { webcrypto } from "node:crypto";
+import { signServiceArgs } from "../../lib/db/service-proof";
+import * as scheduleFunctions from "../schedules";
 import {
   save,
   list,
@@ -84,13 +87,48 @@ function store() {
   return { ctx: { db } as any, tables };
 }
 const auth = { serviceKey: "service", userId: "owner" };
+const deployment = "https://schedules-fixture.convex.cloud";
+const originalEnvironment = { ...process.env };
+Object.defineProperty(globalThis, "crypto", {
+  value: webcrypto,
+  configurable: true,
+});
 const definition = {
   name: "Check",
   prompt: "Reply hello",
   model: "default" as const,
   timing: { type: "interval" as const, minutes: 15 },
 };
-const call = (fn: any, ctx: any, args: any) => fn.handler(ctx, args);
+const call = async (fn: any, ctx: any, args: any) => {
+  const name = `schedules:${Object.entries(scheduleFunctions).find(([, value]) => value === fn)![0]}`;
+  const type = [
+    "list",
+    "due",
+    "getForDispatch",
+    "unsettled",
+    "queuedManual",
+    "abandonedDispatches",
+  ].includes(name.split(":")[1])
+    ? "query"
+    : "mutation";
+  return fn.handler(
+    {
+      ...ctx,
+      meta: {
+        getFunctionMetadata: async () => ({ name, type, componentPath: "" }),
+      },
+    },
+    await signServiceArgs({ deployment, name, type }, args),
+  );
+};
+beforeEach(() => {
+  process.env.CONVEX_SERVICE_ROLE_KEY = auth.serviceKey;
+  process.env.CONVEX_CLOUD_URL = deployment;
+  delete process.env.CONVEX_SERVICE_AUTH_LEGACY_UNTIL;
+});
+afterAll(() => {
+  process.env = originalEnvironment;
+});
 describe("durable schedules", () => {
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date("2026-11-07T20:00:00Z"));

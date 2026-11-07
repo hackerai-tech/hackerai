@@ -4,7 +4,7 @@ import {
   mutation,
   type QueryCtx,
   type MutationCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import type { Doc, Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
