@@ -194,8 +194,11 @@ test("enriches only the retained SDK undefined-unhandled shape without changing 
     { ...entry, type: "Error" },
     {
       ...entry,
-      value: "Non-Error promise rejection captured with value: null",
+      value: "A different rejection message",
     },
+    { ...entry, value: 42 },
+    { ...entry, mechanism: { synthetic: true, type: "generic" } },
+    { ...entry, value: `prefix ${entry.value}` },
   ]) {
     const retained = enrichFrontendExceptionEvent({
       event: "$exception",
@@ -207,6 +210,15 @@ test("enriches only the retained SDK undefined-unhandled shape without changing 
       ),
     ).toBe(false);
   }
+  const multiple = enrichFrontendExceptionEvent({
+    event: "$exception",
+    properties: { $exception_list: [entry, entry] },
+  });
+  expect(
+    Object.keys(multiple.properties).some((key) =>
+      key.startsWith("hackerai_recent_rejection_"),
+    ),
+  ).toBe(false);
   stop();
   expect(
     Object.keys(enrichFrontendExceptionEvent(event).properties).filter((key) =>
@@ -222,4 +234,86 @@ test("enriches only the retained SDK undefined-unhandled shape without changing 
       key.startsWith("hackerai_recent_rejection_"),
     ),
   ).toBe(false);
+});
+
+test.each(["null", "[object Object]"])(
+  "enriches the retained non-undefined SDK rejection %s without reading its reason",
+  (value) => {
+    const forbidden = jest.fn(() => {
+      throw new Error("private-rejection-canary");
+    });
+    reject(
+      value === "null"
+        ? null
+        : Object.defineProperty({}, "private", { get: forbidden }),
+    );
+    const entry = {
+      type: "UnhandledRejection",
+      value: `Non-Error promise rejection captured with value: ${value}`,
+      mechanism: {
+        handled: false,
+        synthetic: value !== "null",
+        type: "generic",
+      },
+    };
+    const event = {
+      event: "$exception",
+      properties: { $exception_list: [entry] },
+    };
+    const original = JSON.parse(JSON.stringify(event.properties));
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(enriched.properties).toMatchObject({
+      hackerai_recent_rejection_count: 1,
+      hackerai_recent_rejection_detail_wrapper_count: 1,
+      hackerai_recent_rejection_undefined_reason_count: 0,
+    });
+    expect(enriched.properties.$exception_list).toEqual(
+      original.$exception_list,
+    );
+    expect(forbidden).not.toHaveBeenCalled();
+    const diagnostics = Object.fromEntries(
+      Object.entries(enriched.properties).filter(([key]) =>
+        key.startsWith("hackerai_recent_rejection_"),
+      ),
+    );
+    expect(
+      Object.values(diagnostics).every((item) =>
+        ["number", "boolean"].includes(typeof item),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(diagnostics)).not.toContain(
+      "private-rejection-canary",
+    );
+  },
+);
+
+test("removes stale non-undefined rejection context after account or consent changes", () => {
+  reject(null);
+  const event = {
+    event: "$exception",
+    properties: {
+      $exception_list: [
+        {
+          type: "UnhandledRejection",
+          value: "Non-Error promise rejection captured with value: null",
+          mechanism: { handled: false },
+        },
+      ],
+      hackerai_recent_rejection_count: 99,
+      hackerai_recent_rejection_version: 1,
+    },
+  };
+  for (const owner of ["different-owner", null]) {
+    identity.mockReturnValue(owner);
+    const enriched = enrichFrontendExceptionEvent({
+      ...event,
+      properties: { ...event.properties },
+    });
+    expect(
+      Object.keys(enriched.properties).some((key) =>
+        key.startsWith("hackerai_recent_rejection_"),
+      ),
+    ).toBe(false);
+  }
 });

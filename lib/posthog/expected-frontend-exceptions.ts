@@ -372,15 +372,17 @@ function getBrowserNetworkDetails() {
   };
 }
 
-/** Match the SDK's unhandled undefined shape without trusting its synthetic flag. */
-function isUndefinedUnhandledRejection(properties: Record<string, unknown>) {
+/** Match the SDK's unhandled non-Error shape without trusting its synthetic flag. */
+function isSdkNonErrorUnhandledRejection(properties: Record<string, unknown>) {
   const list = properties.$exception_list;
   if (!Array.isArray(list) || list.length !== 1) return false;
   const exception = list[0];
   return (
     exception?.type === "UnhandledRejection" &&
-    exception?.value ===
-      "Non-Error promise rejection captured with value: undefined" &&
+    typeof exception?.value === "string" &&
+    exception.value.startsWith(
+      "Non-Error promise rejection captured with value: ",
+    ) &&
     exception?.mechanism?.handled === false
   );
 }
@@ -409,7 +411,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()
       : {}),
-    ...(isUndefinedUnhandledRejection(properties)
+    ...(isSdkNonErrorUnhandledRejection(properties)
       ? getUnhandledRejectionDiagnostics()
       : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
