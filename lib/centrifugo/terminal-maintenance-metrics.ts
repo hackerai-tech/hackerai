@@ -1,4 +1,8 @@
-import type { PersistenceFailureCategory } from "@/lib/ai/tools/utils/persistence-failure";
+import {
+  parseCheckpointFailureOrigin,
+  type CheckpointFailureOrigin,
+  type PersistenceFailureCategory,
+} from "@/lib/ai/tools/utils/persistence-failure";
 import { metrics } from "@opentelemetry/api";
 import type { AnySandbox } from "@/types";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
@@ -26,6 +30,7 @@ type MaintenanceEvent = {
   payloadBytes?: number;
   failureCategory?: PersistenceFailureCategory;
   fileFailure?: DesktopFileFailure;
+  checkpointFailureOrigin?: CheckpointFailureOrigin;
 };
 
 /** Logical record payloads, not wire bytes. Never accept content or identifiers. */
@@ -49,6 +54,8 @@ export function recordTerminalMaintenance(
       source,
       failure_category: event.failureCategory ?? "none",
       file_failure: parseDesktopFileFailure(event.fileFailure) ?? "none",
+      checkpoint_failure_origin:
+        parseCheckpointFailureOrigin(event.checkpointFailureOrigin) ?? "none",
     };
     meter
       .createCounter("hackerai.local_relay.terminal_record_operations", {

@@ -1,4 +1,60 @@
-import { getLocalFileRequestFailure } from "./local-sandbox-errors";
+import {
+  getLocalFileRequestFailure,
+  LocalFileRequestError,
+} from "./local-sandbox-errors";
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
+import { ZodError } from "zod";
+
+const CHECKPOINT_FAILURE_ORIGINS = [
+  "local_file_request",
+  "desktop_file_bridge",
+  "windows_path_resolution",
+  "command_path_limit",
+  "setup_no_result",
+  "record_validation",
+  "type_error",
+  "range_error",
+  "other_error",
+  "thrown_value",
+  "unreadable_error",
+] as const;
+export type CheckpointFailureOrigin =
+  (typeof CHECKPOINT_FAILURE_ORIGINS)[number];
+
+export function parseCheckpointFailureOrigin(
+  value: unknown,
+): CheckpointFailureOrigin | undefined {
+  return typeof value === "string" &&
+    (CHECKPOINT_FAILURE_ORIGINS as readonly string[]).includes(value)
+    ? (value as CheckpointFailureOrigin)
+    : undefined;
+}
+
+/** Preserve only known source guards or error kinds, never private text/stack. */
+export function checkpointFailureOrigin(
+  error: unknown,
+): CheckpointFailureOrigin {
+  try {
+    if (error instanceof LocalFileRequestError) return "local_file_request";
+    if (error instanceof DesktopFileBridgeError) return "desktop_file_bridge";
+    if (error instanceof ZodError) return "record_validation";
+    if (error instanceof TypeError) return "type_error";
+    if (error instanceof RangeError) return "range_error";
+    if (!(error instanceof Error)) return "thrown_value";
+    switch (error.message) {
+      case "Failed to resolve the Windows file path through Git Bash":
+        return "windows_path_resolution";
+      case "File path exceeds the local file command limit":
+        return "command_path_limit";
+      case "Setup command failed without returning a result":
+        return "setup_no_result";
+      default:
+        return "other_error";
+    }
+  } catch {
+    return "unreadable_error";
+  }
+}
 
 export type PersistenceFailureCategory =
   | "aborted"
