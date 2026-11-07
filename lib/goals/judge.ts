@@ -270,14 +270,32 @@ export async function judgeGoalCompletion(
       ],
       goal.startedAt,
     );
-    const { current, proofs, toolResults, gatePassed } =
-      buildGoalCompletionEvidence(
-        goal,
-        messages,
-        runId,
-        messageId,
-        runMessageIds,
-      );
+    const {
+      current,
+      proofs,
+      toolResults: currentToolResults,
+      gatePassed,
+    } = buildGoalCompletionEvidence(
+      goal,
+      messages,
+      runId,
+      messageId,
+      runMessageIds,
+    );
+    const retainedResults = goal.evidenceSources?.length
+      ? await getConvexClient().query(
+          api.agentGoals.retainedResultsForBackend,
+          {
+            serviceKey: goalServiceKey(),
+            chatId: goal.chatId,
+            userId: goal.userId,
+          },
+        )
+      : [];
+    const toolResults = keepNewestJudgeResults([
+      ...retainedResults,
+      ...currentToolResults,
+    ]);
     const prior = await getConvexClient().query(
       api.agentGoals.evidenceForBackend,
       {
@@ -433,7 +451,6 @@ export async function judgeGoalCompletion(
       const verified: GoalEvidence[] = decision.evidence.filter(
         (e) =>
           e.criterion < goal.criteria.length &&
-          e.runId === runId &&
           toolResults.some(
             (p) =>
               p.eligibleEvidence &&
@@ -466,7 +483,8 @@ export async function judgeGoalCompletion(
         verification_gate_passed: gatePassed,
         missing_criteria_count: missingCriteria,
         rejected_reference_count: decision.evidence.length - verified.length,
-        current_result_count: toolResults.length,
+        current_result_count: currentToolResults.length,
+        retained_result_count: retainedResults.length,
         eligible_result_count: toolResults.filter(
           (result) => result.eligibleEvidence,
         ).length,

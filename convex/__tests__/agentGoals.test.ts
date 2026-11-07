@@ -20,6 +20,7 @@ import {
   failDispatch,
   get,
   evidenceForBackend,
+  retainedResultsForBackend,
 } from "../agentGoals";
 import { validateServiceKey } from "../lib/utils";
 
@@ -114,6 +115,121 @@ const terminal = {
 
 describe("persistent goal lifecycle", () => {
   beforeEach(() => jest.clearAllMocks());
+  it.each([false, true])(
+    "keeps canceled command results for independent verification after Resume (retry=%s)",
+    async (retry) => {
+      const db = database();
+      await invoke(start, db.ctx, startArgs);
+      await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+      const messageId = retry ? "r1-retry" : "r1";
+      if (!retry) await db.message(messageId, [result]);
+      await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        canceled: true,
+        messageIds: [messageId],
+      });
+      expect(db.goal().state).toBe("paused");
+      expect(db.goal().evidence).toEqual([]);
+      if (retry) {
+        // onCancel settles before the streaming retry saves its final parts.
+        expect(await invoke(retainedResultsForBackend, db.ctx, owner)).toEqual(
+          [],
+        );
+        const docId = await db.message(messageId, [result]);
+        await db.ctx.db.patch(docId, { trigger_run_id: "r1" });
+      }
+      db.chat().active_trigger_run_id = undefined;
+      await invoke(control, db.ctx, { ...owner, action: "resume" });
+      await invoke(claimRun, db.ctx, { ...owner, generation: 2, runId: "r2" });
+      const retained = await invoke(retainedResultsForBackend, db.ctx, owner);
+      expect(retained).toEqual([
+        expect.objectContaining({
+          runId: "r1",
+          toolCallId: "cmd",
+          eligibleEvidence: true,
+        }),
+      ]);
+      await db.message("r2", [
+        { type: "text", text: "Both replies received; marker was observed." },
+      ]);
+      await invoke(finish, db.ctx, {
+        ...terminal,
+        runId: "r2",
+        judgment: {
+          verdict: "done",
+          reason: "Actual saved command verified",
+          evidence: [proof],
+        },
+      });
+      expect(db.goal().state).toBe("achieved");
+      expect(db.goal().evidence).toEqual([{ ...proof, messageId }]);
+    },
+  );
+
+  it("rejects unregistered, cross-chat and superseded command results after cancellation", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await db.message("r1", [result], "different-chat");
+    await db.message("unregistered", [result]);
+    await invoke(pauseForCanceledRun, db.ctx, { ...owner, runId: "r1" });
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      canceled: true,
+      messageIds: ["unregistered"],
+    });
+    expect(await invoke(retainedResultsForBackend, db.ctx, owner)).toEqual([]);
+    db.chat().active_trigger_run_id = undefined;
+    await invoke(update, db.ctx, {
+      ...owner,
+      generation: 1,
+      objective: "Different objective",
+      criteria: ["Different result"],
+    });
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      canceled: true,
+      messageIds: ["unregistered"],
+    });
+    await invoke(control, db.ctx, { ...owner, action: "resume" });
+    await invoke(claimRun, db.ctx, { ...owner, generation: 3, runId: "r2" });
+    await db.message("r2", [{ type: "text", text: "Claimed completion" }]);
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      runId: "r2",
+      judgment: {
+        verdict: "done",
+        reason: "Untrusted claim",
+        evidence: [proof, { ...proof, runId: "unregistered" }],
+      },
+    });
+    expect(db.goal().state).not.toBe("achieved");
+    expect(db.goal().evidence).toEqual([]);
+  });
+
+  it("does not count repeated historical evidence as new progress", async () => {
+    const db = database();
+    await invoke(start, db.ctx, startArgs);
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    await db.message("r1", [result]);
+    const judgment = {
+      verdict: "continue",
+      reason: "More work remains",
+      evidence: [proof],
+    };
+    await invoke(finish, db.ctx, { ...terminal, judgment });
+    for (const generation of [2, 3]) {
+      const runId = `r${generation}`;
+      db.chat().active_trigger_run_id = undefined;
+      await invoke(claimRun, db.ctx, { ...owner, generation, runId });
+      await db.message(runId, [{ type: "text", text: "Same prior marker" }]);
+      await invoke(finish, db.ctx, { ...terminal, runId, judgment });
+    }
+    expect(db.goal().noProgressRuns).toBe(2);
+    expect(db.goal().state).toBe("blocked");
+  });
+
   it("replaces a paused goal from its composer version and rejects stale or cleared edits", async () => {
     const db = database();
     await invoke(start, db.ctx, startArgs);

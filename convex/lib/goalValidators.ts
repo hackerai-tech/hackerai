@@ -74,6 +74,10 @@ export const goalFields = {
   progress: v.string(),
   reason: v.string(),
   evidence: v.array(goalEvidence),
+  // Run-owned source messages survive Stop/Resume, but are not verified criteria.
+  evidenceSources: v.optional(
+    v.array(v.object({ runId: v.string(), messageId: v.string() })),
+  ),
   activeRunId: v.optional(v.string()),
   dispatchId: v.optional(v.string()),
   continuationSourceRunId: v.optional(v.string()),

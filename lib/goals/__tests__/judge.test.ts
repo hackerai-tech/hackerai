@@ -71,6 +71,65 @@ describe("independent goal completion check", () => {
     jest.resetAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
   });
+  it("uses independently retained command results after Stop and Resume without rerunning work", async () => {
+    const saved = {
+      runId: "r1",
+      toolCallId: "cmd",
+      eligibleEvidence: true,
+      result: JSON.stringify(messages[0].parts[0]),
+    };
+    mockPriorEvidence.mockResolvedValueOnce([saved]).mockResolvedValueOnce([]);
+    generate.mockImplementation(async ({ prompt }) => {
+      const data = JSON.parse(prompt);
+      const observed = data.toolResults.find(
+        (r: { runId: string; toolCallId: string }) =>
+          r.runId === "r1" && r.toolCallId === "cmd",
+      );
+      return {
+        output: {
+          verdict: observed ? "done" : "continue",
+          responseOnly: false,
+          reason: "Check actual saved command",
+          evidence: observed
+            ? [
+                {
+                  criterion: 0,
+                  runId: "r1",
+                  toolCallId: "cmd",
+                  explanation: "Observed saved marker",
+                },
+              ]
+            : [],
+          waitSeconds: null,
+        },
+        usage: {},
+      };
+    });
+    const judgment = await judgeGoalCompletion(
+      {
+        ...goal,
+        checkpoint: undefined,
+        evidenceSources: [{ runId: "r1", messageId: "r1" }],
+      },
+      [
+        {
+          id: "r2",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "Marker exists; both replies received." },
+          ],
+        },
+      ],
+      "r2",
+      jest.fn(),
+    );
+    expect(judgment).toMatchObject({
+      verdict: "done",
+      evidence: [{ runId: "r1", toolCallId: "cmd" }],
+    });
+    expect(judgment).not.toHaveProperty("responseEvidence");
+  });
+
   it("returns structured questions only for a pending user decision", async () => {
     const questions = [
       {

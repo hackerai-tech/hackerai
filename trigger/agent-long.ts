@@ -1445,6 +1445,7 @@ type RunCleanupState = {
   subagentsEnabled: boolean;
   finishCloudSandboxLifecycle: () => Promise<void>;
   cleanupBrowserSessions: () => Promise<void>;
+  goalMessageIds: () => string[];
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
 
@@ -1654,7 +1655,9 @@ export const agentLongTask = task({
     ctx: { run: { id: string } };
     runPromise: Promise<unknown>;
   }) => {
+    const cleanup = runCleanupMap.get(ctx.run.id);
     await finishGoalRun(payload, ctx.run.id, {
+      messageIds: cleanup?.goalMessageIds(),
       canceled: true,
       failed: false,
       usageExhausted: false,
@@ -1664,7 +1667,6 @@ export const agentLongTask = task({
         error: stringifyRedactedError(error),
       });
     });
-    const cleanup = runCleanupMap.get(ctx.run.id);
     if (!cleanup) return;
     await Promise.race([
       runPromise.catch(() => undefined),
@@ -1959,6 +1961,7 @@ export const agentLongTask = task({
       });
       return cloudSandboxLifecyclePromise;
     };
+    const goalRunMessageIds = new Set([ctx.run.id]);
     runCleanupMap.set(ctx.run.id, {
       usageRefundTracker,
       hasObservedUsage,
@@ -1970,6 +1973,7 @@ export const agentLongTask = task({
       subagentsEnabled,
       finishCloudSandboxLifecycle,
       cleanupBrowserSessions: () => cleanupBrowserSessions(),
+      goalMessageIds: () => [...goalRunMessageIds],
     });
 
     // Available before the first database read, including failed setup.
@@ -2010,7 +2014,6 @@ export const agentLongTask = task({
     let goalJudgment: GoalJudgment | undefined;
     let goalFinalMessages: UIMessage[] = [];
     let goalFinalMessageId = ctx.run.id;
-    const goalRunMessageIds = new Set([ctx.run.id]);
     let goalJudgePromise: Promise<void> | undefined;
     let goalClaimed = false;
     let goalFailed = false;
