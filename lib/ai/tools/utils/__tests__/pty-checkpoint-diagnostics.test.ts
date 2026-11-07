@@ -265,6 +265,115 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     });
   });
 
+  it.each([
+    [
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("PRIVATE_HOST"), { code: "ECONNRESET" }),
+      }),
+      "fetch_failed",
+      "ECONNRESET",
+    ],
+    [new TypeError("PRIVATE_SDK_DETAIL"), "other_type_error", "none"],
+    [
+      Object.assign(new TypeError("PRIVATE_SDK_DETAIL"), {
+        code: "PRIVATE_CODE",
+      }),
+      "other_type_error",
+      "other",
+    ],
+  ])(
+    "distinguishes cloud fetch failures on the existing capped diagnostic without exposing their causes",
+    async (error, signal, code) => {
+      const { store, write } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      for (let i = 0; i < 3; i++) await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(write).toHaveBeenCalledTimes(3);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          checkpoint_backend: "cloud",
+          checkpoint_failure_origin: "type_error",
+          cloud_type_error_signal: signal,
+          cloud_transport_code: code,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("reads only a direct transport code or the first cause, with root precedence", () => {
+    const nested = new TypeError("fetch failed", {
+      cause: new Error("PRIVATE_CAUSE", {
+        cause: { code: "ECONNRESET" },
+      }),
+    });
+    expect(checkpointCloudErrorContext(nested)).toMatchObject({
+      cloud_type_error_signal: "fetch_failed",
+      cloud_transport_code: "none",
+    });
+    Object.assign(nested, { code: "ETIMEDOUT" });
+    expect(checkpointCloudErrorContext(nested)).toMatchObject({
+      cloud_transport_code: "ETIMEDOUT",
+    });
+    // SDK HTTP errors retain their existing vocabulary; TypeError-only fields
+    // must not imply network attribution for every cloud failure.
+    expect(
+      checkpointCloudErrorContext({ name: "TimeoutError", statusCode: 504 }),
+    ).toEqual({ cloud_error_kind: "timeout", cloud_http_status: 504 });
+  });
+
+  it("does not invoke TypeError message/code/cause getters or expose proxy failures", () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    const error = new TypeError("PRIVATE_MESSAGE");
+    Object.defineProperty(error, "message", { get: getter });
+    Object.defineProperty(error, "code", { get: getter, configurable: true });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_type_error_signal: "unreadable",
+      cloud_transport_code: "unreadable",
+    });
+    delete (error as unknown as { code?: unknown }).code;
+    Object.defineProperty(error, "cause", { get: getter, configurable: true });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_transport_code: "unreadable",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    const reflect = jest.fn(() => {
+      throw new Error("PRIVATE_PROXY");
+    });
+    Object.defineProperty(error, "cause", {
+      value: new Proxy({}, { getOwnPropertyDescriptor: reflect }),
+    });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_transport_code: "unreadable",
+    });
+    expect(reflect).toHaveBeenCalledTimes(1);
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(checkpointCloudErrorContext(error))).not.toContain(
+      "PRIVATE_",
+    );
+  });
+
+  it("ignores inherited TypeError metadata without invoking it", () => {
+    const getter = jest.fn(() => "ECONNRESET");
+    const error = new TypeError("fetch failed");
+    Object.setPrototypeOf(
+      error,
+      Object.create(TypeError.prototype, {
+        code: { get: getter },
+        cause: { get: getter },
+      }),
+    );
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_type_error_signal: "fetch_failed",
+      cloud_transport_code: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   it("does not attribute cloud SDK fields to a local transport failure", async () => {
     const { store } = failingStore(
       Object.assign(new Error("PRIVATE_MESSAGE"), {
@@ -284,6 +393,8 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     });
     expect(fields).not.toHaveProperty("cloud_error_kind");
     expect(fields).not.toHaveProperty("cloud_http_status");
+    expect(fields).not.toHaveProperty("cloud_type_error_signal");
+    expect(fields).not.toHaveProperty("cloud_transport_code");
     expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
   });
 

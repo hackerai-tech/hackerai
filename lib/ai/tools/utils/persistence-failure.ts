@@ -156,13 +156,33 @@ export function checkpointCommandContext(error: unknown): {
   };
 }
 
-/** Retain fixed cloud SDK error labels/status only, never its private message. */
+const CLOUD_TRANSPORT_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_ABORTED",
+  "ABORT_ERR",
+]);
+
+/** Retain fixed cloud SDK/transport labels only, never private error contents. */
 export function checkpointCloudErrorContext(error: unknown): {
   cloud_error_kind: string;
   cloud_http_status: number | "none" | "other";
+  cloud_type_error_signal?: "fetch_failed" | "other_type_error" | "unreadable";
+  cloud_transport_code?: string;
 } {
   let kind = "other_error";
   let status: unknown;
+  let typeErrorSignal:
+    "fetch_failed" | "other_type_error" | "unreadable" | undefined;
+  let transportCode: string | undefined;
   try {
     if (typeof error !== "object" || error === null) kind = "thrown_value";
     else {
@@ -207,12 +227,53 @@ export function checkpointCloudErrorContext(error: unknown): {
       )
         kind = "empty_write_response";
       status = Object.getOwnPropertyDescriptor(error, "statusCode")?.value;
+      if (error instanceof TypeError) {
+        typeErrorSignal = "unreadable";
+        transportCode = "unreadable";
+        try {
+          const message = Object.getOwnPropertyDescriptor(error, "message");
+          if (!message || "value" in message)
+            typeErrorSignal =
+              message?.value === "fetch failed"
+                ? "fetch_failed"
+                : "other_type_error";
+        } catch {
+          // Reflection itself can throw for a proxy. Keep only the fixed marker.
+        }
+        try {
+          let code = Object.getOwnPropertyDescriptor(error, "code");
+          if (!code || ("value" in code && code.value === undefined)) {
+            const cause = Object.getOwnPropertyDescriptor(error, "cause");
+            // Node fetch failures carry the transport code on their first cause.
+            // Do not walk arbitrary chains or invoke inherited/accessor fields.
+            if (cause && !("value" in cause)) code = cause;
+            else if (cause?.value && typeof cause.value === "object")
+              code = Object.getOwnPropertyDescriptor(cause.value, "code");
+          }
+          if (!code || ("value" in code && code.value === undefined))
+            transportCode = "none";
+          else if ("value" in code)
+            transportCode =
+              typeof code.value === "string" &&
+              CLOUD_TRANSPORT_CODES.has(code.value)
+                ? code.value
+                : "other";
+        } catch {
+          // "none" means no readable direct/first-cause code, not no network fault.
+        }
+      }
     }
   } catch {
     kind = "unreadable_error";
   }
   return {
     cloud_error_kind: kind,
+    ...(typeErrorSignal === undefined
+      ? {}
+      : {
+          cloud_type_error_signal: typeErrorSignal,
+          cloud_transport_code: transportCode,
+        }),
     cloud_http_status:
       status === undefined
         ? "none"
