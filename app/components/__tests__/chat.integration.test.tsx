@@ -1978,7 +1978,7 @@ describe("Chat Component Integration", () => {
           <Chat autoResume={false} />
         </TestWrapper>
       );
-      mockBrowserHandoffSession = { state: "waiting" };
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
       const { rerender } = render(view());
       for (const state of [
         "waiting",
@@ -1987,7 +1987,7 @@ describe("Chat Component Integration", () => {
         "recovery",
         "resuming",
       ]) {
-        mockBrowserHandoffSession = { state };
+        mockBrowserHandoffSession = { state, runId: "run-browser" };
         await act(async () => rerender(view()));
         expect(
           screen.getByRole("region", { name: "Agent goal" }),
@@ -1996,7 +1996,30 @@ describe("Chat Component Integration", () => {
           screen.getByRole("region", { name: "Agent goal" }),
         ).not.toHaveTextContent("Pursuing goal");
       }
-      mockBrowserHandoffSession = { state: "agent" };
+      // A different ordinary run must not turn a retained Goal into Input.
+      mockBrowserHandoffSession = { state: "waiting", runId: "unrelated-run" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "paused",
+        activeRunId: undefined,
+      };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Paused");
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).not.toHaveTextContent("Input");
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "running",
+        activeRunId: "run-browser",
+      };
+      mockBrowserHandoffSession = { state: "agent", runId: "run-browser" };
       await act(async () => rerender(view()));
       expect(
         screen.getByRole("region", { name: "Agent goal" }),

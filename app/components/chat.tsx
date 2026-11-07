@@ -2902,7 +2902,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
-      waitingForReply={!!pendingUserWait || browserNeedsInput}
+      waitingForReply={
+        !!pendingUserWait ||
+        (browserNeedsInput &&
+          !!persistedGoal?.activeRunId &&
+          browserHandoff?.runId === persistedGoal.activeRunId)
+      }
       onEdit={() => openSidebar({ kind: "goal", chatId })}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
