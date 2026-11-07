@@ -3,22 +3,29 @@
 CAPTCHA handling runs inside `run_terminal_cmd`; it does not add a model-facing
 tool. After opening a browser page, the Agent takes a standalone foreground
 `agent-browser snapshot -i` (optionally with `--session NAME` before `snapshot`).
-A successful snapshot checks the browser already owned by that run. A supported
-pending challenge can receive one 2Captcha attempt. The result appears in
-`result.browserChallenge`; the Agent must submit the normal form and verify the
-website's response. Token delivery alone is not acceptance.
+A successful snapshot checks the browser already owned by that run without
+starting a paid task. A supported pending challenge returns `solve_available`
+and instructions in `result.browserChallenge`. The Agent decides whether solving
+is necessary and authorized, then calls `run_terminal_cmd` with the exact
+`hackerai-captcha solve --session NAME` command supplied by that result. This is
+a runtime operation, not an installed shell program. It revalidates the owned
+session and document before admitting one 2Captcha attempt. The Agent must then
+verify the website's response, submitting a form only when authorized. Token
+delivery alone is not acceptance.
 
 Eligible terminal tools include only a short CAPTCHA hint. Detailed workflow
 guidance is returned once per handler/run after the owned page reports a pending
 challenge, including unsupported challenges. Ordinary pages and inspection
 failures before detection receive no detailed guide. The provider module is
-initialized only after challenge validation and durable admission; cancellation
+initialized only after an explicit solve request, challenge validation and durable admission; cancellation
 is rechecked after initialization before any paid task is created. No CAPTCHA
 MCP schemas or extra model-facing tools are loaded.
 
 If a snapshot includes output formatting such as `| tail`, the terminal result
 asks the Agent to repeat the snapshot alone. That formatting command never
-starts a paid solve.
+starts a paid solve. Solve requests must also be standalone, foreground and
+non-interactive. To decline solving and restore a captured managed widget, use
+the supplied `hackerai-captcha release --session NAME` command.
 
 `result.browserChallenge` is runtime metadata attached to the terminal tool
 result, not shell output. Searching terminal logs cannot recover this status.
@@ -28,12 +35,29 @@ another standalone snapshot; repeated snapshot polling does not improve solving.
 
 This path requires a full-access parent Agent run. It supports visible
 reCAPTCHA v2, hCaptcha and standalone Turnstile widgets that expose their public
-site key and response field. Invisible/enterprise challenges, managed challenge
-pages, multiple pending widgets and GeeTest are not implemented. Unsupported or
+site key and response field. Managed Cloudflare challenges have a separate
+Preview opt-in described below. Invisible/enterprise challenges, multiple
+pending widgets, DataDome and GeeTest are not implemented. Unsupported or
 failed challenges require human verification. `browser_handoff` can hand over
 only the current Cloud browser; for connected Local, Desktop and remote browsers,
 the Agent stops and explains that in-app takeover is unavailable. Older clients without
 protected stdin support remain ineligible. Normal browser commands still work.
+
+## Managed Cloudflare in Preview
+
+`CAPTCHA_CLOUDFLARE_PREVIEW_URLS` accepts a JSON array of up to five exact HTTPS
+URLs without credentials, query or fragment. It is ignored outside Preview.
+An eligible run installs a capture hook before navigation on Cloud, Local,
+Desktop and remote browsers running agent-browser 0.39.3 or newer. The hook
+holds the managed widget until the Agent requests solving or releases it.
+
+Managed tasks share the public URL, captured challenge parameters and browser
+user agent with 2Captcha. Returned responses and user agents travel through
+protected stdin, with session/document checks before delivery. A bounded
+post-delivery check distinguishes a cleared gate from a pending or replacement
+challenge; it does not prove form acceptance. Failed delivery restores the
+widget when possible. A solved CAPTCHA cannot guarantee access past a site's
+other anti-bot or access restrictions.
 
 ## Server configuration
 
