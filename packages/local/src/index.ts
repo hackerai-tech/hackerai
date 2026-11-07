@@ -420,7 +420,10 @@ export class LocalSandboxClient {
         "⚠️  Commands run directly on your OS without any isolation.",
       ),
     );
-    const storage = await preparePrivateArtifactStorage();
+    const storage = await preparePrivateArtifactStorage(
+      undefined,
+      this.commandIdentity,
+    );
     this.privateArtifactStorageReady = storage.ready;
     this.privateArtifactNamespace = storage.namespace;
     console.info(

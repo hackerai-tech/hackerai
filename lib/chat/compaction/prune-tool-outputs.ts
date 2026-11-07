@@ -85,6 +85,47 @@ interface ToolPart {
   output?: any;
 }
 
+/** Keep mutation outcomes without retaining file contents or arbitrary error text. */
+const fileMutationOutcome = (output: any, explicitFailure: boolean): string => {
+  let value = output;
+  let failed = explicitFailure;
+  for (
+    let depth = 0;
+    depth < 4 && value && typeof value === "object";
+    depth++
+  ) {
+    if (value.type === "error-text" || value.type === "error-json")
+      failed = true;
+    if (typeof value.error === "string" && value.error.length > 0) {
+      failed = true;
+      value = value.error;
+      break;
+    }
+    if (value.success === false) failed = true;
+    if (Object.hasOwn(value, "value")) value = value.value;
+    else if (Object.hasOwn(value, "result")) value = value.result;
+    else if (typeof value.content === "string") {
+      value = value.content;
+      break;
+    } else break;
+  }
+  // file.toModelOutput emits this prefix for a structured tool error. A read
+  // result is handled separately, so source contents are never classified here.
+  if (typeof value === "string" && value.startsWith("Error:")) failed = true;
+  if (failed) {
+    const noChanges =
+      typeof value === "string" && /No edits were applied\./.test(value);
+    return `outcome failed${noChanges ? "; no changes applied" : ""}`;
+  }
+  if (
+    typeof value === "string" &&
+    /^(Multi-edit completed:|File (written|appended|created):)/.test(value)
+  ) {
+    return "outcome success";
+  }
+  return "outcome unknown";
+};
+
 /**
  * Builds a compact placeholder string given the tool name, its input args, and output.
  * Shared by both UIMessage and ModelMessage pruners.
@@ -93,7 +134,10 @@ const buildPlaceholderFromParts = (
   toolName: string,
   input: any,
   output: any,
+  explicitFailure = false,
 ): string => {
+  const mutationOutcome = fileMutationOutcome(output, explicitFailure);
+  output = unwrapModelToolOutput(output);
   switch (toolName) {
     case "run_terminal_cmd":
     case "interact_terminal_session": {
@@ -173,7 +217,7 @@ const buildPlaceholderFromParts = (
           typeof content === "string" ? content.split("\n").length : "?";
         return `[File: read ${path} (${lines} lines)]`;
       }
-      return `[File: ${action} ${path}]`;
+      return `[File: ${action} ${path}; ${mutationOutcome}]`;
     }
 
     case "match": {
@@ -220,7 +264,12 @@ const buildPlaceholderFromParts = (
 /** Builds a placeholder from a UIMessage ToolPart */
 const buildPlaceholder = (part: ToolPart): string => {
   const toolName = part.type.slice(TOOL_TYPE_PREFIX.length);
-  return buildPlaceholderFromParts(toolName, part.input, part.output);
+  return buildPlaceholderFromParts(
+    toolName,
+    part.input,
+    part.output,
+    part.state === "output-error",
+  );
 };
 
 const isCompactPlaceholderOutput = (output: unknown): output is string =>
@@ -1233,7 +1282,7 @@ export function pruneModelMessages(
         partIdx: pi,
         toolName: part.toolName,
         toolCallId: part.toolCallId,
-        output: modelOutputValue,
+        output: part.output,
         tokens,
       });
     }
@@ -1301,7 +1350,7 @@ export function pruneModelMessages(
       const placeholder = buildPlaceholderFromParts(
         resultPart.toolName,
         args,
-        unwrapModelToolOutput(resultPart.output),
+        resultPart.output,
       );
 
       return { ...resultPart, output: toTextModelToolOutput(placeholder) };

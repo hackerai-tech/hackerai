@@ -1,4 +1,7 @@
 import { constants } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { CommandIdentity } from "./command-identity";
 import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -123,7 +126,62 @@ export async function hardenExistingTerminalArtifacts(
 
 export async function preparePrivateArtifactStorage(
   roots: readonly string[] = DEFAULT_ROOTS,
+  commandIdentity?: CommandIdentity,
 ): Promise<{ ready: boolean; namespace?: string }> {
+  if (commandIdentity) {
+    // The credential-reading client may be root while terminal commands are not.
+    // Run the same no-follow preparation as that command user; never chown an
+    // existing shared root or expose the parent environment to this helper.
+    if (os.platform() !== "linux" || process.getuid?.() !== 0) {
+      return { ready: false };
+    }
+    const { uid, gid, home } = commandIdentity;
+    if (
+      !Number.isSafeInteger(uid) ||
+      uid <= 0 ||
+      !Number.isSafeInteger(gid) ||
+      gid <= 0
+    ) {
+      return { ready: false };
+    }
+    try {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          "-e",
+          "require(process.argv[1]).preparePrivateArtifactStorage(JSON.parse(process.argv[2])).then(result => process.stdout.write(JSON.stringify(result))).catch(() => process.exit(1))",
+          __filename,
+          JSON.stringify(roots),
+        ],
+        {
+          uid,
+          gid,
+          cwd: "/",
+          env: { HOME: home, NODE_ENV: "production" },
+          encoding: "utf8",
+          timeout: 10_000,
+          maxBuffer: 8192,
+        },
+      );
+      const result: unknown = JSON.parse(stdout);
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        !("ready" in result) ||
+        result.ready !== true
+      ) {
+        return { ready: false };
+      }
+      if ("namespace" in result && result.namespace !== `uid-${uid}`) {
+        return { ready: false };
+      }
+      return "namespace" in result
+        ? { ready: true, namespace: `uid-${uid}` }
+        : { ready: true };
+    } catch {
+      return { ready: false };
+    }
+  }
   if (os.platform() === "win32" || typeof process.getuid !== "function") {
     return { ready: false };
   }
