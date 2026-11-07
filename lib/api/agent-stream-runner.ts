@@ -194,6 +194,7 @@ import {
   preparePlatformAuthorizationForModel,
 } from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
+import type { AgentMemoryActivity } from "@/lib/chat/agent-long-memory-telemetry";
 import {
   writeSummarizationCleared,
   writeSummarizationCompleted,
@@ -863,6 +864,8 @@ export type AgentStreamContext = {
   onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
+  /** Content-free lifecycle and delta widths for the worker's sampled memory log. */
+  onMemoryActivity?: (activity: AgentMemoryActivity) => void;
   onModelStepSelected?: (modelName: string) => void;
   onStartupCompactionAttempt?: (
     attempt: import("@/lib/chat/summarization/startup-compaction").StartupCompactionAttempt,
@@ -908,6 +911,13 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const reportMemoryActivity = (activity: AgentMemoryActivity) => {
+    try {
+      ctx.onMemoryActivity?.(activity);
+    } catch {
+      // A diagnostic sink must never fail a provider call or tool execution.
+    }
+  };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
@@ -2189,12 +2199,17 @@ export async function createAgentStream(
       }
       if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
       exposeHistory();
+      reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
       if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
     },
-    experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
+    experimental_onToolCallStart: () => {
+      reportMemoryActivity({ operation: "tool_execution" });
+      ctx.onModelStreamFinish?.();
+    },
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      reportMemoryActivity({ operation: "prepare_step" });
       await ctx.waitForBrowserHandoff?.(abortSignal);
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
@@ -2992,6 +3007,20 @@ export async function createAgentStream(
     ],
 
     onChunk: async (chunk) => {
+      if (ctx.onMemoryActivity) {
+        const part = chunk.chunk;
+        if (part.type === "text-delta" || part.type === "reasoning-delta") {
+          reportMemoryActivity({
+            delta: part.type === "text-delta" ? "text" : "reasoning",
+            utf16Units: part.text.length,
+          });
+        } else if (part.type === "tool-input-delta") {
+          reportMemoryActivity({
+            delta: "tool_input",
+            utf16Units: part.delta.length,
+          });
+        }
+      }
       ctx.onModelChunk?.();
       if (chunk.chunk.type === "text-delta") {
         if (state.postSummarizationContinuationActive) {
@@ -3045,6 +3074,7 @@ export async function createAgentStream(
       text,
       finishReason,
     }) => {
+      reportMemoryActivity({ operation: "step_finalize" });
       lastCompletedResponseMessages = response?.messages ?? [];
       if (ctx.subscription === "free") {
         ctx.abliteratedTelemetry?.recordToolStep(
