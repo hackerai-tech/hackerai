@@ -4379,6 +4379,47 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each([
+      ["\uFEFFC:\\PRIVATE_PATH_CANARY", "leading_bom"],
+      ["\u001b[32mC:\\PRIVATE_PATH_CANARY", "leading_ansi"],
+      ['"C:\\PRIVATE_PATH_CANARY"', "quoted_windows_absolute"],
+      ["'\\\\host\\PRIVATE_PATH_CANARY'", "quoted_windows_absolute"],
+      [" \tC:\\PRIVATE_PATH_CANARY", "whitespace_windows_absolute"],
+      ["/tmp/PRIVATE_PATH_CANARY", "posix_absolute"],
+      ["prefix C:\\PRIVATE_PATH_CANARY", "embedded_windows_absolute"],
+      ["PRIVATE_PATH_CANARY", "relative_or_other"],
+    ])(
+      "classifies rejected Windows file output without exposing it (%s)",
+      async (stdout, shape) => {
+        const sandbox = createDesktopSandbox("/tmp/PRIVATE_SOURCE_CANARY");
+        (sandbox as any).shellKind = "bash";
+        const command = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: `${stdout}\r\n`,
+          stderr: "PRIVATE_STDERR_CANARY",
+          exitCode: 0,
+        });
+        for (let i = 0; i < 2; i++) {
+          await expect(
+            sandbox.files.write("file.txt", "PRIVATE_CONTENT_CANARY"),
+          ).rejects.toMatchObject({ failure: "non_absolute_output" });
+        }
+        const records = guardLog.mock.calls.filter(
+          ([event]) => event === "windows_native_path_resolution_failed",
+        );
+        expect(records).toHaveLength(1);
+        expect(records[0][1]).toMatchObject({
+          reason: "non_absolute_output",
+          stdout_shape: shape,
+          stdout_shape_version: 1,
+        });
+        expect(JSON.stringify(records)).not.toMatch(
+          /PRIVATE|host|cygpath|file\.txt/,
+        );
+        expect(command).toHaveBeenCalledTimes(2);
+        expect(mockSubscriptions).toHaveLength(0);
+      },
+    );
+
     it.each([false, true])(
       "bounds Windows file guard diagnostics per reason and preserves failure when logging throws=%s",
       async (loggingThrows) => {
