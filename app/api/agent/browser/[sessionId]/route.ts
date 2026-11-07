@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai/browser-handoff/input";
 import {
   BrowserPreviewUnavailable,
+  type BrowserCaptureFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
@@ -77,6 +78,7 @@ const unavailableGet = (
   request: NextRequest,
   sessionId: string | undefined,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
+  captureContext?: BrowserCaptureFailureContext,
 ) => {
   const response = unavailable(error);
   if (response.status !== 503) return response;
@@ -100,6 +102,7 @@ const unavailableGet = (
               ? "other_error"
               : "thrown_value",
       fresh_requested: request.nextUrl.searchParams.get("fresh") === "1",
+      ...(stage === "capture_frame" && captureContext),
       web_build_commit:
         build && /^[a-f0-9]{40}$/i.test(build)
           ? build.toLowerCase()
@@ -154,6 +157,7 @@ export const GET = withServiceQueryRecovery(async function GET(
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
   let sessionId: string | undefined;
   let stage: PreviewGetStage = "resolve_session";
+  let captureContext: BrowserCaptureFailureContext | undefined;
   try {
     sessionId = (await params).sessionId;
     resolved = await resolveSession(request, sessionId);
@@ -182,6 +186,10 @@ export const GET = withServiceQueryRecovery(async function GET(
       resolved.session,
       browserSessionName,
       request.nextUrl.searchParams.get("fresh") === "1",
+      undefined,
+      (context) => {
+        captureContext = context;
+      },
     );
     stage = "verify_active_session";
     if (
@@ -191,7 +199,14 @@ export const GET = withServiceQueryRecovery(async function GET(
       return json({ state: "stale" }, 409);
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
-    return unavailableGet(error, stage, request, sessionId, resolved.session);
+    return unavailableGet(
+      error,
+      stage,
+      request,
+      sessionId,
+      resolved.session,
+      captureContext,
+    );
   }
 });
 

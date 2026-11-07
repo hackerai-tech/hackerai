@@ -179,6 +179,8 @@ it.each([false, true])(
       expect.anything(),
       "default",
       fresh,
+      undefined,
+      expect.any(Function),
     );
   },
 );
@@ -308,6 +310,34 @@ it("preserves a capture failure response when logging throws", async () => {
   const result = await preview(false);
   expect(result.status).toBe(503);
   expect(await result.json()).toEqual({ state: "disconnected" });
+});
+
+it("adds capture suboperation context to the single existing GET failure event", async () => {
+  mockCapture.mockImplementationOnce(async (...args: unknown[]) => {
+    const observe = args[5] as (context: unknown) => void;
+    observe({
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+    });
+    throw new Error("PRIVATE frame stream");
+  });
+  const result = await preview(false);
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_get_unavailable",
+    expect.objectContaining({
+      failure_stage: "capture_frame",
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+    }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
 });
 
 const take = () =>

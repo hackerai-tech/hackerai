@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 
-import { Sandbox } from "@e2b/code-interpreter";
+import { CommandExitError, Sandbox, TimeoutError } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
@@ -210,113 +210,191 @@ export async function stopBrowserRelays(
     throw new BrowserPreviewUnavailable("disconnected");
 }
 
+export type BrowserCaptureFailureContext = {
+  capture_stage:
+    | "stream_status"
+    | "frame_bridge"
+    | "frame_decode"
+    | "frame_validation"
+    | "fresh_screenshot"
+    | "fresh_stat"
+    | "fresh_read"
+    | "fresh_validation";
+  capture_error_kind:
+    | "command_exit"
+    | "timeout"
+    | "preview_unavailable"
+    | "other_error"
+    | "thrown_value"
+    | "unreadable";
+  capture_command_exit_code: number | "none" | "other";
+};
+
 export async function captureBrowserFrame(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
   requireFresh = false,
   streamPort?: number,
+  onFailure?: (context: BrowserCaptureFailureContext) => void,
 ) {
-  const port =
-    streamPort ??
-    (await getPrivateStreamPort(sandbox, session, browserSessionName));
-  const result = await sandbox.commands.run(
-    browserBridgeCommand(port, "frame"),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      timeoutMs: 8_000,
-    },
-  );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
-  let frame: {
-    data: string;
-    width: number;
-    height: number;
-    capturedAt: number;
-  };
+  let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   try {
-    frame = JSON.parse(result.stdout) as typeof frame;
-  } catch {
-    throw new BrowserPreviewUnavailable("disconnected");
-  }
-  if (
-    typeof frame.data !== "string" ||
-    frame.data.length > 900_000 ||
-    !Number.isFinite(frame.width) ||
-    !Number.isFinite(frame.height) ||
-    frame.width < 1 ||
-    frame.height < 1 ||
-    !Number.isFinite(frame.capturedAt)
-  )
-    throw new BrowserPreviewUnavailable("disconnected");
-  const image = Buffer.from(frame.data, "base64");
-  if (image.byteLength < 4 || image.byteLength > 675_000)
-    throw new BrowserPreviewUnavailable("disconnected");
-  const mime =
-    image[0] === 0xff && image[1] === 0xd8
-      ? "image/jpeg"
-      : image[0] === 0x89 && image[1] === 0x50
-        ? "image/png"
-        : null;
-  if (!mime) throw new BrowserPreviewUnavailable("disconnected");
-  let imageUrl = `data:${mime};base64,${frame.data}`;
-  let capturedAt = frame.capturedAt;
-  if (requireFresh) {
-    // agent-browser 0.26 can replay cached frames with timestamp=0. A new
-    // screenshot proves freshness without assigning a new age to that cache.
-    const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
-    capturedAt = Date.now();
+    const port =
+      streamPort ??
+      (await getPrivateStreamPort(sandbox, session, browserSessionName));
+    stage = "frame_bridge";
+    const result = await sandbox.commands.run(
+      browserBridgeCommand(port, "frame"),
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        timeoutMs: 8_000,
+      },
+    );
+    if (result.exitCode !== 0)
+      throw new BrowserPreviewUnavailable("disconnected");
+    let frame: {
+      data: string;
+      width: number;
+      height: number;
+      capturedAt: number;
+    };
+    stage = "frame_decode";
     try {
-      const screenshot = await sandbox.commands.run(
-        browserDaemonCommand(session.directory, browserSessionName, {
-          action: "screenshot",
-          path,
-          format: "jpeg",
-          quality: 65,
-        }),
-        {
-          ...buildSandboxCommandOptions(sandbox),
-          timeoutMs: 8_000,
-        },
-      );
-      if (screenshot.exitCode !== 0)
-        throw new BrowserPreviewUnavailable("disconnected");
-      const info = await sandbox.files.getInfo(path, {
-        user: "root",
-        requestTimeoutMs: 4_000,
-      });
-      if (info.size < 4 || info.size > 675_000)
-        throw new BrowserPreviewUnavailable("disconnected");
-      const fresh = Buffer.from(
-        await sandbox.files.read(path, {
-          format: "bytes",
+      frame = JSON.parse(result.stdout) as typeof frame;
+    } catch {
+      throw new BrowserPreviewUnavailable("disconnected");
+    }
+    stage = "frame_validation";
+    if (
+      typeof frame.data !== "string" ||
+      frame.data.length > 900_000 ||
+      !Number.isFinite(frame.width) ||
+      !Number.isFinite(frame.height) ||
+      frame.width < 1 ||
+      frame.height < 1 ||
+      !Number.isFinite(frame.capturedAt)
+    )
+      throw new BrowserPreviewUnavailable("disconnected");
+    const image = Buffer.from(frame.data, "base64");
+    if (image.byteLength < 4 || image.byteLength > 675_000)
+      throw new BrowserPreviewUnavailable("disconnected");
+    const mime =
+      image[0] === 0xff && image[1] === 0xd8
+        ? "image/jpeg"
+        : image[0] === 0x89 && image[1] === 0x50
+          ? "image/png"
+          : null;
+    if (!mime) throw new BrowserPreviewUnavailable("disconnected");
+    let imageUrl = `data:${mime};base64,${frame.data}`;
+    let capturedAt = frame.capturedAt;
+    if (requireFresh) {
+      // agent-browser 0.26 can replay cached frames with timestamp=0. A new
+      // screenshot proves freshness without assigning a new age to that cache.
+      const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
+      capturedAt = Date.now();
+      try {
+        stage = "fresh_screenshot";
+        const screenshot = await sandbox.commands.run(
+          browserDaemonCommand(session.directory, browserSessionName, {
+            action: "screenshot",
+            path,
+            format: "jpeg",
+            quality: 65,
+          }),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            timeoutMs: 8_000,
+          },
+        );
+        if (screenshot.exitCode !== 0)
+          throw new BrowserPreviewUnavailable("disconnected");
+        stage = "fresh_stat";
+        const info = await sandbox.files.getInfo(path, {
           user: "root",
           requestTimeoutMs: 4_000,
-        }),
-      );
-      if (
-        fresh.byteLength < 4 ||
-        fresh.byteLength > 675_000 ||
-        fresh[0] !== 0xff ||
-        fresh[1] !== 0xd8
-      )
-        throw new BrowserPreviewUnavailable("disconnected");
-      imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
-    } finally {
-      // The private memory-backed run directory is also erased at run cleanup.
-      await sandbox.files
-        .remove(path, { user: "root", requestTimeoutMs: 4_000 })
-        .catch(() => undefined);
+        });
+        if (info.size < 4 || info.size > 675_000)
+          throw new BrowserPreviewUnavailable("disconnected");
+        stage = "fresh_read";
+        const fresh = Buffer.from(
+          await sandbox.files.read(path, {
+            format: "bytes",
+            user: "root",
+            requestTimeoutMs: 4_000,
+          }),
+        );
+        stage = "fresh_validation";
+        if (
+          fresh.byteLength < 4 ||
+          fresh.byteLength > 675_000 ||
+          fresh[0] !== 0xff ||
+          fresh[1] !== 0xd8
+        )
+          throw new BrowserPreviewUnavailable("disconnected");
+        imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
+      } finally {
+        // The private memory-backed run directory is also erased at run cleanup.
+        await sandbox.files
+          .remove(path, { user: "root", requestTimeoutMs: 4_000 })
+          .catch(() => undefined);
+      }
     }
+    return {
+      image: imageUrl,
+      width: frame.width,
+      height: frame.height,
+      capturedAt,
+      browserSessionName,
+    };
+  } catch (error) {
+    if (onFailure) {
+      let kind: BrowserCaptureFailureContext["capture_error_kind"] =
+        "unreadable";
+      let code: BrowserCaptureFailureContext["capture_command_exit_code"] =
+        "none";
+      try {
+        if (error instanceof CommandExitError) {
+          kind = "command_exit";
+          // The SDK stores CommandResult as own data; never read output or invoke accessors.
+          const result = Object.getOwnPropertyDescriptor(
+            error,
+            "result",
+          )?.value;
+          const value =
+            result &&
+            Object.getOwnPropertyDescriptor(result, "exitCode")?.value;
+          code =
+            typeof value === "number" &&
+            Number.isInteger(value) &&
+            value >= 0 &&
+            value <= 255
+              ? value
+              : "other";
+        } else
+          kind =
+            error instanceof TimeoutError
+              ? "timeout"
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : error instanceof Error
+                  ? "other_error"
+                  : "thrown_value";
+      } catch {
+        /* Preserve the original failure if optional context is unreadable. */
+      }
+      try {
+        onFailure({
+          capture_stage: stage,
+          capture_error_kind: kind,
+          capture_command_exit_code: code,
+        });
+      } catch {
+        /* Observers cannot change capture behavior. */
+      }
+    }
+    throw error;
   }
-  return {
-    image: imageUrl,
-    width: frame.width,
-    height: frame.height,
-    capturedAt,
-    browserSessionName,
-  };
 }
 
 /** Resize only the currently granted session; callers hold the input lease. */
