@@ -32,6 +32,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     jest.useRealTimers();
   });
 
+  /** Create an owned command session, optionally backed by the real record store. */
   async function fixture(
     save: (record: TerminalExecutionRecord) => Promise<string | null>,
     manager = new PtySessionManager(),
