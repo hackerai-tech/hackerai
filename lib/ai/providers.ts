@@ -1493,6 +1493,7 @@ function isGrokModel(modelName: string): boolean {
   );
 }
 
+/** Whether the tool-result serializer may send original images to this model. */
 export function supportsMultimodalToolResults(modelName?: string): boolean {
   if (!modelName) return false;
 

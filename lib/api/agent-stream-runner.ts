@@ -325,6 +325,10 @@ export const resolveAgentModelAfterSummarization = (
   return modelName;
 };
 
+/**
+ * Promote primary text routes for image tool results while preserving recovery
+ * models already selected for the run and the caller's vision eligibility gates.
+ */
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
   mode: ChatMode,
