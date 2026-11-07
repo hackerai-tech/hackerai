@@ -290,12 +290,42 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  let stage: "authenticate" | "read_request" | "consume" = "authenticate";
+  const startedAt = Date.now();
+  // The platform's 20s termination can bypass finally; record the pending
+  // boundary once beforehand, without delaying or retrying the request.
+  const slowTimer = setTimeout(() => {
+    try {
+      const requestId = req.headers.get("x-vercel-id");
+      console.warn(
+        JSON.stringify({
+          event: "next_actions_delete_slow_request",
+          diagnostic_version: 1,
+          stage,
+          elapsed_ms: Math.max(0, Date.now() - startedAt),
+          warning_threshold_ms: 10_000,
+          request_aborted: req.signal.aborted,
+          ...(requestId &&
+          /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? { request_id: requestId }
+            : {}),
+        }),
+      );
+    } catch {
+      /* Diagnostics cannot change optional prediction behavior. */
+    }
+  }, 10_000);
+  slowTimer.unref?.();
   try {
     const { userId } = await getUserIDAndPro(req);
+    stage = "read_request";
     const raw = await req.text();
     if (raw.length > 512) return empty(400);
     const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) return empty(400);
+    stage = "consume";
     await getConvexClient(
       AbortSignal.any([req.signal, AbortSignal.timeout(5_000)]),
     ).mutation(api.nextActions.consumeForBackend, {
@@ -307,5 +337,7 @@ export async function DELETE(req: NextRequest) {
     return empty();
   } catch {
     return empty();
+  } finally {
+    clearTimeout(slowTimer);
   }
 }
