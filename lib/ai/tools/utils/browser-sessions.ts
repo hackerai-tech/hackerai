@@ -79,7 +79,8 @@ export class BrowserSessions {
   constructor(
     private readonly handoffScope?: BrowserHandoffScope,
     private readonly onOwnershipLost?: () => void,
-    private readonly enableConnectedChallenges = false,
+    private readonly connectedChallengesEnabled: () => Promise<boolean> = async () =>
+      false,
     private readonly cloudflare?: {
       enabled: () => Promise<boolean>;
     },
@@ -140,8 +141,11 @@ export class BrowserSessions {
     return !!this.handoffScope;
   }
 
-  hasConnectedChallengeScope(): boolean {
-    return this.enableConnectedChallenges;
+  async hasConnectedChallengeScope(): Promise<boolean> {
+    return (
+      !this.closed &&
+      (await this.connectedChallengesEnabled().catch(() => false))
+    );
   }
 
   /** Resolve a flagless Cloud snapshot before dispatch, while retaining its sticky session. */
@@ -155,7 +159,7 @@ export class BrowserSessions {
     if (isE2BSandbox(sandbox)) {
       if (!this.sessions.get(sandbox.sandboxId)?.registered) return undefined;
     } else if (
-      !this.enableConnectedChallenges ||
+      !(await this.hasConnectedChallengeScope()) ||
       !sandbox.supportsCommandStdin() ||
       runtimeDefault === "default"
     )
@@ -419,10 +423,14 @@ export class BrowserSessions {
     }
     this.connectedTargetSelected = !isE2BSandbox(sandbox);
     if (!isE2BSandbox(sandbox)) {
-      if (!this.enableConnectedChallenges || !sandbox.supportsCommandStdin()) {
+      if (
+        !(await this.hasConnectedChallengeScope()) ||
+        !sandbox.supportsCommandStdin()
+      ) {
         this.activeConnectedBrowser = undefined;
         return {};
       }
+      if (this.closed) throw new Error("Browser session ownership has ended.");
       const connectionId = sandbox.getConnectionInfo().connectionId;
       let browser = this.connectedBrowsers.get(connectionId);
       if (!browser) {

@@ -69,6 +69,7 @@ jest.mock("../utils/sandbox-manager", () => ({
 
 jest.mock("../utils/sandbox-types", () => ({
   isE2BSandbox: (...args: unknown[]) => mockIsE2BSandbox(...args),
+  isCentrifugoSandbox: (...args: unknown[]) => !mockIsE2BSandbox(...args),
   getCloudSandboxProviderForInstance: (
     sandbox: { provider?: string } | null,
   ) => (sandbox?.provider === "e2b" ? sandbox.provider : null),
@@ -88,6 +89,8 @@ jest.mock("@/lib/logger", () => ({
 }));
 
 import { createTools } from "..";
+import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { E2B_COST_PER_MS } from "../utils/e2b-cost";
 import { BrowserSessions } from "../utils/browser-sessions";
 import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
@@ -184,6 +187,7 @@ describe("sandbox acquisition serialization", () => {
   });
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(true);
     mockResetSandbox.mockResolvedValue(undefined);
     mockQuarantineLocalConnection.mockResolvedValue(undefined);
     mockIsE2BSandbox.mockReturnValue(false);
@@ -193,6 +197,92 @@ describe("sandbox acquisition serialization", () => {
   afterEach(() => {
     jest.useRealTimers();
   });
+
+  it.each([
+    "flag off",
+    "flag unavailable",
+    "approval",
+    "child",
+    "untrusted",
+    "Preview",
+    "Production",
+  ])(
+    "gates connected browser preparation before touching its configuration: %s",
+    async (variant) => {
+      const originalEnv = process.env;
+      process.env = {}; // Missing provider key must still permit eligible detection.
+      const flag = jest.mocked(getPostHogBooleanFlagDecisionForUser);
+      if (variant === "flag off") flag.mockResolvedValue(false);
+      if (variant === "flag unavailable") flag.mockResolvedValue(null);
+      const args: Parameters<typeof createTools> = [
+        "user-1",
+        "chat-1",
+        {} as never,
+        "agent",
+        {} as never,
+      ];
+      args[9] = "service-key";
+      args[20] = "run-1";
+      args[22] = {
+        environment:
+          variant === "Production"
+            ? "PRODUCTION"
+            : variant === "untrusted"
+              ? "DEVELOPMENT"
+              : "PREVIEW",
+        ...(variant === "child" && { browserAgentId: "child-1" }),
+      };
+      if (variant === "approval") args[16] = jest.fn();
+      try {
+        createTools(...args);
+        const sessions = jest.mocked(createRunTerminalCmd).mock.calls.at(-1)![0]
+          .browserSessions!;
+        const run = jest.fn(
+          async (_command: string, options: { stdin: string }) => {
+            const { request } = JSON.parse(options.stdin);
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                root: `/tmp/hackerai-captcha-${request.owner}`,
+                name: `captcha-${request.owner}`,
+              }),
+            };
+          },
+        );
+        const target = {
+          commands: { run },
+          sandboxKind: "centrifugo",
+          supportsCommandStdin: () => true,
+          getConnectionInfo: () => ({ connectionId: "local" }),
+          isWindows: () => false,
+        } as never;
+        const [a, b] = await Promise.all([
+          sessions.prepare(target),
+          sessions.prepare(target),
+        ]);
+        expect(b).toEqual(a);
+        const eligible = ["Preview", "Production"].includes(variant);
+        if (eligible) {
+          expect(a.AGENT_BROWSER_CONFIG).toBeDefined();
+          expect(run).toHaveBeenCalledTimes(1);
+          expect(
+            JSON.parse(run.mock.calls[0][1].stdin).request,
+          ).not.toHaveProperty("initScript");
+          expect(flag).toHaveBeenCalledTimes(1);
+          // Turning the flag off must not silently switch the existing namespace.
+          flag.mockResolvedValue(false);
+          expect(await sessions.prepare(target)).toEqual(a);
+          expect(flag).toHaveBeenCalledTimes(1);
+        } else {
+          expect(a).toEqual({});
+          expect(run).not.toHaveBeenCalled();
+        }
+        await sessions.cleanup();
+      } finally {
+        process.env = originalEnv;
+      }
+    },
+  );
 
   it("dispatches parent delegation and child tools without a scope lookup", async () => {
     const execute = jest.fn().mockResolvedValue({ result: "completed" });

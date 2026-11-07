@@ -504,7 +504,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // A persistent shell can launch the browser in a later send, including
           // through a script. Establish its ownership before any input runs.
           const agentBrowserEnv =
-            isE2B || context.browserSessions?.hasConnectedChallengeScope?.()
+            isE2B ||
+            (await context.browserSessions?.hasConnectedChallengeScope?.())
               ? await prepareBrowserEnv(sandbox, command, true)
               : undefined;
 
@@ -835,7 +836,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         async function executeCommand(sandboxInstance: typeof sandbox) {
           const agentBrowserEnv =
             isE2BSandbox(sandboxInstance) ||
-            context.browserSessions?.hasConnectedChallengeScope?.()
+            (await context.browserSessions?.hasConnectedChallengeScope?.())
               ? await prepareBrowserEnv(sandboxInstance, command)
               : undefined;
           const snapshot = getAgentBrowserSnapshotSession(command);

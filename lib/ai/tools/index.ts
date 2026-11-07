@@ -265,6 +265,41 @@ export const createTools = (
     triggerRunId,
   });
 
+  // Pin preparation for this run so a rollout change cannot switch an existing
+  // connected browser into a different namespace. Paid requests recheck the flag.
+  let captchaPreparationDecision: Promise<boolean> | undefined;
+  const captchaPreparationEnabled = (): Promise<boolean> => {
+    if (
+      !serviceKey ||
+      requestToolApproval ||
+      (runtimePolicy.browserAgentId ?? "parent") !== "parent" ||
+      !isCaptchaEligible(runtimePolicy.environment)
+    )
+      return Promise.resolve(false);
+    return (captchaPreparationDecision ??= (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return (
+          (await Promise.race([
+            getPostHogBooleanFlagDecisionForUser(
+              CAPTCHA_SOLVER_FLAG,
+              userID,
+              undefined,
+              { sendFeatureFlagEvents: false },
+            ),
+            new Promise<false>((resolve) => {
+              timer = setTimeout(() => resolve(false), 1000);
+            }),
+          ])) === true
+        );
+      } catch {
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    })());
+  };
+
   const browserSessions = triggerRunId
     ? new BrowserSessions(
         serviceKey
@@ -278,36 +313,12 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
-        isCaptchaEligible(runtimePolicy.environment),
+        captchaPreparationEnabled,
         {
-          enabled: async () => {
-            if (
-              !serviceKey ||
-              requestToolApproval ||
-              (runtimePolicy.browserAgentId ?? "parent") !== "parent" ||
-              runtimePolicy.environment !== "PREVIEW" ||
-              !process.env.TWOCAPTCHA_API_KEY
-            )
-              return false;
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            try {
-              return (
-                (await Promise.race([
-                  getPostHogBooleanFlagDecisionForUser(
-                    CAPTCHA_SOLVER_FLAG,
-                    userID,
-                    undefined,
-                    { sendFeatureFlagEvents: false },
-                  ),
-                  new Promise<false>((resolve) => {
-                    timer = setTimeout(() => resolve(false), 1000);
-                  }),
-                ])) === true
-              );
-            } finally {
-              clearTimeout(timer);
-            }
-          },
+          enabled: async () =>
+            runtimePolicy.environment === "PREVIEW" &&
+            !!process.env.TWOCAPTCHA_API_KEY &&
+            (await captchaPreparationEnabled()),
         },
       )
     : undefined;

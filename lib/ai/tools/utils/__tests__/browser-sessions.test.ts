@@ -14,7 +14,7 @@ describe("managed browser ownership", () => {
     async (enabled) => {
       const target = sandbox();
       const decide = jest.fn(async () => enabled);
-      const owner = new BrowserSessions(undefined, undefined, false, {
+      const owner = new BrowserSessions(undefined, undefined, undefined, {
         enabled: decide,
       });
       const [a, b] = await Promise.all([

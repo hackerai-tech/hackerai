@@ -33,9 +33,14 @@ function connection(id = "connection", desktop = false) {
 it.each([true, false])(
   "installs managed capture only for approved connected runs: %s",
   async (enabled) => {
-    const sessions = new BrowserSessions(undefined, undefined, true, {
-      enabled: async () => enabled,
-    });
+    const sessions = new BrowserSessions(
+      undefined,
+      undefined,
+      async () => true,
+      {
+        enabled: async () => enabled,
+      },
+    );
     const target = connection();
     await sessions.prepare(target.sandbox);
     const prepare = JSON.parse(target.run.mock.calls[0][1].stdin).request;
@@ -49,7 +54,7 @@ it.each([true, false])(
     await browser.deliverCloudflare!(
       "solver-agent",
       {
-        url: "hackerai.cloudflareChallenge",
+        url: "https://managed.example/challenge",
         documentId: "1",
         originalUserAgent: "original",
       },
@@ -70,7 +75,11 @@ it.each([true, false])(
 it.each([false, true])(
   "keeps response tokens out of commands and survives reconnect (desktop=%s)",
   async (desktop) => {
-    const sessions = new BrowserSessions(undefined, undefined, true);
+    const sessions = new BrowserSessions(
+      undefined,
+      undefined,
+      async () => true,
+    );
     const first = connection("one", desktop);
     const env = await sessions.prepare(first.sandbox);
     const reconnected = connection("one", desktop);
@@ -101,7 +110,7 @@ it("does not inspect user browsers or enable connected changes outside the Previ
   const target = connection();
   const disabled = new BrowserSessions();
   expect(await disabled.prepare(target.sandbox)).toEqual({});
-  const enabled = new BrowserSessions(undefined, undefined, true);
+  const enabled = new BrowserSessions(undefined, undefined, async () => true);
   await expect(
     enabled.getChallengeBrowser(new AbortController().signal),
   ).rejects.toThrow("Open an owned");
@@ -109,8 +118,8 @@ it("does not inspect user browsers or enable connected changes outside the Previ
 });
 
 it("isolates browser namespaces between runs and connected machines", async () => {
-  const a = new BrowserSessions(undefined, undefined, true);
-  const b = new BrowserSessions(undefined, undefined, true);
+  const a = new BrowserSessions(undefined, undefined, async () => true);
+  const b = new BrowserSessions(undefined, undefined, async () => true);
   const envs = await Promise.all([
     a.prepare(connection("one").sandbox),
     a.prepare(connection("two").sandbox),
@@ -122,7 +131,7 @@ it("isolates browser namespaces between runs and connected machines", async () =
 });
 
 it("uses the snapshot connection and name after another connection becomes active", async () => {
-  const sessions = new BrowserSessions(undefined, undefined, true);
+  const sessions = new BrowserSessions(undefined, undefined, async () => true);
   const first = connection("snapshot-connection");
   const second = connection("later-connection");
   await sessions.prepare(first.sandbox);
@@ -144,7 +153,7 @@ it("uses the snapshot connection and name after another connection becomes activ
 
 it("does not expose raw transport errors and never retries response delivery", async () => {
   const target = connection();
-  const sessions = new BrowserSessions(undefined, undefined, true);
+  const sessions = new BrowserSessions(undefined, undefined, async () => true);
   await sessions.prepare(target.sandbox);
   const browser = await sessions.getChallengeBrowser(
     new AbortController().signal,
@@ -162,7 +171,7 @@ it("does not expose raw transport errors and never retries response delivery", a
 it("keeps terminal execution available when optional browser setup fails", async () => {
   const target = connection();
   target.run.mockRejectedValueOnce(new Error("Node unavailable"));
-  const sessions = new BrowserSessions(undefined, undefined, true);
+  const sessions = new BrowserSessions(undefined, undefined, async () => true);
   expect(await sessions.prepare(target.sandbox)).toEqual({});
   await expect(
     sessions.captureChallengeTarget(target.sandbox, "named"),
@@ -176,7 +185,7 @@ it("keeps terminal execution available when optional browser setup fails", async
 });
 
 it("does not retain the previous connection when switching to an unsupported client", async () => {
-  const sessions = new BrowserSessions(undefined, undefined, true);
+  const sessions = new BrowserSessions(undefined, undefined, async () => true);
   await sessions.prepare(connection("first").sandbox);
   const unsupported = connection("second");
   Object.assign(unsupported.sandbox, { supportsCommandStdin: () => false });
