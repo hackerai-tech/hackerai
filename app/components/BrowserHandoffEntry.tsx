@@ -47,7 +47,7 @@ export function BrowserHandoffEntry({
   }, [chatId, storageKey]);
 
   const { isAuthenticated } = useConvexAuth();
-  const { sidebarOpen, openSidebar } = useGlobalState();
+  const { sidebarOpen, sidebarContent, openSidebar } = useGlobalState();
   const session = useQuery(
     api.browserHandoffs.getForUser,
     isAuthenticated && chatId ? { chatId, agentId: "parent" } : "skip",
@@ -64,7 +64,16 @@ export function BrowserHandoffEntry({
     [messages],
   );
 
-  if (sidebarOpen || !session || !browserTool || preference?.chatId !== chatId)
+  const showingGoalEditor =
+    sidebarContent &&
+    "kind" in sidebarContent &&
+    sidebarContent.kind === "goal";
+  if (
+    (sidebarOpen && !showingGoalEditor) ||
+    !session ||
+    !browserTool ||
+    preference?.chatId !== chatId
+  )
     return null;
 
   const attentionKey =

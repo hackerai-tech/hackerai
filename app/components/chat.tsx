@@ -890,6 +890,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     api.agentGoals.get,
     chatDataForCurrentChat ? { chatId } : "skip",
   );
+  const browserHandoff = useQuery(
+    api.browserHandoffs.getForUser,
+    isConvexAuthenticated && chatDataForCurrentChat
+      ? { chatId, agentId: "parent" }
+      : "skip",
+  );
+  const browserNeedsInput =
+    !!browserHandoff &&
+    ["waiting", "claiming", "human", "recovery", "resuming"].includes(
+      browserHandoff.state,
+    );
 
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
@@ -2891,7 +2902,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
-      waitingForReply={!!pendingUserWait}
+      waitingForReply={!!pendingUserWait || browserNeedsInput}
       onEdit={() => openSidebar({ kind: "goal", chatId })}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}

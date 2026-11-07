@@ -65,6 +65,7 @@ const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
 let mockSavedGoal: Record<string, unknown> | null | undefined;
+let mockBrowserHandoffSession: { state: string } | null = null;
 let mockLocalConnections:
   | Array<{ connectionId: string; isDesktop: boolean; lastSeen?: number }>
   | undefined;
@@ -116,6 +117,8 @@ jest.mock("convex/react", () => {
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
       if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
+      if (getFunctionName(query) === "browserHandoffs:getForUser")
+        return mockBrowserHandoffSession;
       if (getFunctionName(query) === "localSandbox:listConnections")
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
@@ -555,6 +558,7 @@ describe("Chat Component Integration", () => {
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
     mockSavedGoal = null;
+    mockBrowserHandoffSession = null;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1939,6 +1943,64 @@ describe("Chat Component Integration", () => {
         ),
       );
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+    });
+
+    it("shows Goal input while browser takeover holds the run, then returns to pursuing", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      mockRouteParams = { id: "goal-browser-chat" };
+      mockRestoredChat = {
+        id: "goal-browser-chat",
+        sandbox_type: "e2b",
+        default_model_slug: "agent",
+        active_trigger_run_id: "run-browser",
+      };
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockSavedGoal = {
+        _id: "goal-browser",
+        state: "running",
+        generation: 1,
+        objective: "Read the manual browser change",
+        criteria: [],
+        evidence: [],
+        runs: 1,
+        maxRuns: 5,
+        activeRunId: "run-browser",
+      };
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      mockBrowserHandoffSession = { state: "waiting" };
+      const { rerender } = render(view());
+      for (const state of [
+        "waiting",
+        "claiming",
+        "human",
+        "recovery",
+        "resuming",
+      ]) {
+        mockBrowserHandoffSession = { state };
+        await act(async () => rerender(view()));
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).toHaveTextContent("Input");
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).not.toHaveTextContent("Pursuing goal");
+      }
+      mockBrowserHandoffSession = { state: "agent" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
     });
 
     it("holds queued work while a Goal needs input or is blocked and releases it after completion", async () => {
