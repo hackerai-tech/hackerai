@@ -1,7 +1,114 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UIMessage } from "ai";
 import { getProviderRequestMediaCounts } from "../provider-request-media";
 
 describe("provider request media counts", () => {
+  it("counts current user file-reference URL matches without retaining private references", () => {
+    const url = "https://private.test/image?token=PRIVATE_TOKEN";
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", image: url },
+          { type: "image", image: new URL(url) },
+          { type: "image", image: "https://private.test/url-only" },
+          {
+            type: "file",
+            data: "https://private.test/other-role",
+            mediaType: "image/png",
+          },
+          { type: "image", image: "data:image/png;base64,cA==" },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "t",
+            toolName: "image",
+            output: { type: "content", value: [{ type: "image-url", url }] },
+          },
+        ],
+      },
+    ];
+    const source: UIMessage[] = [
+      {
+        id: "private-user",
+        role: "user",
+        parts: [
+          Object.assign(
+            { type: "file" as const, mediaType: "image/png", url },
+            { fileId: "PRIVATE_FILE_ID" },
+          ),
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: "https://private.test/url-only",
+          },
+        ],
+      },
+      {
+        id: "private-assistant",
+        role: "assistant",
+        parts: [
+          Object.assign(
+            {
+              type: "file" as const,
+              mediaType: "image/png",
+              url: "https://private.test/other-role",
+            },
+            { fileId: "PRIVATE_OTHER_ID" },
+          ),
+        ],
+      },
+    ];
+    const before = JSON.stringify({ messages, source });
+    const counts = getProviderRequestMediaCounts(messages, 0, source);
+    expect(counts).toMatchObject({
+      user_url_images_with_file_reference_match: 2,
+      user_url_images_without_file_reference_match: 2,
+    });
+    expect(JSON.stringify(counts)).not.toMatch(/private|PRIVATE|https|token/);
+    expect(JSON.stringify({ messages, source })).toBe(before);
+  });
+
+  it("keeps unavailable source context distinct from an explicitly empty snapshot", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", image: "https://private.test/image" }],
+      },
+    ];
+    expect(getProviderRequestMediaCounts(messages)).not.toHaveProperty(
+      "user_url_images_without_file_reference_match",
+    );
+    expect(getProviderRequestMediaCounts(messages, 0, [])).toMatchObject({
+      user_url_images_with_file_reference_match: 0,
+      user_url_images_without_file_reference_match: 1,
+    });
+  });
+
+  it("keeps existing counts when optional source context cannot be inspected", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", image: "https://private.test/image" }],
+      },
+    ];
+    const source = {
+      id: "private",
+      role: "user" as const,
+      get parts(): never {
+        throw new Error("PRIVATE context");
+      },
+    };
+    const counts = getProviderRequestMediaCounts(messages, 0, [source]);
+    expect(counts.user_image_parts).toBe(1);
+    expect(counts).not.toHaveProperty(
+      "user_url_images_without_file_reference_match",
+    );
+  });
+
   it("distinguishes image representations, roles and non-image files", () => {
     const messages: ModelMessage[] = [
       {

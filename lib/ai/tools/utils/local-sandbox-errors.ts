@@ -9,9 +9,18 @@ export type NativePathResolutionFailure =
   | "output_control"
   | "non_absolute_output";
 
+export type NativePathReceiverMode =
+  `${"desktop" | "local" | "unknown"}_${"isolated" | "shared"}`;
+
 /** Retain only a finite conversion hint; the original public message is stable. */
 export class NativePathResolutionError extends Error {
-  constructor(readonly failure: NativePathResolutionFailure) {
+  constructor(
+    readonly failure: NativePathResolutionFailure,
+    readonly commandContext?: {
+      commandId?: string;
+      receiverMode: NativePathReceiverMode;
+    },
+  ) {
     super("Failed to resolve the Windows file path through Git Bash");
   }
 }

@@ -7,7 +7,10 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { browserBridgeCommand } from "./bridge-program";
-import { browserDaemonCommand } from "./daemon-program";
+import {
+  browserDaemonCommand,
+  BROWSER_DAEMON_PRECONDITION_REASONS,
+} from "./daemon-program";
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
@@ -228,6 +231,9 @@ export type BrowserCaptureFailureContext = {
     | "thrown_value"
     | "unreadable";
   capture_command_exit_code: number | "none" | "other";
+  capture_precondition_reason?: (typeof BROWSER_DAEMON_PRECONDITION_REASONS)[number];
+  capture_precondition_error?:
+    "missing" | "permission" | "not_directory" | "other";
 };
 
 /**
@@ -358,6 +364,10 @@ export async function captureBrowserFrame(
         "unreadable";
       let code: BrowserCaptureFailureContext["capture_command_exit_code"] =
         "none";
+      const precondition: Pick<
+        BrowserCaptureFailureContext,
+        "capture_precondition_reason" | "capture_precondition_error"
+      > = {};
       try {
         if (error instanceof CommandExitError) {
           kind = "command_exit";
@@ -376,6 +386,28 @@ export async function captureBrowserFrame(
             value <= 255
               ? value
               : "other";
+          if (stage === "stream_status" && code === 2) {
+            // Only this controlled helper's bounded failure JSON is eligible;
+            // never inspect frame command output or retain raw SDK text.
+            const stdout =
+              result &&
+              Object.getOwnPropertyDescriptor(result, "stdout")?.value;
+            if (typeof stdout === "string" && stdout.length <= 512) {
+              const parsed = JSON.parse(stdout);
+              const reason = parsed?.diagnostic_reason;
+              if (BROWSER_DAEMON_PRECONDITION_REASONS.includes(reason)) {
+                precondition.capture_precondition_reason = reason;
+                const failure = parsed?.diagnostic_error;
+                if (
+                  failure === "missing" ||
+                  failure === "permission" ||
+                  failure === "not_directory" ||
+                  failure === "other"
+                )
+                  precondition.capture_precondition_error = failure;
+              }
+            }
+          }
         } else
           kind =
             error instanceof TimeoutError
@@ -393,6 +425,7 @@ export async function captureBrowserFrame(
           capture_stage: stage,
           capture_error_kind: kind,
           capture_command_exit_code: code,
+          ...precondition,
         });
       } catch {
         /* Observers cannot change capture behavior. */

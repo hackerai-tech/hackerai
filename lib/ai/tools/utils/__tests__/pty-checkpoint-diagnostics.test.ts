@@ -12,7 +12,102 @@ import {
   PersistenceError,
   persistenceCommandError,
 } from "../persistence-failure";
-import { LocalFileRequestError } from "../local-sandbox-errors";
+import {
+  LocalFileRequestError,
+  NativePathResolutionError,
+} from "../local-sandbox-errors";
+
+it("bounds optional native path receipt context without invoking getters", () => {
+  const error = new NativePathResolutionError("empty_output", {
+    commandId: "PRIVATE_ID",
+    receiverMode: "PRIVATE_MODE" as any,
+  });
+  const getter = jest.fn(() => "PRIVATE_GETTER");
+  Object.defineProperty(error, "commandContext", { get: getter });
+  expect(checkpointCommandContext(error)).not.toHaveProperty(
+    "native_path_command_id",
+  );
+  expect(getter).not.toHaveBeenCalled();
+  const invalid = new NativePathResolutionError("empty_output", {
+    commandId: "PRIVATE_ID",
+    receiverMode: "PRIVATE_MODE" as any,
+  });
+  expect(JSON.stringify(checkpointCommandContext(invalid))).not.toContain(
+    "PRIVATE",
+  );
+});
+
+it("keeps existing command fields when optional native type inspection is unreadable", () => {
+  let prototypeReads = 0;
+  const error = new Proxy(
+    new PersistenceError("Failed to write file", "unknown", 1),
+    {
+      getPrototypeOf(target) {
+        if (++prototypeReads > 1)
+          throw new Error("PRIVATE optional inspection");
+        return Reflect.getPrototypeOf(target);
+      },
+    },
+  );
+  expect(checkpointCommandContext(error)).toEqual({
+    command_stage: "write_file",
+    command_exit_code: 1,
+    command_exit_code_shape: "exit_status",
+  });
+});
+
+it("accepts only a fixed prepare marker on the owning private-artifact error", () => {
+  const error = persistenceCommandError(
+    "Private terminal artifact operation failed",
+    {
+      exitCode: 1,
+      stderr: "PRIVATE_PREFIX\nHA_PRIVATE_PREPARE:temporary_create\n",
+    },
+    true,
+    "prepare",
+  );
+  expect(checkpointCommandContext(error)).toMatchObject({
+    private_artifact_prepare_step: "temporary_create",
+    private_artifact_write_phase: "prepare",
+    command_exit_code: 1,
+  });
+  expect(JSON.stringify(error)).not.toContain("PRIVATE_PREFIX");
+  for (const phase of ["append", "commit"] as const)
+    expect(
+      checkpointCommandContext(
+        persistenceCommandError(
+          "Private terminal artifact operation failed",
+          { exitCode: 1, stderr: "HA_PRIVATE_PREPARE:temporary_create\n" },
+          true,
+          phase,
+        ),
+      ),
+    ).not.toHaveProperty("private_artifact_prepare_step");
+  expect(
+    checkpointCommandContext(
+      persistenceCommandError(
+        "Private terminal artifact operation failed",
+        { exitCode: 1, stderr: "HA_PRIVATE_PREPARE:PRIVATE_VALUE\n" },
+        true,
+        "prepare",
+      ),
+    ),
+  ).not.toHaveProperty("private_artifact_prepare_step");
+  const getStderr = jest.fn(() => {
+    throw new Error("PRIVATE accessor");
+  });
+  const unsafe = { exitCode: 73 };
+  Object.defineProperty(unsafe, "stderr", { get: getStderr });
+  expect(
+    persistenceCommandError(
+      "Private terminal artifact operation failed",
+      unsafe,
+      true,
+      "prepare",
+    ).persistenceCategory,
+  ).toBe("unsafe_artifact");
+  expect(getStderr).not.toHaveBeenCalled();
+});
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn() },

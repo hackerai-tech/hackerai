@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UIMessage } from "ai";
 
 export interface ProviderRequestMediaCounts {
   image_parts: number;
@@ -12,6 +12,8 @@ export interface ProviderRequestMediaCounts {
   url_expiry_hint_near_images?: number;
   url_expiry_hint_later_images?: number;
   url_expiry_hint_unknown_images?: number;
+  user_url_images_with_file_reference_match?: number;
+  user_url_images_without_file_reference_match?: number;
   inline_images: number;
   provider_id_images: number;
   unknown_images: number;
@@ -92,12 +94,43 @@ const imageUrlExpiryHint = (
   }
 };
 
-/** Counts model-input occurrences, not unique images or downloaded bytes. */
+/**
+ * Count model-input occurrences, not unique images or downloaded bytes.
+ * Optional current UI references establish exact URL correlation only, never
+ * ownership, accessibility or the source of an unmatched historical image.
+ */
 export const getProviderRequestMediaCounts = (
   messages: readonly ModelMessage[],
   nowMs = Date.now(),
+  sourceMessages?: readonly UIMessage[],
 ): ProviderRequestMediaCounts => {
-  const counts = {
+  let fileReferenceUrls: Set<string> | undefined;
+  try {
+    const references = new Set<string>();
+    for (const message of sourceMessages ?? []) {
+      if (message.role !== "user") continue;
+      for (const part of message.parts) {
+        const fileId = isRecord(part)
+          ? Object.getOwnPropertyDescriptor(part, "fileId")?.value
+          : undefined;
+        if (
+          isRecord(part) &&
+          part.type === "file" &&
+          typeof part.mediaType === "string" &&
+          /^image\//i.test(part.mediaType) &&
+          typeof fileId === "string" &&
+          fileId.length > 0 &&
+          typeof part.url === "string"
+        ) {
+          references.add(part.url);
+        }
+      }
+    }
+    if (sourceMessages !== undefined) fileReferenceUrls = references;
+  } catch {
+    /* Unavailable optional context must not interrupt the provider request. */
+  }
+  const counts: ProviderRequestMediaCounts = {
     image_parts: 0,
     user_image_parts: 0,
     assistant_image_parts: 0,
@@ -113,6 +146,10 @@ export const getProviderRequestMediaCounts = (
     unknown_images: 0,
     pdf_file_parts: 0,
     other_file_parts: 0,
+    ...(fileReferenceUrls !== undefined && {
+      user_url_images_with_file_reference_match: 0,
+      user_url_images_without_file_reference_match: 0,
+    }),
   } satisfies ProviderRequestMediaCounts;
   const addImage = (role: string, value: unknown, providerId = false) => {
     counts.image_parts++;
@@ -130,7 +167,17 @@ export const getProviderRequestMediaCounts = (
       : imageRepresentation(value);
     counts[representation]++;
     if (representation === "url_images") {
-      counts[`url_expiry_hint_${imageUrlExpiryHint(value, nowMs)}_images`]++;
+      const expiryField =
+        `url_expiry_hint_${imageUrlExpiryHint(value, nowMs)}_images` as const;
+      counts[expiryField] = (counts[expiryField] ?? 0) + 1;
+      if (role === "user" && fileReferenceUrls !== undefined) {
+        const field = fileReferenceUrls.has(
+          value instanceof URL ? value.href : (value as string),
+        )
+          ? "user_url_images_with_file_reference_match"
+          : "user_url_images_without_file_reference_match";
+        counts[field] = (counts[field] ?? 0) + 1;
+      }
     }
   };
   const addFile = (role: string, mediaType: unknown, data: unknown) => {

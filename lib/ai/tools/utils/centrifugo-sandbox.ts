@@ -77,6 +77,7 @@ import {
   LocalFileRequestError,
   NativePathResolutionError,
   type NativePathResolutionFailure,
+  type NativePathReceiverMode,
   getLocalFileRequestFailure,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
@@ -1889,13 +1890,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         }
         // Link the actual guard to existing command receipts, not the metric
         // exporter's run context. Each sandbox emits at most one per reason.
+        const receipt = this.commandReceipts.get(result);
+        let receiverMode: NativePathReceiverMode | undefined;
+        try {
+          receiverMode = `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
+        } catch {
+          /* Optional mode context cannot replace the guarded path failure. */
+        }
         if (!this.reportedNativePathFailures.has(failure)) {
           this.reportedNativePathFailures.add(failure);
           try {
-            const receipt = this.commandReceipts.get(result);
             phLogger.info("windows_native_path_resolution_failed", {
               diagnostic_version: 1,
               diagnostic_scope: "first_reason_per_sandbox",
+              receiver_mode: receiverMode,
               reason: failure,
               trigger_run_id: this.triggerRunId,
               command_id: receipt?.commandId,
@@ -1915,7 +1923,15 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             // Diagnostics cannot replace the original guarded failure.
           }
         }
-        throw new NativePathResolutionError(failure);
+        throw new NativePathResolutionError(
+          failure,
+          receiverMode
+            ? {
+                commandId: receipt?.commandId,
+                receiverMode,
+              }
+            : undefined,
+        );
       }
       nativePaths?.set(path, resolved);
       return resolved;
