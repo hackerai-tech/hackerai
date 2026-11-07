@@ -1856,6 +1856,54 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
     });
 
+    it.each(["wait", "goal"] as const)(
+      "keeps Escape Stop aligned with the visible Stop action for %s replies",
+      async (kind) => {
+        mockSandboxState = {
+          chatMode: "agent",
+          subscription: "pro",
+          isCheckingProPlan: false,
+        };
+        const questions = [
+          {
+            id: "confirmation",
+            header: "Confirmation",
+            question: "Continue?",
+            options: [{ value: "yes", label: "Yes" }],
+          },
+        ];
+        render(
+          <TestWrapper>
+            <ChatInput
+              chatId={`escape-${kind}`}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+              {...(kind === "wait"
+                ? {
+                    pendingUserWait: {
+                      runId: "escape-run",
+                      toolCallId: "escape-call",
+                      status: "waiting" as const,
+                      questions,
+                    },
+                  }
+                : { pendingGoalQuestions: { generation: 1, questions } })}
+            />
+          </TestWrapper>,
+        );
+        fireEvent.click(await screen.findByRole("button", { name: /Yes/ }));
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(mockOnStop).toHaveBeenCalledTimes(kind === "wait" ? 1 : 0);
+        if (kind === "goal") {
+          const submit = screen.getByRole("button", { name: "Submit answer" });
+          expect(submit).toBeEnabled();
+          fireEvent.click(submit);
+          await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+        }
+      },
+    );
+
     it.each(
       ["wait", "goal"].flatMap((kind) =>
         [false, true].map((multiSelect) => ({ kind, multiSelect })),

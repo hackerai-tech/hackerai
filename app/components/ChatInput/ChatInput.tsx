@@ -1485,7 +1485,7 @@ const ChatInputContent = ({
                   submitting={pendingUserWait?.status === "submitting"}
                   stopping={isStoppingAgent}
                   hasAttachments={uploadedFiles.length > 0}
-                  hideStop={hideStop}
+                  hideStop={hideStop || !pendingUserWait}
                   onStop={() => void handleAgentStop()}
                 />
               )}
@@ -1738,7 +1738,7 @@ const ChatInputContent = ({
               isGenerating={isGenerating && !isWaitingForReply}
               isReplyingToAgent={isWaitingForReply}
               attachmentsDisabled={isWaitingForReply}
-              hideStop={hideStop}
+              hideStop={hideStop || (isWaitingForReply && !pendingUserWait)}
               onStop={() => void handleAgentStop()}
               onSubmit={handleSubmit}
               status={status}
