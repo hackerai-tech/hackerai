@@ -775,6 +775,53 @@ describe("ComputerSidebar reconnect behavior", () => {
     },
   );
 
+  it("allows explicit navigation to the newest tool while a browser selection is missing", () => {
+    const onNavigate = jest.fn();
+    const props = {
+      sidebarOpen: true,
+      sidebarContent: {
+        command: "agent-browser snapshot -i",
+        output: "",
+        isExecuting: false,
+        toolCallId: "saved-browser",
+      },
+      closeSidebar: jest.fn(),
+      onNavigate,
+      status: "ready" as const,
+    };
+    const { rerender } = render(
+      <ComputerSidebarBase {...props} messages={[otherToolMessage]} />,
+    );
+    const first = otherToolMessage.parts[0];
+    rerender(
+      <ComputerSidebarBase
+        {...props}
+        messages={[
+          {
+            ...otherToolMessage,
+            parts: [
+              first,
+              {
+                ...first,
+                toolCallId: "newest-tool",
+                input: { command: "date" },
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Next tool execution|Latest available tool execution/,
+      }),
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "newest-tool" }),
+    );
+  });
+
   it("waits before navigating away from genuinely missing content", () => {
     const closeSidebar = jest.fn();
     const onNavigate = jest.fn();

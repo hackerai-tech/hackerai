@@ -1228,14 +1228,20 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={handleNext}
+                    onClick={
+                      missingBrowserSelection ? handleJumpToLive : handleNext
+                    }
                     disabled={!canGoNext}
                     className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
                       !canGoNext
                         ? "text-muted-foreground/30 cursor-not-allowed"
                         : "text-muted-foreground hover:text-blue-500"
                     }`}
-                    aria-label="Next tool execution"
+                    aria-label={
+                      missingBrowserSelection
+                        ? "Latest available tool execution"
+                        : "Next tool execution"
+                    }
                   >
                     <SkipForward size={16} />
                   </button>
