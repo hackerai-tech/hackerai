@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
+import { createDiffViewDiagnostics } from "@/lib/analytics/diff-view-diagnostics";
+import { subscribeAuthenticatedAnalytics } from "@/lib/analytics/client";
 
 type ViewMode = "diff" | "original" | "modified";
 
@@ -20,14 +22,47 @@ export const DiffView: React.FC<DiffViewProps> = ({
   wrap = true,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
+  const [diagnostics] = useState(createDiffViewDiagnostics);
+  useEffect(() => {
+    const unsubscribe = subscribeAuthenticatedAnalytics(diagnostics.retry);
+    // A child editor can mount before this effect subscribes to readiness.
+    diagnostics.retry();
+    return unsubscribe;
+  }, [diagnostics]);
+  useEffect(() => {
+    diagnostics.viewRendered(viewMode);
+  }, [diagnostics, viewMode]);
   const handleEditorMount: DiffOnMount = (editor) => {
     const models = editor.getModel();
     if (!models) return;
+
+    let live = true;
+    let diffSubscription: { dispose(): void } | undefined;
+    const recordIfComputed = () => {
+      try {
+        // Monaco also notifies when a computation resets; null is not success.
+        if (live && editor.getLineChanges() !== null) diagnostics.computed();
+      } catch {
+        // Optional observation must not affect editor operation.
+      }
+    };
+    try {
+      diffSubscription = editor.onDidUpdateDiff(recordIfComputed);
+      recordIfComputed();
+    } catch {
+      // Retain normal rendering and cleanup if observation is unavailable.
+    }
 
     // The React wrapper disposes models before the diff widget, which Monaco
     // rejects. Retain them until the widget's synchronous teardown finishes.
     // Monaco fires this event on its inner editor, not the diff wrapper.
     editor.getModifiedEditor().onDidDispose(() => {
+      live = false;
+      try {
+        diffSubscription?.dispose();
+      } catch {
+        // Diagnostic subscription cleanup cannot prevent model disposal.
+      }
       queueMicrotask(() => {
         if (!models.original.isDisposed()) models.original.dispose();
         if (!models.modified.isDisposed()) models.modified.dispose();
