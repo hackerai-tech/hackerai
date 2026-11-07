@@ -1971,6 +1971,56 @@ describe("Chat Component Integration", () => {
       await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
     });
 
+    it("dispatches a new chat's queue after saving without a router navigation", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      window.history.replaceState({}, "", "/");
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+      const view = () => (
+        <TestWrapper>
+          <RecoveryQueueProbe />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(
+        screen.getByRole("button", { name: "Queue recovery draft" }),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      const id = mockChatHandlerArgs.chatId;
+      mockRestoredChat = {
+        id,
+        default_model_slug: "agent",
+        sandbox_type: "e2b",
+      };
+      const options = mockUseChat.mock.calls.at(-1)![0];
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "ready" });
+      await act(async () => {
+        options.onFinish({
+          isAbort: false,
+          isError: false,
+          message: {
+            id: "answer",
+            role: "assistant",
+            parts: [{ type: "text", text: "Done" }],
+          },
+          messages: [],
+        });
+        rerender(view());
+      });
+      expect(window.location.pathname).toBe(`/c/${id}`);
+      expect(mockRouteParams.id).toBeUndefined();
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
     it("restores held queued messages only in their original chat after navigation", async () => {
       mockRouteParams = { id: "held-chat" };
       mockLocalConnections = [];

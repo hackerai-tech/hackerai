@@ -2689,7 +2689,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       queueChatId === chatId &&
-      (routeChatId ? routeChatId === chatId : !isExistingChat) &&
+      // replaceState saves a new chat without updating the router tree/params.
+      (routeChatId
+        ? routeChatId === chatId
+        : !isExistingChat || window.location.pathname === `/c/${chatId}`) &&
       (!isExistingChat ||
         (hasLoadedCurrentChat && persistedGoal !== undefined)) &&
       status === "ready" &&
