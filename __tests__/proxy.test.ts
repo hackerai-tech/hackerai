@@ -586,7 +586,15 @@ describe("proxy", () => {
       try {
         mockAuthkit.mockImplementation((_request, options: any) => {
           options.onSessionRefreshError({
-            error: new Error("Refresh failed"),
+            error: Object.assign(
+              new Error("Refresh failed", {
+                cause: Object.assign(new TypeError("private-refresh-cause"), {
+                  status: 503,
+                  code: "ECONNRESET",
+                }),
+              }),
+              { status: "400" },
+            ),
             isTransient,
           });
           return Promise.resolve({
@@ -603,7 +611,19 @@ describe("proxy", () => {
           event: "auth.session_refresh_failed",
           error: "Refresh failed",
           is_transient: isTransient,
+          auth_refresh_diagnostic_version: 1,
+          auth_refresh_error_kind: "Error",
+          auth_refresh_error_status: null,
+          auth_refresh_error_status_shape: "non_numeric",
+          auth_refresh_error_code: "none",
+          auth_refresh_cause_kind: "TypeError",
+          auth_refresh_cause_status: 503,
+          auth_refresh_cause_status_shape: "integer",
+          auth_refresh_cause_code: "ECONNRESET",
         });
+        expect(String(warnSpy.mock.calls[0][0])).not.toContain(
+          "private-refresh-cause",
+        );
         expect(mockNextResponseJson).toHaveBeenCalledWith(
           {
             code: "unauthorized:auth",
