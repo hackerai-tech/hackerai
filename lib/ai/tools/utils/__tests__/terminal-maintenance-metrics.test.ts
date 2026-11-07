@@ -5,6 +5,11 @@ import {
   terminalSandboxInstance,
 } from "../terminal-execution-record";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
+import {
+  LocalFileRequestError,
+  NativePathResolutionError,
+} from "../local-sandbox-errors";
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 
 type Sample = { name: string; value: number; labels: Record<string, string> };
 let samples: Sample[];
@@ -120,6 +125,8 @@ test("attributes UTF-8 record writes, recovery reads and Windows retention reads
           source: "agent-long",
           reason: "none",
           failure_category: "none",
+          file_failure: "none",
+          checkpoint_failure_origin: "none",
         },
       }),
     ]);
@@ -165,6 +172,147 @@ test("counts returned rejected payloads and write attempts on failure, without c
   expect(JSON.stringify(samples)).not.toContain("private error");
 });
 
+test.each(["native_ipc_denied", "filesystem", "unknown"] as const)(
+  "retains typed %s checkpoint evidence without changing failure classification or retrying",
+  async (fileFailure) => {
+    const { sandbox, store, record } = fixture();
+    sandbox.files.write.mockRejectedValue(
+      new LocalFileRequestError(
+        "native_error",
+        "private opaque error",
+        fileFailure,
+      ),
+    );
+    expect(await store.save(record)).toBeNull();
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(events("checkpoint_write")[0].labels).toMatchObject({
+      outcome: "failure",
+      transport: "native_file",
+      failure_category: "unknown",
+      file_failure: fileFailure,
+    });
+    expect(bytes("checkpoint_write")[0].labels.file_failure).toBe(fileFailure);
+    expect(JSON.stringify(samples)).not.toMatch(/private|abcdef12|cloud-id/);
+  },
+);
+
+test("does not attribute untyped, invalid or throwing file context to a checkpoint", async () => {
+  const { sandbox, store, record } = fixture();
+  const untyped = Object.assign(new Error("private opaque error"), {
+    fileFailure: "native_ipc_denied",
+  });
+  const invalid = new LocalFileRequestError(
+    "native_error",
+    "private opaque error",
+    "private-unbounded-value" as any,
+  );
+  const throwing = new LocalFileRequestError(
+    "native_error",
+    "private opaque error",
+  );
+  Object.defineProperty(throwing, "fileFailure", {
+    get() {
+      throw new Error("private accessor error");
+    },
+  });
+  for (const error of [untyped, invalid, throwing]) {
+    sandbox.files.write.mockRejectedValueOnce(error);
+    await expect(store.save(record)).resolves.toBeNull();
+  }
+  expect(events("checkpoint_write")).toHaveLength(3);
+  expect(events("checkpoint_write").map((s) => s.labels.file_failure)).toEqual([
+    "none",
+    "none",
+    "none",
+  ]);
+  expect(sandbox.files.write).toHaveBeenCalledTimes(3);
+  expect(JSON.stringify(samples)).not.toMatch(/private|abcdef12|cloud-id/);
+});
+
+test("validates the optional metric label at the emission boundary", () => {
+  const { sandbox } = fixture();
+  recordTerminalMaintenance(sandbox, {
+    operation: "checkpoint_write",
+    outcome: "failure",
+    transport: "native_file",
+    fileFailure: "private-unbounded-value",
+    checkpointFailureOrigin: "private-unbounded-origin",
+  } as any);
+  expect(events("checkpoint_write")[0].labels.file_failure).toBe("none");
+  expect(events("checkpoint_write")[0].labels.checkpoint_failure_origin).toBe(
+    "none",
+  );
+  expect(JSON.stringify(samples)).not.toContain("private");
+});
+
+test.each([
+  [
+    new LocalFileRequestError("native_error", "private opaque error"),
+    "local_file_request",
+    "none",
+  ],
+  [
+    new DesktopFileBridgeError("native_ipc_denied", "private opaque error"),
+    "desktop_file_bridge",
+    "native_ipc_denied",
+  ],
+  [
+    new Error("Failed to resolve the Windows file path through Git Bash"),
+    "windows_path_resolution",
+    "none",
+  ],
+  [
+    new Error("File path exceeds the local file command limit"),
+    "command_path_limit",
+    "none",
+  ],
+  [new TypeError("private object or path"), "type_error", "none"],
+  [
+    new NativePathResolutionError("command_failed"),
+    "windows_path_command_failed",
+    "none",
+  ],
+  [
+    new NativePathResolutionError("private-unbounded-reason" as any),
+    "windows_path_resolution",
+    "none",
+  ],
+  [new RangeError("private output"), "range_error", "none"],
+  [new Error("private opaque error"), "other_error", "none"],
+  [
+    new Error("private prefix: File path exceeds the local file command limit"),
+    "other_error",
+    "none",
+  ],
+  ["private thrown value", "thrown_value", "none"],
+])(
+  "retains bounded checkpoint origin %s without replay or private context",
+  async (error, origin, fileFailure) => {
+    const { sandbox, store, record } = fixture();
+    expect(await store.save(record)).not.toBeNull();
+    samples = [];
+    sandbox.files.write.mockRejectedValueOnce(error);
+    expect(
+      await store.save({ ...record, output: "private changed output" }),
+    ).toBeNull();
+    expect(await store.read(record.session)).toEqual(record);
+    expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(events("checkpoint_write")[0].labels).toMatchObject({
+      outcome: "failure",
+      checkpoint_failure_origin: origin,
+      file_failure: fileFailure,
+    });
+    expect(bytes("checkpoint_write")[0].labels.checkpoint_failure_origin).toBe(
+      origin,
+    );
+    expect(JSON.stringify(samples)).not.toMatch(
+      /private|abcdef12|cloud-id|Git Bash|command limit/,
+    );
+  },
+);
+
 test.each([
   ['{"complete":true}', "success", false],
   ['{"complete":false}', "incomplete", false],
@@ -199,12 +347,36 @@ test("records failed fallback listing and preserves best-effort prune behavior",
   expect(events("prune_fallback")[0].labels.outcome).toBe("failure");
 });
 
+test("distinguishes a rejected record from an attempted write without losing the prior checkpoint", async () => {
+  const { sandbox, store, record } = fixture();
+  await store.save(record);
+  samples = [];
+  await expect(
+    store.save({ ...record, version: 99 } as any),
+  ).resolves.toBeNull();
+  expect(events("checkpoint_write")[0].labels.checkpoint_failure_origin).toBe(
+    "record_validation",
+  );
+  expect(bytes("checkpoint_write")).toEqual([]);
+  expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+  expect(await store.read(record.session)).toEqual(record);
+  expect(JSON.stringify(samples)).not.toContain("private");
+});
+
 test("exporter failure cannot break save, recovery, or retention", async () => {
-  const { store, record } = fixture(true);
+  const { sandbox, store, record } = fixture(true);
   installProvider(true);
   expect(await store.save(record)).not.toBeNull();
   expect(await store.read(record.session)).toEqual(record);
   await expect(store.prune()).resolves.toBeUndefined();
+  sandbox.files.write.mockRejectedValue(
+    new LocalFileRequestError(
+      "native_error",
+      "private opaque error",
+      "native_ipc_denied",
+    ),
+  );
+  await expect(store.save(record)).resolves.toBeNull();
   expect(await store.read(record.session)).toEqual(record);
 });
 

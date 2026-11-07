@@ -110,7 +110,11 @@ const seedTables = (): Tables => ({
   finding_sources: [],
 });
 
-function createResult(rows: Row[], filters: Array<[string, unknown]>) {
+function createResult(
+  rows: Row[],
+  filters: Array<[string, unknown]>,
+  paginationFailure?: unknown,
+) {
   const filtered = () =>
     rows.filter((row) =>
       filters.every(([field, value]) => row[field] === value),
@@ -154,6 +158,7 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
         cursor: string | null;
         numItems: number;
       }) => {
+        if (paginationFailure !== undefined) throw paginationFailure;
         const all = filtered();
         const start = cursor ? Number(cursor) : 0;
         const page = all.slice(start, start + numItems);
@@ -172,7 +177,11 @@ function createResult(rows: Row[], filters: Array<[string, unknown]>) {
   return result;
 }
 
-function createMockCtx(tables: Tables, subject = "user-1") {
+function createMockCtx(
+  tables: Tables,
+  subject = "user-1",
+  paginationFailure?: unknown,
+) {
   let nextId = 1;
   const indexes: string[] = [];
   const query = jest.fn((table: string) => ({
@@ -186,7 +195,7 @@ function createMockCtx(tables: Tables, subject = "user-1") {
         },
       };
       build(q);
-      return createResult(tables[table] ?? [], filters);
+      return createResult(tables[table] ?? [], filters, paginationFailure);
     }),
     withSearchIndex: jest.fn((_index: string, build: (q: any) => any) => {
       const filters: Array<[string, unknown]> = [];
@@ -207,7 +216,7 @@ function createMockCtx(tables: Tables, subject = "user-1") {
           .toLowerCase()
           .includes(search),
       );
-      return createResult(rows, filters);
+      return createResult(rows, filters, paginationFailure);
     }),
   }));
   const insert = jest.fn(async (table: string, value: Record<string, any>) => {
@@ -1435,5 +1444,147 @@ describe("semantic finding deduplication", () => {
       ),
     ).toMatchObject({ success: true });
     expect(tables.findings).toHaveLength(2);
+  });
+});
+
+describe("Agent report cursor validation", () => {
+  beforeEach(() => jest.clearAllMocks());
+  const scope = { serviceKey: "service", userId: "user-1", chatId: "chat-1" };
+  const paginationOpts = { numItems: 1, cursor: "private-invalid-cursor" };
+
+  it("preserves valid first-page and continuation results", async () => {
+    const api = await import("../findings");
+    const tables = seedTables();
+    const mock = createMockCtx(tables);
+    await api.createFindingForBackend.handler(mock.ctx, createArgs());
+    await api.createFindingForBackend.handler(
+      mock.ctx,
+      createArgs({
+        toolCallId: "tool-2",
+        report: report({
+          title: "Different invoice issue",
+          target: "other.example.test",
+        }),
+      }),
+    );
+    const first = await api.listReportsForBackend.handler(mock.ctx, {
+      ...scope,
+      paginationOpts: { numItems: 1, cursor: null },
+    });
+    expect(first).toMatchObject({
+      success: true,
+      is_done: false,
+      reports: [expect.objectContaining({ finding_id: expect.any(String) })],
+    });
+    const second = await api.listReportsForBackend.handler(mock.ctx, {
+      ...scope,
+      paginationOpts: { numItems: 1, cursor: first.next_cursor },
+    });
+    expect(second).toMatchObject({
+      success: true,
+      is_done: true,
+      next_cursor: null,
+      reports: [expect.objectContaining({ finding_id: expect.any(String) })],
+    });
+    expect(second.reports[0].finding_id).not.toBe(first.reports[0].finding_id);
+  });
+
+  it.each([undefined, "invoice"])(
+    "returns actionable validation for a malformed cursor with search %s without restarting",
+    async (search) => {
+      const api = await import("../findings");
+      const mock = createMockCtx(
+        seedTables(),
+        "user-1",
+        new Error("Failed to parse cursor"),
+      );
+      const result = await api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts,
+        search,
+      });
+      expect(result).toEqual({
+        success: false,
+        error: "validation",
+        message:
+          "The report cursor is invalid. Start again without a cursor and use only the next_cursor returned for the same search and status filters.",
+      });
+      const findingsRead = mock.ctx.db.query.mock.results.at(-1).value;
+      const builder = search
+        ? findingsRead.withSearchIndex
+        : findingsRead.withIndex;
+      const page = builder.mock.results[0].value;
+      expect(page.paginate).toHaveBeenCalledTimes(1);
+      expect(page.paginate).toHaveBeenCalledWith(paginationOpts);
+      expect(JSON.stringify(result)).not.toContain(paginationOpts.cursor);
+    },
+  );
+
+  it.each([
+    new Error("Too many concurrent requests"),
+    new Error("InvalidCursor: cursor used with a different query"),
+    new Error("Failed to parse cursor elsewhere"),
+    "Failed to parse cursor",
+  ])("keeps an unrelated pagination failure visible: %s", async (failure) => {
+    const api = await import("../findings");
+    const mock = createMockCtx(seedTables(), "user-1", failure);
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts,
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("keeps parser failures without a supplied cursor visible", async () => {
+    const api = await import("../findings");
+    const failure = new Error("Failed to parse cursor");
+    const mock = createMockCtx(seedTables(), "user-1", failure);
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts: { numItems: 1, cursor: null },
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it("does not treat an authorization or history failure as cursor validation", async () => {
+    const api = await import("../findings");
+    const { validateServiceKey } = await import("../lib/utils");
+    const { assertUserCanAccessChatHistory } =
+      await import("../lib/suspensionGuards");
+    const failure = new Error("Failed to parse cursor");
+    for (const guard of [validateServiceKey, assertUserCanAccessChatHistory]) {
+      jest.mocked(guard).mockImplementationOnce(() => {
+        throw failure;
+      });
+      const mock = createMockCtx(seedTables(), "user-1", failure);
+      await expect(
+        api.listReportsForBackend.handler(mock.ctx, {
+          ...scope,
+          paginationOpts,
+        }),
+      ).rejects.toBe(failure);
+      expect(mock.ctx.db.query).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not inspect a foreign chat's findings even with a malformed cursor", async () => {
+    const api = await import("../findings");
+    const mock = createMockCtx(
+      seedTables(),
+      "user-1",
+      new Error("Failed to parse cursor"),
+    );
+    await expect(
+      api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        chatId: "chat-other",
+        paginationOpts,
+      }),
+    ).resolves.toMatchObject({ success: false, error: "not_found" });
+    expect(
+      mock.ctx.db.query.mock.calls.map(([table]: [string]) => table),
+    ).toEqual(["chats"]);
   });
 });

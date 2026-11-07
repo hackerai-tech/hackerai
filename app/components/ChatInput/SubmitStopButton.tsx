@@ -4,7 +4,14 @@ import { Button } from "@/components/ui/button";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { ArrowUp, Square } from "lucide-react";
-import { useHotkeys } from "react-hotkeys-hook";
+import { useEffect } from "react";
+import { useShortcutPlatform } from "@/hooks/use-shortcut-platform";
+import {
+  formatShortcut,
+  hasOpenShortcutOverlay,
+  isShortcutTargetBlocked,
+  matchesShortcut,
+} from "@/lib/keyboard-shortcuts";
 import type { ChatStatus } from "@/types";
 import type { ChatMode } from "@/types/chat";
 import type { UploadedFileState } from "@/types/file";
@@ -101,23 +108,29 @@ export function SubmitStopButton({
   isReplyingToAgent = false,
   replyActionLabel = "Submit answer",
 }: SubmitStopButtonProps) {
-  useHotkeys(
-    "ctrl+c",
-    (e) => {
-      e.preventDefault();
-      onStop();
-    },
-    {
-      enabled: (isGenerating || isReplyingToAgent) && !hideStop,
-      enableOnFormTags: !isReplyingToAgent,
-      enableOnContentEditable: !isReplyingToAgent,
-      ignoreEventWhen: () =>
-        isReplyingToAgent && !!window.getSelection()?.toString(),
-      preventDefault: true,
-      description: "Stop AI generation",
-    },
-    [isGenerating, isReplyingToAgent, onStop],
-  );
+  const isMac = useShortcutPlatform();
+  useEffect(() => {
+    if ((!isGenerating && !isReplyingToAgent) || hideStop) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        matchesShortcut(event, "stop", isMac) &&
+        !isShortcutTargetBlocked(event) &&
+        !hasOpenShortcutOverlay() &&
+        !(
+          isReplyingToAgent &&
+          (window.getSelection()?.toString() ||
+            (event.target instanceof Element &&
+              event.target.closest("input, textarea, [contenteditable=true]")))
+        ) &&
+        !document.querySelector('[data-shortcuts-scope="navigation"]')
+      ) {
+        event.preventDefault();
+        onStop();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isGenerating, isReplyingToAgent, hideStop, isMac, onStop]);
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
@@ -143,7 +156,7 @@ export function SubmitStopButton({
             </Button>
           </TooltipTrigger>
           <TooltipContent>
-            <p>Stop (⌃C)</p>
+            <p>Stop ({formatShortcut("stop", isMac)})</p>
           </TooltipContent>
         </TooltipPrimitive.Root>
       )}

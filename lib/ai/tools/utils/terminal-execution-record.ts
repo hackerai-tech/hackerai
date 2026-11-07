@@ -1,8 +1,16 @@
 import {
   classifyPersistenceFailure,
+  checkpointFailureOrigin,
+  type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
+import {
+  parseDesktopFileFailure,
+  DesktopFileBridgeError,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+import { LocalFileRequestError } from "./local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
@@ -20,6 +28,8 @@ import {
   writeOwnerOnlyPosixFile,
 } from "./owner-only-posix-file";
 import { pruneLocalTerminalRecords } from "./local-terminal-retention";
+import { phLogger } from "@/lib/posthog/server";
+import type { RecordCheckpointIssue } from "./pty-session-manager";
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -161,6 +171,18 @@ export function createTerminalRecordStore(
   };
 
   return {
+    /** Keep server logging behind the adapter used by the shared session manager. */
+    reportCheckpointIssue(issue: RecordCheckpointIssue): void {
+      phLogger.info("terminal_record_checkpoint_unconfirmed", {
+        // Scope IDs can be client-controlled; reuse the store's opaque digest.
+        terminal_scope_fingerprint: scope,
+        terminal_session_id: issue.terminalSessionId,
+        session_kind: issue.sessionKind,
+        reason: issue.reason,
+        diagnostic_version: 1,
+        diagnostic_scope: "first_reason_per_terminal_session",
+      });
+    },
     checkpointOnStart: true,
     checkpointOnOutput: true,
     pruneOnStart: true,
@@ -169,6 +191,8 @@ export function createTerminalRecordStore(
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
       let failureCategory: PersistenceFailureCategory | undefined;
+      let fileFailure: DesktopFileFailure | undefined;
+      let failureOrigin: CheckpointFailureOrigin | undefined;
       try {
         const validated = recordSchema.parse(record);
         const path = pathFor(record.session);
@@ -190,13 +214,25 @@ export function createTerminalRecordStore(
         outcome = "success";
         return path;
       } catch (error) {
+        failureOrigin = checkpointFailureOrigin(error);
         failureCategory = classifyPersistenceFailure(error);
+        try {
+          if (
+            error instanceof LocalFileRequestError ||
+            error instanceof DesktopFileBridgeError
+          )
+            fileFailure = parseDesktopFileFailure(error.fileFailure);
+        } catch {
+          // Optional adapter context must not change a best-effort save result.
+        }
         return null; // Persistence failure must not interrupt or replay a command.
       } finally {
         recordTerminalMaintenance(sandbox, {
           operation: "checkpoint_write",
           outcome,
           failureCategory,
+          fileFailure,
+          checkpointFailureOrigin: failureOrigin,
           payloadBytes,
           transport: ownerOnlyPosix ? "posix_command" : "native_file",
         });

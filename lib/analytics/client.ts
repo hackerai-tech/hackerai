@@ -45,6 +45,11 @@ export function getIdentifiedAnalyticsUserId() {
     : null;
 }
 
+/** Consent-permitted queue owner, including while SDK identification is pending. */
+export function getPermittedAnalyticsUserId() {
+  return authenticatedAnalyticsUserId;
+}
+
 function notifyAuthenticatedAnalyticsListeners() {
   authenticatedAnalyticsListeners.forEach((listener) => listener());
 }

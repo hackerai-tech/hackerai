@@ -1,10 +1,9 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { jest } from "@jest/globals";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SubmitStopButton } from "../SubmitStopButton";
-import { useHotkeys } from "react-hotkeys-hook";
 
 Object.defineProperty(globalThis, "ResizeObserver", {
   configurable: true,
@@ -85,6 +84,68 @@ describe("SubmitStopButton paid mode colors", () => {
     },
   );
 
+  it("preserves Ctrl+C and only stops with the advertised chord while running", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false, true);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stop from a terminal or behind a dialog", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", false, true);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    dialog.remove();
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm";
+    document.body.append(terminal);
+    fireEvent.keyDown(terminal, {
+      key: "Escape",
+    });
+    terminal.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
+
+  it("leaves already-handled Escape and open navigation alone", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", true, true);
+    const handled = new KeyboardEvent("keydown", {
+      key: "Escape",
+      cancelable: true,
+    });
+    handled.preventDefault();
+    window.dispatchEvent(handled);
+    const navigation = document.createElement("div");
+    navigation.dataset.shortcutsScope = "navigation";
+    document.body.append(navigation);
+    fireEvent.keyDown(window, { key: "Escape" });
+    navigation.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
+
+  it("ignores Stop while idle", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false);
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
   it("disables sending while offline without hiding the composer action", () => {
     render(
       <TooltipProvider>
@@ -106,21 +167,34 @@ describe("SubmitStopButton paid mode colors", () => {
         />
       </TooltipProvider>,
     );
-    // The hotkey library is mocked globally. Test our policy at its options
-    // boundary. This does not establish native clipboard behavior.
-    const options = jest.mocked(useHotkeys).mock.calls.at(-1)![2];
-    expect(options).toMatchObject({
-      enabled: true,
-      enableOnFormTags: false,
-      enableOnContentEditable: false,
+    defaultProps.onStop.mockClear();
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
     });
+    field.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    fireEvent.keyDown(field, { key: "Escape" });
+    field.remove();
     const range = document.createRange();
     range.selectNodeContents(screen.getByText("Question text"));
     const selection = window.getSelection()!;
     selection.addRange(range);
-    expect(options.ignoreEventWhen?.()).toBe(true);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
     selection.removeAllRanges();
-    expect(options.ignoreEventWhen?.()).toBe(false);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, { key: "Escape" });
+    dialog.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
   });
 
   it("prioritizes the loading reason while destination messages load", async () => {

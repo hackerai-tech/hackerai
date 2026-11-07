@@ -1657,6 +1657,8 @@ const ChatInputContent = ({
                   selectGoal();
                 }
                 if (e.key === "Escape") {
+                  // Dismiss composer UI before the global Stop shortcut.
+                  if (goalMode || showGoalSuggestion) e.preventDefault();
                   exitGoalMode("escape");
                   setDismissedGoalSuggestionInput(input);
                 }

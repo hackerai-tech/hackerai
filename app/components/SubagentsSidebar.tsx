@@ -33,6 +33,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { SubagentSkillBadges } from "./SubagentSkillBadges";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { hasOpenShortcutOverlay } from "@/lib/keyboard-shortcuts";
 import {
   SUBAGENT_ACTIVE_STATUSES,
   type SubagentProfile,
@@ -943,7 +944,14 @@ export const SubagentsSidebar = ({
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        hasOpenShortcutOverlay() ||
+        document.querySelector('[data-shortcuts-scope="navigation"]')
+      )
+        return;
+      event.preventDefault();
       if (selectedId) {
         if (selected?.parent_message_id) {
           setResolvedParentMessageId(selected.parent_message_id);
@@ -953,8 +961,8 @@ export const SubagentsSidebar = ({
         closeSidebar();
       }
     };
-    window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
   }, [closeSidebar, selected, selectedId]);
 
   const cancelSelected = async () => {

@@ -7,7 +7,12 @@ import {
 } from "@/lib/centrifugo/desktop-file-errors";
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
-import { persistenceCommandError } from "./persistence-failure";
+import { phLogger } from "@/lib/posthog/server";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
+import {
+  classifyPersistenceFailure,
+  persistenceCommandError,
+} from "./persistence-failure";
 import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
@@ -70,6 +75,8 @@ import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
   LocalFileRequestError,
+  NativePathResolutionError,
+  type NativePathResolutionFailure,
   getLocalFileRequestFailure,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
@@ -337,6 +344,17 @@ export class CentrifugoSandbox extends EventEmitter {
   private activeClients: Centrifuge[] = [];
   private nativeFileRelayConfirmed = false;
   private nativeFileRelayConfirmation?: Promise<void>;
+  private readonly commandReceipts = new WeakMap<
+    CommandResult,
+    {
+      commandId: string;
+      acknowledgedOutput: boolean;
+      terminalAckPublished: boolean;
+      lastReceivedSequence: number;
+    }
+  >();
+  private readonly reportedNativePathFailures =
+    new Set<NativePathResolutionFailure>();
 
   constructor(
     private userId: string,
@@ -496,13 +514,12 @@ export class CentrifugoSandbox extends EventEmitter {
       const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
-      const shellInfo = this.connectionInfo.isDesktop
-        ? platform === "win32"
-          ? "Desktop commands use Git Bash when available, otherwise cmd.exe /C. Confirm the active shell before choosing shell-specific syntax."
-          : 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
-        : platform === "win32"
-          ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
-          : `Commands are invoked via /bin/bash -c.`;
+      const shellInfo =
+        platform === "win32"
+          ? WINDOWS_COMMAND_SHELL_GUIDANCE
+          : this.connectionInfo.isDesktop
+            ? 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
+            : `Commands are invoked via /bin/bash -c.`;
       const agentBrowserProbe =
         platform === "win32"
           ? "where agent-browser && agent-browser --version"
@@ -1371,12 +1388,19 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
-                resolve({
+                const completed = {
                   stdout,
                   stderr,
                   exitCode: message.exitCode,
                   pid: message.pid,
+                };
+                this.commandReceipts.set(completed, {
+                  commandId,
+                  acknowledgedOutput,
+                  terminalAckPublished: terminalCursorPublished,
+                  lastReceivedSequence: lastStreamSequence,
                 });
+                resolve(completed);
               };
               if (acknowledgedOutput && sequence !== undefined)
                 void sendOutputCursor("command_output_ack");
@@ -1448,13 +1472,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
-                resolve({
+                const completed = {
                   stdout,
                   stderr: stderr
                     ? `${stderr}\n${message.message}`
                     : message.message,
                   exitCode: -1,
+                };
+                this.commandReceipts.set(completed, {
+                  commandId,
+                  acknowledgedOutput,
+                  terminalAckPublished: terminalCursorPublished,
+                  lastReceivedSequence: lastStreamSequence,
                 });
+                resolve(completed);
               };
               if (acknowledgedOutput && sequence !== undefined)
                 void sendOutputCursor("command_output_ack");
@@ -1826,9 +1857,48 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
       ) {
         // Never guess another file location when conversion fails.
-        throw new Error(
-          "Failed to resolve the Windows file path through Git Bash",
-        );
+        let failure: NativePathResolutionFailure;
+        if (result.exitCode !== 0) {
+          const category = classifyPersistenceFailure(result.stderr);
+          failure =
+            category === "missing_utility" ||
+            category === "shell_syntax" ||
+            category === "permission"
+              ? category
+              : "command_failed";
+        } else {
+          failure =
+            resolved.length === 0
+              ? "empty_output"
+              : /[\r\n\0]/.test(resolved)
+                ? "output_control"
+                : "non_absolute_output";
+        }
+        // Link the actual guard to existing command receipts, not the metric
+        // exporter's run context. Each sandbox emits at most one per reason.
+        if (!this.reportedNativePathFailures.has(failure)) {
+          this.reportedNativePathFailures.add(failure);
+          try {
+            const receipt = this.commandReceipts.get(result);
+            phLogger.info("windows_native_path_resolution_failed", {
+              diagnostic_version: 1,
+              diagnostic_scope: "first_reason_per_sandbox",
+              reason: failure,
+              trigger_run_id: this.triggerRunId,
+              command_id: receipt?.commandId,
+              receipt_available: receipt !== undefined,
+              acknowledged_output: receipt?.acknowledgedOutput,
+              terminal_ack_published: receipt?.terminalAckPublished,
+              last_received_sequence: receipt?.lastReceivedSequence,
+              exit_success: result.exitCode === 0,
+              stdout_bytes: Buffer.byteLength(result.stdout, "utf8"),
+              stderr_bytes: Buffer.byteLength(result.stderr, "utf8"),
+            });
+          } catch {
+            // Diagnostics cannot replace the original guarded failure.
+          }
+        }
+        throw new NativePathResolutionError(failure);
       }
       nativePaths?.set(path, resolved);
       return resolved;
