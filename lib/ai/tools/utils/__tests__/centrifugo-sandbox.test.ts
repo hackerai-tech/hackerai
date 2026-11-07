@@ -1,4 +1,5 @@
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
+import { phLogger } from "@/lib/posthog/server";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
  *
@@ -185,6 +186,7 @@ function startCommand(
 
 describe("CentrifugoSandbox", () => {
   let receiverLog: jest.SpyInstance;
+  let guardLog: jest.SpyInstance;
   const receiverRecords = () =>
     receiverLog.mock.calls
       .map(([value]) => {
@@ -197,6 +199,7 @@ describe("CentrifugoSandbox", () => {
       .filter((record) => record.event === "desktop_command_receiver");
   beforeEach(() => {
     receiverLog = jest.spyOn(console, "info").mockImplementation(() => {});
+    guardLog = jest.spyOn(phLogger, "info").mockImplementation(() => {});
     jest.mocked(relayTraffic.recordRelayReceivedBytes).mockClear();
     mockSubscriptions = [];
     mockClients = [];
@@ -206,6 +209,7 @@ describe("CentrifugoSandbox", () => {
 
   afterEach(() => {
     receiverLog.mockRestore();
+    guardLog.mockRestore();
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
   });
@@ -4259,8 +4263,8 @@ describe("CentrifugoSandbox", () => {
           },
         });
         await rejected;
-        const records = receiverLog.mock.calls
-          .map(([value]) => JSON.parse(value))
+        const records = guardLog.mock.calls
+          .map(([event, fields]) => ({ event, ...fields }))
           .filter(
             (row) => row.event === "windows_native_path_resolution_failed",
           );
@@ -4299,10 +4303,10 @@ describe("CentrifugoSandbox", () => {
           stderr: "PRIVATE_STDERR_CANARY",
           exitCode: 0,
         });
-        receiverLog.mockImplementation((value) => {
+        guardLog.mockImplementation((event) => {
           if (
             loggingThrows &&
-            String(value).includes("windows_native_path_resolution_failed")
+            event === "windows_native_path_resolution_failed"
           )
             throw new Error("logger unavailable");
         });
@@ -4325,8 +4329,8 @@ describe("CentrifugoSandbox", () => {
         expect(checkpointFailureOrigin(error)).toBe(
           "windows_path_non_absolute_output",
         );
-        const records = receiverLog.mock.calls
-          .map(([value]) => JSON.parse(value))
+        const records = guardLog.mock.calls
+          .map(([event, fields]) => ({ event, ...fields }))
           .filter(
             (row) => row.event === "windows_native_path_resolution_failed",
           );

@@ -7,6 +7,7 @@ import {
 } from "@/lib/centrifugo/desktop-file-errors";
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { phLogger } from "@/lib/posthog/server";
 import {
   classifyPersistenceFailure,
   persistenceCommandError,
@@ -1872,23 +1873,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           this.reportedNativePathFailures.add(failure);
           try {
             const receipt = this.commandReceipts.get(result);
-            console.info(
-              JSON.stringify({
-                event: "windows_native_path_resolution_failed",
-                diagnostic_version: 1,
-                diagnostic_scope: "first_reason_per_sandbox",
-                reason: failure,
-                trigger_run_id: this.triggerRunId,
-                command_id: receipt?.commandId,
-                receipt_available: receipt !== undefined,
-                acknowledged_output: receipt?.acknowledgedOutput,
-                terminal_ack_published: receipt?.terminalAckPublished,
-                last_received_sequence: receipt?.lastReceivedSequence,
-                exit_success: result.exitCode === 0,
-                stdout_bytes: Buffer.byteLength(result.stdout, "utf8"),
-                stderr_bytes: Buffer.byteLength(result.stderr, "utf8"),
-              }),
-            );
+            phLogger.info("windows_native_path_resolution_failed", {
+              diagnostic_version: 1,
+              diagnostic_scope: "first_reason_per_sandbox",
+              reason: failure,
+              trigger_run_id: this.triggerRunId,
+              command_id: receipt?.commandId,
+              receipt_available: receipt !== undefined,
+              acknowledged_output: receipt?.acknowledgedOutput,
+              terminal_ack_published: receipt?.terminalAckPublished,
+              last_received_sequence: receipt?.lastReceivedSequence,
+              exit_success: result.exitCode === 0,
+              stdout_bytes: Buffer.byteLength(result.stdout, "utf8"),
+              stderr_bytes: Buffer.byteLength(result.stderr, "utf8"),
+            });
           } catch {
             // Diagnostics cannot replace the original guarded failure.
           }
