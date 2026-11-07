@@ -70,6 +70,10 @@ test("readiness records scheduled-to-result time once and remains separate from 
   expect(settledEvents()[0].properties).toEqual({
     definition_version: 1,
     timing_version: 1,
+    delivery_version: 1,
+    http_attempts: 1,
+    retry_count: 0,
+    http_status: 200,
     attempt_id: expect.any(String),
     chat_id: "chat",
     message_id: "answer",
@@ -186,6 +190,12 @@ test.each(["empty", "failed", "timeout"])(
       outcome,
     });
     expect(settledEvents()[0].properties).not.toHaveProperty("batch_id");
+    if (outcome !== "empty")
+      expect(settledEvents()[0].properties).toMatchObject({
+        failure_phase: outcome === "timeout" ? "deadline" : "network",
+        http_attempts: 1,
+        retry_count: 0,
+      });
     expect(result.current.batch).toBeNull();
   },
 );
@@ -351,6 +361,138 @@ test("persistence lag retries are bounded and failures stay silent", async () =>
   expect(result.current.batch).toBeNull();
   expect(setInput).not.toHaveBeenCalled();
 });
+
+test("exhausted completion conflicts are counted as one failed delivery, not four model calls", async () => {
+  jest.mocked(fetch).mockResolvedValue({
+    ok: false,
+    status: 409,
+    headers: { get: () => "source_active" },
+  } as unknown as Response);
+  const { result } = renderHook(() => useNextActions(base()));
+  await act(async () => jest.advanceTimersByTimeAsync(4_000));
+  expect(generationCalls()).toHaveLength(4);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "failed",
+    request_kind: "generate",
+    elapsed_ms: 3500,
+    delivery_version: 1,
+    http_attempts: 4,
+    retry_count: 3,
+    http_status: 409,
+    server_reason: "source_active",
+    failure_phase: "http",
+  });
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test.each([400, 404, 500])(
+  "HTTP %s has the same coarse failed outcome",
+  async (status) => {
+    jest.mocked(fetch).mockResolvedValue({ ok: false, status } as Response);
+    renderHook(() => useNextActions(base()));
+    await settle();
+    expect(generationCalls()).toHaveLength(1);
+    expect(settledEvents()).toHaveLength(1);
+    expect(settledEvents()[0].properties.outcome).toBe("failed");
+    expect(settledEvents()[0].properties).toMatchObject({
+      http_status: status,
+      failure_phase: "http",
+      http_attempts: 1,
+      retry_count: 0,
+    });
+    expect(setInput).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["json", "schema"])(
+  "invalid %s is indistinguishable from transport failure in existing telemetry",
+  async (kind) => {
+    jest.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        if (kind === "json") throw new SyntaxError("synthetic invalid JSON");
+        return { suggestions: [123] };
+      },
+    } as Response);
+    const { result } = renderHook(() => useNextActions(base()));
+    await settle();
+    expect(settledEvents()).toHaveLength(1);
+    expect(settledEvents()[0].properties.outcome).toBe("failed");
+    expect(settledEvents()[0].properties).toMatchObject({
+      http_status: 200,
+      failure_phase: kind === "json" ? "decode" : "schema",
+    });
+    expect(result.current.batch).toBeNull();
+    expect(setInput).not.toHaveBeenCalled();
+  },
+);
+
+test("a completion conflict which clears can deliver once without writing or sending the draft", async () => {
+  jest
+    .mocked(fetch)
+    .mockResolvedValueOnce({ ok: false, status: 409 } as Response);
+  const { result } = renderHook(() => useNextActions(base()));
+  await act(async () => jest.advanceTimersByTimeAsync(1500));
+  expect(generationCalls()).toHaveLength(2);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties.outcome).toBe("ready");
+  expect(result.current.batch).toEqual(batch);
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("a failed retry does not attribute a previous HTTP response to the new network failure", async () => {
+  jest
+    .mocked(fetch)
+    .mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      headers: { get: () => "source_active" },
+    } as unknown as Response)
+    .mockRejectedValueOnce(new Error("private network diagnostics"));
+  renderHook(() => useNextActions(base()));
+  await act(async () => jest.advanceTimersByTimeAsync(1500));
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "failed",
+    http_attempts: 2,
+    retry_count: 1,
+    failure_phase: "network",
+  });
+  expect(settledEvents()[0].properties).not.toHaveProperty("http_status");
+  expect(settledEvents()[0].properties).not.toHaveProperty("server_reason");
+  expect(JSON.stringify(settledEvents())).not.toContain(
+    "private network diagnostics",
+  );
+});
+
+test.each(["private arbitrary header content", "throws", "restore_miss"])(
+  "optional diagnostic header %s cannot suppress a valid response or leak content",
+  async (reason) => {
+    jest.mocked(fetch).mockResolvedValue({
+      ...response(),
+      headers: {
+        get: () => {
+          if (reason === "throws") throw new Error("private metadata failure");
+          return reason;
+        },
+      },
+    } as unknown as Response);
+    const { result } = renderHook(() => useNextActions(base()));
+    await settle();
+    expect(result.current.batch).toEqual(batch);
+    expect(settledEvents()[0].properties.outcome).toBe("ready");
+    if (reason === "restore_miss")
+      expect(settledEvents()[0].properties.server_reason).toBe(reason);
+    else
+      expect(settledEvents()[0].properties).not.toHaveProperty("server_reason");
+    expect(JSON.stringify(settledEvents())).not.toMatch(
+      /private arbitrary|private metadata/,
+    );
+  },
+);
 
 test("an aborted accepted follow-up cannot be credited to a later regenerate", async () => {
   const { result, rerender } = renderHook((props) => useNextActions(props), {

@@ -6,6 +6,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 const capture = jest.fn();
@@ -193,6 +194,21 @@ test.each([
   };
   if (expectedStatus[condition])
     expect(result.status).toBe(expectedStatus[condition]);
+  const reasons: Record<string, string> = {
+    "wrong owner": "chat_unavailable",
+    active: "source_active",
+    "waiting for reply": "source_waiting",
+    canceled: "source_canceled",
+    error: "source_not_successful",
+    old: "source_expired",
+    "flag off": "not_offered",
+    duplicate: "generation_reserved_or_budgeted",
+    suspended: "server_error",
+    "stale message": "source_stale",
+  };
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    reasons[condition],
+  );
   expect((await result.json()).suggestions).toEqual([]);
   expect(generateNextActions).not.toHaveBeenCalled();
 });
@@ -223,6 +239,53 @@ test("provider failure and a new run during generation suppress predictions", as
   expect(JSON.stringify(capture.mock.calls)).not.toContain(
     "private provider payload",
   );
+});
+
+test("unavailable reservation infrastructure is distinct from normal dedupe or budget gating", async () => {
+  jest.mocked(createRedisClient).mockReturnValueOnce(null as never);
+  const result = await POST(request());
+  expect(result.status).toBe(200);
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "reservation_unavailable",
+  );
+  expect(generateNextActions).not.toHaveBeenCalled();
+});
+
+test.each(["unauthorized:auth", "forbidden:chat", "rate_limit:chat"] as const)(
+  "typed %s denial is not attributed to a server defect",
+  async (code) => {
+    const error = new ChatSDKError(
+      code,
+      "private account or authorization details",
+    );
+    if (code === "unauthorized:auth")
+      jest.mocked(getUserIDAndPro).mockRejectedValueOnce(error);
+    else
+      jest
+        .mocked(assertUserCanMakeCostIncurringRequest)
+        .mockRejectedValueOnce(error);
+    const result = await POST(request());
+    expect(result.status).toBe(200);
+    expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+      code === "unauthorized:auth" ? "auth_required" : "access_denied",
+    );
+    expect(JSON.stringify(await result.json())).toBe('{"suggestions":[]}');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("private account");
+    expect(generateNextActions).not.toHaveBeenCalled();
+  },
+);
+
+test("malformed JSON keeps the existing empty 200 behavior with a bounded reason", async () => {
+  const req = {
+    ...request(),
+    text: async () => '{"private malformed payload',
+  } as NextRequest;
+  const result = await POST(req);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "invalid_request",
+  );
+  expect(JSON.stringify(capture.mock.calls)).not.toContain("private malformed");
 });
 
 test.each([

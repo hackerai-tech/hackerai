@@ -10,6 +10,12 @@ import {
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { v4 as uuidv4 } from "uuid";
 import {
+  NEXT_ACTIONS_REASON_HEADER,
+  nextActionsDeliveryReason,
+  type NextActionsDeliveryReason,
+  type NextActionsFailurePhase,
+} from "@/lib/chat/next-actions/delivery";
+import {
   NEXT_ACTIONS_VERSION,
   emptyNextActionsResponseSchema,
   nextActionsResponseSchema,
@@ -124,7 +130,7 @@ export function useNextActions(options: Options): NextActionsController {
       request.current?.abort();
       request.current = null;
       batchRef.current = null;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- Revoke the previous message before accepting a new chat/message identity.
+       
       setBatch(null);
     }
     keyRef.current = key;
@@ -198,7 +204,7 @@ export function useNextActions(options: Options): NextActionsController {
     previousMode.current = options.chatMode;
     // Revoke before paint, including a pending result that could otherwise
     // reappear after switching back. Keep any already accepted draft intact.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- Mode changes must abort and discard externally generated predictions before interaction.
+     
     invalidate();
   }, [
     options.chatMode,
@@ -232,7 +238,7 @@ export function useNextActions(options: Options): NextActionsController {
     pending.current = null;
     attempted.current.clear();
     batchRef.current = null;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- Navigation must discard async results before another chat can display them.
+     
     setBatch(null);
     return () => request.current?.abort();
   }, [options.chatId, options.userId]);
@@ -255,7 +261,7 @@ export function useNextActions(options: Options): NextActionsController {
     if (options.status === "error") pending.current = null;
     if (!key) return;
     if (!canRetain()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- Lifecycle changes revoke an already visible async prediction.
+       
       if (batchRef.current || request.current) invalidate();
       return;
     }
@@ -279,6 +285,10 @@ export function useNextActions(options: Options): NextActionsController {
     let settled = false;
     let timedOut = false;
     let typed = false;
+    let httpAttempts = 0;
+    let httpStatus: number | undefined;
+    let serverReason: NextActionsDeliveryReason | undefined;
+    let failurePhase: NextActionsFailurePhase = "network";
     const tracking = {
       key,
       markTyped: () => {
@@ -310,6 +320,7 @@ export function useNextActions(options: Options): NextActionsController {
           properties: {
             definition_version: NEXT_ACTIONS_VERSION,
             timing_version: 1,
+            delivery_version: 1,
             attempt_id: attemptId,
             chat_id: owner.chatId,
             message_id: owner.messageId,
@@ -317,6 +328,18 @@ export function useNextActions(options: Options): NextActionsController {
             presentation: "inline_composer",
             request_kind: requestKind,
             outcome,
+            http_attempts: httpAttempts,
+            retry_count: Math.max(0, httpAttempts - 1),
+            ...(httpStatus !== undefined && { http_status: httpStatus }),
+            ...(serverReason && { server_reason: serverReason }),
+            ...(["failed", "aborted", "timeout"].includes(outcome) && {
+              failure_phase:
+                outcome === "timeout"
+                  ? "deadline"
+                  : outcome === "aborted"
+                    ? "lifecycle"
+                    : failurePhase,
+            }),
             elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
             typed_before_settle: typed || typingNow === true,
             page_visible: document.visibilityState === "visible",
@@ -344,6 +367,10 @@ export function useNextActions(options: Options): NextActionsController {
           return;
         }
         remember(attempted.current, attemptKey);
+        httpAttempts++;
+        httpStatus = undefined;
+        serverReason = undefined;
+        failurePhase = "network";
         sent = true;
         const response = await fetch("/api/chat/next-actions", {
           method: "POST",
@@ -355,6 +382,21 @@ export function useNextActions(options: Options): NextActionsController {
           }),
           signal: controller.signal,
         });
+        failurePhase = "http";
+        if (
+          Number.isInteger(response.status) &&
+          response.status >= 100 &&
+          response.status <= 599
+        )
+          httpStatus = response.status;
+        // Optional diagnostic headers must never turn a valid response into failure.
+        try {
+          serverReason = nextActionsDeliveryReason(
+            response.headers?.get(NEXT_ACTIONS_REASON_HEADER),
+          );
+        } catch {
+          /* Ignore malformed optional metadata. */
+        }
         if (
           response.status === 409 &&
           attempt < 3 &&
@@ -367,7 +409,9 @@ export function useNextActions(options: Options): NextActionsController {
           report("failed");
           return;
         }
+        failurePhase = "decode";
         const data: unknown = await response.json();
+        failurePhase = "schema";
         if (emptyNextActionsResponseSchema.safeParse(data).success) {
           report("empty");
           return;
