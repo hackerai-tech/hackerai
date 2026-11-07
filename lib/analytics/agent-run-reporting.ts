@@ -5,6 +5,7 @@ import {
 } from "@/lib/experiments/agent-model-context";
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
+import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
 
 type RunEvent = "hackerai-agent_run" | "hackerai-usage_cost";
 type FailureStage = "setup" | "preparation" | "model_stream";
@@ -96,6 +97,8 @@ export function createAgentRunReporting(context: {
   let agentModelContextVariant: AgentModelContextVariant | undefined;
   let failure:
     { stage: FailureStage; kind: FailureKind; category: string } | undefined;
+  let selectedComputerDiagnostics:
+    ReturnType<typeof selectedComputerFailureDiagnostics> | undefined;
   const captured = new Set<RunEvent>();
   let terminalOutcome: "success" | "error" | "aborted" | undefined;
   let terminalAbortSource: string | undefined;
@@ -126,6 +129,8 @@ export function createAgentRunReporting(context: {
     },
     fail(error: unknown, kind: FailureKind = "error") {
       // Capture before ProviderTerminalError wrapping and cleanup exceptions.
+      if (!failure)
+        selectedComputerDiagnostics = selectedComputerFailureDiagnostics(error);
       failure ??= { stage, kind, category: agentFailureCategory(error) };
     },
     captureTerminal<T>(capture: (args: T) => void, args: T) {
@@ -211,6 +216,7 @@ export function createAgentRunReporting(context: {
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",
         failure_kind: failure?.kind ?? (snapshot.canceled ? "canceled" : null),
+        ...selectedComputerDiagnostics,
         outcome,
         finish_reason: terminalFinishReason ?? "unknown",
         step_limit_reached: terminalStepLimitReached ?? null,
