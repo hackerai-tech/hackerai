@@ -287,6 +287,158 @@ it("reports a fresh screenshot failure after the cached frame and retains cleanu
   expect(sandbox.files.read).not.toHaveBeenCalled();
 });
 
+it.each([2, 3, 6])(
+  "preserves bounded helper context for fresh screenshot exit%s",
+  async (exitCode) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const error = new CommandExitError({
+      exitCode,
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        wrapper_receipt_version: 1,
+        wrapper_action: "open",
+        wrapper_phase: "started",
+        wrapper_exit: "none",
+        wrapper_session_matches: true,
+        wrapper_age: "lt10s",
+        private: "PRIVATE_CAPTURE_PATH",
+      }),
+      stderr: "PRIVATE_CAPTURE_OUTPUT",
+    });
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        true,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "fresh_screenshot",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: exitCode,
+      ...(exitCode === 2
+        ? {
+            capture_precondition_reason: "socket_stat",
+            capture_precondition_error: "missing",
+          }
+        : {}),
+      capture_wrapper_receipt_version: 1,
+      capture_wrapper_action: "open",
+      capture_wrapper_phase: "started",
+      capture_wrapper_exit_code: "none",
+      capture_wrapper_session_matches: true,
+      capture_wrapper_age: "lt10s",
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  [1, '{"diagnostic_reason":"socket_stat","diagnostic_error":"missing"}'],
+  [7, '{"diagnostic_reason":"socket_stat","diagnostic_error":"missing"}'],
+  [
+    2,
+    JSON.stringify({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      private: "PRIVATE".repeat(100),
+    }),
+  ],
+  [2, "PRIVATE_MALFORMED_JSON"],
+])(
+  "excludes unrelated or unbounded fresh helper output (exit%s)",
+  async (exitCode, stdout) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const error = new CommandExitError({ exitCode, stdout, stderr: "PRIVATE" });
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        true,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "fresh_screenshot",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: exitCode,
+    });
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("does not invoke a fresh helper output accessor or inspect bridge output", async () => {
+  const getter = jest.fn(() => {
+    throw new Error("PRIVATE_ACCESSOR");
+  });
+  for (const freshStage of [false, true]) {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const stdoutDescriptors = jest.fn();
+    const result = new Proxy(
+      Object.defineProperty({ exitCode: 2, stderr: "PRIVATE" }, "stdout", {
+        get: getter,
+      }),
+      {
+        getOwnPropertyDescriptor(target, key) {
+          if (key === "stdout") stdoutDescriptors();
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      },
+    );
+    const error = new CommandExitError(result as any);
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (
+        freshStage
+          ? command.includes('"action":"screenshot"')
+          : !command.includes('"action":"stream_status"')
+      )
+        throw error;
+      return run(command);
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        true,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: freshStage ? "fresh_screenshot" : "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 2,
+    });
+    expect(stdoutDescriptors).toHaveBeenCalledTimes(freshStage ? 1 : 0);
+  }
+  expect(getter).not.toHaveBeenCalled();
+});
+
 function fixture(screenshotExitCode = 0, viewportExitCode = 0) {
   const sandbox = {
     commands: {
