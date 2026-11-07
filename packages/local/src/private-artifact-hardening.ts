@@ -129,11 +129,17 @@ export async function preparePrivateArtifactStorage(
   commandIdentity?: CommandIdentity,
 ): Promise<{ ready: boolean; namespace?: string }> {
   if (commandIdentity) {
+    const unavailable = (reason: string): { ready: false } => {
+      console.warn(
+        `Could not prepare private terminal artifacts as the command user (${reason}); private terminal saving will not be used`,
+      );
+      return { ready: false };
+    };
     // The credential-reading client may be root while terminal commands are not.
     // Run the same no-follow preparation as that command user; never chown an
     // existing shared root or expose the parent environment to this helper.
     if (os.platform() !== "linux" || process.getuid?.() !== 0) {
-      return { ready: false };
+      return unavailable("unsupported_identity");
     }
     const { uid, gid, home } = commandIdentity;
     if (
@@ -142,7 +148,7 @@ export async function preparePrivateArtifactStorage(
       !Number.isSafeInteger(gid) ||
       gid <= 0
     ) {
-      return { ready: false };
+      return unavailable("invalid_identity");
     }
     try {
       const { stdout } = await promisify(execFile)(
@@ -170,16 +176,26 @@ export async function preparePrivateArtifactStorage(
         !("ready" in result) ||
         result.ready !== true
       ) {
-        return { ready: false };
+        return unavailable("storage_unavailable_or_invalid_response");
       }
       if ("namespace" in result && result.namespace !== `uid-${uid}`) {
-        return { ready: false };
+        return unavailable("invalid_namespace");
       }
       return "namespace" in result
         ? { ready: true, namespace: `uid-${uid}` }
         : { ready: true };
-    } catch {
-      return { ready: false };
+    } catch (error) {
+      // Never print the helper's captured stderr, arbitrary code or raw message.
+      const details = error as { code?: unknown; killed?: boolean };
+      const reason =
+        error instanceof SyntaxError
+          ? "invalid_response"
+          : details?.killed === true
+            ? "helper_terminated"
+            : ["ENOENT", "EACCES", "EPERM"].includes(String(details?.code))
+              ? String(details.code)
+              : "helper_failed";
+      return unavailable(reason);
     }
   }
   if (os.platform() === "win32" || typeof process.getuid !== "function") {
