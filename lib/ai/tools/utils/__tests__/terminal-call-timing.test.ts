@@ -210,3 +210,91 @@ describe("routine terminal log sampling", () => {
     );
   });
 });
+
+test("correlates returned terminal sessions across command and interaction timing", async () => {
+  jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
+  const executeCommand = jest.fn(async () => ({
+    result: {
+      session: "a1b2c3d4",
+      exitCode: 0,
+      recordPersistenceFailed: true,
+    },
+  }));
+  const executeInteraction = jest.fn(
+    async (_input: { action: "wait"; session: string }) => ({
+      result: {
+        session: "a1b2c3d4",
+        exitCode: 0,
+      },
+    }),
+  );
+  const command = await withTerminalCallTiming(
+    context,
+    "run_terminal_cmd",
+    executeCommand,
+  )({}, options);
+  const interaction = await withTerminalCallTiming(
+    context,
+    "interact_terminal_session",
+    executeInteraction,
+  )(
+    { action: "wait", session: "private requested value" },
+    { ...options, toolCallId: "next-call" },
+  );
+  expect(executeCommand).toHaveBeenCalledTimes(1);
+  expect(executeInteraction).toHaveBeenCalledTimes(1);
+  expect(command.result.recordPersistenceFailed).toBe(true);
+  expect(interaction.result.session).toBe("a1b2c3d4");
+  const logs = jest
+    .mocked(phLogger.info)
+    .mock.calls.map(([, fields]) => fields);
+  expect(logs).toEqual([
+    expect.objectContaining({
+      trigger_run_id: "run-fixture",
+      tool_call_id: "call-fixture",
+      terminal_session_id: "a1b2c3d4",
+      record_persistence_failed: true,
+      telemetry_version: 3,
+    }),
+    expect.objectContaining({
+      trigger_run_id: "run-fixture",
+      tool_call_id: "next-call",
+      terminal_session_id: "a1b2c3d4",
+      record_persistence_failed: false,
+      telemetry_version: 3,
+    }),
+  ]);
+  expect(JSON.stringify(logs)).not.toContain("private requested value");
+});
+
+test.each([
+  undefined,
+  null,
+  123,
+  "private session",
+  "deadbeef\n",
+  "ABCDEF01",
+  "a1b2c3d45",
+  "abcdefg1",
+])(
+  "omits noncanonical returned session values from timing diagnostics: %p",
+  async (session) => {
+    await withTerminalCallTiming(
+      context,
+      "interact_terminal_session",
+      async (_input: { action: "view"; session: string }) => ({
+        result: { session, exitCode: 2 },
+      }),
+    )({ action: "view", session: "a1b2c3d4" }, options);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "terminal_call_finished",
+      expect.objectContaining({
+        terminal_session_id: null,
+        telemetry_version: 3,
+      }),
+    );
+    const logged = JSON.stringify(jest.mocked(phLogger.info).mock.calls);
+    expect(logged).not.toContain("a1b2c3d4");
+    expect(logged).not.toContain("private session");
+  },
+);
