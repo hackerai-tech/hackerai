@@ -34,6 +34,7 @@ import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
 import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import * as relayTraffic from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
+import { checkpointFailureOrigin } from "../persistence-failure";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
   LocalCommandRelayUnsubscribedError,
@@ -4196,10 +4197,28 @@ describe("CentrifugoSandbox", () => {
       (sandbox as any).shellKind = "bash";
       const run = jest.fn();
       (sandbox as any).commands.run = run;
-      await expect(
-        sandbox.files.write(`/tmp/${"界".repeat(6000)}/file`, "value"),
-      ).rejects.toThrow("File path exceeds the local file command limit");
+      const error = await sandbox.files
+        .write(`/tmp/${"界".repeat(6000)}/file`, "value")
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(checkpointFailureOrigin(error)).toBe("command_path_limit");
       expect(run).not.toHaveBeenCalled();
+    });
+
+    it("classifies the actual native write path-conversion guard before file dispatch", async () => {
+      const sandbox = createDesktopSandbox("/tmp/project");
+      (sandbox as any).shellKind = "bash";
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "not a Windows native path",
+        stderr: "",
+        exitCode: 0,
+      });
+      const error = await sandbox.files
+        .write("file.txt", "value")
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(checkpointFailureOrigin(error)).toBe("windows_path_resolution");
+      expect(mockSubscriptions).toHaveLength(0);
     });
 
     it.each(["failure", "cancel"])(
