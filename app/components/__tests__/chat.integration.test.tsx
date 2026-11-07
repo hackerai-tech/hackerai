@@ -1929,7 +1929,7 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
-    it("holds queued work while a Goal needs input and releases it after completion", async () => {
+    it("holds queued work while a Goal needs input or is blocked and releases it after completion", async () => {
       mockRouteParams = { id: "goal-queue-chat" };
       mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
       mockRestoredChat = {
@@ -1954,7 +1954,7 @@ describe("Chat Component Integration", () => {
       expect(mockSendMessage).not.toHaveBeenCalled();
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
       // A reply in another tab publishes Goal admission before the run id.
-      for (const state of ["queued", "running"]) {
+      for (const state of ["blocked", "queued", "running"]) {
         mockSavedGoal = { ...mockSavedGoal, state };
         await act(async () => rerender(view()));
         expect(mockSendMessage).not.toHaveBeenCalled();

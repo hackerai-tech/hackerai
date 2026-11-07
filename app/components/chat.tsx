@@ -2701,6 +2701,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       !hasPendingSummarySteer &&
       !hasPendingUserWait &&
       persistedGoal?.state !== "needs_input" &&
+      persistedGoal?.state !== "blocked" &&
       persistedGoal?.state !== "queued" &&
       persistedGoal?.state !== "running" &&
       !agentLongRunId &&
