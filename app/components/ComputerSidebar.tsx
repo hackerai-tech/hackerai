@@ -399,6 +399,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     !!sidebarContent &&
     isSidebarTerminal(sidebarContent) &&
     !!detectAgentBrowserUsage(sidebarContent.command);
+  const showingLiveContent = isAtLive || missingBrowserSelection;
 
   const handleJumpToLive = useCallback(() => {
     const latestTool = toolExecutions.at(-1);
@@ -761,9 +762,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
-                liveSelection={
-                  (isAtLive || missingBrowserSelection) && isFollowingLive
-                }
+                liveSelection={showingLiveContent && isFollowingLive}
                 browserRequested={
                   !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
                 }
@@ -1302,7 +1301,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </span>
                 </div>
                 {toolExecutions.length > 0 &&
-                  (!isAtLive || !isFollowingLive) && (
+                  (!showingLiveContent || !isFollowingLive) && (
                     <button
                       onClick={handleJumpToLive}
                       className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"

@@ -766,6 +766,9 @@ describe("ComputerSidebar reconnect behavior", () => {
       act(() => jest.advanceTimersByTime(6_000));
       expect(closeSidebar).not.toHaveBeenCalled();
       expect(onNavigate).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("button", { name: "Jump to live" }),
+      ).not.toBeInTheDocument();
       expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
         "agent-browser snapshot -i",
       );
