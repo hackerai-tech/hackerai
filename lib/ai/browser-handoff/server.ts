@@ -402,13 +402,13 @@ export async function captureBrowserFrame(
               ? value
               : "other";
           if (
-            stage === "stream_status" &&
+            (stage === "stream_status" || stage === "fresh_screenshot") &&
             typeof code === "number" &&
             code >= 2 &&
             code <= 6
           ) {
             // Only this controlled helper's bounded failure JSON is eligible;
-            // never inspect frame command output or retain raw SDK text.
+            // never inspect successful image responses or bridge command output.
             const stdout =
               result &&
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
