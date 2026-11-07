@@ -25,6 +25,22 @@ beforeEach(() => {
 });
 afterEach(() => jest.useRealTimers());
 
+it("distinguishes stopping the agent from choosing a Stop answer", () => {
+  const onStop = jest.fn();
+  render(
+    <UserInputQuestionPanel
+      {...props}
+      question={{ ...question, options: [{ label: "Stop", value: "stop" }] }}
+      onStop={onStop}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /^Stop \d?$/ }));
+  expect(props.onSelect).toHaveBeenCalledWith("stop");
+  expect(onStop).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Stop agent" }));
+  expect(onStop).toHaveBeenCalledTimes(1);
+});
+
 it("selects by shortcut without adding a second submit action", () => {
   render(<UserInputQuestionPanel {...props} />);
   fireEvent.keyDown(document.body, { key: "2" });

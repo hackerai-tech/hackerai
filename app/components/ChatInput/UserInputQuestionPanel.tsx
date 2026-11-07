@@ -137,6 +137,7 @@ export function UserInputQuestionPanel({
             className="h-11 px-2 text-xs text-muted-foreground sm:h-8"
             onClick={onStop}
             disabled={stopping}
+            aria-label="Stop agent"
           >
             Stop
           </Button>
@@ -194,7 +195,7 @@ export function UserInputQuestionPanel({
               </Dialog>
             )}
           </div>
-          <div className="max-h-[min(18rem,35dvh)] min-h-0 space-y-0.5 overflow-y-auto overscroll-contain px-3 pb-3">
+          <div className="max-h-[min(18rem,35dvh)] min-h-0 space-y-0.5 overflow-y-auto overscroll-contain px-3 pb-3 pt-2 [mask-image:linear-gradient(to_bottom,transparent,#000_8px,#000_calc(100%_-_8px),transparent)]">
             {question.options.map((option, optionIndex) => {
               const selected =
                 !answer.customAnswer.trim() &&
