@@ -60,6 +60,7 @@ type StopCompactor =
 
 type StopSnapshot = {
   parts: ChatMessage["parts"];
+  preparation?: "not_needed" | "measurement_failed";
   diagnostics?: {
     preparation_outcome: "compacted" | "unchanged" | "unavailable";
     before_size_bytes: number;
@@ -279,7 +280,8 @@ export const useChatHandlers = ({
     const parts = sanitizeForConvexValue(message.parts) as ChatMessage["parts"];
     try {
       const beforeSizeBytes = getConvexSize(parts as Value);
-      if (beforeSizeBytes <= 850 * 1024) return { parts };
+      if (beforeSizeBytes <= 850 * 1024)
+        return { parts, preparation: "not_needed" };
       const diagnostics = {
         before_size_bytes: beforeSizeBytes,
         part_count: parts.length,
@@ -320,7 +322,7 @@ export const useChatHandlers = ({
       };
     } catch {
       // Preserve valid sanitized values and the server's document guard.
-      return { parts };
+      return { parts, preparation: "measurement_failed" };
     }
   };
 
@@ -539,20 +541,41 @@ export const useChatHandlers = ({
         : undefined;
     let snapshotDedupeKey: string | undefined;
     /** SDK acknowledgment can deduplicate; it does not prove these exact parts were inserted. */
-    const recordSaveOutcome = (outcome: "acknowledged" | "rejected") => {
-      if (!snapshot?.diagnostics) return;
+    const recordSaveOutcome = (
+      outcome: "acknowledged" | "rejected",
+      error?: unknown,
+    ) => {
+      if (!snapshot || (outcome === "acknowledged" && !snapshot.diagnostics))
+        return;
       try {
         snapshotDedupeKey ??= uuidv4();
         const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
-        // One event per oversized Stop attempt. SDK acknowledgment may be an
+        const requestId =
+          outcome === "rejected" && error instanceof Error
+            ? error.message
+                .slice(0, 512)
+                .match(
+                  /^\[CONVEX M\(messages:saveAssistantMessage\)\] \[Request ID: ([a-f0-9]{16})\]/,
+                )?.[1]
+            : undefined;
+        // One event per oversized or rejected Stop attempt. SDK acknowledgment may be an
         // idempotent no-op; it does not prove these exact parts were inserted.
         captureQueuedAuthenticatedEvent({
           event: "chat_stop_snapshot_save_outcome",
           dedupeKey: snapshotDedupeKey,
           properties: {
             diagnostic_version: 1,
-            ...snapshot.diagnostics,
+            ...(snapshot.diagnostics ?? {
+              preparation_outcome: snapshot.preparation,
+            }),
             save_outcome: outcome,
+            ...(outcome === "rejected" && {
+              save_error_code:
+                getConvexErrorCode(error) === "MESSAGE_TOO_LARGE"
+                  ? "message_too_large"
+                  : "other",
+              ...(requestId && { convex_request_id: requestId }),
+            }),
             frontend_build_commit:
               build && /^[a-f0-9]{40}$/i.test(build)
                 ? build.toLowerCase()
@@ -581,7 +604,7 @@ export const useChatHandlers = ({
               return value;
             })
             .catch((error) => {
-              recordSaveOutcome("rejected");
+              recordSaveOutcome("rejected", error);
               console.error("Failed to save message on stop:", error);
               if (options?.requireSaveSuccess) throw error;
             })

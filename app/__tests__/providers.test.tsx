@@ -276,6 +276,8 @@ describe("PostHogProvider", () => {
       part_count: 260,
       pruned_count: 250,
       frontend_build_commit: "a".repeat(40),
+      save_error_code: "message_too_large",
+      convex_request_id: "0123456789abcdef",
     };
     const stopSnapshot = config.before_send({
       event: "chat_stop_snapshot_save_outcome",
