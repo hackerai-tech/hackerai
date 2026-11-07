@@ -1,8 +1,16 @@
 import {
   classifyPersistenceFailure,
+  checkpointFailureOrigin,
+  type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
 import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
+import {
+  parseDesktopFileFailure,
+  DesktopFileBridgeError,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+import { LocalFileRequestError } from "./local-sandbox-errors";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
@@ -183,6 +191,8 @@ export function createTerminalRecordStore(
       let payloadBytes = 0;
       let outcome: "success" | "failure" = "failure";
       let failureCategory: PersistenceFailureCategory | undefined;
+      let fileFailure: DesktopFileFailure | undefined;
+      let failureOrigin: CheckpointFailureOrigin | undefined;
       try {
         const validated = recordSchema.parse(record);
         const path = pathFor(record.session);
@@ -204,13 +214,25 @@ export function createTerminalRecordStore(
         outcome = "success";
         return path;
       } catch (error) {
+        failureOrigin = checkpointFailureOrigin(error);
         failureCategory = classifyPersistenceFailure(error);
+        try {
+          if (
+            error instanceof LocalFileRequestError ||
+            error instanceof DesktopFileBridgeError
+          )
+            fileFailure = parseDesktopFileFailure(error.fileFailure);
+        } catch {
+          // Optional adapter context must not change a best-effort save result.
+        }
         return null; // Persistence failure must not interrupt or replay a command.
       } finally {
         recordTerminalMaintenance(sandbox, {
           operation: "checkpoint_write",
           outcome,
           failureCategory,
+          fileFailure,
+          checkpointFailureOrigin: failureOrigin,
           payloadBytes,
           transport: ownerOnlyPosix ? "posix_command" : "native_file",
         });

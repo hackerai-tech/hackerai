@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
+import { ConvexError } from "convex/values";
 
 jest.mock("@/lib/utils/client-token-validation", () => ({
   ...jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
@@ -2555,6 +2556,466 @@ describe("useChatHandlers steer todo handoff", () => {
       expect(global.fetch).not.toHaveBeenCalled();
       expect(mockSendMessage).not.toHaveBeenCalled();
       expect(mockQueueMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("compacts an aggregate stopped snapshot without changing the live response", async () => {
+    const { getDocumentSize } = await import("convex/values");
+    const toolParts = Array.from({ length: 260 }, (_, index) => ({
+      type: "tool-run_terminal_cmd",
+      toolCallId: `synthetic-call-${index}`,
+      state: "output-available",
+      input: { command: `printf synthetic-${index}` },
+      output: { output: "synthetic-output-" + "x".repeat(6000), exitCode: 0 },
+    }));
+    const history = [
+      messages[0],
+      {
+        id: "long-stopped-assistant",
+        role: "assistant",
+        parts: [...toolParts, { type: "text", text: "Keep the final answer." }],
+        metadata: { mode: "ask", generationStartedAt: Date.now() - 1000 },
+      },
+    ] as ChatMessage[];
+    const originalParts = JSON.stringify(history[1].parts);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: history,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await import("@/lib/chat/compaction/prune-tool-outputs");
+    });
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+    const saved = mockSaveAssistantMessage.mock.calls[0].at(0) as unknown as {
+      id: string;
+      parts: ChatMessage["parts"];
+      mode: string;
+      generationStartedAt: number;
+      generationTimeMs: number;
+    };
+    expect(new TextEncoder().encode(originalParts).byteLength).toBeGreaterThan(
+      1024 * 1024,
+    );
+    expect(
+      getDocumentSize({
+        ...saved,
+        chat_id: "chat-1",
+        user_id: "test-user",
+        update_time: Date.now(),
+      }),
+    ).toBeLessThan(960 * 1024);
+    expect(saved.parts).toContainEqual({
+      type: "text",
+      text: "Keep the final answer.",
+    });
+    expect(saved).toMatchObject({
+      id: history[1].id,
+      mode: "ask",
+      generationStartedAt: history[1].metadata?.generationStartedAt,
+      generationTimeMs: expect.any(Number),
+    });
+    expect(
+      saved.parts
+        .filter((part) => part.type === "tool-run_terminal_cmd")
+        .map((part: any) => part.toolCallId),
+    ).toEqual(toolParts.map((part) => part.toolCallId));
+    expect(JSON.stringify(history[1].parts)).toBe(originalParts);
+    expect(mockSetMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ id: history[1].id, parts: history[1].parts }),
+      ]),
+    );
+    expect(mockCancelStream).toHaveBeenCalledTimes(1);
+    expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelStream.mock.invocationCallOrder[0],
+    );
+    const outcomes = mockCaptureCancellationEvent.mock.calls
+      .map(
+        ([input]) =>
+          input as { event: string; properties: Record<string, unknown> },
+      )
+      .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].properties).toMatchObject({
+      diagnostic_version: 1,
+      preparation_outcome: "compacted",
+      save_outcome: "acknowledged",
+      part_count: 261,
+      before_size_bytes: expect.any(Number),
+      after_size_bytes: expect.any(Number),
+    });
+    expect(JSON.stringify(outcomes)).not.toMatch(
+      /synthetic|private|final answer|chat-1|long-stopped/,
+    );
+  });
+
+  it("bounds numeric-heavy Stop snapshots using Convex size rather than JSON", async () => {
+    const { getConvexSize } = await import("convex/values");
+    const parts = Array.from({ length: 14 }, () => ({
+      type: "data-value",
+      data: Array(7900).fill(0),
+    })) as ChatMessage["parts"];
+    expect(JSON.stringify(parts).length).toBeLessThan(850 * 1024);
+    expect(getConvexSize(parts as any)).toBeGreaterThan(960 * 1024);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "numeric-stop", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await import("@/lib/chat/compaction/prune-tool-outputs");
+    });
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    const saved = mockSaveAssistantMessage.mock.calls[0].at(0) as unknown as {
+      parts: ChatMessage["parts"];
+    };
+    expect(getConvexSize(saved.parts as any)).toBeLessThanOrEqual(850 * 1024);
+    expect(saved.parts).toHaveLength(parts.length);
+    expect(saved.parts.at(-1)).toEqual(parts.at(-1));
+    expect(parts[0]).toEqual({ type: "data-value", data: Array(7900).fill(0) });
+  });
+
+  it("preserves a Convex-sized snapshot even when JSON escaping inflates its estimate", async () => {
+    const parts = [
+      { type: "text", text: '"'.repeat(500_000) },
+    ] as ChatMessage["parts"];
+    expect(JSON.stringify(parts).length).toBeGreaterThan(850 * 1024);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "quoted-stop", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ parts }),
+    );
+    expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelStream.mock.invocationCallOrder[0],
+    );
+  });
+
+  it.each(["rejected", "analytics_unavailable"] as const)(
+    "keeps oversized Stop outcomes independent of %s",
+    async (scenario) => {
+      const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT =
+        scenario === "rejected" ? "F".repeat(40) : "private-invalid-build";
+      if (scenario === "rejected")
+        mockSaveAssistantMessage.mockRejectedValueOnce(
+          new Error("private synthetic rejection"),
+        );
+      else
+        mockCaptureCancellationEvent.mockImplementation(
+          (...args: unknown[]) => {
+            if (
+              (args[0] as { event?: string })?.event ===
+              "chat_stop_snapshot_save_outcome"
+            )
+              throw new Error("analytics unavailable");
+          },
+        );
+      try {
+        const parts = Array.from({ length: 14 }, () => ({
+          type: "data-value",
+          data: Array(7900).fill(0),
+        })) as ChatMessage["parts"];
+        const { result } = renderHook(() =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages: [
+              messages[0],
+              { id: "private-snapshot", role: "assistant", parts },
+            ],
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate: jest.fn(),
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        );
+        await act(async () => {
+          await import("@/lib/chat/compaction/prune-tool-outputs");
+        });
+        await act(async () => {
+          expect(
+            await result.current.handleStop({ requireSavedResponse: true }),
+          ).toBe(scenario !== "rejected");
+        });
+        expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+        expect(mockCancelStream).toHaveBeenCalledTimes(1);
+        const outcomes = mockCaptureCancellationEvent.mock.calls
+          .map(
+            ([input]) =>
+              input as { event: string; properties: Record<string, unknown> },
+          )
+          .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+        expect(outcomes).toHaveLength(1);
+        if (scenario === "analytics_unavailable") {
+          const index = mockCaptureCancellationEvent.mock.calls.findIndex(
+            ([input]) =>
+              (input as { event?: string })?.event ===
+              "chat_stop_snapshot_save_outcome",
+          );
+          expect(mockCaptureCancellationEvent.mock.results[index].type).toBe(
+            "throw",
+          );
+        }
+        expect(outcomes[0].properties).toMatchObject({
+          save_outcome: scenario === "rejected" ? "rejected" : "acknowledged",
+          frontend_build_commit:
+            scenario === "rejected" ? "f".repeat(40) : "unknown",
+        });
+        expect(Object.keys(outcomes[0].properties as object).sort()).toEqual(
+          [
+            "diagnostic_version",
+            "preparation_outcome",
+            "before_size_bytes",
+            "after_size_bytes",
+            "part_count",
+            "pruned_count",
+            "save_outcome",
+            "frontend_build_commit",
+            ...(scenario === "rejected" ? ["save_error_code"] : []),
+          ].sort(),
+        );
+        expect(JSON.stringify(outcomes)).not.toMatch(
+          /private|chat-1|synthetic/,
+        );
+      } finally {
+        mockCaptureCancellationEvent.mockReset();
+        if (originalBuild === undefined)
+          delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+        else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "never waits for a compactor chunk before Ask cancellation (preloaded=%s)",
+    async (preloaded) => {
+      mockChatMode = "ask";
+      const parts = Array.from({ length: 14 }, () => ({
+        type: "data-value",
+        data: Array(7900).fill(0),
+      })) as ChatMessage["parts"];
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: [
+            messages[0],
+            { id: "ask-large-stop", role: "assistant", parts },
+          ],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      if (preloaded)
+        await act(async () => {
+          await import("@/lib/chat/compaction/prune-tool-outputs");
+        });
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop({ requireSavedResponse: true });
+        expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+        expect(mockCancelStream).toHaveBeenCalledTimes(1);
+        expect(
+          mockSaveAssistantMessage.mock.invocationCallOrder[0],
+        ).toBeLessThan(mockCancelStream.mock.invocationCallOrder[0]);
+      });
+      await act(async () => {
+        expect(await stopped).toBe(true);
+      });
+      const outcomes = mockCaptureCancellationEvent.mock.calls
+        .map(
+          ([input]) =>
+            input as { event: string; properties: Record<string, unknown> },
+        )
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0].properties.preparation_outcome).toBe(
+        preloaded ? "compacted" : "unavailable",
+      );
+    },
+  );
+
+  it("preserves small Convex-native values and cancellation", async () => {
+    const parts = [
+      { type: "text", text: "small response" },
+      { type: "data-value", data: { counter: 1n } },
+    ] as ChatMessage["parts"];
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [
+          messages[0],
+          { id: "native-values", role: "assistant", parts },
+        ],
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleStop({ requireSavedResponse: true }),
+      ).toBe(true);
+    });
+    expect(mockSaveAssistantMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "native-values", parts }),
+    );
+    expect(
+      mockCaptureCancellationEvent.mock.calls
+        .map(([input]) => input as { event: string })
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome"),
+    ).toHaveLength(0);
+    expect(mockCancelStream).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef",
+      "MESSAGE_TOO_LARGE",
+      "0123456789abcdef",
+    ],
+    ["messages:other", "0123456789abcdef", "MESSAGE_TOO_LARGE", undefined],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789ABCDEf",
+      "MESSAGE_TOO_LARGE",
+      undefined,
+    ],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef0",
+      "MESSAGE_TOO_LARGE",
+      undefined,
+    ],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef",
+      "PRIVATE_CODE_CANARY",
+      "0123456789abcdef",
+    ],
+  ])(
+    "correlates rejected Stop snapshots without copying private errors (%s/%s/%s)",
+    async (fn, marker, code, expectedId) => {
+      const error = new ConvexError({
+        code,
+        content: "PRIVATE_CONTENT_CANARY",
+      });
+      error.message = `[CONVEX M(${fn})] [Request ID: ${marker}] PRIVATE_MESSAGE_CANARY`;
+      mockSaveAssistantMessage.mockRejectedValueOnce(error);
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleStop({ requireSavedResponse: true }),
+        ).toBe(false);
+      });
+      const outcomes = mockCaptureCancellationEvent.mock.calls
+        .map(
+          ([input]) =>
+            input as { event: string; properties: Record<string, unknown> },
+        )
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0].properties).toMatchObject({
+        diagnostic_version: 1,
+        preparation_outcome: "not_needed",
+        save_outcome: "rejected",
+        save_error_code:
+          code === "MESSAGE_TOO_LARGE" ? "message_too_large" : "other",
+        frontend_build_commit: expect.any(String),
+      });
+      expect(outcomes[0].properties.convex_request_id).toBe(expectedId);
+      expect(Object.keys(outcomes[0].properties).sort()).toEqual(
+        [
+          "diagnostic_version",
+          "preparation_outcome",
+          "save_outcome",
+          "save_error_code",
+          "frontend_build_commit",
+          ...(expectedId ? ["convex_request_id"] : []),
+        ].sort(),
+      );
+      expect(JSON.stringify(outcomes)).not.toMatch(/CANARY|chat-1/);
+      expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(mockCancelStream).toHaveBeenCalledTimes(1);
+      expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCancelStream.mock.invocationCallOrder[0],
+      );
     },
   );
 
