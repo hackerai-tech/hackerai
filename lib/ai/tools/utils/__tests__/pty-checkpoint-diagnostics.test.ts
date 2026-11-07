@@ -8,6 +8,7 @@ import {
 import type { AnySandbox } from "@/types";
 import {
   checkpointCommandContext,
+  checkpointCloudErrorContext,
   PersistenceError,
   persistenceCommandError,
 } from "../persistence-failure";
@@ -71,7 +72,8 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     return { manager, session, handle, kill };
   }
 
-  function failingStore(error: unknown) {
+  /** Model a failed cloud or native write without executing customer commands. */
+  function failingStore(error: unknown, local = false) {
     const write = jest
       .fn<Promise<void>, [string, string]>()
       .mockRejectedValue(error);
@@ -79,6 +81,15 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       {
         sandboxId: "PRIVATE_SANDBOX",
         files: { write },
+        ...(local
+          ? {
+              sandboxKind: "centrifugo",
+              getConnectionId: () => "PRIVATE_CONNECTION",
+              getWorkingDirectory: () => "C:/PRIVATE_FOLDER",
+              isWindows: () => true,
+              supportsNativeFileRelay: () => true,
+            }
+          : {}),
       } as unknown as AnySandbox,
       "PRIVATE_USER",
       "PRIVATE_SCOPE",
@@ -184,6 +195,96 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       command_exit_code: "none",
     });
     expect(getter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      Object.assign(new Error("PRIVATE_PATH"), {
+        name: "FileNotFoundError",
+        statusCode: 404,
+      }),
+      "file_not_found",
+      404,
+    ],
+    [
+      Object.assign(new Error("PRIVATE_SANDBOX"), {
+        name: "SandboxNotFoundError",
+        statusCode: 404,
+      }),
+      "sandbox_not_found",
+      404,
+    ],
+    [
+      new Error("Expected to receive information about written file"),
+      "empty_write_response",
+      "none",
+    ],
+  ])(
+    "retains the closed cloud SDK failure kind and HTTP status without private text",
+    async (error, kind, status) => {
+      const { store } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          cloud_error_kind: kind,
+          cloud_http_status: status,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("keeps malformed cloud metadata finite without evaluating error accessors", () => {
+    const error = Object.assign(new Error("PRIVATE_MESSAGE"), {
+      name: "PRIVATE_ERROR_KIND",
+      statusCode: "PRIVATE_STATUS",
+    });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: "other_error",
+      cloud_http_status: "other",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    for (const key of ["name", "message", "statusCode"])
+      Object.defineProperty(error, key, { get: getter });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: "other_error",
+      cloud_http_status: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    expect(
+      checkpointCloudErrorContext({ name: "SandboxError", statusCode: 600 }),
+    ).toEqual({
+      cloud_error_kind: "sandbox_error",
+      cloud_http_status: "other",
+    });
+  });
+
+  it("does not attribute cloud SDK fields to a local transport failure", async () => {
+    const { store } = failingStore(
+      Object.assign(new Error("PRIVATE_MESSAGE"), {
+        name: "FileNotFoundError",
+        statusCode: 404,
+      }),
+      true,
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(session.recordPersistenceFailed).toBe(true);
+    expect(info).toHaveBeenCalledTimes(1);
+    const fields = info.mock.calls[0][1];
+    expect(fields).toMatchObject({
+      checkpoint_backend: "local",
+      reason: "save_unacknowledged",
+    });
+    expect(fields).not.toHaveProperty("cloud_error_kind");
+    expect(fields).not.toHaveProperty("cloud_http_status");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
   });
 
   it("keeps malformed record rejection best effort without retaining unrelated context", async () => {
