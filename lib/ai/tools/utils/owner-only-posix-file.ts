@@ -2,6 +2,7 @@ import {
   classifyPersistenceFailure,
   persistenceCommandError,
   PersistenceError,
+  type PrivateArtifactWritePhase,
 } from "./persistence-failure";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -62,6 +63,7 @@ const runChecked = async (
   command: string,
   stdin?: string | Buffer,
   timeoutMs = COMMAND_TIMEOUT_MS,
+  writePhase?: PrivateArtifactWritePhase,
 ): Promise<string> => {
   // The local client advertises this capability only after atomically
   // creating or opening both selected /tmp roots with O_NOFOLLOW and confirming
@@ -94,6 +96,7 @@ const runChecked = async (
       "Private terminal artifact operation failed",
       result,
       true,
+      writePhase,
     );
   }
   return result.stdout;
@@ -181,6 +184,9 @@ if [ -e ${encodedTemporaryPath} ] || [ -L ${encodedTemporaryPath} ]; then exit 7
 ( set -C; : > ${encodedTemporaryPath} )
 chmod 600 ${encodedTemporaryPath}
 `,
+    undefined,
+    COMMAND_TIMEOUT_MS,
+    "prepare",
   );
 
   try {
@@ -193,6 +199,8 @@ if [ -L ${encodedTemporaryPath} ] || [ ! -f ${encodedTemporaryPath} ] || [ ! -O 
 cat >> ${encodedTemporaryPath}
 `,
         bytes.subarray(offset, offset + WRITE_CHUNK_BYTES),
+        COMMAND_TIMEOUT_MS,
+        "append",
       ).catch((error) =>
         verifyAfterTimeout(
           error,
@@ -213,6 +221,9 @@ chmod 600 ${encodedTemporaryPath}
 mv -f ${encodedTemporaryPath} ${encodedFilePath}
 chmod 600 ${encodedFilePath}
 `,
+      undefined,
+      COMMAND_TIMEOUT_MS,
+      "commit",
     ).catch((error) => verifyAfterTimeout(error, filePath, bytes, "commit"));
   } catch (error) {
     await sandbox.commands

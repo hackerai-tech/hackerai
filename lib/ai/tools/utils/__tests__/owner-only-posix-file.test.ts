@@ -11,7 +11,10 @@ import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { preparePrivateArtifactStorage } from "@/packages/local/src/private-artifact-hardening";
-import { classifyPersistenceFailure } from "../persistence-failure";
+import {
+  classifyPersistenceFailure,
+  checkpointCommandContext,
+} from "../persistence-failure";
 import {
   readOwnerOnlyPosixFile,
   writeOwnerOnlyPosixFile,
@@ -122,6 +125,47 @@ describe("owner-only POSIX terminal artifacts", () => {
       warn.mockRestore();
     }
   });
+
+  it.each(["prepare", "append", "commit"])(
+    "retains the fixed %s phase when the private write command fails",
+    async (phase) => {
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      let failures = 0;
+      commands.run.mockImplementation(async (command, opts) => {
+        const selected =
+          phase === "prepare"
+            ? commands.run.mock.calls.length === 1
+            : phase === "append"
+              ? opts?.stdin !== undefined
+              : command.includes("mv -f");
+        if (selected) {
+          failures++;
+          return {
+            stdout: "PRIVATE_STDOUT",
+            stderr: "PRIVATE_STDERR",
+            exitCode: 1,
+          };
+        }
+        return runShell(command, opts?.stdin);
+      });
+      const error = await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "PRIVATE_PAYLOAD",
+      ).catch((failure: unknown) => failure);
+      expect(checkpointCommandContext(error)).toMatchObject({
+        command_stage: "private_artifact",
+        command_exit_code: 1,
+        command_exit_code_shape: "exit_status",
+        private_artifact_write_phase: phase,
+      });
+      expect(failures).toBe(1);
+      expect(JSON.stringify(error)).not.toContain("PRIVATE_");
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it.each(["append", "commit"])(
     "verifies a completed %s after a lost reply without replaying it",

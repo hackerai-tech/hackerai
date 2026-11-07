@@ -96,12 +96,15 @@ export type PersistenceFailureCategory =
   | "no_space"
   | "unsafe_artifact";
 
+export type PrivateArtifactWritePhase = "prepare" | "append" | "commit";
+
 /** Carries only a bounded diagnostic, never shell output, paths or content. */
 export class PersistenceError extends Error {
   constructor(
     message: string,
     readonly persistenceCategory: PersistenceFailureCategory,
     readonly exitCode?: number,
+    readonly privateArtifactWritePhase?: PrivateArtifactWritePhase,
   ) {
     super(message);
     this.name = "PersistenceError";
@@ -111,6 +114,7 @@ export class PersistenceError extends Error {
 /** Describe only our fixed command producers; never retain error text or stderr. */
 export function checkpointCommandContext(error: unknown): {
   command_stage: string;
+  private_artifact_write_phase?: PrivateArtifactWritePhase;
   command_exit_code: number | "none" | "other";
   command_exit_code_shape:
     | "none"
@@ -124,6 +128,7 @@ export function checkpointCommandContext(error: unknown): {
 } {
   let commandStage = "none";
   let exitCode: unknown;
+  let writePhase: unknown;
   try {
     if (error instanceof PersistenceError) {
       commandStage = "other";
@@ -151,8 +156,24 @@ export function checkpointCommandContext(error: unknown): {
   } catch {
     commandStage = "unreadable";
   }
+  if (commandStage === "private_artifact") {
+    try {
+      writePhase = Object.getOwnPropertyDescriptor(
+        error,
+        "privateArtifactWritePhase",
+      )?.value;
+    } catch {
+      // A missing optional phase cannot invalidate the existing command context.
+    }
+  }
   return {
     command_stage: commandStage,
+    ...(commandStage === "private_artifact" &&
+    (writePhase === "prepare" ||
+      writePhase === "append" ||
+      writePhase === "commit")
+      ? { private_artifact_write_phase: writePhase }
+      : {}),
     command_exit_code:
       exitCode === undefined
         ? "none"
@@ -395,6 +416,7 @@ export function persistenceCommandError(
   message: string,
   result: { exitCode: number; stderr?: string },
   ownerOnly = false,
+  privateArtifactWritePhase?: PrivateArtifactWritePhase,
 ): PersistenceError {
   return new PersistenceError(
     message,
@@ -402,5 +424,6 @@ export function persistenceCommandError(
       ? "unsafe_artifact"
       : classifyPersistenceFailure(result.stderr),
     result.exitCode,
+    privateArtifactWritePhase,
   );
 }
