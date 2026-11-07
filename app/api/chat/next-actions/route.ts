@@ -289,6 +289,10 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * Consume optional suggestions with the existing empty-response contract,
+ * including auth/data failures; observe one pending stage before hard termination.
+ */
 export async function DELETE(req: NextRequest) {
   let stage: "authenticate" | "read_request" | "consume" = "authenticate";
   const startedAt = Date.now();

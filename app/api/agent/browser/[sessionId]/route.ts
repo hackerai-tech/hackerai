@@ -339,6 +339,11 @@ type BrowserAction = {
   note?: unknown;
 };
 
+/**
+ * Apply authenticated browser controls with the existing grant, rollback and
+ * response contracts. Failure telemetry uses the resolved session snapshot;
+ * it never rereads ownership or records private control payloads.
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
