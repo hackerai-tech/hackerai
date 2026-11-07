@@ -947,7 +947,8 @@ export const SubagentsSidebar = ({
       if (
         event.key !== "Escape" ||
         event.defaultPrevented ||
-        hasOpenShortcutOverlay()
+        hasOpenShortcutOverlay() ||
+        document.querySelector('[data-shortcuts-scope="navigation"]')
       )
         return;
       event.preventDefault();

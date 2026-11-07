@@ -529,6 +529,20 @@ describe("SubagentsSidebar", () => {
         />
       </TooltipProvider>,
     );
+    const navigation = document.createElement("div");
+    navigation.dataset.shortcutsScope = "navigation";
+    document.body.append(navigation);
+    try {
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(
+        screen.getByRole("heading", { name: "Active candidate" }),
+      ).toBeVisible();
+      expect(closeSidebar).not.toHaveBeenCalled();
+      expect(onStop).not.toHaveBeenCalled();
+    } finally {
+      navigation.remove();
+    }
+
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.getByRole("heading", { name: "Subagents" })).toBeVisible();
     expect(closeSidebar).not.toHaveBeenCalled();
