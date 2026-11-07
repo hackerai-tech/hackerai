@@ -2,6 +2,10 @@ import type { PersistenceFailureCategory } from "@/lib/ai/tools/utils/persistenc
 import { metrics } from "@opentelemetry/api";
 import type { AnySandbox } from "@/types";
 import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
+import {
+  parseDesktopFileFailure,
+  type DesktopFileFailure,
+} from "./desktop-file-errors";
 
 type MaintenanceEvent = {
   operation:
@@ -21,6 +25,7 @@ type MaintenanceEvent = {
   reason?: "windows" | "node_unavailable";
   payloadBytes?: number;
   failureCategory?: PersistenceFailureCategory;
+  fileFailure?: DesktopFileFailure;
 };
 
 /** Logical record payloads, not wire bytes. Never accept content or identifiers. */
@@ -43,6 +48,7 @@ export function recordTerminalMaintenance(
       reason: event.reason ?? "none",
       source,
       failure_category: event.failureCategory ?? "none",
+      file_failure: parseDesktopFileFailure(event.fileFailure) ?? "none",
     };
     meter
       .createCounter("hackerai.local_relay.terminal_record_operations", {
