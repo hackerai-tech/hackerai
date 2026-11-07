@@ -25,7 +25,7 @@ export function WaitingForReplyBanner({
     >
       <MessageCircleQuestionMark
         aria-hidden="true"
-        className="size-3.5 shrink-0 text-indigo-600 dark:text-indigo-300"
+        className="size-3.5 shrink-0 text-foreground"
       />
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium leading-5 text-foreground">

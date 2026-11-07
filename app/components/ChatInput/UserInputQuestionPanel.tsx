@@ -85,7 +85,7 @@ export function UserInputQuestionPanel({
           aria-expanded={!collapsed}
           className="flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <span className="flex shrink-0 items-center gap-1.5 font-medium text-indigo-600 dark:text-indigo-300">
+          <span className="flex shrink-0 items-center gap-1.5 font-medium text-foreground">
             <MessageCircleQuestionMark
               className="size-3.5"
               aria-hidden="true"
@@ -135,11 +135,11 @@ export function UserInputQuestionPanel({
                   aria-pressed={selected}
                   disabled={disabled || answersLocked}
                   onClick={() => select(option.value)}
-                  className={`flex min-h-11 w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-indigo-500/10 text-foreground" : "text-foreground/80"}`}
+                  className={`flex min-h-11 w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-muted text-foreground" : "text-foreground/80"}`}
                 >
                   <span
                     aria-hidden="true"
-                    className={`mt-0.5 flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? "rounded" : "rounded-full"} ${selected ? "border-indigo-600 bg-indigo-600 text-white dark:border-indigo-300 dark:bg-indigo-300 dark:text-background" : "border-muted-foreground/60"}`}
+                    className={`mt-0.5 flex size-4 shrink-0 items-center justify-center border ${question.multiSelect ? "rounded" : "rounded-full"} ${selected ? "border-foreground bg-foreground text-background" : "border-muted-foreground/60"}`}
                   >
                     {selected &&
                       (question.multiSelect ? (

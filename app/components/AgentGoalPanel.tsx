@@ -453,7 +453,7 @@ export function AgentGoalPanel({
           : stateLabels[goal.state];
   const StatusIcon = needsInput ? MessageCircleQuestionMark : GoalTargetIcon;
   const statusColor = needsInput
-    ? "text-indigo-600 dark:text-indigo-300"
+    ? "text-foreground"
     : goal.state === "achieved"
       ? "text-emerald-700 dark:text-emerald-400"
       : ["needs_approval", "blocked", "failed", "usage_exhausted"].includes(

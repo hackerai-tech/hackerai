@@ -535,7 +535,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
           <span className="min-w-0 flex-1 truncate">{taskTitle}</span>
           {showInputStatus && (
             <span
-              className={`ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-medium ${inputIsApproval ? "text-amber-700 dark:text-amber-300" : "text-indigo-600 dark:text-indigo-300"}`}
+              className={`ml-auto inline-flex shrink-0 items-center gap-1 text-xs font-medium ${inputIsApproval ? "text-amber-700 dark:text-amber-300" : "text-foreground"}`}
               data-testid="chat-item-needs-input"
               data-reason={needsInputReason ?? "approval"}
               aria-hidden="true"
