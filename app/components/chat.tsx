@@ -41,6 +41,8 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
+import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
+import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
@@ -585,7 +587,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     editingQueuedMessageId,
     removeQueuedMessage,
     setQueuedMessageDelivery,
-    clearQueue,
+    queueChatId,
+    selectMessageQueue,
     todos,
     sandboxPreference,
     setSandboxPreference,
@@ -881,10 +884,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const storedPendingUserWait = (chatDataForCurrentChat as any)
+    ?.active_agent_user_wait as ActiveAgentUserWait | undefined;
   const persistedGoal = useQuery(
     api.agentGoals.get,
     chatDataForCurrentChat ? { chatId } : "skip",
   );
+
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -2571,19 +2577,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useLatestRef(messageQueue);
-
-  // Clear queue when navigating to a different chat.
-  // Intentionally reads messageQueueRef at cleanup time (latest value).
-  useEffect(() => {
-    return () => {
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      if (messageQueueRef.current.length > 0) {
-        clearQueue();
-      }
-    };
-  }, [chatId, clearQueue, messageQueueRef]);
+  useLayoutEffect(() => {
+    selectMessageQueue(chatId);
+  }, [chatId, selectMessageQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
@@ -2592,6 +2588,48 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     handleDragOver,
     handleDrop,
   });
+
+  // The stream may show the wait tool before the Convex chat subscription
+  // publishes its pending field. Keep that immediate reply out of the queue.
+  const lastVisibleMessage = messages.at(-1);
+  const lastWaitPart =
+    lastVisibleMessage?.role === "assistant" &&
+    Array.isArray(lastVisibleMessage.parts)
+      ? (lastVisibleMessage.parts as any[])
+          .slice()
+          .reverse()
+          .find((part) => part?.type === "tool-wait_for_user")
+      : undefined;
+  // Once persisted, absence means released, not an unpublished stream update.
+  // Retain prior identities too: a later wait must not revive an earlier part.
+  const observedUserWaitsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (storedPendingUserWait)
+      observedUserWaitsRef.current.add(
+        `${chatId}:${storedPendingUserWait.runId}:${storedPendingUserWait.toolCallId}`,
+      );
+  }, [chatId, storedPendingUserWait]);
+  const streamedWaitKey = `${chatId}:${agentLongRunId || activeTriggerRunId}:${lastWaitPart?.toolCallId}`;
+  const pendingUserWait: ActiveAgentUserWait | undefined =
+    (storedPendingUserWait
+      ? { ...storedPendingUserWait, published: true as const }
+      : undefined) ??
+    (status === "streaming" &&
+    !hasManuallyStoppedRef.current &&
+    !observedUserWaitsRef.current.has(streamedWaitKey) &&
+    lastWaitPart?.state === "input-available" &&
+    typeof lastWaitPart.toolCallId === "string" &&
+    (agentLongRunId || activeTriggerRunId)
+      ? {
+          runId: (agentLongRunId || activeTriggerRunId)!,
+          toolCallId: lastWaitPart.toolCallId,
+          status: "waiting",
+          questions: userInputQuestionsSchema.safeParse(
+            lastWaitPart.input?.questions,
+          ).data,
+        }
+      : undefined);
+  const hasPendingUserWait = !!pendingUserWait;
 
   // The start response can arrive before the Convex subscription catches up.
   // Keep that exact local run available to Stop after the pending POST settles.
@@ -2644,13 +2682,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     resetAutoContinueCount,
     sendDisabledReason: computerSendDisabledReason,
+    pendingUserWait,
   });
 
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
+      queueChatId === chatId &&
+      // replaceState saves a new chat without updating the router tree/params.
+      (routeChatId
+        ? routeChatId === chatId
+        : !isExistingChat || window.location.pathname === `/c/${chatId}`) &&
+      (!isExistingChat ||
+        (hasLoadedCurrentChat && persistedGoal !== undefined)) &&
       status === "ready" &&
       !hasPendingSummarySteer &&
+      !hasPendingUserWait &&
+      persistedGoal?.state !== "needs_input" &&
+      persistedGoal?.state !== "blocked" &&
+      persistedGoal?.state !== "queued" &&
+      persistedGoal?.state !== "running" &&
+      !agentLongRunId &&
+      !activeTriggerRunId &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2697,8 +2750,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     status,
     hasPendingSummarySteer,
+    hasPendingUserWait,
+    persistedGoal?.state,
+    agentLongRunId,
+    activeTriggerRunId,
     shouldUseAgentLong,
     messageQueue,
+    queueChatId,
+    routeChatId,
+    chatId,
+    isExistingChat,
+    hasLoadedCurrentChat,
+    persistedGoal,
     editingQueuedMessageId,
     computerSendDisabledReason,
     isProcessingQueue,
@@ -2828,6 +2891,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
+      waitingForReply={!!pendingUserWait}
       onEdit={() => openSidebar({ kind: "goal", chatId })}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
@@ -2841,7 +2905,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       )}
       eligible={chatMode === "agent" && subscription !== "free"}
       idle={
-        status === "ready" && !activeTriggerRunId && messageQueue.length === 0
+        status === "ready" &&
+        !activeTriggerRunId &&
+        (messageQueue.length === 0 ||
+          persistedGoal?.state === "blocked" ||
+          persistedGoal?.state === "needs_input")
       }
       disabledReason={computerSendDisabledReason}
       mobileAccessory={
@@ -3068,13 +3136,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     hasMessages={hasMessages}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
-                    sendDisabledReason={computerSendDisabledReason}
+                    sendDisabledReason={
+                      pendingUserWait ? undefined : computerSendDisabledReason
+                    }
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     storedApprovalRequest={storedAgentApprovalRequest}
+                    pendingUserWait={pendingUserWait}
+                    pendingGoalQuestions={
+                      !pendingUserWait && persistedGoal?.state === "needs_input"
+                        ? {
+                            generation: persistedGoal.generation,
+                            questions: persistedGoal.judgment?.questions ?? [
+                              {
+                                id: "reply",
+                                header: "Your input",
+                                question:
+                                  persistedGoal.reason ||
+                                  "What should the Agent do next?",
+                                options: [],
+                              },
+                            ],
+                          }
+                        : undefined
+                    }
                   />
                 </ComposerOverlay>
               ) : null}

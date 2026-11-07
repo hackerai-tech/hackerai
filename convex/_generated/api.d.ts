@@ -60,6 +60,7 @@ import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as modelHistory from "../modelHistory.js";
 import type * as nextActions from "../nextActions.js";
+
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
@@ -147,6 +148,7 @@ declare const fullApi: ApiFromModules<{
   messages: typeof messages;
   modelHistory: typeof modelHistory;
   nextActions: typeof nextActions;
+
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;

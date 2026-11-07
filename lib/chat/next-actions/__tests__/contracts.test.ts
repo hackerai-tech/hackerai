@@ -161,31 +161,34 @@ test("shortens Unicode without broken surrogate pairs", () => {
   );
 });
 
-test("ignores empty, system, attachment, pending finding and malformed parts", () => {
-  expect(
-    buildPredictionSources([
-      {
-        id: "sys",
-        role: "system",
-        parts: [{ type: "text", text: "SYSTEM_SECRET" }],
-      },
-      {
-        id: "answer",
-        role: "assistant",
-        parts: [
-          null,
-          5,
-          { type: "text", text: "  " },
-          { type: "file", url: "PRIVATE_ATTACHMENT" },
-          {
-            type: "tool-get_report",
-            state: "output-error",
-            output: "FAILED_FINDING",
-          },
-        ],
-      },
-    ]),
-  ).toEqual([]);
+test("ignores private non-text content while retaining failed finding activity", () => {
+  const sources = buildPredictionSources([
+    {
+      id: "sys",
+      role: "system",
+      parts: [{ type: "text", text: "SYSTEM_SECRET" }],
+    },
+    {
+      id: "answer",
+      role: "assistant",
+      parts: [
+        null,
+        5,
+        { type: "text", text: "  " },
+        { type: "file", url: "PRIVATE_ATTACHMENT" },
+        {
+          type: "tool-get_report",
+          state: "output-error",
+          output: "FAILED_FINDING",
+        },
+      ],
+    },
+  ]);
+  expect(sources).toHaveLength(1);
+  expect(sources[0].text).toContain('"state":"output-error"');
+  expect(JSON.stringify(sources)).not.toMatch(
+    /SYSTEM_SECRET|PRIVATE_ATTACHMENT|FAILED_FINDING/,
+  );
 });
 
 test("bounds history and excludes reasoning, tool inputs, and unrelated tool outputs", () => {
@@ -340,3 +343,237 @@ test("a later user request supersedes an earlier cancellation", () => {
     ]),
   ).toBe(false);
 });
+
+test("retains structured questions and delivered replies even without user message rows", () => {
+  const sources = buildPredictionSources([
+    {
+      id: "done",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          input: {
+            questions: [
+              {
+                id: "confirmation",
+                header: "Confirm",
+                question: "Confirm your choice?",
+                options: [{ label: "Continue", value: "continue" }],
+              },
+            ],
+            privateField: "SECRET_INPUT",
+          },
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Continue",
+            token: "SECRET_TOKEN",
+          },
+        },
+        { type: "text", text: "Done. Label Alpha; confirmation Continue." },
+      ],
+    },
+    message("choice", "alpha", "user"),
+    message("question", "Alpha or Beta?"),
+  ]);
+  expect(sources.at(-1)?.text).toContain("wait_for_user");
+  expect(sources.at(-1)?.text).toContain("Confirm your choice?");
+  expect(sources.at(-1)?.text).toContain('"reply":"Continue"');
+  expect(JSON.stringify(sources)).not.toMatch(/SECRET_INPUT|SECRET_TOKEN/);
+});
+
+test("includes static and dynamic tool outcomes without exposing arbitrary payloads", () => {
+  const sources = buildPredictionSources([
+    {
+      id: "tools",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          input: { command: "PRIVATE_COMMAND" },
+          output: { success: false, error: "PRIVATE_ERROR" },
+        },
+        {
+          type: "dynamic-tool",
+          toolName: "file",
+          state: "output-available",
+          output: { content: "PRIVATE_FILE" },
+        },
+        {
+          type: "tool-browser",
+          state: "output-error",
+          errorText: "PRIVATE_BROWSER_ERROR",
+        },
+        { type: "tool-delete_note", state: "output-denied" },
+      ],
+    },
+  ]);
+  expect(sources).toHaveLength(1);
+  const text = sources[0].text;
+  expect(text).toContain('"name":"run_terminal_cmd"');
+  expect(text).toContain('"success":false');
+  expect(text).toContain('"name":"file"');
+  expect(text).toContain('"state":"output-error"');
+  expect(text).toContain('"state":"output-denied"');
+  expect(text).not.toMatch(/PRIVATE_/);
+});
+
+test.each([
+  "input-available",
+  "output-error",
+  "output-denied",
+  "output-available",
+])(
+  "does not invent a delivered answer for an unsuccessful wait (%s)",
+  (state) => {
+    const sources = buildPredictionSources([
+      {
+        id: "wait",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-wait_for_user",
+            state,
+            input: { questions: [] },
+            output: {
+              success: false,
+              wait_outcome: "timed_out",
+              reply: "NOT_DELIVERED",
+            },
+          },
+        ],
+      },
+    ]);
+    expect(sources[0].text).toContain("wait_for_user");
+    expect(sources[0].text).not.toContain("NOT_DELIVERED");
+  },
+);
+
+test("keeps reply evidence and marks incomplete tool history under a large tool budget", () => {
+  const parts = Array.from({ length: 300 }, (_, i) => ({
+    type: `tool-command_${i}`,
+    state: "output-available",
+  }));
+  const sources = buildPredictionSources([
+    {
+      id: "large",
+      role: "assistant",
+      parts: [
+        ...parts.slice(0, 150),
+        {
+          type: "dynamic-tool",
+          toolName: "wait_for_user",
+          state: "output-available",
+          input: {},
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "CONFIRMED",
+          },
+        },
+        ...parts.slice(150),
+        { type: "text", text: "x".repeat(10000) + "Final task complete." },
+      ],
+    },
+  ]);
+  expect(sources[0].text).toContain('"reply":"CONFIRMED"');
+  expect(sources[0].text).toContain("tool events omitted");
+  expect(sources[0].text).toContain("Final task complete.");
+  expect(sources[0].text.length).toBeLessThanOrEqual(4000);
+});
+
+test("keeps terminal execution before its later confirmation in prediction context", () => {
+  const [source] = buildPredictionSources([
+    {
+      id: "done",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: { success: true },
+        },
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          input: { questions: [{ question: "Confirm your choice?" }] },
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Continue",
+          },
+        },
+        {
+          type: "text",
+          text: "Both answers received. The command ran. Goal complete.",
+        },
+      ],
+    },
+  ]);
+  expect(source.text.indexOf('"name":"run_terminal_cmd"')).toBeLessThan(
+    source.text.indexOf('"name":"wait_for_user"'),
+  );
+});
+
+test("preserves a short older reply within the total budget after several long messages", () => {
+  const sources = buildPredictionSources([
+    ...Array.from({ length: 5 }, (_, i) =>
+      message(`long-${i}`, "x".repeat(5000)),
+    ),
+    {
+      id: "older-reply",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Yes",
+          },
+        },
+      ],
+    },
+  ]);
+  expect(
+    sources.reduce((total, source) => total + source.text.length, 0),
+  ).toBeLessThanOrEqual(12000);
+  expect(sources.find((source) => source.id === "older-reply")?.text).toContain(
+    '"reply":"Yes"',
+  );
+});
+
+test.each(["Confirmed: " + "r".repeat(230), "Confirmed: " + "\\".repeat(230)])(
+  "keeps an older delivered reply when its question and escaped text strain the budget",
+  (reply) => {
+    const sources = buildPredictionSources([
+      ...Array.from({ length: 5 }, (_, i) =>
+        message(`long-${i}`, "x".repeat(5000)),
+      ),
+      {
+        id: "older",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-wait_for_user",
+            state: "output-available",
+            input: { questions: [{ question: "q".repeat(200) }] },
+            output: { success: true, wait_outcome: "message_arrived", reply },
+          },
+        ],
+      },
+    ]);
+    const text = sources.find((source) => source.id === "older")!.text;
+    expect(text).toContain('"reply":"Confirmed: ');
+    expect(text).toContain('"waitOutcome":"message_arrived"');
+    expect(text).toContain('"questionsOmitted":true');
+    expect(text.length).toBeLessThanOrEqual(600);
+    expect(
+      sources.reduce((sum, source) => sum + source.text.length, 0),
+    ).toBeLessThanOrEqual(12000);
+    if (reply.includes("\\")) expect(text).toContain("[truncated]");
+  },
+);

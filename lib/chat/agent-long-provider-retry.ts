@@ -660,6 +660,46 @@ const tokenSliceEquals = (
   return true;
 };
 
+// A model can repeat a longer block with a short, changing transition between
+// copies. Require sustained, dense repetition so ordinary recurring labels or
+// references do not trigger recovery. Bound work independently of answer size.
+const detectInterruptedTextLoop = (
+  tokens: string[],
+): AssistantContentLoopDetection => {
+  const tail = tokens.slice(-256);
+  for (let length = 8; length <= 32; length++) {
+    const phrases = new Map<
+      string,
+      { start: number; end: number; count: number }
+    >();
+    for (let start = 0; start + length <= tail.length; start++) {
+      const phrase = tail.slice(start, start + length).join(" ");
+      const previous = phrases.get(phrase);
+      if (!previous) {
+        phrases.set(phrase, { start, end: start + length, count: 1 });
+        continue;
+      }
+      if (start < previous.end) continue;
+      previous.end = start + length;
+      previous.count++;
+      const repeatedTokens = previous.count * length;
+      if (
+        previous.count >= 6 &&
+        repeatedTokens >= 96 &&
+        repeatedTokens / (previous.end - previous.start) >= 0.7
+      ) {
+        return {
+          detected: true,
+          reason: "repeated_text",
+          repeatedText: phrase,
+          repeatCount: previous.count,
+        };
+      }
+    }
+  }
+  return NO_ASSISTANT_CONTENT_LOOP;
+};
+
 export const detectAssistantContentLoopFromText = (
   text: string,
 ): AssistantContentLoopDetection => {
@@ -710,7 +750,7 @@ export const detectAssistantContentLoopFromText = (
     }
   }
 
-  return NO_ASSISTANT_CONTENT_LOOP;
+  return detectInterruptedTextLoop(tokens);
 };
 
 export const detectAssistantContentLoopFromParts = (

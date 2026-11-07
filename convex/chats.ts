@@ -1,3 +1,5 @@
+import { userInputQuestionsValidator } from "./lib/userInputQuestions";
+import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
@@ -31,6 +33,7 @@ import {
 } from "./lib/suspensionGuards";
 import { resolveBranchedFromTitle } from "./lib/branchedChatTitle";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
+import { getSidebarChatAttention } from "./lib/sidebarChatAttention";
 
 const DELETE_ALL_CHATS_MESSAGE_BATCH_SIZE = 10;
 const DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE = 25;
@@ -38,6 +41,21 @@ const DELETE_ALL_CHATS_FINDING_BATCH_SIZE = 25;
 const DELETE_CHAT_SUBAGENT_BATCH_SIZE = 10;
 const CHAT_DELETION_FENCE_BATCH_SIZE = 100;
 const MAX_ACTIVE_TRIGGER_RUNS_TO_RETURN = 100;
+const activeAgentUserWaitValidator = v.object({
+  questions: v.optional(userInputQuestionsValidator),
+  runId: v.string(),
+  toolCallId: v.string(),
+  tokenId: v.string(),
+  status: v.union(v.literal("waiting"), v.literal("submitting")),
+  replyId: v.optional(v.string()),
+  replyHash: v.optional(v.string()),
+});
+const clientAgentUserWaitValidator = v.object({
+  questions: v.optional(userInputQuestionsValidator),
+  runId: v.string(),
+  toolCallId: v.string(),
+  status: v.union(v.literal("waiting"), v.literal("submitting")),
+});
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
 const CHAT_SUMMARY_TELEMETRY_CLEANUP_MAX_BATCH_SIZE = 1000;
 const CHAT_SUMMARY_TELEMETRY_FIELDS = [
@@ -571,6 +589,7 @@ export const getChatByIdFromClient = query({
       active_agent_approval_request: v.optional(
         activeAgentApprovalRequestValidator,
       ),
+      active_agent_user_wait: v.optional(clientAgentUserWaitValidator),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       project_id: v.optional(v.id("projects")),
@@ -605,30 +624,47 @@ export const getChatByIdFromClient = query({
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
         objective_checkpoint: _privateObjectiveCheckpoint,
+        active_agent_user_wait: activeUserWait,
         next_actions: _privateNextActions,
+
         ...chatPublic
       } = chat;
+      const clientChat = {
+        ...chatPublic,
+        ...(activeUserWait
+          ? {
+              active_agent_user_wait: {
+                runId: activeUserWait.runId,
+                toolCallId: activeUserWait.toolCallId,
+                status: activeUserWait.status,
+                ...(activeUserWait.questions
+                  ? { questions: activeUserWait.questions }
+                  : {}),
+              },
+            }
+          : {}),
+      };
 
       // Fetch branched_from_title if this chat is branched from another chat
-      if (chatPublic.branched_from_chat_id) {
+      if (clientChat.branched_from_chat_id) {
         const branchedFromChat = await ctx.db
           .query("chats")
           .withIndex("by_chat_id", (q) =>
-            q.eq("id", chatPublic.branched_from_chat_id!),
+            q.eq("id", clientChat.branched_from_chat_id!),
           )
           .first();
 
         return {
-          ...chatPublic,
+          ...clientChat,
           branched_from_title: resolveBranchedFromTitle(
-            chatPublic,
+            clientChat,
             branchedFromChat,
             identity.subject,
           ),
         };
       }
 
-      return chatPublic;
+      return clientChat;
     } catch (error) {
       console.error("Failed to get chat by id:", error);
       throw error;
@@ -686,6 +722,7 @@ export const getChatById = query({
       active_agent_approval_request: v.optional(
         activeAgentApprovalRequestValidator,
       ),
+      active_agent_user_wait: v.optional(activeAgentUserWaitValidator),
       agent_approval_grants: v.optional(
         v.array(agentApprovalTargetGrantValidator),
       ),
@@ -1203,18 +1240,30 @@ export const getUserChats = query({
       );
 
       // Step 4: Enhance chats using the map
+      const attention = await getSidebarChatAttention(ctx, combinedPage);
       const enhancedChats = combinedPage.map(
-        ({
-          objective_checkpoint: _privateObjectiveCheckpoint,
-          next_actions: _privateNextActions,
-          ...chat
-        }) => {
+        (
+          {
+            objective_checkpoint: _privateObjectiveCheckpoint,
+            next_actions: _privateNextActions,
+            active_agent_user_wait: privateUserWait,
+            ...chat
+          },
+          index,
+        ) => {
+          const sidebarChat = {
+            ...chat,
+            ...(privateUserWait
+              ? { active_agent_user_wait: { status: privateUserWait.status } }
+              : {}),
+            ...attention[index],
+          };
           if (chat.branched_from_chat_id) {
             const branchedFromChat = branchedChatMap.get(
               chat.branched_from_chat_id,
             );
             return {
-              ...chat,
+              ...sidebarChat,
               branched_from_title: resolveBranchedFromTitle(
                 chat,
                 branchedFromChat,
@@ -1222,7 +1271,7 @@ export const getUserChats = query({
               ),
             };
           }
-          return chat;
+          return sidebarChat;
         },
       );
 
@@ -1792,6 +1841,9 @@ export const replaceActiveTriggerRun = mutation({
       active_agent_approval_session_id: args.approvalSessionId ?? undefined,
       active_agent_approval_pending: undefined,
       active_agent_approval_request: undefined,
+      ...(currentRunId !== args.triggerRunId
+        ? { active_agent_user_wait: undefined }
+        : {}),
       canceled_at: undefined,
     });
     return previous;
@@ -1881,8 +1933,128 @@ export const setActiveTriggerRun = mutation({
             active_agent_approval_request: undefined,
           }
         : {}),
+      // A same-run retry keeps its wait; a different or terminal run cannot.
+      ...(args.triggerRunId === null ||
+      chat.active_trigger_run_id !== args.triggerRunId
+        ? { active_agent_user_wait: undefined }
+        : {}),
     });
     return "updated" as const;
+  },
+});
+
+/** Only the current Trigger run may expose a reply wait in this chat. */
+export const setActiveAgentUserWait = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    runId: v.string(),
+    toolCallId: v.string(),
+    tokenId: v.optional(v.string()),
+    questions: v.optional(userInputQuestionsValidator),
+  },
+  returns: v.union(
+    v.literal("acquired"),
+    v.literal("released"),
+    v.literal("busy"),
+    v.literal("stale"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (
+      !chat ||
+      chat.user_id !== args.userId ||
+      chat.active_trigger_run_id !== args.runId ||
+      chat.deletion_started_at !== undefined
+    ) {
+      return "stale" as const;
+    }
+    const active = chat.active_agent_user_wait;
+    if (args.tokenId) {
+      const questions =
+        args.questions === undefined
+          ? undefined
+          : userInputQuestionsSchema.parse(args.questions);
+      if (active) {
+        return active.toolCallId === args.toolCallId &&
+          active.tokenId === args.tokenId
+          ? ("acquired" as const)
+          : ("busy" as const);
+      }
+      await ctx.db.patch(chat._id, {
+        active_agent_user_wait: {
+          runId: args.runId,
+          toolCallId: args.toolCallId,
+          tokenId: args.tokenId,
+          ...(questions ? { questions } : {}),
+          status: "waiting" as const,
+        },
+      });
+      return "acquired" as const;
+    }
+    if (!active || active.toolCallId !== args.toolCallId) {
+      return "stale" as const;
+    }
+    await ctx.db.patch(chat._id, { active_agent_user_wait: undefined });
+    return "released" as const;
+  },
+});
+
+/** Compare-and-set prevents two replies from completing one waitpoint. */
+export const claimAgentUserWaitReply = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    runId: v.string(),
+    toolCallId: v.string(),
+    replyId: v.string(),
+    replyHash: v.string(),
+  },
+  returns: v.union(
+    v.literal("claimed"),
+    v.literal("duplicate"),
+    v.literal("busy"),
+    v.literal("stale"),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    const active = chat?.active_agent_user_wait;
+    if (
+      !chat ||
+      chat.user_id !== args.userId ||
+      chat.active_trigger_run_id !== args.runId ||
+      chat.deletion_started_at !== undefined ||
+      !active ||
+      active.runId !== args.runId ||
+      active.toolCallId !== args.toolCallId
+    ) {
+      return "stale" as const;
+    }
+    if (active.status === "submitting") {
+      return active.replyId === args.replyId &&
+        active.replyHash === args.replyHash
+        ? ("duplicate" as const)
+        : ("busy" as const);
+    }
+    await ctx.db.patch(chat._id, {
+      active_agent_user_wait: {
+        ...active,
+        status: "submitting" as const,
+        replyId: args.replyId,
+        replyHash: args.replyHash,
+      },
+    });
+    return "claimed" as const;
   },
 });
 

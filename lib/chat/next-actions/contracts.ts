@@ -1,9 +1,13 @@
 import { z } from "zod";
+import {
+  predictionToolEvents,
+  renderPredictionToolContext,
+} from "./tool-context";
 
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
 // Legacy field name: this versions the saved prediction format/behavior, not truth or authorization.
-export const NEXT_ACTIONS_VALIDATION_VERSION = 3;
+export const NEXT_ACTIONS_VALIDATION_VERSION = 5;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
@@ -61,8 +65,8 @@ function excerpt(text: string, budget: number): string {
   return head + OMITTED_TEXT + tail;
 }
 
-/** Recent persisted messages only. No reasoning, attachments, system messages,
- * tool inputs, or arbitrary tool outputs. Existing finding results provide IDs. */
+/** Recent persisted messages plus bounded tool activity. No reasoning, attachments,
+ * system messages or arbitrary tool payloads. Wait records preserve actual replies. */
 export function buildPredictionSources(
   newestFirst: ContextMessage[],
 ): PredictionSource[] {
@@ -97,8 +101,10 @@ export function buildPredictionSources(
     }
     const text = textParts.join("\n");
     const findings = findingParts.join("\n");
-    return text.trim() || findings
-      ? [{ id: message.id, role: message.role, text, findings }]
+    const tools =
+      message.role === "assistant" ? predictionToolEvents(message.parts) : [];
+    return text.trim() || findings || tools.length
+      ? [{ id: message.id, role: message.role, text, findings, tools }]
       : [];
   });
   const sources: PredictionSource[] = [];
@@ -106,30 +112,36 @@ export function buildPredictionSources(
   for (const [index, message] of messages.entries()) {
     // Reserve context for every recent turn instead of dropping the user's
     // earlier scope/intent after three long assistant messages.
-    const reserved = messages
-      .slice(index + 1)
-      .reduce(
-        (sum, older) =>
-          sum +
-          Math.min(
-            1_000,
-            older.text.length +
-              older.findings.length +
-              (older.text && older.findings ? 1 : 0),
-          ),
-        0,
-      );
+    const reserved = messages.slice(index + 1).reduce(
+      (sum, older) =>
+        sum +
+        (older.tools.length
+          ? 1_000 // Include renderer overhead and room for an older reply.
+          : Math.min(
+              1_000,
+              older.text.length +
+                older.findings.length +
+                (older.text && older.findings ? 1 : 0),
+            )),
+      0,
+    );
     const budget = Math.min(4_000, remaining - reserved);
     // Findings cannot crowd out the final answer, including on older turns
     // with a smaller budget. Clip each original span only once so an omission
     // marker cannot itself be cut into apparent source evidence.
+    const tools = renderPredictionToolContext(
+      message.tools,
+      Math.min(1_000, Math.floor(budget * 0.6)),
+    );
+    const textBudget = budget - tools.length - (tools ? 1 : 0);
     const findings = excerpt(
       message.findings,
-      Math.min(1_000, message.text ? Math.floor(budget / 4) : budget),
+      Math.min(1_000, message.text ? Math.floor(textBudget / 4) : textBudget),
     );
     const text = [
-      excerpt(message.text, budget - findings.length - (findings ? 1 : 0)),
+      excerpt(message.text, textBudget - findings.length - (findings ? 1 : 0)),
       findings,
+      tools,
     ]
       .filter(Boolean)
       .join("\n");

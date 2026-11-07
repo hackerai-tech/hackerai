@@ -68,6 +68,10 @@ import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
+import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
+import { AGENT_WAIT_FOR_USER_FLAG } from "@/lib/experiments/agent-wait-for-user";
+import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
+
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -1531,21 +1535,39 @@ const finishCloudSandboxLifecycleForParentRun = async ({
   approvalSessionId?: string;
   approvalSessionClosed: boolean;
 }): Promise<void> => {
-  try {
-    await clearFinishedAgentRun({
-      chatId,
-      triggerRunId,
-      approvalSessionId,
-      approvalSessionClosed,
-    });
-  } catch (error) {
-    triggerLogger.warn("[agent-long] active run clear failed", {
-      event: "agent_cloud_sandbox_active_run_clear_failed",
-      user_id: userId,
-      chat_id: chatId,
-      trigger_run_id: triggerRunId,
-      error: stringifyRedactedError(error),
-    });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const outcome = await clearFinishedAgentRun({
+        chatId,
+        triggerRunId,
+        approvalSessionId,
+        approvalSessionClosed,
+      });
+      // The mutation clears the reply wait atomically with the active run.
+      // A stale result means a newer run already owns the chat.
+      if (
+        outcome === "updated" ||
+        outcome === "stale" ||
+        outcome === "not_found" ||
+        outcome === "pending"
+      ) {
+        return;
+      }
+      throw new Error(`Unexpected active run clear outcome: ${outcome}`);
+    } catch (error) {
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+        continue;
+      }
+      triggerLogger.warn("[agent-long] active run clear failed", {
+        event: "agent_cloud_sandbox_active_run_clear_failed",
+        user_id: userId,
+        chat_id: chatId,
+        trigger_run_id: triggerRunId,
+        attempts: attempt,
+        error: stringifyRedactedError(error),
+      });
+    }
   }
 };
 
@@ -2833,6 +2855,81 @@ export const agentLongTask = task({
                 await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
               }
             };
+            const revalidateAfterUserWait = async (toolCallId: string) => {
+              await assertUserCanMakeCostIncurringRequest(userId);
+              const currentEntitlement =
+                await getCurrentAgentEntitlementContext({
+                  userId,
+                  organizationId,
+                });
+              if (
+                currentEntitlement.subscription !== subscription ||
+                currentEntitlement.organizationId !== organizationId
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the run start.",
+                );
+              }
+              const currentChat = await getChatById({ id: chatId });
+              if (
+                !currentChat ||
+                currentChat.user_id !== userId ||
+                currentChat.active_trigger_run_id !== ctx.run.id ||
+                currentChat.active_agent_user_wait?.toolCallId !== toolCallId ||
+                currentChat.active_agent_user_wait?.status !== "submitting"
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer waiting for this reply.",
+                );
+              }
+              const currentUserCustomization = await getUserCustomization({
+                userId,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId,
+                subscription: currentEntitlement.subscription,
+                userCustomization: currentUserCustomization,
+                organizationId: currentEntitlement.organizationId,
+                failClosedOnLookupError: true,
+              });
+              const currentlyAllowedModel = normalizeMaxModelForSubscription(
+                selectedModelOverride,
+                currentEntitlement.subscription,
+                { extraUsageConfig: currentExtraUsageConfig },
+              );
+              if (currentlyAllowedModel !== selectedModelOverride) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The selected model is no longer authorized.",
+                );
+              }
+              const currentModelExtraUsageConfig =
+                withExtraUsageBillingForModel(
+                  currentExtraUsageConfig,
+                  currentlyAllowedModel,
+                  currentEntitlement.subscription,
+                );
+              await checkRateLimitCapacity(
+                userId,
+                mode,
+                currentEntitlement.subscription,
+                currentModelExtraUsageConfig,
+                selectedModel,
+                currentEntitlement.organizationId,
+                freeQuotaSubject,
+                freeLimits,
+              );
+              if (currentEntitlement.subscription === "free") {
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
+                const lock = await acquireFreeRunConcurrencyLock(
+                  freeUsageSubject,
+                  FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
+                );
+                releaseFreeRunLock = lock.release;
+              }
+            };
             const revalidateAfterAutoReview = async ({
               approvalId: _approvalId,
               toolCallId: _toolCallId,
@@ -2976,6 +3073,10 @@ export const agentLongTask = task({
                 stopSignal.abort("post_wait_authorization_denied"),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
+            const waitForUserEnabled = await getPostHogFeatureFlagForUser(
+              AGENT_WAIT_FOR_USER_FLAG,
+              userId,
+            );
             const {
               cloudNetworkPrompt,
               tools: baseTools,
@@ -3032,9 +3133,21 @@ export const agentLongTask = task({
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>
                   stopSignal.abort("browser_ownership_lost"),
-                ...(subagentsEnabled
-                  ? {
-                      additionalTools: (toolContext) => ({
+                additionalTools: (toolContext) => ({
+                  ...(waitForUserEnabled && {
+                    wait_for_user: createWaitForUserTool(toolContext, {
+                      beforeSuspend:
+                        subscription === "free"
+                          ? releaseFreeRunLockOnce
+                          : undefined,
+                      pauseActiveTime: runtimeBudget.pause,
+                      resumeActiveTime: runtimeBudget.resume,
+                      abortRun: () => stopSignal.abort("wait_for_user"),
+                      revalidateAfterSuspend: revalidateAfterUserWait,
+                    }),
+                  }),
+                  ...(subagentsEnabled
+                    ? {
                         delegate_task: createDelegateTaskTool(toolContext, {
                           organizationId,
                           sandboxPreference,
@@ -3070,9 +3183,9 @@ export const agentLongTask = task({
                         cancel_agent: createCancelAgentTool(toolContext),
                         search_skills: createSearchSkillsTool(),
                         load_skill: createLoadSkillTool(),
-                      }),
-                    }
-                  : {}),
+                      }
+                    : {}),
+                }),
               },
             );
             const tools = baseTools;
@@ -5079,7 +5192,12 @@ export const agentLongTask = task({
                             stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                             assistantContentLoop:
                               assistantContentLoopDetection.detected
-                                ? assistantContentLoopDetection
+                                ? {
+                                    reason:
+                                      assistantContentLoopDetection.reason,
+                                    repeatCount:
+                                      assistantContentLoopDetection.repeatCount,
+                                  }
                                 : undefined,
                             shouldRetryInterruptedToolInput,
                             shouldRetryNonDurableOutputLimit,

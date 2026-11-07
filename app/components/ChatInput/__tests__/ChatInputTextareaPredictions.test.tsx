@@ -18,9 +18,10 @@ import { getComposerChangeDiagnostics } from "@/lib/posthog/composer-change-diag
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ subscription: "pro" }),
 }));
+const mockHandlePasteEvent = jest.fn(async () => false);
 jest.mock("@/app/hooks/useFileUpload", () => ({
   useFileUpload: () => ({
-    handlePasteEvent: async () => false,
+    handlePasteEvent: mockHandlePasteEvent,
     handlePastedTextAttachment: jest.fn(),
   }),
 }));
@@ -33,7 +34,13 @@ const suggestions = [
   "Explain the uncertainty in this finding.",
   "Summarize the existing evidence.",
 ];
-function Harness({ blocked = false }: { blocked?: boolean }) {
+function Harness({
+  blocked = false,
+  reply = false,
+}: {
+  blocked?: boolean;
+  reply?: boolean;
+}) {
   const input = useComposerInput();
   const { getInput, setInput } = useComposerActions();
   const controller = useNextActions({
@@ -54,6 +61,7 @@ function Harness({ blocked = false }: { blocked?: boolean }) {
       <ChatInputTextarea
         draftId="chat"
         chatMode="ask"
+        isReplyingToAgent={reply}
         autoFocus={false}
         onEnterSubmit={send}
         prediction={controller.batch?.suggestions[0]}
@@ -93,10 +101,10 @@ beforeEach(() => {
 });
 let visibilityCallback: IntersectionObserverCallback;
 afterEach(() => jest.useRealTimers());
-async function setup(blocked = false) {
+async function setup(blocked = false, reply = false) {
   render(
     <ComposerStateProvider>
-      <Harness blocked={blocked} />
+      <Harness blocked={blocked} reply={reply} />
     </ComposerStateProvider>,
   );
   await act(async () => {
@@ -104,6 +112,18 @@ async function setup(blocked = false) {
   });
   return screen.getByTestId("chat-input");
 }
+
+test("keeps a long pasted reply as text instead of an attachment", async () => {
+  const textarea = await setup(true, true);
+  const pastedText = "A".repeat(6_000);
+  const event = createEvent.paste(textarea, {
+    clipboardData: { items: [], getData: () => pastedText },
+  });
+  fireEvent(textarea, event);
+  expect(event.defaultPrevented).toBe(false);
+  expect(mockHandlePasteEvent).not.toHaveBeenCalled();
+  expect(textarea).toHaveAttribute("maxLength", "20000");
+});
 
 test("change diagnostics preserve editing and IME, including malformed native metadata", async () => {
   const textarea = await setup(true);

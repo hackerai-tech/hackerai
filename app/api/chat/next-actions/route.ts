@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
       !chat.active_stream_id &&
       !chat.active_trigger_run_id &&
       !chat.active_agent_approval_pending &&
+      !chat.active_agent_user_wait &&
       !chat.canceled_at;
     if (!completed) return empty(409);
     const history = await convex.query(api.messages.getMessagesPageForBackend, {
@@ -100,6 +101,20 @@ export async function POST(req: NextRequest) {
       history.page[0]?.role !== "assistant"
     )
       return empty(409);
+    // Goal completion is persisted separately from model prose. Do not let a
+    // prediction reopen a finished workflow, including an older saved draft.
+    const goalAchieved = async () => {
+      const answer = await convex.query(api.messages.getLastAssistantMessage, {
+        serviceKey,
+        userId,
+        chatId,
+      });
+      return (
+        answer?.id === messageId &&
+        typeof answer.metadata?.goal?.achievedElapsedMs === "number"
+      );
+    };
+    if (await goalAchieved()) return empty();
     const sources = buildPredictionSources(history.page);
     if (
       !sources.some((source) => source.id === messageId && source.text.trim())
@@ -136,7 +151,7 @@ export async function POST(req: NextRequest) {
       return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
-      prompt_version: "natural-single-reply-v4",
+      prompt_version: "ordered-tool-single-reply-v6",
       draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
       provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,
@@ -248,7 +263,7 @@ export async function POST(req: NextRequest) {
       latestHistory.page[0]?.role !== "assistant"
     )
       return empty();
-    if (!result.suggestions.length) return empty();
+    if (!result.suggestions.length || (await goalAchieved())) return empty();
     const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
       serviceKey,
       userId,

@@ -4,6 +4,7 @@ import { createAgentStopSignal } from "../agent-stop-signal";
 describe("Agent stop diagnostics", () => {
   it.each([
     "trigger_platform",
+    "wait_for_user",
     "active_runtime_budget",
     "auto_review_circuit_breaker",
     "post_wait_authorization_denied",
