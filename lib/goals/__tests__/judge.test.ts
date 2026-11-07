@@ -71,6 +71,162 @@ describe("independent goal completion check", () => {
     jest.resetAllMocks();
     mockPriorEvidence.mockResolvedValue([]);
   });
+  it("uses independently retained command results after Stop and Resume without rerunning work", async () => {
+    const saved = {
+      runId: "r1",
+      toolCallId: "cmd",
+      eligibleEvidence: true,
+      result: JSON.stringify(messages[0].parts[0]),
+    };
+    mockPriorEvidence.mockResolvedValueOnce([saved]).mockResolvedValueOnce([]);
+    generate.mockImplementation(async ({ prompt }) => {
+      const data = JSON.parse(prompt);
+      const observed = data.toolResults.find(
+        (r: { runId: string; toolCallId: string }) =>
+          r.runId === "r1" && r.toolCallId === "cmd",
+      );
+      return {
+        output: {
+          verdict: observed ? "done" : "continue",
+          responseOnly: false,
+          reason: "Check actual saved command",
+          evidence: observed
+            ? [
+                {
+                  criterion: 0,
+                  runId: "r1",
+                  toolCallId: "cmd",
+                  explanation: "Observed saved marker",
+                },
+              ]
+            : [],
+          waitSeconds: null,
+        },
+        usage: {},
+      };
+    });
+    const judgment = await judgeGoalCompletion(
+      {
+        ...goal,
+        checkpoint: undefined,
+        evidenceSources: [{ runId: "r1", messageId: "r1" }],
+      },
+      [
+        {
+          id: "r2",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "Marker exists; both replies received." },
+          ],
+        },
+      ],
+      "r2",
+      jest.fn(),
+    );
+    expect(judgment).toMatchObject({
+      verdict: "done",
+      evidence: [{ runId: "r1", toolCallId: "cmd" }],
+    });
+    expect(judgment).not.toHaveProperty("responseEvidence");
+  });
+
+  it("returns structured questions only for a pending user decision", async () => {
+    const questions = [
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Alpha or Beta?",
+        options: [
+          { label: "Alpha", value: "a" },
+          { label: "Beta", value: "b" },
+        ],
+      },
+    ];
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Choose scope",
+        evidence: [],
+        questions,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          id: "r1",
+          role: "assistant",
+          parts: [{ type: "text", text: "Alpha or Beta?" }],
+        },
+      ],
+      "r1",
+      jest.fn(),
+    );
+    expect(result).toMatchObject({ verdict: "needs_input", questions });
+    generate.mockResolvedValue({
+      output: {
+        verdict: "continue",
+        reason: "Work remains",
+        evidence: [],
+        questions,
+      },
+      usage: {},
+    });
+    const continued = await judgeGoalCompletion(
+      goal,
+      messages,
+      "r1",
+      jest.fn(),
+    );
+    expect(continued).not.toHaveProperty("questions");
+  });
+
+  it.each([
+    { questions: "malformed" },
+    { questions: [] },
+    {
+      questions: [
+        {
+          id: "scope",
+          header: "Scope",
+          question: "Choose",
+          options: [],
+          allowCustomAnswer: false,
+        },
+      ],
+    },
+    {
+      questions: [
+        { id: "scope", header: "Scope", question: "Choose", options: [] },
+        { id: "scope", header: "Scope", question: "Choose again", options: [] },
+      ],
+    },
+  ])(
+    "keeps a valid judgment when optional questions are invalid: %j",
+    async ({ questions }) => {
+      generate.mockImplementation(async ({ output }) => ({
+        output: output.schema.parse({
+          verdict: "needs_input",
+          reason: "Choose the next scope",
+          responseOnly: false,
+          waitSeconds: null,
+          evidence: goal.checkpoint!.evidence,
+          questions,
+        }),
+        usage: {},
+      }));
+      const result = await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+      expect(result).toMatchObject({
+        verdict: "needs_input",
+        reason: "Choose the next scope",
+        evidence: [expect.objectContaining({ toolCallId: "cmd", runId: "r1" })],
+      });
+      expect(result).not.toHaveProperty("questions");
+      expect(generate).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(["continue", "uncited_done"])(
     "rechecks %s against the completed updated goal before dispatching more work",
     async (firstVerdict) => {
@@ -332,6 +488,132 @@ describe("independent goal completion check", () => {
     expect(classification.userReplies).toEqual(["ORCHID"]);
     expect(JSON.stringify(classification)).not.toContain("Which word?");
   });
+  it.each([false, true])(
+    "retains delivered tool replies for current and later Goal checks (historical=%s)",
+    async (historical) => {
+      const waitMessage = {
+        id: "wait-run",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-wait_for_user",
+            toolCallId: "confirm",
+            state: "output-available",
+            input: {
+              questions: [
+                {
+                  id: "qa_confirm",
+                  header: "Confirm",
+                  question: "Confirm your choice?",
+                  options: [],
+                  allowCustomAnswer: true,
+                },
+              ],
+            },
+            output: {
+              success: true,
+              wait_outcome: "message_arrived",
+              reply: "Proceed Gamma",
+            },
+          },
+        ],
+      } as UIMessage;
+      const final = {
+        id: historical ? "later-run" : "wait-run",
+        role: "assistant",
+        parts: [
+          ...(!historical ? waitMessage.parts : []),
+          { type: "text", text: "QA_GOAL_COMPLETE Alpha Proceed Gamma" },
+        ],
+      } as UIMessage;
+      generate.mockImplementation(async ({ prompt, system }) => {
+        const data = JSON.parse(prompt);
+        if (system.startsWith("Classify"))
+          return { output: { responseOnly: true }, usage: {} };
+        const answered = data.conversation.messages.some(
+          (m: any) => m.role === "user" && m.text === "Proceed Gamma",
+        );
+        return {
+          output: {
+            verdict: answered ? "done" : "continue",
+            reason: "Check delivered confirmation",
+            responseOnly: true,
+            evidence: [],
+            waitSeconds: null,
+          },
+          usage: {},
+        };
+      });
+      const judgment = await judgeGoalCompletion(
+        {
+          ...goal,
+          objective:
+            "Ask for a route and confirmation, then report both in chat",
+          criteria: ["Report both supplied answers"],
+          checkpoint: undefined,
+        },
+        [final],
+        final.id,
+        jest.fn(),
+        final.id,
+        [final.id],
+        [
+          {
+            id: "answer",
+            role: "user",
+            parts: [{ type: "text", text: "Alpha" }],
+          },
+          waitMessage,
+        ] as UIMessage[],
+      );
+      expect(judgment).toMatchObject({
+        verdict: "done",
+        responseEvidence: { text: "QA_GOAL_COMPLETE Alpha Proceed Gamma" },
+      });
+      const conversation = JSON.parse(generate.mock.calls[0][0].prompt)
+        .conversation.messages;
+      expect(
+        conversation.filter(
+          (m: any) => m.role === "user" && m.text === "Proceed Gamma",
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(conversation)).toContain("qa_confirm");
+      expect(JSON.parse(generate.mock.calls[1][0].prompt).userReplies).toEqual([
+        "Alpha",
+        "Proceed Gamma",
+      ]);
+    },
+  );
+
+  it.each([
+    { state: "input-available", output: undefined },
+    { state: "output-error", output: { success: true, reply: "Invented" } },
+    {
+      state: "output-available",
+      output: { success: false, wait_outcome: "timed_out", reply: "Invented" },
+    },
+  ])(
+    "does not turn an undelivered wait into a user answer: %j",
+    async (waitState) => {
+      generate.mockResolvedValue({
+        output: { verdict: "needs_input", reason: "Waiting", evidence: [] },
+        usage: {},
+      });
+      await judgeGoalCompletion(goal, messages, "r1", jest.fn(), "r1", ["r1"], [
+        {
+          id: "old-wait",
+          role: "assistant",
+          parts: [
+            { type: "tool-wait_for_user", toolCallId: "wait", ...waitState },
+          ],
+        },
+      ] as UIMessage[]);
+      const conversation = JSON.parse(generate.mock.calls[0][0].prompt)
+        .conversation.messages;
+      expect(conversation.filter((m: any) => m.role === "user")).toEqual([]);
+    },
+  );
+
   it("retries an invalid verifier response without rerunning work and accounts for failed generation", async () => {
     generate
       .mockRejectedValueOnce(

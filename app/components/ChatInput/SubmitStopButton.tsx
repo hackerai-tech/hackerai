@@ -85,6 +85,8 @@ export interface SubmitStopButtonProps {
   useNeutralAgentStyle?: boolean;
   isOnline?: boolean;
   sendDisabledReason?: string;
+  isReplyingToAgent?: boolean;
+  replyActionLabel?: string;
 }
 
 export function SubmitStopButton({
@@ -103,15 +105,23 @@ export function SubmitStopButton({
   useNeutralAgentStyle = false,
   isOnline = true,
   sendDisabledReason,
+  isReplyingToAgent = false,
+  replyActionLabel = "Submit answer",
 }: SubmitStopButtonProps) {
   const isMac = useShortcutPlatform();
   useEffect(() => {
-    if (!isGenerating || hideStop) return;
+    if ((!isGenerating && !isReplyingToAgent) || hideStop) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         matchesShortcut(event, "stop", isMac) &&
         !isShortcutTargetBlocked(event) &&
         !hasOpenShortcutOverlay() &&
+        !(
+          isReplyingToAgent &&
+          (window.getSelection()?.toString() ||
+            (event.target instanceof Element &&
+              event.target.closest("input, textarea, [contenteditable=true]")))
+        ) &&
         !document.querySelector('[data-shortcuts-scope="navigation"]')
       ) {
         event.preventDefault();
@@ -120,7 +130,7 @@ export function SubmitStopButton({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isGenerating, hideStop, isMac, onStop]);
+  }, [isGenerating, isReplyingToAgent, hideStop, isMac, onStop]);
 
   const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
@@ -161,30 +171,45 @@ export function SubmitStopButton({
                     !!sendDisabledReason ||
                     !isOnline ||
                     (status !== "ready" &&
+                      !isReplyingToAgent &&
                       !(allowSendWhileGenerating && status === "streaming")) ||
                     isUploadingFiles ||
-                    (!input.trim() && uploadedFiles.length === 0)
+                    (isReplyingToAgent
+                      ? !input.trim() || uploadedFiles.length > 0
+                      : !input.trim() && uploadedFiles.length === 0)
                   }
                   variant="default"
-                  className={`${BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
+                  className={`${isReplyingToAgent ? "h-11 min-w-0 rounded-full px-4 text-sm sm:h-8" : BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
                   aria-label={
-                    pausesGoal ? "Send message and pause goal" : "Send message"
+                    isReplyingToAgent
+                      ? replyActionLabel
+                      : pausesGoal
+                        ? "Send message and pause goal"
+                        : "Send message"
                   }
                   data-testid="send-button"
                 >
-                  <ArrowUp size={15} strokeWidth={3} />
+                  {isReplyingToAgent ? (
+                    replyActionLabel
+                  ) : (
+                    <ArrowUp size={15} strokeWidth={3} />
+                  )}
                 </Button>
               </div>
             </TooltipTrigger>
             <TooltipContent>
               <p>
-                {getSendButtonTooltip(
-                  isOnline,
-                  uploadedFiles.some((f) => f.error),
-                  isUploadingFiles,
-                  sendDisabledReason,
-                  pausesGoal,
-                )}
+                {isReplyingToAgent && !sendDisabledReason
+                  ? replyActionLabel === "Next"
+                    ? "Next question (⏎)"
+                    : "Reply and resume (⏎)"
+                  : getSendButtonTooltip(
+                      isOnline,
+                      uploadedFiles.some((f) => f.error),
+                      isUploadingFiles,
+                      sendDisabledReason,
+                      pausesGoal,
+                    )}
               </p>
             </TooltipContent>
           </TooltipPrimitive.Root>

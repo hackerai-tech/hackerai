@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
+import { toast } from "sonner";
+import { AgentReplyConflictError } from "@/lib/chat/agent-user-wait";
 import { ConvexError } from "convex/values";
 
 jest.mock("@/lib/utils/client-token-validation", () => ({
@@ -193,6 +195,260 @@ describe("useChatHandlers steer todo handoff", () => {
           }) as Response,
       ),
     });
+  });
+
+  it.each([false, true])(
+    "allows only the wait reply while the computer is disconnected (structured=%s)",
+    async (structured) => {
+      mockInput = structured ? "Unsent ordinary draft" : "/goal pause";
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          goalState: "needs_input",
+          sendDisabledReason: "Reconnect your computer",
+          activeTriggerRunRef: { current: "run-1" },
+          pendingUserWait: {
+            runId: "run-1",
+            toolCallId: "tool-1",
+            status: "waiting",
+            published: true,
+          },
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => result.current.handleSendNow("queued-1"));
+      expect(mockCancelStream).not.toHaveBeenCalled();
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      await act(async () => {
+        expect(
+          await result.current.handleSubmit(
+            { preventDefault: jest.fn() } as any,
+            structured ? "/goal pause" : undefined,
+            structured,
+          ),
+        ).toBe(true);
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/agent/reply",
+        expect.objectContaining({
+          body: JSON.stringify({
+            chatId: "chat-1",
+            runId: "run-1",
+            toolCallId: "tool-1",
+            waitWasPublished: true,
+            text: "/goal pause",
+          }),
+        }),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockClearInput).toHaveBeenCalledTimes(structured ? 0 : 1);
+    },
+  );
+
+  it.each([
+    { status: 400, conflict: false },
+    { status: 409, conflict: false },
+    { status: 425, conflict: false },
+    { status: 409, conflict: true },
+  ])(
+    "retains a rejected reply and permits resubmission after HTTP $status (conflict=$conflict)",
+    async ({ status, conflict }) => {
+      jest.useFakeTimers();
+      const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+      try {
+        mockInput = "Keep this answer";
+        jest.mocked(global.fetch).mockResolvedValue({
+          ok: false,
+          status,
+          ...(conflict
+            ? { json: async () => ({ error: "reply_conflict" }) }
+            : {}),
+        } as Response);
+        const { result } = renderHook(() =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages,
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate: jest.fn(),
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            pendingUserWait: {
+              runId: "run-1",
+              toolCallId: "tool-1",
+              status: "waiting",
+            },
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+          }),
+        );
+        let submission!: Promise<boolean | Error>;
+        await act(async () => {
+          submission = result.current
+            .handleSubmit(
+              { preventDefault: jest.fn() } as any,
+              conflict ? mockInput : undefined,
+              conflict,
+            )
+            .catch((error) => error);
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        if (status === 425) {
+          for (const [index, delay] of [250, 500, 750].entries()) {
+            expect(fetch).toHaveBeenCalledTimes(index + 1);
+            await act(async () => {
+              await jest.advanceTimersByTimeAsync(delay - 1);
+            });
+            expect(fetch).toHaveBeenCalledTimes(index + 1);
+            await act(async () => {
+              await jest.advanceTimersByTimeAsync(1);
+            });
+          }
+        }
+        if (conflict)
+          expect(await submission).toBeInstanceOf(AgentReplyConflictError);
+        else expect(await submission).toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(status === 425 ? 4 : 1);
+        expect(mockClearInput).not.toHaveBeenCalled();
+        if (status === 409)
+          expect(errorToast).toHaveBeenCalledWith(
+            "Could not send your reply",
+            expect.objectContaining({
+              description: expect.stringContaining(
+                conflict ? "Retry that same answer" : "This wait has ended",
+              ),
+            }),
+          );
+        jest
+          .mocked(global.fetch)
+          .mockResolvedValue({ ok: true, status: 200 } as Response);
+        await act(async () => {
+          expect(
+            await result.current.handleSubmit({
+              preventDefault: jest.fn(),
+            } as any),
+          ).toBe(true);
+        });
+        expect(mockClearInput).toHaveBeenCalledTimes(1);
+      } finally {
+        errorToast.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["rejected", "network", "success", "newer-stop"])(
+    "preserves Stop intent across a %s wait reply",
+    async (outcome) => {
+      mockInput = "Beta";
+      const hasManuallyStoppedRef = { current: true };
+      let resolveReply!: (value: Response) => void;
+      let rejectReply!: (error: Error) => void;
+      jest.mocked(global.fetch).mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve, reject) => {
+            resolveReply = resolve;
+            rejectReply = reject;
+          }),
+      );
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          pendingUserWait: {
+            runId: "run-1",
+            toolCallId: "tool-1",
+            status: "waiting",
+          },
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef,
+        }),
+      );
+      let submission!: Promise<boolean>;
+      await act(async () => {
+        submission = result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as any);
+      });
+      expect(hasManuallyStoppedRef.current).toBe(true);
+      if (outcome === "newer-stop") {
+        await act(async () => {
+          await result.current.handleStop();
+        });
+      }
+      await act(async () => {
+        if (outcome === "network") rejectReply(new Error("Connection lost"));
+        else
+          resolveReply({
+            ok: outcome !== "rejected",
+            status: outcome === "rejected" ? 500 : 200,
+          } as Response);
+        expect(await submission).toBe(
+          outcome === "success" || outcome === "newer-stop",
+        );
+      });
+      expect(hasManuallyStoppedRef.current).toBe(outcome !== "success");
+    },
+  );
+
+  it("does not clear a reply draft after the chat unmounts", async () => {
+    mockInput = "Use option A";
+    let resolveReply!: (response: Response) => void;
+    jest
+      .mocked(global.fetch)
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => (resolveReply = resolve)),
+      );
+    const { result, unmount } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "streaming",
+        pendingUserWait: {
+          runId: "run-1",
+          toolCallId: "tool-1",
+          status: "waiting",
+        },
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    let submission!: Promise<boolean>;
+    act(() => {
+      submission = result.current.handleSubmit({
+        preventDefault: jest.fn(),
+      } as any);
+    });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    unmount();
+    await act(async () => {
+      resolveReply({ ok: true, status: 200 } as Response);
+      expect(await submission).toBe(true);
+    });
+    expect(mockClearInput).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2327,6 +2583,106 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
   });
+  it("lets a Goal answer resume ahead of held queued work", async () => {
+    mockInput = "Ordinary draft";
+    mockAgentPermissionMode = "ask_approval";
+    mockMessageQueue = [
+      { id: "held-followup", text: "Later task", timestamp: Date.now() },
+    ];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+    } as Response);
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit(
+          { preventDefault: jest.fn() } as any,
+          "Beta",
+          true,
+        ),
+      ).toBe(true);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Beta" }),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: {
+            action: "resume",
+            expectedGeneration: 4,
+            resumeOnReply: true,
+          },
+        }),
+      }),
+    );
+    expect(mockMessageQueue).toHaveLength(1);
+    expect(mockClearInput).not.toHaveBeenCalled();
+  });
+
+  it("explicitly resumes a blocked Goal without sending or deleting held work", async () => {
+    mockInput = "/goal resume";
+    mockMessageQueue = [
+      { id: "held", text: "Later task", timestamp: Date.now() },
+    ];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        enabled: true,
+        goal: { ...savedBlockedGoal, state: "blocked" },
+      }),
+    } as Response);
+    const { result } = renderGoalReply("blocked");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(true);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: { action: "resume", expectedGeneration: 4 },
+        }),
+      }),
+    );
+    expect(mockMessageQueue).toHaveLength(1);
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("treats a structured Goal answer as literal text even when it resembles a command", async () => {
+    mockInput = "Unsent ordinary draft";
+    mockAgentPermissionMode = "ask_approval";
+    mockMessageQueue = [];
+    jest.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ enabled: true, goal: savedBlockedGoal }),
+    } as Response);
+    const { result } = renderGoalReply("needs_input");
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit(
+          { preventDefault: jest.fn() } as any,
+          "/goal clear",
+          true,
+        ),
+      ).toBe(true);
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "/goal clear" }),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          goal: {
+            action: "resume",
+            expectedGeneration: 4,
+            resumeOnReply: true,
+          },
+        }),
+      }),
+    );
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+  });
+
   it.each(["needs_input", "blocked"])(
     "resumes a %s goal with the user's actual reply and original permissions",
     async (state) => {

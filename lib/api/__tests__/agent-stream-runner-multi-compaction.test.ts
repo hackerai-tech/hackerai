@@ -4627,6 +4627,54 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each(["ask", "agent"] as const)(
+    "aborts an interrupted text loop through the real monitor in %s",
+    async (mode) => {
+      const { createAssistantContentLoopMonitor } = jest.requireActual(
+        "@/lib/chat/agent-long-provider-retry",
+      );
+      const monitor = createAssistantContentLoopMonitor();
+      mockAppendAssistantDelta.mockImplementation((delta) =>
+        monitor.appendDelta(delta),
+      );
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+          usedTokens: 1000,
+          maxTokens: 128000,
+        });
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint: mode,
+            usageTracker: {},
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        for (let i = 0; i < 12 && !stream.abortSignal.aborted; i++) {
+          await stream.onChunk({
+            chunk: {
+              type: "text-delta",
+              id: "text",
+              text: `Transition ${i}. Ok. Emit. Ok. Final. Ok. Emit. Ok. Write. Ok. Emit. Ok. Done. Ok. Emit. Ok. `,
+            },
+          });
+        }
+        expect(stream.abortSignal.aborted).toBe(true);
+        expect(state.stoppedDueToAssistantContentLoop).toBe(true);
+        expect(state.assistantContentLoopDetection?.detected).toBe(true);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain("Transition");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
     const stream = (await createAgentStream(

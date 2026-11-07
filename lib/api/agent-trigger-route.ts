@@ -807,6 +807,15 @@ export const createAgentTriggerPost = ({
         getChatById({ id: chatId }),
         getUserCustomization({ userId }),
       ]);
+      if (
+        existingChat?.user_id === userId &&
+        existingChat.active_agent_user_wait
+      ) {
+        return new NextResponse(
+          "Agent is waiting for your reply in this chat. Reply to continue or stop the run first.",
+          { status: 409 },
+        );
+      }
 
       if (
         goalRequest &&

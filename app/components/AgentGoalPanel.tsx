@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ChevronDown,
+  MessageCircleQuestionMark,
   CircleCheck,
   Pause,
   CirclePause,
@@ -48,7 +49,7 @@ const stateLabels: Record<GoalState, string> = {
   running: "Working",
   waiting: "Waiting",
   paused: "Paused",
-  needs_input: "Needs your input",
+  needs_input: "Input",
   needs_approval: "Needs approval",
   blocked: "Blocked",
   failed: "Run failed",
@@ -64,6 +65,7 @@ const MOBILE_ACCESSORY_SPACE = 48;
 export function AgentGoalPanel({
   chatId,
   detached = false,
+  waitingForReply = false,
   exists,
   eligible,
   idle,
@@ -77,6 +79,7 @@ export function AgentGoalPanel({
 }: {
   chatId: string;
   detached?: boolean;
+  waitingForReply?: boolean;
   exists: boolean;
   eligible: boolean;
   idle: boolean;
@@ -184,6 +187,7 @@ export function AgentGoalPanel({
     latestSavedUserMessageAt > (goal.achievedAt ?? goal.updatedAt)
   )
     return null;
+  const needsInput = waitingForReply || goal.state === "needs_input";
   const active = goal && !["achieved", "canceled"].includes(goal.state);
   const resumable =
     goal &&
@@ -314,7 +318,7 @@ export function AgentGoalPanel({
             </TooltipContent>
           </Tooltip>
         )}
-      {(canResume || goal.state === "paused") && (
+      {!needsInput && (canResume || goal.state === "paused") && (
         <Tooltip open={isMobile ? false : undefined}>
           <TooltipTrigger asChild>
             <span className="inline-flex">
@@ -384,7 +388,7 @@ export function AgentGoalPanel({
             : "mb-2 max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain rounded-xl border bg-background p-3 break-words [overflow-wrap:anywhere]"
       }
     >
-      {resumable && (
+      {resumable && !needsInput && (
         <div className="space-y-2">
           <label className="block">
             Reply or new information (optional)
@@ -432,8 +436,9 @@ export function AgentGoalPanel({
         )}
     </div>
   );
-  const goalLabel =
-    goal.state === "running"
+  const goalLabel = needsInput
+    ? "Input"
+    : goal.state === "running"
       ? "Pursuing goal"
       : goal.state === "achieved"
         ? "Goal achieved"
@@ -446,16 +451,14 @@ export function AgentGoalPanel({
             ].includes(goal.state)
           ? `${stateLabels[goal.state]} goal`
           : stateLabels[goal.state];
-  const statusColor =
-    goal.state === "achieved"
+  const StatusIcon = needsInput ? MessageCircleQuestionMark : GoalTargetIcon;
+  const statusColor = needsInput
+    ? "text-foreground"
+    : goal.state === "achieved"
       ? "text-emerald-700 dark:text-emerald-400"
-      : [
-            "needs_input",
-            "needs_approval",
-            "blocked",
-            "failed",
-            "usage_exhausted",
-          ].includes(goal.state)
+      : ["needs_approval", "blocked", "failed", "usage_exhausted"].includes(
+            goal.state,
+          )
         ? "text-amber-700 dark:text-amber-400"
         : ["paused", "canceled", "budget_exhausted"].includes(goal.state)
           ? "text-muted-foreground"
@@ -553,7 +556,7 @@ export function AgentGoalPanel({
                 }
                 className="flex min-h-8 max-w-full items-center gap-1.5 rounded-full border bg-background/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur-md transition-colors data-[state=open]:bg-foreground data-[state=open]:text-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <GoalTargetIcon
+                <StatusIcon
                   className={`size-3.5 shrink-0 ${mobileOpen ? "" : statusColor}`}
                   aria-hidden="true"
                 />
@@ -612,7 +615,7 @@ export function AgentGoalPanel({
       className={`relative z-0 mx-3 flex min-w-0 shrink-0 flex-col-reverse text-sm ${detached ? "mb-2" : "-mb-5"}`}
     >
       <div
-        className={`border border-black/8 bg-muted px-2 dark:border-border ${detached ? "rounded-[22px]" : "rounded-t-[22px] pb-5"}`}
+        className={`border border-black/8 ${needsInput ? "bg-transparent text-xs" : "bg-muted"} px-2 dark:border-border ${detached ? "rounded-[22px]" : "rounded-t-[22px] pb-5"}`}
       >
         <div className="flex min-h-9 min-w-0 items-center gap-2">
           <button
@@ -624,7 +627,7 @@ export function AgentGoalPanel({
             title={goal.objective}
             className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2 text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <GoalTargetIcon
+            <StatusIcon
               className={`size-4 shrink-0 ${statusColor}`}
               aria-hidden="true"
             />
@@ -642,9 +645,16 @@ export function AgentGoalPanel({
                 <GoalElapsedTime goal={goal} />
               </>
             )}
+            {needsInput && (
+              <ChevronDown
+                className={`mr-2 size-3.5 shrink-0 text-muted-foreground ${expanded ? "rotate-180" : ""}`}
+                aria-hidden="true"
+              />
+            )}
           </button>
-          {actions}
+          {!needsInput && actions}
         </div>
+        {needsInput && expanded && actions}
       </div>
       {expanded && details}
     </section>
