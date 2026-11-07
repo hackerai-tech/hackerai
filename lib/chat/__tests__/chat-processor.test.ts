@@ -299,13 +299,7 @@ describe("selectModel", () => {
                   directGlmVisionEnabled,
                 },
               ),
-            ).toBe(
-              !maxAllowed
-                ? DEEPSEEK_1017_MODEL_KEY
-                : hasImage
-                  ? DEEPSEEK_1017_MODEL_KEY
-                  : "model-muse-wonder",
-            );
+            ).toBe(maxAllowed ? "model-muse-wonder" : DEEPSEEK_1017_MODEL_KEY);
           }
           expect(
             selectModel(

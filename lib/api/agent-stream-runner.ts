@@ -341,11 +341,10 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Promote only the Max text route; preserve explicit recovery models.
+  // Muse accepts original image tool results. Upgrade only the legacy Max
+  // text route; preserve explicit recovery models already selected for the run.
   if (selectedModelOverride === "hackerai-max") {
-    return modelName === "model-glm-5.3" || modelName === "model-muse-wonder"
-      ? DEEPSEEK_1017_MODEL_KEY
-      : modelName;
+    return modelName === "model-glm-5.3" ? "model-muse-wonder" : modelName;
   }
   // Native Standard and Pro vision need no promotion. The dedicated Standard
   // alias also stays on GLM after compaction removes images from the context.

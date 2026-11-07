@@ -136,9 +136,7 @@ describe("ModelSelector", () => {
         await screen.findAllByText("Maximum intelligence for complex work"),
       ).not.toHaveLength(0);
       expect(
-        await screen.findAllByText(
-          "Powered by Meta Muse Wonder (text), DeepSeek V4.1 Flash 1017 (vision)",
-        ),
+        await screen.findAllByText("Powered by Meta Muse Wonder"),
       ).not.toHaveLength(0);
     },
   );

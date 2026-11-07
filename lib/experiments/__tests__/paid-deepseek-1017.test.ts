@@ -34,7 +34,7 @@ const client = (variant: unknown) => ({
 
 describe("paid 1017 routing", () => {
   it.each([false, true])(
-    "uses exact 1017 with maximum reasoning for Max uploads and image tool results (direct vision=%s)",
+    "keeps Max uploads and image tool results on Muse Wonder (direct vision=%s)",
     (directGlmVisionEnabled) => {
       const attachmentModel = selectModel(
         "agent",
@@ -57,7 +57,7 @@ describe("paid 1017 routing", () => {
       );
       for (const modelKey of [attachmentModel, toolImageModel]) {
         expect(myProvider.languageModel(modelKey).modelId).toBe(
-          DEEPSEEK_1017_SLUG,
+          "meta/muse-wonder",
         );
         expect(supportsMultimodalToolResults(modelKey)).toBe(true);
         const options = buildProviderOptions(
@@ -68,12 +68,11 @@ describe("paid 1017 routing", () => {
           {
             selectedModelOverride: "hackerai-max",
             hasMultimodalToolResults: true,
-            reasoningOverride: { enabled: true, effort: "low" },
           },
         );
         expect(options.openrouter.reasoning).toEqual({
           enabled: true,
-          effort: "max",
+          effort: "high",
         });
         expect(options.openrouter.models).toBeUndefined();
         expect(

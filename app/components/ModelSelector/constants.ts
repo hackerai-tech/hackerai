@@ -29,7 +29,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "Meta Muse Wonder (text), DeepSeek V4.1 Flash 1017 (vision)",
+    poweredBy: "Meta Muse Wonder",
     thinking: true,
   },
 ];
