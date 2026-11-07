@@ -361,7 +361,7 @@ it("reads only a branded rejection slot and never properties of its reason", () 
   }
 });
 
-it("enriches only three retained shapes, preserving original exceptions and filtering", () => {
+it("enriches only four retained shapes, preserving original exceptions and filtering", () => {
   const cases = [
     entry(),
     {
@@ -375,6 +375,12 @@ it("enriches only three retained shapes, preserving original exceptions and filt
       type: "TypeError",
       value:
         "undefined is not an object (evaluating 'window.ethereum.selectedAddress')",
+    },
+    {
+      type: "SyntaxError",
+      value: "Unexpected end of script",
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+      stacktrace: { frames: [] },
     },
   ];
   for (const exception of cases) {
@@ -423,4 +429,74 @@ it("enriches only three retained shapes, preserving original exceptions and filt
       key.startsWith("hackerai_nearby_dispatch_"),
     ),
   ).toBe(false);
+});
+
+const syntaxEntry = () => ({
+  type: "SyntaxError",
+  value: "Unexpected end of script",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: { frames: [] as unknown[] },
+});
+
+it.each([false, true])(
+  "adds only nearby finite context for the exact retained SyntaxError (frames absent: %s)",
+  (absent) => {
+    const exception = syntaxEntry();
+    if (absent) Reflect.deleteProperty(exception, "stacktrace");
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        message: "Unexpected end of script",
+        filename: `${location.origin}/_next/static/chunks/PRIVATE-canary.js?dpl=dpl_PRIVATE`,
+        error: new SyntaxError("PRIVATE error"),
+        lineno: 7,
+        colno: 2,
+        cancelable: true,
+      }),
+    );
+    const context = snapshot(exception);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_group: "stackless_end_of_script_syntaxerror",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    });
+    expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|dpl_|_next/);
+    const event = {
+      event: "$exception",
+      properties: { $exception_list: [exception] },
+    };
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(enriched.properties.$exception_list).toBe(
+      event.properties.$exception_list,
+    );
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  },
+);
+
+it("keeps near-miss SyntaxErrors out of this specific attribution gate", () => {
+  const entry = syntaxEntry();
+  const negatives = [
+    { ...entry, mechanism: { ...entry.mechanism, handled: true } },
+    { ...entry, mechanism: { ...entry.mechanism, synthetic: true } },
+    { ...entry, mechanism: { handled: false, type: "generic" } },
+    {
+      ...entry,
+      mechanism: { ...entry.mechanism, type: "onunhandledrejection" },
+    },
+    { ...entry, stacktrace: { frames: [{}] } },
+    { ...entry, type: "Error" },
+    ...[
+      "Unexpected end of script.",
+      "SyntaxError: Unexpected end of script",
+      "Unexpected end of input",
+      "JSON Parse error: Unexpected EOF",
+    ].map((value) => ({ ...entry, value })),
+  ];
+  for (const exception of negatives) expect(snapshot(exception)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [entry, entry] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
 });
