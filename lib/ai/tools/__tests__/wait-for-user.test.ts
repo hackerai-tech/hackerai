@@ -28,6 +28,7 @@ const execute = async (
     beforeSuspend?: () => Promise<void>;
     revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
   } = {},
+  toolCallId = "tool-1",
 ) => {
   const { createWaitForUserTool } = await import("../wait-for-user");
   const waitTool = createWaitForUserTool({ ...context, ...overrides } as any, {
@@ -35,12 +36,12 @@ const execute = async (
     resumeActiveTime: jest.fn(),
     ...toolOptions,
   });
-  return waitTool.execute?.({}, { toolCallId: "tool-1" } as any);
+  return waitTool.execute?.({}, { toolCallId } as any);
 };
 
 describe("wait_for_user", () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     createToken.mockResolvedValue({ id: "waitpoint-1" });
     setActiveWait.mockResolvedValue("acquired");
     forToken.mockResolvedValue({
@@ -168,4 +169,74 @@ describe("wait_for_user", () => {
     expect(abortRun).toHaveBeenCalledTimes(1);
     expect(setActiveWait).toHaveBeenCalledTimes(2);
   });
+
+  it("recovers a failed release so the same run can ask another question", async () => {
+    let activeTool: string | undefined;
+    let releaseFailed = false;
+    setActiveWait.mockImplementation(async (input: any) => {
+      if (input.tokenId) {
+        if (activeTool) return "busy";
+        activeTool = input.toolCallId;
+        return "acquired";
+      }
+      expect(input).toMatchObject(contextToIdentity(input.toolCallId));
+      if (!releaseFailed) {
+        releaseFailed = true;
+        throw new Error("temporary database failure");
+      }
+      if (activeTool !== input.toolCallId) return "stale";
+      activeTool = undefined;
+      return "released";
+    });
+    const abortRun = jest.fn();
+    await expect(execute({}, { abortRun })).resolves.toMatchObject({
+      success: true,
+      reply: "Option A",
+    });
+    forToken.mockResolvedValue({
+      ok: true,
+      output: {
+        ...contextToIdentity("tool-2"),
+        replyId: "reply-2",
+        text: "Confirmed",
+      },
+    });
+    await expect(execute({}, { abortRun }, "tool-2")).resolves.toMatchObject({
+      success: true,
+      reply: "Confirmed",
+    });
+    expect(activeTool).toBeUndefined();
+    expect(abortRun).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "aborts on persistent release failure without masking an existing error (%s)",
+    async (alreadyFailed) => {
+      const abortRun = jest.fn();
+      const originalError = new Error("waitpoint unavailable");
+      if (alreadyFailed) forToken.mockRejectedValue(originalError);
+      setActiveWait
+        .mockResolvedValueOnce("acquired")
+        .mockRejectedValue(new Error("database unavailable"));
+      const result = execute({}, { abortRun });
+      if (alreadyFailed) await expect(result).rejects.toBe(originalError);
+      else
+        await expect(result).rejects.toThrow(
+          "Could not release the Agent reply wait",
+        );
+      expect(abortRun).toHaveBeenCalled();
+      const releases = setActiveWait.mock.calls.slice(1);
+      expect(releases.length).toBeGreaterThan(1);
+      expect(releases.length).toBeLessThanOrEqual(3);
+      for (const [identity] of releases)
+        expect(identity).toEqual(contextToIdentity("tool-1"));
+    },
+  );
+});
+
+const contextToIdentity = (toolCallId: string) => ({
+  chatId: context.chatId,
+  userId: context.userID,
+  runId: context.triggerRunId,
+  toolCallId,
 });

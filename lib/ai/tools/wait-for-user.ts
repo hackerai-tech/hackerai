@@ -73,6 +73,7 @@ export const createWaitForUserTool = (
       });
 
       let activeTimePaused = false;
+      let waitFailed = false;
       try {
         await options.beforeSuspend?.();
         options.pauseActiveTime?.();
@@ -116,14 +117,33 @@ export const createWaitForUserTool = (
           note: "The user replied in this chat. Continue the same task using this answer.",
         };
       } catch (error) {
+        waitFailed = true;
         options.abortRun?.();
         throw error;
       } finally {
         if (activeTimePaused) options.resumeActiveTime?.();
-        await setActiveAgentUserWait(identity).catch(() => {
-          // The run's terminal cleanup also clears this state. Do not replace
-          // a newer run's wait after a cancellation or chat deletion race.
-        });
+        // A delivered reply must release its slot before another question can
+        // acquire it. Every retry retains the run/tool fence; "stale" is safe
+        // when cancellation or a newer wait already removed our ownership.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await setActiveAgentUserWait(identity);
+            break;
+          } catch {
+            if (attempt === 2) {
+              if (!waitFailed) {
+                options.abortRun?.();
+                throw new Error("Could not release the Agent reply wait");
+              }
+              // Preserve the original failure. Terminal run cleanup will also
+              // retry clearing this wait with the expected run identity.
+              break;
+            }
+            await new Promise((resolve) =>
+              setTimeout(resolve, 250 * (attempt + 1)),
+            );
+          }
+        }
       }
     },
   });
