@@ -230,6 +230,11 @@ export type BrowserCaptureFailureContext = {
   capture_command_exit_code: number | "none" | "other";
 };
 
+/**
+ * Capture a validated frame, requesting a separate screenshot when freshness is required.
+ * The optional failure observer receives only bounded context; observer failures
+ * cannot replace the original rejection or change capture, cleanup, or retry behavior.
+ */
 export async function captureBrowserFrame(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
