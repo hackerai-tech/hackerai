@@ -42,7 +42,9 @@ an **unconfirmed** result without claiming success; a still-active task remains
 fenced. Final dispatcher failure
 checks for an already-started child instead of replaying an uncertain start.
 An ambiguous start remains fenced as **Start unconfirmed** until it can be
-verified. A failed status read never authorizes an automatic replacement run.
+verified. Reconciliation revisits those receipts for matching task execution or
+cleanup evidence. Retention preserves the active receipt even when overlapping
+ticks accumulate. A failed status read never authorizes an automatic replacement run.
 
 Each account may retain up to 20 schedules. Each schedule retains its latest 200
 run receipts and shows its latest five runs; normal task retention is independent.

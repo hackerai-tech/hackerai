@@ -60,7 +60,11 @@ export async function GET(req: NextRequest) {
         { enabled: ctx.enabled },
         { headers: { "Cache-Control": "private, no-store" } },
       );
-    await reconcileScheduleRuns(ctx.userId);
+    await reconcileScheduleRuns(ctx.userId).catch((error) => {
+      console.error("Schedule reconciliation failed", {
+        errorType: error instanceof Error ? error.name : "unknown",
+      });
+    });
     const schedules = await getConvexClient().query(
       api.schedules.list,
       ctx.args,

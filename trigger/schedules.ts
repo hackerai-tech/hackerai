@@ -228,7 +228,11 @@ export const dispatchAgentSchedules = schedules.task({
   },
   maxDuration: 60,
   run: async () => {
-    await reconcileScheduleRuns();
+    await reconcileScheduleRuns().catch((error) => {
+      console.error("Schedule reconciliation failed", {
+        errorType: error instanceof Error ? error.name : "unknown",
+      });
+    });
     const due = await getConvexClient().query(api.schedules.due, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     });

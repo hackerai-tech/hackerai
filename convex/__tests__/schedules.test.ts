@@ -23,6 +23,7 @@ import {
   failDispatcher,
   recordOutcome,
   beginDispatch,
+  recoverUncertainStarts,
 } from "../schedules";
 import { assertUserCanAccessChatHistory } from "../lib/suspensionGuards";
 
@@ -121,6 +122,103 @@ const call = async (fn: any, ctx: any, args: any) => {
     await signServiceArgs({ deployment, name, type }, args),
   );
 };
+it("retains an ambiguous active receipt through repeated overlap trimming", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const first = await call(claim, ctx, {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "blocked",
+    chatId: "original",
+  });
+  await call(finishDispatch, ctx, {
+    serviceKey: auth.serviceKey,
+    id: first.id,
+    dispatcherId: "blocked",
+    status: "uncertain_start",
+  });
+  const clock = jest.spyOn(Date, "now");
+  try {
+    for (let n = 0; n < 205; n++) {
+      const at = tables.agent_schedules[0].next_run_at;
+      clock.mockReturnValue(at);
+      expect(
+        await call(claim, ctx, {
+          ...auth,
+          id,
+          revision: 1,
+          at,
+          manual: false,
+          dispatcherId: `tick-${n}`,
+          chatId: `other-${n}`,
+        }),
+      ).toBeNull();
+    }
+    expect(tables.schedule_runs).toHaveLength(200);
+    expect(await ctx.db.get(first.id)).toMatchObject({
+      status: "uncertain_start",
+      chat_id: "original",
+    });
+  } finally {
+    clock.mockRestore();
+  }
+});
+it("recovers ambiguous starts only after matching task execution evidence arrives", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const first = await call(claim, ctx, {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "d",
+    chatId: "original",
+  });
+  await call(finishDispatch, ctx, {
+    serviceKey: auth.serviceKey,
+    id: first.id,
+    dispatcherId: "d",
+    status: "uncertain_start",
+  });
+  await call(recoverUncertainStarts, ctx, auth);
+  expect(tables.schedule_runs[0].status).toBe("uncertain_start");
+  const clock = jest.spyOn(Date, "now");
+  try {
+    clock.mockReturnValue(Date.now() + 31000);
+    tables.chats.push({
+      _id: "chat",
+      _creationTime: 1,
+      id: "original",
+      user_id: "owner",
+      active_trigger_run_id: "confirmed-child",
+    });
+    await call(recoverUncertainStarts, ctx, auth);
+    expect(tables.schedule_runs[0]).toMatchObject({
+      status: "started",
+      trigger_run_id: "confirmed-child",
+    });
+    await expect(
+      call(claim, ctx, {
+        ...auth,
+        id,
+        revision: 1,
+        manual: true,
+        dispatcherId: "replacement",
+        chatId: "new",
+      }),
+    ).rejects.toThrow();
+    tables.schedule_runs[0].status = "uncertain_start";
+    tables.schedule_runs[0].last_checked_at = undefined;
+    tables.chats[0].active_trigger_run_id = undefined;
+    tables.chats[0].last_run_finished_at = Date.now();
+    await call(recoverUncertainStarts, ctx, auth);
+    expect(tables.schedule_runs[0].status).toBe("unconfirmed");
+  } finally {
+    clock.mockRestore();
+  }
+});
 beforeEach(() => {
   process.env.CONVEX_SERVICE_ROLE_KEY = auth.serviceKey;
   process.env.CONVEX_CLOUD_URL = deployment;

@@ -63,6 +63,7 @@ import { canUseSchedules } from "@/lib/schedules/access";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { ConvexError } from "convex/values";
 import { ChatSDKError } from "@/lib/errors";
+import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
 const mockQuery = jest.fn(),
   mockMutation = jest.fn(),
   mockTrigger = jest.fn();
@@ -109,6 +110,19 @@ describe("schedule HTTP boundary", () => {
     );
     expect((await GET(request("GET"))).status).toBe(401);
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+  it("keeps the schedule list available when result reconciliation fails", async () => {
+    (reconcileScheduleRuns as jest.Mock).mockRejectedValueOnce(
+      Error("unavailable"),
+    );
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await GET(request("GET"));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ enabled: true, schedules: [] });
+    } finally {
+      log.mockRestore();
+    }
   });
   it("rejects creation before database or Trigger when the flag is disabled", async () => {
     (canUseSchedules as jest.Mock).mockResolvedValue(false);

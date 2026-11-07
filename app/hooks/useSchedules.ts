@@ -7,9 +7,13 @@ export async function schedulesRequest(url: string, init?: RequestInit) {
     ...init,
     headers: { "content-type": "application/json", ...init?.headers },
   });
-  const data = await response.json();
-  if (!response.ok)
-    throw new Error(data.message ?? "Could not update schedules. Try again.");
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data || typeof data !== "object")
+    throw new Error(
+      typeof data?.message === "string"
+        ? data.message
+        : "Could not update schedules. Try again.",
+    );
   return data;
 }
 export function useSchedules() {

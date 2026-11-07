@@ -6,6 +6,10 @@ import { getConvexClient } from "@/lib/db/convex-client";
 export async function reconcileScheduleRuns(userId?: string) {
   const db = getConvexClient();
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+  await db.mutation(api.schedules.recoverUncertainStarts, {
+    serviceKey,
+    ...(userId ? { userId } : {}),
+  });
   const pending = await db.query(api.schedules.unsettled, {
     serviceKey,
     ...(userId ? { userId } : {}),

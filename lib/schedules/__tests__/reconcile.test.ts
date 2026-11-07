@@ -11,6 +11,7 @@ jest.mock("@/convex/_generated/api", () => ({
       recordOutcome: "recordOutcome",
       abandonedDispatches: "abandoned",
       failDispatcher: "fail",
+      recoverUncertainStarts: "recover",
     },
   },
 }));

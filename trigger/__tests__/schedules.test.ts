@@ -45,10 +45,13 @@ jest.mock("@/convex/_generated/api", () => ({
       failDispatcher: "fail",
       due: "due",
       beginDispatch: "begin",
+      queuedManual: "queued",
     },
   },
 }));
-import { scheduledAgentRun } from "../schedules";
+import { scheduledAgentRun, dispatchAgentSchedules } from "../schedules";
+import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
+import { tasks } from "@trigger.dev/sdk";
 const mockQuery = jest.fn(),
   mockMutation = jest.fn(),
   mockEntitlement = jest.fn(),
@@ -112,6 +115,36 @@ it("uses current entitlement and the normal Agent start with immutable cloud set
     selectedModel: "hackerai-max",
   });
   expect(body.messages[0].parts[0].text).toBe(schedule.definition.prompt);
+});
+it("dispatches due and queued work even when reconciliation fails", async () => {
+  (reconcileScheduleRuns as jest.Mock).mockRejectedValueOnce(
+    Error("unavailable"),
+  );
+  mockQuery.mockImplementation(async (fn) =>
+    fn === "due"
+      ? [{ id: "s", revision: 1, at: 100 }]
+      : [{ id: "receipt", scheduleId: "m", revision: 2, requestId: "request" }],
+  );
+  const log = jest.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await (dispatchAgentSchedules as any).run();
+    expect(tasks.trigger).toHaveBeenCalledWith(
+      "scheduled-agent-run",
+      { scheduleId: "s", revision: 1, at: 100 },
+      expect.any(Object),
+    );
+    expect(tasks.trigger).toHaveBeenCalledWith(
+      "scheduled-agent-run",
+      expect.objectContaining({
+        scheduleId: "m",
+        manual: true,
+        receiptId: "receipt",
+      }),
+      expect.any(Object),
+    );
+  } finally {
+    log.mockRestore();
+  }
 });
 it("records lost eligibility without starting a child", async () => {
   mockEntitlement.mockResolvedValue({ subscription: "free" });

@@ -356,7 +356,12 @@ export const claim = mutation({
       .withIndex("by_schedule_id", (q) => q.eq("schedule_id", s._id))
       .order("desc")
       .take(201);
-    if (old.length > 200) await ctx.db.delete(old[200]._id);
+    if (old.length > 200) {
+      const victim = old
+        .reverse()
+        .find((r) => r._id !== s.active_run_id && r._id !== runId);
+      if (victim) await ctx.db.delete(victim._id);
+    }
     return busy ? null : { id: runId, chatId: args.chatId };
   },
 });
@@ -435,6 +440,59 @@ export const failDispatcher = mutation({
         detail:
           "The run could not be confirmed. Check its task before trying again.",
       });
+    }
+    return null;
+  },
+});
+
+/** Late task evidence can resolve an ambiguous start, never a timeout alone. */
+export const recoverUncertainStarts = mutation({
+  args: { serviceKey: v.string(), userId: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const cutoff = Date.now() - 30000;
+    const rows = args.userId
+      ? await ctx.db
+          .query("schedule_runs")
+          .withIndex("by_user_status_and_last_check", (q) =>
+            q
+              .eq("user_id", args.userId!)
+              .eq("status", "uncertain_start")
+              .lt("last_checked_at", cutoff),
+          )
+          .take(50)
+      : await ctx.db
+          .query("schedule_runs")
+          .withIndex("by_status_and_last_check", (q) =>
+            q.eq("status", "uncertain_start").lt("last_checked_at", cutoff),
+          )
+          .take(50);
+    for (const row of rows) {
+      await ctx.db.patch(row._id, { last_checked_at: Date.now() });
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", row.chat_id))
+        .unique();
+      if (!chat || chat.user_id !== row.user_id || chat.deletion_started_at)
+        continue;
+      if (chat.active_trigger_run_id) {
+        await ctx.db.patch(row._id, {
+          status: "started",
+          trigger_run_id: chat.active_trigger_run_id,
+          detail: undefined,
+        });
+      } else if (
+        chat.last_run_finished_at &&
+        chat.last_run_finished_at >=
+          (row.dispatch_requested_at ?? row.created_at)
+      ) {
+        await ctx.db.patch(row._id, {
+          status: "unconfirmed",
+          detail:
+            "Execution ended, but its result could not be confirmed. Open its task to inspect saved output.",
+        });
+      }
     }
     return null;
   },
