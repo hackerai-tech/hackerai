@@ -34,14 +34,13 @@ it.each([true, false])(
   "installs managed capture only for approved connected runs: %s",
   async (enabled) => {
     const sessions = new BrowserSessions(undefined, undefined, true, {
-      urls: ["https://managed.example/challenge"],
       enabled: async () => enabled,
     });
     const target = connection();
     await sessions.prepare(target.sandbox);
     const prepare = JSON.parse(target.run.mock.calls[0][1].stdin).request;
     if (enabled)
-      expect(prepare.initScript).toContain("https://managed.example/challenge");
+      expect(prepare.initScript).toContain("hackerai.cloudflareChallenge");
     else expect(prepare).not.toHaveProperty("initScript");
     const browser = await sessions.getChallengeBrowser(
       new AbortController().signal,
@@ -50,7 +49,7 @@ it.each([true, false])(
     await browser.deliverCloudflare!(
       "solver-agent",
       {
-        url: "https://managed.example/challenge",
+        url: "hackerai.cloudflareChallenge",
         documentId: "1",
         originalUserAgent: "original",
       },

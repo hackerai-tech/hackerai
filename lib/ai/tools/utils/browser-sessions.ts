@@ -81,7 +81,6 @@ export class BrowserSessions {
     private readonly onOwnershipLost?: () => void,
     private readonly enableConnectedChallenges = false,
     private readonly cloudflare?: {
-      urls: string[];
       enabled: () => Promise<boolean>;
     },
   ) {}
@@ -455,11 +454,9 @@ export class BrowserSessions {
       // commands preparing the same sandbox retain one owner and namespace.
       const directory = `/dev/shm/hackerai-browser-${randomBytes(12).toString("hex")}`;
       const ready = (async () => {
-        const cloudflareUrls =
-          this.cloudflare?.urls.length &&
-          (await this.cloudflare.enabled().catch(() => false))
-            ? this.cloudflare.urls
-            : [];
+        const captureManaged =
+          this.cloudflare &&
+          (await this.cloudflare?.enabled().catch(() => false));
         if (this.closed)
           throw new Error("Browser session ownership has ended.");
         const result = await sandbox.commands.run(
@@ -468,9 +465,7 @@ export class BrowserSessions {
             directory,
             this.expiresAt,
             gate,
-            cloudflareUrls.length
-              ? cloudflareInitScript(cloudflareUrls)
-              : undefined,
+            captureManaged ? cloudflareInitScript() : undefined,
           ),
           { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20000 },
         );
@@ -573,7 +568,7 @@ export class BrowserSessions {
       throw new Error(
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
-    if (current.state.state === "agent" && this.cloudflare?.urls.length) {
+    if (current.state.state === "agent" && this.cloudflare) {
       try {
         const target = await this.captureChallengeTarget(
           current.session.sandbox,
@@ -583,7 +578,7 @@ export class BrowserSessions {
           signal ?? new AbortController().signal,
           target,
         );
-        await browser.evaluate(cloudflareReleaseScript(this.cloudflare.urls));
+        await browser.evaluate(cloudflareReleaseScript());
       } catch {
         // Optional widget recovery must not prevent control of the browser.
         // Admission below still checks ownership; this does not promise that

@@ -15,7 +15,6 @@ describe("managed browser ownership", () => {
       const target = sandbox();
       const decide = jest.fn(async () => enabled);
       const owner = new BrowserSessions(undefined, undefined, false, {
-        urls: ["https://approved.example/"],
         enabled: decide,
       });
       const [a, b] = await Promise.all([
@@ -28,8 +27,8 @@ describe("managed browser ownership", () => {
       const command = (
         target.commands.run.mock.calls[0] as unknown as [string]
       )[0];
-      if (enabled) expect(command).toContain("https://approved.example/");
-      else expect(command).not.toContain("https://approved.example/");
+      if (enabled) expect(command).toContain("hackerai.cloudflareChallenge");
+      else expect(command).not.toContain("hackerai.cloudflareChallenge");
       await owner.cleanup();
     },
   );

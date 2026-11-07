@@ -93,13 +93,11 @@ import { BrowserSessions } from "../utils/browser-sessions";
 import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
 
 describe("sandbox acquisition serialization", () => {
-  it("retains the CAPTCHA attempt budget across provider fallback and excludes Production", async () => {
+  it("retains the CAPTCHA attempt budget across provider fallback and excludes untrusted runtimes", async () => {
     const originalEnv = process.env;
     process.env = {
       ...originalEnv,
-      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
-      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
-      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "user-1",
+
       TWOCAPTCHA_API_KEY: "test-provider-key",
     };
     const evaluator = jest
@@ -165,7 +163,7 @@ describe("sandbox acquisition serialization", () => {
       expect(preview.getCaptchaReceiptPrompt()).toContain("Provider: 2Captcha");
       expect(preview.getCaptchaReceiptPrompt()).toContain("0.003 USD");
       expect(createTools(...args).getCaptchaReceiptPrompt()).toBe("");
-      args[22] = { environment: "PRODUCTION" };
+      args[22] = { environment: "DEVELOPMENT" };
       await expect(
         createTools(...args).tools.run_terminal_cmd.execute!(
           { action: "solve" },

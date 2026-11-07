@@ -16,7 +16,7 @@ const originalEnv = process.env;
 beforeEach(() => {
   process.env = {
     ...originalEnv,
-    HACKERAI_CAPTCHA_JOURNAL_ENABLED: "1",
+
     TWOCAPTCHA_API_KEY: "secret-key",
   };
 });
@@ -99,8 +99,8 @@ it.each([
   "deleting chat",
   "deleting user",
   "missing key",
-  "disabled journal",
-  "zero limit",
+  "global cap",
+  "user cap",
 ])("refuses admission for %s", async (variant) => {
   const f = fixture();
   if (variant === "wrong user") f.rows.chats[0].user_id = "other";
@@ -110,22 +110,31 @@ it.each([
   if (variant === "deleting user")
     f.rows.user_deletion_fences.push({ _id: "fence", user_id: "user" });
   if (variant === "missing key") delete process.env.TWOCAPTCHA_API_KEY;
-  if (variant === "disabled journal")
-    delete process.env.HACKERAI_CAPTCHA_JOURNAL_ENABLED;
-  if (variant === "zero limit") process.env.CAPTCHA_SOLVER_DAILY_ATTEMPTS = "0";
+  if (variant === "global cap" || variant === "user cap")
+    f.rows.captcha_daily_limits.push({
+      _id: "limit",
+      bucket: variant === "global cap" ? "global" : "user:user",
+      day: new Date().toISOString().slice(0, 10),
+      attempts: variant === "global cap" ? 100 : 10,
+    });
   expect(await f.reserve()).toBe(false);
   expect(f.rows.captcha_attempts).toHaveLength(0);
   expect(f.ctx.scheduler.runAfter).not.toHaveBeenCalled();
 });
 
 it("holds daily capacity for an unknown creation and denies subsequent runs", async () => {
-  process.env.CAPTCHA_SOLVER_USER_DAILY_ATTEMPTS = "1";
   const f = fixture();
+  f.rows.captcha_daily_limits.push({
+    _id: "limit",
+    bucket: "user:user",
+    day: new Date().toISOString().slice(0, 10),
+    attempts: 9,
+  });
   expect(await f.reserve()).toBe(true);
   f.scope.runId = "run-2";
   f.rows.chats[0].active_trigger_run_id = "run-2";
   expect(await f.reserve()).toBe(false);
-  expect(f.rows.captcha_daily_limits.map((r) => r.attempts)).toEqual([1, 1]);
+  expect(f.rows.captcha_daily_limits.map((r) => r.attempts)).toEqual([10, 1]);
 });
 
 it("reconciles a late fee after the parent ends, once, without a customer deduction", async () => {

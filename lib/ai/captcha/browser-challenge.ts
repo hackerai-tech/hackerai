@@ -4,11 +4,7 @@ import {
   getPostHogBooleanFlagDecisionForUser,
   phLogger,
 } from "@/lib/posthog/server";
-import {
-  captchaFlag,
-  captchaAutomaticSolvingEnabled,
-  isCaptchaEligible,
-} from "./policy";
+import { CAPTCHA_SOLVER_FLAG, isCaptchaEligible } from "./policy";
 import {
   browserChallengeObservation,
   DETECT_CHALLENGES_SCRIPT,
@@ -22,7 +18,6 @@ import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
 import {
   cloudflarePageUrl,
-  cloudflarePreviewUrls,
   cloudflareOutcomeScript,
   cloudflareReleaseScript,
   CLOUDFLARE_PAGE_URL_SCRIPT,
@@ -89,7 +84,7 @@ export function createBrowserChallengeHandler(
       : new AbortController().signal;
     signal.throwIfAborted();
     if (
-      !isCaptchaEligible(environment, context.userID) ||
+      !isCaptchaEligible(environment) ||
       !context.triggerRunId ||
       !context.browserSessions ||
       context.requestToolApproval
@@ -148,7 +143,7 @@ export function createBrowserChallengeHandler(
       try {
         enabled = await Promise.race([
           getPostHogBooleanFlagDecisionForUser(
-            captchaFlag(environment),
+            CAPTCHA_SOLVER_FLAG,
             context.userID,
             undefined,
             { sendFeatureFlagEvents: false },
@@ -162,18 +157,17 @@ export function createBrowserChallengeHandler(
       }
       signal.throwIfAborted();
       if (enabled !== true) {
-        const approvedUrls = cloudflarePreviewUrls(environment);
         // Setup may have captured a widget before the rollout became
         // unavailable. Release only the current owned Cloud document; no
         // challenge parameters, provider calls or ordinary browser inspection.
-        if (approvedUrls.length) {
+        if (environment === "PREVIEW") {
           try {
             const browser = await context.browserSessions.getChallengeBrowser(
               signal,
               target,
             );
             if (browser.deliverCloudflare)
-              await browser.evaluate(cloudflareReleaseScript(approvedUrls));
+              await browser.evaluate(cloudflareReleaseScript());
           } catch {
             // A lost/paused owner cannot be used for cleanup either.
           }
@@ -230,8 +224,7 @@ export function createBrowserChallengeHandler(
         widget_count: pending.length,
         interstitial: observation.interstitial,
       });
-      const autoSolve = captchaAutomaticSolvingEnabled(environment);
-      if (!autoSolve)
+      if (!process.env.TWOCAPTCHA_API_KEY && action === "inspect")
         return respond({
           status: "challenge_detected",
           widgets: pending.map(({ kind, invisible }) => ({
@@ -256,6 +249,7 @@ export function createBrowserChallengeHandler(
         return respond({ status: "handoff_required", reason: "attempt_limit" });
       if (
         (observation.interstitial && !widget?.managed) ||
+        (widget?.managed && environment !== "PREVIEW") ||
         pending.length !== 1 ||
         !widget ||
         !isSupportedCaptchaTarget(observation.url, widget) ||

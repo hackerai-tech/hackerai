@@ -3,12 +3,7 @@ import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
 import { createBrowserChallengeHandler } from "../captcha/browser-challenge";
 import { createCaptchaJournal } from "../captcha/journal";
-import {
-  isCaptchaEligible,
-  captchaAutomaticSolvingEnabled,
-  captchaFlag,
-} from "../captcha/policy";
-import { cloudflarePreviewUrls } from "../captcha/cloudflare";
+import { isCaptchaEligible, CAPTCHA_SOLVER_FLAG } from "../captcha/policy";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -283,24 +278,23 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
-        isCaptchaEligible(runtimePolicy.environment, userID),
+        isCaptchaEligible(runtimePolicy.environment),
         {
-          urls:
-            serviceKey &&
-            !requestToolApproval &&
-            (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
-            isCaptchaEligible(runtimePolicy.environment, userID)
-              ? cloudflarePreviewUrls(runtimePolicy.environment)
-              : [],
           enabled: async () => {
-            if (!captchaAutomaticSolvingEnabled(runtimePolicy.environment))
+            if (
+              !serviceKey ||
+              requestToolApproval ||
+              (runtimePolicy.browserAgentId ?? "parent") !== "parent" ||
+              runtimePolicy.environment !== "PREVIEW" ||
+              !process.env.TWOCAPTCHA_API_KEY
+            )
               return false;
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
               return (
                 (await Promise.race([
                   getPostHogBooleanFlagDecisionForUser(
-                    captchaFlag(runtimePolicy.environment!),
+                    CAPTCHA_SOLVER_FLAG,
                     userID,
                     undefined,
                     { sendFeatureFlagEvents: false },
@@ -355,7 +349,7 @@ export const createTools = (
     triggerRunId &&
     !requestToolApproval &&
     (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
-    isCaptchaEligible(runtimePolicy.environment, userID)
+    isCaptchaEligible(runtimePolicy.environment)
       ? createBrowserChallengeHandler(
           context,
           runtimePolicy.environment,

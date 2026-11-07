@@ -21,7 +21,6 @@ it.each(["valid", "missing", "null"])(
     process.env = {
       ...previous,
       HACKERAI_ENVIRONMENT: "preview",
-      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
     };
     try {
       mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
@@ -93,7 +92,6 @@ it.each(["control character", "oversized"])(
     process.env = {
       ...previous,
       HACKERAI_ENVIRONMENT: "preview",
-      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
     };
     try {
       await expect(
@@ -585,12 +583,11 @@ it.each(["recaptcha_v2", "hcaptcha"] as const)(
 );
 
 it.each([
-  { url: "https://customer.test/login", widget },
-  { url: demo, widget: { ...widget, kind: "hcaptcha" as const } },
+  { url: "https://customer.test/login?token=private", widget },
   { url: demo, widget: { ...widget, invisible: true } },
-  { url: demo, widget: { ...widget, siteKey: "foreign-customer-key" } },
+  { url: demo, widget: { ...widget, siteKey: "invalid key" } },
 ])(
-  "does not contact the provider outside supported public demos",
+  "does not contact the provider for unsafe URLs or unsupported widgets",
   async (input) => {
     await expect(
       createTwoCaptchaSolver("provider-key").solve(

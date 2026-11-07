@@ -31,11 +31,7 @@ const originalFetch = global.fetch;
 it.each([true, false])(
   "uses managed Cloudflare solving only with a transport that can apply the returned user agent: %s",
   async (supported) => {
-    process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
     process.env.HACKERAI_ENVIRONMENT = "preview";
-    process.env.CAPTCHA_CLOUDFLARE_PREVIEW_URLS = JSON.stringify([
-      "https://dash.cloudflare.com/sign-up",
-    ]);
     const data = {
       ...observation,
       url: "https://dash.cloudflare.com/sign-up",
@@ -165,8 +161,9 @@ const run = (
   action: "inspect" | "solve",
   abortSignal?: AbortSignal,
 ) => {
-  if (action === "solve") process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
-  return tool(abortSignal);
+  return action === "inspect"
+    ? tool.inspect(abortSignal, { sandbox: {} as never, sessionName: "owned" })
+    : tool(abortSignal);
 };
 
 beforeEach(() => {
@@ -174,15 +171,12 @@ beforeEach(() => {
   flag.mockResolvedValue(true);
   process.env = {
     ...originalEnv,
-    HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
-    CAPTCHA_SOLVER_PREVIEW_USER_IDS: "internal-user",
+
     TWOCAPTCHA_API_KEY: "private-provider-key",
   };
-  delete process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW;
 });
 
 it("loads solving only after the agent requests the detected session, once per run", async () => {
-  process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
   const { tool, solve, solverFactory, journal } = setup();
   const target = { sandbox: {} as never, sessionName: "owned" };
   expect(await tool.request("solve", "owned")).toMatchObject({
@@ -213,7 +207,6 @@ it("loads solving only after the agent requests the detected session, once per r
 });
 
 it("refuses a stale page decision without loading or charging the solver", async () => {
-  process.env.HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW = "1";
   const { tool, evaluate, solverFactory, journal } = setup();
   await tool.inspect(undefined, { sandbox: {} as never, sessionName: "owned" });
   evaluate.mockResolvedValueOnce({
@@ -234,7 +227,7 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-it.each(["PRODUCTION", "STAGING", "DEVELOPMENT", "preview", "unknown"])(
+it.each(["STAGING", "DEVELOPMENT", "preview", "unknown"])(
   "never inspects a browser or contacts a solver in %s",
   async (environment) => {
     const { tool, getChallengeBrowser, solve } = setup(environment);
@@ -250,32 +243,29 @@ it.each(["PRODUCTION", "STAGING", "DEVELOPMENT", "preview", "unknown"])(
   },
 );
 
-it.each([
-  "not allowlisted",
-  "explicit enablement missing",
-  "approval mode",
-  "Ask mode",
-])("preserves the eligibility boundary: %s", async (reason) => {
-  if (reason === "not allowlisted")
-    process.env.CAPTCHA_SOLVER_PREVIEW_USER_IDS = "another-user";
-  if (reason === "explicit enablement missing")
-    delete process.env.HACKERAI_CAPTCHA_SOLVER_PREVIEW;
-  const { tool, solve, getChallengeBrowser } = setup(
-    "PREVIEW",
-    reason === "approval mode"
-      ? { requestToolApproval: jest.fn() }
-      : reason === "Ask mode"
-        ? { triggerRunId: undefined }
-        : {},
-  );
-  await expect(run(tool, "solve")).resolves.toEqual({ status: "unavailable" });
-  expect(getChallengeBrowser).not.toHaveBeenCalled();
-  expect(solve).not.toHaveBeenCalled();
-});
+it.each(["approval mode", "Ask mode"])(
+  "preserves the eligibility boundary: %s",
+  async (reason) => {
+    const { tool, solve, getChallengeBrowser } = setup(
+      "PREVIEW",
+      reason === "approval mode"
+        ? { requestToolApproval: jest.fn() }
+        : reason === "Ask mode"
+          ? { triggerRunId: undefined }
+          : {},
+    );
+    await expect(run(tool, "solve")).resolves.toEqual({
+      status: "unavailable",
+    });
+    expect(getChallengeBrowser).not.toHaveBeenCalled();
+    expect(solve).not.toHaveBeenCalled();
+  },
+);
 
 it("detects without spending, exposes no site key and respects a disabled flag", async () => {
+  delete process.env.TWOCAPTCHA_API_KEY;
   const { tool, solve } = setup();
-  await expect(run(tool, "inspect")).resolves.toEqual({
+  await expect(run(tool, "inspect")).resolves.toMatchObject({
     status: "challenge_detected",
     demoEligible: true,
     widgets: [{ kind: "recaptcha_v2", invisible: false }],
@@ -310,6 +300,7 @@ it("offers the vision workflow for an allowlisted hCaptcha demo without a solver
 it.each(["other site", "invisible", "interstitial", "turnstile", "multiple"])(
   "keeps the vision pilot confined to visible, allowlisted image challenges: %s",
   async (variant) => {
+    delete process.env.TWOCAPTCHA_API_KEY;
     const { tool, evaluate, solve } = setup();
     const data = cloneObservation();
     if (variant === "other site") data.url = "https://example.com/login";
@@ -363,11 +354,12 @@ it("reports uncertain delivery separately from a provider failure", async () => 
 it("fails closed after a one-second flag timeout", async () => {
   jest.useFakeTimers();
   flag.mockReturnValue(new Promise(() => {}));
-  const { tool, getChallengeBrowser } = setup();
+  const { tool, solve, evaluate } = setup();
   const pending = run(tool, "solve");
   await jest.advanceTimersByTimeAsync(1000);
   await expect(pending).resolves.toEqual({ status: "unavailable" });
-  expect(getChallengeBrowser).not.toHaveBeenCalled();
+  expect(solve).not.toHaveBeenCalled();
+  expect(evaluate).not.toHaveBeenCalledWith(DETECT_CHALLENGES_SCRIPT);
 });
 
 it("delivers once, accounts for cost, and never claims website acceptance or exposes secrets", async () => {
@@ -562,27 +554,16 @@ it("does not create a paid task if stopped while the provider initializes", asyn
   expect(evaluate).toHaveBeenCalledTimes(1);
 });
 
-it.each([
-  "non-demo",
-  "hcaptcha",
-  "interstitial",
-  "multiple widgets",
-  "invisible",
-  "foreign site key",
-])(
+it.each(["interstitial", "multiple widgets", "invisible", "invalid site key"])(
   "hands off unsupported challenges without provider work: %s",
   async (variant) => {
     const { tool, solve, evaluate } = setup();
     const data = cloneObservation();
-    if (variant === "non-demo") data.url = "https://customer.test/login";
-    if (variant === "hcaptcha")
-      (data.widgets[0] as { kind: string }).kind = "hcaptcha";
     if (variant === "interstitial") data.interstitial = true;
     if (variant === "multiple widgets")
       data.widgets.push({ ...data.widgets[0] });
     if (variant === "invisible") data.widgets[0].invisible = true;
-    if (variant === "foreign site key")
-      data.widgets[0].siteKey = "foreign-customer-key";
+    if (variant === "invalid site key") data.widgets[0].siteKey = "invalid key";
     evaluate.mockResolvedValue(data);
     await expect(run(tool, "solve")).resolves.toEqual({
       status: "handoff_required",
@@ -662,5 +643,35 @@ it.each(["ready", "invalid solution", "poll failure", "ambiguous creation"])(
     expect(fetch).toHaveBeenCalledTimes(
       outcome === "ambiguous creation" ? 1 : 2,
     );
+  },
+);
+
+it.each(["PREVIEW", "PRODUCTION"])(
+  "uses the single PostHog flag on ordinary sites in %s with only the API key",
+  async (environment) => {
+    process.env = { TWOCAPTCHA_API_KEY: "private-provider-key" };
+    const { tool, evaluate, solve, solverFactory } = setup(environment);
+    evaluate.mockResolvedValueOnce({
+      ...cloneObservation(),
+      url: "https://customer.test/login",
+    });
+    expect(
+      await tool.inspect(undefined, {
+        sandbox: {} as never,
+        sessionName: "owned",
+      }),
+    ).toMatchObject({ status: "solve_available", providerTaskCreated: false });
+    expect(flag).toHaveBeenCalledWith(
+      "browser_captcha_solver_v1",
+      "internal-user",
+      undefined,
+      { sendFeatureFlagEvents: false },
+    );
+    expect(solverFactory).not.toHaveBeenCalled();
+    flag.mockResolvedValue(false);
+    expect(await tool.request("solve", "owned")).toMatchObject({
+      status: "unavailable",
+    });
+    expect(solve).not.toHaveBeenCalled();
   },
 );

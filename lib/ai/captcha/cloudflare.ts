@@ -1,40 +1,5 @@
 import { z } from "zod";
 
-const urls = z
-  .array(
-    z
-      .string()
-      .url()
-      .max(2048)
-      .refine((value) => {
-        const url = new URL(value);
-        return (
-          url.protocol === "https:" &&
-          !url.username &&
-          !url.password &&
-          !url.search &&
-          !url.hash
-        );
-      }),
-  )
-  .max(5);
-
-/** Managed challenges disclose opaque per-page parameters as well as the URL.
- * Keep this separate from standalone widgets and opt in only in Preview.
- */
-export function cloudflarePreviewUrls(
-  environment: string | undefined,
-): string[] {
-  if (environment !== "PREVIEW") return [];
-  try {
-    return urls.parse(
-      JSON.parse(process.env.CAPTCHA_CLOUDFLARE_PREVIEW_URLS ?? "[]"),
-    );
-  } catch {
-    return [];
-  }
-}
-
 export const cloudflareParameters = z.object({
   action: z.literal("managed"),
   data: z.string().min(1).max(2048),
@@ -48,12 +13,13 @@ export const cloudflareParameters = z.object({
 
 /** Cloudflare can add a transient challenge query during navigation. Never
  * send that signed query to the solver or treat unrelated query values as an
- * approved target. Authorization still requires the exact configured page.
+ * eligible target. Session and document identity are checked separately.
  */
 export function cloudflarePageUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (
+      url.protocol !== "https:" ||
       url.username ||
       url.password ||
       url.hash ||
@@ -70,7 +36,7 @@ export function cloudflarePageUrl(value: string): string | undefined {
 
 export const CLOUDFLARE_PAGE_URL_SCRIPT = String.raw`(() => {
   const url = new URL(location.href);
-  if (url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => !/^__cf_chl_[A-Za-z0-9_]+$/.test(key))) return null;
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => !/^__cf_chl_[A-Za-z0-9_]+$/.test(key))) return null;
   return url.origin + url.pathname;
 })()`;
 
@@ -93,9 +59,9 @@ export function cloudflareOutcomeScript(url: string): string {
   })()`;
 }
 
-export function cloudflareReleaseScript(approvedUrls: string[]): string {
+export function cloudflareReleaseScript(approvedUrls?: string[]): string {
   return `(() => {
-    if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
+    if (window !== top || !${CLOUDFLARE_PAGE_URL_SCRIPT}${approvedUrls ? ` || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})` : ""}) return false;
     try { sessionStorage.setItem('hackerai.cloudflareManual:' + ${CLOUDFLARE_PAGE_URL_SCRIPT}, '1'); } catch {}
     const current = window[Symbol.for('hackerai.cloudflareChallenge')];
     if (!current || current.delivered || typeof current.release !== 'function') return false;
@@ -103,13 +69,12 @@ export function cloudflareReleaseScript(approvedUrls: string[]): string {
   })()`;
 }
 
-/** Install before navigation. Intercept only the approved page's managed
+/** Install only in an owned, flag-enabled Preview browser. Intercept its managed
  * challenge; normal widgets retain their original render function. No logging.
  */
-export function cloudflareInitScript(approvedUrls: string[]): string {
+export function cloudflareInitScript(): string {
   return `(() => {
-    const current = new URL(location.href);
-    if (window !== top || !${JSON.stringify(approvedUrls)}.includes(current.origin + current.pathname)) return;
+    if (window !== top) return;
     const canonical = ${CLOUDFLARE_PAGE_URL_SCRIPT};
     window[Symbol.for('hackerai.cloudflareInit')] = {exact:location.href === canonical, queryAllowed:!!canonical};
     if (!canonical) return;

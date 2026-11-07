@@ -1,7 +1,6 @@
 /** @jest-environment-options {"url":"https://managed.example/challenge"} */
 import {
   cloudflareInitScript,
-  cloudflarePreviewUrls,
   cloudflarePageUrl,
   cloudflareOutcomeScript,
   cloudflareReleaseScript,
@@ -42,7 +41,7 @@ afterEach(() => {
 });
 
 function render() {
-  window.eval(cloudflareInitScript([location.href]));
+  window.eval(cloudflareInitScript());
   const original = jest.fn(
     (_container?: unknown, _options?: unknown) => "ordinary-widget",
   );
@@ -81,7 +80,7 @@ it.each([false, true])(
 );
 
 it("does not capture a widget that initializes after manual handoff was requested", () => {
-  window.eval(cloudflareInitScript([location.href]));
+  window.eval(cloudflareInitScript());
   expect(window.eval(cloudflareReleaseScript([location.href]))).toBe(false);
   const original = jest.fn();
   const api = { render: original };
@@ -124,10 +123,7 @@ it.each([
     process.env = {
       ...originalEnv,
       HACKERAI_ENVIRONMENT: "preview",
-      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
-      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
-      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
-      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([location.href]),
+
       TWOCAPTCHA_API_KEY: "private-key",
     };
     const solve = jest.fn(async () => ({
@@ -246,7 +242,7 @@ it("does not inspect or release a different page during managed verification", a
 });
 
 it("lets the vendor initialize its global before capturing the first managed render", () => {
-  window.eval(cloudflareInitScript([location.href]));
+  window.eval(cloudflareInitScript());
   const original = jest.fn();
   // Match the real vendor's duplicate-load guard before it assigns the API.
   const vendorLoaded = !("turnstile" in window);
@@ -367,7 +363,7 @@ it("captures a transient Cloudflare challenge URL without approving unrelated qu
     history.replaceState(null, "", "?__cf_chl_rt_tk=opaque-challenge-address");
     const canonical = cloudflarePageUrl(location.href)!;
     expect(canonical).toBe(location.origin + location.pathname);
-    window.eval(cloudflareInitScript([canonical]));
+    window.eval(cloudflareInitScript());
     const callback = jest.fn();
     page.turnstile = { render: jest.fn() };
     jest.advanceTimersByTime(10);
@@ -401,13 +397,11 @@ it("captures a transient Cloudflare challenge URL without approving unrelated qu
   }
 });
 
-it("restores the actual page widget when the handler rejects managed target approval", async () => {
+it("restores the actual page widget when the handler rejects managed support outside Preview", async () => {
   const { original, options } = render();
   process.env = {
     ...originalEnv,
-    HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
-    HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
-    CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
+    TWOCAPTCHA_API_KEY: "private-key",
   };
   const solverFactory = jest.fn();
   const context = {
@@ -422,7 +416,7 @@ it("restores the actual page widget when the handler rejects managed target appr
   } as unknown as ToolContext;
   const result = await createBrowserChallengeHandler(
     context,
-    "PREVIEW",
+    "PRODUCTION",
     undefined,
     solverFactory,
   )();
@@ -435,18 +429,12 @@ it("restores the actual page widget when the handler rejects managed target appr
   expect(solverFactory).not.toHaveBeenCalled();
 });
 
-it.each(["disabled", "timeout", "unapproved page"])(
+it.each(["disabled", "timeout"])(
   "recovers an intercepted widget without provider work when rollout is unavailable: %s",
   async (reason) => {
     const { original, options } = render();
     process.env = {
       ...originalEnv,
-      HACKERAI_CAPTCHA_SOLVER_PREVIEW: "1",
-      HACKERAI_CAPTCHA_AUTO_SOLVE_PREVIEW: "1",
-      CAPTCHA_SOLVER_PREVIEW_USER_IDS: "qa-user",
-      CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([
-        reason === "unapproved page" ? "https://other.example/" : location.href,
-      ]),
     };
     const flag = jest.mocked(getPostHogBooleanFlagDecisionForUser);
     if (reason === "timeout") flag.mockReturnValue(new Promise(() => {}));
@@ -472,24 +460,20 @@ it.each(["disabled", "timeout", "unapproved page"])(
     )();
     if (reason === "timeout") await jest.advanceTimersByTimeAsync(1000);
     await expect(pending).resolves.toEqual({ status: "unavailable" });
-    if (reason === "unapproved page") {
-      expect(original).not.toHaveBeenCalled();
-      expect(page[key]).toBeDefined();
-    } else {
-      expect(original).toHaveBeenCalledWith(document.body, options);
-      expect(page[key]).toBeUndefined();
-    }
+    expect(original).toHaveBeenCalledWith(document.body, options);
+    expect(page[key]).toBeUndefined();
     expect(solverFactory).not.toHaveBeenCalled();
     expect(deliverCloudflare).not.toHaveBeenCalled();
   },
 );
 
-it("leaves unapproved pages and ordinary Turnstile renders unchanged", () => {
-  const api = { render: jest.fn() };
+it("leaves ordinary Turnstile renders unchanged", () => {
+  const original = jest.fn();
+  const api = { render: original };
   page.turnstile = api;
-  window.eval(cloudflareInitScript(["https://approved.example/sign-up"]));
+  window.eval(cloudflareInitScript());
   api.render();
-  expect(api.render).toHaveBeenCalledTimes(1);
+  expect(original).toHaveBeenCalledTimes(1);
   expect(page[key]).toBeUndefined();
 });
 
@@ -505,25 +489,16 @@ it("recognizes Cloudflare's current security challenge iframe without a data-sit
   });
 });
 
-it("authorizes managed parameters only for the exact opt-in Preview URL", () => {
+it("accepts managed public URLs but never discloses unrelated query or fragment data", () => {
   render();
   const {
     widgets: [widget],
   } = inspect();
   const url = "https://dash.cloudflare.com/sign-up";
-  process.env = {
-    ...originalEnv,
-    HACKERAI_ENVIRONMENT: "preview",
-    CAPTCHA_CLOUDFLARE_PREVIEW_URLS: JSON.stringify([url]),
-  };
-  expect(cloudflarePreviewUrls("PREVIEW")).toEqual([url]);
   expect(isSupportedCaptchaTarget(url, widget)).toBe(true);
-  expect(isSupportedCaptchaTarget(url + "/other", widget)).toBe(false);
-  process.env.HACKERAI_ENVIRONMENT = "production";
-  expect(cloudflarePreviewUrls("PRODUCTION")).toEqual([]);
-  expect(isSupportedCaptchaTarget(url, widget)).toBe(false);
-  process.env.CAPTCHA_CLOUDFLARE_PREVIEW_URLS = JSON.stringify([
-    url + "?private=data",
-  ]);
-  expect(cloudflarePreviewUrls("PREVIEW")).toEqual([]);
+  expect(isSupportedCaptchaTarget(url + "?__cf_chl_tk=signed", widget)).toBe(
+    true,
+  );
+  expect(isSupportedCaptchaTarget(url + "?private=data", widget)).toBe(false);
+  expect(isSupportedCaptchaTarget(url + "#private", widget)).toBe(false);
 });

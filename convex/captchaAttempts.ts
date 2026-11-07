@@ -8,12 +8,9 @@ import { isUserDeletionFenced } from "./lib/userDeletionFence";
 const scope = { serviceKey: v.string(), userId: v.string(), runId: v.string() };
 const validCost = (cost: number) =>
   Number.isFinite(cost) && cost >= 0 && cost <= 1;
-const dailyLimit = (value: string | undefined, fallback: number) =>
-  value === undefined
-    ? fallback
-    : /^\d{1,5}$/.test(value)
-      ? Math.min(Number(value), 10000)
-      : 0;
+// Fixed admission caps survive rollout/configuration changes and unknown outcomes.
+const GLOBAL_DAILY_ATTEMPTS = 100;
+const USER_DAILY_ATTEMPTS = 10;
 
 /** The transaction admits exactly one request per run and consumes daily limits
  * even if createTask's outcome is unknown. Never retry a lost admission response.
@@ -24,11 +21,7 @@ export const reserve = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     if (await isUserDeletionFenced(ctx.db, args.userId)) return false;
-    if (
-      process.env.HACKERAI_CAPTCHA_JOURNAL_ENABLED !== "1" ||
-      !process.env.TWOCAPTCHA_API_KEY
-    )
-      return false;
+    if (!process.env.TWOCAPTCHA_API_KEY) return false;
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
@@ -49,11 +42,11 @@ export const reserve = mutation({
     const limits = [
       {
         bucket: "global",
-        limit: dailyLimit(process.env.CAPTCHA_SOLVER_DAILY_ATTEMPTS, 100),
+        limit: GLOBAL_DAILY_ATTEMPTS,
       },
       {
         bucket: `user:${args.userId}`,
-        limit: dailyLimit(process.env.CAPTCHA_SOLVER_USER_DAILY_ATTEMPTS, 10),
+        limit: USER_DAILY_ATTEMPTS,
       },
     ];
     const buckets = await Promise.all(

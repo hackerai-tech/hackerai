@@ -19,7 +19,6 @@ export class ConnectedChallengeBrowser {
     private sandbox: CentrifugoSandbox,
     private readonly expiresAt: number,
     private readonly cloudflare?: {
-      urls: readonly string[];
       enabled: () => Promise<boolean>;
     },
   ) {}
@@ -72,20 +71,16 @@ export class ConnectedChallengeBrowser {
       throw new Error("Browser ownership ended.");
     if (!this.sandbox.supportsCommandStdin()) return {};
     this.preparation ??= (async () => {
-      const urls =
-        this.cloudflare?.urls.length &&
-        (await this.cloudflare.enabled().catch(() => false))
-          ? this.cloudflare.urls
-          : [];
+      const captureManaged =
+        this.cloudflare &&
+        (await this.cloudflare?.enabled().catch(() => false));
       if (this.closed) throw new Error("Browser ownership ended.");
       return this.request(
         "prepare",
         undefined,
         undefined,
         undefined,
-        urls.length
-          ? { initScript: cloudflareInitScript([...urls]) }
-          : undefined,
+        captureManaged ? { initScript: cloudflareInitScript() } : undefined,
       );
     })().then(({ root, name }) => {
       const paths = this.sandbox.isWindows() ? path.win32 : path.posix;

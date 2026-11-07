@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   cloudflareParameters,
-  cloudflarePreviewUrls,
   cloudflarePageUrl,
   CLOUDFLARE_PAGE_URL_SCRIPT,
 } from "./cloudflare";
@@ -31,8 +30,7 @@ export type BrowserChallengeObservation = z.infer<
 >;
 export type CaptchaWidget = BrowserChallengeObservation["widgets"][number];
 
-// Public demo defaults. Additional URLs and widget keys require explicit server
-// configuration. Never send cookies or page content. Match complete URLs.
+// Demo recognition is used only for vision guidance, not paid rollout eligibility.
 const DEMOS = new Set([
   "https://www.google.com/recaptcha/api2/demo",
   "https://accounts.hcaptcha.com/demo",
@@ -40,98 +38,31 @@ const DEMOS = new Set([
   "https://2captcha.com/demo/cloudflare-turnstile",
 ]);
 
-// Public keys verified on these demos. A matching URL alone must not authorize
-// a paid task for a site key injected into the page by another browser action.
-const SOLVER_DEMOS: Record<string, { kind: CaptchaKind; siteKey: string }> = {
-  "https://accounts.hcaptcha.com/demo": {
-    kind: "hcaptcha",
-    siteKey: "a5f74b19-9e45-40e0-b45d-47ff91b7a6c2",
-  },
-  "https://www.google.com/recaptcha/api2/demo": {
-    kind: "recaptcha_v2",
-    siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
-  },
-  "https://2captcha.com/demo/recaptcha-v2": {
-    kind: "recaptcha_v2",
-    siteKey: "6LfD3PIbAAAAAJs_eEHvoOl75_83eXSqpPSRFJ_u",
-  },
-  // Cloudflare's interactive test key: this demo proves wiring, not real
-  // Turnstile challenge acceptance. Keep its results separate in QA.
-  "https://2captcha.com/demo/cloudflare-turnstile": {
-    kind: "turnstile",
-    siteKey: "3x00000000000000000000FF",
-  },
-};
-
-export function isSupportedCaptchaDemo(
-  url: string,
-  widget: CaptchaWidget,
-): boolean {
-  if (widget.managed) return false;
-  const expected = Object.hasOwn(SOLVER_DEMOS, url)
-    ? SOLVER_DEMOS[url]
-    : undefined;
-  return (
-    !!expected &&
-    expected.kind === widget.kind &&
-    expected.siteKey === widget.siteKey
-  );
-}
-
 export function isCaptchaDemo(url: string): boolean {
   return DEMOS.has(url);
 }
 
-const configuredTargets = z
-  .array(
-    z.object({
-      url: z
-        .string()
-        .max(2048)
-        .url()
-        .refine((value) => {
-          const parsed = new URL(value);
-          return (
-            parsed.protocol === "https:" &&
-            !parsed.username &&
-            !parsed.password &&
-            !parsed.search &&
-            !parsed.hash
-          );
-        }),
-      kind: captchaKind,
-      siteKey: z.string().regex(/^[A-Za-z0-9_-]{10,256}$/),
-    }),
-  )
-  .max(20);
-
-/** Additional targets require exact server-side approval, never a tool input.
- * This authorizes sharing the selected URL and public widget key only.
+/** Only public, credential-free HTTPS pages from the owned browser are eligible.
+ * Rollout and the explicit paid-solve decision are checked by the caller.
  */
 export function isSupportedCaptchaTarget(
   url: string,
   widget: CaptchaWidget,
-  configuration = process.env.CAPTCHA_SOLVER_TARGETS ??
-    (process.env.HACKERAI_ENVIRONMENT === "preview"
-      ? process.env.CAPTCHA_SOLVER_PREVIEW_TARGETS
-      : undefined),
 ): boolean {
-  if (widget.managed)
-    return (
-      widget.kind === "turnstile" &&
-      process.env.HACKERAI_ENVIRONMENT === "preview" &&
-      cloudflarePreviewUrls("PREVIEW").includes(cloudflarePageUrl(url) ?? "")
-    );
-  if (isSupportedCaptchaDemo(url, widget)) return true;
-  if (!configuration || configuration.length > 16384) return false;
+  if (!/^[A-Za-z0-9_-]{10,256}$/.test(widget.siteKey)) return false;
   try {
-    const targets = configuredTargets.parse(JSON.parse(configuration));
-    return targets.some(
-      (target) =>
-        target.url === url &&
-        target.kind === widget.kind &&
-        target.siteKey === widget.siteKey,
-    );
+    const parsed = new URL(url);
+    if (
+      url.length > 2048 ||
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.hash
+    )
+      return false;
+    if (widget.managed)
+      return widget.kind === "turnstile" && !!cloudflarePageUrl(url);
+    return !parsed.search;
   } catch {
     return false;
   }

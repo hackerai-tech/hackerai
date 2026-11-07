@@ -36,7 +36,7 @@ another standalone snapshot; repeated snapshot polling does not improve solving.
 This path requires a full-access parent Agent run. It supports visible
 reCAPTCHA v2, hCaptcha and standalone Turnstile widgets that expose their public
 site key and response field. Managed Cloudflare challenges have a separate
-Preview opt-in described below. Invisible/enterprise challenges, multiple
+Preview-only capture path described below. Invisible/enterprise challenges, multiple
 pending widgets, DataDome and GeeTest are not implemented. Unsupported or
 failed challenges require human verification. `browser_handoff` can hand over
 only the current Cloud browser; for connected Local, Desktop and remote browsers,
@@ -45,10 +45,10 @@ protected stdin support remain ineligible. Normal browser commands still work.
 
 ## Managed Cloudflare in Preview
 
-`CAPTCHA_CLOUDFLARE_PREVIEW_URLS` accepts a JSON array of up to five exact HTTPS
-URLs without credentials, query or fragment. The Trigger worker must also set
-`HACKERAI_ENVIRONMENT=preview`; other values disable managed support and the
-legacy `CAPTCHA_SOLVER_PREVIEW_TARGETS` setting. It is ignored outside Preview.
+Managed support is restricted to trusted Trigger Preview workers. The same
+PostHog flag controls capture and paid solving; no separate URL opt-in is needed.
+Only public HTTPS pages without credentials, unrelated query parameters or
+fragments qualify. Transient Cloudflare challenge query parameters are stripped.
 An eligible run installs a capture hook before navigation on Cloud, Local,
 Desktop and remote browsers running agent-browser 0.39.3 or newer. The hook
 holds the managed widget until the Agent requests solving or releases it.
@@ -75,16 +75,13 @@ Development Convex deployment and Trigger Preview branch; Production uses its
 designated Production Convex deployment and Trigger Production environment.
 Never reuse configuration from the other environment as a shortcut.
 
-| Setting                              | Location                                                   | Purpose                                                                                            |
-| ------------------------------------ | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `TWOCAPTCHA_API_KEY`                 | Trigger environment **and** its matching Convex deployment | 2Captcha account API key. Trigger creates/polls tasks; Convex independently reconciles late costs. |
-| `HACKERAI_CAPTCHA_SOLVER_ENABLED=1`  | Trigger environment                                        | Enables automatic fallback, subject to the remaining gates. Explicit `0` disables it.              |
-| `CAPTCHA_SOLVER_USER_IDS`            | Trigger environment                                        | Comma-separated internal user IDs eligible for the staged rollout. Empty/unset enables nobody.     |
-| `browser_captcha_solver_v1`          | Matching PostHog project                                   | Boolean rollout flag; unavailable/disabled fails closed.                                           |
-| `CAPTCHA_SOLVER_TARGETS`             | Trigger environment                                        | Optional exact approved targets, shown below. Without it, only the built-in public demos qualify.  |
-| `HACKERAI_CAPTCHA_JOURNAL_ENABLED=1` | Matching Convex deployment                                 | Enables durable admission; missing key or disabled journal prevents paid creation.                 |
-| `CAPTCHA_SOLVER_DAILY_ATTEMPTS`      | Matching Convex deployment                                 | Global UTC-day task admission limit; default 100. Set `0` to stop new paid tasks.                  |
-| `CAPTCHA_SOLVER_USER_DAILY_ATTEMPTS` | Matching Convex deployment                                 | Per-user UTC-day admission limit; default 10.                                                      |
+The only CAPTCHA-specific environment variable is `TWOCAPTCHA_API_KEY`, set in
+both Trigger and its matching Convex deployment. Trigger creates and polls tasks;
+Convex independently reconciles late costs. The boolean PostHog flag
+`browser_captcha_solver_v1` controls rollout and user targeting in the matching
+PostHog project. A disabled, missing or unavailable flag prevents paid solving.
+No enablement, user-list, target-list or journal-switch environment variables
+are required or read.
 
 The API key comes from the **2Captcha customer dashboard**, not a CAPTCHA
 website's public site key. Store it only in server-side secrets. Do not add it to
@@ -95,27 +92,21 @@ all use the same server-side adapter.
 Changing worker code requires a Trigger deployment. Configuration/flag changes
 apply to new Agent runs. Deploy the Convex functions and configure their matching
 secrets before enabling the worker; failed durable admission prevents solving.
-Legacy Preview-only pilot settings remain recognized when the generic enablement
-variable is absent; they never enable Production.
+Use the same flag key independently in Preview and Production. Legacy pilot
+flags and environment switches are no longer read. PostHog controls eligibility,
+not payment initiation: the Agent still explicitly requests each solve after
+observing a supported challenge in its owned browser.
 
-Additional targets require exact HTTPS URLs (no credentials, query or fragment),
-kind and public widget key. This explicitly approves sharing that URL and widget
-key with 2Captcha; cookies and page content are not shared. Maximum 20 targets:
-
-```json
-[
-  {
-    "url": "https://example.com/test-form",
-    "kind": "recaptcha_v2",
-    "siteKey": "PUBLIC_WIDGET_KEY"
-  }
-]
-```
+Supported widgets on public HTTPS pages qualify without a site list. The URL
+must not include credentials, query parameters or fragments (except the stripped
+Cloudflare parameters above). Only the public URL and required widget/challenge
+parameters are shared with 2Captcha, never cookies or page content. Session,
+document and widget identity are revalidated before delivery.
 
 ## Costs and failure handling
 
 Before creating a task, a Convex transaction reserves one attempt for the run and
-consumes its daily admission limits. This survives model fallback and process
+consumes fixed daily admission limits: 100 globally and 10 per user per UTC day. This survives model fallback and process
 loss. Failed or uncertain requests consume the attempt; creation is never
 automatically retried. Daily limits count admitted attempts, not dollars, and
 provider pricing may change. The prepaid 2Captcha balance remains the provider's
