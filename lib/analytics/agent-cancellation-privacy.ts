@@ -35,6 +35,8 @@ const STOP_SNAPSHOT_PROPERTIES = new Set([
   "part_count",
   "pruned_count",
   "save_outcome",
+  "save_error_code",
+  "convex_request_id",
   "frontend_build_commit",
 ]);
 

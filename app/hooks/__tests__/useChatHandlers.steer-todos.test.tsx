@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, QueuedMessage, QueueBehavior, Todo } from "@/types";
 import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
+import { ConvexError } from "convex/values";
 
 jest.mock("@/lib/utils/client-token-validation", () => ({
   ...jest.requireActual<typeof import("@/lib/utils/client-token-validation")>(
@@ -2822,6 +2823,7 @@ describe("useChatHandlers steer todo handoff", () => {
             "pruned_count",
             "save_outcome",
             "frontend_build_commit",
+            ...(scenario === "rejected" ? ["save_error_code"] : []),
           ].sort(),
         );
         expect(JSON.stringify(outcomes)).not.toMatch(
@@ -2927,6 +2929,95 @@ describe("useChatHandlers steer todo handoff", () => {
     ).toHaveLength(0);
     expect(mockCancelStream).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef",
+      "MESSAGE_TOO_LARGE",
+      "0123456789abcdef",
+    ],
+    ["messages:other", "0123456789abcdef", "MESSAGE_TOO_LARGE", undefined],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789ABCDEf",
+      "MESSAGE_TOO_LARGE",
+      undefined,
+    ],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef0",
+      "MESSAGE_TOO_LARGE",
+      undefined,
+    ],
+    [
+      "messages:saveAssistantMessage",
+      "0123456789abcdef",
+      "PRIVATE_CODE_CANARY",
+      "0123456789abcdef",
+    ],
+  ])(
+    "correlates rejected Stop snapshots without copying private errors (%s/%s/%s)",
+    async (fn, marker, code, expectedId) => {
+      const error = new ConvexError({
+        code,
+        content: "PRIVATE_CONTENT_CANARY",
+      });
+      error.message = `[CONVEX M(${fn})] [Request ID: ${marker}] PRIVATE_MESSAGE_CANARY`;
+      mockSaveAssistantMessage.mockRejectedValueOnce(error);
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(async () => {
+        expect(
+          await result.current.handleStop({ requireSavedResponse: true }),
+        ).toBe(false);
+      });
+      const outcomes = mockCaptureCancellationEvent.mock.calls
+        .map(
+          ([input]) =>
+            input as { event: string; properties: Record<string, unknown> },
+        )
+        .filter((input) => input.event === "chat_stop_snapshot_save_outcome");
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0].properties).toMatchObject({
+        diagnostic_version: 1,
+        preparation_outcome: "not_needed",
+        save_outcome: "rejected",
+        save_error_code:
+          code === "MESSAGE_TOO_LARGE" ? "message_too_large" : "other",
+        frontend_build_commit: expect.any(String),
+      });
+      expect(outcomes[0].properties.convex_request_id).toBe(expectedId);
+      expect(Object.keys(outcomes[0].properties).sort()).toEqual(
+        [
+          "diagnostic_version",
+          "preparation_outcome",
+          "save_outcome",
+          "save_error_code",
+          "frontend_build_commit",
+          ...(expectedId ? ["convex_request_id"] : []),
+        ].sort(),
+      );
+      expect(JSON.stringify(outcomes)).not.toMatch(/CANARY|chat-1/);
+      expect(mockSaveAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(mockCancelStream).toHaveBeenCalledTimes(1);
+      expect(mockSaveAssistantMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCancelStream.mock.invocationCallOrder[0],
+      );
+    },
+  );
 
   it("reports failure to goal controls when the partial response could not be saved", async () => {
     mockSaveAssistantMessage.mockRejectedValueOnce(
