@@ -538,6 +538,7 @@ describe("Chat Component Integration", () => {
   });
 
   beforeEach(() => {
+    window.history.replaceState({}, "", "/");
     jest.clearAllMocks();
     require("@/hooks/use-mobile").useIsMobile.mockReturnValue(false);
     mockBranchChat.mockReset();
