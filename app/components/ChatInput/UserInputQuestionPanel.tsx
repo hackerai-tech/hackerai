@@ -6,12 +6,20 @@ import {
   ChevronUp,
   Check,
   MessageCircleQuestionMark,
+  X,
 } from "lucide-react";
 import type {
   UserInputQuestion,
   UserInputAnswer,
 } from "@/lib/chat/user-input-questions";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { MemoizedMarkdown } from "../MemoizedMarkdown";
 
 export function UserInputQuestionPanel({
@@ -36,6 +44,22 @@ export function UserInputQuestionPanel({
   stopping?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [questionOverflows, setQuestionOverflows] = useState(false);
+  const questionPreviewRef = useRef<HTMLDivElement>(null);
+  const questionContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const preview = questionPreviewRef.current;
+    const content = questionContentRef.current;
+    if (!preview || !content) return;
+    const measure = () =>
+      setQuestionOverflows(content.scrollHeight > preview.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(preview);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [collapsed, question.question]);
   const select = (value: string) => {
     if (disabled || answersLocked) return;
     onSelect(value);
@@ -76,14 +100,14 @@ export function UserInputQuestionPanel({
   return (
     <section
       aria-label="Agent question"
-      className="relative mx-3 -mb-3 min-w-0 rounded-t-xl border border-b-0 border-black/8 bg-input-chat pb-4 dark:border-border"
+      className="relative flex min-h-0 min-w-0 flex-col rounded-t-[22px] border border-b-0 border-black/8 bg-input-chat dark:border-border"
     >
-      <div className="flex min-h-9 items-center gap-2 px-3">
+      <div className="flex min-h-11 shrink-0 items-center gap-2 px-3">
         <button
           type="button"
           onClick={() => setCollapsed(!collapsed)}
           aria-expanded={!collapsed}
-          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-2 text-left text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <span className="flex shrink-0 items-center gap-1.5 font-medium text-foreground">
             <MessageCircleQuestionMark
@@ -110,7 +134,7 @@ export function UserInputQuestionPanel({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-10 px-2 text-xs text-muted-foreground sm:h-8"
+            className="h-11 px-2 text-xs text-muted-foreground sm:h-8"
             onClick={onStop}
             disabled={stopping}
           >
@@ -119,11 +143,58 @@ export function UserInputQuestionPanel({
         )}
       </div>
       {!collapsed && (
-        <div className="max-h-[30dvh] overflow-y-auto overscroll-contain px-3 pb-1">
-          <div className="min-w-0 break-words px-1 pb-1 text-sm">
-            <MemoizedMarkdown content={question.question} />
+        <div className="flex min-h-0 flex-col">
+          <div className="min-w-0 shrink-0 break-words px-4 pb-2 text-sm">
+            <div
+              ref={questionPreviewRef}
+              inert={questionOverflows || undefined}
+              className="max-h-20 overflow-hidden [@media(max-height:600px)]:max-h-15"
+            >
+              <div ref={questionContentRef}>
+                <MemoizedMarkdown content={question.question} />
+              </div>
+            </div>
+            {questionOverflows && (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <button
+                    type="button"
+                    className="min-h-11 rounded-md text-xs font-medium text-muted-foreground underline underline-offset-4 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Read full question
+                  </button>
+                </DialogTrigger>
+                <DialogContent
+                  aria-describedby={undefined}
+                  showCloseButton={false}
+                  className="flex max-h-[80dvh] flex-col"
+                >
+                  <DialogTitle className="shrink-0 pr-8">
+                    {question.header}
+                  </DialogTitle>
+                  <div
+                    role="region"
+                    aria-label="Full question"
+                    tabIndex={0}
+                    className="min-h-0 overflow-y-auto overscroll-contain rounded-sm p-1 break-words text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  >
+                    <MemoizedMarkdown content={question.question} />
+                  </div>
+                  <DialogClose asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-2 size-11"
+                      aria-label="Close"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </Button>
+                  </DialogClose>
+                </DialogContent>
+              </Dialog>
+            )}
           </div>
-          <div className="space-y-0.5">
+          <div className="max-h-[min(18rem,35dvh)] min-h-0 space-y-0.5 overflow-y-auto overscroll-contain px-3 pb-3">
             {question.options.map((option, optionIndex) => {
               const selected =
                 !answer.customAnswer.trim() &&
@@ -135,7 +206,7 @@ export function UserInputQuestionPanel({
                   aria-pressed={selected}
                   disabled={disabled || answersLocked}
                   onClick={() => select(option.value)}
-                  className={`flex min-h-11 w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-muted text-foreground" : "text-foreground/80"}`}
+                  className={`flex min-h-11 w-full items-start gap-2.5 rounded-lg px-2 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-muted text-foreground" : "text-foreground/80"}`}
                 >
                   <span
                     aria-hidden="true"
@@ -145,7 +216,7 @@ export function UserInputQuestionPanel({
                       (question.multiSelect ? (
                         <Check className="size-3" />
                       ) : (
-                        <span className="size-1.5 rounded-full bg-white dark:bg-background" />
+                        <span className="size-1.5 rounded-full bg-background" />
                       ))}
                   </span>
                   <span className="min-w-0 flex-1 break-words">

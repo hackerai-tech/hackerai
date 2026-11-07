@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { UserInputQuestionPanel } from "../UserInputQuestionPanel";
 
 const question = {
@@ -105,4 +105,45 @@ it("does not change an answer from number keys inside an open dialog", () => {
     key: "1",
   });
   expect(props.onSelect).not.toHaveBeenCalled();
+});
+
+it("makes an overflowing question readable without changing the selected answer", () => {
+  const scrollHeight = jest
+    .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+    .mockReturnValue(200);
+  const clientHeight = jest
+    .spyOn(HTMLElement.prototype, "clientHeight", "get")
+    .mockReturnValue(80);
+  try {
+    render(
+      <UserInputQuestionPanel
+        {...props}
+        disabled
+        answer={{ selectedValues: ["a"], customAnswer: "" }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Read full question" }));
+    const dialog = screen.getByRole("dialog", { name: "Scope" });
+    expect(within(dialog).getByText("Choose a scope")).toBeVisible();
+    fireEvent.keyDown(within(dialog).getByRole("button", { name: "Close" }), {
+      key: "2",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Alpha/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(props.onSelect).not.toHaveBeenCalled();
+  } finally {
+    scrollHeight.mockRestore();
+    clientHeight.mockRestore();
+  }
+});
+
+it("does not add a full-question action when the question fits", () => {
+  render(<UserInputQuestionPanel {...props} />);
+  expect(
+    screen.queryByRole("button", { name: "Read full question" }),
+  ).not.toBeInTheDocument();
 });

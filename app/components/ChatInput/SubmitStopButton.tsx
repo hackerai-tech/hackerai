@@ -166,7 +166,7 @@ export function SubmitStopButton({
                       : !input.trim() && uploadedFiles.length === 0)
                   }
                   variant="default"
-                  className={`${isReplyingToAgent ? "h-10 min-w-0 rounded-full px-4 text-sm sm:h-8" : BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
+                  className={`${isReplyingToAgent ? "h-11 min-w-0 rounded-full px-4 text-sm sm:h-8" : BASE_BUTTON_CLASSES} ${getSubmitButtonVariantClasses(chatMode, isPaid, useNeutralAgentStyle)}`}
                   aria-label={
                     isReplyingToAgent
                       ? replyActionLabel

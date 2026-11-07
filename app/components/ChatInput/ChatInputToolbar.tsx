@@ -73,7 +73,7 @@ export function ChatInputToolbar({
             <Button
               type="button"
               variant="ghost"
-              className="h-10 rounded-full px-3 text-sm sm:h-8"
+              className="h-11 rounded-full px-3 text-sm sm:h-8"
               {...replyBack}
             >
               Back

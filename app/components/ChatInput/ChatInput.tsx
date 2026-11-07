@@ -1480,39 +1480,14 @@ const ChatInputContent = ({
                 />
               )}
 
-              {hasQuestionPanel && questionAnswers.question ? (
-                <UserInputQuestionPanel
-                  key={`${questionKey}:${questionAnswers.question.id}`}
-                  question={questionAnswers.question}
-                  answer={questionAnswers.answer}
-                  index={questionAnswers.index}
-                  total={questions.length}
-                  disabled={
-                    !questionAnswers.ready ||
-                    submissionPending ||
-                    isStoppingAgent ||
-                    isOffline ||
-                    !!effectiveSendDisabledReason
-                  }
-                  answersLocked={questionAnswers.locked}
+              {isWaitingForReply && !hasQuestionPanel && (
+                <WaitingForReplyBanner
+                  submitting={pendingUserWait?.status === "submitting"}
                   stopping={isStoppingAgent}
-                  onSelect={questionAnswers.select}
-                  onStop={
-                    pendingUserWait && !hideStop
-                      ? () => void handleAgentStop()
-                      : undefined
-                  }
+                  hasAttachments={uploadedFiles.length > 0}
+                  hideStop={hideStop}
+                  onStop={() => void handleAgentStop()}
                 />
-              ) : (
-                isWaitingForReply && (
-                  <WaitingForReplyBanner
-                    submitting={pendingUserWait?.status === "submitting"}
-                    stopping={isStoppingAgent}
-                    hasAttachments={uploadedFiles.length > 0}
-                    hideStop={hideStop}
-                    onStop={() => void handleAgentStop()}
-                  />
-                )
               )}
             </div>
           )}
@@ -1579,9 +1554,36 @@ const ChatInputContent = ({
             onStop={() => void handleAgentStop()}
           />
         )}
-        <div hidden={showAgentApprovalPrompt} className="order-2">
+        <div
+          hidden={showAgentApprovalPrompt}
+          className="order-2 flex min-h-0 flex-col"
+        >
+          {user && hasQuestionPanel && questionAnswers.question && (
+            <UserInputQuestionPanel
+              key={`${questionKey}:${questionAnswers.question.id}`}
+              question={questionAnswers.question}
+              answer={questionAnswers.answer}
+              index={questionAnswers.index}
+              total={questions.length}
+              disabled={
+                !questionAnswers.ready ||
+                submissionPending ||
+                isStoppingAgent ||
+                isOffline ||
+                !!effectiveSendDisabledReason
+              }
+              answersLocked={questionAnswers.locked}
+              stopping={isStoppingAgent}
+              onSelect={questionAnswers.select}
+              onStop={
+                pendingUserWait && !hideStop
+                  ? () => void handleAgentStop()
+                  : undefined
+              }
+            />
+          )}
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onPointerDownCapture={holdComposerFocusForPointer}
