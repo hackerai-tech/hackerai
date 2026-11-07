@@ -122,6 +122,23 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       },
     ]),
     [
+      Object.defineProperty(
+        new PersistenceError(
+          "Private terminal artifact operation failed",
+          "unknown",
+          1,
+        ),
+        "privateArtifactWritePhase",
+        { value: "append" },
+      ),
+      {
+        failure_category: "unknown",
+        command_stage: "private_artifact",
+        command_exit_code: 1,
+        private_artifact_write_phase: "append",
+      },
+    ],
+    [
       persistenceCommandError("Failed to write file", {
         exitCode: 17,
         stderr: "PRIVATE_STDERR",
@@ -173,6 +190,48 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
     },
   );
+
+  it("omits private or inapplicable phases without invoking diagnostic getters", () => {
+    const error = new PersistenceError(
+      "Private terminal artifact operation failed",
+      "unknown",
+      1,
+    );
+    const getter = jest.fn(() => "PRIVATE_PHASE");
+    Object.defineProperty(error, "privateArtifactWritePhase", {
+      get: getter,
+      configurable: true,
+    });
+    expect(checkpointCommandContext(error)).not.toHaveProperty(
+      "private_artifact_write_phase",
+    );
+    expect(getter).not.toHaveBeenCalled();
+    const unreadablePhase = new Proxy(error, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "privateArtifactWritePhase")
+          throw new Error("PRIVATE_TRAP");
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    expect(checkpointCommandContext(unreadablePhase)).toEqual({
+      command_stage: "private_artifact",
+      command_exit_code: 1,
+      command_exit_code_shape: "exit_status",
+    });
+    Object.defineProperty(error, "privateArtifactWritePhase", {
+      value: "PRIVATE_PHASE",
+    });
+    expect(JSON.stringify(checkpointCommandContext(error))).not.toContain(
+      "PRIVATE_",
+    );
+    const unrelated = Object.assign(
+      new PersistenceError("Failed to write file", "unknown", 1),
+      { privateArtifactWritePhase: "prepare" },
+    );
+    expect(checkpointCommandContext(unrelated)).not.toHaveProperty(
+      "private_artifact_write_phase",
+    );
+  });
 
   it("does not attribute another session's failure or retain it after successful recovery", async () => {
     const { store, write } = failingStore(
