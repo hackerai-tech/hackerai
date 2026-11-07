@@ -64,6 +64,11 @@ import {
   isDesktopPreference,
   resolveEnvironmentConnection,
 } from "@/lib/sandbox/environment";
+import {
+  selectedComputerOfflineError,
+  selectedComputerPreferenceKind,
+  type SelectedComputerLookup,
+} from "@/lib/sandbox/selected-computer-diagnostics";
 
 type SandboxInstance = AnySandbox;
 
@@ -320,6 +325,10 @@ export class HybridSandboxManager implements SandboxManager {
   private localAcquisition: Promise<void> | null = null;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
+  private readonly connectionListingDiagnostics = new WeakMap<
+    ConnectionInfo[],
+    { preference: string; lookup: SelectedComputerLookup }
+  >();
 
   constructor(
     private userID: string,
@@ -653,6 +662,9 @@ export class HybridSandboxManager implements SandboxManager {
    * List available connections for this user
    */
   async listConnections(): Promise<ConnectionInfo[]> {
+    const requestedKind = selectedComputerPreferenceKind(
+      this.sandboxPreference,
+    );
     try {
       // Old saved UUIDs can be upgraded only through their authenticated,
       // user-owned session record. Never infer identity from host metadata.
@@ -675,6 +687,26 @@ export class HybridSandboxManager implements SandboxManager {
         (connection) =>
           !this.quarantinedConnectionIds.has(connection.connectionId),
       );
+      const preference = this.sandboxPreference;
+      const matchesSelection = (connection: ConnectionInfo) =>
+        connectionMatchesPreference(connection, preference);
+      const lookup: SelectedComputerLookup = {
+        requestedKind,
+        resolvedKind: selectedComputerPreferenceKind(this.sandboxPreference),
+        registryMatch: storedConnections.some(matchesSelection),
+        quarantinedMatch: storedConnections.some(
+          (connection) =>
+            matchesSelection(connection) &&
+            this.quarantinedConnectionIds.has(connection.connectionId),
+        ),
+        staleMatch: false,
+        otherAvailable: connections.some(
+          (connection) => !matchesSelection(connection),
+        ),
+        presence: "not_checked",
+      };
+      const listing = { preference, lookup };
+      this.connectionListingDiagnostics.set(connections, listing);
       if (connections.length === 0) {
         return connections;
       }
@@ -685,6 +717,7 @@ export class HybridSandboxManager implements SandboxManager {
         this.chatId,
       );
       if (!presence.reliable) {
+        lookup.presence = "unavailable";
         logStructured("warn", "local_sandbox_presence_unavailable", {
           user_id: this.userID,
           connection_count: connections.length,
@@ -699,6 +732,12 @@ export class HybridSandboxManager implements SandboxManager {
 
       const { availableConnections, staleConnections } =
         filterConnectionsByPresence(connections, presence.onlineConnectionIds);
+      lookup.presence = "reliable";
+      lookup.staleMatch = staleConnections.some(matchesSelection);
+      lookup.otherAvailable = availableConnections.some(
+        (connection) => !matchesSelection(connection),
+      );
+      this.connectionListingDiagnostics.set(availableConnections, listing);
 
       if (staleConnections.length > 0) {
         logStructured("warn", "local_sandbox_stale_connections_filtered", {
@@ -755,6 +794,14 @@ export class HybridSandboxManager implements SandboxManager {
       }
       return [];
     }
+  }
+
+  /** Reject old evidence when a concurrent lookup changes the selected computer. */
+  private selectedComputerLookup(connections: ConnectionInfo[]) {
+    const listing = this.connectionListingDiagnostics.get(connections);
+    return listing?.preference === this.sandboxPreference
+      ? listing.lookup
+      : undefined;
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
@@ -825,9 +872,9 @@ export class HybridSandboxManager implements SandboxManager {
     // Legacy session IDs and the Desktop alias select a computer just as
     // persistent environment IDs do. Fail before acquiring a different host
     // so all offline selections reach the reconnect-required recovery path.
-    throw new ChatSDKError(
-      "offline:sandbox",
-      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    throw selectedComputerOfflineError(
+      this.selectedComputerLookup(connections),
+      "acquisition",
     );
   }
 
@@ -1082,9 +1129,9 @@ export class HybridSandboxManager implements SandboxManager {
       return this.buildSandboxContext(preferredConnection);
     }
 
-    throw new ChatSDKError(
-      "offline:sandbox",
-      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    throw selectedComputerOfflineError(
+      this.selectedComputerLookup(connections),
+      "prompt_context",
     );
   }
 
