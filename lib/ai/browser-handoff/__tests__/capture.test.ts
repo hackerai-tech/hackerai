@@ -32,6 +32,56 @@ const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
 it.each([
+  [
+    JSON.stringify({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      private: "PRIVATE_CANARY",
+    }),
+    {
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+    },
+  ],
+  [
+    JSON.stringify({
+      diagnostic_reason: "PRIVATE_CANARY",
+      diagnostic_error: "PRIVATE_CANARY",
+    }),
+    {},
+  ],
+])(
+  "reads only fixed helper preconditions from a stream-status exit2",
+  async (stdout, context) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stdout,
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 2,
+      ...context,
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
   [0, "stream_status"],
   [1, "frame_bridge"],
 ])(

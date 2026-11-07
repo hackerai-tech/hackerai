@@ -10,6 +10,7 @@ function daemon(
     invalidPath?: string;
     action?: string;
     unownedPath?: string;
+    missingPath?: string;
     name?: string;
   } = {},
 ) {
@@ -36,12 +37,19 @@ function daemon(
       if (name === "node:net") return { createConnection: connect };
       if (name === "node:fs")
         return {
-          lstatSync: (file: string) => ({
-            uid: file === options.unownedPath ? 0 : 1000,
-            isDirectory: () =>
-              file !== socketPath && file !== options.invalidPath,
-            isSocket: () => file === socketPath && file !== options.invalidPath,
-          }),
+          lstatSync: (file: string) => {
+            if (file === options.missingPath)
+              throw Object.assign(new Error("PRIVATE filesystem path"), {
+                code: "ENOENT",
+              });
+            return {
+              uid: file === options.unownedPath ? 0 : 1000,
+              isDirectory: () =>
+                file !== socketPath && file !== options.invalidPath,
+              isSocket: () =>
+                file === socketPath && file !== options.invalidPath,
+            };
+          },
         };
       throw new Error("Unexpected process or module access");
     },
@@ -89,6 +97,28 @@ it("queries only the existing owned socket and accepts a complete correlated res
     port: 9223,
   });
   expect(d.socket.destroy).toHaveBeenCalled();
+});
+
+it("reports a bounded missing-socket precondition while preserving exit2 and no connection", () => {
+  const d = daemon({ missingPath: directory + "/sockets/default.sock" });
+  expect(d.exit).toHaveBeenCalledWith(2);
+  expect(d.connect).not.toHaveBeenCalled();
+  expect(JSON.parse(d.output.mock.calls[0]?.[0] ?? "null")).toEqual({
+    diagnostic_reason: "socket_stat",
+    diagnostic_error: "missing",
+  });
+  expect(JSON.stringify(d.output.mock.calls)).not.toMatch(
+    /PRIVATE|\/dev\/shm|default/,
+  );
+});
+
+it("distinguishes owner mismatch without exposing UID or path", () => {
+  const d = daemon({ unownedPath: directory });
+  expect(d.exit).toHaveBeenCalledWith(2);
+  expect(d.connect).not.toHaveBeenCalled();
+  expect(JSON.parse(d.output.mock.calls[0]?.[0] ?? "null")).toEqual({
+    diagnostic_reason: "owner_mismatch",
+  });
 });
 
 it.each([

@@ -97,6 +97,20 @@ export type PersistenceFailureCategory =
   | "unsafe_artifact";
 
 export type PrivateArtifactWritePhase = "prepare" | "append" | "commit";
+const PRIVATE_ARTIFACT_PREPARE_STEPS = [
+  "root_validate",
+  "root_mkdir",
+  "root_chmod",
+  "directory_validate",
+  "directory_mkdir",
+  "directory_chmod",
+  "target_validate",
+  "temporary_validate",
+  "temporary_create",
+  "temporary_chmod",
+] as const;
+export type PrivateArtifactPrepareStep =
+  (typeof PRIVATE_ARTIFACT_PREPARE_STEPS)[number];
 
 /** Carries only a bounded diagnostic, never shell output, paths or content. */
 export class PersistenceError extends Error {
@@ -105,6 +119,7 @@ export class PersistenceError extends Error {
     readonly persistenceCategory: PersistenceFailureCategory,
     readonly exitCode?: number,
     readonly privateArtifactWritePhase?: PrivateArtifactWritePhase,
+    readonly privateArtifactPrepareStep?: PrivateArtifactPrepareStep,
   ) {
     super(message);
     this.name = "PersistenceError";
@@ -114,7 +129,10 @@ export class PersistenceError extends Error {
 /** Describe only our fixed command producers; never retain error text or stderr. */
 export function checkpointCommandContext(error: unknown): {
   command_stage: string;
+  native_path_command_id?: string;
+  native_path_receiver_mode?: string;
   private_artifact_write_phase?: PrivateArtifactWritePhase;
+  private_artifact_prepare_step?: PrivateArtifactPrepareStep;
   command_exit_code: number | "none" | "other";
   command_exit_code_shape:
     | "none"
@@ -129,6 +147,11 @@ export function checkpointCommandContext(error: unknown): {
   let commandStage = "none";
   let exitCode: unknown;
   let writePhase: unknown;
+  let prepareStep: unknown;
+  const nativePath: {
+    native_path_command_id?: string;
+    native_path_receiver_mode?: string;
+  } = {};
   try {
     if (error instanceof PersistenceError) {
       commandStage = "other";
@@ -165,9 +188,57 @@ export function checkpointCommandContext(error: unknown): {
     } catch {
       // A missing optional phase cannot invalidate the existing command context.
     }
+    try {
+      prepareStep = Object.getOwnPropertyDescriptor(
+        error,
+        "privateArtifactPrepareStep",
+      )?.value;
+    } catch {
+      /* Independent optional context. */
+    }
+  }
+  try {
+    if (error instanceof NativePathResolutionError) {
+      const context = Object.getOwnPropertyDescriptor(
+        error,
+        "commandContext",
+      )?.value;
+      if (context && typeof context === "object") {
+        const id = Object.getOwnPropertyDescriptor(context, "commandId")?.value;
+        const mode = Object.getOwnPropertyDescriptor(
+          context,
+          "receiverMode",
+        )?.value;
+        if (
+          typeof id === "string" &&
+          /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+            id,
+          )
+        )
+          nativePath.native_path_command_id = id;
+        if (
+          typeof mode === "string" &&
+          /^(desktop|local|unknown)_(isolated|shared)$/.test(mode)
+        )
+          nativePath.native_path_receiver_mode = mode;
+      }
+    }
+  } catch {
+    /* Optional native receipt context cannot invalidate existing fields. */
   }
   return {
     command_stage: commandStage,
+    ...nativePath,
+    ...(commandStage === "private_artifact" &&
+    writePhase === "prepare" &&
+    PRIVATE_ARTIFACT_PREPARE_STEPS.includes(
+      prepareStep as PrivateArtifactPrepareStep,
+    )
+      ? {
+          private_artifact_prepare_step:
+            prepareStep as PrivateArtifactPrepareStep,
+        }
+      : {}),
     ...(commandStage === "private_artifact" &&
     (writePhase === "prepare" ||
       writePhase === "append" ||
@@ -418,6 +489,26 @@ export function persistenceCommandError(
   ownerOnly = false,
   privateArtifactWritePhase?: PrivateArtifactWritePhase,
 ): PersistenceError {
+  let prepareStep: PrivateArtifactPrepareStep | undefined;
+  if (ownerOnly && privateArtifactWritePhase === "prepare") {
+    try {
+      const stderr = Object.getOwnPropertyDescriptor(result, "stderr")?.value;
+      const marker =
+        typeof stderr === "string"
+          ? stderr
+              .slice(-1024)
+              .match(/(?:^|\n)HA_PRIVATE_PREPARE:([a-z_]{1,40})\r?\n?$/)?.[1]
+          : undefined;
+      if (
+        PRIVATE_ARTIFACT_PREPARE_STEPS.includes(
+          marker as PrivateArtifactPrepareStep,
+        )
+      )
+        prepareStep = marker as PrivateArtifactPrepareStep;
+    } catch {
+      /* Optional marker parsing cannot replace the original classification. */
+    }
+  }
   return new PersistenceError(
     message,
     ownerOnly && result.exitCode === 73
@@ -425,5 +516,6 @@ export function persistenceCommandError(
       : classifyPersistenceFailure(result.stderr),
     result.exitCode,
     privateArtifactWritePhase,
+    prepareStep,
   );
 }

@@ -4290,6 +4290,65 @@ describe("CentrifugoSandbox", () => {
       expect(run).not.toHaveBeenCalled();
     });
 
+    it("preserves the path guard if optional receiver mode cannot be inspected", async () => {
+      const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH");
+      (sandbox as any).shellKind = "bash";
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 } as any);
+      jest
+        .spyOn(sandbox, "supportsOperationChannels")
+        .mockImplementation(() => {
+          throw new Error("PRIVATE mode");
+        });
+      const error = await sandbox.files
+        .write("file.txt", "PRIVATE_CONTENT")
+        .catch((failure: unknown) => failure);
+      expect(checkpointFailureOrigin(error)).toBe("windows_path_empty_output");
+      expect(checkpointCommandContext(error)).not.toHaveProperty(
+        "native_path_receiver_mode",
+      );
+    });
+
+    it("retains each actual path command receipt after the first-reason log is deduplicated", async () => {
+      const ids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ];
+      crypto.randomUUID = jest
+        .fn()
+        .mockReturnValueOnce(ids[0])
+        .mockReturnValueOnce(ids[1]);
+      const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH_CANARY");
+      (sandbox as any).shellKind = "bash";
+      for (let i = 0; i < 2; i++) {
+        const pending = sandbox.files
+          .write("file.txt", "PRIVATE_CONTENT")
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[i];
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "exit", commandId: ids[i], exitCode: 0 },
+        });
+        const error = await pending;
+        expect(checkpointCommandContext(error)).toMatchObject({
+          native_path_command_id: ids[i],
+          native_path_receiver_mode: "desktop_shared",
+        });
+      }
+      const records = guardLog.mock.calls.filter(
+        ([event]) => event === "windows_native_path_resolution_failed",
+      );
+      expect(records).toHaveLength(1);
+      expect(records[0][1]).toMatchObject({
+        command_id: ids[0],
+        receiver_mode: "desktop_shared",
+      });
+      expect(JSON.stringify(records)).not.toContain("PRIVATE");
+    });
+
     it.each([
       [true, "exit"],
       [false, "exit"],
@@ -4322,11 +4381,17 @@ describe("CentrifugoSandbox", () => {
         );
         (sandbox as any).shellKind = "bash";
         const command = jest.spyOn(sandbox.commands, "run");
+        let pathFailure: unknown;
         const pending = sandbox.files.write(
           "file.txt",
           "PRIVATE_CONTENT_CANARY",
         );
-        const rejected = expect(pending).rejects.toThrow(
+        const rejected = expect(
+          pending.catch((error: unknown) => {
+            pathFailure = error;
+            throw error;
+          }),
+        ).rejects.toThrow(
           "Failed to resolve the Windows file path through Git Bash",
         );
         await jest.advanceTimersByTimeAsync(0);
@@ -4358,6 +4423,7 @@ describe("CentrifugoSandbox", () => {
             event: "windows_native_path_resolution_failed",
             diagnostic_version: 1,
             diagnostic_scope: "first_reason_per_sandbox",
+            receiver_mode: "desktop_isolated",
             reason: terminal === "exit" ? "empty_output" : "command_failed",
             trigger_run_id: "run-originating-operation",
             command_id: FIXED_UUID,
@@ -4375,6 +4441,9 @@ describe("CentrifugoSandbox", () => {
           /PRIVATE|cygpath|file\.txt/,
         );
         expect(command).toHaveBeenCalledTimes(1);
+        expect(checkpointCommandContext(pathFailure)).toMatchObject({
+          native_path_receiver_mode: "desktop_isolated",
+        });
         expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
       },
     );

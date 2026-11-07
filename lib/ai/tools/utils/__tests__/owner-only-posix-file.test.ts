@@ -167,6 +167,45 @@ describe("owner-only POSIX terminal artifacts", () => {
     },
   );
 
+  it.each([false, true])(
+    "preserves a real prepare chmod exit even when diagnostic stderr is closed=%s",
+    async (closedStderr) => {
+      const { root, directory, filePath, sandbox, commands } = fixture();
+      commands.run.mockImplementation(async (command, opts) =>
+        runShell(
+          `${closedStderr ? "exec 2>&-\n" : ""}chmod() { return 17; }\n${command}`,
+          opts?.stdin,
+        ),
+      );
+      const error = await writeOwnerOnlyPosixFile(
+        sandbox,
+        root,
+        directory,
+        filePath,
+        "PRIVATE_PAYLOAD",
+      ).catch((failure: unknown) => failure);
+      expect(checkpointCommandContext(error)).toMatchObject({
+        command_stage: "private_artifact",
+        command_exit_code: 17,
+        private_artifact_write_phase: "prepare",
+      });
+      if (closedStderr)
+        expect(checkpointCommandContext(error)).not.toHaveProperty(
+          "private_artifact_prepare_step",
+        );
+      else
+        expect(checkpointCommandContext(error)).toHaveProperty(
+          "private_artifact_prepare_step",
+          "root_chmod",
+        );
+      expect(commands.run).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(error)).not.toMatch(
+        /PRIVATE|hackerai-private-artifacts/,
+      );
+      await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
   it.each(["append", "commit"])(
     "verifies a completed %s after a lost reply without replaying it",
     async (stage) => {
