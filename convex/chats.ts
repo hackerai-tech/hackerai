@@ -1943,6 +1943,29 @@ export const setActiveTriggerRun = mutation({
   },
 });
 
+async function updateGoalUserWaitTiming(
+  ctx: MutationCtx,
+  identity: { chatId: string; userId: string; runId: string },
+  waiting: boolean,
+) {
+  const goal = await ctx.db
+    .query("agent_goals")
+    .withIndex("by_chatId", (q) => q.eq("chatId", identity.chatId))
+    .first();
+  if (
+    goal?.userId === identity.userId &&
+    goal.activeRunId === identity.runId &&
+    goal.state === "running"
+  ) {
+    // Preserve the running lease while its durable tool is suspended. The
+    // timer changes atomically with wait ownership, without dispatching a run.
+    await ctx.db.patch(
+      goal._id,
+      goalTimingForState(goal, waiting ? "needs_input" : "running", Date.now()),
+    );
+  }
+}
+
 /** Only the current Trigger run may expose a reply wait in this chat. */
 export const setActiveAgentUserWait = mutation({
   args: {
@@ -1995,12 +2018,14 @@ export const setActiveAgentUserWait = mutation({
           status: "waiting" as const,
         },
       });
+      await updateGoalUserWaitTiming(ctx, args, true);
       return "acquired" as const;
     }
     if (!active || active.toolCallId !== args.toolCallId) {
       return "stale" as const;
     }
     await ctx.db.patch(chat._id, { active_agent_user_wait: undefined });
+    await updateGoalUserWaitTiming(ctx, args, false);
     return "released" as const;
   },
 });

@@ -443,6 +443,47 @@ describe("persistent goal lifecycle", () => {
       expect(db.goal().continuationSourceRunId).toBeUndefined();
     },
   );
+  it("settles a chat-only deliverable after a corrected wait without another run", async () => {
+    const db = database();
+    await invoke(start, db.ctx, {
+      ...startArgs,
+      objective: "Ask then report the answer in chat",
+      criteria: ["Report the supplied answer"],
+    });
+    await invoke(claimRun, db.ctx, { ...owner, generation: 1, runId: "r1" });
+    const text = "Confirmed Alpha";
+    await db.message("r1", [
+      {
+        type: "tool-wait_for_user",
+        toolCallId: "invalid",
+        state: "output-error",
+        errorText: "Question too long",
+      },
+      {
+        type: "tool-wait_for_user",
+        toolCallId: "valid",
+        state: "output-available",
+        output: {
+          success: true,
+          wait_outcome: "message_arrived",
+          reply: "Alpha",
+        },
+      },
+      { type: "text", text },
+    ]);
+    await invoke(finish, db.ctx, {
+      ...terminal,
+      judgment: {
+        verdict: "done",
+        reason: "Actual answer reported",
+        responseEvidence: { messageId: "r1", text },
+        evidence: [],
+      },
+    });
+    expect(db.goal().state).toBe("achieved");
+    expect(db.goal().continuationSourceRunId).toBeUndefined();
+  });
+
   it.each([
     "wrong-chat",
     "user-message",
@@ -452,6 +493,7 @@ describe("persistent goal lifecycle", () => {
     "oversized",
     "verification",
     "retry-tool",
+    "pending-wait",
   ])(
     "rejects %s response evidence without recording an achievement",
     async (kind) => {
@@ -481,9 +523,19 @@ describe("persistent goal lifecycle", () => {
       if (kind === "user-message") await db.ctx.db.patch(id, { role: "user" });
       await db.message("old", [{ type: "text", text }]);
       if (kind === "retry-tool") await db.message("retry", [result]);
+      if (kind === "pending-wait")
+        await db.message("retry", [
+          {
+            type: "tool-wait_for_user",
+            toolCallId: "pending",
+            state: "input-available",
+          },
+        ]);
       await invoke(finish, db.ctx, {
         ...terminal,
-        messageIds: kind === "retry-tool" ? ["r1", "retry"] : ["r1"],
+        messageIds: ["retry-tool", "pending-wait"].includes(kind)
+          ? ["r1", "retry"]
+          : ["r1"],
         judgment: {
           verdict: "done",
           reason: "Claim",

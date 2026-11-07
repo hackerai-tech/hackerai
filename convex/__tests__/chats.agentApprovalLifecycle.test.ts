@@ -1,3 +1,4 @@
+import { goalElapsedMs } from "../../lib/goals/timing";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -1390,4 +1391,75 @@ it("admits the replacement after worker cleanup clears the observed session", as
     "chat-doc",
     expect.objectContaining({ active_trigger_run_id: "new" }),
   );
+});
+
+describe("Goal clock during durable user waits", () => {
+  it("freezes until the matching wait releases, including duplicate acquisition and reply claim", async () => {
+    const chat: any = {
+      _id: "chat-doc",
+      user_id: "user",
+      active_trigger_run_id: "run",
+    };
+    const goal: any = {
+      _id: "goal-doc",
+      userId: "user",
+      activeRunId: "run",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: 1000,
+      updatedAt: 1000,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    ctx.db.query.mockImplementation((table: string) => ({
+      withIndex: () => ({
+        first: async () => (table === "agent_goals" ? goal : chat),
+      }),
+    }));
+    patch.mockImplementation(async (id: string, fields: object) =>
+      Object.assign(id === goal._id ? goal : chat, fields),
+    );
+    const now = jest.spyOn(Date, "now").mockReturnValue(4000);
+    const identity = {
+      serviceKey: "key",
+      chatId: "chat",
+      userId: "user",
+      runId: "run",
+      toolCallId: "tool",
+    };
+    try {
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      now.mockReturnValue(64000);
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      await claimAgentUserWaitReply.handler(ctx, {
+        ...identity,
+        replyId: "reply",
+        replyHash: "hash",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      await setActiveAgentUserWait.handler(ctx, identity);
+      expect(goalElapsedMs(goal, 66000)).toBe(7000);
+      goal.state = "paused";
+      goal.activeSince = undefined;
+      chat.active_agent_user_wait = {
+        runId: "run",
+        toolCallId: "tool2",
+        tokenId: "token2",
+        status: "waiting",
+      };
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        toolCallId: "tool2",
+      });
+      expect(goal.activeSince).toBeUndefined();
+    } finally {
+      now.mockRestore();
+    }
+  });
 });

@@ -106,8 +106,20 @@ export function validGoalResponseEvidence(
   if (
     messages.some((m) =>
       m.parts?.some((part) => {
-        const p = part as { type?: unknown } | null;
-        return typeof p?.type === "string" && p.type.startsWith("tool-");
+        const p = part as { type?: unknown; state?: unknown } | null;
+        // Asking and receiving an answer inside this chat is not external work.
+        // Terminal validation failures can precede a successful corrected wait;
+        // the independent judge still requires the actual delivered answer.
+        const settledUserWait =
+          p?.type === "tool-wait_for_user" &&
+          ["output-available", "output-error", "output-denied"].includes(
+            String(p.state),
+          );
+        return (
+          typeof p?.type === "string" &&
+          p.type.startsWith("tool-") &&
+          !settledUserWait
+        );
       }),
     )
   )

@@ -66,7 +66,8 @@ const originalMatchMedia = window.matchMedia;
 let mockUseRealChatHandlers = false;
 let mockSavedGoal: Record<string, unknown> | null | undefined;
 let mockLocalConnections:
-  Array<{ connectionId: string; isDesktop: boolean }> | undefined;
+  | Array<{ connectionId: string; isDesktop: boolean; lastSeen?: number }>
+  | undefined;
 let mockChatHandlerArgs: Parameters<
   typeof import("@/app/hooks/useChatHandlers").useChatHandlers
 >[0];
@@ -1892,7 +1893,9 @@ describe("Chat Component Integration", () => {
       const { rerender } = render(view());
       expect(mockHandleSubmit).not.toHaveBeenCalled();
       expect(sessionStorage.getItem("autoSendChatId")).toBe("fork-task");
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
@@ -1921,7 +1924,9 @@ describe("Chat Component Integration", () => {
         mockChatHandlerArgs.sendMessage({ text: "bypass" }),
       ).rejects.toThrow("Reconnect your computer");
       expect(mockSendMessage).not.toHaveBeenCalled();
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
@@ -1938,7 +1943,9 @@ describe("Chat Component Integration", () => {
 
     it("holds queued work while a Goal needs input or is blocked and releases it after completion", async () => {
       mockRouteParams = { id: "goal-queue-chat" };
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       mockRestoredChat = {
         id: "goal-queue-chat",
         sandbox_type: "desktop",
@@ -2051,7 +2058,9 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
       mockRouteParams = { id: "held-chat" };
       mockRestoredChat = { ...mockRestoredChat, id: "held-chat" };
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       mockSavedGoal = undefined;
       await act(async () => rerender(view()));
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
@@ -2068,7 +2077,9 @@ describe("Chat Component Integration", () => {
 
     it("holds queued work after a wait clears until the resumed run finishes", async () => {
       mockRouteParams = { id: "wait-queue-chat" };
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       mockRestoredChat = {
         id: "wait-queue-chat",
         sandbox_type: "desktop",
@@ -2444,7 +2455,9 @@ describe("Chat Component Integration", () => {
     });
 
     it("removes a queued item only when its actual Agent transport acknowledges the matching turn", async () => {
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       let finish!: () => void;
       mockSendMessage.mockImplementationOnce(
         () =>

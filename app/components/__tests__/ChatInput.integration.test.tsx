@@ -1205,6 +1205,7 @@ describe("ChatInput - Integration Tests", () => {
         let connections: Array<{
           connectionId: string;
           isDesktop: boolean;
+          lastSeen: number;
           name: string;
         }> = [];
         mockUseQuery.mockImplementation((query) =>
@@ -1253,6 +1254,7 @@ describe("ChatInput - Integration Tests", () => {
           {
             connectionId: sandboxPreference,
             isDesktop: sandboxPreference === "desktop",
+            lastSeen: Date.now(),
             name: "My computer",
           },
         ];

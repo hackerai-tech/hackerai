@@ -429,6 +429,132 @@ describe("independent goal completion check", () => {
     expect(classification.userReplies).toEqual(["ORCHID"]);
     expect(JSON.stringify(classification)).not.toContain("Which word?");
   });
+  it.each([false, true])(
+    "retains delivered tool replies for current and later Goal checks (historical=%s)",
+    async (historical) => {
+      const waitMessage = {
+        id: "wait-run",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-wait_for_user",
+            toolCallId: "confirm",
+            state: "output-available",
+            input: {
+              questions: [
+                {
+                  id: "qa_confirm",
+                  header: "Confirm",
+                  question: "Confirm your choice?",
+                  options: [],
+                  allowCustomAnswer: true,
+                },
+              ],
+            },
+            output: {
+              success: true,
+              wait_outcome: "message_arrived",
+              reply: "Proceed Gamma",
+            },
+          },
+        ],
+      } as UIMessage;
+      const final = {
+        id: historical ? "later-run" : "wait-run",
+        role: "assistant",
+        parts: [
+          ...(!historical ? waitMessage.parts : []),
+          { type: "text", text: "QA_GOAL_COMPLETE Alpha Proceed Gamma" },
+        ],
+      } as UIMessage;
+      generate.mockImplementation(async ({ prompt, system }) => {
+        const data = JSON.parse(prompt);
+        if (system.startsWith("Classify"))
+          return { output: { responseOnly: true }, usage: {} };
+        const answered = data.conversation.messages.some(
+          (m: any) => m.role === "user" && m.text === "Proceed Gamma",
+        );
+        return {
+          output: {
+            verdict: answered ? "done" : "continue",
+            reason: "Check delivered confirmation",
+            responseOnly: true,
+            evidence: [],
+            waitSeconds: null,
+          },
+          usage: {},
+        };
+      });
+      const judgment = await judgeGoalCompletion(
+        {
+          ...goal,
+          objective:
+            "Ask for a route and confirmation, then report both in chat",
+          criteria: ["Report both supplied answers"],
+          checkpoint: undefined,
+        },
+        [final],
+        final.id,
+        jest.fn(),
+        final.id,
+        [final.id],
+        [
+          {
+            id: "answer",
+            role: "user",
+            parts: [{ type: "text", text: "Alpha" }],
+          },
+          waitMessage,
+        ] as UIMessage[],
+      );
+      expect(judgment).toMatchObject({
+        verdict: "done",
+        responseEvidence: { text: "QA_GOAL_COMPLETE Alpha Proceed Gamma" },
+      });
+      const conversation = JSON.parse(generate.mock.calls[0][0].prompt)
+        .conversation.messages;
+      expect(
+        conversation.filter(
+          (m: any) => m.role === "user" && m.text === "Proceed Gamma",
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(conversation)).toContain("qa_confirm");
+      expect(JSON.parse(generate.mock.calls[1][0].prompt).userReplies).toEqual([
+        "Alpha",
+        "Proceed Gamma",
+      ]);
+    },
+  );
+
+  it.each([
+    { state: "input-available", output: undefined },
+    { state: "output-error", output: { success: true, reply: "Invented" } },
+    {
+      state: "output-available",
+      output: { success: false, wait_outcome: "timed_out", reply: "Invented" },
+    },
+  ])(
+    "does not turn an undelivered wait into a user answer: %j",
+    async (waitState) => {
+      generate.mockResolvedValue({
+        output: { verdict: "needs_input", reason: "Waiting", evidence: [] },
+        usage: {},
+      });
+      await judgeGoalCompletion(goal, messages, "r1", jest.fn(), "r1", ["r1"], [
+        {
+          id: "old-wait",
+          role: "assistant",
+          parts: [
+            { type: "tool-wait_for_user", toolCallId: "wait", ...waitState },
+          ],
+        },
+      ] as UIMessage[]);
+      const conversation = JSON.parse(generate.mock.calls[0][0].prompt)
+        .conversation.messages;
+      expect(conversation.filter((m: any) => m.role === "user")).toEqual([]);
+    },
+  );
+
   it("retries an invalid verifier response without rerunning work and accounts for failed generation", async () => {
     generate
       .mockRejectedValueOnce(
