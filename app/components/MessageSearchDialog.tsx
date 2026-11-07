@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  isShortcutTargetBlocked,
+  matchesShortcut,
+} from "@/lib/keyboard-shortcuts";
+
 import React, { useCallback, useState, useEffect, useRef } from "react";
 import { useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -322,7 +327,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     if (!isOpen) return;
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if (!isShortcutTargetBlocked(e) && matchesShortcut(e, "search")) {
         e.preventDefault();
         onClose();
       }
