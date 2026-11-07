@@ -221,7 +221,7 @@ export function createBrowserChallengeHandler(
           ...(managed && { manualWidgetRestored: restored }),
           message:
             restored === false
-              ? "Automatic solving declined. No paid task was created. The captured widget could not be restored; do not claim manual verification is ready."
+              ? "Automatic solving declined. No paid task was created. The captured widget could not be restored; do not claim manual verification is ready. If no form action was submitted and restarting verification is safe, reload this same page once and inspect it before requesting human takeover. Otherwise explain the blocked state; never reload an uncertain form submission."
               : "Automatic solving declined. No new paid task was created; use manual verification if needed.",
         });
       }

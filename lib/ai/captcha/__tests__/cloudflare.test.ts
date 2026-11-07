@@ -28,6 +28,7 @@ const inspect = () =>
 const originalEnv = process.env;
 beforeEach(() => {
   jest.useFakeTimers();
+  sessionStorage.clear();
   jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(true);
   document.body.innerHTML = "";
 });
@@ -59,6 +60,43 @@ function render() {
   api.render(document.body, options);
   return { api, options, original, callback };
 }
+
+it.each([false, true])(
+  "keeps manual rendering after navigation when release detached=%s",
+  (detached) => {
+    render();
+    if (detached) document.body.replaceWith(document.createElement("body"));
+    expect(window.eval(cloudflareReleaseScript([location.href]))).toBe(
+      !detached,
+    );
+    // A new document runs the initialization script again in the same tab.
+    jest.clearAllTimers();
+    delete page.turnstile;
+    delete page[key];
+    document.body.replaceWith(document.createElement("body"));
+    const next = render();
+    expect(next.original).toHaveBeenCalledTimes(1);
+    expect(page[key]).toBeUndefined();
+  },
+);
+
+it("does not capture a widget that initializes after manual handoff was requested", () => {
+  window.eval(cloudflareInitScript([location.href]));
+  expect(window.eval(cloudflareReleaseScript([location.href]))).toBe(false);
+  const original = jest.fn();
+  const api = { render: original };
+  page.turnstile = api;
+  jest.advanceTimersByTime(10);
+  api.render(document.body, {
+    sitekey: "0x4-public-site-key",
+    action: "managed",
+    cData: "opaque-data",
+    chlPageData: "opaque-page-data",
+    callback: jest.fn(),
+  });
+  expect(original).toHaveBeenCalledTimes(1);
+  expect(page[key]).toBeUndefined();
+});
 
 it.each([
   "cleared",

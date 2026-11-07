@@ -96,6 +96,7 @@ export function cloudflareOutcomeScript(url: string): string {
 export function cloudflareReleaseScript(approvedUrls: string[]): string {
   return `(() => {
     if (window !== top || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})) return false;
+    try { sessionStorage.setItem('hackerai.cloudflareManual:' + ${CLOUDFLARE_PAGE_URL_SCRIPT}, '1'); } catch {}
     const current = window[Symbol.for('hackerai.cloudflareChallenge')];
     if (!current || current.delivered || typeof current.release !== 'function') return false;
     return current.release() === true;
@@ -112,14 +113,21 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
     const canonical = ${CLOUDFLARE_PAGE_URL_SCRIPT};
     window[Symbol.for('hackerai.cloudflareInit')] = {exact:location.href === canonical, queryAllowed:!!canonical};
     if (!canonical) return;
+    // Releasing a detached widget cannot replay it. Let a human reload this
+    // page without capturing it again, for the lifetime of this owned tab.
+    const manualKey = 'hackerai.cloudflareManual:' + canonical;
+    const manualRequested = () => {
+      try { return sessionStorage.getItem(manualKey) === '1'; } catch { return false; }
+    };
+    if (manualRequested()) return;
     const key = Symbol.for('hackerai.cloudflareChallenge');
     let disabled = false;
     let timer;
     const wrap = (api) => {
-      if (disabled || !api || typeof api.render !== 'function' || api.render.__hackeraiWrapped) return;
+      if (disabled || manualRequested() || !api || typeof api.render !== 'function' || api.render.__hackeraiWrapped) return;
       const original = api.render;
       const render = function(container, options) {
-        if (disabled || options?.action !== 'managed' || typeof options.cData !== 'string' ||
+        if (disabled || manualRequested() || options?.action !== 'managed' || typeof options.cData !== 'string' ||
             !options.cData || options.cData.length > 2048 ||
             typeof options.chlPageData !== 'string' || !options.chlPageData ||
             options.chlPageData.length > 16384 || typeof options.callback !== 'function' ||
@@ -140,6 +148,7 @@ export function cloudflareInitScript(approvedUrls: string[]): string {
         args[1] = {...options};
         captured.release = () => {
           if (window[key] !== captured || captured.delivered) return false;
+          try { sessionStorage.setItem(manualKey, '1'); } catch {}
           disabled = true;
           clearInterval(timer);
           api.render = original;

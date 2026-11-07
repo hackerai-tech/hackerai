@@ -61,6 +61,13 @@ challenge; it does not prove form acceptance. Failed delivery restores the
 widget when possible. A solved CAPTCHA cannot guarantee access past a site's
 other anti-bot or access restrictions.
 
+Release records a page-specific manual-verification preference in the owned
+tab's session storage, including when a detached container prevents replay.
+Reloading that page then uses the original widget instead of capturing it again.
+The preference expires with the tab; it does not change other pages or solver
+eligibility. If the page cannot execute release or session storage is unavailable,
+this recovery is best-effort and must not be reported as successful verification.
+
 ## Server configuration
 
 Configure each environment independently. Preview uses its designated
