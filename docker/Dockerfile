@@ -270,11 +270,12 @@ RUN set -eux; \
 # ============================================================================
 # Binary Downloads (Platform-aware)
 # ============================================================================
+COPY install_trivy.sh /tmp/install_trivy.sh
+RUN sh /tmp/install_trivy.sh && rm /tmp/install_trivy.sh
+
 RUN set -eux; \
     # Secret scanning tool
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin && \
-    # Vulnerability scanner for containers and filesystems
-    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
     # httpx with proper architecture detection
     arch=$(uname -m); \
     if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \

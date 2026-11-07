@@ -60,6 +60,7 @@ export type SandboxUploadFailureReason =
   | "local_file_prepare_failed"
   | "windows_command_syntax"
   | "attachment_client_unavailable"
+  | "attachment_client_not_executable"
   | "attachment_dns_failure"
   | "attachment_resource_exhausted"
   | "sandbox_placement_failure"
@@ -88,8 +89,12 @@ type LocalCopyFailureReason =
   | "unclassified";
 
 // Combined fallback errors retain both messages for existing reporting, but
-// terminal copy diagnostics describe the last attempt only.
+// terminal diagnostics describe the last attempt only.
 const finalLocalCopyReasons = new WeakMap<Error, LocalCopyFailureReason>();
+const finalUrlTransferReasons = new WeakMap<
+  Error,
+  SandboxUploadFailureReason
+>();
 
 // Diagnostic only: do not change retries or forward local paths/stderr.
 const classifyLocalCopyFailure = (error: unknown): LocalCopyFailureReason => {
@@ -282,6 +287,11 @@ const classifySandboxUploadFailureReason = (
   error: unknown,
   sandboxReadinessReason: SandboxReadinessFailureReason,
 ): SandboxUploadFailureReason => {
+  const finalReason =
+    file.kind === "url" && error instanceof Error
+      ? finalUrlTransferReasons.get(error)
+      : undefined;
+  if (finalReason) return finalReason;
   const message = errorMessage(error);
 
   if (LOCAL_COMMAND_NO_RESPONSE_PATTERN.test(message)) {
@@ -296,6 +306,13 @@ const classifySandboxUploadFailureReason = (
     )
   ) {
     return "attachment_client_unavailable";
+  }
+  if (
+    file.kind === "url" &&
+    extractCommandExitCode(error) === 127 &&
+    /\bcurl:\s*inaccessible or not found\b/i.test(message)
+  ) {
+    return "attachment_client_not_executable";
   }
   if (
     /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
@@ -1195,6 +1212,17 @@ const stageSandboxFile = async (
           combinedError,
           classifyLocalCopyFailure(fallbackError),
         );
+      } else {
+        // The combined message keeps both attempts, but the final diagnostic
+        // must not mistake an earlier path failure for the terminal cause.
+        finalUrlTransferReasons.set(
+          combinedError,
+          classifySandboxUploadFailureReason(
+            file,
+            fallbackError,
+            classifySandboxUploadReadinessFailure(fallbackError),
+          ),
+        );
       }
       throw combinedError;
     }
@@ -1271,7 +1299,13 @@ const summarizeSandboxUploadFailure = (
     kind: file.kind,
     phase,
     error: redactSandboxUploadError(file, error),
-    exitCode: extractCommandExitCode(error),
+    // Native terminal errors use -1 rather than a process exit status. Retain
+    // that sentinel in diagnostics without changing command retry parsing.
+    exitCode:
+      extractCommandExitCode(error) ??
+      (/^[ \t]*exitCode:[ \t]*-1[ \t\r]*$/im.test(errorMessage(error))
+        ? -1
+        : null),
     reason: classifySandboxUploadFailureReason(
       file,
       error,
@@ -1654,6 +1688,8 @@ export const getSandboxUploadUserMessage = (
       return "The selected computer disconnected while preparing the attachment. Reconnect it in Remote Control, then try again.";
     case "attachment_client_unavailable":
       return "The selected Windows computer needs curl or PowerShell to transfer attachments. Install one or restore it to PATH, then try again.";
+    case "attachment_client_not_executable":
+      return "The selected computer could not run the attachment transfer tool. Check its installation, execution permissions, and PATH, then try again.";
     case "attachment_resource_exhausted":
       return "The selected computer could not start the attachment download because system resources are unavailable. Stop unnecessary processes or free memory, then try again.";
     case "attachment_dns_failure":

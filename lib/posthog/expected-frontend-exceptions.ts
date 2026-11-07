@@ -1,6 +1,10 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
-import { getUnhandledRejectionDiagnostics } from "./unhandled-rejection-diagnostics";
+import {
+  getUnhandledRejectionDiagnostics,
+  getNearbyDispatchDiagnostics,
+  type NearbyDispatchGroup,
+} from "./unhandled-rejection-diagnostics";
 
 type PostHogEventLike = {
   event?: string;
@@ -372,17 +376,56 @@ function getBrowserNetworkDetails() {
   };
 }
 
-/** Match the SDK's unhandled undefined shape without trusting its synthetic flag. */
-function isUndefinedUnhandledRejection(properties: Record<string, unknown>) {
+/** Match the SDK's unhandled non-Error shape without trusting its synthetic flag. */
+function isSdkNonErrorUnhandledRejection(properties: Record<string, unknown>) {
   const list = properties.$exception_list;
   if (!Array.isArray(list) || list.length !== 1) return false;
   const exception = list[0];
   return (
     exception?.type === "UnhandledRejection" &&
-    exception?.value ===
-      "Non-Error promise rejection captured with value: undefined" &&
+    typeof exception?.value === "string" &&
+    exception.value.startsWith(
+      "Non-Error promise rejection captured with value: ",
+    ) &&
     exception?.mechanism?.handled === false
   );
+}
+
+/** Narrow retained shapes needing native context; this never suppresses an error. */
+function nearbyDispatchGroup(
+  properties: Record<string, unknown>,
+): NearbyDispatchGroup | undefined {
+  try {
+    const list = properties.$exception_list;
+    if (!Array.isArray(list) || list.length !== 1) return undefined;
+    const exception = list[0];
+    if (
+      exception?.mechanism?.handled !== false ||
+      typeof exception.value !== "string"
+    )
+      return undefined;
+    if (
+      exception.type === "TypeError" &&
+      exception.value.includes("Request with GET/HEAD method cannot have body")
+    )
+      return "get_head_body_typeerror";
+    if (
+      exception.type === "TypeError" &&
+      ["ethereum", "selectedAddress", "undefined"].every((part) =>
+        exception.value.includes(part),
+      )
+    )
+      return "wallet_property_typeerror";
+    const frames = exception.stacktrace?.frames;
+    if (
+      exception.type === "Error" &&
+      exception.mechanism.synthetic === true &&
+      (frames === undefined || (Array.isArray(frames) && frames.length === 0))
+    )
+      return "synthetic_stackless_error";
+  } catch {
+    /* Optional attribution cannot change the retained exception. */
+  }
 }
 
 /** Enrich retained exceptions with bounded build and recent-context diagnostics. */
@@ -394,7 +437,11 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   const properties = { ...event.properties };
   // Reprocessing an event must not carry another account's old observation.
   for (const key of Object.keys(properties)) {
-    if (key.startsWith("hackerai_recent_rejection_")) delete properties[key];
+    if (
+      key.startsWith("hackerai_recent_rejection_") ||
+      key.startsWith("hackerai_nearby_dispatch_")
+    )
+      delete properties[key];
   }
   const strings = collectStrings(properties);
   const frameSources = collectStackFrameSources(properties);
@@ -402,6 +449,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   const routeKind = getRouteKind(properties.$current_url);
   const deploymentId = getDeploymentIdFromFrameSources(frameSources);
   const buildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  const dispatchGroup = nearbyDispatchGroup(properties);
 
   event.properties = {
     ...properties,
@@ -409,9 +457,10 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()
       : {}),
-    ...(isUndefinedUnhandledRejection(properties)
+    ...(isSdkNonErrorUnhandledRejection(properties)
       ? getUnhandledRejectionDiagnostics()
       : {}),
+    ...(dispatchGroup ? getNearbyDispatchDiagnostics(dispatchGroup) : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
       ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }
       : {}),

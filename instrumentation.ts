@@ -1,6 +1,7 @@
 import { phLogger } from "@/lib/posthog/server";
 import { registerPostHogLogProvider } from "@/lib/posthog/logs";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
+import { getRefreshFailureDiagnostics } from "@/lib/auth/refresh-failure-diagnostics";
 import type { Instrumentation } from "next";
 
 export async function register() {
@@ -72,6 +73,54 @@ const getServerActionErrorMetadata = (
   };
 };
 
+/** Correlate unexpected root reads without exporting headers or error contents. */
+function getRootRequestErrorMetadata(
+  error: unknown,
+  request: Parameters<Instrumentation.onRequestError>[1],
+  context: Parameters<Instrumentation.onRequestError>[2],
+  path: string,
+) {
+  if (
+    !["/", "/index", "/login"].includes(path) ||
+    (request.method !== "GET" && request.method !== "HEAD")
+  )
+    return undefined;
+  try {
+    // Reuse the existing closed error/cause taxonomy; none of these fields
+    // participate in auth, rendering, or response decisions.
+    const details = getRefreshFailureDiagnostics(error);
+    const requestId = getHeaderValue(request.headers, "x-vercel-id");
+    const digest = getErrorDigest(error);
+    return {
+      root_request_error_diagnostic_version: 1,
+      root_error_kind: details.auth_refresh_error_kind,
+      root_error_status: details.auth_refresh_error_status,
+      root_error_status_shape: details.auth_refresh_error_status_shape,
+      root_error_code: details.auth_refresh_error_code,
+      root_cause_kind: details.auth_refresh_cause_kind,
+      root_cause_status: details.auth_refresh_cause_status,
+      root_cause_status_shape: details.auth_refresh_cause_status_shape,
+      root_cause_code: details.auth_refresh_cause_code,
+      root_render_source: [
+        "react-server-components",
+        "react-server-components-payload",
+        "server-rendering",
+      ].includes(context.renderSource ?? "")
+        ? context.renderSource
+        : "unknown",
+      ...(requestId &&
+      /^(?:[a-z]{3}\d::){1,3}[a-z0-9]{3,16}-\d{10,17}-[a-f0-9]{8,64}$/.test(
+        requestId,
+      )
+        ? { vercel_request_id: requestId }
+        : {}),
+      ...(digest && /^\d{1,20}$/.test(digest) ? { error_digest: digest } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export const onRequestError: Instrumentation.onRequestError = (
   error,
   request,
@@ -93,6 +142,48 @@ export const onRequestError: Instrumentation.onRequestError = (
     return;
   }
 
+  const rootMetadata = getRootRequestErrorMetadata(
+    error,
+    request,
+    context,
+    path,
+  );
+  if (rootMetadata?.root_request_error_diagnostic_version === 1) {
+    // PostHog exports are buffered. This finite native receipt distinguishes a
+    // reached Next hook from missing export evidence, without awaiting telemetry
+    // or serializing the original error. It is not proof of pre-hook failures.
+    try {
+      const build = process.env.VERCEL_GIT_COMMIT_SHA;
+      const environment = process.env.VERCEL_ENV;
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "root_request_error_context",
+          service: "hackerai-web",
+          environment: ["production", "preview", "development"].includes(
+            environment ?? "",
+          )
+            ? environment
+            : "unknown",
+          ...(build && /^[a-f0-9]{40}$/i.test(build)
+            ? { web_build_commit: build.toLowerCase() }
+            : {}),
+          path,
+          method: request.method,
+          route_type: ["render", "route", "action", "proxy"].includes(
+            context.routeType,
+          )
+            ? context.routeType
+            : "unknown",
+          ...rootMetadata,
+        }),
+      );
+    } catch {
+      // Optional diagnostics cannot replace the original error report.
+    }
+  }
+
   phLogger.error("Next.js request error", {
     error,
     path,
@@ -100,6 +191,7 @@ export const onRequestError: Instrumentation.onRequestError = (
     routePath: context.routePath,
     routeType: context.routeType,
     routerKind: context.routerKind,
+    ...rootMetadata,
     ...getServerActionErrorMetadata(error, request, context),
   });
 };

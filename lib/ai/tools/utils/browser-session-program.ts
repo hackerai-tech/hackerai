@@ -75,6 +75,48 @@ for i, arg in enumerate(sys.argv[1:]):
 if not name or len(name) > 80 or '/' in name or '\\x00' in name:
     raise RuntimeError('Invalid browser session name')
 (root / 'active-session').write_text(name)
+def record_wrapper(phase, status=None):
+    """Atomically record finite wrapper state without changing CLI admission or its result."""
+    # Diagnostic only, in the existing private ephemeral root. Never store argv,
+    # targets or output; the reader exports session equality, not its name.
+    temporary = None
+    created = False
+    try:
+        info = root.lstat()
+        if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return
+        action = 'other'
+        args = iter(sys.argv[1:])
+        for arg in args:
+            if arg == '--session':
+                next(args, None)
+            elif arg.startswith('--session='):
+                continue
+            elif arg.startswith('-'):
+                break  # Unknown option values must not be mistaken for actions.
+            else:
+                action = arg if arg in ('open', 'close') else 'other'
+                break
+        if sys.argv[1:] in (['--version'], ['-V']):
+            action = 'version'
+        value = dict(v=1, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
+                     exit=status, at=int(time.time() * 1000))
+        temporary = root / ('.wrapper-receipt-' + os.urandom(12).hex())
+        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
+        with os.fdopen(fd, 'w') as output:
+            __import__('json').dump(value, output)
+        os.replace(temporary, root / 'wrapper-receipt.json')
+    except Exception:
+        pass
+    finally:
+        if temporary is not None and created:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+record_wrapper('started')
 verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]
@@ -92,12 +134,16 @@ if verify.exists():
             break
     if command != 'snapshot':
         print('Browser handoff resumed; this command was not executed. The browser is still open and user input is preserved. Run agent-browser snapshot -i first in this same session, without prepending get url or open. This is a handoff verification gate, not a socket failure; do not reload, switch sessions, or repair the browser.', file=sys.stderr)
+        record_wrapper('completed', 75)
         sys.exit(75)
     result = __import__('subprocess').run([%r, *args], close_fds=True)
     if result.returncode == 0:
         verify.unlink(missing_ok=True)
+    record_wrapper('completed', result.returncode)
     sys.exit(result.returncode)
-sys.exit(__import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True).returncode)
+result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
+record_wrapper('completed', result.returncode)
+sys.exit(result.returncode)
 ''' % (str(root), real, real)
         path = gate_bin / 'agent-browser'
         path.write_text(wrapper)

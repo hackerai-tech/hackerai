@@ -12,6 +12,8 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { ChatSDKError } from "@/lib/errors";
+import { ConvexError } from "convex/values";
+import { phLogger } from "@/lib/posthog/server";
 
 const controlRequest = z.discriminatedUnion("action", [
   z.object({
@@ -34,8 +36,10 @@ const controlRequest = z.discriminatedUnion("action", [
 export const maxDuration = 30;
 /** Own goal-read recovery until the status response finishes, separately from controls. */
 async function handleGet(req: NextRequest) {
+  let failureStage: "auth_lookup" | "goal_reconciliation" = "auth_lookup";
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
+    failureStage = "goal_reconciliation";
     const chatId = req.nextUrl.searchParams.get("chatId");
     const goal = chatId ? await reconcileGoal(chatId, userId) : null;
     return Response.json({
@@ -43,9 +47,49 @@ async function handleGet(req: NextRequest) {
       ...(chatId ? { goal: goal?.deletedAt ? null : goal } : {}),
     });
   } catch (e) {
-    return e instanceof ChatSDKError
-      ? e.toResponse()
-      : Response.json({ message: "Goal access unavailable" }, { status: 503 });
+    if (e instanceof ChatSDKError) return e.toResponse();
+    let failureKind = "thrown_value";
+    let requestId = "none";
+    try {
+      failureKind =
+        e instanceof TypeError
+          ? "type_error"
+          : e instanceof ConvexError
+            ? "convex_error"
+            : e instanceof Error
+              ? "other_error"
+              : "thrown_value";
+      if (e && typeof e === "object") {
+        // Inspect data properties only; never emit private error/goal contents.
+        if (
+          Object.getOwnPropertyDescriptor(e, "data")?.value ===
+          "Goal chat unavailable"
+        )
+          failureKind = "goal_chat_unavailable";
+        const message = Object.getOwnPropertyDescriptor(e, "message")?.value;
+        if (typeof message === "string" && message.length <= 4096)
+          requestId =
+            message
+              .match(/\[Request ID:\s*([a-f0-9]{16})\]/i)?.[1]
+              .toLowerCase() ?? "none";
+      }
+    } catch {
+      failureKind = "unreadable_error";
+    }
+    try {
+      phLogger.warn("agent_goal_status_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: failureStage,
+        failure_kind: failureKind,
+        convex_request_id: requestId,
+      });
+    } catch {
+      // Diagnostics must not replace the existing response or retry the operation.
+    }
+    return Response.json(
+      { message: "Goal access unavailable" },
+      { status: 503 },
+    );
   }
 }
 export const GET = withServiceQueryRecovery(handleGet);

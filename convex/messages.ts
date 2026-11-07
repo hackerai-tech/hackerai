@@ -646,6 +646,7 @@ export const saveMessage = mutation({
         return "stale_run" as const;
     }
     let failureStage = "start";
+    let messageOwnershipMismatch: "chat" | "user" | "chat_and_user" | undefined;
     let chatForInsert: Doc<"chats"> | null = null;
 
     try {
@@ -734,6 +735,13 @@ export const saveMessage = mutation({
           existingMessage.chat_id !== args.chatId ||
           existingMessage.user_id !== args.userId
         ) {
+          // Server-only scope, never the existing owner's identifiers or response data.
+          messageOwnershipMismatch =
+            existingMessage.chat_id === args.chatId
+              ? "user"
+              : existingMessage.user_id === args.userId
+                ? "chat"
+                : "chat_and_user";
           failureStage = "verify_existing_message_ownership";
           throw new ConvexError({
             code: "MESSAGE_UNAUTHORIZED",
@@ -1076,6 +1084,10 @@ export const saveMessage = mutation({
         JSON.stringify({
           level: "error",
           event: "convex_message_save_failed",
+          ...(messageOwnershipMismatch && {
+            message_ownership_mismatch: messageOwnershipMismatch,
+            message_ownership_diagnostic_version: 1,
+          }),
           ...(fileValidationReason && {
             file_validation_reason: fileValidationReason,
           }),

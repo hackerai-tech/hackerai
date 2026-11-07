@@ -5256,11 +5256,16 @@ describe("createAgentStream repeated compaction", () => {
     state.transcriptSourceMessages = [
       uiMessage("transcript-1", "private transcript content"),
     ];
-    state.finalMessages[0].parts.push({
-      type: "file",
-      mediaType: "image/png",
-      url: "https://private.test/diagnostic-fixture",
-    });
+    state.finalMessages[0].parts.push(
+      Object.assign(
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "https://private.test/diagnostic-fixture?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20200101T000000Z&X-Amz-Expires=600&X-Amz-Signature=private-signature",
+        } as const,
+        { fileId: "PRIVATE_FILE_REFERENCE" },
+      ),
+    );
 
     await createAgentStream(
       "test-model",
@@ -5281,6 +5286,10 @@ describe("createAgentStream repeated compaction", () => {
           image_parts: 1,
           user_image_parts: 1,
           url_images: 1,
+          url_expiry_hint_expired_images: 1,
+          url_expiry_hint_unknown_images: 0,
+          user_url_images_with_file_reference_match: 1,
+          user_url_images_without_file_reference_match: 0,
           inline_images: 0,
         }),
         serialized_message_bytes: expect.any(Number),
@@ -5305,6 +5314,9 @@ describe("createAgentStream repeated compaction", () => {
     expect(
       JSON.stringify(onProviderRequestDiagnostics.mock.calls),
     ).not.toContain("https://private.test/diagnostic-fixture");
+    expect(
+      JSON.stringify(onProviderRequestDiagnostics.mock.calls),
+    ).not.toContain("PRIVATE_FILE_REFERENCE");
   });
 
   it("retains the handoff note when preparing a compacted request falls back", async () => {

@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UIMessage } from "ai";
 
 export interface ProviderRequestMediaCounts {
   image_parts: number;
@@ -7,6 +7,13 @@ export interface ProviderRequestMediaCounts {
   tool_image_parts: number;
   other_image_parts: number;
   url_images: number;
+  // Optional for older web/worker diagnostic records during deployment skew.
+  url_expiry_hint_expired_images?: number;
+  url_expiry_hint_near_images?: number;
+  url_expiry_hint_later_images?: number;
+  url_expiry_hint_unknown_images?: number;
+  user_url_images_with_file_reference_match?: number;
+  user_url_images_without_file_reference_match?: number;
   inline_images: number;
   provider_id_images: number;
   unknown_images: number;
@@ -40,10 +47,89 @@ const imageRepresentation = (
     : "unknown_images";
 };
 
-/** Counts model-input occurrences, not unique images or downloaded bytes. */
+// These untrusted SigV4 hints describe the input snapshot, not URL accessibility
+// or signature/credential validity. Never fetch an image or retain URL material.
+const imageUrlExpiryHint = (
+  value: unknown,
+  nowMs: number,
+): "expired" | "near" | "later" | "unknown" => {
+  const raw = value instanceof URL ? value.href : value;
+  if (typeof raw !== "string" || raw.length > 8192 || !Number.isFinite(nowMs)) {
+    return "unknown";
+  }
+  try {
+    const params = new URL(raw).searchParams;
+    const algorithms = params.getAll("X-Amz-Algorithm");
+    const dates = params.getAll("X-Amz-Date");
+    const expiries = params.getAll("X-Amz-Expires");
+    if (
+      algorithms.length !== 1 ||
+      algorithms[0] !== "AWS4-HMAC-SHA256" ||
+      dates.length !== 1 ||
+      expiries.length !== 1 ||
+      !/^\d{8}T\d{6}Z$/.test(dates[0]) ||
+      !/^\d{1,6}$/.test(expiries[0])
+    )
+      return "unknown";
+    const date = dates[0];
+    const signedAt = Date.parse(
+      `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${date.slice(9, 11)}:${date.slice(11, 13)}:${date.slice(13, 15)}Z`,
+    );
+    const seconds = Number(expiries[0]);
+    if (
+      !Number.isFinite(signedAt) ||
+      signedAt > nowMs ||
+      new Date(signedAt)
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace(".000", "") !== date ||
+      seconds < 1 ||
+      seconds > 604800
+    )
+      return "unknown";
+    const remaining = signedAt + seconds * 1000 - nowMs;
+    return remaining <= 0 ? "expired" : remaining <= 300_000 ? "near" : "later";
+  } catch {
+    return "unknown";
+  }
+};
+
+/**
+ * Count model-input occurrences, not unique images or downloaded bytes.
+ * Optional current UI references establish exact URL correlation only, never
+ * ownership, accessibility or the source of an unmatched historical image.
+ */
 export const getProviderRequestMediaCounts = (
   messages: readonly ModelMessage[],
+  nowMs = Date.now(),
+  sourceMessages?: readonly UIMessage[],
 ): ProviderRequestMediaCounts => {
+  let fileReferenceUrls: Set<string> | undefined;
+  try {
+    const references = new Set<string>();
+    for (const message of sourceMessages ?? []) {
+      if (message.role !== "user") continue;
+      for (const part of message.parts) {
+        const fileId = isRecord(part)
+          ? Object.getOwnPropertyDescriptor(part, "fileId")?.value
+          : undefined;
+        if (
+          isRecord(part) &&
+          part.type === "file" &&
+          typeof part.mediaType === "string" &&
+          /^image\//i.test(part.mediaType) &&
+          typeof fileId === "string" &&
+          fileId.length > 0 &&
+          typeof part.url === "string"
+        ) {
+          references.add(part.url);
+        }
+      }
+    }
+    if (sourceMessages !== undefined) fileReferenceUrls = references;
+  } catch {
+    /* Unavailable optional context must not interrupt the provider request. */
+  }
   const counts: ProviderRequestMediaCounts = {
     image_parts: 0,
     user_image_parts: 0,
@@ -51,12 +137,20 @@ export const getProviderRequestMediaCounts = (
     tool_image_parts: 0,
     other_image_parts: 0,
     url_images: 0,
+    url_expiry_hint_expired_images: 0,
+    url_expiry_hint_near_images: 0,
+    url_expiry_hint_later_images: 0,
+    url_expiry_hint_unknown_images: 0,
     inline_images: 0,
     provider_id_images: 0,
     unknown_images: 0,
     pdf_file_parts: 0,
     other_file_parts: 0,
-  };
+    ...(fileReferenceUrls !== undefined && {
+      user_url_images_with_file_reference_match: 0,
+      user_url_images_without_file_reference_match: 0,
+    }),
+  } satisfies ProviderRequestMediaCounts;
   const addImage = (role: string, value: unknown, providerId = false) => {
     counts.image_parts++;
     const roleKey =
@@ -68,7 +162,23 @@ export const getProviderRequestMediaCounts = (
             ? "tool_image_parts"
             : "other_image_parts";
     counts[roleKey]++;
-    counts[providerId ? "provider_id_images" : imageRepresentation(value)]++;
+    const representation = providerId
+      ? "provider_id_images"
+      : imageRepresentation(value);
+    counts[representation]++;
+    if (representation === "url_images") {
+      const expiryField =
+        `url_expiry_hint_${imageUrlExpiryHint(value, nowMs)}_images` as const;
+      counts[expiryField] = (counts[expiryField] ?? 0) + 1;
+      if (role === "user" && fileReferenceUrls !== undefined) {
+        const field = fileReferenceUrls.has(
+          value instanceof URL ? value.href : (value as string),
+        )
+          ? "user_url_images_with_file_reference_match"
+          : "user_url_images_without_file_reference_match";
+        counts[field] = (counts[field] ?? 0) + 1;
+      }
+    }
   };
   const addFile = (role: string, mediaType: unknown, data: unknown) => {
     if (typeof mediaType === "string" && /^image\//i.test(mediaType)) {

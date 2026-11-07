@@ -36,6 +36,7 @@ import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import * as relayTraffic from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
+  checkpointCommandContext,
   checkpointFailureOrigin,
   classifyPersistenceFailure,
 } from "../persistence-failure";
@@ -1975,6 +1976,83 @@ describe("CentrifugoSandbox", () => {
       expect(run).not.toHaveBeenCalled();
       expect(jest.getTimerCount()).toBe(0);
     });
+
+    it("overwrites an existing legacy Windows file instead of rejecting its second checkpoint", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      (sandbox as any).shellKind = "cmd";
+      let staged = "";
+      let output: Buffer | undefined;
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (command) => {
+          const chunk = /^echo ([A-Za-z0-9+/=]+) (>>?) /.exec(command);
+          if (chunk) staged = chunk[2] === ">" ? chunk[1] : staged + chunk[1];
+          if (command.startsWith("certutil ")) {
+            if (output && !command.split(" ").includes("-f")) {
+              return {
+                stdout: "",
+                stderr: "The file exists",
+                exitCode: -2147024816,
+              };
+            }
+            output = Buffer.from(staged, "base64");
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+      const path = "C:\\temp\\checkpoint (saved).json";
+      await sandbox.files.write(path, "first checkpoint");
+      expect(output).toEqual(Buffer.from("first checkpoint"));
+      const replacement = Buffer.from("updated checkpoint λ\n".repeat(1000));
+      await sandbox.files.write(path, replacement);
+      expect(output).toEqual(replacement);
+    });
+
+    (process.platform === "win32" ? it : it.skip)(
+      "overwrites a real legacy Windows file with repeated checkpoint bytes",
+      async () => {
+        jest.useRealTimers();
+        mkdirSync("C:\\temp", { recursive: true });
+        const directory = mkdtempSync("C:\\temp\\hackerai-checkpoint-");
+        const path = win32.join(directory, "checkpoint (saved).json");
+        const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+        (sandbox as any).shellKind = "cmd";
+        const shell = windowsSystemExecutable("cmd.exe");
+        jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            const spec = buildShellSpawn(shell, "/c", command);
+            return promisify(execFile)(shell, spec.args, {
+              ...spec.options,
+              timeout: 10_000,
+            }).then(
+              (result) => ({
+                stdout: String(result.stdout),
+                stderr: String(result.stderr),
+                exitCode: 0,
+              }),
+              (error) => ({
+                stdout: String(error.stdout ?? ""),
+                stderr: String(error.stderr ?? ""),
+                exitCode: Number(error.code) || -1,
+              }),
+            );
+          });
+        try {
+          await sandbox.files.write(path, "first checkpoint");
+          expect(readFileSync(path)).toEqual(Buffer.from("first checkpoint"));
+          const replacement = Buffer.from(
+            "updated checkpoint λ\n".repeat(1000),
+          );
+          await sandbox.files.write(path, replacement);
+          expect(readFileSync(path)).toEqual(replacement);
+          await sandbox.files.write(path, "final");
+          expect(readFileSync(path)).toEqual(Buffer.from("final"));
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+      30_000,
+    );
 
     it("does not mask a Windows decode failure with successful cleanup", async () => {
       const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
@@ -4212,6 +4290,65 @@ describe("CentrifugoSandbox", () => {
       expect(run).not.toHaveBeenCalled();
     });
 
+    it("preserves the path guard if optional receiver mode cannot be inspected", async () => {
+      const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH");
+      (sandbox as any).shellKind = "bash";
+      jest
+        .spyOn(sandbox.commands, "run")
+        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 } as any);
+      jest
+        .spyOn(sandbox, "supportsOperationChannels")
+        .mockImplementation(() => {
+          throw new Error("PRIVATE mode");
+        });
+      const error = await sandbox.files
+        .write("file.txt", "PRIVATE_CONTENT")
+        .catch((failure: unknown) => failure);
+      expect(checkpointFailureOrigin(error)).toBe("windows_path_empty_output");
+      expect(checkpointCommandContext(error)).not.toHaveProperty(
+        "native_path_receiver_mode",
+      );
+    });
+
+    it("retains each actual path command receipt after the first-reason log is deduplicated", async () => {
+      const ids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ];
+      crypto.randomUUID = jest
+        .fn()
+        .mockReturnValueOnce(ids[0])
+        .mockReturnValueOnce(ids[1]);
+      const sandbox = createDesktopSandbox("/tmp/PRIVATE_PATH_CANARY");
+      (sandbox as any).shellKind = "bash";
+      for (let i = 0; i < 2; i++) {
+        const pending = sandbox.files
+          .write("file.txt", "PRIVATE_CONTENT")
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(0);
+        const reply = mockSubscriptions[i];
+        reply.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "exit", commandId: ids[i], exitCode: 0 },
+        });
+        const error = await pending;
+        expect(checkpointCommandContext(error)).toMatchObject({
+          native_path_command_id: ids[i],
+          native_path_receiver_mode: "desktop_shared",
+        });
+      }
+      const records = guardLog.mock.calls.filter(
+        ([event]) => event === "windows_native_path_resolution_failed",
+      );
+      expect(records).toHaveLength(1);
+      expect(records[0][1]).toMatchObject({
+        command_id: ids[0],
+        receiver_mode: "desktop_shared",
+      });
+      expect(JSON.stringify(records)).not.toContain("PRIVATE");
+    });
+
     it.each([
       [true, "exit"],
       [false, "exit"],
@@ -4244,11 +4381,17 @@ describe("CentrifugoSandbox", () => {
         );
         (sandbox as any).shellKind = "bash";
         const command = jest.spyOn(sandbox.commands, "run");
+        let pathFailure: unknown;
         const pending = sandbox.files.write(
           "file.txt",
           "PRIVATE_CONTENT_CANARY",
         );
-        const rejected = expect(pending).rejects.toThrow(
+        const rejected = expect(
+          pending.catch((error: unknown) => {
+            pathFailure = error;
+            throw error;
+          }),
+        ).rejects.toThrow(
           "Failed to resolve the Windows file path through Git Bash",
         );
         await jest.advanceTimersByTimeAsync(0);
@@ -4280,6 +4423,7 @@ describe("CentrifugoSandbox", () => {
             event: "windows_native_path_resolution_failed",
             diagnostic_version: 1,
             diagnostic_scope: "first_reason_per_sandbox",
+            receiver_mode: "desktop_isolated",
             reason: terminal === "exit" ? "empty_output" : "command_failed",
             trigger_run_id: "run-originating-operation",
             command_id: FIXED_UUID,
@@ -4297,7 +4441,51 @@ describe("CentrifugoSandbox", () => {
           /PRIVATE|cygpath|file\.txt/,
         );
         expect(command).toHaveBeenCalledTimes(1);
+        expect(checkpointCommandContext(pathFailure)).toMatchObject({
+          native_path_receiver_mode: "desktop_isolated",
+        });
         expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
+      ["\uFEFFC:\\PRIVATE_PATH_CANARY", "leading_bom"],
+      ["\u001b[32mC:\\PRIVATE_PATH_CANARY", "leading_ansi"],
+      ['"C:\\PRIVATE_PATH_CANARY"', "quoted_windows_absolute"],
+      ["'\\\\host\\PRIVATE_PATH_CANARY'", "quoted_windows_absolute"],
+      [" \tC:\\PRIVATE_PATH_CANARY", "whitespace_windows_absolute"],
+      ["/tmp/PRIVATE_PATH_CANARY", "posix_absolute"],
+      ["prefix C:\\PRIVATE_PATH_CANARY", "embedded_windows_absolute"],
+      ["PRIVATE_PATH_CANARY", "relative_or_other"],
+    ])(
+      "classifies rejected Windows file output without exposing it (%s)",
+      async (stdout, shape) => {
+        const sandbox = createDesktopSandbox("/tmp/PRIVATE_SOURCE_CANARY");
+        (sandbox as any).shellKind = "bash";
+        const command = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: `${stdout}\r\n`,
+          stderr: "PRIVATE_STDERR_CANARY",
+          exitCode: 0,
+        });
+        for (let i = 0; i < 2; i++) {
+          await expect(
+            sandbox.files.write("file.txt", "PRIVATE_CONTENT_CANARY"),
+          ).rejects.toMatchObject({ failure: "non_absolute_output" });
+        }
+        const records = guardLog.mock.calls.filter(
+          ([event]) => event === "windows_native_path_resolution_failed",
+        );
+        expect(records).toHaveLength(1);
+        expect(records[0][1]).toMatchObject({
+          reason: "non_absolute_output",
+          stdout_shape: shape,
+          stdout_shape_version: 1,
+        });
+        expect(JSON.stringify(records)).not.toMatch(
+          /PRIVATE|host|cygpath|file\.txt/,
+        );
+        expect(command).toHaveBeenCalledTimes(2);
+        expect(mockSubscriptions).toHaveLength(0);
       },
     );
 
@@ -4553,9 +4741,17 @@ describe("CentrifugoSandbox", () => {
             stderr: "",
             exitCode: 0,
           } as any);
-        await expect(sandbox.files.write("/tmp/test", "safe")).rejects.toThrow(
-          "Failed to detect local shell",
+        const error = await sandbox.files
+          .write("/tmp/test", "safe")
+          .catch((error: unknown) => error);
+        expect(error).toEqual(
+          expect.objectContaining({ message: "Failed to detect local shell" }),
         );
+        expect(checkpointCommandContext(error)).toEqual({
+          command_stage: "detect_shell",
+          command_exit_code: 2,
+          command_exit_code_shape: "exit_status",
+        });
         expect(run).toHaveBeenCalledTimes(1);
         await expect(sandbox.detectShell()).resolves.toBe("cmd");
       },

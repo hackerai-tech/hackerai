@@ -1,4 +1,10 @@
 import type { NextRequest } from "next/server";
+import { ConvexError } from "convex/values";
+import { ChatSDKError } from "@/lib/errors";
+import { phLogger } from "@/lib/posthog/server";
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { warn: jest.fn() },
+}));
 jest.mock("next/server", () => ({}));
 jest.mock("convex/browser", () =>
   jest.requireActual(
@@ -216,6 +222,118 @@ describe("goal status transport recovery", () => {
       }
     },
   );
+});
+
+describe("goal status failure diagnostics", () => {
+  const warn = jest.mocked(phLogger.warn);
+  const auth = jest.mocked(require("@/lib/auth/get-user-id").getUserIDAndPro);
+  const reconcile = jest.mocked(require("@/lib/goals/server").reconcileGoal);
+  const statusRequest = () =>
+    ({
+      nextUrl: new URL(
+        "https://fixture.test/api/agent-goal?chatId=PRIVATE_CHAT",
+      ),
+    }) as unknown as NextRequest;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    warn.mockReset();
+    reconcile.mockReset();
+  });
+
+  it.each([
+    [
+      Object.assign(new ConvexError("Goal chat unavailable"), {
+        message: "[Request ID: abcdef0123456789] PRIVATE_DETAIL",
+      }),
+      "goal_chat_unavailable",
+      "abcdef0123456789",
+    ],
+    [
+      new TypeError("PRIVATE_URL", { cause: new Error("PRIVATE_CAUSE") }),
+      "type_error",
+      "none",
+    ],
+  ])(
+    "records one finite cause and safe request join without changing the unavailable response",
+    async (error, kind, requestId) => {
+      reconcile.mockRejectedValueOnce(error);
+      const response = await GET(statusRequest());
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        message: "Goal access unavailable",
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("agent_goal_status_unavailable", {
+        diagnostic_version: 1,
+        failure_stage: "goal_reconciliation",
+        failure_kind: kind,
+        convex_request_id: requestId,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE_");
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(mockCancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps logging best effort and attributes nonstandard auth lookup failures", async () => {
+    auth.mockRejectedValueOnce(new Error("PRIVATE_AUTH_ERROR"));
+    warn.mockImplementationOnce(() => {
+      throw new Error("PRIVATE_LOGGER_ERROR");
+    });
+    const response = await GET(statusRequest());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      message: "Goal access unavailable",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "agent_goal_status_unavailable",
+      expect.objectContaining({
+        failure_stage: "auth_lookup",
+        failure_kind: "other_error",
+        convex_request_id: "none",
+      }),
+    );
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("preserves typed auth responses without treating them as new unavailable failures", async () => {
+    const error = new ChatSDKError("unauthorized:chat");
+    auth.mockRejectedValueOnce(error);
+    const expected = error.toResponse();
+    const response = await GET(statusRequest());
+    expect(response.status).toBe(expected.status);
+    expect(await response.json()).toEqual(await expected.json());
+    expect(warn).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("does not evaluate error accessors or retain malformed private request identifiers", async () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    const error = new Error("PRIVATE_MESSAGE");
+    for (const key of ["message", "data", "cause"])
+      Object.defineProperty(error, key, { get: getter });
+    for (const failure of [
+      error,
+      new Error("[Request ID: PRIVATE_REQUEST_ID] PRIVATE_MESSAGE"),
+    ]) {
+      reconcile.mockRejectedValueOnce(failure);
+      expect((await GET(statusRequest())).status).toBe(503);
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(2);
+    for (const [, fields] of warn.mock.calls)
+      expect(fields).toEqual({
+        diagnostic_version: 1,
+        failure_stage: "goal_reconciliation",
+        failure_kind: "other_error",
+        convex_request_id: "none",
+      });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE_");
+  });
 });
 
 // Menu eligibility is a plan decision, independent of analytics configuration.

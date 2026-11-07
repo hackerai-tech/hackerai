@@ -2,6 +2,7 @@ import {
   classifyPersistenceFailure,
   persistenceCommandError,
   PersistenceError,
+  type PrivateArtifactWritePhase,
 } from "./persistence-failure";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -43,18 +44,35 @@ const validatePaths = (
   }
 };
 
-const secureDirectoriesScript = (root: string, directory: string): string => `
+/** Preserve private-directory guards and report only fixed prepare stages on failure. */
+const secureDirectoriesScript = (
+  root: string,
+  directory: string,
+  diagnosePrepare = false,
+): string => `
 set -eu
 umask 077
+${
+  diagnosePrepare
+    ? `private_prepare_step=root_validate
+trap 'private_prepare_status=$?; if [ "$private_prepare_status" -ne 0 ]; then printf "HA_PRIVATE_PREPARE:%s\\n" "$private_prepare_step" >&2 || :; fi; exit "$private_prepare_status"' EXIT`
+    : ""
+}
 secure_dir() {
   candidate="$1"
+  ${diagnosePrepare ? 'private_prepare_step="${2}_validate"' : ""}
   if [ -L "$candidate" ]; then exit 73; fi
-  if [ ! -e "$candidate" ]; then mkdir -m 700 "$candidate"; fi
+  if [ ! -e "$candidate" ]; then
+    ${diagnosePrepare ? 'private_prepare_step="${2}_mkdir"' : ""}
+    mkdir -m 700 "$candidate"
+  fi
+  ${diagnosePrepare ? 'private_prepare_step="${2}_validate"' : ""}
   if [ ! -d "$candidate" ] || [ ! -O "$candidate" ]; then exit 73; fi
+  ${diagnosePrepare ? 'private_prepare_step="${2}_chmod"' : ""}
   chmod 700 "$candidate"
 }
-secure_dir ${quote(root)}
-secure_dir ${quote(directory)}
+secure_dir ${quote(root)}${diagnosePrepare ? " root" : ""}
+secure_dir ${quote(directory)}${diagnosePrepare ? " directory" : ""}
 `;
 
 const runChecked = async (
@@ -62,6 +80,7 @@ const runChecked = async (
   command: string,
   stdin?: string | Buffer,
   timeoutMs = COMMAND_TIMEOUT_MS,
+  writePhase?: PrivateArtifactWritePhase,
 ): Promise<string> => {
   // The local client advertises this capability only after atomically
   // creating or opening both selected /tmp roots with O_NOFOLLOW and confirming
@@ -94,6 +113,7 @@ const runChecked = async (
       "Private terminal artifact operation failed",
       result,
       true,
+      writePhase,
     );
   }
   return result.stdout;
@@ -174,13 +194,20 @@ fi
 
   await runChecked(
     sandbox,
-    `${secureDirectoriesScript(root, directory)}
+    `${secureDirectoriesScript(root, directory, true)}
+private_prepare_step=target_validate
 if [ -L ${encodedFilePath} ]; then exit 73; fi
 if [ -e ${encodedFilePath} ] && { [ ! -f ${encodedFilePath} ] || [ ! -O ${encodedFilePath} ]; }; then exit 73; fi
+private_prepare_step=temporary_validate
 if [ -e ${encodedTemporaryPath} ] || [ -L ${encodedTemporaryPath} ]; then exit 73; fi
+private_prepare_step=temporary_create
 ( set -C; : > ${encodedTemporaryPath} )
+private_prepare_step=temporary_chmod
 chmod 600 ${encodedTemporaryPath}
 `,
+    undefined,
+    COMMAND_TIMEOUT_MS,
+    "prepare",
   );
 
   try {
@@ -193,6 +220,8 @@ if [ -L ${encodedTemporaryPath} ] || [ ! -f ${encodedTemporaryPath} ] || [ ! -O 
 cat >> ${encodedTemporaryPath}
 `,
         bytes.subarray(offset, offset + WRITE_CHUNK_BYTES),
+        COMMAND_TIMEOUT_MS,
+        "append",
       ).catch((error) =>
         verifyAfterTimeout(
           error,
@@ -213,6 +242,9 @@ chmod 600 ${encodedTemporaryPath}
 mv -f ${encodedTemporaryPath} ${encodedFilePath}
 chmod 600 ${encodedFilePath}
 `,
+      undefined,
+      COMMAND_TIMEOUT_MS,
+      "commit",
     ).catch((error) => verifyAfterTimeout(error, filePath, bytes, "commit"));
   } catch (error) {
     await sandbox.commands

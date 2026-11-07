@@ -6,6 +6,195 @@ import {
   type TerminalExecutionRecord,
 } from "../terminal-execution-record";
 import type { AnySandbox } from "@/types";
+import {
+  checkpointCommandContext,
+  checkpointCloudErrorContext,
+  checkpointNativeFilesystemErrorContext,
+  PersistenceError,
+  persistenceCommandError,
+} from "../persistence-failure";
+import {
+  LocalFileRequestError,
+  NativePathResolutionError,
+} from "../local-sandbox-errors";
+
+it.each(["Mkdir", "Open", "Write", "Flush"])(
+  "projects the fixed %s primitive without native private text",
+  (phase) => {
+    const fields = checkpointNativeFilesystemErrorContext(
+      new Error(
+        `${phase} error: ${"PRIVATE_PATH".repeat(20_000)} (os error 13)`,
+      ),
+    );
+    expect(fields).toEqual({
+      native_filesystem_diagnostic_version: 1,
+      native_filesystem_phase: phase.toLowerCase(),
+      native_filesystem_os_error_code_hint: 13,
+      native_filesystem_os_error_code_shape: "integer",
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  ["(os error 0)", 0, "integer"],
+  ["(os error 65535)", 65535, "integer"],
+  ["(os error 65536)", "none", "other"],
+  ["(os error 100000)", "none", "other"],
+  ["(os error -1)", "none", "other"],
+  ["(os error 1.5)", "none", "other"],
+  ["(os error PRIVATE)", "none", "other"],
+  ["(os error 13)\n", "none", "other"],
+  ["(os error 13) trailing", "none", "other"],
+  ["PRIVATE_DETAIL", "none", "absent"],
+])("bounds a terminal native OS-code hint %s", (suffix, hint, shape) => {
+  expect(
+    checkpointNativeFilesystemErrorContext(new Error(`Open error: ${suffix}`)),
+  ).toMatchObject({
+    native_filesystem_os_error_code_hint: hint,
+    native_filesystem_os_error_code_shape: shape,
+  });
+});
+
+it("does not coerce native messages or inspect accessors, causes or stacks", () => {
+  const getter = jest.fn(() => {
+    throw new Error("PRIVATE_ACCESSOR");
+  });
+  const stringify = jest.fn(() => "PRIVATE_COERCION");
+  const error = Object.defineProperties(
+    {},
+    {
+      message: { get: getter },
+      cause: { get: getter },
+      stack: { get: getter },
+      toString: { value: stringify },
+    },
+  );
+  expect(checkpointNativeFilesystemErrorContext(error)).toMatchObject({
+    native_filesystem_phase: "unreadable",
+    native_filesystem_os_error_code_shape: "unreadable",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext({ message: error }),
+  ).toMatchObject({
+    native_filesystem_phase: "other",
+    native_filesystem_os_error_code_shape: "other",
+  });
+  expect(checkpointNativeFilesystemErrorContext({})).toMatchObject({
+    native_filesystem_phase: "none",
+    native_filesystem_os_error_code_shape: "absent",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext(
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: getter,
+        },
+      ),
+    ),
+  ).toMatchObject({
+    native_filesystem_phase: "unreadable",
+    native_filesystem_os_error_code_shape: "unreadable",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext(new Error("PRIVATE_OTHER")),
+  ).toMatchObject({ native_filesystem_phase: "other" });
+  expect(getter).toHaveBeenCalledTimes(1); // Descriptor trap only, never accessors.
+  expect(stringify).not.toHaveBeenCalled();
+});
+
+it("bounds optional native path receipt context without invoking getters", () => {
+  const error = new NativePathResolutionError("empty_output", {
+    commandId: "PRIVATE_ID",
+    receiverMode: "PRIVATE_MODE" as any,
+  });
+  const getter = jest.fn(() => "PRIVATE_GETTER");
+  Object.defineProperty(error, "commandContext", { get: getter });
+  expect(checkpointCommandContext(error)).not.toHaveProperty(
+    "native_path_command_id",
+  );
+  expect(getter).not.toHaveBeenCalled();
+  const invalid = new NativePathResolutionError("empty_output", {
+    commandId: "PRIVATE_ID",
+    receiverMode: "PRIVATE_MODE" as any,
+  });
+  expect(JSON.stringify(checkpointCommandContext(invalid))).not.toContain(
+    "PRIVATE",
+  );
+});
+
+it("keeps existing command fields when optional native type inspection is unreadable", () => {
+  let prototypeReads = 0;
+  const error = new Proxy(
+    new PersistenceError("Failed to write file", "unknown", 1),
+    {
+      getPrototypeOf(target) {
+        if (++prototypeReads > 1)
+          throw new Error("PRIVATE optional inspection");
+        return Reflect.getPrototypeOf(target);
+      },
+    },
+  );
+  expect(checkpointCommandContext(error)).toEqual({
+    command_stage: "write_file",
+    command_exit_code: 1,
+    command_exit_code_shape: "exit_status",
+  });
+});
+
+it("accepts only a fixed prepare marker on the owning private-artifact error", () => {
+  const error = persistenceCommandError(
+    "Private terminal artifact operation failed",
+    {
+      exitCode: 1,
+      stderr: "PRIVATE_PREFIX\nHA_PRIVATE_PREPARE:temporary_create\n",
+    },
+    true,
+    "prepare",
+  );
+  expect(checkpointCommandContext(error)).toMatchObject({
+    private_artifact_prepare_step: "temporary_create",
+    private_artifact_write_phase: "prepare",
+    command_exit_code: 1,
+  });
+  expect(JSON.stringify(error)).not.toContain("PRIVATE_PREFIX");
+  for (const phase of ["append", "commit"] as const)
+    expect(
+      checkpointCommandContext(
+        persistenceCommandError(
+          "Private terminal artifact operation failed",
+          { exitCode: 1, stderr: "HA_PRIVATE_PREPARE:temporary_create\n" },
+          true,
+          phase,
+        ),
+      ),
+    ).not.toHaveProperty("private_artifact_prepare_step");
+  expect(
+    checkpointCommandContext(
+      persistenceCommandError(
+        "Private terminal artifact operation failed",
+        { exitCode: 1, stderr: "HA_PRIVATE_PREPARE:PRIVATE_VALUE\n" },
+        true,
+        "prepare",
+      ),
+    ),
+  ).not.toHaveProperty("private_artifact_prepare_step");
+  const getStderr = jest.fn(() => {
+    throw new Error("PRIVATE accessor");
+  });
+  const unsafe = { exitCode: 73 };
+  Object.defineProperty(unsafe, "stderr", { get: getStderr });
+  expect(
+    persistenceCommandError(
+      "Private terminal artifact operation failed",
+      unsafe,
+      true,
+      "prepare",
+    ).persistenceCategory,
+  ).toBe("unsafe_artifact");
+  expect(getStderr).not.toHaveBeenCalled();
+});
 
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { info: jest.fn() },
@@ -26,17 +215,21 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     jest.useRealTimers();
   });
 
+  /** Create an owned command session, optionally backed by the real record store. */
   async function fixture(
     save: (record: TerminalExecutionRecord) => Promise<string | null>,
     manager = new PtySessionManager(),
+    suppliedStore?: ReturnType<typeof createTerminalRecordStore>,
   ) {
     const kill = jest.fn(async () => true);
     const handle = createCommandSessionHandle({ kill });
-    const store = createTerminalRecordStore(
-      { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
-      "PRIVATE_USER",
-      "PRIVATE_SCOPE",
-    );
+    const store =
+      suppliedStore ??
+      createTerminalRecordStore(
+        { sandboxId: "PRIVATE_SANDBOX" } as unknown as AnySandbox,
+        "PRIVATE_USER",
+        "PRIVATE_SCOPE",
+      );
     const session = await manager.create("PRIVATE_SCOPE", {
       createHandle: async () => handle,
       cols: 120,
@@ -60,6 +253,520 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     handle.emitText("PRIVATE_OUTPUT");
     return { manager, session, handle, kill };
   }
+
+  /** Model a failed cloud or native write without executing customer commands. */
+  function failingStore(error: unknown, local = false) {
+    const write = jest
+      .fn<Promise<void>, [string, string]>()
+      .mockRejectedValue(error);
+    const store = createTerminalRecordStore(
+      {
+        sandboxId: "PRIVATE_SANDBOX",
+        files: { write },
+        ...(local
+          ? {
+              sandboxKind: "centrifugo",
+              getConnectionId: () => "PRIVATE_CONNECTION",
+              getWorkingDirectory: () => "C:/PRIVATE_FOLDER",
+              isWindows: () => true,
+              supportsNativeFileRelay: () => true,
+            }
+          : {}),
+      } as unknown as AnySandbox,
+      "PRIVATE_USER",
+      "PRIVATE_SCOPE",
+    );
+    return { store, write };
+  }
+
+  it("adds bounded filesystem context to the existing owning checkpoint warning", async () => {
+    const { store, write } = failingStore(
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE_NATIVE_PATH (os error 13)",
+        "filesystem",
+      ),
+      true,
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0][0]).toBe(
+      "terminal_record_checkpoint_unconfirmed",
+    );
+    expect(info.mock.calls[0][1]).toMatchObject({
+      failure_category: "unknown",
+      checkpoint_failure_origin: "local_file_request",
+      file_failure: "filesystem",
+      native_filesystem_diagnostic_version: 1,
+      native_filesystem_phase: "open",
+      native_filesystem_os_error_code_hint: 13,
+      native_filesystem_os_error_code_shape: "integer",
+    });
+    expect(JSON.stringify(info.mock.calls)).not.toContain(
+      "PRIVATE_NATIVE_PATH",
+    );
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: "abcdef12",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "native_filesystem_diagnostic_version",
+    );
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: session.sessionId,
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "native_filesystem_diagnostic_version",
+    );
+  });
+
+  it.each([
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE (os error 13)",
+        "filesystem",
+      ),
+      false,
+    ],
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE (os error 13)",
+        "unknown",
+      ),
+      true,
+    ],
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: permission denied (os error 13)",
+        "filesystem",
+      ),
+      true,
+    ],
+    [new Error("Open error: PRIVATE (os error 13)"), true],
+  ])(
+    "keeps native filesystem fields outside unrelated failure scopes",
+    async (error, local) => {
+      const { store } = failingStore(error, local);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "native_filesystem_diagnostic_version",
+      );
+    },
+  );
+
+  it.each([
+    ...[
+      [-1, "sentinel_minus_one"],
+      [-9, "negative_integer"],
+      [1_000_000, "out_of_range"],
+      [NaN, "non_integer"],
+      ["PRIVATE_EXIT_CODE", "non_numeric"],
+    ].map(([exitCode, shape]) => [
+      Object.defineProperty(
+        new PersistenceError(
+          "Private terminal artifact operation failed",
+          "unknown",
+        ),
+        "exitCode",
+        { value: exitCode },
+      ),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "private_artifact",
+        command_exit_code: "other",
+        command_exit_code_shape: shape,
+      },
+    ]),
+    [
+      Object.defineProperty(
+        new PersistenceError(
+          "Private terminal artifact operation failed",
+          "unknown",
+          1,
+        ),
+        "privateArtifactWritePhase",
+        { value: "append" },
+      ),
+      {
+        failure_category: "unknown",
+        command_stage: "private_artifact",
+        command_exit_code: 1,
+        private_artifact_write_phase: "append",
+      },
+    ],
+    [
+      persistenceCommandError("Failed to write file", {
+        exitCode: 17,
+        stderr: "PRIVATE_STDERR",
+      }),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "write_file",
+        command_exit_code: 17,
+      },
+    ],
+    [
+      persistenceCommandError("Failed to decode file", { exitCode: 1 }),
+      {
+        failure_category: "unknown",
+        checkpoint_failure_origin: "other_error",
+        command_stage: "decode_file",
+        command_exit_code: 1,
+      },
+    ],
+    [
+      new LocalFileRequestError("timeout", "PRIVATE_TIMEOUT"),
+      {
+        failure_category: "timeout",
+        checkpoint_failure_origin: "local_file_request",
+        command_stage: "none",
+        command_exit_code: "none",
+      },
+    ],
+  ])(
+    "retains finite failed-write context on the existing session diagnostic",
+    async (error, expected) => {
+      const { store } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      for (let i = 0; i < 3; i++) await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          reason: "save_unacknowledged",
+          terminal_session_id: session.sessionId,
+          checkpoint_backend: "cloud",
+          checkpoint_transport: "native_file",
+          file_failure: "none",
+          ...expected,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("omits private or inapplicable phases without invoking diagnostic getters", () => {
+    const error = new PersistenceError(
+      "Private terminal artifact operation failed",
+      "unknown",
+      1,
+    );
+    const getter = jest.fn(() => "PRIVATE_PHASE");
+    Object.defineProperty(error, "privateArtifactWritePhase", {
+      get: getter,
+      configurable: true,
+    });
+    expect(checkpointCommandContext(error)).not.toHaveProperty(
+      "private_artifact_write_phase",
+    );
+    expect(getter).not.toHaveBeenCalled();
+    const unreadablePhase = new Proxy(error, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === "privateArtifactWritePhase")
+          throw new Error("PRIVATE_TRAP");
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    expect(checkpointCommandContext(unreadablePhase)).toEqual({
+      command_stage: "private_artifact",
+      command_exit_code: 1,
+      command_exit_code_shape: "exit_status",
+    });
+    Object.defineProperty(error, "privateArtifactWritePhase", {
+      value: "PRIVATE_PHASE",
+    });
+    expect(JSON.stringify(checkpointCommandContext(error))).not.toContain(
+      "PRIVATE_",
+    );
+    const unrelated = Object.assign(
+      new PersistenceError("Failed to write file", "unknown", 1),
+      { privateArtifactWritePhase: "prepare" },
+    );
+    expect(checkpointCommandContext(unrelated)).not.toHaveProperty(
+      "private_artifact_write_phase",
+    );
+  });
+
+  it("does not attribute another session's failure or retain it after successful recovery", async () => {
+    const { store, write } = failingStore(
+      persistenceCommandError("Failed to write file", { exitCode: 4 }),
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    const report = (
+      id: string,
+      reason: "save_unacknowledged" | "wait_deadline" = "save_unacknowledged",
+    ) =>
+      store.reportCheckpointIssue({
+        terminalSessionId: id,
+        sessionKind: "command",
+        reason,
+      });
+    info.mockClear();
+    report("abcdef12");
+    report(session.sessionId, "wait_deadline");
+    for (const [, fields] of info.mock.calls)
+      expect(fields).not.toHaveProperty("failure_category");
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    expect(session.recordPersistenceFailed).toBe(false);
+    info.mockClear();
+    report(session.sessionId);
+    expect(info.mock.calls[0][1]).not.toHaveProperty("failure_category");
+  });
+
+  it("rejects private or malformed command details and never invokes optional error accessors", () => {
+    const error = new PersistenceError("PRIVATE_MESSAGE", "unknown", 1000000);
+    expect(checkpointCommandContext(error)).toEqual({
+      command_stage: "other",
+      command_exit_code: "other",
+      command_exit_code_shape: "out_of_range",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    Object.defineProperty(error, "message", { get: getter });
+    Object.defineProperty(error, "exitCode", { get: getter });
+    expect(checkpointCommandContext(error)).toEqual({
+      command_stage: "other",
+      command_exit_code: "none",
+      command_exit_code_shape: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      Object.assign(new Error("PRIVATE_PATH"), {
+        name: "FileNotFoundError",
+        statusCode: 404,
+      }),
+      "file_not_found",
+      404,
+    ],
+    [
+      Object.assign(new Error("PRIVATE_SANDBOX"), {
+        name: "SandboxNotFoundError",
+        statusCode: 404,
+      }),
+      "sandbox_not_found",
+      404,
+    ],
+    [
+      new Error("Expected to receive information about written file"),
+      "empty_write_response",
+      "none",
+    ],
+  ])(
+    "retains the closed cloud SDK failure kind and HTTP status without private text",
+    async (error, kind, status) => {
+      const { store } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          cloud_error_kind: kind,
+          cloud_http_status: status,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("keeps malformed cloud metadata finite without evaluating error accessors", () => {
+    const error = Object.assign(new Error("PRIVATE_MESSAGE"), {
+      name: "PRIVATE_ERROR_KIND",
+      statusCode: "PRIVATE_STATUS",
+    });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: "other_error",
+      cloud_http_status: "other",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    for (const key of ["name", "message", "statusCode"])
+      Object.defineProperty(error, key, { get: getter });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: "other_error",
+      cloud_http_status: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    expect(
+      checkpointCloudErrorContext({ name: "SandboxError", statusCode: 600 }),
+    ).toEqual({
+      cloud_error_kind: "sandbox_error",
+      cloud_http_status: "other",
+    });
+  });
+
+  it.each([
+    [
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("PRIVATE_HOST"), { code: "ECONNRESET" }),
+      }),
+      "fetch_failed",
+      "ECONNRESET",
+    ],
+    [new TypeError("PRIVATE_SDK_DETAIL"), "other_type_error", "none"],
+    [
+      Object.assign(new TypeError("PRIVATE_SDK_DETAIL"), {
+        code: "PRIVATE_CODE",
+      }),
+      "other_type_error",
+      "other",
+    ],
+  ])(
+    "distinguishes cloud fetch failures on the existing capped diagnostic without exposing their causes",
+    async (error, signal, code) => {
+      const { store, write } = failingStore(error);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      for (let i = 0; i < 3; i++) await manager.checkpoint(session);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(write).toHaveBeenCalledTimes(3);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith(
+        "terminal_record_checkpoint_unconfirmed",
+        expect.objectContaining({
+          checkpoint_backend: "cloud",
+          checkpoint_failure_origin: "type_error",
+          cloud_type_error_signal: signal,
+          cloud_transport_code: code,
+        }),
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("reads only a direct transport code or the first cause, with root precedence", () => {
+    const nested = new TypeError("fetch failed", {
+      cause: new Error("PRIVATE_CAUSE", {
+        cause: { code: "ECONNRESET" },
+      }),
+    });
+    expect(checkpointCloudErrorContext(nested)).toMatchObject({
+      cloud_type_error_signal: "fetch_failed",
+      cloud_transport_code: "none",
+    });
+    Object.assign(nested, { code: "ETIMEDOUT" });
+    expect(checkpointCloudErrorContext(nested)).toMatchObject({
+      cloud_transport_code: "ETIMEDOUT",
+    });
+    // SDK HTTP errors retain their existing vocabulary; TypeError-only fields
+    // must not imply network attribution for every cloud failure.
+    expect(
+      checkpointCloudErrorContext({ name: "TimeoutError", statusCode: 504 }),
+    ).toEqual({ cloud_error_kind: "timeout", cloud_http_status: 504 });
+  });
+
+  it("does not invoke TypeError message/code/cause getters or expose proxy failures", () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    const error = new TypeError("PRIVATE_MESSAGE");
+    Object.defineProperty(error, "message", { get: getter });
+    Object.defineProperty(error, "code", { get: getter, configurable: true });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_type_error_signal: "unreadable",
+      cloud_transport_code: "unreadable",
+    });
+    delete (error as unknown as { code?: unknown }).code;
+    Object.defineProperty(error, "cause", { get: getter, configurable: true });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_transport_code: "unreadable",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    const reflect = jest.fn(() => {
+      throw new Error("PRIVATE_PROXY");
+    });
+    Object.defineProperty(error, "cause", {
+      value: new Proxy({}, { getOwnPropertyDescriptor: reflect }),
+    });
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_transport_code: "unreadable",
+    });
+    expect(reflect).toHaveBeenCalledTimes(1);
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(checkpointCloudErrorContext(error))).not.toContain(
+      "PRIVATE_",
+    );
+  });
+
+  it("ignores inherited TypeError metadata without invoking it", () => {
+    const getter = jest.fn(() => "ECONNRESET");
+    const error = new TypeError("fetch failed");
+    Object.setPrototypeOf(
+      error,
+      Object.create(TypeError.prototype, {
+        code: { get: getter },
+        cause: { get: getter },
+      }),
+    );
+    expect(checkpointCloudErrorContext(error)).toMatchObject({
+      cloud_type_error_signal: "fetch_failed",
+      cloud_transport_code: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("does not attribute cloud SDK fields to a local transport failure", async () => {
+    const { store } = failingStore(
+      Object.assign(new Error("PRIVATE_MESSAGE"), {
+        name: "FileNotFoundError",
+        statusCode: 404,
+      }),
+      true,
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(session.recordPersistenceFailed).toBe(true);
+    expect(info).toHaveBeenCalledTimes(1);
+    const fields = info.mock.calls[0][1];
+    expect(fields).toMatchObject({
+      checkpoint_backend: "local",
+      reason: "save_unacknowledged",
+    });
+    expect(fields).not.toHaveProperty("cloud_error_kind");
+    expect(fields).not.toHaveProperty("cloud_http_status");
+    expect(fields).not.toHaveProperty("cloud_type_error_signal");
+    expect(fields).not.toHaveProperty("cloud_transport_code");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+  });
+
+  it("keeps malformed record rejection best effort without retaining unrelated context", async () => {
+    const { store } = failingStore(new Error("PRIVATE_FAILURE"));
+    await expect(
+      store.save(null as unknown as TerminalExecutionRecord),
+    ).resolves.toBeNull();
+    store.reportCheckpointIssue({
+      terminalSessionId: "abcdef12",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty("failure_category");
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+  });
 
   it("distinguishes unacknowledged saves from thrown writes without leaking record content", async () => {
     const save = jest

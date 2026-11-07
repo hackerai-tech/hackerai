@@ -469,6 +469,102 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it.each([
+    [
+      "/system/bin/sh: curl: inaccessible or not found",
+      127,
+      "attachment_client_not_executable",
+      "attachment transfer tool",
+    ],
+    [
+      "/system/bin/sh: curl: inaccessible or not found",
+      126,
+      "attachment_transfer_failed",
+      "Failed to upload",
+    ],
+    [
+      "unclassified failure",
+      127,
+      "attachment_transfer_failed",
+      "Failed to upload",
+    ],
+    ["Permission denied", 1, "attachment_permission_denied", "permissions"],
+  ])(
+    "reports the terminal URL fallback failure %s (exit %i)",
+    async (message, exitCode, reason, guidance) => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const downloadFromUrl = jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(
+            new Error("Failed to download file: Permission denied"),
+            {
+              exitCode: 1,
+            },
+          ),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error(`Failed to download file: ${message}`), {
+            exitCode,
+          }),
+        );
+      const run = jest.fn().mockResolvedValue({
+        exitCode: 0,
+        stdout: "/home/alice/hackerai-upload/fallback/report.pdf",
+        stderr: "",
+      });
+      const ensure = jest.fn(async () => ({
+        sandboxKind: "centrifugo",
+        files: { downloadFromUrl },
+        commands: { run },
+      }));
+      try {
+        const result = await uploadSandboxFiles(
+          [
+            {
+              kind: "url",
+              url: "https://example.com/report.pdf",
+              localPath: "/tmp/hackerai-upload/report.pdf",
+            },
+          ],
+          ensure,
+          { retryAfterReconnectOnTransientFailure: true },
+        );
+        expect(result.failedCount).toBe(1);
+        expect(result.pathRewrites).toEqual([]);
+        expect(ensure).toHaveBeenCalledTimes(1);
+        expect(downloadFromUrl).toHaveBeenCalledTimes(2);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+          upload_failure_reason: reason,
+          upload_failure_transient_sandbox_command: false,
+        });
+        expect(result.failureDetails?.[0]?.exitCode).toBe(exitCode);
+        expect(getSandboxUploadUserMessage(result)).toContain(guidance);
+        expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toMatchObject({
+          event: "sandbox_attachment_staging_failed",
+          failure_reason: reason,
+          failure_exit_code: exitCode,
+        });
+        const fallback = warnSpy.mock.calls
+          .map(([value]) => JSON.parse(String(value)))
+          .find((event) => event.fallback_outcome === "failed");
+        expect(fallback).toMatchObject({
+          initial_failure_reason: "attachment_permission_denied",
+          initial_failure_exit_code: 1,
+          final_failure_reason: reason,
+          final_failure_exit_code: exitCode,
+        });
+      } finally {
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
   it("logs the final copy exit status when the fallback upload path also fails", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, "error")
@@ -1463,6 +1559,55 @@ describe("desktop-local sandbox file helpers", () => {
       }
     },
   );
+
+  it("retains the native terminal exit sentinel in attachment diagnostics", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const downloadFromUrl = jest
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Failed to download file: Command timed out after 120000ms\n" +
+            "  source: [redacted-url]\n" +
+            "  destination: [redacted-destination-path]\n" +
+            "  command: curl\n" +
+            "  exitCode: -1\n" +
+            "  diagnostics: unavailable",
+        ),
+      );
+    const ensureSandbox = jest.fn(async () => ({
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+      files: { downloadFromUrl },
+    }));
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/image.png",
+            localPath: "/tmp/image.png",
+          },
+        ],
+        ensureSandbox,
+        { retryAfterReconnectOnTransientFailure: true },
+      );
+      expect(result.failedCount).toBe(1);
+      expect(getSandboxUploadUserMessage(result)).toBe(
+        "The attachment download timed out on the selected computer. Check its network connection and try again.",
+      );
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(downloadFromUrl).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        failure_reason: "attachment_download_timeout",
+        failure_exit_code: -1,
+        transient_sandbox_command: false,
+        failure_stage: "transfer",
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 
   it("classifies Windows command parsing failures separately", async () => {
     const consoleErrorSpy = jest

@@ -5,6 +5,7 @@ import {
   isEndedSessionRefreshError,
   isInvalidRefreshTokenError,
 } from "@/lib/auth/expected-auth-errors";
+import { getRefreshFailureDiagnostics } from "@/lib/auth/refresh-failure-diagnostics";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -414,6 +415,7 @@ export default async function proxy(request: NextRequest) {
             pathname,
             error: error instanceof Error ? error.message : String(error),
             is_transient: isTransient,
+            ...getRefreshFailureDiagnostics(error),
           }),
         );
       },

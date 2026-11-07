@@ -89,7 +89,11 @@ unmatched call/result counts, duplicate calls within a batch, and the number of
 oversized batches repaired in that request. Error extraction retains known
 schema parameter paths with numeric indices normalized, when supplied by the
 provider. No new diagnostic includes prompts, tool arguments/results, image
-contents, or signed URLs.
+contents, or signed URLs. URL image counts also classify recognized SigV4
+expiry hints at the diagnostic snapshot as elapsed, within five minutes, later,
+or unknown. These counts do not validate signatures, credentials or access;
+unsupported, malformed, duplicate or future-dated hints remain unknown. Input
+URLs are unchanged and no image fetch is added.
 
 Generic `invalid_request` responses still require an upstream request ID and
 these shape diagnostics to identify the rejected constraint. An image fetch
