@@ -111,6 +111,10 @@ export function terminalSandboxInstance(sandbox: AnySandbox): string {
   return `e2b:${sandbox.sandboxId}`;
 }
 
+/**
+ * Persist best-effort terminal recovery artifacts within one user/sandbox scope.
+ * Keep failed-write diagnostics bounded and attributable to the same session.
+ */
 export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
