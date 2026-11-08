@@ -993,6 +993,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const closedAgentLongRunIdsRef = useRef(new Set<string>());
   const agentLongRequestGenerationRef = useRef(0);
   const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
     useState(0);
@@ -1040,6 +1041,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
   const handleAgentLongRunClosed = (runId: string) => {
+    // Closing the transport can beat useChat consuming buffered correlation
+    // chunks. Those chunks must not restore a finished run and block Goal replies.
+    closedAgentLongRunIdsRef.current.add(runId);
+    if (agentLongRunCorrelationRef.current?.runId === runId)
+      agentLongRunCorrelationRef.current = null;
     setAgentLongRunId((current) => (current === runId ? null : current));
   };
 
@@ -1129,6 +1135,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             pendingGoal.requestSent = true;
           let recordedRunId: string | undefined;
           const recordAdmission = (run: AgentLongRunStarted) => {
+            if (closedAgentLongRunIdsRef.current.has(run.runId)) return;
             const pending = goalAdmissionRef.current;
             if (
               pending &&
@@ -1333,6 +1340,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         if (
           typeof correlationData.runId === "string" &&
           typeof correlationData.token === "string" &&
+          !closedAgentLongRunIdsRef.current.has(correlationData.runId) &&
           (correlationData.chatId === undefined ||
             correlationData.chatId === chatId)
         ) {

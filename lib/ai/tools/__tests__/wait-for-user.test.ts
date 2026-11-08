@@ -24,7 +24,7 @@ const context = {
 const execute = async (
   overrides: Record<string, unknown> = {},
   toolOptions: {
-    abortRun?: () => void;
+    abortRun?: (outcome: "timed_out" | "failed") => void;
     beforeSuspend?: () => Promise<void>;
     revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
   } = {},
@@ -122,6 +122,7 @@ describe("wait_for_user", () => {
     });
     expect(setActiveWait).toHaveBeenCalledTimes(2);
     expect(abortRun).toHaveBeenCalledTimes(1);
+    expect(abortRun).toHaveBeenCalledWith("timed_out");
   });
 
   it("aborts if preparation fails before the wait starts", async () => {

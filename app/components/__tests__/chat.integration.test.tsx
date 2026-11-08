@@ -2768,6 +2768,34 @@ describe("Chat Component Integration", () => {
       },
     );
 
+    it("does not restore a closed local run from buffered correlation data", async () => {
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockResumeAgentLongStream.mockResolvedValueOnce({} as Response);
+      await options.transport.fetch(
+        "/api/agent/resume?chatId=queued-message-id",
+        { method: "GET" },
+      );
+      const onRunClosed = mockResumeAgentLongStream.mock.calls.at(-1)![2]!;
+      act(() => onRunClosed("run-finished"));
+      act(() =>
+        options.onData({
+          type: "data-agent-run-correlation",
+          data: { runId: "run-finished", token: "synthetic" },
+        }),
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
     it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
       render(
         <TestWrapper>

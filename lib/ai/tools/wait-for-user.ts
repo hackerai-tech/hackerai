@@ -23,7 +23,7 @@ export const createWaitForUserTool = (
     beforeSuspend?: () => Promise<void>;
     pauseActiveTime?: () => void;
     resumeActiveTime?: () => void;
-    abortRun?: () => void;
+    abortRun?: (outcome: "timed_out" | "failed") => void;
     revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
   } = {},
 ) =>
@@ -82,7 +82,7 @@ export const createWaitForUserTool = (
         options.resumeActiveTime?.();
         activeTimePaused = false;
         if (!result.ok) {
-          options.abortRun?.();
+          options.abortRun?.("timed_out");
           return {
             success: false,
             wait_outcome: "timed_out",
@@ -98,7 +98,7 @@ export const createWaitForUserTool = (
           typeof reply.text !== "string" ||
           !reply.text.trim()
         ) {
-          options.abortRun?.();
+          options.abortRun?.("failed");
           return {
             success: false,
             error: "The reply did not match this Agent wait.",
@@ -118,7 +118,7 @@ export const createWaitForUserTool = (
         };
       } catch (error) {
         waitFailed = true;
-        options.abortRun?.();
+        options.abortRun?.("failed");
         throw error;
       } finally {
         if (activeTimePaused) options.resumeActiveTime?.();
@@ -132,7 +132,7 @@ export const createWaitForUserTool = (
           } catch {
             if (attempt === 2) {
               if (!waitFailed) {
-                options.abortRun?.();
+                options.abortRun?.("failed");
                 throw new Error("Could not release the Agent reply wait");
               }
               // Preserve the original failure. Terminal run cleanup will also
