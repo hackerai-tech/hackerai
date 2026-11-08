@@ -5,6 +5,7 @@ import {
 } from "@/lib/experiments/agent-model-context";
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
+import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
 
 type RunEvent = "hackerai-agent_run" | "hackerai-usage_cost";
 type FailureStage = "setup" | "preparation" | "model_stream";
@@ -72,6 +73,35 @@ export function agentFailureCategory(error: unknown): string {
   return category;
 }
 
+type FailureSignalContext = {
+  trigger_aborted: boolean;
+  stop_aborted: boolean;
+  matches_trigger_reason: boolean;
+  matches_stop_reason: boolean;
+};
+
+/** Compare standard signal identity only; never inspect, retain or export reasons. */
+export function agentFailureSignalContext(
+  error: unknown,
+  triggerSignal: AbortSignal,
+  stopSignal: AbortSignal,
+): FailureSignalContext | undefined {
+  try {
+    const triggerAborted = triggerSignal.aborted;
+    const stopAborted = stopSignal.aborted;
+    if (typeof triggerAborted !== "boolean" || typeof stopAborted !== "boolean")
+      return undefined;
+    return {
+      trigger_aborted: triggerAborted,
+      stop_aborted: stopAborted,
+      matches_trigger_reason: triggerAborted && error === triggerSignal.reason,
+      matches_stop_reason: stopAborted && error === stopSignal.reason,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 const knownAmount = (value: number | undefined) =>
   typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
@@ -90,12 +120,18 @@ export function createAgentRunReporting(context: {
   subscription: string;
   endpoint: string;
   isAutoContinue?: boolean;
+  getFailureSignalContext?: (
+    error: unknown,
+  ) => FailureSignalContext | undefined;
 }) {
   let stage: FailureStage = "setup";
   let agentModelContextFlag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG;
   let agentModelContextVariant: AgentModelContextVariant | undefined;
   let failure:
     { stage: FailureStage; kind: FailureKind; category: string } | undefined;
+  let selectedComputerDiagnostics:
+    ReturnType<typeof selectedComputerFailureDiagnostics> | undefined;
+  let failureSignals: FailureSignalContext | undefined;
   const captured = new Set<RunEvent>();
   let terminalOutcome: "success" | "error" | "aborted" | undefined;
   let terminalAbortSource: string | undefined;
@@ -124,8 +160,41 @@ export function createAgentRunReporting(context: {
     setStage(next: FailureStage) {
       stage = next;
     },
+    /** Keep the first failure's signal snapshot even if cleanup cancels later. */
     fail(error: unknown, kind: FailureKind = "error") {
       // Capture before ProviderTerminalError wrapping and cleanup exceptions.
+      if (!failure) {
+        selectedComputerDiagnostics = selectedComputerFailureDiagnostics(error);
+        try {
+          const observed = context.getFailureSignalContext?.(error);
+          if (observed) {
+            // Read only these four primitives once; never spread an observer object.
+            const {
+              trigger_aborted,
+              stop_aborted,
+              matches_trigger_reason,
+              matches_stop_reason,
+            } = observed;
+            if (
+              [
+                trigger_aborted,
+                stop_aborted,
+                matches_trigger_reason,
+                matches_stop_reason,
+              ].every((value) => typeof value === "boolean")
+            ) {
+              failureSignals = {
+                trigger_aborted,
+                stop_aborted,
+                matches_trigger_reason,
+                matches_stop_reason,
+              };
+            }
+          }
+        } catch {
+          /* Optional attribution cannot replace the original failure. */
+        }
+      }
       failure ??= { stage, kind, category: agentFailureCategory(error) };
     },
     captureTerminal<T>(capture: (args: T) => void, args: T) {
@@ -184,6 +253,7 @@ export function createAgentRunReporting(context: {
     captureCost<T>(capture: (args: T) => void, args: T) {
       once("hackerai-usage_cost", capture, args);
     },
+    /** Fill missing reports without changing outcomes, settlement or capture identity. */
     finalize(snapshot: {
       canceled: boolean;
       triggerCostDollars?: number;
@@ -211,6 +281,15 @@ export function createAgentRunReporting(context: {
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",
         failure_kind: failure?.kind ?? (snapshot.canceled ? "canceled" : null),
+        ...selectedComputerDiagnostics,
+        ...(failureSignals && {
+          failure_signal_context_version: 1,
+          failure_trigger_aborted: failureSignals.trigger_aborted,
+          failure_stop_aborted: failureSignals.stop_aborted,
+          failure_matches_trigger_reason: failureSignals.matches_trigger_reason,
+          failure_matches_stop_reason: failureSignals.matches_stop_reason,
+          finalization_trigger_aborted: snapshot.canceled === true,
+        }),
         outcome,
         finish_reason: terminalFinishReason ?? "unknown",
         step_limit_reached: terminalStepLimitReached ?? null,

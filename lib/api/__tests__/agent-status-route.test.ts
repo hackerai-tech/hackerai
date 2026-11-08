@@ -14,6 +14,11 @@ const mockSetActiveTriggerRun = jest.fn();
 const mockRunsRetrieve = jest.fn();
 const mockRecover = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
+const mockAuthkit = jest.fn();
+
+jest.mock("@workos-inc/authkit-nextjs", () => ({
+  authkit: (...args: unknown[]) => mockAuthkit(...args),
+}));
 
 jest.mock("@/lib/api/agent-crash-recovery", () => ({
   recoverCrashedAgentRun: (...args: unknown[]) => mockRecover(...args),
@@ -492,6 +497,78 @@ describe("agent status timeout diagnostics", () => {
     expect(timers).toBe(0);
   });
 
+  it.each(["/api/agent", "/api/agent-long"] as const)(
+    "observes the real pending session phase on %s without changing request completion",
+    async (endpoint) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      const actual = jest.requireActual<
+        typeof import("@/lib/auth/get-user-id")
+      >("@/lib/auth/get-user-id");
+      let finish!: (value: unknown) => void;
+      mockAuthkit.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      mockGetUserIDAndPro.mockImplementationOnce(
+        actual.getUserIDAndPro as never,
+      );
+      const response = createAgentStatusPost({ endpoint })(
+        requestFor("chat-1", "run-1"),
+      );
+      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(10_000);
+      const logs = jest
+        .mocked(console.warn)
+        .mock.calls.map(([line]) => JSON.parse(line as string));
+      expect(logs).toHaveLength(2);
+      expect(
+        logs.map((log) => [
+          log.stage,
+          log.auth_phase_diagnostic_version,
+          log.auth_phase,
+          log.warning_threshold_ms,
+        ]),
+      ).toEqual([
+        ["authenticate", 1, "session", 10_000],
+        ["authenticate", 1, "session", 20_000],
+      ]);
+      finish({
+        session: {
+          user: { id: "user-1", email: "PRIVATE@example.org" },
+          entitlements: [],
+          accessToken: "PRIVATE token",
+        },
+      });
+      expect((await response).status).toBe(200);
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(console.warn).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(logs)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("rejects unexpected phase values instead of exporting them", async () => {
+    const { createAgentStatusPost } = await import("../agent-status-route");
+    let finish!: (value: unknown) => void;
+    mockGetUserIDAndPro.mockImplementationOnce((...args: unknown[]) => {
+      (args[1] as (phase: unknown) => void)("PRIVATE future value");
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const response = createAgentStatusPost({ endpoint: "/api/agent" })(
+      requestFor("chat-1", "run-1"),
+    );
+    await jest.advanceTimersByTimeAsync(10_000);
+    const log = JSON.parse(
+      jest.mocked(console.warn).mock.calls[0][0] as string,
+    );
+    expect(log.auth_phase).toBe("not_observed");
+    expect(JSON.stringify(log)).not.toContain("PRIVATE");
+    finish({ userId: "user-1" });
+    expect((await response).status).toBe(200);
+  });
+
   it.each([
     "read_request",
     "authenticate",
@@ -687,6 +764,12 @@ describe("agent status timeout diagnostics", () => {
         "authenticate",
         "retrieve_trigger_run",
       ]);
+      expect(logs[0]).toMatchObject({
+        auth_phase_diagnostic_version: 1,
+        auth_phase: "not_observed",
+      });
+      expect(logs[1]).not.toHaveProperty("auth_phase");
+      expect(logs[1]).not.toHaveProperty("auth_phase_diagnostic_version");
       expect(logs.map((log) => log.endpoint)).toEqual([endpoint, endpoint]);
       retrieve({
         status: "EXECUTING",

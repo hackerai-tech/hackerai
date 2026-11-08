@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ApiError, runs } from "@trigger.dev/sdk";
 
-import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { getUserIDAndPro, type AuthSessionPhase } from "@/lib/auth/get-user-id";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { closeAgentApprovalSession } from "@/lib/api/agent-approval-session";
@@ -86,6 +86,7 @@ export const createAgentStatusPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     let stage = "read_request";
+    let authPhase: AuthSessionPhase | undefined;
     let userId: string | undefined;
     let chatId: string | undefined;
     let runId: string | undefined;
@@ -113,6 +114,10 @@ export const createAgentStatusPost =
             chat_id: ownedRun?.chatId,
             trigger_run_id: ownedRun?.runId,
             stage,
+            ...(stage === "authenticate" && {
+              auth_phase_diagnostic_version: 1,
+              auth_phase: authPhase ?? "not_observed",
+            }),
             elapsed_ms: elapsedMs,
             warning_threshold_ms: delay,
             timer_lateness_ms: Math.max(0, elapsedMs - delay),
@@ -140,7 +145,14 @@ export const createAgentStatusPost =
       }
 
       stage = "authenticate";
-      const authContext = await getUserIDAndPro(req);
+      const authContext = await getUserIDAndPro(req, (phase) => {
+        if (
+          phase === "load_sdk" ||
+          phase === "session" ||
+          phase === "entitlements"
+        )
+          authPhase = phase;
+      });
       userId = authContext.userId;
 
       stage = "get_chat";

@@ -4675,6 +4675,69 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it("projects only lifecycle enums and UTF-16 widths, isolating a failing diagnostic sink", async () => {
+    const onMemoryActivity = jest.fn();
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        onMemoryActivity,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Say hello")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+    await stream.prepareStep({
+      steps: [],
+      stepNumber: 0,
+      messages: stream.messages,
+    });
+    stream.experimental_onStepStart({ model: { modelId: "test-provider" } });
+    await stream.onChunk({ chunk: { type: "text-delta", text: "secret😀" } });
+    await stream.onChunk({
+      chunk: { type: "reasoning-delta", text: "private-reason" },
+    });
+    await stream.onChunk({
+      chunk: { type: "tool-input-delta", delta: "private-command" },
+    });
+    stream.experimental_onToolCallStart();
+    await stream.onStepFinish({
+      response: { modelId: "test-provider", messages: [] },
+      content: [],
+      text: "",
+      finishReason: "stop",
+      toolCalls: [],
+      toolResults: [],
+    });
+    expect(onMemoryActivity.mock.calls.map(([value]) => value)).toEqual([
+      { operation: "prepare_step" },
+      { operation: "provider_stream" },
+      { delta: "text", utf16Units: 8 },
+      { delta: "reasoning", utf16Units: 14 },
+      { delta: "tool_input", utf16Units: 15 },
+      { operation: "tool_execution" },
+      { operation: "step_finalize" },
+    ]);
+    expect(JSON.stringify(onMemoryActivity.mock.calls)).not.toMatch(
+      /secret|private/,
+    );
+    onMemoryActivity.mockImplementation(() => {
+      throw new Error("sink failed");
+    });
+    expect(() =>
+      stream.experimental_onStepStart({ model: { modelId: "test-provider" } }),
+    ).not.toThrow();
+    expect(() => stream.experimental_onToolCallStart()).not.toThrow();
+    await expect(
+      stream.onChunk({ chunk: { type: "reasoning-delta", text: "safe" } }),
+    ).resolves.toBeUndefined();
+  });
+
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
     const stream = (await createAgentStream(

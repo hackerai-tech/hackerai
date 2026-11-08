@@ -52,6 +52,9 @@ jest.mock("next/server", () => ({
 const request = (body = { chatId, messageId: "answer" }) =>
   ({
     signal: new AbortController().signal,
+    headers: new Headers({
+      "x-vercel-id": "iad1::qa123-1794060000000-abcdef123456",
+    }),
     text: async () => JSON.stringify(body),
   }) as NextRequest;
 
@@ -580,4 +583,128 @@ test("discards a draft if Goal achievement is persisted during prediction", asyn
   });
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
   expect(mutation).not.toHaveBeenCalled();
+});
+
+test.each(["authenticate", "read_request", "consume"] as const)(
+  "records one pending DELETE %s stage before the platform deadline, then clears the timer",
+  async (stage) => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const req = request();
+    if (stage === "authenticate")
+      jest.mocked(getUserIDAndPro).mockImplementationOnce(async () => {
+        await gate;
+        return {
+          userId: "owner",
+          subscription: "pro",
+          emailVerified: true,
+          analyticsAccountCohort: "non_internal",
+        };
+      });
+    if (stage === "read_request")
+      req.text = async () => {
+        await gate;
+        return JSON.stringify({ chatId, messageId: "answer" });
+      };
+    if (stage === "consume")
+      mutation.mockImplementationOnce(async () => {
+        await gate;
+        return true;
+      });
+    const pending = DELETE(req);
+    try {
+      await jest.advanceTimersByTimeAsync(9_999);
+      expect(warn).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+        event: "next_actions_delete_slow_request",
+        diagnostic_version: 1,
+        stage,
+        elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
+        request_aborted: false,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+      });
+      release();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ suggestions: [] });
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+        /owner|answer|serviceKey|suggestions/,
+      );
+    } finally {
+      release();
+      await pending;
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  },
+);
+
+test("clears DELETE diagnostics on caught failures and excludes hostile request headers", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const req = request();
+    req.headers.set("x-vercel-id", "PRIVATE_TOKEN");
+    jest
+      .mocked(getUserIDAndPro)
+      .mockRejectedValueOnce(new Error("PRIVATE auth"));
+    expect((await DELETE(req)).status).toBe(200);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warn).not.toHaveBeenCalled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    req.text = async () => {
+      await gate;
+      throw new Error("PRIVATE body");
+    };
+    const pending = DELETE(req);
+    await jest.advanceTimersByTimeAsync(10_000);
+    release();
+    expect((await pending).status).toBe(200);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  } finally {
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test("a throwing slow-warning sink cannot fail the pending DELETE", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {
+    throw new Error("PRIVATE sink");
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const req = request();
+  req.text = async () => {
+    await gate;
+    return JSON.stringify({ chatId, messageId: "answer" });
+  };
+  const pending = DELETE(req);
+  try {
+    await expect(
+      jest.advanceTimersByTimeAsync(10_000),
+    ).resolves.toBeUndefined();
+    release();
+    expect((await pending).status).toBe(200);
+  } finally {
+    release();
+    await pending;
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
 });

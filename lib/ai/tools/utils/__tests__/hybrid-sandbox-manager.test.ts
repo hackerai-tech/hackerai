@@ -2,6 +2,9 @@ jest.mock("@/lib/cloud-recovery/store", () => ({
   readFailures: jest.fn(async () => null),
   clearResumeFailures: jest.fn(async () => {}),
 }));
+jest.mock("@/lib/centrifugo/jwt", () => ({
+  generateCentrifugoToken: jest.fn(async () => "test-token"),
+}));
 jest.mock("../cloud-workspace-guard", () => ({
   ...jest.requireActual("../cloud-workspace-guard"),
   readCloudWorkspaceState: jest.fn(async () => null),
@@ -55,6 +58,12 @@ import {
 } from "@/lib/centrifugo/presence";
 import type { ConnectionInfo } from "../sandbox-types";
 import { ChatSDKError } from "@/lib/errors";
+import { serializeChatSDKErrorForStream } from "@/lib/errors";
+import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
+import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
+import type { PostHog } from "posthog-node";
+import { Centrifuge } from "centrifuge";
+import { EventEmitter } from "node:events";
 
 const baseConnection: ConnectionInfo = {
   connectionId: "conn-online",
@@ -1505,4 +1514,195 @@ describe("HybridSandboxManager reset cleanup", () => {
       }
     }
   });
+});
+
+describe("selected-computer failure diagnostics", () => {
+  const originalWs = process.env.CENTRIFUGO_WS_URL;
+  const originalSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+
+  beforeEach(() => {
+    delete process.env.CENTRIFUGO_WS_URL;
+    mockConvexQuery.mockReset().mockResolvedValue([]);
+    mockConvexMutation.mockReset().mockResolvedValue({ success: true });
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+    else process.env.CENTRIFUGO_WS_URL = originalWs;
+    if (originalSecret === undefined)
+      delete process.env.CENTRIFUGO_TOKEN_SECRET;
+    else process.env.CENTRIFUGO_TOKEN_SECRET = originalSecret;
+  });
+
+  it.each([
+    ["desktop", "desktop_alias"],
+    ["desktop-environment:private-machine", "desktop_environment"],
+    ["environment:private-machine", "remote_environment"],
+    ["00000000-0000-4000-8000-000000000001", "legacy_session"],
+  ])(
+    "delivers finite %s lookup evidence on the existing terminal event",
+    async (preference, kind) => {
+      if (kind === "legacy_session")
+        mockConvexQuery.mockResolvedValueOnce(preference);
+      const manager = new HybridSandboxManager(
+        "user",
+        jest.fn(),
+        preference,
+        "key",
+      );
+      const error = await manager
+        .getSandboxContextForPrompt()
+        .catch((error) => error);
+      const capture = jest.fn();
+      const reporter = createAgentRunReporting({
+        posthog: { capture } as unknown as PostHog,
+        runId: "run-offline",
+        userId: "user",
+        chatId: "chat",
+        subscription: "free",
+        endpoint: "/api/agent",
+      });
+      reporter.setStage("preparation");
+      reporter.fail(error);
+      reporter.fail(new Error("later cleanup failure"));
+      reporter.finalize({ canceled: false });
+      reporter.finalize({ canceled: false });
+      const terminal = capture.mock.calls.filter(
+        ([event]) => event.event === "hackerai-agent_run",
+      );
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0][0].properties).toMatchObject({
+        failure_category: "sandbox_offline",
+        failure_stage: "preparation",
+        selected_computer_diagnostic_version: 1,
+        selected_computer_failure_phase: "prompt_context",
+        selected_computer_requested_kind: kind,
+        selected_computer_resolved_kind: kind,
+        selected_computer_registry_match: false,
+        selected_computer_quarantined_match: false,
+        selected_computer_stale_match: false,
+        selected_computer_other_available: false,
+        selected_computer_presence: "not_checked",
+      });
+      expect(error.metadata).toBeUndefined();
+      expect(serializeChatSDKErrorForStream(error)).not.toContain(
+        "selected_computer_",
+      );
+      expect(JSON.stringify(terminal)).not.toContain("private-machine");
+      if (kind === "legacy_session")
+        expect(JSON.stringify(terminal)).not.toContain(preference);
+      expect(manager.peekFallbackInfo()).toBeNull();
+    },
+  );
+
+  it("distinguishes an unrelated available computer and an unavailable presence probe", async () => {
+    mockConvexQuery.mockResolvedValue([
+      makeConnection({ environmentId: "private-other" }),
+    ]);
+    const manager = new HybridSandboxManager(
+      "user",
+      jest.fn(),
+      "environment:private-selected",
+      "key",
+    );
+    const error = await manager.getSandbox().catch((error) => error);
+    expect(selectedComputerFailureDiagnostics(error)).toMatchObject({
+      selected_computer_failure_phase: "acquisition",
+      selected_computer_registry_match: false,
+      selected_computer_other_available: true,
+      selected_computer_stale_match: false,
+      selected_computer_presence: "unavailable",
+    });
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(manager.getEffectivePreference()).toBe(
+      "environment:private-selected",
+    );
+  });
+
+  it("distinguishes a quarantined selected connection from a missing registry match", async () => {
+    const selected = makeConnection({ environmentId: "private-selected" });
+    mockConvexQuery.mockResolvedValue([selected]);
+    const manager = new HybridSandboxManager(
+      "user",
+      jest.fn(),
+      "environment:private-selected",
+      "key",
+    );
+    await manager.quarantineLocalConnection(
+      selected.connectionId,
+      "command_unresponsive",
+    );
+    const error = await manager
+      .getSandboxContextForPrompt()
+      .catch((error) => error);
+    expect(error).toBeInstanceOf(ChatSDKError);
+    expect(selectedComputerFailureDiagnostics(error)).toMatchObject({
+      selected_computer_registry_match: true,
+      selected_computer_quarantined_match: true,
+      selected_computer_stale_match: false,
+      selected_computer_presence: "not_checked",
+    });
+  });
+
+  it.each([false, true])(
+    "keeps presence evidence on its sampled preference when changed=%s",
+    async (changed) => {
+      process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+      process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+      const sub = Object.assign(new EventEmitter(), {
+        subscribe() {
+          queueMicrotask(() => sub.emit("subscribed"));
+        },
+        unsubscribe: jest.fn(),
+        presence: jest.fn(async () => {
+          if (changed)
+            await manager.setSandboxPreference("environment:replacement");
+          return { clients: {} };
+        }),
+      });
+      jest
+        .spyOn(Centrifuge.prototype, "newSubscription")
+        .mockReturnValue(sub as any);
+      jest.spyOn(Centrifuge.prototype, "connect").mockImplementation(() => {});
+      jest
+        .spyOn(Centrifuge.prototype, "disconnect")
+        .mockImplementation(() => {});
+      const selected = makeConnection({
+        environmentId: "private-selected",
+        lastSeen: 1,
+      });
+      mockConvexQuery.mockResolvedValue([selected]);
+      const manager = new HybridSandboxManager(
+        "user",
+        jest.fn(),
+        "environment:private-selected",
+        "key",
+      );
+      const error = await manager
+        .getSandboxContextForPrompt()
+        .catch((error) => error);
+      expect(sub.presence).toHaveBeenCalledTimes(1);
+      expect(selectedComputerFailureDiagnostics(error)).toMatchObject(
+        changed
+          ? {
+              selected_computer_requested_kind: "unavailable",
+              selected_computer_registry_match: null,
+              selected_computer_stale_match: null,
+            }
+          : {
+              selected_computer_registry_match: true,
+              selected_computer_quarantined_match: false,
+              selected_computer_stale_match: true,
+              selected_computer_other_available: false,
+              selected_computer_presence: "reliable",
+            },
+      );
+      expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
+        serviceKey: "key",
+        connectionId: selected.connectionId,
+      });
+    },
+  );
 });
