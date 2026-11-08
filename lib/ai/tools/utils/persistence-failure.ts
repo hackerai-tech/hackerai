@@ -97,8 +97,13 @@ export type PersistenceFailureCategory =
   | "unsafe_artifact";
 
 /** Project fixed native producer markers, never paths or OS-specific meanings. */
-export function checkpointNativeFilesystemErrorContext(error: unknown): {
-  native_filesystem_diagnostic_version: 1;
+export function checkpointNativeFilesystemErrorContext(
+  error: unknown,
+  reportedPlatform?: unknown,
+): {
+  native_filesystem_diagnostic_version: 2;
+  native_filesystem_reported_platform:
+    "windows" | "macos" | "linux" | "unknown";
   native_filesystem_phase:
     "mkdir" | "open" | "write" | "flush" | "other" | "none" | "unreadable";
   native_filesystem_os_error_code_hint: number | "none";
@@ -106,11 +111,24 @@ export function checkpointNativeFilesystemErrorContext(error: unknown): {
     "integer" | "absent" | "other" | "unreadable";
 } {
   const result: ReturnType<typeof checkpointNativeFilesystemErrorContext> = {
-    native_filesystem_diagnostic_version: 1,
+    native_filesystem_diagnostic_version: 2,
+    native_filesystem_reported_platform: "unknown",
     native_filesystem_phase: "none",
     native_filesystem_os_error_code_hint: "none",
     native_filesystem_os_error_code_shape: "absent",
   };
+  // Client-reported namespace, not an independent OS or failure diagnosis.
+  if (typeof reportedPlatform === "string" && reportedPlatform.length <= 16) {
+    const platform = reportedPlatform.toLowerCase();
+    result.native_filesystem_reported_platform =
+      platform === "win32" || platform === "windows"
+        ? "windows"
+        : platform === "darwin" || platform === "macos"
+          ? "macos"
+          : platform === "linux"
+            ? "linux"
+            : "unknown";
+  }
   if (
     error === null ||
     (typeof error !== "object" && typeof error !== "function")
