@@ -121,3 +121,27 @@ it("describes a paused schedule without promising another run", () => {
   ).toBeInTheDocument();
   expect(screen.queryByText(/Next run:/)).not.toBeInTheDocument();
 });
+it("keeps an edited interval when its selected recurrence button is pressed again", async () => {
+  const save = jest.fn().mockResolvedValue(undefined);
+  render(
+    <ScheduleFormDialog
+      initial={{ ...initial, timing: { type: "interval", minutes: 15 } }}
+      editing
+      onSave={save}
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Repeat every (minutes)"), {
+    target: { value: "30" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Interval", exact: true }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      ...initial,
+      timing: { type: "interval", minutes: 30 },
+    }),
+  );
+});
