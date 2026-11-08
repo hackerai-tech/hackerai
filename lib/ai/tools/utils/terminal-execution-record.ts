@@ -300,6 +300,12 @@ export function createTerminalRecordStore(
           const cloudContext = !local
             ? checkpointCloudErrorContext(error)
             : undefined;
+          const nativeFilesystemFailure =
+            local &&
+            !ownerOnlyPosix &&
+            failureOrigin === "local_file_request" &&
+            fileFailure === "filesystem" &&
+            failureCategory === "unknown";
           const session = Object.getOwnPropertyDescriptor(
             record,
             "session",
@@ -317,18 +323,15 @@ export function createTerminalRecordStore(
                       : "native_file",
                     checkpoint_backend: local ? "local" : "cloud",
                     ...checkpointCommandContext(error),
-                    ...(local &&
-                    !ownerOnlyPosix &&
-                    failureOrigin === "local_file_request" &&
-                    fileFailure === "filesystem" &&
-                    failureCategory === "unknown"
+                    ...(nativeFilesystemFailure
                       ? checkpointNativeFilesystemErrorContext(
                           error,
                           nativeFilesystemReportedPlatform(sandbox),
                         )
                       : {}),
                     ...cloudContext,
-                    ...(cloudContext?.cloud_error_kind === "no_space"
+                    ...(nativeFilesystemFailure ||
+                    cloudContext?.cloud_error_kind === "no_space"
                       ? ownerContext
                       : {}),
                   },

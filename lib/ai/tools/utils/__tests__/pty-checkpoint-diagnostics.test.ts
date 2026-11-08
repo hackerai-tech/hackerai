@@ -421,7 +421,12 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       native_filesystem_phase: "open",
       native_filesystem_os_error_code_hint: 13,
       native_filesystem_os_error_code_shape: "integer",
+      checkpoint_owner_diagnostic_version: 1,
+      checkpoint_owner_run_status: "unavailable",
     });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_trigger_run_id",
+    );
     expect(JSON.stringify(info.mock.calls)).not.toContain(
       "PRIVATE_NATIVE_PATH",
     );
@@ -436,6 +441,9 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     expect(info.mock.calls[0][1]).not.toHaveProperty(
       "native_filesystem_diagnostic_version",
     );
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_diagnostic_version",
+    );
     write.mockResolvedValue(undefined);
     await manager.checkpoint(session);
     info.mockClear();
@@ -446,6 +454,9 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     });
     expect(info.mock.calls[0][1]).not.toHaveProperty(
       "native_filesystem_diagnostic_version",
+    );
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_diagnostic_version",
     );
   });
 
@@ -475,7 +486,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
           "filesystem",
         ),
         true,
-        undefined,
+        ownerRunId,
         getConnectionInfo,
       );
       const { manager, session } = await fixture(store.save, undefined, store);
@@ -486,6 +497,9 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
         native_filesystem_reported_platform: platform,
         native_filesystem_phase: "write",
         native_filesystem_os_error_code_hint: 112,
+        checkpoint_owner_diagnostic_version: 1,
+        checkpoint_owner_run_status: "recorded",
+        checkpoint_owner_trigger_run_id: ownerRunId,
       });
       expect(write).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE");
@@ -555,12 +569,15 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   ])(
     "keeps native filesystem fields outside unrelated failure scopes",
     async (error, local) => {
-      const { store } = failingStore(error, local);
+      const { store } = failingStore(error, local, ownerRunId);
       const { manager, session } = await fixture(store.save, undefined, store);
       await manager.checkpoint(session);
       expect(info).toHaveBeenCalledTimes(1);
       expect(info.mock.calls[0][1]).not.toHaveProperty(
         "native_filesystem_diagnostic_version",
+      );
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_diagnostic_version",
       );
     },
   );
