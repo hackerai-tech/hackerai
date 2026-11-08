@@ -319,6 +319,12 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
     });
     throw new Error("PRIVATE frame stream");
   });
@@ -333,6 +339,12 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
     }),
   );
   expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(

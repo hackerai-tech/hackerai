@@ -242,6 +242,13 @@ export type BrowserCaptureFailureContext = {
   capture_wrapper_exit_code?: number | "none" | "other";
   capture_wrapper_session_matches?: boolean;
   capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_open_receipt_version?: 1;
+  capture_open_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_open_phase?: "started" | "completed";
+  capture_open_exit_code?: number | "none" | "other";
+  capture_open_session_matches?: boolean;
+  capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
 };
 
 /**
@@ -382,6 +389,12 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_open_receipt_version"
+        | "capture_open_receipt_status"
+        | "capture_open_phase"
+        | "capture_open_exit_code"
+        | "capture_open_session_matches"
+        | "capture_open_age"
       > = {};
       try {
         if (error instanceof CommandExitError) {
@@ -452,6 +465,39 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_session_matches =
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
+              }
+              const openStatus = parsed?.open_receipt_status;
+              const openPhase = parsed?.open_phase;
+              const openExit = parsed?.open_exit;
+              if (
+                parsed?.open_receipt_version === 1 &&
+                [
+                  "unavailable",
+                  "not_observed",
+                  "unreadable",
+                  "recorded",
+                ].includes(openStatus) &&
+                (openStatus !== "recorded" ||
+                  ((openPhase === "started" || openPhase === "completed") &&
+                    typeof parsed.open_session_matches === "boolean" &&
+                    BROWSER_WRAPPER_AGES.includes(parsed.open_age) &&
+                    (openPhase === "started"
+                      ? openExit === "none"
+                      : openExit === "other" ||
+                        (typeof openExit === "number" &&
+                          Number.isInteger(openExit) &&
+                          openExit >= 0 &&
+                          openExit <= 255))))
+              ) {
+                precondition.capture_open_receipt_version = 1;
+                precondition.capture_open_receipt_status = openStatus;
+                if (openStatus === "recorded") {
+                  precondition.capture_open_phase = openPhase;
+                  precondition.capture_open_exit_code = openExit;
+                  precondition.capture_open_session_matches =
+                    parsed.open_session_matches;
+                  precondition.capture_open_age = parsed.open_age;
+                }
               }
             }
           }
