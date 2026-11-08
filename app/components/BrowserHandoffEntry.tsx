@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { MousePointerClick, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
+import { effectiveBrowserHandoffState } from "@/convex/lib/browserHandoffState";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   extractAllSidebarContent,
@@ -54,6 +55,40 @@ export function BrowserHandoffEntry({
     api.browserHandoffs.getForUser,
     isAuthenticated && chatId ? { chatId, agentId: "parent" } : "skip",
   );
+  const [now, setNow] = useState(Date.now);
+  const recoveryAt =
+    session?.state === "human" || session?.state === "claiming"
+      ? (session.grantExpiresAt ?? 0)
+      : session?.state === "resuming"
+        ? session.updatedAt + 30_000
+        : null;
+  const expiresAt = session?.expiresAt;
+  useEffect(() => {
+    // Convex queries do not rerun just because a control lease expires. After
+    // a reload, surface recovery even when no browser viewer is mounted.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wake = () => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      const deadlines = [recoveryAt, expiresAt].filter(
+        (value): value is number => value != null && value > currentTime,
+      );
+      if (deadlines.length > 0)
+        timer = setTimeout(wake, Math.min(...deadlines) - currentTime);
+    };
+    wake();
+    return () => clearTimeout(timer);
+  }, [recoveryAt, expiresAt]);
+  const state = session
+    ? effectiveBrowserHandoffState(
+        {
+          state: session.state,
+          grant_expires_at: session.grantExpiresAt ?? undefined,
+          updated_at: session.updatedAt,
+        },
+        now,
+      )
+    : null;
   const browserTool = useMemo(() => {
     // A saved handoff can arrive before its live tool chunk. Keep takeover
     // reachable without replacing the SDK's in-flight messages.
@@ -77,14 +112,15 @@ export function BrowserHandoffEntry({
   if (
     (sidebarOpen && !showingGoalEditor) ||
     !session ||
+    session.expiresAt <= now ||
     !browserTool ||
     preference?.chatId !== chatId
   )
     return null;
 
   const attentionKey =
-    session.state === "waiting" || session.state === "recovery"
-      ? `${session.sessionId}:${session.state}:${session.updatedAt}`
+    state === "waiting" || state === "recovery"
+      ? `${session.sessionId}:${state}:${session.updatedAt}`
       : null;
   const needsAttention =
     attentionKey !== null && preference.dismissedAttention !== attentionKey;
@@ -113,7 +149,7 @@ export function BrowserHandoffEntry({
         />
         <div className="min-w-0 flex-1 text-sm">
           <p role="status" className="font-medium">
-            {session.state === "recovery"
+            {state === "recovery"
               ? "Browser takeover needs attention"
               : "Agent needs your input"}
           </p>

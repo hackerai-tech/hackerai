@@ -6,6 +6,8 @@ let mockSession: {
   state: string;
   sessionId?: string;
   updatedAt?: number;
+  grantExpiresAt?: number | null;
+  expiresAt?: number;
 } | null;
 let mockSidebarOpen = false;
 let mockSidebarContent: { kind: string } | null = null;
@@ -72,7 +74,12 @@ it("keeps normal browsing quiet across chats, reloads and legacy dismissals", ()
     <BrowserHandoffEntry chatId="chat" messages={messages} />,
   );
   for (const state of ["agent", "claiming", "human", "resuming"]) {
-    mockSession = { state, sessionId: "session", updatedAt: 3 };
+    mockSession = {
+      state,
+      sessionId: "session",
+      updatedAt: Date.now(),
+      grantExpiresAt: Date.now() + 30_000,
+    };
     view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();
@@ -149,7 +156,12 @@ it("surfaces recovery after a dismissed wait and keeps takeover transitions quie
     screen.getByRole("button", { name: "Dismiss browser takeover prompt" }),
   );
   for (const state of ["claiming", "human", "resuming", "agent"]) {
-    mockSession = { state, sessionId: "session", updatedAt: 3 };
+    mockSession = {
+      state,
+      sessionId: "session",
+      updatedAt: Date.now(),
+      grantExpiresAt: Date.now() + 30_000,
+    };
     view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
@@ -293,4 +305,74 @@ it("prefers live browser progress over an older persisted browser command", () =
   expect(mockOpenSidebar).toHaveBeenCalledWith(
     expect.objectContaining({ toolCallId: "live-browser" }),
   );
+});
+
+it.each(["human", "claiming", "resuming"])(
+  "surfaces %s lease recovery after reload without a query update",
+  (state) => {
+    jest.useFakeTimers();
+    jest.setSystemTime(100_000);
+    mockSession = {
+      state,
+      sessionId: "paused-session",
+      updatedAt: 90_000,
+      grantExpiresAt: 120_000,
+      expiresAt: 200_000,
+    };
+    const view = render(
+      <BrowserHandoffEntry chatId="chat" messages={messages} />,
+    );
+    try {
+      expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+      act(() => jest.advanceTimersByTime(20_001));
+      fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+      expect(mockOpenSidebar).toHaveBeenCalledWith(
+        expect.objectContaining({
+          browserTakeoverRequest: expect.objectContaining({
+            sessionId: "paused-session",
+          }),
+        }),
+      );
+      mockSession = null;
+      view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+      expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    } finally {
+      view.unmount();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it("reschedules renewed grants and retires an expired session without query updates", () => {
+  jest.useFakeTimers();
+  jest.setSystemTime(100_000);
+  mockSession = {
+    state: "human",
+    sessionId: "session",
+    updatedAt: 100_000,
+    grantExpiresAt: 130_000,
+    expiresAt: 160_000,
+  };
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  try {
+    act(() => jest.advanceTimersByTime(20_000));
+    mockSession = {
+      ...mockSession!,
+      updatedAt: 120_000,
+      grantExpiresAt: 150_000,
+    };
+    view.rerender(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+    act(() => jest.advanceTimersByTime(15_000));
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+    act(() => jest.advanceTimersByTime(15_000));
+    expect(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(10_000));
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+  } finally {
+    view.unmount();
+    jest.useRealTimers();
+  }
 });
