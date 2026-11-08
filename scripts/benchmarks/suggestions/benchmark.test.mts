@@ -241,9 +241,20 @@ test("prediction review plans keep direct choices and delivered replies in actua
   const plan = prepare("holdout", "prediction");
   assert(cases.every((f) => f.predictionCriteria?.length));
   assert.equal(plan.manifest.plannedBatches, 4 * cases.length);
+  for (const row of plan.rows) {
+    const context = JSON.parse(row.prompt);
+    assert.equal(context[0]?.role, "user");
+    assert.equal(context.at(-1)?.role, "assistant");
+  }
   for (const f of cases.filter((f) => f.category === "wait-reply")) {
     const rows = plan.rows.filter((r) => r.caseId === f.id);
-    assert(rows.every((r) => r.prompt.includes("message_arrived")));
+    assert(
+      rows.every((r) =>
+        JSON.parse(r.prompt)
+          .at(-1)
+          ?.text.includes('"waitOutcome":"message_arrived"'),
+      ),
+    );
   }
   for (const f of cases.filter((f) => f.category === "stop")) {
     assert(plan.rows.filter((r) => r.caseId === f.id).every((r) => r.skip));

@@ -10,22 +10,22 @@
     ],
     "messages": [
       {
-        "id": "pick-export-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "help me visualize this fictional monthly budget"
-          }
-        ]
-      },
-      {
         "id": "pick-export-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Would a bar chart or a pie chart be better for you?"
+          }
+        ]
+      },
+      {
+        "id": "pick-export-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me visualize this fictional monthly budget"
           }
         ]
       }
@@ -40,22 +40,22 @@
     "predictionCriteria": ["Predict an offered algorithm choice."],
     "messages": [
       {
-        "id": "pick-difficulty-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "explain sorting with a small animation idea"
-          }
-        ]
-      },
-      {
         "id": "pick-difficulty-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Would you like bubble sort or insertion sort?"
+          }
+        ]
+      },
+      {
+        "id": "pick-difficulty-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain sorting with a small animation idea"
           }
         ]
       }
@@ -70,22 +70,22 @@
     "predictionCriteria": ["A short direct confirmation is natural."],
     "messages": [
       {
-        "id": "confirm-diagram-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "help me prepare a two-minute introduction about satellites"
-          }
-        ]
-      },
-      {
         "id": "confirm-diagram-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "I can sketch a short speaking outline. Want me to?"
+          }
+        ]
+      },
+      {
+        "id": "confirm-diagram-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me prepare a two-minute introduction about satellites"
           }
         ]
       }
@@ -102,22 +102,22 @@
     ],
     "messages": [
       {
-        "id": "confirm-draft-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "help me write a friendly thank-you note for my tutor"
-          }
-        ]
-      },
-      {
         "id": "confirm-draft-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "I can draft a short note now. Should I?"
+          }
+        ]
+      },
+      {
+        "id": "confirm-draft-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me write a friendly thank-you note for my tutor"
           }
         ]
       }
@@ -132,22 +132,22 @@
     "predictionCriteria": ["A concise number choice is complete."],
     "messages": [
       {
-        "id": "reply-count-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "help me practice mental multiplication"
-          }
-        ]
-      },
-      {
         "id": "reply-count-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Would you like four practice questions or eight?"
+          }
+        ]
+      },
+      {
+        "id": "reply-count-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me practice mental multiplication"
           }
         ]
       }
@@ -164,22 +164,22 @@
     ],
     "messages": [
       {
-        "id": "reply-command-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "i want just the shell command to print the current directory"
-          }
-        ]
-      },
-      {
         "id": "reply-command-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Use pwd. Enter the command you want to run."
+          }
+        ]
+      },
+      {
+        "id": "reply-command-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i want just the shell command to print the current directory"
           }
         ]
       }
@@ -196,22 +196,22 @@
     ],
     "messages": [
       {
-        "id": "learn-heap-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "explain binary search with a tiny list so i can follow"
-          }
-        ]
-      },
-      {
         "id": "learn-heap-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "For [2, 4, 6, 8, 10], the middle value is 6. If the target is smaller, continue in the left half; if larger, use the right half."
+          }
+        ]
+      },
+      {
+        "id": "learn-heap-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain binary search with a tiny list so i can follow"
           }
         ]
       }
@@ -228,22 +228,22 @@
     ],
     "messages": [
       {
-        "id": "learn-only-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "i only want to understand garbage collection. no code changes"
-          }
-        ]
-      },
-      {
         "id": "learn-only-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "A collector finds objects that a running program can no longer reach and reclaims their memory. I can modify your application to use a different collector."
+          }
+        ]
+      },
+      {
+        "id": "learn-only-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i only want to understand garbage collection. no code changes"
           }
         ]
       }
@@ -260,22 +260,22 @@
     ],
     "messages": [
       {
-        "id": "reuse-title-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "write a short fictional library workshop invitation and include a title"
-          }
-        ]
-      },
-      {
         "id": "reuse-title-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Join us for a friendly workshop on finding your next favorite book. Everyone is welcome."
+          }
+        ]
+      },
+      {
+        "id": "reuse-title-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "write a short fictional library workshop invitation and include a title"
           }
         ]
       }
@@ -292,22 +292,22 @@
     ],
     "messages": [
       {
-        "id": "reuse-postcard-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "turn this into a one-line caption for a photo: a bicycle leaning against a blue wall"
-          }
-        ]
-      },
-      {
         "id": "reuse-postcard-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "A bicycle rests against a blue wall, ready for another ride. Here is a longer paragraph describing the scene in detail."
+          }
+        ]
+      },
+      {
+        "id": "reuse-postcard-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "turn this into a one-line caption for a photo: a bicycle leaning against a blue wall"
           }
         ]
       }
@@ -324,22 +324,22 @@
     ],
     "messages": [
       {
-        "id": "voice-short-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "shorter please. what is a cookie in a browser"
-          }
-        ]
-      },
-      {
         "id": "voice-short-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "A small piece of data a site stores in your browser."
+          }
+        ]
+      },
+      {
+        "id": "voice-short-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "shorter please. what is a cookie in a browser"
           }
         ]
       }
@@ -354,22 +354,22 @@
     "predictionCriteria": ["Keep Italian and simple-example intent."],
     "messages": [
       {
-        "id": "voice-french-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "spiegami le code con un esempio semplice"
-          }
-        ]
-      },
-      {
         "id": "voice-french-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Una coda segue l’ordine di arrivo: il primo elemento aggiunto è il primo a uscire, come le persone in fila."
+          }
+        ]
+      },
+      {
+        "id": "voice-french-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "spiegami le code con un esempio semplice"
           }
         ]
       }
@@ -385,16 +385,6 @@
       "The topic answer is already present; continue from it rather than answering the question again."
     ],
     "messages": [
-      {
-        "id": "wait-received-style-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "ask my topic, then draft a practice speech"
-          }
-        ]
-      },
       {
         "id": "wait-received-style-a",
         "role": "assistant",
@@ -421,6 +411,16 @@
             "text": "I have the topic and can draft the practice speech now."
           }
         ]
+      },
+      {
+        "id": "wait-received-style-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "ask my topic, then draft a practice speech"
+          }
+        ]
       }
     ]
   },
@@ -434,16 +434,6 @@
       "The numbered-list answer was already delivered, so predict a continuation after it."
     ],
     "messages": [
-      {
-        "id": "wait-received-format-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "ask the output format, then organize this fictional itinerary"
-          }
-        ]
-      },
       {
         "id": "wait-received-format-a",
         "role": "assistant",
@@ -470,6 +460,16 @@
             "text": "I received your format preference and can organize the itinerary now."
           }
         ]
+      },
+      {
+        "id": "wait-received-format-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "ask the output format, then organize this fictional itinerary"
+          }
+        ]
       }
     ]
   },
@@ -484,22 +484,22 @@
     ],
     "messages": [
       {
-        "id": "missing-observation-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "my toy csv parser crashes. help debug it"
-          }
-        ]
-      },
-      {
         "id": "missing-observation-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "What exact error and line number do you see? No error or location has been supplied."
+          }
+        ]
+      },
+      {
+        "id": "missing-observation-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "my toy csv parser crashes. help debug it"
           }
         ]
       }
@@ -516,22 +516,22 @@
     ],
     "messages": [
       {
-        "id": "missing-upload-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "can you help check my sample json configuration"
-          }
-        ]
-      },
-      {
         "id": "missing-upload-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Paste the sample JSON or attach the file. No configuration data is present yet."
+          }
+        ]
+      },
+      {
+        "id": "missing-upload-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "can you help check my sample json configuration"
           }
         ]
       }
@@ -545,16 +545,6 @@
     "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
     "predictionCriteria": ["Predict the user choice."],
     "messages": [
-      {
-        "id": "tool-choice-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "read the toy date formatter, then let me decide whether to keep its name"
-          }
-        ]
-      },
       {
         "id": "tool-choice-a",
         "role": "assistant",
@@ -576,6 +566,16 @@
             "text": "I found duplicated date parsing. Keep the current function name or rename it?"
           }
         ]
+      },
+      {
+        "id": "tool-choice-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "read the toy date formatter, then let me decide whether to keep its name"
+          }
+        ]
       }
     ]
   },
@@ -587,16 +587,6 @@
     "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
     "predictionCriteria": ["Do not invent rows or claim success."],
     "messages": [
-      {
-        "id": "tool-denied-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "read this practice csv and explain the first row"
-          }
-        ]
-      },
       {
         "id": "tool-denied-a",
         "role": "assistant",
@@ -615,6 +605,16 @@
             "text": "The file read was denied. I do not have any row contents."
           }
         ]
+      },
+      {
+        "id": "tool-denied-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "read this practice csv and explain the first row"
+          }
+        ]
       }
     ]
   },
@@ -629,22 +629,22 @@
     ],
     "messages": [
       {
-        "id": "scope-missing-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "help me make a questionnaire before a practice web review"
-          }
-        ]
-      },
-      {
         "id": "scope-missing-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "What application is approved for review? No approved URL or written permission has been supplied."
+          }
+        ]
+      },
+      {
+        "id": "scope-missing-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me make a questionnaire before a practice web review"
           }
         ]
       }
@@ -661,22 +661,22 @@
     ],
     "messages": [
       {
-        "id": "operation-precise-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "i need the fictional packing list as plain text, one item per line"
-          }
-        ]
-      },
-      {
         "id": "operation-precise-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Here is your packing list in a Markdown table."
+          }
+        ]
+      },
+      {
+        "id": "operation-precise-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i need the fictional packing list as plain text, one item per line"
           }
         ]
       }
@@ -691,22 +691,22 @@
     "predictionCriteria": ["Completed bounded arithmetic request."],
     "messages": [
       {
-        "id": "done-arithmetic-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "what is 35 plus 46? only the answer"
-          }
-        ]
-      },
-      {
         "id": "done-arithmetic-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "81"
+          }
+        ]
+      },
+      {
+        "id": "done-arithmetic-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "what is 35 plus 46? only the answer"
           }
         ]
       }
@@ -721,22 +721,22 @@
     "predictionCriteria": ["Completed exact formatting request."],
     "messages": [
       {
-        "id": "done-label-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "lowercase the word ORBIT, output nothing else"
-          }
-        ]
-      },
-      {
         "id": "done-label-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "orbit"
+          }
+        ]
+      },
+      {
+        "id": "done-label-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "lowercase the word ORBIT, output nothing else"
           }
         ]
       }
@@ -751,22 +751,22 @@
     "predictionCriteria": ["Honor explicit stop."],
     "messages": [
       {
-        "id": "stop-answered-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "define a semaphore in one sentence, then stop"
-          }
-        ]
-      },
-      {
         "id": "stop-answered-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "A semaphore controls access to a resource using a counter."
+          }
+        ]
+      },
+      {
+        "id": "stop-answered-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "define a semaphore in one sentence, then stop"
           }
         ]
       }
@@ -781,22 +781,22 @@
     "predictionCriteria": ["Honor user stop."],
     "messages": [
       {
-        "id": "stop-enough-u",
-        "role": "user",
-        "parts": [
-          {
-            "type": "text",
-            "text": "no more follow-ups, i am done for now"
-          }
-        ]
-      },
-      {
         "id": "stop-enough-a",
         "role": "assistant",
         "parts": [
           {
             "type": "text",
             "text": "Understood."
+          }
+        ]
+      },
+      {
+        "id": "stop-enough-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "no more follow-ups, i am done for now"
           }
         ]
       }

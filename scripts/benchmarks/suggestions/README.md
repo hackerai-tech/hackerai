@@ -19,9 +19,8 @@ complete application delivery or real customer outcomes.
 `task-progress-fixtures.json` retains the earlier tuning/reserved-test scenarios and
 reviewer-only goals/criteria. `fixtures.json` retains the older regression set for
 compatibility; it is not the new reserved test set. `candidate.txt` is the
-benchmark comparison arm. After promoting a tested revision, it can match the
-application prompt after promotion: a fresh run would then compare the same
-system text. Edit the candidate before a new comparison. To repeat an earlier
+benchmark comparison arm. It can match the application prompt, so a fresh run may
+compare identical system text. Edit the candidate before a new comparison. To repeat an earlier
 comparison, use its original plan and pinned source/configuration, including
 `baselineCommit` and recorded source hashes. Preparation during development may
 include uncommitted runner/fixture changes; preserve those alongside the plan.
