@@ -13,6 +13,7 @@ function daemon(
     action?: string;
     unownedPath?: string;
     missingPath?: string;
+    missingCode?: string;
     name?: string;
     receipt?: unknown;
     openReceipt?: unknown;
@@ -131,7 +132,7 @@ function daemon(
             }
             if (file === options.missingPath)
               throw Object.assign(new Error("PRIVATE filesystem path"), {
-                code: "ENOENT",
+                code: options.missingCode ?? "ENOENT",
               });
             return {
               uid: file === options.unownedPath ? 0 : 1000,
@@ -188,6 +189,85 @@ const receipt = {
   private: "PRIVATE_TARGET",
   close_all: false,
 };
+
+it.each(["unset", "disabled", "lt_15m", "15m", "gt_15m", "unparsed"])(
+  "retains the wrapped open declaration %s after a different last command",
+  (idle) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+      openReceipt: {
+        ...receipt,
+        action: "open",
+        idle_env_version: 1,
+        idle_env: idle,
+      },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text).open_idle).toEqual([1, idle]);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+    expect(text).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  { idle_env_version: 1, idle_env: "PRIVATE_ENV" },
+  { idle_env_version: 2, idle_env: "15m" },
+  { idle_env_version: 1, idle_env: "15m", session_key: "a".repeat(64) },
+  {},
+])(
+  "censors an invalid, old or other-session open declaration (%#)",
+  (fields) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...receipt, open_receipt_support: 1 },
+      openReceipt: { ...receipt, action: "open", ...fields },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(JSON.parse(d.output.mock.calls[0][0])).not.toHaveProperty(
+      "open_idle",
+    );
+  },
+);
+
+it("keeps the longest open/close/declaration failure below the unchanged 512-byte cap", () => {
+  const longest = { ...receipt, at: Date.now() + 60000, exit: 999 };
+  const d = daemon({
+    missingPath: directory + "/sockets",
+    missingCode: "ENOTDIR",
+    receipt: {
+      ...longest,
+      action: "version",
+      session_key: "a".repeat(64),
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      idle_env_version: 1,
+      idle_env: "unparsed",
+    },
+    closeReceipt: { ...longest, action: "close" },
+  });
+  const text = d.output.mock.calls[0][0];
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expect(JSON.parse(text)).toMatchObject({
+    diagnostic_reason: "sockets_stat",
+    diagnostic_error: "not_directory",
+    open_idle: [1, "unparsed"],
+    close_receipt: [
+      1,
+      "recorded",
+      "completed",
+      "other",
+      "selected_session",
+      "unknown",
+      "same_time",
+    ],
+  });
+});
 
 it("reports only bounded same-session wrapper context when an owned socket is missing", () => {
   const d = daemon({

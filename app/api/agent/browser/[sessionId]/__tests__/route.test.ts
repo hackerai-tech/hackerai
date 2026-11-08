@@ -355,6 +355,8 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_open_exit_code: 0,
       capture_open_session_matches: true,
       capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     });
     throw new Error("PRIVATE frame stream");
   });
@@ -375,6 +377,8 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_open_exit_code: 0,
       capture_open_session_matches: true,
       capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     }),
   );
   expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(

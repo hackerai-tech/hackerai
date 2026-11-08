@@ -107,6 +107,19 @@ def write_receipt(filename, value):
                 pass
 
 
+def invocation_idle_env():
+    # The wrapped command's declaration, not the separate probe's environment
+    # or the effective configuration of a possibly pre-existing daemon.
+    raw = os.environ.get('AGENT_BROWSER_IDLE_TIMEOUT_MS')
+    if raw is None: return 'unset'
+    if len(raw) > 128: return 'unparsed'
+    value = raw.strip()
+    if value.startswith('+'): value = value[1:]
+    if not value or any(c < '0' or c > '9' for c in value): return 'unparsed'
+    timeout = int(value)
+    if timeout > 18446744073709551615: return 'unparsed'
+    return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
+
 def record_wrapper(phase, status=None):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
@@ -140,6 +153,8 @@ def record_wrapper(phase, status=None):
             action = 'version'
         value = dict(v=1, open_receipt_support=1, close_receipt_support=1, close_all=close_all, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
+        if action == 'open':
+            value.update(idle_env_version=1, idle_env=invocation_idle_env())
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', value)

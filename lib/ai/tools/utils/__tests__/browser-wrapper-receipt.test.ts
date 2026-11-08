@@ -11,14 +11,17 @@ const exercise = (
   blockedReceipt = false,
   args = ["--session", "PRIVATE_SESSION", "open", "PRIVATE_TARGET"],
   verify = false,
+  idleEnv?: string,
 ) =>
   JSON.parse(
     execFileSync(
       "python3",
       [
         "-c",
-        `import ast,json,pathlib,subprocess,sys
+        `import ast,json,os,pathlib,subprocess,sys
 x=json.load(sys.stdin)
+os.environ.pop('AGENT_BROWSER_IDLE_TIMEOUT_MS',None)
+if x.get('idleEnv') is not None: os.environ['AGENT_BROWSER_IDLE_TIMEOUT_MS']=x['idleEnv']
 root=pathlib.Path(x['root'])
 real=root/'fake-browser'
 real.write_text('#!/usr/bin/env python3\\nimport json,pathlib,sys\\nr=pathlib.Path('+repr(str(root))+')\\np=r/"wrapper-receipt.json"\\n(r/"observed.json").write_text(p.read_text() if p.is_file() else "null")\\nsys.exit('+str(x['exit'])+')\\n')
@@ -42,6 +45,7 @@ print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_
           blocked: blockedReceipt,
           args,
           verify,
+          idleEnv,
           program: BROWSER_SESSION_PROGRAM,
         }),
         encoding: "utf8",
@@ -54,6 +58,35 @@ beforeEach(() => {
   root = mkdtempSync(path.join(os.tmpdir(), "hackerai-wrapper-receipt-"));
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+it.each([
+  [undefined, "unset"],
+  ["0", "disabled"],
+  ["1", "lt_15m"],
+  [" +900000 ", "15m"],
+  ["900001", "gt_15m"],
+  ["PRIVATE_ENV", "unparsed"],
+  ["-1", "unparsed"],
+  ["1e6", "unparsed"],
+  ["18446744073709551616", "unparsed"],
+  ["9".repeat(129), "unparsed"],
+])(
+  "records only the actual wrapped open idle declaration (%#)",
+  (idleEnv, bucket) => {
+    const opened = exercise(root, 37, false, undefined, false, idleEnv);
+    expect(opened.status).toBe(37);
+    expect(opened.open).toMatchObject({
+      idle_env: bucket,
+      idle_env_version: 1,
+    });
+    expect(Buffer.byteLength(JSON.stringify(opened.open))).toBeLessThanOrEqual(
+      512,
+    );
+    const later = exercise(root, 0, false, ["--version"], false, "0");
+    expect(later.open).toEqual(opened.open);
+    expect(JSON.stringify(later)).not.toContain("PRIVATE_ENV");
+  },
+);
 
 it.each([0, 37])(
   "observes start/completion without replacing browser exit %s or recording arguments",
