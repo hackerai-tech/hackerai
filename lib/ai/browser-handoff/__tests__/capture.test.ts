@@ -328,6 +328,111 @@ it.each([
 );
 
 it.each([
+  [
+    3,
+    [1, "connecting"],
+    {
+      capture_deadline_diagnostic_version: 1,
+      capture_deadline_phase: "connecting",
+    },
+  ],
+  [
+    3,
+    [1, "awaiting_response"],
+    {
+      capture_deadline_diagnostic_version: 1,
+      capture_deadline_phase: "awaiting_response",
+    },
+  ],
+  [
+    3,
+    [1, "partial_response"],
+    {
+      capture_deadline_diagnostic_version: 1,
+      capture_deadline_phase: "partial_response",
+    },
+  ],
+  [3, [2, "connecting"], {}],
+  [3, [1, "PRIVATE"], {}],
+  [3, [1, "connecting", "PRIVATE"], {}],
+  [2, [1, "connecting"], {}],
+])(
+  "exports only the controlled deadline tuple for exit %s (%#)",
+  async (exitCode, deadline, context) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: exitCode as number,
+      stdout: JSON.stringify({ deadline, private: "PRIVATE" }),
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: exitCode,
+      ...(context as object),
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  ["fresh_screenshot", true],
+  ["frame_bridge", false],
+])(
+  "keeps deadline metadata restricted to the daemon at %s",
+  async (stage, eligible) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const error = new CommandExitError({
+      exitCode: 3,
+      stdout: JSON.stringify({ deadline: [1, "awaiting_response"] }),
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockImplementation(async (command: string) => {
+      if (
+        stage === "fresh_screenshot"
+          ? command.includes('"action":"screenshot"')
+          : !command.includes('"action":"stream_status"')
+      )
+        throw error;
+      return run(command);
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        true,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context.capture_stage).toBe(stage);
+    if (eligible)
+      expect(context).toMatchObject({
+        capture_deadline_diagnostic_version: 1,
+        capture_deadline_phase: "awaiting_response",
+      });
+    else expect(context).not.toHaveProperty("capture_deadline_phase");
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(eligible ? 1 : 0);
+  },
+);
+
+it.each([
   [0, "stream_status"],
   [1, "frame_bridge"],
 ])(

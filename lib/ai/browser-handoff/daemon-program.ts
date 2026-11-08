@@ -34,6 +34,12 @@ export const BROWSER_OPEN_IDLE_ENV_VALUES = [
   "unparsed",
 ] as const;
 
+export const BROWSER_DAEMON_DEADLINE_PHASES = [
+  "connecting",
+  "awaiting_response",
+  "partial_response",
+] as const;
+
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
 const net = require('node:net');
@@ -46,6 +52,8 @@ let done = false;
 let precondition = 'arguments';
 let argumentsValid = false;
 let rootInfo;
+// Socket progress only: a queued write is not a daemon acknowledgement.
+let deadlinePhase = 'connecting';
 /** Read only a bounded owned private file; never follow links or block on pipes. */
 function readReceipt(filename) {
   let fd;
@@ -182,11 +190,15 @@ try {
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
   let buffer = '';
-  timer = setTimeout(() => finish(3), 6000);
+  timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
   socket = net.createConnection(address);
   socket.setEncoding('utf8');
-  socket.on('connect', () => socket.write(JSON.stringify({ ...request, id }) + '\n'));
+  socket.on('connect', () => {
+    deadlinePhase = 'awaiting_response';
+    socket.write(JSON.stringify({ ...request, id }) + '\n');
+  });
   socket.on('data', chunk => {
+    if (chunk.length > 0) deadlinePhase = 'partial_response';
     buffer += chunk;
     if (buffer.length > 2 * 1024 * 1024) return finish(4);
     const newline = buffer.indexOf('\n');
