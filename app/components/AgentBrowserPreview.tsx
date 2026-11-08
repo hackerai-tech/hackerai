@@ -86,6 +86,10 @@ async function withBrowserDeadline<T>(
   }
 }
 
+/**
+ * Displays a session's live browser and handoff controls, keeping preview
+ * retries bounded and input gated by verified image freshness and control.
+ */
 export function AgentBrowserPreview({
   chatId,
   agentId,
