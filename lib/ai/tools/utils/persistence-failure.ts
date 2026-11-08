@@ -402,6 +402,24 @@ export function checkpointCloudErrorContext(error: unknown): {
           break;
       }
       if (
+        typeof DOMException !== "undefined" &&
+        error instanceof DOMException
+      ) {
+        // AbortSignal.timeout rejects with a native exception whose name is an
+        // intrinsic accessor. Brand-check with that getter, never an overridden
+        // error getter, and export only these fixed labels.
+        const nativeName = Object.getOwnPropertyDescriptor(
+          DOMException.prototype,
+          "name",
+        )?.get?.call(error);
+        kind =
+          nativeName === "TimeoutError"
+            ? "dom_timeout"
+            : nativeName === "AbortError"
+              ? "dom_abort"
+              : "other_error";
+      }
+      if (
         kind === "other_error" &&
         Object.getOwnPropertyDescriptor(error, "message")?.value ===
           "Expected to receive information about written file"

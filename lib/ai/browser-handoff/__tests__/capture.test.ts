@@ -38,6 +38,20 @@ const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
 it.each([
   [
+    new DOMException("PRIVATE native timer", "TimeoutError"),
+    {
+      active_session_read_error_kind: "dom_timeout",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
+    new DOMException("PRIVATE native cancellation", "AbortError"),
+    {
+      active_session_read_error_kind: "dom_abort",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
     Object.assign(new Error("PRIVATE missing path"), {
       name: "FileNotFoundError",
       statusCode: 404,
