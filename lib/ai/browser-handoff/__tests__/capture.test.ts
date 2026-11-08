@@ -1,4 +1,9 @@
-import { captureBrowserFrame, resizeBrowserViewport } from "../server";
+import {
+  browserSessionReadFailureContext,
+  captureBrowserFrame,
+  getActiveBrowserSessionName,
+  resizeBrowserViewport,
+} from "../server";
 import { CommandExitError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
 
@@ -30,6 +35,85 @@ const location = {
 };
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
+
+it.each([
+  [
+    Object.assign(new Error("PRIVATE missing path"), {
+      name: "FileNotFoundError",
+      statusCode: 404,
+    }),
+    {
+      active_session_read_error_kind: "file_not_found",
+      active_session_read_http_status: 404,
+    },
+  ],
+  [
+    Object.assign(new Error("PRIVATE SDK request"), { name: "TimeoutError" }),
+    {
+      active_session_read_error_kind: "timeout",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
+    new TypeError("fetch failed", {
+      cause: { code: "ECONNRESET", url: "PRIVATE" },
+    }),
+    {
+      active_session_read_error_kind: "other_error",
+      active_session_read_http_status: "none",
+      active_session_read_type_error_signal: "fetch_failed",
+      active_session_read_transport_code: "ECONNRESET",
+    },
+  ],
+])(
+  "retains bounded active-session read attribution while preserving loading (%#)",
+  async (error, fields) => {
+    const read = jest.fn().mockRejectedValue(error);
+    const sandbox = { files: { read } } as unknown as Sandbox;
+    let failure: unknown;
+    try {
+      await getActiveBrowserSessionName(sandbox, location);
+    } catch (caught) {
+      failure = caught;
+    }
+    expect(failure).toMatchObject({ state: "loading" });
+    expect(browserSessionReadFailureContext(failure)).toEqual({
+      active_session_read_diagnostic_version: 1,
+      ...fields,
+    });
+    expect(
+      JSON.stringify(browserSessionReadFailureContext(failure)),
+    ).not.toContain("PRIVATE");
+    expect(JSON.stringify(failure)).toBe('{"state":"loading"}');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(`${location.directory}/active-session`, {
+      user: "root",
+      requestTimeoutMs: 8_000,
+    });
+  },
+);
+
+it("keeps successful and invalid session-name reads free of SDK failure diagnostics", async () => {
+  const read = jest
+    .fn()
+    .mockResolvedValueOnce("default\n")
+    .mockResolvedValueOnce("PRIVATE/invalid");
+  const sandbox = { files: { read } } as unknown as Sandbox;
+  await expect(getActiveBrowserSessionName(sandbox, location)).resolves.toBe(
+    "default",
+  );
+  let failure: unknown;
+  try {
+    await getActiveBrowserSessionName(sandbox, location);
+  } catch (caught) {
+    failure = caught;
+  }
+  expect(failure).toMatchObject({ state: "closed" });
+  expect(browserSessionReadFailureContext(failure)).toBeUndefined();
+  expect(
+    browserSessionReadFailureContext(new Error("PRIVATE")),
+  ).toBeUndefined();
+});
 
 it.each([2, 3])(
   "carries only validated wrapper context from the failed status helper (%s)",
