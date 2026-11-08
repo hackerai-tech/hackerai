@@ -24,6 +24,7 @@ import {
   recordOutcome,
   beginDispatch,
   recoverUncertainStarts,
+  hasAny,
 } from "../schedules";
 import { assertUserCanAccessChatHistory } from "../lib/suspensionGuards";
 
@@ -104,6 +105,7 @@ const call = async (fn: any, ctx: any, args: any) => {
   const name = `schedules:${Object.entries(scheduleFunctions).find(([, value]) => value === fn)![0]}`;
   const type = [
     "list",
+    "hasAny",
     "due",
     "getForDispatch",
     "unsettled",
@@ -238,6 +240,11 @@ describe("durable schedules", () => {
     const id = await call(save, s.ctx, { ...auth, definition });
     return { ...s, id };
   }
+  it("reports only the current owner's existing schedules for management navigation", async () => {
+    const { ctx } = await setup();
+    expect(await call(hasAny, ctx, auth)).toBe(true);
+    expect(await call(hasAny, ctx, { ...auth, userId: "other" })).toBe(false);
+  });
   it("enforces service authentication and schedule ownership", async () => {
     const { ctx, id } = await setup();
     await expect(

@@ -13,6 +13,11 @@ const mockToggleSidebar = jest.fn();
 const mockStartNewChat = jest.fn();
 let mockSubscription: SubscriptionTier = "free";
 let mockIsCheckingProPlan = false;
+let mockSchedulesAccess: { visible: boolean } | undefined;
+jest.mock("swr", () => ({
+  __esModule: true,
+  default: (key: unknown) => ({ data: key ? mockSchedulesAccess : undefined }),
+}));
 
 jest.mock("@/components/ui/sidebar", () => ({
   useSidebar: () => ({ toggleSidebar: mockToggleSidebar }),
@@ -58,7 +63,25 @@ describe("SidebarHeaderContent", () => {
     jest.clearAllMocks();
     mockSubscription = "free";
     mockIsCheckingProPlan = false;
+    mockSchedulesAccess = undefined;
   });
+  it.each([true, false])(
+    "keeps schedule management discoverable for a downgraded user, collapsed=%s",
+    (isCollapsed) => {
+      mockSubscription = "free";
+      mockSchedulesAccess = { visible: true };
+      render(
+        <SidebarHeaderContent
+          handleCloseSidebar={jest.fn()}
+          isCollapsed={isCollapsed}
+        />,
+      );
+      expect(screen.getByRole("link", { name: "Schedules" })).toHaveAttribute(
+        "href",
+        "/schedules",
+      );
+    },
+  );
 
   it("shows the sidebar button instead of the HackerAI icon when collapsed", () => {
     render(

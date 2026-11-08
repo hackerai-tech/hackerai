@@ -48,6 +48,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     schedules: {
       list: "list",
+      hasAny: "hasAny",
       save: "save",
       setEnabled: "setEnabled",
       getForDispatch: "getForDispatch",
@@ -111,6 +112,24 @@ describe("schedule HTTP boundary", () => {
     expect((await GET(request("GET"))).status).toBe(401);
     expect(mockQuery).not.toHaveBeenCalled();
   });
+  it.each([true, false])(
+    "preserves management visibility for existing schedules when eligibility is disabled: %s",
+    async (hasSchedules) => {
+      (canUseSchedules as jest.Mock).mockResolvedValue(false);
+      mockQuery.mockResolvedValue(hasSchedules);
+      const response = await GET(
+        request("GET", undefined, "http://localhost/api/schedules?access=1"),
+      );
+      expect(await response.json()).toEqual({
+        enabled: false,
+        visible: hasSchedules,
+      });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "hasAny",
+        expect.objectContaining({ userId: "owner" }),
+      );
+    },
+  );
   it("keeps the schedule list available when result reconciliation fails", async () => {
     (reconcileScheduleRuns as jest.Mock).mockRejectedValueOnce(
       Error("unavailable"),

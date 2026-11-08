@@ -97,12 +97,12 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   const pathname = usePathname();
   const { setChatSidebarOpen, closeSidebar, subscription, isCheckingProPlan } =
     useGlobalState();
-  const { data: schedulesAccess } = useSWR<{ enabled: boolean }>(
-    subscription !== "free" ? "/api/schedules?access=1" : null,
+  const { data: schedulesAccess } = useSWR<{ visible: boolean }>(
+    "/api/schedules?access=1",
     schedulesRequest,
     { dedupingInterval: 60_000 },
   );
-  const showSchedules = schedulesAccess?.enabled === true;
+  const showSchedules = schedulesAccess?.visible === true;
 
   // Search dialog state
   const [isSearchOpen, setIsSearchOpen] = useState(false);

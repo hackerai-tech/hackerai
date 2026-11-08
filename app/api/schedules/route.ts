@@ -57,7 +57,12 @@ export async function GET(req: NextRequest) {
     const ctx = await context(req);
     if (req.nextUrl.searchParams.get("access") === "1")
       return NextResponse.json(
-        { enabled: ctx.enabled },
+        {
+          enabled: ctx.enabled,
+          visible:
+            ctx.enabled ||
+            (await getConvexClient().query(api.schedules.hasAny, ctx.args)),
+        },
         { headers: { "Cache-Control": "private, no-store" } },
       );
     await reconcileScheduleRuns(ctx.userId).catch((error) => {

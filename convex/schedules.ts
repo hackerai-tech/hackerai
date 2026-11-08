@@ -59,6 +59,20 @@ async function runState(
   };
 }
 
+/** Keep management discoverable after plan access or rollout eligibility ends. */
+export const hasAny = query({
+  args: auth,
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    await authorize(ctx, args);
+    const rows = await ctx.db
+      .query("agent_schedules")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .take(1);
+    return rows.length > 0;
+  },
+});
+
 export const list = query({
   args: auth,
   // Result status is derived from the normal task's authoritative completion state.
