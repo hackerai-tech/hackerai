@@ -50,7 +50,7 @@ const DAYS = [
 ];
 const DISPLAY_DAYS = [1, 2, 3, 4, 5, 6, 0];
 const KINDS: { value: ScheduleTiming["type"]; label: string }[] = [
-  { value: "weekly", label: "Days of week" },
+  { value: "weekly", label: "Weekly" },
   { value: "interval", label: "Interval" },
   { value: "once", label: "One time" },
 ];
@@ -347,7 +347,7 @@ export function ScheduleFormDialog({
                         ))}
                       </div>
                     </div>
-                    <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-3">
+                    <div className="grid gap-3 min-[380px]:grid-cols-[minmax(0,7rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
                       <div className="min-w-0 space-y-2">
                         <Label htmlFor={`${id}-time`}>Time</Label>
                         <Input
@@ -520,7 +520,7 @@ export function ScheduleFormDialog({
             >
               Discard changes
             </AlertDialogAction>
-            <AlertDialogCancel className="border-transparent bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground">
+            <AlertDialogCancel className="border-transparent bg-primary-foreground text-primary hover:bg-primary-foreground hover:text-primary hover:opacity-90 dark:border-transparent dark:bg-primary-foreground dark:hover:bg-primary-foreground">
               Keep editing
             </AlertDialogCancel>
           </AlertDialogFooter>
