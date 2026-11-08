@@ -2,6 +2,7 @@
 
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
+import { isAbuseTelemetry } from "@/lib/abuse/privacy";
 import { useEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
@@ -152,6 +153,8 @@ export function PostHogProvider({
             if (!event) {
               return null;
             }
+            if (isAbuseTelemetry(window.location.pathname, event.properties))
+              return null;
             if (event.event === INFLUENCER_VISIT_EVENT)
               return sanitizeInfluencerVisit(event);
             if (event.event === X_REFERRAL_EVENT) {

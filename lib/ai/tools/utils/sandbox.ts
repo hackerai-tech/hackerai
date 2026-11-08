@@ -3,6 +3,7 @@ import {
   listWorkspaceInventory,
   startWorkspaceCreation,
 } from "./cloud-workspace-identity";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   CloudWorkspaceUnavailableError,
   readCloudWorkspaceState,
@@ -128,6 +129,7 @@ export const ensureSandboxConnection = async (
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion = "us-east-1", signal } = options;
   signal?.throwIfAborted();
+  await assertUserCanMakeCostIncurringRequest(userID);
   // The SDK aborts fetch with this shared deadline signal. Paused restores use
   // a longer SDK timeout as well; the total acquisition deadline remains authoritative.
   const requestOptions = { signal };

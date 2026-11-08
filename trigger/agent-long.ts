@@ -1749,6 +1749,7 @@ export const agentLongTask = task({
       genericDelegationEnabled = false,
     } = payload;
     const subagentsEnabled = genericDelegationEnabled;
+
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
@@ -2026,6 +2027,8 @@ export const agentLongTask = task({
     let goalFinishReason: string | undefined;
     let activeGoal: Awaited<ReturnType<typeof getGoal>> = null;
     try {
+      // Check inside the cleanup boundary, before sandbox reconnect can resume work.
+      await assertUserCanMakeCostIncurringRequest(userId);
       if (payload.goalGeneration !== undefined) {
         activeGoal = await goalConvex().mutation(goalApi.agentGoals.claimRun, {
           serviceKey: goalServiceKey(),

@@ -1,3 +1,6 @@
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: jest.fn(async () => {}),
+}));
 jest.mock("@/lib/cloud-recovery/store", () => ({
   readFailures: jest.fn(async () => null),
   clearResumeFailures: jest.fn(async () => {}),

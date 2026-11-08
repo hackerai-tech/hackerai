@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as abuseCases from "../abuseCases.js";
+import type * as lib_abuseValidators from "../lib/abuseValidators.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as agentGoals from "../agentGoals.js";
@@ -99,6 +101,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  abuseCases: typeof abuseCases;
+  "lib/abuseValidators": typeof lib_abuseValidators;
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
   agentGoals: typeof agentGoals;

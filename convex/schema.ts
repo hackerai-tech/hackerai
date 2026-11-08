@@ -22,6 +22,7 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
+import { abuseCaseFields, abuseEventFields } from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -199,6 +200,21 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  // Evidence is encrypted before transport; ordinary users have no read path.
+  abuse_cases: defineTable(abuseCaseFields)
+    .index("by_active_containment_user", ["activeContainmentUserId"])
+    .index("by_reference", ["reference"])
+    .index("by_status", ["status"]),
+  abuse_events: defineTable(abuseEventFields)
+    .index("by_caseId", ["caseId"])
+    .index("by_caseId_and_kind", ["caseId", "kind"]),
+  abuse_rate_limits: defineTable({
+    bucket: v.string(),
+    count: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_bucket", ["bucket"])
+    .index("by_expiresAt", ["expiresAt"]),
   cloud_network_settings: defineTable({
     user_id: v.string(),
     policy: networkPolicy,

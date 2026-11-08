@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
+import { isAbuseReportingPath } from "@/lib/abuse/privacy";
 import type { IntercomMessengerIdentity } from "@/lib/intercom/messenger";
 import { shutdownIntercomSession } from "@/lib/intercom/client";
 
@@ -13,8 +15,9 @@ export function IntercomMessenger({
 }: {
   identity: IntercomMessengerIdentity | null;
 }) {
+  const pathname = usePathname();
   useEffect(() => {
-    if (!identity) {
+    if (!identity || isAbuseReportingPath(pathname ?? "")) {
       shutdownIntercomSession();
       activeUserId = null;
       return;
@@ -55,7 +58,7 @@ export function IntercomMessenger({
     return () => {
       cancelled = true;
     };
-  }, [identity]);
+  }, [identity, pathname]);
 
   return null;
 }

@@ -452,6 +452,7 @@ export const subagentTask = task({
     }
     const row = await getSubagent(payload.subagentId);
     if (!row) throw new Error("Subagent reservation not found");
+    await assertUserCanMakeCostIncurringRequest(row.user_id);
     if (SUBAGENT_TERMINAL_STATUSES.has(row.status)) {
       return await reusePersistedTerminalState(row, ctx.run.id, "pre_attach");
     }
