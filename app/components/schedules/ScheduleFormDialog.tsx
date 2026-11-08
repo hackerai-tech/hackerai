@@ -1,6 +1,7 @@
 "use client";
 import { useId, useState } from "react";
 import { CalendarClock, Cloud, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -48,6 +49,11 @@ const DAYS = [
   "Saturday",
 ];
 const DISPLAY_DAYS = [1, 2, 3, 4, 5, 6, 0];
+const KINDS: { value: ScheduleTiming["type"]; label: string }[] = [
+  { value: "weekly", label: "Days of week" },
+  { value: "interval", label: "Interval" },
+  { value: "once", label: "One time" },
+];
 function localDateTime(at: number) {
   const date = new Date(at);
   return new Date(at - date.getTimezoneOffset() * 60000)
@@ -96,6 +102,17 @@ export function ScheduleFormDialog({
       onceAt !== localDateTime(initial.timing.at));
   const timing = value.timing;
   const setTiming = (timing: ScheduleTiming) => setValue({ ...value, timing });
+  const setKind = (type: ScheduleTiming["type"]) => {
+    // Re-selecting the current kind must not reset its fields.
+    if (type === timing.type) return;
+    setTiming(
+      type === "once"
+        ? { type: "once", at: new Date(onceAt).getTime() }
+        : type === "interval"
+          ? { type: "interval", minutes: 60 }
+          : defaultSchedule().timing,
+    );
+  };
   const close = () => {
     if (pending) return;
     if (dirty) {
@@ -159,7 +176,7 @@ export function ScheduleFormDialog({
       }}
     >
       <DialogContent
-        className="max-h-[90dvh] overflow-y-auto sm:max-w-xl"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-h-[min(90dvh,52rem)] sm:max-w-xl"
         onInteractOutside={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -167,262 +184,322 @@ export function ScheduleFormDialog({
           if (pending) e.preventDefault();
         }}
       >
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <CalendarClock className="size-5" />
+        <DialogHeader className="shrink-0 gap-1.5 border-b px-5 py-4 pr-12 text-left sm:px-6">
+          <DialogTitle>
             {editing ? "Edit schedule" : "New schedule"}
           </DialogTitle>
           <DialogDescription>
-            Give HackerAI a prompt and a time. Come back to the result.
+            Write the instructions once. Each run starts a new task you can open
+            later.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="space-y-5">
-          <fieldset disabled={pending} className="space-y-5">
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-name`}>Name</Label>
-              <Input
-                id={`${id}-name`}
-                value={value.name}
-                onChange={(e) => setValue({ ...value, name: e.target.value })}
-                maxLength={80}
-                placeholder="e.g. Morning security brief"
-                required
-                autoFocus
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-prompt`}>Instructions</Label>
-              <Textarea
-                id={`${id}-prompt`}
-                value={value.prompt}
-                onChange={(e) => setValue({ ...value, prompt: e.target.value })}
-                maxLength={16000}
-                rows={5}
-                className="min-h-28 resize-y"
-                placeholder="What should HackerAI do each time? Include any context it needs."
-                required
-              />
-              <p className="text-xs text-muted-foreground">
-                Each run starts a new task with these instructions.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-kind`}>When</Label>
-              <Select
-                value={timing.type}
-                onValueChange={(type) =>
-                  setTiming(
-                    type === "once"
-                      ? { type: "once", at: new Date(onceAt).getTime() }
-                      : type === "interval"
-                        ? { type: "interval", minutes: 60 }
-                        : defaultSchedule().timing,
-                  )
-                }
-              >
-                <SelectTrigger id={`${id}-kind`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="weekly">At a set time</SelectItem>
-                  <SelectItem value="interval">At an interval</SelectItem>
-                  <SelectItem value="once">One time</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {timing.type === "interval" && (
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-minutes`}>Repeat every (minutes)</Label>
-                <Input
-                  id={`${id}-minutes`}
-                  type="number"
-                  min={15}
-                  max={43200}
-                  step={1}
-                  value={timing.minutes}
-                  onChange={(e) =>
-                    setTiming({ ...timing, minutes: Number(e.target.value) })
-                  }
-                  required
-                />
-                <p className="text-xs text-muted-foreground">
-                  Minimum 15 minutes. The first run starts after this interval.
-                </p>
-              </div>
-            )}
-            {timing.type === "once" && (
-              <div className="space-y-2">
-                <Label htmlFor={`${id}-at`}>Date and time</Label>
-                <Input
-                  id={`${id}-at`}
-                  type="datetime-local"
-                  value={onceAt}
-                  onInput={(e) => setOnceAt(e.currentTarget.value)}
-                  required
-                />
-                <p className="text-xs text-muted-foreground">
-                  Your current time zone:{" "}
-                  {Intl.DateTimeFormat().resolvedOptions().timeZone}
-                </p>
-              </div>
-            )}
-            {timing.type === "weekly" && (
+        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 sm:px-6">
+            <fieldset disabled={pending} className="min-w-0 space-y-6">
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Days</Label>
+                  <Label htmlFor={`${id}-name`}>Name</Label>
+                  <Input
+                    id={`${id}-name`}
+                    value={value.name}
+                    onChange={(e) =>
+                      setValue({ ...value, name: e.target.value })
+                    }
+                    maxLength={80}
+                    placeholder="e.g. Morning security brief"
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-prompt`}>Instructions</Label>
+                  <Textarea
+                    id={`${id}-prompt`}
+                    value={value.prompt}
+                    onChange={(e) =>
+                      setValue({ ...value, prompt: e.target.value })
+                    }
+                    maxLength={16000}
+                    rows={5}
+                    className="min-h-28 resize-y"
+                    placeholder="What should HackerAI do each time? Include any context it needs."
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Each run starts a new task with these instructions.
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-4 border-t pt-5">
+                <div className="space-y-2">
                   <div
-                    className="flex flex-wrap gap-1.5"
-                    role="group"
-                    aria-label="Days of the week"
+                    id={`${id}-kind`}
+                    className="text-sm leading-none font-medium"
                   >
-                    {DISPLAY_DAYS.map((day) => (
-                      <Button
-                        key={day}
+                    When
+                  </div>
+                  <div
+                    role="group"
+                    aria-labelledby={`${id}-kind`}
+                    className="grid grid-cols-3 gap-1 rounded-lg border bg-muted/40 p-1"
+                  >
+                    {KINDS.map((kind) => (
+                      <button
+                        key={kind.value}
                         type="button"
-                        variant={
-                          timing.weekdays.includes(day) ? "default" : "outline"
-                        }
-                        size="sm"
-                        className="size-9 p-0"
-                        aria-label={DAYS[day]}
-                        aria-pressed={timing.weekdays.includes(day)}
-                        onClick={() =>
-                          setTiming({
-                            ...timing,
-                            weekdays: timing.weekdays.includes(day)
-                              ? timing.weekdays.filter((d) => d !== day)
-                              : [...timing.weekdays, day].sort(),
-                          })
-                        }
+                        aria-pressed={timing.type === kind.value}
+                        onClick={() => setKind(kind.value)}
+                        className={cn(
+                          "h-11 min-w-0 truncate rounded-md px-2 text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 sm:h-8",
+                          timing.type === kind.value
+                            ? "bg-background font-medium text-foreground shadow-xs dark:bg-input/60"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
                       >
-                        {DAYS[day].slice(0, 1)}
-                      </Button>
+                        {kind.label}
+                      </button>
                     ))}
                   </div>
                 </div>
-                <div className="grid gap-4 sm:grid-cols-[140px_1fr]">
+                {timing.type === "interval" && (
                   <div className="space-y-2">
-                    <Label htmlFor={`${id}-time`}>Time</Label>
+                    <Label htmlFor={`${id}-minutes`}>
+                      Repeat every (minutes)
+                    </Label>
                     <Input
-                      id={`${id}-time`}
-                      type="time"
-                      value={timing.time}
-                      onInput={(e) =>
-                        setTiming({ ...timing, time: e.currentTarget.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor={`${id}-timezone`}>Time zone</Label>
-                    <Input
-                      id={`${id}-timezone`}
-                      value={timing.timezone}
+                      id={`${id}-minutes`}
+                      type="number"
+                      inputMode="numeric"
+                      min={15}
+                      max={43200}
+                      step={1}
+                      className="tabular-nums sm:w-40"
+                      value={timing.minutes}
                       onChange={(e) =>
-                        setTiming({ ...timing, timezone: e.target.value })
+                        setTiming({
+                          ...timing,
+                          minutes: Number(e.target.value),
+                        })
                       }
-                      placeholder="America/Chicago"
-                      list={`${id}-zones`}
                       required
                     />
-                    <datalist id={`${id}-zones`}>
-                      {[
-                        ...new Set([
-                          Intl.DateTimeFormat().resolvedOptions().timeZone,
-                          "UTC",
-                          "America/New_York",
-                          "America/Chicago",
-                          "America/Denver",
-                          "America/Los_Angeles",
-                          "Europe/London",
-                          "Europe/Berlin",
-                          "Asia/Kolkata",
-                          "Asia/Tokyo",
-                          "Australia/Sydney",
-                        ]),
-                      ].map((z) => (
-                        <option key={z} value={z} />
-                      ))}
-                    </datalist>
+                    <p className="text-xs text-muted-foreground">
+                      Minimum 15 minutes. The first run starts after this
+                      interval.
+                    </p>
                   </div>
-                </div>
+                )}
+                {timing.type === "once" && (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${id}-at`}>Date and time</Label>
+                    <Input
+                      id={`${id}-at`}
+                      type="datetime-local"
+                      className="sm:w-64"
+                      value={onceAt}
+                      onInput={(e) => setOnceAt(e.currentTarget.value)}
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Your current time zone:{" "}
+                      {Intl.DateTimeFormat().resolvedOptions().timeZone}
+                    </p>
+                  </div>
+                )}
+                {timing.type === "weekly" && (
+                  <>
+                    <div className="space-y-2">
+                      <div
+                        id={`${id}-days`}
+                        className="text-sm leading-none font-medium"
+                      >
+                        Days
+                      </div>
+                      <div
+                        className="grid grid-cols-7 gap-1"
+                        role="group"
+                        aria-labelledby={`${id}-days`}
+                      >
+                        {DISPLAY_DAYS.map((day) => (
+                          <Button
+                            key={day}
+                            type="button"
+                            variant={
+                              timing.weekdays.includes(day)
+                                ? "default"
+                                : "outline"
+                            }
+                            size="sm"
+                            className="h-11 min-w-0 px-0 text-xs sm:h-9"
+                            aria-label={DAYS[day]}
+                            aria-pressed={timing.weekdays.includes(day)}
+                            onClick={() =>
+                              setTiming({
+                                ...timing,
+                                weekdays: timing.weekdays.includes(day)
+                                  ? timing.weekdays.filter((d) => d !== day)
+                                  : [...timing.weekdays, day].sort(),
+                              })
+                            }
+                          >
+                            {DAYS[day].slice(0, 3)}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-3">
+                      <div className="min-w-0 space-y-2">
+                        <Label htmlFor={`${id}-time`}>Time</Label>
+                        <Input
+                          id={`${id}-time`}
+                          type="time"
+                          className="tabular-nums"
+                          value={timing.time}
+                          onInput={(e) =>
+                            setTiming({
+                              ...timing,
+                              time: e.currentTarget.value,
+                            })
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="min-w-0 space-y-2">
+                        <Label htmlFor={`${id}-timezone`}>Time zone</Label>
+                        <Input
+                          id={`${id}-timezone`}
+                          value={timing.timezone}
+                          onChange={(e) =>
+                            setTiming({ ...timing, timezone: e.target.value })
+                          }
+                          placeholder="America/Chicago"
+                          list={`${id}-zones`}
+                          autoComplete="off"
+                          spellCheck={false}
+                          required
+                        />
+                        <datalist id={`${id}-zones`}>
+                          {[
+                            ...new Set([
+                              Intl.DateTimeFormat().resolvedOptions().timeZone,
+                              "UTC",
+                              "America/New_York",
+                              "America/Chicago",
+                              "America/Denver",
+                              "America/Los_Angeles",
+                              "Europe/London",
+                              "Europe/Berlin",
+                              "Asia/Kolkata",
+                              "Asia/Tokyo",
+                              "Australia/Sydney",
+                            ]),
+                          ].map((z) => (
+                            <option key={z} value={z} />
+                          ))}
+                        </datalist>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-model`}>Model</Label>
-              <Select
-                value={value.model}
-                onValueChange={(model) =>
-                  setValue({
-                    ...value,
-                    model: model as ScheduleDefinition["model"],
-                  })
-                }
-              >
-                <SelectTrigger id={`${id}-model`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">Auto</SelectItem>
-                  <SelectItem value="pro">HackerAI Pro</SelectItem>
-                  <SelectItem value="max">HackerAI Max</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </fieldset>
-          <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-            <p className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
-              <Cloud className="size-3.5" /> Runs in your cloud workspace
-            </p>
-            Saving authorizes HackerAI to run these instructions with full tool
-            access, even while you’re away. Runs use your account’s normal usage
-            and spending limits.
+              <div className="flex flex-col gap-2 border-t pt-5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <Label htmlFor={`${id}-model`}>Model</Label>
+                <Select
+                  value={value.model}
+                  onValueChange={(model) =>
+                    setValue({
+                      ...value,
+                      model: model as ScheduleDefinition["model"],
+                    })
+                  }
+                >
+                  <SelectTrigger id={`${id}-model`} className="w-full sm:w-52">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">Auto</SelectItem>
+                    <SelectItem value="pro">HackerAI Pro</SelectItem>
+                    <SelectItem value="max">HackerAI Max</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </fieldset>
           </div>
-          {next && (
-            <p className="text-xs text-muted-foreground">
-              Next run:{" "}
-              <span className="font-medium text-foreground">
-                {new Date(next).toLocaleString([], {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                  ...(timing.type === "weekly"
-                    ? { timeZone: timing.timezone }
-                    : {}),
-                })}
-              </span>
-              {timing.type === "weekly" ? ` · ${timing.timezone}` : ""}. Starts
-              within about a minute of the scheduled time.
-            </p>
-          )}
-          {!enabledAfterSave && (
-            <p className="text-xs text-muted-foreground">
-              {saved?.consumed && !timingChanged
-                ? "This one-time schedule already ran. Choose a new date and time to run it again."
-                : "This schedule will stay paused after saving. Resume it from the schedule menu to set its next run."}
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={close}
-              disabled={pending}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={pending}>
-              {pending && <Loader2 className="size-4 animate-spin" />}
-              {pending
-                ? "Saving…"
-                : editing
-                  ? "Save changes"
-                  : "Create schedule"}
-            </Button>
+          <div className="shrink-0 space-y-3 border-t bg-muted/30 px-5 py-4 sm:px-6">
+            <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
+              <div className="flex items-start gap-2">
+                <CalendarClock
+                  className="mt-0.5 size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                {next ? (
+                  <p>
+                    Next run:{" "}
+                    <span className="font-medium text-foreground tabular-nums">
+                      {new Date(next).toLocaleString([], {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                        ...(timing.type === "weekly"
+                          ? { timeZone: timing.timezone }
+                          : {}),
+                      })}
+                    </span>
+                    {timing.type === "weekly" ? ` · ${timing.timezone}` : ""}.
+                    Starts within about a minute of the scheduled time.
+                  </p>
+                ) : !enabledAfterSave ? (
+                  <p>
+                    {saved?.consumed && !timingChanged
+                      ? "This one-time schedule already ran. Choose a new date and time to run it again."
+                      : "This schedule will stay paused after saving. Resume it from the schedule menu to set its next run."}
+                  </p>
+                ) : (
+                  <p>
+                    {timing.type === "once"
+                      ? "Choose a date and time in the future to see when it runs."
+                      : "Finish choosing when to run to see the next run time."}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-start gap-2">
+                <Cloud
+                  className="mt-0.5 size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <p>
+                  <span className="font-medium text-foreground">
+                    Runs in your cloud workspace.
+                  </span>{" "}
+                  Saving authorizes HackerAI to run these instructions with full
+                  tool access, even while you’re away. Runs use your account’s
+                  normal usage and spending limits.
+                </p>
+              </div>
+            </div>
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11 sm:h-9"
+                onClick={close}
+                disabled={pending}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" className="h-11 sm:h-9" disabled={pending}>
+                {pending && <Loader2 className="size-4 animate-spin" />}
+                {pending
+                  ? "Saving…"
+                  : editing
+                    ? "Save changes"
+                    : "Create schedule"}
+              </Button>
+            </div>
           </div>
         </form>
       </DialogContent>
@@ -431,14 +508,21 @@ export function ScheduleFormDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>Discard your unsaved changes?</AlertDialogTitle>
             <AlertDialogDescription>
-              Your edits will be lost. The saved schedule will stay as it is.
+              {editing
+                ? "Your edits will be lost. The saved schedule will stay as it is."
+                : "Your instructions and timing will be lost. No schedule will be created."}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep editing</AlertDialogCancel>
-            <AlertDialogAction onClick={onClose}>
+          <AlertDialogFooter className="flex-col">
+            <AlertDialogAction
+              onClick={onClose}
+              className="bg-transparent text-destructive shadow-none hover:bg-destructive/10"
+            >
               Discard changes
             </AlertDialogAction>
+            <AlertDialogCancel className="border-transparent bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground">
+              Keep editing
+            </AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -3,7 +3,6 @@ import Link from "next/link";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ArrowUpRight,
-  CalendarClock,
   ChevronDown,
   Ellipsis,
   Loader2,
@@ -12,9 +11,8 @@ import {
   Play,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +20,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 import { describeTiming } from "@/lib/schedules/recurrence";
 import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 
@@ -39,16 +38,45 @@ const LABELS: Record<string, string> = {
   canceled: "Canceled",
   deleted: "Task deleted",
 };
+const BUSY = [
+  "queued",
+  "starting",
+  "started",
+  "running",
+  "finishing",
+  "uncertain_start",
+];
+// Dot color mirrors the stored run status; it never implies success on its own.
+function statusDot(status: string) {
+  if (status === "finished") return "bg-emerald-500";
+  if (status === "failed") return "bg-destructive";
+  if (BUSY.includes(status)) return "bg-amber-500 motion-safe:animate-pulse";
+  if (status === "unconfirmed") return "bg-amber-500";
+  return "bg-muted-foreground/50";
+}
 function RunResult({ run }: { run: ScheduleRun }) {
   const hasTask = run.hasTask && run.status !== "deleted";
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-      <span
-        className={
-          run.status === "failed" ? "text-destructive" : "text-muted-foreground"
-        }
-      >
-        {LABELS[run.status] ?? run.status} ·{" "}
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <span className="inline-flex items-center gap-1.5">
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            statusDot(run.status),
+          )}
+          aria-hidden="true"
+        />
+        <span
+          className={
+            run.status === "failed"
+              ? "font-medium text-destructive"
+              : "text-foreground"
+          }
+        >
+          {LABELS[run.status] ?? run.status}
+        </span>
+      </span>
+      <span className="tabular-nums text-muted-foreground">
         {new Date(run.createdAt).toLocaleString([], {
           dateStyle: "medium",
           timeStyle: "short",
@@ -62,14 +90,16 @@ function RunResult({ run }: { run: ScheduleRun }) {
               run_status: run.status,
             })
           }
-          className="inline-flex items-center gap-0.5 text-foreground underline-offset-4 hover:underline"
+          className="inline-flex items-center gap-0.5 rounded-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           View task
-          <ArrowUpRight className="size-3" />
+          <ArrowUpRight className="size-3" aria-hidden="true" />
         </Link>
       )}
       {run.detail && (
-        <span className="w-full text-muted-foreground">{run.detail}</span>
+        <span className="w-full break-words text-muted-foreground">
+          {run.detail}
+        </span>
       )}
     </div>
   );
@@ -89,72 +119,43 @@ export function ScheduleRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const historyId = useId();
   const [history, setHistory] = useState(false);
   const latest = schedule.runs[0];
-  const busy =
-    latest &&
-    [
-      "queued",
-      "starting",
-      "started",
-      "running",
-      "finishing",
-      "uncertain_start",
-    ].includes(latest.status);
+  const busy = latest && BUSY.includes(latest.status);
   const completed = !schedule.enabled && schedule.consumed;
   return (
-    <li className="p-4 sm:p-5">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-        <div className="hidden size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/30 sm:flex">
-          <CalendarClock className="size-4 text-muted-foreground" />
-        </div>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="break-words text-sm font-medium">
+    <li className="px-4 py-4 sm:px-5">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 pt-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h2 className="min-w-0 break-words text-[15px] font-medium">
               {schedule.definition.name}
             </h2>
-            <Badge
-              variant="outline"
-              className="rounded-full px-2 py-0 text-[11px] font-normal"
-            >
-              {schedule.enabled ? "Active" : completed ? "One-time" : "Paused"}
-            </Badge>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {describeTiming(schedule.definition.timing)}
-            {schedule.definition.timing.type === "weekly" && (
-              <span className="block text-xs sm:ml-1 sm:inline">
-                {" "}
-                · {schedule.definition.timing.timezone.replaceAll("_", " ")}
-              </span>
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Next run{" "}
-            <span className="ml-1 text-foreground">
-              {schedule.enabled && schedule.nextRunAt
-                ? new Date(schedule.nextRunAt).toLocaleString([], {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    ...(schedule.definition.timing.type === "weekly"
-                      ? { timeZone: schedule.definition.timing.timezone }
-                      : {}),
-                  })
-                : completed
-                  ? "No further runs"
-                  : "Paused"}
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-px text-[11px] text-muted-foreground">
+              <span
+                className={cn(
+                  "size-1.5 rounded-full",
+                  schedule.enabled
+                    ? "bg-emerald-500"
+                    : "bg-muted-foreground/50",
+                )}
+                aria-hidden="true"
+              />
+              {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
             </span>
+          </div>
+          <p className="mt-1 break-words text-xs text-muted-foreground">
+            {describeTiming(schedule.definition.timing)}
+            {schedule.definition.timing.type === "weekly" &&
+              ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
           </p>
-          {latest ? (
-            <RunResult run={latest} />
-          ) : (
-            <p className="text-xs text-muted-foreground">No runs yet</p>
-          )}
         </div>
-        <div className="flex shrink-0 items-center gap-1 self-end sm:self-start">
+        <div className="-mr-1 flex shrink-0 items-center gap-1">
           <Button
             variant="outline"
             size="sm"
+            className="h-11 sm:h-8"
             disabled={pending || !enabled || Boolean(busy)}
             onClick={() => onAction("run")}
             aria-label={`Run ${schedule.definition.name} now`}
@@ -171,7 +172,7 @@ export function ScheduleRow({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-8"
+                className="size-11 sm:size-8"
                 disabled={pending}
                 aria-label={`More actions for ${schedule.definition.name}`}
               >
@@ -206,28 +207,65 @@ export function ScheduleRow({
           </DropdownMenu>
         </div>
       </div>
-      {schedule.runs.length > 1 && (
-        <div className="mt-3 sm:ml-[52px]">
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setHistory(!history)}
-            aria-expanded={history}
-          >
-            <ChevronDown
-              className={`size-3 transition-transform ${history ? "rotate-180" : ""}`}
-            />
-            Recent runs
-          </button>
-          {history && (
-            <div className="mt-2 space-y-3 border-l pl-3">
-              {schedule.runs.slice(1).map((run) => (
-                <RunResult key={run.id} run={run} />
-              ))}
-            </div>
+      <dl className="mt-3 grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 rounded-lg bg-muted/30 px-3 py-2.5 text-xs">
+        <dt className="text-muted-foreground">Next run</dt>
+        <dd
+          className={cn(
+            "min-w-0 tabular-nums",
+            schedule.enabled && schedule.nextRunAt
+              ? "text-foreground"
+              : "text-muted-foreground",
           )}
-        </div>
-      )}
+        >
+          {schedule.enabled && schedule.nextRunAt
+            ? new Date(schedule.nextRunAt).toLocaleString([], {
+                dateStyle: "medium",
+                timeStyle: "short",
+                ...(schedule.definition.timing.type === "weekly"
+                  ? { timeZone: schedule.definition.timing.timezone }
+                  : {}),
+              })
+            : completed
+              ? "No further runs"
+              : "None while paused"}
+        </dd>
+        <dt className="text-muted-foreground">Last run</dt>
+        <dd className="min-w-0">
+          {latest ? (
+            <RunResult run={latest} />
+          ) : (
+            <span className="text-muted-foreground">No runs yet</span>
+          )}
+        </dd>
+        {schedule.runs.length > 1 && (
+          <dd className="col-start-2 min-w-0">
+            <button
+              type="button"
+              className="-ml-1 inline-flex min-h-7 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setHistory(!history)}
+              aria-expanded={history}
+              aria-controls={historyId}
+            >
+              <ChevronDown
+                className={cn(
+                  "size-3 transition-transform motion-reduce:transition-none",
+                  history && "rotate-180",
+                )}
+                aria-hidden="true"
+              />
+              Recent runs
+              <span className="tabular-nums">({schedule.runs.length - 1})</span>
+            </button>
+            {history && (
+              <div id={historyId} className="mt-1.5 space-y-2 border-l pl-3">
+                {schedule.runs.slice(1).map((run) => (
+                  <RunResult key={run.id} run={run} />
+                ))}
+              </div>
+            )}
+          </dd>
+        )}
+      </dl>
     </li>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import {
-  CalendarClock,
+  ChevronRight,
   Cloud,
   GraduationCap,
   Loader2,
@@ -65,6 +65,10 @@ const TEMPLATES = [
     label: "Fridays · 17:00",
   },
 ];
+// Header and body share one column so titles and content line up.
+const COLUMN = "mx-auto w-full max-w-3xl";
+const STARTER =
+  "group flex w-full min-w-0 items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-muted/40 focus-visible:relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5";
 export function SchedulesPage() {
   const { data, error, isLoading, reload, perform } = useSchedules();
   const exposed = useRef(false);
@@ -113,31 +117,30 @@ export function SchedulesPage() {
   }
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-      <header className="shrink-0 border-b px-4 py-4 sm:px-6">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            {!chatSidebarOpen && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 md:hidden"
-                aria-label="Open task sidebar"
-                onClick={() => setChatSidebarOpen(true)}
-              >
-                <PanelLeft className="size-5" />
-              </Button>
-            )}
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight">
-                Schedules
-              </h1>
-              <p className="hidden text-sm text-muted-foreground sm:block">
-                Your prompts, on a schedule.
-              </p>
-            </div>
+      <header className="shrink-0 border-b py-3">
+        <div
+          className={`${COLUMN} flex min-h-10 items-center gap-3 px-4 sm:px-6`}
+        >
+          {!chatSidebarOpen && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="-ml-1 md:hidden"
+              aria-label="Open task sidebar"
+              onClick={() => setChatSidebarOpen(true)}
+            >
+              <PanelLeft className="size-5" />
+            </Button>
+          )}
+          <div className="min-w-0 flex-1">
+            <h1 className="text-lg font-semibold tracking-tight">Schedules</h1>
+            <p className="hidden text-xs text-muted-foreground sm:block">
+              Run prompts automatically and review each result as a task.
+            </p>
           </div>
           <Button
             size="sm"
+            className="h-11 shrink-0 sm:h-8"
             disabled={!canCreate}
             onClick={() => setForm({ definition: defaultSchedule() })}
           >
@@ -147,27 +150,18 @@ export function SchedulesPage() {
         </div>
       </header>
       <main className="min-h-0 flex-1 overflow-y-auto" aria-busy={isLoading}>
-        <div className="mx-auto max-w-4xl space-y-5 px-4 py-6 sm:px-6 sm:py-8">
-          <div className="flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
-            <Cloud className="mt-0.5 size-4 shrink-0" />
-            <p>
-              HackerAI runs your instructions in the cloud, even when you’re
-              away. Each run starts a new task and uses your account’s normal
-              limits.
-            </p>
-          </div>
+        <div className={`${COLUMN} space-y-5 px-4 py-6 sm:px-6 sm:py-8`}>
           {isLoading && (
             <div role="status" className="space-y-3">
               <span className="sr-only">Loading schedules</span>
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-28 w-full rounded-xl" />
-              ))}
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-64 w-full rounded-xl" />
             </div>
           )}
           {error && !data && (
             <div
               role="alert"
-              className="rounded-xl border border-dashed p-8 text-center"
+              className="rounded-xl border border-dashed px-6 py-10 text-center"
             >
               <h2 className="font-medium">Couldn’t load schedules</h2>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -184,7 +178,10 @@ export function SchedulesPage() {
             </div>
           )}
           {data && !data.enabled && (
-            <div role="status" className="rounded-xl border bg-muted/30 p-5">
+            <div
+              role="status"
+              className="rounded-xl border bg-muted/30 px-4 py-3.5 sm:px-5"
+            >
               <h2 className="text-sm font-medium">
                 Schedules aren’t available for this account yet
               </h2>
@@ -205,34 +202,34 @@ export function SchedulesPage() {
           {actionError && (
             <p
               role="alert"
-              className="rounded-lg border border-destructive/30 px-3 py-2 text-sm text-destructive"
+              className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
             >
               {actionError}
             </p>
           )}
           {data?.enabled && data.schedules.length === 0 && (
-            <section className="py-5" aria-labelledby="empty-schedules">
-              <div className="mb-7 max-w-lg">
-                <div className="mb-4 flex size-11 items-center justify-center rounded-xl border bg-muted/40">
-                  <CalendarClock className="size-5" />
-                </div>
+            <section aria-labelledby="empty-schedules" className="space-y-4">
+              <div className="max-w-xl">
                 <h2
                   id="empty-schedules"
-                  className="text-xl font-semibold tracking-tight"
+                  className="text-base font-semibold tracking-tight"
                 >
-                  Make time for the work that repeats
+                  No schedules yet
                 </h2>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                  Start with a daily brief, a weekly checklist, or your own
-                  routine. Pick a template and make it yours.
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                  Pick a starting point. You’ll review the instructions and
+                  timing before anything runs.
                 </p>
               </div>
-              <ul className="grid gap-3 sm:grid-cols-3">
+              <ul
+                className="divide-y overflow-hidden rounded-xl border"
+                aria-label="Schedule templates"
+              >
                 {TEMPLATES.map((t) => (
                   <li key={t.name}>
                     <button
                       type="button"
-                      className="flex h-full w-full flex-col gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className={STARTER}
                       onClick={() =>
                         setForm({
                           definition: {
@@ -251,42 +248,65 @@ export function SchedulesPage() {
                         })
                       }
                     >
-                      <t.icon className="size-5 text-muted-foreground" />
-                      <div>
-                        <h3 className="text-sm font-medium">{t.name}</h3>
-                        <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                          {t.description}
-                        </p>
-                      </div>
-                      <span className="mt-auto text-xs text-muted-foreground">
-                        {t.label}
+                      <t.icon
+                        className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 self-start sm:flex sm:items-baseline sm:gap-4">
+                        <span className="block min-w-0 sm:flex-1">
+                          <span className="block text-sm font-medium">
+                            {t.name}
+                          </span>
+                          <span className="mt-0.5 block text-sm text-muted-foreground">
+                            {t.description}
+                          </span>
+                        </span>
+                        <span className="mt-1.5 block text-xs tabular-nums text-muted-foreground sm:mt-0 sm:shrink-0">
+                          {t.label}
+                        </span>
                       </span>
+                      <ChevronRight
+                        className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none"
+                        aria-hidden="true"
+                      />
                     </button>
                   </li>
                 ))}
+                <li>
+                  <button
+                    type="button"
+                    className={STARTER}
+                    onClick={() => setForm({ definition: defaultSchedule() })}
+                  >
+                    <Plus
+                      className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">
+                        Start from scratch
+                      </span>
+                      <span className="mt-0.5 block text-sm text-muted-foreground">
+                        Write your own instructions and timing.
+                      </span>
+                    </span>
+                    <ChevronRight
+                      className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </li>
               </ul>
-              <Button
-                variant="outline"
-                className="mt-5"
-                size="sm"
-                onClick={() => setForm({ definition: defaultSchedule() })}
-              >
-                <Plus className="size-4" />
-                Start from scratch
-              </Button>
             </section>
           )}
           {data && data.schedules.length > 0 && (
-            <>
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>
-                  {data.schedules.filter((s) => s.enabled).length} active ·{" "}
-                  {data.schedules.length} total
-                </span>
-                <span>Up to {MAX_SCHEDULES} schedules</span>
-              </div>
+            <section className="space-y-3">
+              <p className="text-xs tabular-nums text-muted-foreground">
+                {data.schedules.length} of {MAX_SCHEDULES} schedules ·{" "}
+                {data.schedules.filter((s) => s.enabled).length} active
+              </p>
               <ul
-                className="divide-y rounded-xl border"
+                className="divide-y overflow-hidden rounded-xl border"
                 aria-label="Your schedules"
               >
                 {data.schedules.map((schedule) => (
@@ -309,7 +329,17 @@ export function SchedulesPage() {
                   />
                 ))}
               </ul>
-            </>
+            </section>
+          )}
+          {data && (
+            <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <Cloud className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                HackerAI runs schedules in the cloud, even when you’re away.
+                Each run starts a new task and uses your account’s normal
+                limits.
+              </span>
+            </p>
           )}
         </div>
       </main>
