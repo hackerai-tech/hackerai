@@ -6,6 +6,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import { ChatSDKError } from "@/lib/errors";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 const capture = jest.fn();
@@ -51,6 +52,9 @@ jest.mock("next/server", () => ({
 const request = (body = { chatId, messageId: "answer" }) =>
   ({
     signal: new AbortController().signal,
+    headers: new Headers({
+      "x-vercel-id": "iad1::qa123-1794060000000-abcdef123456",
+    }),
     text: async () => JSON.stringify(body),
   }) as NextRequest;
 
@@ -160,7 +164,7 @@ test.each([
   "old",
   "flag off",
   "duplicate",
-  "suspended",
+  "gate error",
   "stale message",
 ])("does not generate for %s", async (condition) => {
   if (condition === "wrong owner") chat.user_id = "someone-else";
@@ -173,7 +177,7 @@ test.each([
   if (condition === "flag off")
     jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
   if (condition === "duplicate") reserve.mockResolvedValue(0);
-  if (condition === "suspended")
+  if (condition === "gate error")
     jest
       .mocked(assertUserCanMakeCostIncurringRequest)
       .mockRejectedValueOnce(new Error("blocked"));
@@ -193,6 +197,21 @@ test.each([
   };
   if (expectedStatus[condition])
     expect(result.status).toBe(expectedStatus[condition]);
+  const reasons: Record<string, string> = {
+    "wrong owner": "chat_unavailable",
+    active: "source_active",
+    "waiting for reply": "source_waiting",
+    canceled: "source_canceled",
+    error: "source_not_successful",
+    old: "source_expired",
+    "flag off": "not_offered",
+    duplicate: "generation_reserved_or_budgeted",
+    "gate error": "server_error",
+    "stale message": "source_stale",
+  };
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    reasons[condition],
+  );
   expect((await result.json()).suggestions).toEqual([]);
   expect(generateNextActions).not.toHaveBeenCalled();
 });
@@ -223,6 +242,53 @@ test("provider failure and a new run during generation suppress predictions", as
   expect(JSON.stringify(capture.mock.calls)).not.toContain(
     "private provider payload",
   );
+});
+
+test("unavailable reservation infrastructure is distinct from normal dedupe or budget gating", async () => {
+  jest.mocked(createRedisClient).mockReturnValueOnce(null as never);
+  const result = await POST(request());
+  expect(result.status).toBe(200);
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "reservation_unavailable",
+  );
+  expect(generateNextActions).not.toHaveBeenCalled();
+});
+
+test.each(["unauthorized:auth", "forbidden:chat", "rate_limit:chat"] as const)(
+  "typed %s denial is not attributed to a server defect",
+  async (code) => {
+    const error = new ChatSDKError(
+      code,
+      "private account or authorization details",
+    );
+    if (code === "unauthorized:auth")
+      jest.mocked(getUserIDAndPro).mockRejectedValueOnce(error);
+    else
+      jest
+        .mocked(assertUserCanMakeCostIncurringRequest)
+        .mockRejectedValueOnce(error);
+    const result = await POST(request());
+    expect(result.status).toBe(200);
+    expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+      code === "unauthorized:auth" ? "auth_required" : "access_denied",
+    );
+    expect(JSON.stringify(await result.json())).toBe('{"suggestions":[]}');
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("private account");
+    expect(generateNextActions).not.toHaveBeenCalled();
+  },
+);
+
+test("malformed JSON keeps the existing empty 200 behavior with a bounded reason", async () => {
+  const req = {
+    ...request(),
+    text: async () => '{"private malformed payload',
+  } as NextRequest;
+  const result = await POST(req);
+  expect(result.status).toBe(200);
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "invalid_request",
+  );
+  expect(JSON.stringify(capture.mock.calls)).not.toContain("private malformed");
 });
 
 test.each([
@@ -324,7 +390,7 @@ test("ineligible control users are not enrolled", async () => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
   jest
     .mocked(assertUserCanMakeCostIncurringRequest)
-    .mockRejectedValueOnce(new Error("suspended"));
+    .mockRejectedValueOnce(new Error("gate error"));
   await POST(request());
   expect(capture).not.toHaveBeenCalled();
   expect(generateNextActions).not.toHaveBeenCalled();
@@ -334,7 +400,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 5,
+    validationVersion: 6,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -388,7 +454,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 5 }),
+      batch: expect.objectContaining({ validationVersion: 6 }),
     }),
   );
 });
@@ -414,6 +480,7 @@ test("emits partial known spend and unknown-call coverage on unavailable generat
       event: "contextual_next_actions_generated",
       properties: expect.objectContaining({
         outcome: "unavailable",
+        prompt_version: "ordered-tool-single-reply-v6",
         cost_usd: undefined,
         known_cost_usd: 0.0001,
         provider_calls: 2,
@@ -498,7 +565,7 @@ test.each([0, 50000])(
         batchId: "old",
         messageId: "answer",
         mode: "agent",
-        validationVersion: 5,
+        validationVersion: 6,
         suggestions: ["alpha"],
       },
     };
@@ -517,4 +584,128 @@ test("discards a draft if Goal achievement is persisted during prediction", asyn
   });
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
   expect(mutation).not.toHaveBeenCalled();
+});
+
+test.each(["authenticate", "read_request", "consume"] as const)(
+  "records one pending DELETE %s stage before the platform deadline, then clears the timer",
+  async (stage) => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const req = request();
+    if (stage === "authenticate")
+      jest.mocked(getUserIDAndPro).mockImplementationOnce(async () => {
+        await gate;
+        return {
+          userId: "owner",
+          subscription: "pro",
+          emailVerified: true,
+          analyticsAccountCohort: "non_internal",
+        };
+      });
+    if (stage === "read_request")
+      req.text = async () => {
+        await gate;
+        return JSON.stringify({ chatId, messageId: "answer" });
+      };
+    if (stage === "consume")
+      mutation.mockImplementationOnce(async () => {
+        await gate;
+        return true;
+      });
+    const pending = DELETE(req);
+    try {
+      await jest.advanceTimersByTimeAsync(9_999);
+      expect(warn).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+        event: "next_actions_delete_slow_request",
+        diagnostic_version: 1,
+        stage,
+        elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
+        request_aborted: false,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+      });
+      release();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ suggestions: [] });
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+        /owner|answer|serviceKey|suggestions/,
+      );
+    } finally {
+      release();
+      await pending;
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  },
+);
+
+test("clears DELETE diagnostics on caught failures and excludes hostile request headers", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const req = request();
+    req.headers.set("x-vercel-id", "PRIVATE_TOKEN");
+    jest
+      .mocked(getUserIDAndPro)
+      .mockRejectedValueOnce(new Error("PRIVATE auth"));
+    expect((await DELETE(req)).status).toBe(200);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warn).not.toHaveBeenCalled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    req.text = async () => {
+      await gate;
+      throw new Error("PRIVATE body");
+    };
+    const pending = DELETE(req);
+    await jest.advanceTimersByTimeAsync(10_000);
+    release();
+    expect((await pending).status).toBe(200);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  } finally {
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test("a throwing slow-warning sink cannot fail the pending DELETE", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {
+    throw new Error("PRIVATE sink");
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const req = request();
+  req.text = async () => {
+    await gate;
+    return JSON.stringify({ chatId, messageId: "answer" });
+  };
+  const pending = DELETE(req);
+  try {
+    await expect(
+      jest.advanceTimersByTimeAsync(10_000),
+    ).resolves.toBeUndefined();
+    release();
+    expect((await pending).status).toBe(200);
+  } finally {
+    release();
+    await pending;
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
 });

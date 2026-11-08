@@ -7,7 +7,7 @@ import {
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
 // Legacy field name: this versions the saved prediction format/behavior, not truth or authorization.
-export const NEXT_ACTIONS_VALIDATION_VERSION = 5;
+export const NEXT_ACTIONS_VALIDATION_VERSION = 6;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),
@@ -160,6 +160,16 @@ export function parsePredictedNextAction(output: unknown): string[] {
     return [];
   // Composer commands have their own explicit entry flow; a prediction cannot select one.
   if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
+  // Utility models can emit schema-valid filler. Abstain rather than put a
+  // sustained word/phrase loop in the user's composer (at most 240 chars).
+  const tokens = text.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+  for (let width = 1; width <= 4; width++) {
+    let repeated = width;
+    for (let index = width; index < tokens.length; index++) {
+      repeated = tokens[index] === tokens[index - width] ? repeated + 1 : width;
+      if (repeated >= Math.max(12, width * 4)) return [];
+    }
+  }
   return [text];
 }
 

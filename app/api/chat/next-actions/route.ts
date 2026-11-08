@@ -19,21 +19,29 @@ import {
   type NextActionsBatch,
 } from "@/lib/chat/next-actions/contracts";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
+import { ChatSDKError } from "@/lib/errors";
+import {
+  NEXT_ACTIONS_REASON_HEADER,
+  type NextActionsDeliveryReason,
+} from "@/lib/chat/next-actions/delivery";
 
 export const maxDuration = 20;
-const empty = (status = 200) =>
+const empty = (status = 200, reason?: NextActionsDeliveryReason) =>
   NextResponse.json(
     { suggestions: [] },
     {
       status,
-      headers: { "Cache-Control": "no-store" },
+      headers: {
+        "Cache-Control": "no-store",
+        ...(reason && { [NEXT_ACTIONS_REASON_HEADER]: reason }),
+      },
     },
   );
 
 const batchResponse = (batch: NextActionsBatch) =>
   batch.validationVersion === NEXT_ACTIONS_VALIDATION_VERSION
     ? NextResponse.json(batch, { headers: { "Cache-Control": "no-store" } })
-    : empty();
+    : empty(200, "saved_incompatible");
 // One generation per completed message, including failed/aborted attempts.
 // Redis holds only reservations; validated results are private chat data.
 // A fixed per-user hourly budget bounds auxiliary spend.
@@ -53,11 +61,17 @@ export async function POST(req: NextRequest) {
     const { userId, subscription, analyticsAccountCohort } =
       await getUserIDAndPro(req);
     const raw = await req.text();
-    if (raw.length > 512) return empty(400);
-    const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return empty(400);
+    if (raw.length > 512) return empty(400, "invalid_request");
+    let body: unknown;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return empty(200, "invalid_request");
+    }
+    const parsed = nextActionsRequestSchema.safeParse(body);
+    if (!parsed.success) return empty(400, "invalid_request");
     const { chatId, messageId } = parsed.data;
-    if (!posthog) return empty();
+    if (!posthog) return empty(200, "analytics_unavailable");
     const assignment = await getPostHogFlagWithoutExposure(
       posthog,
       NEXT_ACTIONS_FLAG,
@@ -66,20 +80,20 @@ export async function POST(req: NextRequest) {
     );
     const enabled = assignment === true || assignment === "test";
     // A disabled flag is not a randomized control assignment.
-    if (!enabled && assignment !== "control") return empty();
+    if (!enabled && assignment !== "control") return empty(200, "not_offered");
     const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
     const convex = getConvexClient(signal);
     const preference = await convex.query(
       api.userCustomization.getPredictionPreferenceForBackend,
       { serviceKey, userId },
     );
-    if (!preference.enabled) return empty();
+    if (!preference.enabled) return empty(200, "preference_disabled");
     const chat = await convex.query(api.chats.getChatById, {
       serviceKey,
       id: chatId,
     });
     if (!chat || chat.user_id !== userId || chat.deletion_started_at)
-      return empty(404);
+      return empty(404, "chat_unavailable");
     // Agent persists after its browser finish. The client may retry this read
     // briefly; no reservation/model work occurs until the source is settled.
     const completed =
@@ -89,7 +103,17 @@ export async function POST(req: NextRequest) {
       !chat.active_agent_approval_pending &&
       !chat.active_agent_user_wait &&
       !chat.canceled_at;
-    if (!completed) return empty(409);
+    if (!completed)
+      return empty(
+        409,
+        chat.canceled_at
+          ? "source_canceled"
+          : chat.active_agent_approval_pending || chat.active_agent_user_wait
+            ? "source_waiting"
+            : chat.active_stream_id || chat.active_trigger_run_id
+              ? "source_active"
+              : "source_not_successful",
+      );
     const history = await convex.query(api.messages.getMessagesPageForBackend, {
       serviceKey,
       userId,
@@ -100,7 +124,7 @@ export async function POST(req: NextRequest) {
       history.page[0]?.id !== messageId ||
       history.page[0]?.role !== "assistant"
     )
-      return empty(409);
+      return empty(409, "source_stale");
     // Goal completion is persisted separately from model prose. Do not let a
     // prediction reopen a finished workflow, including an older saved draft.
     const goalAchieved = async () => {
@@ -114,12 +138,12 @@ export async function POST(req: NextRequest) {
         typeof answer.metadata?.goal?.achievedElapsedMs === "number"
       );
     };
-    if (await goalAchieved()) return empty();
+    if (await goalAchieved()) return empty(200, "goal_complete");
     const sources = buildPredictionSources(history.page);
     if (
       !sources.some((source) => source.id === messageId && source.text.trim())
     )
-      return empty();
+      return empty(200, "context_empty");
     const mode = chat.default_model_slug === "ask" ? "ask" : "agent";
     // Enrollment eligibility must be identical in both randomized arms.
     await assertUserCanMakeCostIncurringRequest(userId, { signal });
@@ -140,15 +164,15 @@ export async function POST(req: NextRequest) {
       : null;
     if (saved)
       return saved.consumed || !saved.batch
-        ? empty()
+        ? empty(200, "saved_consumed")
         : batchResponse(saved.batch);
     // Returning to a chat only restores existing work; it never spends tokens.
-    if (parsed.data.restoreOnly) return empty();
+    if (parsed.data.restoreOnly) return empty(200, "restore_miss");
     if (
       !chat.last_run_finished_at ||
       Date.now() - chat.last_run_finished_at > 5 * 60_000
     )
-      return empty();
+      return empty(200, "source_expired");
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
       prompt_version: "ordered-tool-single-reply-v6",
@@ -174,10 +198,10 @@ export async function POST(req: NextRequest) {
         $insert_id: `next-actions:${userId}:${messageId}:eligible`,
       },
     });
-    if (!enabled) return empty();
+    if (!enabled) return empty(200, "not_offered");
     const redis = createRedisClient();
+    if (!redis) return empty(200, "reservation_unavailable");
     if (
-      !redis ||
       (await redis.eval(
         RESERVE,
         [
@@ -187,7 +211,7 @@ export async function POST(req: NextRequest) {
         [],
       )) !== 1
     )
-      return empty();
+      return empty(200, "generation_reserved_or_budgeted");
     const started = Date.now();
     const batchId = crypto.randomUUID();
     let result;
@@ -204,7 +228,7 @@ export async function POST(req: NextRequest) {
           latency_ms: Date.now() - started,
         },
       });
-      return empty();
+      return empty(200, "provider_unavailable");
     }
     posthog.capture({
       distinctId: userId,
@@ -246,7 +270,7 @@ export async function POST(req: NextRequest) {
       latest.finish_reason !== "stop" ||
       latest.last_run_finished_at !== chat.last_run_finished_at
     )
-      return empty();
+      return empty(200, "source_changed");
     // Regeneration can delete the answer before a replacement run is admitted,
     // without changing the chat's completion fields.
     const latestHistory = await convex.query(
@@ -262,8 +286,13 @@ export async function POST(req: NextRequest) {
       latestHistory.page[0]?.id !== messageId ||
       latestHistory.page[0]?.role !== "assistant"
     )
-      return empty();
-    if (!result.suggestions.length || (await goalAchieved())) return empty();
+      return empty(200, "source_stale");
+    if (!result.suggestions.length)
+      return empty(
+        200,
+        result.unavailable ? "provider_unavailable" : "prediction_empty",
+      );
+    if (await goalAchieved()) return empty(200, "goal_complete");
     const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
       serviceKey,
       userId,
@@ -278,10 +307,22 @@ export async function POST(req: NextRequest) {
         validationVersion: NEXT_ACTIONS_VALIDATION_VERSION,
       },
     });
-    return savedBatch ? batchResponse(savedBatch) : empty();
-  } catch {
+    return savedBatch ? batchResponse(savedBatch) : empty(200, "save_rejected");
+  } catch (error) {
     // Optional predictions never surface provider/auth/data errors or content.
-    return empty();
+    return empty(
+      200,
+      req.signal.aborted
+        ? "request_aborted"
+        : signal.aborted
+          ? "server_deadline"
+          : error instanceof ChatSDKError && error.type === "unauthorized"
+            ? "auth_required"
+            : error instanceof ChatSDKError &&
+                (error.type === "forbidden" || error.type === "rate_limit")
+              ? "access_denied"
+              : "server_error",
+    );
   } finally {
     // Keep event delivery in the request lifetime without delaying the draft.
     // The 15s request budget leaves room inside maxDuration for this flush.
@@ -289,13 +330,47 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * Consume optional suggestions with the existing empty-response contract,
+ * including auth/data failures; observe one pending stage before hard termination.
+ */
 export async function DELETE(req: NextRequest) {
+  let stage: "authenticate" | "read_request" | "consume" = "authenticate";
+  const startedAt = Date.now();
+  // The platform's 20s termination can bypass finally; record the pending
+  // boundary once beforehand, without delaying or retrying the request.
+  const slowTimer = setTimeout(() => {
+    try {
+      const requestId = req.headers.get("x-vercel-id");
+      console.warn(
+        JSON.stringify({
+          event: "next_actions_delete_slow_request",
+          diagnostic_version: 1,
+          stage,
+          elapsed_ms: Math.max(0, Date.now() - startedAt),
+          warning_threshold_ms: 10_000,
+          request_aborted: req.signal.aborted,
+          ...(requestId &&
+          /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? { request_id: requestId }
+            : {}),
+        }),
+      );
+    } catch {
+      /* Diagnostics cannot change optional prediction behavior. */
+    }
+  }, 10_000);
+  slowTimer.unref?.();
   try {
     const { userId } = await getUserIDAndPro(req);
+    stage = "read_request";
     const raw = await req.text();
     if (raw.length > 512) return empty(400);
     const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) return empty(400);
+    stage = "consume";
     await getConvexClient(
       AbortSignal.any([req.signal, AbortSignal.timeout(5_000)]),
     ).mutation(api.nextActions.consumeForBackend, {
@@ -307,5 +382,7 @@ export async function DELETE(req: NextRequest) {
     return empty();
   } catch {
     return empty();
+  } finally {
+    clearTimeout(slowTimer);
   }
 }

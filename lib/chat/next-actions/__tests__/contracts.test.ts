@@ -577,3 +577,19 @@ test.each(["Confirmed: " + "r".repeat(230), "Confirmed: " + "\\".repeat(230)])(
     if (reply.includes("\\")) expect(text).toContain("[truncated]");
   },
 );
+
+test.each([
+  `QA ${"browser ".repeat(30)}`.trim(),
+  `Please ${"continue browsing ".repeat(8)}`.trim(),
+])(
+  "abstains from repetitive filler in an otherwise valid prediction: %s",
+  (suggestion) => {
+    expect(parsePredictedNextAction({ suggestion })).toEqual([]);
+  },
+);
+
+test("keeps meaningful suggestions that reuse ordinary terms", () => {
+  const suggestion =
+    "Compare the browser screenshot before takeover with the browser screenshot after takeover.";
+  expect(parsePredictedNextAction({ suggestion })).toEqual([suggestion]);
+});

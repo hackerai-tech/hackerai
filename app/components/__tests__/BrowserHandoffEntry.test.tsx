@@ -8,6 +8,7 @@ let mockSession: {
   updatedAt?: number;
 } | null;
 let mockSidebarOpen = false;
+let mockSidebarContent: { kind: string } | null = null;
 const mockOpenSidebar = jest.fn();
 jest.mock("convex/react", () => ({
   useConvexAuth: () => ({ isAuthenticated: true }),
@@ -19,6 +20,7 @@ jest.mock("@/convex/_generated/api", () => ({
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     sidebarOpen: mockSidebarOpen,
+    sidebarContent: mockSidebarContent,
     openSidebar: mockOpenSidebar,
   }),
 }));
@@ -56,6 +58,7 @@ beforeEach(() => {
   localStorage.clear();
   mockSession = { state: "agent", sessionId: "session", updatedAt: 1 };
   mockSidebarOpen = false;
+  mockSidebarContent = null;
   mockOpenSidebar.mockClear();
 });
 
@@ -218,4 +221,76 @@ it("recovers from malformed preferences and syncs attention dismissal from anoth
   );
   expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+// The Goal editor occupies the sidebar instead of the browser preview.
+it("keeps takeover reachable while the Goal editor is open", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 2 };
+  mockSidebarOpen = true;
+  mockSidebarContent = { kind: "goal" };
+  render(<BrowserHandoffEntry chatId="chat" messages={messages} />);
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({
+      toolCallId: "current-browser",
+      browserTakeoverRequest: expect.objectContaining({ sessionId: "session" }),
+    }),
+  );
+});
+
+it("keeps persisted takeover reachable when the live message stream has not caught up", () => {
+  mockSession = {
+    state: "waiting",
+    sessionId: "persisted-session",
+    updatedAt: 9,
+  };
+  render(
+    <BrowserHandoffEntry
+      chatId="chat"
+      messages={[]}
+      persistedMessages={messages}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Agent needs your input",
+  );
+  expect(mockOpenSidebar).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({
+      toolCallId: "current-browser",
+      browserTakeoverRequest: {
+        sessionId: "persisted-session",
+        requestId: expect.any(String),
+      },
+    }),
+  );
+});
+
+it("prefers live browser progress over an older persisted browser command", () => {
+  mockSession = { state: "waiting", sessionId: "session", updatedAt: 10 };
+  const liveMessages = [
+    {
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-shell",
+          toolCallId: "live-browser",
+          state: "input-available",
+          input: { action: "exec", command: "agent-browser screenshot" },
+        },
+      ],
+    },
+  ];
+  render(
+    <BrowserHandoffEntry
+      chatId="chat"
+      messages={liveMessages}
+      persistedMessages={messages}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+  expect(mockOpenSidebar).toHaveBeenCalledWith(
+    expect.objectContaining({ toolCallId: "live-browser" }),
+  );
 });

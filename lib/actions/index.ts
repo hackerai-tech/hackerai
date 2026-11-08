@@ -1,8 +1,11 @@
 import {
   APICallError,
   generateText,
+  JSONParseError,
   NoObjectGeneratedError,
+  NoOutputGeneratedError,
   Output,
+  TypeValidationError,
   UIMessage,
   UIMessageStreamWriter,
 } from "ai";
@@ -20,6 +23,33 @@ const FALLBACK_TITLE_WORD_LIMIT = 5;
 const IMAGE_ONLY_CHAT_TITLE = "New chat";
 const AUXILIARY_IMAGE_DESCRIPTION_PATTERN =
   /^<image_description\b(?=[^>]*\btrust="untrusted")[^>]*>[\s\S]*<\/image_description>$/;
+
+/** Identify public failure classes without retaining error text, values or arbitrary names. */
+const getUnknownTitleErrorKind = (
+  error: unknown,
+):
+  | "sdk_no_output"
+  | "sdk_type_validation"
+  | "sdk_json_parse"
+  | "js_type_error"
+  | "js_range_error"
+  | "js_syntax_error"
+  | "other_error"
+  | "non_error"
+  | "unavailable" => {
+  try {
+    if (NoOutputGeneratedError.isInstance(error)) return "sdk_no_output";
+    if (TypeValidationError.isInstance(error)) return "sdk_type_validation";
+    if (JSONParseError.isInstance(error)) return "sdk_json_parse";
+    if (error instanceof TypeError) return "js_type_error";
+    if (error instanceof RangeError) return "js_range_error";
+    if (error instanceof SyntaxError) return "js_syntax_error";
+    return error instanceof Error ? "other_error" : "non_error";
+  } catch {
+    // A thrown value can reject brand inspection; diagnostics must preserve fallback.
+    return "unavailable";
+  }
+};
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -136,15 +166,23 @@ export const generateTitleFromUserMessage = async (
     return normalizeTitle(result.output?.title) ?? fallbackTitle;
   } catch (error) {
     // SDK errors can contain prompts, provider responses, and credentials.
-    // Keep fallback diagnostics limited to fixed categories and HTTP status.
+    // Keep fallback diagnostics limited to fixed categories/kinds and HTTP status.
     const isProviderError = APICallError.isInstance(error);
+    const category = isProviderError
+      ? "provider_error"
+      : NoObjectGeneratedError.isInstance(error)
+        ? "invalid_output"
+        : "unknown_error";
     console.warn("chat_title_generation_failed", {
-      category: isProviderError
-        ? "provider_error"
-        : NoObjectGeneratedError.isInstance(error)
-          ? "invalid_output"
-          : "unknown_error",
+      category,
       ...(isProviderError && { statusCode: error.statusCode }),
+      error_kind_version: 1,
+      error_kind:
+        category === "provider_error"
+          ? "provider_api_error"
+          : category === "invalid_output"
+            ? "sdk_no_object"
+            : getUnknownTitleErrorKind(error),
     });
     return fallbackTitle;
   }

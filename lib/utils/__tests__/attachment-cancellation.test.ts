@@ -9,6 +9,55 @@ const file: SandboxFile = {
   localPath: "/home/user/upload/input.txt",
 };
 const ok = { stdout: "", stderr: "", exitCode: 0 };
+
+it("does not retry or reconnect after failed-wait cleanup cannot be confirmed", async () => {
+  const waitFailure = Object.assign(
+    new Error("[deadline_exceeded] operation timed out: timeoutMs"),
+    { name: "TimeoutError" },
+  );
+  const killFailure = new Error("cleanup request failed");
+  const transfer = {
+    pid: 42,
+    exitCode: undefined,
+    wait: jest.fn(async () => {
+      throw waitFailure;
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    sandboxId: "test-owned-workspace",
+    commands: {
+      run: jest.fn(async (command: string) =>
+        command === "true"
+          ? {
+              pid: 41,
+              exitCode: 0,
+              wait: async () => ok,
+              disconnect: jest.fn(),
+            }
+          : transfer,
+      ),
+      kill: jest.fn(async () => {
+        throw killFailure;
+      }),
+    },
+    kill: jest.fn(),
+  };
+  const acquire = jest.fn(async () => sandbox);
+  const error = await uploadSandboxFiles([file], acquire, {
+    signal: new AbortController().signal,
+    retryAfterReconnectOnTransientFailure: true,
+  }).catch((error) => error);
+  expect(error).toBeInstanceOf(AttachmentCommandCleanupError);
+  expect(error.cause).toBe(killFailure);
+  expect(acquire).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+  expect(sandbox.commands.kill).toHaveBeenCalledWith(42, {
+    requestTimeoutMs: 5000,
+  });
+  expect(transfer.disconnect).toHaveBeenCalledTimes(1);
+  expect(sandbox.kill).not.toHaveBeenCalled();
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;

@@ -85,8 +85,9 @@ export function validateConfig(input) {
   check(
     input.environment === "local"
       ? loopback(frontend)
-      : new URL(frontend).protocol === "https:" &&
-          new URL(frontend).hostname.endsWith(".vercel.app"),
+      : loopback(frontend) ||
+          (new URL(frontend).protocol === "https:" &&
+            new URL(frontend).hostname.endsWith(".vercel.app")),
     "Frontend does not match the selected QA environment",
   );
   keys(input.backend, ["account", "project", "deployment", "url"]);
@@ -380,6 +381,12 @@ export async function main(args, root = ROOT) {
         await readFile(action === "doctor" ? session : configFile, "utf8"),
       ),
     );
+    if (action === "serve")
+      check(
+        loopback(config.frontend) &&
+          new URL(config.frontend).protocol === "http:",
+        "serve requires an HTTP loopback frontend",
+      );
     const executable = await verifyApp(root, config.app);
     const report = {
       capturedAt: new Date().toISOString(),
@@ -423,10 +430,6 @@ export async function main(args, root = ROOT) {
     let command = executable;
     let commandArgs = [];
     if (action === "serve") {
-      check(
-        config.environment === "local",
-        "serve only starts a prebuilt local frontend",
-      );
       const buildId = await readFile(join(root, ".next/BUILD_ID"), "utf8");
       report.frontendBuildIdSha256 = createHash("sha256")
         .update(buildId)

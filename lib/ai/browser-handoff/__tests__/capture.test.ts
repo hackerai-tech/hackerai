@@ -1,4 +1,9 @@
-import { captureBrowserFrame, resizeBrowserViewport } from "../server";
+import {
+  browserSessionReadFailureContext,
+  captureBrowserFrame,
+  getActiveBrowserSessionName,
+  resizeBrowserViewport,
+} from "../server";
 import { CommandExitError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
 
@@ -31,6 +36,153 @@ const location = {
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
+it.each([
+  [[1, "15m"], true, "15m"],
+  [[1, "unset"], true, "unset"],
+  [[1, "PRIVATE_ENV"], true, undefined],
+  [[2, "15m"], true, undefined],
+  [[1, "15m", "PRIVATE"], true, undefined],
+  [[1, "15m"], false, undefined],
+  [undefined, true, undefined],
+])(
+  "projects only a matching versioned open idle declaration (%#)",
+  async (tuple, matches, expected) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: matches,
+        open_age: "lt5m",
+        open_idle: tuple,
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+    });
+    if (expected)
+      expect(context).toMatchObject({
+        capture_open_idle_env_version: 1,
+        capture_open_idle_env: expected,
+      });
+    else expect(context).not.toHaveProperty("capture_open_idle_env");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  [
+    new DOMException("PRIVATE native timer", "TimeoutError"),
+    {
+      active_session_read_error_kind: "dom_timeout",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
+    new DOMException("PRIVATE native cancellation", "AbortError"),
+    {
+      active_session_read_error_kind: "dom_abort",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
+    Object.assign(new Error("PRIVATE missing path"), {
+      name: "FileNotFoundError",
+      statusCode: 404,
+    }),
+    {
+      active_session_read_error_kind: "file_not_found",
+      active_session_read_http_status: 404,
+    },
+  ],
+  [
+    Object.assign(new Error("PRIVATE SDK request"), { name: "TimeoutError" }),
+    {
+      active_session_read_error_kind: "timeout",
+      active_session_read_http_status: "none",
+    },
+  ],
+  [
+    new TypeError("fetch failed", {
+      cause: { code: "ECONNRESET", url: "PRIVATE" },
+    }),
+    {
+      active_session_read_error_kind: "other_error",
+      active_session_read_http_status: "none",
+      active_session_read_type_error_signal: "fetch_failed",
+      active_session_read_transport_code: "ECONNRESET",
+    },
+  ],
+])(
+  "retains bounded active-session read attribution while preserving loading (%#)",
+  async (error, fields) => {
+    const read = jest.fn().mockRejectedValue(error);
+    const sandbox = { files: { read } } as unknown as Sandbox;
+    let failure: unknown;
+    try {
+      await getActiveBrowserSessionName(sandbox, location);
+    } catch (caught) {
+      failure = caught;
+    }
+    expect(failure).toMatchObject({ state: "loading" });
+    expect(browserSessionReadFailureContext(failure)).toEqual({
+      active_session_read_diagnostic_version: 1,
+      ...fields,
+    });
+    expect(
+      JSON.stringify(browserSessionReadFailureContext(failure)),
+    ).not.toContain("PRIVATE");
+    expect(JSON.stringify(failure)).toBe('{"state":"loading"}');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(`${location.directory}/active-session`, {
+      user: "root",
+      requestTimeoutMs: 8_000,
+    });
+  },
+);
+
+it("keeps successful and invalid session-name reads free of SDK failure diagnostics", async () => {
+  const read = jest
+    .fn()
+    .mockResolvedValueOnce("default\n")
+    .mockResolvedValueOnce("PRIVATE/invalid");
+  const sandbox = { files: { read } } as unknown as Sandbox;
+  await expect(getActiveBrowserSessionName(sandbox, location)).resolves.toBe(
+    "default",
+  );
+  let failure: unknown;
+  try {
+    await getActiveBrowserSessionName(sandbox, location);
+  } catch (caught) {
+    failure = caught;
+  }
+  expect(failure).toMatchObject({ state: "closed" });
+  expect(browserSessionReadFailureContext(failure)).toBeUndefined();
+  expect(
+    browserSessionReadFailureContext(new Error("PRIVATE")),
+  ).toBeUndefined();
+});
+
 it.each([2, 3])(
   "carries only validated wrapper context from the failed status helper (%s)",
   async (exitCode) => {
@@ -45,6 +197,12 @@ it.each([2, 3])(
         wrapper_exit: 37,
         wrapper_session_matches: false,
         wrapper_age: "lt60s",
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
         session: "PRIVATE_NAME",
         command: "PRIVATE_COMMAND",
       }),
@@ -71,6 +229,12 @@ it.each([2, 3])(
       capture_wrapper_exit_code: 37,
       capture_wrapper_session_matches: false,
       capture_wrapper_age: "lt60s",
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
     });
     expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
   },
@@ -573,4 +737,198 @@ it("rejects unbounded viewport dimensions before executing a command", async () 
     ),
   ).rejects.toThrow("Invalid browser viewport");
   expect(sandbox.commands.run).not.toHaveBeenCalled();
+});
+
+it.each(["unavailable", "not_observed", "unreadable"])(
+  "preserves the finite %s observation without invented open details",
+  async (status) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        open_receipt_version: 1,
+        open_receipt_status: status,
+        open_phase: "PRIVATE",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: status,
+    });
+    expect(observed.mock.calls[0][0]).not.toHaveProperty("capture_open_phase");
+  },
+);
+
+it("rejects partial open details without retaining supplied private values", async () => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      open_receipt_version: 1,
+      open_receipt_status: "recorded",
+      open_phase: "completed",
+      open_exit: 999,
+      open_session_matches: "PRIVATE",
+      open_age: "PRIVATE",
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).not.toHaveProperty(
+    "capture_open_receipt_version",
+  );
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each([
+  [1, "unavailable"],
+  [1, "not_observed"],
+  [1, "unreadable"],
+  [1, "recorded", "completed", 0, "selected_session", "older", "after"],
+  [1, "recorded", "completed", 0, "all_sessions", "older", "after"],
+  [1, "recorded", "started", "none", "other_session", "lt10s", "unavailable"],
+])("projects only the bounded retained close tuple %j", async (...tuple) => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      close_receipt: tuple,
+      open_receipt_version: 1,
+      open_receipt_status: "recorded",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      open_age: "older",
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).toMatchObject({
+    capture_close_receipt_version: 1,
+    capture_close_receipt_status: tuple[1],
+  });
+  if (tuple[1] === "recorded") {
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_close_phase: tuple[2],
+      capture_close_exit_code: tuple[3],
+      capture_close_scope: tuple[4],
+      capture_close_age: tuple[5],
+      capture_close_open_order: tuple[6],
+    });
+  } else
+    expect(observed.mock.calls[0][0]).not.toHaveProperty("capture_close_phase");
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each([
+  [1, "recorded", "completed", 256, "selected_session", "older", "after"],
+  [1, "recorded", "started", 0, "selected_session", "older", "after"],
+  [1, "recorded", "completed", 0, "PRIVATE", "older", "after"],
+  [1, "recorded", "completed", 0, "selected_session", "PRIVATE", "after"],
+  [1, "recorded", "completed", 0, "selected_session", "older", "PRIVATE"],
+  [1, "unavailable", "PRIVATE"],
+  [1, "recorded", "completed", 0, "other_session", "older", "after"],
+])(
+  "rejects malformed close details without leaking supplied values: %j",
+  async (...tuple) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        close_receipt: tuple,
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed.mock.calls[0][0]).not.toHaveProperty(
+      "capture_close_receipt_version",
+    );
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it("censors close/open ordering when valid same-session open evidence is absent", async () => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        0,
+        "selected_session",
+        "older",
+        "after",
+      ],
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).not.toHaveProperty(
+    "capture_close_receipt_version",
+  );
 });

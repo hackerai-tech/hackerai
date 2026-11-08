@@ -66,8 +66,9 @@ export function PricingPlans() {
         <div>
           <h2 className="text-2xl font-semibold">Individual plans</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Prices in USD. Change or cancel your plan any time from account
-            settings.
+            Prices in USD. Paid plans&apos; included usage refills every month,
+            whether you pay monthly or yearly. Change or cancel your plan any
+            time from account settings.
           </p>
         </div>
         <BillingFrequencySelector value={frequency} onChange={setFrequency} />

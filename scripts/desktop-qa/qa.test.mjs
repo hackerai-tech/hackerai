@@ -111,6 +111,33 @@ test("rejects Production, mixed local targets, credentials and unknown fields", 
   assert.equal(validateConfig(c).environment, "preview");
 });
 
+test("allows a local frontend with verified Preview services without relaxing worker selection", () => {
+  const c = config();
+  c.environment = "preview";
+  c.worker.environment = "preview";
+  c.backend.url = "https://example.convex.cloud";
+  c.relay = "wss://preview-relay.example.test";
+  assert.equal(validateConfig(c).frontend, "http://127.0.0.1:3100");
+  c.worker.environment = "production";
+  assert.throws(() => validateConfig(c));
+  c.worker.environment = "preview";
+  c.frontend = "http://192.168.1.10:3100";
+  assert.throws(() => validateConfig(c));
+});
+
+test("serve rejects HTTPS before trying to launch its HTTP server", async (t) => {
+  const dir = await temp(t);
+  const c = config();
+  c.environment = "preview";
+  c.worker.environment = "preview";
+  c.frontend = "https://127.0.0.1:3100";
+  await writeFile(join(dir, "config.json"), JSON.stringify(c));
+  await assert.rejects(
+    main(["serve", "https-frontend", join(dir, "config.json")], dir),
+    /serve requires an HTTP loopback frontend/,
+  );
+});
+
 test("checks executable hash and rejects paths escaping the worktree through symlinks", async (t) => {
   const dir = await temp(t);
   const executable = join(dir, "app");

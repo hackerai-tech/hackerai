@@ -36,13 +36,16 @@ import { ChatSDKError } from "@/lib/errors";
 
 describe("handleAgentRouteError", () => {
   const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
 
   beforeEach(() => {
     console.error = jest.fn();
+    console.warn = jest.fn();
   });
 
   afterEach(() => {
     console.error = originalConsoleError;
+    console.warn = originalConsoleWarn;
   });
 
   test("returns ChatSDKError responses without extra logging", async () => {
@@ -150,5 +153,220 @@ describe("handleAgentRouteError", () => {
       error_message: JSON.stringify(error),
       error_code: "trigger_unavailable",
     });
+  });
+});
+
+describe("typed Agent service-unavailable receipts", () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  test.each([
+    ["/api/agent", "start", "tasks.trigger"],
+    ["/api/agent-long", "start", "sessions.start"],
+    ["/api/agent", "status", "get_chat"],
+    ["/api/agent-long", "status", "retrieve_trigger_run"],
+  ] as const)(
+    "records the typed503 boundary for %s %s without replacing its response",
+    async (endpoint, action, stage) => {
+      const error = new ChatSDKError("offline:sandbox", "PRIVATE_CAUSE", {
+        value: "PRIVATE_METADATA",
+      });
+      const original = error.toResponse();
+      const toResponse = jest
+        .spyOn(error, "toResponse")
+        .mockReturnValue(original);
+      const response = handleAgentRouteError({
+        error,
+        endpoint,
+        action,
+        fallbackMessage: "PRIVATE_FALLBACK",
+        context: {
+          requestId: "sin1::abcde-1794139010452-8943ba28f213",
+          stage,
+          userId: "PRIVATE_USER",
+          chatId: "PRIVATE_CHAT",
+          runId: "PRIVATE_RUN",
+          approvalSessionId: "PRIVATE_APPROVAL",
+        },
+      });
+      expect(response).toBe(original);
+      expect(toResponse).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: "offline:sandbox",
+        cause: "PRIVATE_CAUSE",
+        metadata: { value: "PRIVATE_METADATA" },
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(fields).toMatchObject({
+        event: "agent_route_service_unavailable",
+        agent_route_error_diagnostic_version: 1,
+        http_status: 503,
+        endpoint,
+        action,
+        stage,
+        error_code: "offline:sandbox",
+        request_id_kind: "vercel",
+        request_id: "sin1::abcde-1794139010452-8943ba28f213",
+      });
+      expect(Object.keys(fields).sort()).toEqual(
+        [
+          "timestamp",
+          "level",
+          "event",
+          "service",
+          "agent_route_error_diagnostic_version",
+          "http_status",
+          "endpoint",
+          "action",
+          "stage",
+          "error_code",
+          "request_id_kind",
+          "request_id",
+        ].sort(),
+      );
+      expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    },
+  );
+
+  test("omits private or accessor metadata instead of coercing it", () => {
+    const error = new ChatSDKError("offline:sandbox", "PRIVATE_CAUSE");
+    const getter = jest.fn(() => "PRIVATE_ACCESSOR");
+    const stringify = jest.fn(() => "PRIVATE_COERCION");
+    const context = { stage: { toString: stringify } };
+    Object.defineProperty(context, "requestId", { get: getter });
+    handleAgentRouteError({
+      error,
+      endpoint: "/api/agent",
+      action: "start",
+      fallbackMessage: "PRIVATE",
+      context: context as any,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const fields = JSON.parse(warn.mock.calls[0][0]);
+    expect(fields).toMatchObject({
+      stage: "unknown",
+      request_id_kind: "unavailable",
+    });
+    expect(fields).not.toHaveProperty("request_id");
+    expect(getter).not.toHaveBeenCalled();
+    expect(stringify).not.toHaveBeenCalled();
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  });
+
+  test("does not let an unavailable diagnostic sink alter the typed response", () => {
+    const error = new ChatSDKError("offline:sandbox", "original response");
+    const original = error.toResponse();
+    jest.spyOn(error, "toResponse").mockReturnValue(original);
+    warn.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    expect(
+      handleAgentRouteError({
+        error,
+        endpoint: "/api/agent",
+        action: "status",
+        fallbackMessage: "fallback",
+      }),
+    ).toBe(original);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["8d31cf94-03cf-4c8e-a5bb-a7f5da637285", "uuid"],
+    ["https://PRIVATE_TARGET/path", "unavailable"],
+    ["PRIVATE".repeat(1000), "unavailable"],
+    [undefined, "unavailable"],
+  ])("keeps request correlation opaque for %s", (requestId, kind) => {
+    handleAgentRouteError({
+      error: new ChatSDKError("offline:sandbox"),
+      endpoint: "/api/agent",
+      action: "status",
+      fallbackMessage: "fallback",
+      context: { requestId, stage: "authenticate" },
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const fields = JSON.parse(warn.mock.calls[0][0]);
+    expect(fields.request_id_kind).toBe(kind);
+    if (kind === "uuid") expect(fields.request_id).toBe(requestId);
+    else expect(fields).not.toHaveProperty("request_id");
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  });
+
+  test("does not log arbitrary typed-error properties or invoke accessors", () => {
+    const error = new ChatSDKError("offline:sandbox", "PRIVATE");
+    const original = error.toResponse();
+    jest.spyOn(error, "toResponse").mockReturnValue(original);
+    const getter = jest.fn(() => "PRIVATE_SURFACE");
+    Object.defineProperty(error, "surface", { get: getter });
+    Object.defineProperty(error, "type", { value: "PRIVATE_TYPE" });
+    expect(
+      handleAgentRouteError({
+        error,
+        endpoint: "/api/agent",
+        action: "start",
+        fallbackMessage: "PRIVATE",
+      }),
+    ).toBe(original);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0][0]).error_code).toBe("unrecognized");
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  test("uses the actual returned status instead of assuming every offline error is503", () => {
+    const error = new ChatSDKError("offline:sandbox");
+    error.statusCode = 500;
+    const response = handleAgentRouteError({
+      error,
+      endpoint: "/api/agent",
+      action: "start",
+      fallbackMessage: "fallback",
+    });
+    expect(response.status).toBe(500);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test.each(["resume", "cancel", "approve", "reply"] as const)(
+    "keeps %s outside the measured entrypoints",
+    (action) => {
+      const error = new ChatSDKError("offline:sandbox");
+      expect(
+        handleAgentRouteError({
+          error,
+          endpoint: "/api/agent",
+          action,
+          fallbackMessage: "fallback",
+        }).status,
+      ).toBe(503);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    "bad_request",
+    "unauthorized",
+    "forbidden",
+    "not_found",
+    "rate_limit",
+  ] as const)("does not add a service-unavailable receipt for %s", (type) => {
+    const error = new ChatSDKError(`${type}:api`);
+    const original = error.toResponse();
+    jest.spyOn(error, "toResponse").mockReturnValue(original);
+    expect(
+      handleAgentRouteError({
+        error,
+        endpoint: "/api/agent",
+        action: "start",
+        fallbackMessage: "fallback",
+      }),
+    ).toBe(original);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

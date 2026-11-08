@@ -65,6 +65,7 @@ const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
 let mockSavedGoal: Record<string, unknown> | null | undefined;
+let mockBrowserHandoffSession: { state: string } | null = null;
 let mockLocalConnections:
   | Array<{ connectionId: string; isDesktop: boolean; lastSeen?: number }>
   | undefined;
@@ -116,6 +117,8 @@ jest.mock("convex/react", () => {
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
       if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
+      if (getFunctionName(query) === "browserHandoffs:getForUser")
+        return mockBrowserHandoffSession;
       if (getFunctionName(query) === "localSandbox:listConnections")
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
@@ -309,10 +312,25 @@ jest.mock("../ComputerSidebar", () => ({
     mockBrowserContinue = onBrowserContinue;
     mockContinueGoal = continueGoal;
     const [draft, setDraft] = useState("");
+    const { sidebarOpen, sidebarContent, closeSidebar } =
+      require("@/app/contexts/GlobalState").useGlobalState();
+    if (!sidebarOpen) return null;
     return (
       <div data-testid="computer-sidebar">
         Sidebar
         <button type="button">First computer action</button>
+        {sidebarContent?.kind === "goal" && (
+          <button
+            type="button"
+            aria-label="Close goal editor"
+            onClick={() => {
+              setDraft("");
+              closeSidebar();
+            }}
+          >
+            Close editor
+          </button>
+        )}
         <textarea
           aria-label="Computer draft"
           value={draft}
@@ -555,6 +573,7 @@ describe("Chat Component Integration", () => {
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
     mockSavedGoal = null;
+    mockBrowserHandoffSession = null;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1941,6 +1960,89 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
+    it("shows Goal input while browser takeover holds the run, then returns to pursuing", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      mockRouteParams = { id: "goal-browser-chat" };
+      mockRestoredChat = {
+        id: "goal-browser-chat",
+        sandbox_type: "e2b",
+        default_model_slug: "agent",
+        active_trigger_run_id: "run-browser",
+      };
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockSavedGoal = {
+        _id: "goal-browser",
+        state: "running",
+        generation: 1,
+        objective: "Read the manual browser change",
+        criteria: [],
+        evidence: [],
+        runs: 1,
+        maxRuns: 5,
+        activeRunId: "run-browser",
+      };
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
+      const { rerender } = render(view());
+      for (const state of [
+        "waiting",
+        "claiming",
+        "human",
+        "recovery",
+        "resuming",
+      ]) {
+        mockBrowserHandoffSession = { state, runId: "run-browser" };
+        await act(async () => rerender(view()));
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).toHaveTextContent("Input");
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).not.toHaveTextContent("Pursuing goal");
+      }
+      // A different ordinary run must not turn a retained Goal into Input.
+      mockBrowserHandoffSession = { state: "waiting", runId: "unrelated-run" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
+      // Stop pauses before worker cleanup clears the retained run identity.
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "paused",
+        activeRunId: "run-browser",
+      };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Paused");
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).not.toHaveTextContent("Input");
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "running",
+        activeRunId: "run-browser",
+      };
+      mockBrowserHandoffSession = { state: "agent", runId: "run-browser" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
+    });
+
     it("holds queued work while a Goal needs input or is blocked and releases it after completion", async () => {
       mockRouteParams = { id: "goal-queue-chat" };
       mockLocalConnections = [
@@ -2770,6 +2872,87 @@ describe("Chat Component Integration", () => {
         screen.getByRole("textbox", { name: "Computer draft" }),
       ).toHaveValue("Unsaved goal edits");
     });
+    it("preserves the controller draft when the browser panel is closed and reopened", async () => {
+      const CloseComputer = () => {
+        const { closeSidebar } = useGlobalState();
+        return <button onClick={closeSidebar}>Close computer panel</button>;
+      };
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <CloseComputer />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Keep unsaved Goal edits" } },
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close computer panel" }),
+      );
+      expect(screen.queryByTestId("computer-sidebar")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      expect(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Keep unsaved Goal edits");
+    });
+    it("uses the Goal editor close action for overlay Escape after retaining the controller", async () => {
+      mockComputerOverlayMedia = true;
+      const OpenGoal = () => {
+        const { openSidebar } = useGlobalState();
+        return (
+          <button
+            onClick={() => openSidebar({ kind: "goal", chatId: "chat-1" })}
+          >
+            Open test goal
+          </button>
+        );
+      };
+      render(
+        <TestWrapper>
+          <OpenGoal />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open test goal" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Discard this edit" } },
+      );
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByTestId("computer-sidebar")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open test goal" }));
+      expect(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("");
+    });
+    it.each(["handled", "composing"])(
+      "keeps the overlay open when Escape is %s",
+      async (state) => {
+        mockComputerOverlayMedia = true;
+        render(
+          <TestWrapper>
+            <OpenComputerSidebarHarness />
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+        await screen.findByTestId("computer-sidebar");
+        const event = new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+          isComposing: state === "composing",
+        });
+        if (state === "handled") event.preventDefault();
+        fireEvent(document, event);
+        expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+          "open",
+        );
+      },
+    );
     it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
       render(
         <TestWrapper>

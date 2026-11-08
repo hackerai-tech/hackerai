@@ -41,9 +41,11 @@ export const USER_DELETION_TABLE_POLICY = {
     "subagent_events",
     "subagent_work_items",
     "subagent_runs",
+    "captcha_daily_limits",
   ],
   anonymize: [
     "usage_logs",
+    "captcha_attempts",
     "usage_settlement_operations",
     "usage_settlement_debits",
     "cancellation_reasons",
@@ -567,6 +569,11 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const captchaLimitsBatch = await collectByIndexBatch<
+    Doc<"captcha_daily_limits">
+  >(ctx, budget, "captcha_daily_limits", "by_bucket_and_day", (q) =>
+    q.eq("bucket", `user:${userId}`),
+  );
   const deletionBatches = [
     schedulesBatch,
     scheduleRunsBatch,
@@ -592,6 +599,7 @@ async function cleanupUserDataForUser(
     subagentEventsBatch,
     subagentWorkItemsBatch,
     subagentRunsBatch,
+    captchaLimitsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -664,6 +672,13 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);
   await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "captcha_daily_limits",
+    captchaLimitsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteDocs(ctx, stats, "agent_schedules", schedulesBatch.docs, mode);
@@ -738,6 +753,25 @@ async function cleanupUserDataForUser(
     stats,
     "research_user_profiles",
     researchUserProfiles,
+    mode,
+  );
+
+  const captchaAttemptsBatch = await collectByIndexBatch<
+    Doc<"captcha_attempts">
+  >(ctx, budget, "captcha_attempts", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  stats.hasMore ||= captchaAttemptsBatch.hasMore;
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "captcha_attempts",
+    captchaAttemptsBatch.docs,
+    (row) => ({
+      user_id: DELETED_USER_ID,
+      chat_id: "",
+      run_id: `deleted:${row._id}`,
+    }),
     mode,
   );
 

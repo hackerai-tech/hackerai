@@ -97,6 +97,14 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserSessionReadFailureContext: () =>
+    mockFailure === "read-active"
+      ? {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }
+      : undefined,
   BrowserPreviewUnavailable: class extends Error {
     constructor(public state: string) {
       super(state);
@@ -225,6 +233,16 @@ it.each([
       }),
     );
     const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    if (failure === "read-active")
+      expect(fields).toMatchObject({
+        active_session_read_diagnostic_version: 1,
+        active_session_read_error_kind: "file_not_found",
+        active_session_read_http_status: 404,
+      });
+    else
+      expect(fields).not.toHaveProperty(
+        "active_session_read_diagnostic_version",
+      );
     if (failure === "lookup")
       expect(fields).not.toHaveProperty("trigger_run_id");
     else
@@ -238,25 +256,37 @@ it.each([
   },
 );
 
-it("attributes verification failure without replaying a successful capture", async () => {
-  mockFailure = "";
-  mockRunActive = false;
-  jest
-    .mocked(getActiveBrowserSessionName)
-    .mockResolvedValueOnce("default")
-    .mockRejectedValueOnce(new Error("PRIVATE verification"));
-  const response = await preview(false);
-  expect(response.status).toBe(503);
-  expect(mockCapture).toHaveBeenCalledTimes(1);
-  expect(phLogger.info).toHaveBeenCalledWith(
-    "agent_browser_preview_get_unavailable",
-    expect.objectContaining({
-      failure_stage: "verify_active_session",
-      preview_state: "disconnected",
-      run_active: false,
-    }),
-  );
-});
+it.each(["", "read-active"])(
+  "attributes verification failure without replaying a successful capture (%s)",
+  async (failure) => {
+    mockFailure = failure;
+    mockRunActive = false;
+    jest
+      .mocked(getActiveBrowserSessionName)
+      .mockResolvedValueOnce("default")
+      .mockRejectedValueOnce(
+        failure === "read-active"
+          ? new BrowserPreviewUnavailable("loading")
+          : new Error("PRIVATE verification"),
+      );
+    const response = await preview(false);
+    expect(response.status).toBe(503);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({
+        failure_stage: "verify_active_session",
+        preview_state: failure === "read-active" ? "loading" : "disconnected",
+        run_active: false,
+        ...(failure === "read-active" && {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }),
+      }),
+    );
+  },
+);
 
 it("does not add a failure diagnostic to an already closed browser", async () => {
   mockCapture.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
@@ -319,6 +349,14 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     });
     throw new Error("PRIVATE frame stream");
   });
@@ -333,6 +371,14 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     }),
   );
   expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
@@ -769,3 +815,120 @@ it.each([undefined, "1"])(
     expect(mockMutation).not.toHaveBeenCalled();
   },
 );
+
+const diagnosticPost = (body: Record<string, unknown>) =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+        "x-vercel-id": "iad1::qa123-1794060000000-abcdef123456",
+      }),
+      body: jsonBody(body),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it.each([
+  ["take", "lookup", "resolve_session", "disconnected"],
+  ["take", "connect", "connect_sandbox", "disconnected"],
+  ["take", "read-active", "read_active_session", "loading"],
+  ["take", "capture", "capture_frame", "disconnected"],
+  ["take", "relay-start", "start_relay", "disconnected"],
+  ["resume", "capture", "capture_frame", "disconnected"],
+  ["viewport", "connect", "connect_sandbox", "disconnected"],
+  ["release", "relay-stop", "drain_relays", "recovery"],
+  ["heartbeat", "renew", "renew_relay", "recovery"],
+])(
+  "preserves %s/%s POST503 and records its bounded stage",
+  async (action, failure, stage, state) => {
+    mockFailure = failure;
+    if (failure === "renew")
+      mockRenewRelay.mockRejectedValueOnce(new Error("PRIVATE renewal"));
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "PRIVATE_GRANT".repeat(3),
+      note: "PRIVATE_NOTE",
+      width: 390,
+      height: 844,
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        diagnostic_version: 1,
+        action,
+        failure_stage: stage,
+        preview_state: state,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+        browser_session_id: mockSessionId,
+      }),
+    );
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(Object.keys(fields).sort()).toEqual(
+      (failure === "lookup"
+        ? [
+            "diagnostic_version",
+            "action",
+            "failure_stage",
+            "failure_kind",
+            "preview_state",
+            "web_build_commit",
+            "request_id",
+            "browser_session_id",
+          ]
+        : [
+            "diagnostic_version",
+            "action",
+            "failure_stage",
+            "failure_kind",
+            "preview_state",
+            "web_build_commit",
+            "request_id",
+            "browser_session_id",
+            "handoff_state",
+            "run_active",
+            "trigger_run_id",
+          ]
+      ).sort(),
+    );
+    expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
+  },
+);
+
+it.each(["auth", "identity", "missing"])(
+  "does not report non503 POST %s as unavailable",
+  async (failure) => {
+    mockFailure = failure;
+    const response = await take();
+    expect([401, 404, 410]).toContain(response.status);
+    expect(phLogger.info).not.toHaveBeenCalled();
+  },
+);
+
+it("bounds an unknown action and preserves POST503 when its diagnostic sink throws", async () => {
+  mockFailure = "lookup";
+  const response = await diagnosticPost({
+    action: "PRIVATE_ACTION",
+    note: "PRIVATE_NOTE",
+  });
+  expect(response.status).toBe(503);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({ action: "unknown" }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+  jest.mocked(phLogger.info).mockImplementationOnce(() => {
+    throw new Error("PRIVATE sink");
+  });
+  const failedSink = await take();
+  expect(failedSink.status).toBe(503);
+  expect(await failedSink.json()).toEqual({ state: "disconnected" });
+});

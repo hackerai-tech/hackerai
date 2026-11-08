@@ -24,7 +24,10 @@ import {
   isExpandedAgentContextEligible,
   getAgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
-import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
+import {
+  createAgentRunReporting,
+  agentFailureSignalContext,
+} from "@/lib/analytics/agent-run-reporting";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
@@ -1990,6 +1993,8 @@ export const agentLongTask = task({
       subscription,
       endpoint,
       isAutoContinue: !!isAutoContinue,
+      getFailureSignalContext: (error) =>
+        agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
     });
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
@@ -3116,6 +3121,7 @@ export const agentLongTask = task({
             );
             const {
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools: baseTools,
               ensureSandbox,
               getTodoManager,
@@ -4183,6 +4189,7 @@ export const agentLongTask = task({
               trackedProvider,
               currentSystemPrompt,
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools,
               mode,
               endpoint,
