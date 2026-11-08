@@ -924,6 +924,38 @@ describe("shouldRetryProviderStreamAfterReasoningOnlyOutput", () => {
 });
 
 describe("assistant content loop detection", () => {
+  it("detects a long repeated block interrupted by changing transition sentences", () => {
+    const monitor = createAssistantContentLoopMonitor();
+    const block =
+      "Ok. Emit. Ok. Final. Ok. Emit. Ok. Write. Ok. Emit. Ok. Done. Ok. Emit. Ok.";
+    let detected = false;
+    for (const transition of [
+      "I will finish now.",
+      "Writing the answer next.",
+      "Here is the final answer.",
+      "Now I will stop.",
+      "This is the result.",
+      "Producing the response now.",
+      "The answer follows below.",
+      "Ending this turn now.",
+    ]) {
+      for (const delta of `${transition}\n\n${block}\n\n`.match(/.{1,17}/gs) ??
+        []) {
+        detected = monitor.appendDelta(delta).detected || detected;
+      }
+    }
+    expect(detected).toBe(true);
+  });
+
+  it("does not flag repeated labels with distinct substantive results", () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `Check ${i}: completed successfully. Result: unique finding ${i} explains different behavior and preserves evidence for case ${i}.`,
+    ).join("\n\n");
+    expect(detectAssistantContentLoopFromText(text).detected).toBe(false);
+  });
+
   it("detects repeated text that arrives incrementally", () => {
     const monitor = createAssistantContentLoopMonitor();
     let detected = false;
@@ -1247,6 +1279,42 @@ describe("prepareAgentLoopContinuation", () => {
       ).toBeUndefined();
     },
   );
+
+  it("keeps an already delivered user reply in the replacement model's history", async () => {
+    const reply = {
+      type: "tool-wait_for_user",
+      toolCallId: "answered-once",
+      state: "output-available",
+      input: { questions: [{ id: "label", question: "Alpha or Beta?" }] },
+      output: { success: true, wait_outcome: "message_arrived", reply: "Beta" },
+    };
+    const continuation = prepareAgentLoopContinuation(
+      assistant([
+        { type: "step-start" },
+        write,
+        { type: "step-start" },
+        reply,
+        { type: "step-start" },
+        { type: "text", text: "LOOPING_OUTPUT" },
+      ]),
+    )!;
+    const providerMessages = await convertToModelMessages(
+      continuation.messages,
+    );
+    const results = providerMessages
+      .flatMap((message) =>
+        Array.isArray(message.content) ? message.content : [],
+      )
+      .filter((part) => part.type === "tool-result");
+    expect(results.map((part) => part.toolCallId)).toEqual([
+      "write-once",
+      "answered-once",
+    ]);
+    expect(results[1]).toMatchObject({
+      output: { type: "json", value: reply.output },
+    });
+    expect(JSON.stringify(providerMessages)).not.toContain("LOOPING_OUTPUT");
+  });
 
   it("does not pass provider item IDs or signatures into the replacement model", async () => {
     const continuation = prepareAgentLoopContinuation(

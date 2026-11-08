@@ -156,6 +156,47 @@ describe("SubmitStopButton paid mode colors", () => {
     expect(screen.getByLabelText("Send message")).toBeDisabled();
   });
 
+  it("preserves copy in reply fields and selected page text without disabling the Stop shortcut", () => {
+    render(
+      <TooltipProvider>
+        <p>Question text</p>
+        <SubmitStopButton
+          {...defaultProps}
+          chatMode="agent"
+          isReplyingToAgent
+        />
+      </TooltipProvider>,
+    );
+    defaultProps.onStop.mockClear();
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    fireEvent.keyDown(field, { key: "Escape" });
+    field.remove();
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("Question text"));
+    const selection = window.getSelection()!;
+    selection.addRange(range);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, { key: "Escape" });
+    dialog.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
+  });
+
   it("prioritizes the loading reason while destination messages load", async () => {
     const user = userEvent.setup();
     render(

@@ -96,6 +96,86 @@ export type PersistenceFailureCategory =
   | "no_space"
   | "unsafe_artifact";
 
+/** Project fixed native producer markers, never paths or OS-specific meanings. */
+export function checkpointNativeFilesystemErrorContext(
+  error: unknown,
+  reportedPlatform?: unknown,
+): {
+  native_filesystem_diagnostic_version: 2;
+  native_filesystem_reported_platform:
+    "windows" | "macos" | "linux" | "unknown";
+  native_filesystem_phase:
+    "mkdir" | "open" | "write" | "flush" | "other" | "none" | "unreadable";
+  native_filesystem_os_error_code_hint: number | "none";
+  native_filesystem_os_error_code_shape:
+    "integer" | "absent" | "other" | "unreadable";
+} {
+  const result: ReturnType<typeof checkpointNativeFilesystemErrorContext> = {
+    native_filesystem_diagnostic_version: 2,
+    native_filesystem_reported_platform: "unknown",
+    native_filesystem_phase: "none",
+    native_filesystem_os_error_code_hint: "none",
+    native_filesystem_os_error_code_shape: "absent",
+  };
+  // Client-reported namespace, not an independent OS or failure diagnosis.
+  if (typeof reportedPlatform === "string" && reportedPlatform.length <= 16) {
+    const platform = reportedPlatform.toLowerCase();
+    result.native_filesystem_reported_platform =
+      platform === "win32" || platform === "windows"
+        ? "windows"
+        : platform === "darwin" || platform === "macos"
+          ? "macos"
+          : platform === "linux"
+            ? "linux"
+            : "unknown";
+  }
+  if (
+    error === null ||
+    (typeof error !== "object" && typeof error !== "function")
+  )
+    return result;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "message");
+    if (!descriptor) return result;
+    if (!("value" in descriptor)) {
+      result.native_filesystem_phase = "unreadable";
+      result.native_filesystem_os_error_code_shape = "unreadable";
+      return result;
+    }
+    if (typeof descriptor.value !== "string") {
+      result.native_filesystem_phase = "other";
+      result.native_filesystem_os_error_code_shape = "other";
+      return result;
+    }
+    const message = descriptor.value;
+    const prefix = message.slice(0, 64);
+    result.native_filesystem_phase = prefix.startsWith("Mkdir error:")
+      ? "mkdir"
+      : prefix.startsWith("Open error:")
+        ? "open"
+        : prefix.startsWith("Write error:")
+          ? "write"
+          : prefix.startsWith("Flush error:")
+            ? "flush"
+            : "other";
+    const suffix = message.slice(-96);
+    // This is only a numeric hint. Windows and POSIX assign different meanings.
+    const code = suffix.endsWith(")")
+      ? /\(os error ([0-9]{1,5})\)$/.exec(suffix)?.[1]
+      : undefined;
+    if (code !== undefined && Number(code) <= 65_535) {
+      result.native_filesystem_os_error_code_hint = Number(code);
+      result.native_filesystem_os_error_code_shape = "integer";
+    } else if (suffix.includes("(os error")) {
+      result.native_filesystem_os_error_code_shape = "other";
+    }
+  } catch {
+    result.native_filesystem_phase = "unreadable";
+    result.native_filesystem_os_error_code_shape = "unreadable";
+  }
+  return result;
+}
+
 export type PrivateArtifactWritePhase = "prepare" | "append" | "commit";
 const PRIVATE_ARTIFACT_PREPARE_STEPS = [
   "root_validate",
@@ -338,6 +418,24 @@ export function checkpointCloudErrorContext(error: unknown): {
         case "SandboxError":
           kind = "sandbox_error";
           break;
+      }
+      if (
+        typeof DOMException !== "undefined" &&
+        error instanceof DOMException
+      ) {
+        // AbortSignal.timeout rejects with a native exception whose name is an
+        // intrinsic accessor. Brand-check with that getter, never an overridden
+        // error getter, and export only these fixed labels.
+        const nativeName = Object.getOwnPropertyDescriptor(
+          DOMException.prototype,
+          "name",
+        )?.get?.call(error);
+        kind =
+          nativeName === "TimeoutError"
+            ? "dom_timeout"
+            : nativeName === "AbortError"
+              ? "dom_abort"
+              : "other_error";
       }
       if (
         kind === "other_error" &&

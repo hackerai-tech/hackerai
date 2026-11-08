@@ -391,7 +391,11 @@ it.each([
       cpu_used_pct: 10,
     });
     expect(getMetrics).toHaveBeenCalledTimes(1);
-    expect(getMetrics).toHaveBeenCalledWith({ requestTimeoutMs: 1_000 });
+    expect(getMetrics).toHaveBeenCalledWith({
+      requestTimeoutMs: 1_000,
+      start: new Date(now - 5 * 60_000),
+      end: new Date(now),
+    });
   },
 );
 

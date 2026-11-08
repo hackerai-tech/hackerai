@@ -51,6 +51,11 @@ jest.mock("../lib/suspensionGuards", () => ({
   CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
   assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
 }));
+jest.mock("../lib/sidebarChatAttention", () => ({
+  getSidebarChatAttention: jest.fn(async (_ctx: unknown, chats: unknown[]) =>
+    chats.map(() => ({})),
+  ),
+}));
 
 const { ConvexError } =
   jest.requireMock<typeof import("convex/values")>("convex/values");

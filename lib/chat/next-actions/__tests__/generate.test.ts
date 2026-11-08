@@ -1,5 +1,6 @@
 import { generateText } from "ai";
 import { generateNextActions } from "../generate";
+import { buildPredictionSources } from "../contracts";
 
 jest.mock("ai", () => ({
   generateText: jest.fn(),
@@ -197,4 +198,41 @@ test("provider failures expose no private error details and keep unknown spend",
     }),
   );
   expect(JSON.stringify(result)).not.toContain("private provider payload");
+});
+
+test("passes persisted tool activity and actual answers to the predictor", async () => {
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(completion({ suggestion: null }));
+  const history = buildPredictionSources([
+    {
+      id: "finished",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-run_terminal_cmd",
+          state: "output-available",
+          output: { success: true, stdout: "PRIVATE_STDOUT" },
+        },
+        {
+          type: "tool-wait_for_user",
+          state: "output-available",
+          input: { questions: [{ question: "Confirm your choice?" }] },
+          output: {
+            success: true,
+            wait_outcome: "message_arrived",
+            reply: "Continue",
+          },
+        },
+        { type: "text", text: "Done, both answers received." },
+      ],
+    },
+  ]);
+  await generateNextActions(history, new AbortController().signal);
+  const prompt = String(jest.mocked(generateText).mock.calls[0][0].prompt);
+  const sent = JSON.parse(prompt)[0].text;
+  expect(sent).toContain('"name":"run_terminal_cmd"');
+  expect(sent).toContain("Confirm your choice?");
+  expect(sent).toContain('"reply":"Continue"');
+  expect(sent).not.toContain("PRIVATE_STDOUT");
 });

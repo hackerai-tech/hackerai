@@ -17,9 +17,16 @@ jest.mock("@/lib/posthog/worker", () => ({
   createRetryLogger: () => jest.fn(),
 }));
 
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { event: jest.fn() },
+}));
+
 import type { AnySandbox } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
+import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import {
   classifySandboxReadinessFailureReason,
+  observeSandboxResourceFailure,
   waitForSandboxReady,
 } from "../sandbox-health";
 
@@ -45,6 +52,89 @@ const makeE2BSandbox = () =>
   }) as unknown as AnySandbox;
 
 describe("sandbox health resource observations", () => {
+  test.each(["health", "failure"] as const)(
+    "preserves provider sample age through the %s path into existing telemetry",
+    async (path) => {
+      const sandbox = makeE2BSandbox();
+      const now = Date.now();
+      const clock = jest.spyOn(Date, "now").mockReturnValue(now);
+      const metrics = await sandbox.getMetrics();
+      (sandbox.getMetrics as jest.Mock).mockResolvedValue([
+        { ...metrics[0], timestamp: new Date(now - 120_000) },
+      ]);
+      const observer = createE2BResourcePressureObserver({
+        userId: "user-1",
+        chatId: "chat-1",
+        mode: "agent",
+      });
+
+      try {
+        if (path === "health") {
+          await waitForSandboxReady(sandbox, 1, undefined, observer);
+        } else {
+          await observeSandboxResourceFailure(
+            sandbox,
+            observer,
+            "terminal_command_timeout",
+            "terminal_command_timed_out",
+          );
+        }
+        expect(phLogger.event).toHaveBeenLastCalledWith(
+          path === "health"
+            ? "e2b_sandbox_resource_pressure_observed"
+            : "e2b_sandbox_resource_failure_observed",
+          expect.objectContaining({
+            metrics_sample_age_available: true,
+            metrics_sample_age_ms: 120_000,
+          }),
+        );
+        // One fixture read and one existing health/failure sample, no extra probe.
+        expect(sandbox.getMetrics).toHaveBeenCalledTimes(2);
+        expect(sandbox.getMetrics).toHaveBeenLastCalledWith({
+          start: new Date(now - 5 * 60_000),
+          end: new Date(now),
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  test.each([
+    ["future", (now: number) => new Date(now + 5_000), -5_000],
+    ["missing", () => undefined, undefined],
+    ["invalid", () => new Date(NaN), undefined],
+    ["wrong type", () => "2026-11-08T00:00:00Z", undefined],
+  ])(
+    "handles %s sample timestamps without reporting false freshness",
+    async (_label, timestamp, age) => {
+      const sandbox = makeE2BSandbox();
+      const now = Date.now();
+      const clock = jest.spyOn(Date, "now").mockReturnValue(now);
+      const metrics = await sandbox.getMetrics();
+      (sandbox.getMetrics as jest.Mock).mockResolvedValue([
+        { ...metrics[0], timestamp: timestamp(now) },
+      ]);
+      const observer = createE2BResourcePressureObserver({
+        userId: "user-1",
+        chatId: "chat-1",
+        mode: "agent",
+      });
+      try {
+        await waitForSandboxReady(sandbox, 1, undefined, observer);
+        const properties = (phLogger.event as jest.Mock).mock.calls.at(-1)[1];
+        expect(properties.metrics_sample_age_available).toBe(age !== undefined);
+        if (age === undefined) {
+          expect(properties).not.toHaveProperty("metrics_sample_age_ms");
+        } else {
+          expect(properties.metrics_sample_age_ms).toBe(age);
+        }
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   test("reports metrics already fetched by the pre-command health check", async () => {
     const sandbox = makeE2BSandbox();
     const onResourceMetrics = jest.fn();

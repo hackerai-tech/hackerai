@@ -67,6 +67,11 @@ export const DiffView: React.FC<DiffViewProps> = ({
         if (!models.original.isDisposed()) models.original.dispose();
         if (!models.modified.isDisposed()) models.modified.dispose();
       });
+      try {
+        diagnostics.modifiedEditorDisposed();
+      } catch {
+        // Optional observation cannot affect model release.
+      }
     });
   };
 

@@ -1,3 +1,4 @@
+import { goalElapsedMs } from "../../lib/goals/timing";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -63,6 +64,8 @@ const {
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveAgentApprovalPending,
+  setActiveAgentUserWait,
+  claimAgentUserWaitReply,
   setActiveTriggerRun,
   replaceActiveTriggerRun,
   updateChat,
@@ -93,6 +96,39 @@ describe("Agent approval lifecycle guards", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each([
+    { nextRunId: "run-old", keepsWait: true },
+    { nextRunId: "run-new", keepsWait: false },
+  ])(
+    "keeps a reply wait only for the same run: %j",
+    async ({ nextRunId, keepsWait }) => {
+      const wait = {
+        runId: "run-old",
+        toolCallId: "tool-1",
+        tokenId: "token-1",
+        status: "waiting",
+      };
+      const { ctx, patch } = makeCtx({
+        _id: "chat-doc",
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-old",
+        active_agent_user_wait: wait,
+      });
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: nextRunId,
+        }),
+      ).toBe("updated");
+      const fields = patch.mock.calls[0][1];
+      if (keepsWait)
+        expect(fields).not.toHaveProperty("active_agent_user_wait");
+      else expect(fields.active_agent_user_wait).toBeUndefined();
+    },
+  );
 
   it.each([undefined, "stop"])(
     "conditionally detaches recovered crashes without replacing finish reason %s",
@@ -208,6 +244,123 @@ describe("Agent approval lifecycle guards", () => {
         },
         expectedRunId: "parent-run",
         expectedApprovalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("busy");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("does not let a stale run register a user reply wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "new-run",
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "old-run",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("persists structured questions with their current wait identity", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    });
+    const questions = [
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Choose a scope",
+        options: [{ label: "Alpha", value: "a" }],
+      },
+    ];
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        questions,
+      }),
+    ).resolves.toBe("acquired");
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+        questions,
+      },
+    });
+  });
+
+  it("accepts only one reply to a current user wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      }),
+    ).resolves.toBe("claimed");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_agent_user_wait: expect.objectContaining({
+          status: "submitting",
+          replyId: "reply-1",
+        }),
+      }),
+    );
+  });
+
+  it("rejects a different reply after the first delivery is claimed", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "submitting",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-2",
+        replyHash: "hash-2",
       }),
     ).resolves.toBe("busy");
     expect(patch).not.toHaveBeenCalled();
@@ -1019,6 +1172,79 @@ describe("Agent approval lifecycle guards", () => {
 });
 
 describe("Agent run replacement", () => {
+  it("allows a replacement run to acquire a wait after late old-run cleanup", async () => {
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "old",
+      active_agent_user_wait: {
+        runId: "old",
+        toolCallId: "old-tool",
+        tokenId: "old-token",
+        status: "waiting",
+      },
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "old",
+      approvalSessionId: null,
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "old",
+        toolCallId: "old-tool",
+      }),
+    ).resolves.toBe("stale");
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "new",
+        toolCallId: "new-tool",
+        tokenId: "new-token",
+      }),
+    ).resolves.toBe("acquired");
+  });
+
+  it("retains the current wait on a same-run replacement retry", async () => {
+    const wait = {
+      runId: "current",
+      toolCallId: "tool",
+      tokenId: "token",
+      status: "waiting",
+    };
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "current",
+      active_agent_user_wait: wait,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "current",
+      expectedRunId: "current",
+      approvalSessionId: null,
+    });
+    expect(chat.active_agent_user_wait).toEqual(wait);
+  });
+
   it("returns the displaced owner atomically and retains saved chat history", async () => {
     const { ctx, patch } = makeCtx({
       _id: "chat-doc",
@@ -1165,4 +1391,125 @@ it("admits the replacement after worker cleanup clears the observed session", as
     "chat-doc",
     expect.objectContaining({ active_trigger_run_id: "new" }),
   );
+});
+
+describe("Goal clock during durable user waits", () => {
+  it("freezes until the matching wait releases, including duplicate acquisition and reply claim", async () => {
+    const chat: any = {
+      _id: "chat-doc",
+      user_id: "user",
+      active_trigger_run_id: "run",
+    };
+    const goal: any = {
+      _id: "goal-doc",
+      userId: "user",
+      activeRunId: "run",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: 1000,
+      updatedAt: 1000,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    ctx.db.query.mockImplementation((table: string) => ({
+      withIndex: () => ({
+        first: async () => (table === "agent_goals" ? goal : chat),
+        order: () => ({ first: async () => null }),
+      }),
+    }));
+    patch.mockImplementation(async (id: string, fields: object) =>
+      Object.assign(id === goal._id ? goal : chat, fields),
+    );
+    const now = jest.spyOn(Date, "now").mockReturnValue(4000);
+    const identity = {
+      serviceKey: "key",
+      chatId: "chat",
+      userId: "user",
+      runId: "run",
+      toolCallId: "tool",
+    };
+    try {
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      now.mockReturnValue(64000);
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      await claimAgentUserWaitReply.handler(ctx, {
+        ...identity,
+        replyId: "reply",
+        replyHash: "hash",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      await setActiveAgentUserWait.handler(ctx, identity);
+      expect(goalElapsedMs(goal, 66000)).toBe(7000);
+      goal.state = "paused";
+      goal.activeSince = undefined;
+      chat.active_agent_user_wait = {
+        runId: "run",
+        toolCallId: "tool2",
+        tokenId: "token2",
+        status: "waiting",
+      };
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        toolCallId: "tool2",
+      });
+      expect(goal.activeSince).toBeUndefined();
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
+
+it("keeps Goal time frozen when approval ends during browser takeover", async () => {
+  const chat: any = {
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+    active_trigger_run_id: "run",
+    active_agent_approval_pending: true,
+    active_agent_approval_request: { approvalId: "approval" },
+  };
+  const goal: any = {
+    _id: "goal-doc",
+    chatId: "chat",
+    userId: "user",
+    activeRunId: "run",
+    state: "needs_approval",
+    elapsedMs: 2000,
+    activeSince: undefined,
+    updatedAt: 1000,
+  };
+  const browser = { user_id: "user", run_id: "run", state: "human" };
+  const { ctx, patch } = makeCtx(chat);
+  ctx.db.query.mockImplementation((table: string) => ({
+    withIndex: () => ({
+      first: async () => (table === "agent_goals" ? goal : chat),
+      unique: async () => goal,
+      order: () => ({ first: async () => browser }),
+    }),
+  }));
+  patch.mockImplementation(async (id: string, fields: object) =>
+    Object.assign(id === goal._id ? goal : chat, fields),
+  );
+  const now = jest.spyOn(Date, "now").mockReturnValue(64000);
+  try {
+    await expect(
+      setActiveAgentApprovalPending.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        pending: false,
+        expectedRunId: "run",
+        expectedApprovalId: "approval",
+      }),
+    ).resolves.toBe("released");
+    expect(goal.state).toBe("running");
+    expect(goalElapsedMs(goal, 124000)).toBe(2000);
+  } finally {
+    now.mockRestore();
+  }
 });

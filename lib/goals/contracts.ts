@@ -1,3 +1,5 @@
+import type { UserInputQuestion } from "../chat/user-input-questions";
+
 const GOAL_MAX_EVIDENCE = 64;
 export const GOAL_STATES = [
   "queued",
@@ -53,6 +55,7 @@ export function mergeGoalEvidence<
 }
 
 export type GoalCheckpoint = {
+  questions?: UserInputQuestion[];
   outcome: "continue" | "achieved" | "needs_input" | "blocked" | "wait";
   progress: string;
   evidence: GoalEvidence[];
@@ -65,6 +68,7 @@ export type GoalContract = {
   stopWhen?: string;
 };
 export type GoalJudgment = {
+  questions?: UserInputQuestion[];
   verdict: "done" | "continue" | "needs_input" | "blocked" | "wait";
   reason: string;
   // Optional for compatibility with workers deployed before automatic evaluation.
@@ -102,8 +106,20 @@ export function validGoalResponseEvidence(
   if (
     messages.some((m) =>
       m.parts?.some((part) => {
-        const p = part as { type?: unknown } | null;
-        return typeof p?.type === "string" && p.type.startsWith("tool-");
+        const p = part as { type?: unknown; state?: unknown } | null;
+        // Asking and receiving an answer inside this chat is not external work.
+        // Terminal validation failures can precede a successful corrected wait;
+        // the independent judge still requires the actual delivered answer.
+        const settledUserWait =
+          p?.type === "tool-wait_for_user" &&
+          ["output-available", "output-error", "output-denied"].includes(
+            String(p.state),
+          );
+        return (
+          typeof p?.type === "string" &&
+          p.type.startsWith("tool-") &&
+          !settledUserWait
+        );
       }),
     )
   )

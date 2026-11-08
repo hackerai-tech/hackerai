@@ -20,11 +20,15 @@ const mockNextResponseRedirect = jest.fn((url: URL, init?: unknown) =>
 );
 const originalCookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
 
+/** Model Next's default redirect status for response-based diagnostic assertions. */
 function mockCreateResponse(kind: string, body?: unknown, init?: unknown) {
   return {
     kind,
     body,
     init,
+    status:
+      (init as { status?: number } | undefined)?.status ??
+      (kind === "redirect" ? 307 : 200),
     cookies: {
       set: jest.fn(),
       delete: jest.fn(),
@@ -93,6 +97,242 @@ function createRequest({
 }
 
 describe("proxy", () => {
+  it.each([
+    ["POST", true],
+    ["PRIVATE-METHOD-MARKER", false],
+  ])(
+    "records only bounded Desktop redirect context for %s",
+    async (method, isAction) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/c/private-chat-marker?secret=private-query-marker",
+            userAgent: "HackerAI-Desktop private-ua-marker",
+            method,
+            accept: "text/html;private-accept-marker",
+            headers: { "next-action": "private-action-marker" },
+            cookieValues: { unrelated: "private-cookie-marker" },
+          }),
+        );
+        expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+        expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+          new URL("https://hackerai.co/desktop-callback?error=unauthenticated"),
+        );
+        expect(mockAuthkit).not.toHaveBeenCalled();
+        expect(response.cookies.delete).not.toHaveBeenCalledWith("wos-session");
+        expect(info).toHaveBeenCalledTimes(1);
+        const fields = JSON.parse(info.mock.calls[0][0] as string);
+        expect(fields).toEqual({
+          event: "desktop_auth_redirect_observed",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          reason: "missing_session_cookie",
+          request_method: isAction ? "POST" : "OTHER",
+          route_kind: "chat_page",
+          next_action_header_present: true,
+          accepts_html: true,
+          redirect_status: 307,
+          destination: "desktop_callback",
+        });
+        expect(JSON.stringify(fields)).not.toContain("private-");
+        expect(JSON.stringify(fields)).not.toContain("PRIVATE-");
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("records the ended-session redirect after preserving cookie clearing", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/api/private-marker",
+          userAgent: "HackerAI-Desktop",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+        }),
+      );
+      expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+      expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      expect(JSON.parse(info.mock.calls[0][0] as string)).toMatchObject({
+        reason: "ended_session",
+        route_kind: "api",
+        request_method: "POST",
+        next_action_header_present: false,
+        redirect_status: 307,
+      });
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it.each([false, true])(
+    "preserves the Desktop redirect when logging throws (session=%s)",
+    async (hasSession) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {
+        throw new Error("logger unavailable");
+      });
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        if (hasSession)
+          mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/dashboard",
+            userAgent: "HackerAI-Desktop",
+            method: "POST",
+            accept: "text/html",
+            hasSession,
+          }),
+        );
+        expect(info).toHaveBeenCalledTimes(1);
+        expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+        expect(response.status).toBe(307);
+        if (hasSession)
+          expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      } finally {
+        info.mockRestore();
+        warning.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { method: "GET", userAgent: "HackerAI-Desktop", hasSession: false },
+    { method: "HEAD", userAgent: "HackerAI-Desktop", hasSession: false },
+    { method: "POST", userAgent: "Mozilla/5.0", hasSession: true },
+    { method: "POST", userAgent: "HackerAI-Desktop", hasSession: true },
+  ])(
+    "does not log unrelated requests: $method $userAgent session=$hasSession",
+    async (options) => {
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockResolvedValue({
+          session: { user: { id: "user" } },
+          headers: new Headers(),
+        });
+        const { default: proxy } = await import("../proxy");
+        await proxy(createRequest({ pathname: "/dashboard", ...options }));
+        expect(info).not.toHaveBeenCalled();
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
+
+  it("does not describe an ended-session Server Action 401 as a redirect", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/c/example",
+          userAgent: "HackerAI-Desktop",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+          headers: { "next-action": "action" },
+        }),
+      );
+      expect(response).toBe(mockNextResponseJson.mock.results[0]?.value);
+      expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+      expect(response.status).toBe(401);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it("does not attribute a web login redirect to the Desktop callback", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+      const { default: proxy } = await import("../proxy");
+      const response = await proxy(
+        createRequest({
+          pathname: "/dashboard",
+          userAgent: "Mozilla/5.0",
+          method: "POST",
+          accept: "text/html",
+          hasSession: true,
+        }),
+      );
+      expect(response).toBe(mockNextResponseRedirect.mock.results[0]?.value);
+      expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+        new URL("https://hackerai.co/login"),
+      );
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warning.mockRestore();
+    }
+  });
+
+  it.each([
+    [
+      "preview",
+      "qa-branch.vercel.app",
+      "https://qa-branch.vercel.app/callback",
+    ],
+    [
+      "preview",
+      "deployment.vercel.app",
+      "https://deployment.vercel.app/callback",
+    ],
+    ["preview", "untrusted.example", "https://deployment.vercel.app/callback"],
+    ["production", "qa-branch.vercel.app", undefined],
+  ])(
+    "keeps auth on a trusted Preview branch origin (%s / %s)",
+    async (environment, host, redirectUri) => {
+      const keys = ["VERCEL_ENV", "VERCEL_URL", "VERCEL_BRANCH_URL"] as const;
+      const previous = Object.fromEntries(
+        keys.map((key) => [key, process.env[key]]),
+      );
+      Object.assign(process.env, {
+        VERCEL_ENV: environment,
+        VERCEL_URL: "deployment.vercel.app",
+        VERCEL_BRANCH_URL: "qa-branch.vercel.app",
+      });
+      mockAuthkit.mockResolvedValue({
+        session: { user: { id: "user" } },
+        headers: new Headers(),
+      });
+      try {
+        const { default: proxy } = await import("../proxy");
+        await proxy(
+          createRequest({
+            pathname: `https://${host}/c/goal-chat`,
+            accept: "text/html",
+            userAgent: "Mozilla/5.0",
+            hasSession: true,
+          }),
+        );
+        expect(mockAuthkit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ redirectUri }),
+        );
+      } finally {
+        for (const key of keys) {
+          if (previous[key] === undefined) delete process.env[key];
+          else process.env[key] = previous[key];
+        }
+      }
+    },
+  );
+
   afterAll(() => {
     if (originalCookiePassword === undefined) {
       delete process.env.WORKOS_COOKIE_PASSWORD;

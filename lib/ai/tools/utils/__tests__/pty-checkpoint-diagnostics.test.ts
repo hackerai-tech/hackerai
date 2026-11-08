@@ -9,6 +9,7 @@ import type { AnySandbox } from "@/types";
 import {
   checkpointCommandContext,
   checkpointCloudErrorContext,
+  checkpointNativeFilesystemErrorContext,
   PersistenceError,
   persistenceCommandError,
 } from "../persistence-failure";
@@ -16,6 +17,93 @@ import {
   LocalFileRequestError,
   NativePathResolutionError,
 } from "../local-sandbox-errors";
+
+it.each(["Mkdir", "Open", "Write", "Flush"])(
+  "projects the fixed %s primitive without native private text",
+  (phase) => {
+    const fields = checkpointNativeFilesystemErrorContext(
+      new Error(
+        `${phase} error: ${"PRIVATE_PATH".repeat(20_000)} (os error 13)`,
+      ),
+    );
+    expect(fields).toEqual({
+      native_filesystem_diagnostic_version: 2,
+      native_filesystem_reported_platform: "unknown",
+      native_filesystem_phase: phase.toLowerCase(),
+      native_filesystem_os_error_code_hint: 13,
+      native_filesystem_os_error_code_shape: "integer",
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  ["(os error 0)", 0, "integer"],
+  ["(os error 65535)", 65535, "integer"],
+  ["(os error 65536)", "none", "other"],
+  ["(os error 100000)", "none", "other"],
+  ["(os error -1)", "none", "other"],
+  ["(os error 1.5)", "none", "other"],
+  ["(os error PRIVATE)", "none", "other"],
+  ["(os error 13)\n", "none", "other"],
+  ["(os error 13) trailing", "none", "other"],
+  ["PRIVATE_DETAIL", "none", "absent"],
+])("bounds a terminal native OS-code hint %s", (suffix, hint, shape) => {
+  expect(
+    checkpointNativeFilesystemErrorContext(new Error(`Open error: ${suffix}`)),
+  ).toMatchObject({
+    native_filesystem_os_error_code_hint: hint,
+    native_filesystem_os_error_code_shape: shape,
+  });
+});
+
+it("does not coerce native messages or inspect accessors, causes or stacks", () => {
+  const getter = jest.fn(() => {
+    throw new Error("PRIVATE_ACCESSOR");
+  });
+  const stringify = jest.fn(() => "PRIVATE_COERCION");
+  const error = Object.defineProperties(
+    {},
+    {
+      message: { get: getter },
+      cause: { get: getter },
+      stack: { get: getter },
+      toString: { value: stringify },
+    },
+  );
+  expect(checkpointNativeFilesystemErrorContext(error)).toMatchObject({
+    native_filesystem_phase: "unreadable",
+    native_filesystem_os_error_code_shape: "unreadable",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext({ message: error }),
+  ).toMatchObject({
+    native_filesystem_phase: "other",
+    native_filesystem_os_error_code_shape: "other",
+  });
+  expect(checkpointNativeFilesystemErrorContext({})).toMatchObject({
+    native_filesystem_phase: "none",
+    native_filesystem_os_error_code_shape: "absent",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext(
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: getter,
+        },
+      ),
+    ),
+  ).toMatchObject({
+    native_filesystem_phase: "unreadable",
+    native_filesystem_os_error_code_shape: "unreadable",
+  });
+  expect(
+    checkpointNativeFilesystemErrorContext(new Error("PRIVATE_OTHER")),
+  ).toMatchObject({ native_filesystem_phase: "other" });
+  expect(getter).toHaveBeenCalledTimes(1); // Descriptor trap only, never accessors.
+  expect(stringify).not.toHaveBeenCalled();
+});
 
 it("bounds optional native path receipt context without invoking getters", () => {
   const error = new NativePathResolutionError("empty_output", {
@@ -168,10 +256,16 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   }
 
   /** Model a failed cloud or native write without executing customer commands. */
-  function failingStore(error: unknown, local = false) {
+  function failingStore(
+    error: unknown,
+    local = false,
+    ownerRunId?: unknown,
+    getConnectionInfo?: () => unknown,
+  ) {
     const write = jest
       .fn<Promise<void>, [string, string]>()
       .mockRejectedValue(error);
+    const metadata = jest.fn<unknown, []>(() => ({}));
     const store = createTerminalRecordStore(
       {
         sandboxId: "PRIVATE_SANDBOX",
@@ -179,6 +273,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
         ...(local
           ? {
               sandboxKind: "centrifugo",
+              getConnectionInfo: metadata,
               getConnectionId: () => "PRIVATE_CONNECTION",
               getWorkingDirectory: () => "C:/PRIVATE_FOLDER",
               isWindows: () => true,
@@ -188,9 +283,287 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       } as unknown as AnySandbox,
       "PRIVATE_USER",
       "PRIVATE_SCOPE",
+      ownerRunId as string | undefined,
     );
+    // Identity setup precedes the optional failure-context metadata read.
+    if (getConnectionInfo) metadata.mockImplementation(getConnectionInfo);
     return { store, write };
   }
+
+  const ownerRunId = "run_0123456789abcdefghijklmn";
+  it("correlates only the owning cloud no-space checkpoint without another event or I/O", async () => {
+    const error = Object.assign(new Error("PRIVATE_PATH"), {
+      name: "NotEnoughSpaceError",
+    });
+    const { store, write } = failingStore(error, false, ownerRunId);
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0][1]).toMatchObject({
+      checkpoint_backend: "cloud",
+      cloud_error_kind: "no_space",
+      checkpoint_owner_diagnostic_version: 1,
+      checkpoint_owner_run_status: "recorded",
+      checkpoint_owner_trigger_run_id: ownerRunId,
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    expect(info.mock.calls[0][1]).not.toHaveProperty("cloud_sandbox_id");
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: "12345678",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_trigger_run_id",
+    );
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: session.sessionId,
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_trigger_run_id",
+    );
+  });
+
+  it.each(["PRIVATE_SCOPE", "run_" + "x".repeat(41), undefined])(
+    "censors missing or malformed run context without hiding the no-space condition (%s)",
+    async (id) => {
+      const { store } = failingStore(
+        Object.assign(new Error("PRIVATE_PATH"), {
+          name: "NotEnoughSpaceError",
+        }),
+        false,
+        id,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info.mock.calls[0][1]).toMatchObject({
+        cloud_error_kind: "no_space",
+        checkpoint_owner_diagnostic_version: 1,
+        checkpoint_owner_run_status: "unavailable",
+      });
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_trigger_run_id",
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("does not coerce optional run context while reporting a cloud disk failure", async () => {
+    const coercion = jest.fn(() => {
+      throw new Error("PRIVATE_COERCION");
+    });
+    const { store } = failingStore(
+      Object.assign(new Error("PRIVATE_PATH"), { name: "NotEnoughSpaceError" }),
+      false,
+      { toString: coercion },
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info.mock.calls[0][1]).toMatchObject({
+      cloud_error_kind: "no_space",
+      checkpoint_owner_run_status: "unavailable",
+    });
+    expect(coercion).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "omits new owner fields for native failure or unrelated cloud error (local=%s)",
+    async (local) => {
+      const { store } = failingStore(
+        Object.assign(new Error("PRIVATE_PATH"), {
+          name: local ? "NotEnoughSpaceError" : "TimeoutError",
+        }),
+        local,
+        ownerRunId,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_diagnostic_version",
+      );
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_trigger_run_id",
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("adds bounded filesystem context to the existing owning checkpoint warning", async () => {
+    const { store, write } = failingStore(
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE_NATIVE_PATH (os error 13)",
+        "filesystem",
+      ),
+      true,
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0][0]).toBe(
+      "terminal_record_checkpoint_unconfirmed",
+    );
+    expect(info.mock.calls[0][1]).toMatchObject({
+      failure_category: "unknown",
+      checkpoint_failure_origin: "local_file_request",
+      file_failure: "filesystem",
+      native_filesystem_diagnostic_version: 2,
+      native_filesystem_reported_platform: "unknown",
+      native_filesystem_phase: "open",
+      native_filesystem_os_error_code_hint: 13,
+      native_filesystem_os_error_code_shape: "integer",
+    });
+    expect(JSON.stringify(info.mock.calls)).not.toContain(
+      "PRIVATE_NATIVE_PATH",
+    );
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: "abcdef12",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "native_filesystem_diagnostic_version",
+    );
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: session.sessionId,
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "native_filesystem_diagnostic_version",
+    );
+  });
+
+  it.each([
+    [() => ({ osInfo: { platform: "win32" } }), "windows"],
+    [() => ({ osInfo: { platform: "windows" } }), "windows"],
+    [() => ({ osInfo: { platform: "darwin" } }), "macos"],
+    [() => ({ osInfo: { platform: "macos" } }), "macos"],
+    [() => ({ osInfo: { platform: "linux" } }), "linux"],
+    [() => ({ osInfo: { platform: "PRIVATE_PLATFORM" } }), "unknown"],
+    [() => ({ osInfo: { platform: { toString: () => "win32" } } }), "unknown"],
+    [() => ({}), "unknown"],
+    [
+      () => {
+        throw new Error("PRIVATE_CONNECTION");
+      },
+      "unknown",
+    ],
+  ])(
+    "retains the failed native checkpoint with bounded reported platform %s",
+    async (getInfo, platform) => {
+      const getConnectionInfo = jest.fn(getInfo as () => unknown);
+      const { store, write } = failingStore(
+        new LocalFileRequestError(
+          "native_error",
+          "Write error: PRIVATE (os error 112)",
+          "filesystem",
+        ),
+        true,
+        undefined,
+        getConnectionInfo,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0][1]).toMatchObject({
+        native_filesystem_diagnostic_version: 2,
+        native_filesystem_reported_platform: platform,
+        native_filesystem_phase: "write",
+        native_filesystem_os_error_code_hint: 112,
+      });
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("does not inspect connection metadata accessors or coerce platform values", async () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_ACCESSOR");
+    });
+    const stringify = jest.fn(() => "win32");
+    const candidates = [
+      Object.defineProperty({}, "osInfo", { get: getter }),
+      { osInfo: Object.defineProperty({}, "platform", { get: getter }) },
+      { osInfo: { platform: { toString: stringify } } },
+      { osInfo: { platform: "linux" + "PRIVATE".repeat(1000) } },
+    ];
+    for (const connection of candidates) {
+      const { store } = failingStore(
+        new LocalFileRequestError(
+          "native_error",
+          "Write error: PRIVATE (os error 112)",
+          "filesystem",
+        ),
+        true,
+        undefined,
+        () => connection,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info.mock.calls.at(-1)?.[1]).toMatchObject({
+        native_filesystem_reported_platform: "unknown",
+        native_filesystem_os_error_code_hint: 112,
+      });
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(stringify).not.toHaveBeenCalled();
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE (os error 13)",
+        "filesystem",
+      ),
+      false,
+    ],
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: PRIVATE (os error 13)",
+        "unknown",
+      ),
+      true,
+    ],
+    [
+      new LocalFileRequestError(
+        "native_error",
+        "Open error: permission denied (os error 13)",
+        "filesystem",
+      ),
+      true,
+    ],
+    [new Error("Open error: PRIVATE (os error 13)"), true],
+  ])(
+    "keeps native filesystem fields outside unrelated failure scopes",
+    async (error, local) => {
+      const { store } = failingStore(error, local);
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "native_filesystem_diagnostic_version",
+      );
+    },
+  );
 
   it.each([
     ...[
@@ -441,6 +814,36 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     ).toEqual({
       cloud_error_kind: "sandbox_error",
       cloud_http_status: "other",
+    });
+  });
+
+  it.each([
+    ["TimeoutError", "dom_timeout"],
+    ["AbortError", "dom_abort"],
+    ["PRIVATE_NAME", "other_error"],
+  ])("projects only the native DOM exception subtype (%s)", (name, kind) => {
+    const error = new DOMException("PRIVATE_MESSAGE", name);
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    Object.defineProperty(error, "name", { get: getter });
+    Object.defineProperty(error, "message", { get: getter });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: kind,
+      cloud_http_status: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(checkpointCloudErrorContext(error))).not.toContain(
+      "PRIVATE",
+    );
+  });
+
+  it("does not trust a forged native DOM prototype", () => {
+    expect(
+      checkpointCloudErrorContext(Object.create(DOMException.prototype)),
+    ).toEqual({
+      cloud_error_kind: "unreadable_error",
+      cloud_http_status: "none",
     });
   });
 

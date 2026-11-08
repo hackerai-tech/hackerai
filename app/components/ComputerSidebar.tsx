@@ -394,6 +394,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     onNavigate: onNavigate ? navigateManually : undefined,
   });
 
+  const missingBrowserSelection =
+    currentIndex === -1 &&
+    !!sidebarContent &&
+    isSidebarTerminal(sidebarContent) &&
+    !!detectAgentBrowserUsage(sidebarContent.command);
+  const showingLiveContent = isAtLive || missingBrowserSelection;
+
   const handleJumpToLive = useCallback(() => {
     const latestTool = toolExecutions.at(-1);
     if (!latestTool || !onNavigate) return;
@@ -502,6 +509,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return;
     }
 
+    // Browser control has its own authenticated session lifecycle. A command
+    // opened from persisted history can be absent from the live stream; do not
+    // close or replace its preview while the user is taking control.
+    if (missingBrowserSelection) {
+      return;
+    }
+
     // currentIndex === -1 means the current sidebarContent is not found in toolExecutions
     // This happens when the message containing this tool was deleted
     const timeoutId = window.setTimeout(() => {
@@ -517,6 +531,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return () => window.clearTimeout(timeoutId);
   }, [
     currentIndex,
+    missingBrowserSelection,
     sidebarOpen,
     sidebarContent,
     status,
@@ -747,7 +762,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 onContinue={onBrowserContinue}
                 chatId={browserChatId}
                 agentId={browserAgentId}
-                liveSelection={isAtLive && isFollowingLive}
+                liveSelection={showingLiveContent && isFollowingLive}
                 browserRequested={
                   !!detectAgentBrowserUsage(resolvedTerminal?.command ?? "")
                 }
@@ -1213,14 +1228,20 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={handleNext}
+                    onClick={
+                      missingBrowserSelection ? handleJumpToLive : handleNext
+                    }
                     disabled={!canGoNext}
                     className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
                       !canGoNext
                         ? "text-muted-foreground/30 cursor-not-allowed"
                         : "text-muted-foreground hover:text-blue-500"
                     }`}
-                    aria-label="Next tool execution"
+                    aria-label={
+                      missingBrowserSelection
+                        ? "Latest available tool execution"
+                        : "Next tool execution"
+                    }
                   >
                     <SkipForward size={16} />
                   </button>
@@ -1286,7 +1307,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </span>
                 </div>
                 {toolExecutions.length > 0 &&
-                  (!isAtLive || !isFollowingLive) && (
+                  (!showingLiveContent || !isFollowingLive) && (
                     <button
                       onClick={handleJumpToLive}
                       className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
@@ -1547,6 +1568,9 @@ export const ComputerSidebar: React.FC<{
     )
       closeSidebar();
   }, [editorChatId, editorGoal, goalDraft, closeSidebar]);
+
+  // Keep only the draft controller alive while closed, not browser viewers or polls.
+  if (!sidebarOpen) return null;
 
   if (editorChatId) {
     return (

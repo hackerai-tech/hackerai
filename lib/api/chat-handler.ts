@@ -2281,7 +2281,11 @@ export const createChatHandler = () => {
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           assistantContentLoop:
                             assistantContentLoopDetection.detected
-                              ? assistantContentLoopDetection
+                              ? {
+                                  reason: assistantContentLoopDetection.reason,
+                                  repeatCount:
+                                    assistantContentLoopDetection.repeatCount,
+                                }
                               : undefined,
                           shouldRetryInterruptedToolInput,
                           shouldRetryNonDurableOutputLimit,

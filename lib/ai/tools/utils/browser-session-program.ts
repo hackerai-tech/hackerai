@@ -14,6 +14,18 @@ def validate():
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise RuntimeError('Invalid browser session owner')
 
+def ambient_idle_timeout():
+    # Observe only this nonsensitive declaration, not daemon flags or effective state.
+    raw = os.environ.get('AGENT_BROWSER_IDLE_TIMEOUT_MS')
+    if raw is None: return 'unset'
+    if len(raw) > 128: return 'unparsed'
+    value = raw.strip()
+    if value.startswith('+'): value = value[1:]
+    if not value or any(c < '0' or c > '9' for c in value): return 'unparsed'
+    timeout = int(value)
+    if timeout > 18446744073709551615: return 'unparsed'
+    return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
+
 def cleanup():
     try:
         if root.exists():
@@ -103,12 +115,43 @@ if verify.exists() and active.read_text().strip() != name:
     raise RuntimeError('Snapshot the current browser before changing sessions')
 sys.argv = [sys.argv[0], '--session', name, *args]
 active.write_text(name)
+def write_receipt(filename, value):
+    temporary = None
+    created = False
+    try:
+        temporary = root / ('.wrapper-receipt-' + os.urandom(12).hex())
+        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
+        with os.fdopen(fd, 'w') as output:
+            __import__('json').dump(value, output)
+        os.replace(temporary, root / filename)
+    except Exception:
+        pass
+    finally:
+        if temporary is not None and created:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def invocation_idle_env():
+    # The wrapped command's declaration, not the separate probe's environment
+    # or the effective configuration of a possibly pre-existing daemon.
+    raw = os.environ.get('AGENT_BROWSER_IDLE_TIMEOUT_MS')
+    if raw is None: return 'unset'
+    if len(raw) > 128: return 'unparsed'
+    value = raw.strip()
+    if value.startswith('+'): value = value[1:]
+    if not value or any(c < '0' or c > '9' for c in value): return 'unparsed'
+    timeout = int(value)
+    if timeout > 18446744073709551615: return 'unparsed'
+    return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
+
 def record_wrapper(phase, status=None):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
     # targets or output; the reader exports session equality, not its name.
-    temporary = None
-    created = False
     try:
         info = root.lstat()
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -125,24 +168,30 @@ def record_wrapper(phase, status=None):
             else:
                 action = arg if arg in ('open', 'close') else 'other'
                 break
+        close_all = False
+        if action == 'close':
+            for arg in args:
+                if arg == '--session':
+                    next(args, None)
+                elif arg == '--all':
+                    close_all = True
+                elif arg in ('--help', '-h'):
+                    action = 'other'
         if sys.argv[3:] in (['--version'], ['-V']):
             action = 'version'
-        value = dict(v=1, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
+        value = dict(v=1, open_receipt_support=1, close_receipt_support=1, close_all=close_all, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
-        temporary = root / ('.wrapper-receipt-' + os.urandom(12).hex())
-        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        created = True
-        with os.fdopen(fd, 'w') as output:
-            __import__('json').dump(value, output)
-        os.replace(temporary, root / 'wrapper-receipt.json')
+        if action == 'open':
+            value.update(idle_env_version=1, idle_env=invocation_idle_env())
+        # Keep wrapped open/close observations even after version/other commands.
+        # These are observations, not proof that a browser is still running.
+        write_receipt('wrapper-receipt.json', value)
+        if action == 'open':
+            write_receipt('open-receipt.json', value)
+        elif action == 'close':
+            write_receipt('close-receipt.json', value)
     except Exception:
         pass
-    finally:
-        if temporary is not None and created:
-            try:
-                temporary.unlink(missing_ok=True)
-            except Exception:
-                pass
 
 record_wrapper('started')
 verify = root / 'verify-required'
@@ -244,7 +293,14 @@ elif action == 'status':
             line = response.readline(65537)
             if not line or len(line) > 65536:
                 raise RuntimeError('Invalid browser status')
-            print(json.dumps(json.loads(line)))
+            result = json.loads(line)
+            output = json.dumps(result)
+            if isinstance(result, dict) and len(output) + 1 <= 65536:
+                result['hackerai_env_idle_timeout'] = ambient_idle_timeout()
+                observed = json.dumps(result)
+                # Optional metadata must not push a valid status past its existing cap.
+                if len(observed) + 1 <= 65536: output = observed
+            print(output)
 elif action == 'cloudflare':
     validate()
     request = json.loads(sys.stdin.read(65537))

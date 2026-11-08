@@ -1,4 +1,5 @@
 import { after, type NextRequest } from "next/server";
+import { getFunctionName } from "convex/server";
 import { POST, DELETE } from "../route";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -33,6 +34,7 @@ const query = jest.fn();
 const mutation = jest.fn();
 let saved: unknown = null;
 let predictionsEnabled = true;
+let achievedElapsedMs: number | undefined;
 const reserve = jest.fn();
 const chatId = "11111111-1111-4111-8111-111111111111";
 let chat: Record<string, unknown>;
@@ -49,6 +51,9 @@ jest.mock("next/server", () => ({
 const request = (body = { chatId, messageId: "answer" }) =>
   ({
     signal: new AbortController().signal,
+    headers: new Headers({
+      "x-vercel-id": "iad1::qa123-1794060000000-abcdef123456",
+    }),
     text: async () => JSON.stringify(body),
   }) as NextRequest;
 
@@ -57,6 +62,7 @@ beforeEach(() => {
   shutdown.mockResolvedValue(undefined);
   saved = null;
   predictionsEnabled = true;
+  achievedElapsedMs = undefined;
   mutation.mockImplementation(async (_name, args) => args.batch ?? true);
   chat = {
     id: chatId,
@@ -74,33 +80,39 @@ beforeEach(() => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(true);
   jest.mocked(getConvexClient).mockReturnValue({ query, mutation } as never);
   query.mockImplementation(async (_name, args) =>
-    args.userId && !args.chatId
-      ? { enabled: predictionsEnabled }
-      : args.chatId && !args.paginationOpts
-        ? saved
-        : args.paginationOpts
-          ? {
-              page: [
-                {
-                  id: "answer",
-                  role: "assistant",
-                  parts: [
-                    {
-                      type: "text",
-                      text: "Synthetic finding lacks impact evidence.",
-                    },
-                  ],
-                },
-                {
-                  id: "user",
-                  role: "user",
-                  parts: [
-                    { type: "text", text: "Explain this synthetic finding." },
-                  ],
-                },
-              ],
-            }
-          : chat,
+    getFunctionName(_name) === "messages:getLastAssistantMessage"
+      ? {
+          id: "answer",
+          role: "assistant",
+          metadata: { goal: { achievedElapsedMs } },
+        }
+      : args.userId && !args.chatId
+        ? { enabled: predictionsEnabled }
+        : args.chatId && !args.paginationOpts
+          ? saved
+          : args.paginationOpts
+            ? {
+                page: [
+                  {
+                    id: "answer",
+                    role: "assistant",
+                    parts: [
+                      {
+                        type: "text",
+                        text: "Synthetic finding lacks impact evidence.",
+                      },
+                    ],
+                  },
+                  {
+                    id: "user",
+                    role: "user",
+                    parts: [
+                      { type: "text", text: "Explain this synthetic finding." },
+                    ],
+                  },
+                ],
+              }
+            : chat,
   );
   jest.mocked(createRedisClient).mockReturnValue({ eval: reserve } as never);
   reserve.mockResolvedValue(1);
@@ -145,6 +157,7 @@ test("generates from owned bounded persisted context and emits no content in ana
 test.each([
   "wrong owner",
   "active",
+  "waiting for reply",
   "canceled",
   "error",
   "old",
@@ -155,6 +168,8 @@ test.each([
 ])("does not generate for %s", async (condition) => {
   if (condition === "wrong owner") chat.user_id = "someone-else";
   if (condition === "active") chat.active_trigger_run_id = "run";
+  if (condition === "waiting for reply")
+    chat.active_agent_user_wait = { runId: "run", toolCallId: "wait" };
   if (condition === "canceled") chat.canceled_at = Date.now();
   if (condition === "error") chat.finish_reason = "error";
   if (condition === "old") chat.last_run_finished_at = Date.now() - 3600_000;
@@ -174,6 +189,7 @@ test.each([
   const expectedStatus: Record<string, number> = {
     "wrong owner": 404,
     active: 409,
+    "waiting for reply": 409,
     canceled: 409,
     error: 409,
     "stale message": 409,
@@ -321,7 +337,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 3,
+    validationVersion: 6,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -336,25 +352,29 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
-test("does not restore legacy prediction formats or make a model call", async () => {
-  saved = {
-    consumed: false,
-    batch: {
-      batchId: "legacy",
-      messageId: "answer",
-      mode: "ask",
-      suggestions: ["Explain the evidence."],
-    },
-  };
-  const result = await POST(
-    request({ chatId, messageId: "answer", restoreOnly: true } as never),
-  );
-  expect(await result.json()).toEqual({ suggestions: [] });
-  expect(generateNextActions).not.toHaveBeenCalled();
-  expect(reserve).not.toHaveBeenCalled();
-  expect(mutation).not.toHaveBeenCalled();
-  expect(capture).not.toHaveBeenCalled();
-});
+test.each([undefined, 3, 4])(
+  "does not restore legacy prediction version %s or make a model call",
+  async (validationVersion) => {
+    saved = {
+      consumed: false,
+      batch: {
+        batchId: "legacy",
+        validationVersion,
+        messageId: "answer",
+        mode: "ask",
+        suggestions: ["Explain the evidence."],
+      },
+    };
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly: true } as never),
+    );
+    expect(await result.json()).toEqual({ suggestions: [] });
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+  },
+);
 
 test("does not expose an legacy batch returned by a concurrent save", async () => {
   mutation.mockResolvedValueOnce({
@@ -371,7 +391,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 3 }),
+      batch: expect.objectContaining({ validationVersion: 6 }),
     }),
   );
 });
@@ -471,3 +491,157 @@ test.each([false, true])(
     expect(capture).not.toHaveBeenCalled();
   },
 );
+
+test.each([0, 50000])(
+  "completed Goal turns hide both new and saved suggestions (%i ms)",
+  async (elapsed) => {
+    achievedElapsedMs = elapsed;
+    saved = {
+      batch: {
+        batchId: "old",
+        messageId: "answer",
+        mode: "agent",
+        validationVersion: 6,
+        suggestions: ["alpha"],
+      },
+    };
+    expect((await (await POST(request())).json()).suggestions).toEqual([]);
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+  },
+);
+
+test("discards a draft if Goal achievement is persisted during prediction", async () => {
+  jest.mocked(generateNextActions).mockImplementationOnce(async () => {
+    achievedElapsedMs = 50000;
+    return { suggestions: ["alpha"], unavailable: false } as Awaited<
+      ReturnType<typeof generateNextActions>
+    >;
+  });
+  expect((await (await POST(request())).json()).suggestions).toEqual([]);
+  expect(mutation).not.toHaveBeenCalled();
+});
+
+test.each(["authenticate", "read_request", "consume"] as const)(
+  "records one pending DELETE %s stage before the platform deadline, then clears the timer",
+  async (stage) => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const req = request();
+    if (stage === "authenticate")
+      jest.mocked(getUserIDAndPro).mockImplementationOnce(async () => {
+        await gate;
+        return {
+          userId: "owner",
+          subscription: "pro",
+          emailVerified: true,
+          analyticsAccountCohort: "non_internal",
+        };
+      });
+    if (stage === "read_request")
+      req.text = async () => {
+        await gate;
+        return JSON.stringify({ chatId, messageId: "answer" });
+      };
+    if (stage === "consume")
+      mutation.mockImplementationOnce(async () => {
+        await gate;
+        return true;
+      });
+    const pending = DELETE(req);
+    try {
+      await jest.advanceTimersByTimeAsync(9_999);
+      expect(warn).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+        event: "next_actions_delete_slow_request",
+        diagnostic_version: 1,
+        stage,
+        elapsed_ms: 10_000,
+        warning_threshold_ms: 10_000,
+        request_aborted: false,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+      });
+      release();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ suggestions: [] });
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(
+        /owner|answer|serviceKey|suggestions/,
+      );
+    } finally {
+      release();
+      await pending;
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  },
+);
+
+test("clears DELETE diagnostics on caught failures and excludes hostile request headers", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const req = request();
+    req.headers.set("x-vercel-id", "PRIVATE_TOKEN");
+    jest
+      .mocked(getUserIDAndPro)
+      .mockRejectedValueOnce(new Error("PRIVATE auth"));
+    expect((await DELETE(req)).status).toBe(200);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warn).not.toHaveBeenCalled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    req.text = async () => {
+      await gate;
+      throw new Error("PRIVATE body");
+    };
+    const pending = DELETE(req);
+    await jest.advanceTimersByTimeAsync(10_000);
+    release();
+    expect((await pending).status).toBe(200);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  } finally {
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+test("a throwing slow-warning sink cannot fail the pending DELETE", async () => {
+  jest.useFakeTimers();
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {
+    throw new Error("PRIVATE sink");
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const req = request();
+  req.text = async () => {
+    await gate;
+    return JSON.stringify({ chatId, messageId: "answer" });
+  };
+  const pending = DELETE(req);
+  try {
+    await expect(
+      jest.advanceTimersByTimeAsync(10_000),
+    ).resolves.toBeUndefined();
+    release();
+    expect((await pending).status).toBe(200);
+  } finally {
+    release();
+    await pending;
+    warn.mockRestore();
+    jest.useRealTimers();
+  }
+});

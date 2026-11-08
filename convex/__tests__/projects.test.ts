@@ -35,6 +35,11 @@ jest.mock("../lib/utils", () => ({
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock("../lib/sidebarChatAttention", () => ({
+  getSidebarChatAttention: jest.fn(async (_ctx: unknown, chats: unknown[]) =>
+    chats.map(() => ({})),
+  ),
+}));
 
 const {
   createProject,

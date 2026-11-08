@@ -70,9 +70,16 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/manifest.json",
 ]);
 
-function getRedirectUri(): string | undefined {
+function getRedirectUri(request: NextRequest): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}/callback`;
+    // Keep the branch origin's auth cookie usable by its allowlisted relay.
+    // Never derive a callback from an arbitrary request/forwarded Host value.
+    const branchHost = process.env.VERCEL_BRANCH_URL;
+    const host =
+      branchHost && request.nextUrl.host === branchHost
+        ? branchHost
+        : process.env.VERCEL_URL;
+    return `https://${host}/callback`;
   }
   return undefined;
 }
@@ -236,6 +243,50 @@ function withSessionCookieCleared(response: NextResponse): NextResponse {
   return response;
 }
 
+/** Observe non-GET Desktop redirect decisions without retaining request contents or affecting auth. */
+function recordDesktopAuthRedirect(
+  request: NextRequest,
+  response: NextResponse,
+  reason: "missing_session_cookie" | "ended_session",
+): void {
+  try {
+    if (
+      request.method === "GET" ||
+      request.method === "HEAD" ||
+      !isDesktopApp(request)
+    ) {
+      return;
+    }
+
+    const pathname = request.nextUrl.pathname;
+    console.info(
+      JSON.stringify({
+        event: "desktop_auth_redirect_observed",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        reason,
+        request_method: ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(
+          request.method,
+        )
+          ? request.method
+          : "OTHER",
+        route_kind: pathname.startsWith("/c/")
+          ? "chat_page"
+          : pathname.startsWith("/api/")
+            ? "api"
+            : "other_protected",
+        next_action_header_present: request.headers.has(NEXT_ACTION_HEADER),
+        accepts_html: isBrowserRequest(request),
+        redirect_status: response.status,
+        destination: "desktop_callback",
+      }),
+    );
+  } catch {
+    // Diagnostics must never change authentication responses.
+  }
+}
+
+/** Retain the logged-out response contract and clear only the ended session cookie. */
 function buildEndedSessionResponse(
   request: NextRequest,
   pathname: string,
@@ -283,11 +334,14 @@ function buildEndedSessionResponse(
     ? new URL("/desktop-callback?error=unauthenticated", request.url)
     : new URL("/login", request.url);
 
-  return withSessionCookieCleared(
+  const response = withSessionCookieCleared(
     withAttributionCookies(request, NextResponse.redirect(redirectUrl)),
   );
+  recordDesktopAuthRedirect(request, response, "ended_session");
+  return response;
 }
 
+/** Keep Desktop cookie admission distinct from AuthKit refresh recovery and its response contract. */
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
@@ -343,12 +397,14 @@ export default async function proxy(request: NextRequest) {
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return withAttributionCookies(
+      const response = withAttributionCookies(
         request,
         NextResponse.redirect(
           new URL("/desktop-callback?error=unauthenticated", request.url),
         ),
       );
+      recordDesktopAuthRedirect(request, response, "missing_session_cookie");
+      return response;
     }
   }
 
@@ -359,7 +415,7 @@ export default async function proxy(request: NextRequest) {
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
   try {
     authkitResult = await authkit(request, {
-      redirectUri: getRedirectUri(),
+      redirectUri: getRedirectUri(request),
       eagerAuth: true,
       onSessionRefreshError: ({ error, isTransient }) => {
         if (isInvalidRefreshTokenError(error)) {
@@ -446,7 +502,7 @@ export default async function proxy(request: NextRequest) {
       // cookie deletion alone leaves the invalid cookie on this request.
       // An error from this second call propagates, so recovery cannot loop.
       const { headers } = await authkit(request, {
-        redirectUri: getRedirectUri(),
+        redirectUri: getRedirectUri(request),
         eagerAuth: true,
       });
       return withSessionCookieCleared(

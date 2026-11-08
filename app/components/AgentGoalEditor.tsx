@@ -362,7 +362,7 @@ export function AgentGoalEditor({
                     goal.state,
                   )
                 ? willContinue
-                  ? "The agent keeps working while you edit. Updating stops this run, keeps its partial response, and continues with the revised goal."
+                  ? "Your edits apply when you update the goal. Updating stops this run, keeps its partial response, and continues with the revised goal."
                   : "Saving keeps the revised goal paused until you resume."
                 : goal?.state === "achieved"
                   ? "Saving reopens this goal and resets its completion check. Resume when ready."

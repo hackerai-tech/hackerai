@@ -51,16 +51,20 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
   }
 };
 
+export type AuthSessionPhase = "load_sdk" | "session" | "entitlements";
+
 /**
  * Get the current user ID and pro status from the authenticated session
  * Throws ChatSDKError if user is not authenticated
  *
  * @param req - NextRequest object (server-side only)
- * @returns Promise<{ userId: string; isPro: boolean; subscription: SubscriptionTier }> - Object with userId, isPro, and subscription
+ * @param onPhase - Optional finite progress observer; receives no session data.
+ * @returns Authenticated identity, subscription and quota metadata.
  * @throws ChatSDKError - When user is not authenticated
  */
 export const getUserIDAndPro = async (
   req: NextRequest,
+  onPhase?: (phase: AuthSessionPhase) => void,
 ): Promise<{
   userId: string;
   subscription: SubscriptionTier;
@@ -69,14 +73,25 @@ export const getUserIDAndPro = async (
   organizationId?: string;
   freeQuotaSubject?: string;
 }> => {
+  /** Observe progress without allowing diagnostics to alter authentication. */
+  const reportPhase = (phase: AuthSessionPhase) => {
+    try {
+      onPhase?.(phase);
+    } catch {
+      // Optional timing context cannot change authentication or its errors.
+    }
+  };
   try {
+    reportPhase("load_sdk");
     const { authkit } = await import("@workos-inc/authkit-nextjs");
+    reportPhase("session");
     const { session } = await authkit(req);
 
     if (!session?.user?.id) {
       throw new ChatSDKError("unauthorized:auth");
     }
 
+    reportPhase("entitlements");
     const entitlements = parseEntitlements(session.entitlements);
     const subscription = resolveSubscriptionTier(entitlements);
 

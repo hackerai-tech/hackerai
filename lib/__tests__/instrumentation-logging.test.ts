@@ -84,4 +84,57 @@ describe("request error diagnostic exports", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain("SYNTHETIC_");
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it("exports root request correlation through the actual log sender and a content-free native receipt", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    onRequestError(
+      Object.assign(new TypeError("root failed"), { digest: "1234567890" }),
+      {
+        path: "/?code=SYNTHETIC_CODE#SYNTHETIC_FRAGMENT",
+        method: "GET",
+        headers: {
+          "x-vercel-id": "iad1::fixture-1794075870712-0123456789ab",
+          cookie: "SYNTHETIC_COOKIE",
+          authorization: "Bearer SYNTHETIC_TOKEN",
+        },
+      },
+      {
+        routePath: "/(chat)/page",
+        routeType: "render",
+        routerKind: "App Router",
+        renderSource: "react-server-components",
+        revalidateReason: undefined,
+      },
+    );
+    await flushPostHogLogs();
+    const body = String(jest.mocked(global.fetch).mock.calls[0][1]?.body);
+    expect(body).not.toContain("SYNTHETIC_");
+    const records = JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords;
+    expect(records).toHaveLength(1);
+    expect(records[0].attributes).toEqual(
+      expect.arrayContaining([
+        {
+          key: "root_request_error_diagnostic_version",
+          value: { doubleValue: 1 },
+        },
+        {
+          key: "vercel_request_id",
+          value: { stringValue: "iad1::fixture-1794075870712-0123456789ab" },
+        },
+        {
+          key: "root_render_source",
+          value: { stringValue: "react-server-components" },
+        },
+        { key: "root_error_kind", value: { stringValue: "TypeError" } },
+        { key: "error_digest", value: { stringValue: "1234567890" } },
+      ]),
+    );
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(mockCaptureException.mock.calls[0][2]).toMatchObject({
+      vercel_request_id: "iad1::fixture-1794075870712-0123456789ab",
+      root_request_error_diagnostic_version: 1,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).not.toMatch(/SYNTHETIC_|root failed/);
+  });
 });

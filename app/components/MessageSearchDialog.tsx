@@ -26,7 +26,6 @@ import {
   isThisWeek,
   isThisMonth,
 } from "date-fns";
-import type { Doc } from "@/convex/_generated/dataModel";
 import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
@@ -94,7 +93,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   const canSearch = isOpen && isSearchReady && Boolean(user);
 
   // Date categorization functions
-  const getChatDateCategory = (chat: Doc<"chats">): DateCategory => {
+  const getChatDateCategory = (chat: { update_time: number }): DateCategory => {
     const chatDate = new Date(chat.update_time);
 
     if (isToday(chatDate)) return "Today";

@@ -13,9 +13,14 @@ type Fact =
       stage: "view_rendered";
       view_mode: ViewMode;
       instance_observed_computed_before_view: boolean;
+    }
+  | {
+      stage: "first_modified_editor_disposed";
+      instance_observed_computed_before_disposal: boolean;
+      modified_editor_disposed_at: number;
     };
 
-/** Four consent-permitted lifetime facts, not file success or viewport exposure. */
+/** Five consent-permitted lifetime facts, not file success or viewport exposure. */
 export function createDiffViewDiagnostics() {
   const facts = new Map<string, Fact>();
   const queued = new Set<string>();
@@ -72,6 +77,14 @@ export function createDiffViewDiagnostics() {
   return {
     retry,
     computed: () => observe("computed", { stage: "computed" }),
+    // The first editor teardown only; remounts share this component instance.
+    modifiedEditorDisposed: () =>
+      observe("first_modified_editor_disposed", {
+        stage: "first_modified_editor_disposed",
+        instance_observed_computed_before_disposal: facts.has("computed"),
+        // Queue delivery may lag observation; retain the client clock separately.
+        modified_editor_disposed_at: Date.now(),
+      }),
     viewRendered: (view: ViewMode) =>
       observe(`view:${view}`, {
         stage: "view_rendered",

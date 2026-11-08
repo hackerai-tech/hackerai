@@ -64,9 +64,11 @@ const mockOverlayListeners = new Set<() => void>();
 const originalMatchMedia = window.matchMedia;
 
 let mockUseRealChatHandlers = false;
-let mockSavedGoal: Record<string, unknown> | undefined;
+let mockSavedGoal: Record<string, unknown> | null | undefined;
+let mockBrowserHandoffSession: { state: string } | null = null;
 let mockLocalConnections:
-  Array<{ connectionId: string; isDesktop: boolean }> | undefined;
+  | Array<{ connectionId: string; isDesktop: boolean; lastSeen?: number }>
+  | undefined;
 let mockChatHandlerArgs: Parameters<
   typeof import("@/app/hooks/useChatHandlers").useChatHandlers
 >[0];
@@ -78,6 +80,12 @@ let mockRestoredChat:
       finish_reason?: string;
       active_stream_id?: string;
       active_trigger_run_id?: string;
+      active_agent_user_wait?: {
+        runId: string;
+        toolCallId: string;
+        status: "waiting";
+        questions?: import("@/lib/chat/user-input-questions").UserInputQuestion[];
+      };
     }
   | undefined;
 let mockDesktopState: Partial<
@@ -109,6 +117,8 @@ jest.mock("convex/react", () => {
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
       if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
+      if (getFunctionName(query) === "browserHandoffs:getForUser")
+        return mockBrowserHandoffSession;
       if (getFunctionName(query) === "localSandbox:listConnections")
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
@@ -302,10 +312,25 @@ jest.mock("../ComputerSidebar", () => ({
     mockBrowserContinue = onBrowserContinue;
     mockContinueGoal = continueGoal;
     const [draft, setDraft] = useState("");
+    const { sidebarOpen, sidebarContent, closeSidebar } =
+      require("@/app/contexts/GlobalState").useGlobalState();
+    if (!sidebarOpen) return null;
     return (
       <div data-testid="computer-sidebar">
         Sidebar
         <button type="button">First computer action</button>
+        {sidebarContent?.kind === "goal" && (
+          <button
+            type="button"
+            aria-label="Close goal editor"
+            onClick={() => {
+              setDraft("");
+              closeSidebar();
+            }}
+          >
+            Close editor
+          </button>
+        )}
         <textarea
           aria-label="Computer draft"
           value={draft}
@@ -532,6 +557,7 @@ describe("Chat Component Integration", () => {
   });
 
   beforeEach(() => {
+    window.history.replaceState({}, "", "/");
     jest.clearAllMocks();
     require("@/hooks/use-mobile").useIsMobile.mockReturnValue(false);
     mockBranchChat.mockReset();
@@ -546,7 +572,8 @@ describe("Chat Component Integration", () => {
     mockIsAtBottom = true;
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
-    mockSavedGoal = undefined;
+    mockSavedGoal = null;
+    mockBrowserHandoffSession = null;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     mockOverlayListeners.clear();
@@ -1274,6 +1301,78 @@ describe("Chat Component Integration", () => {
     });
   });
 
+  it("preserves streamed question restrictions without resurrecting cleared waits", async () => {
+    mockRouteParams = { id: "wait-chat" };
+    mockLocalConnections = [];
+    mockRestoredChat = {
+      id: "wait-chat",
+      sandbox_type: "desktop",
+      default_model_slug: "agent",
+      active_trigger_run_id: "run-wait",
+    };
+    const questions = [
+      {
+        id: "choice",
+        header: "Choice",
+        question: "Alpha?",
+        options: [{ value: "alpha", label: "Alpha" }],
+        allowCustomAnswer: false,
+      },
+    ];
+    const part = {
+      type: "tool-wait_for_user",
+      toolCallId: "wait-1",
+      state: "input-available",
+      input: { questions } as Record<string, unknown>,
+    };
+    const stream = {
+      ...mockUseChat(),
+      status: "streaming",
+      messages: [{ id: "response", role: "assistant", parts: [part] }],
+    };
+    mockUseChat.mockReturnValue(stream);
+    const view = () => (
+      <TestWrapper>
+        <Chat autoResume={false} />
+      </TestWrapper>
+    );
+    const { rerender } = render(view());
+    expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-1");
+    expect(mockChatInputProps.pendingUserWait?.questions).toEqual(questions);
+    expect(mockChatInputProps.pendingUserWait?.published).toBeUndefined();
+    expect(mockChatHandlerArgs.sendDisabledReason).toBeTruthy();
+    mockRestoredChat.active_agent_user_wait = {
+      runId: "run-wait",
+      toolCallId: "wait-1",
+      status: "waiting",
+      questions,
+    };
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.published).toBe(true);
+    expect(mockChatInputProps.pendingUserWait?.questions).toEqual(questions);
+    expect(mockChatHandlerArgs.sendDisabledReason).toBeTruthy();
+    delete mockRestoredChat.active_agent_user_wait;
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
+
+    // A genuinely new tool call can still appear before its subscription.
+    part.toolCallId = "wait-2";
+    part.input = {};
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.toolCallId).toBe("wait-2");
+    expect(mockChatInputProps.pendingUserWait?.questions).toBeUndefined();
+    part.input = { questions: [{ ...questions[0], options: [] }] };
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait?.questions).toBeUndefined();
+    mockChatHandlerArgs.hasManuallyStoppedRef.current = true;
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
+    mockChatHandlerArgs.hasManuallyStoppedRef.current = false;
+    mockUseChat.mockReturnValue({ ...stream, status: "ready" });
+    await act(async () => rerender(view()));
+    expect(mockChatInputProps.pendingUserWait).toBeUndefined();
+  });
+
   it("waits for the saved chat mode before restoring predictions", async () => {
     mockRouteParams = { id: "restore-prediction-mode" };
     mockUseChat.mockReturnValue({
@@ -1580,9 +1679,14 @@ describe("Chat Component Integration", () => {
         });
         render(
           <TestWrapper>
+            <RecoveryQueueProbe />
             <Chat autoResume={false} />
           </TestWrapper>,
         );
+        fireEvent.click(
+          screen.getByRole("button", { name: "Queue recovery draft" }),
+        );
+        expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
         const openDetails = () => {
           if (mobile) {
             fireEvent.click(
@@ -1617,6 +1721,7 @@ describe("Chat Component Integration", () => {
           "Use blue",
         );
         expect(screen.getByRole("alert")).toHaveTextContent("The goal changed");
+        expect(screen.getByTestId("recovery-queue")).toHaveTextContent("1");
         expect(mockSendMessage).toHaveBeenCalledWith(
           expect.objectContaining({
             id: expect.any(String),
@@ -1807,7 +1912,9 @@ describe("Chat Component Integration", () => {
       const { rerender } = render(view());
       expect(mockHandleSubmit).not.toHaveBeenCalled();
       expect(sessionStorage.getItem("autoSendChatId")).toBe("fork-task");
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
@@ -1836,7 +1943,9 @@ describe("Chat Component Integration", () => {
         mockChatHandlerArgs.sendMessage({ text: "bypass" }),
       ).rejects.toThrow("Reconnect your computer");
       expect(mockSendMessage).not.toHaveBeenCalled();
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
@@ -1849,6 +1958,257 @@ describe("Chat Component Integration", () => {
         ),
       );
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+    });
+
+    it("shows Goal input while browser takeover holds the run, then returns to pursuing", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      mockRouteParams = { id: "goal-browser-chat" };
+      mockRestoredChat = {
+        id: "goal-browser-chat",
+        sandbox_type: "e2b",
+        default_model_slug: "agent",
+        active_trigger_run_id: "run-browser",
+      };
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockSavedGoal = {
+        _id: "goal-browser",
+        state: "running",
+        generation: 1,
+        objective: "Read the manual browser change",
+        criteria: [],
+        evidence: [],
+        runs: 1,
+        maxRuns: 5,
+        activeRunId: "run-browser",
+      };
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
+      const { rerender } = render(view());
+      for (const state of [
+        "waiting",
+        "claiming",
+        "human",
+        "recovery",
+        "resuming",
+      ]) {
+        mockBrowserHandoffSession = { state, runId: "run-browser" };
+        await act(async () => rerender(view()));
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).toHaveTextContent("Input");
+        expect(
+          screen.getByRole("region", { name: "Agent goal" }),
+        ).not.toHaveTextContent("Pursuing goal");
+      }
+      // A different ordinary run must not turn a retained Goal into Input.
+      mockBrowserHandoffSession = { state: "waiting", runId: "unrelated-run" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
+      // Stop pauses before worker cleanup clears the retained run identity.
+      mockBrowserHandoffSession = { state: "waiting", runId: "run-browser" };
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "paused",
+        activeRunId: "run-browser",
+      };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Paused");
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).not.toHaveTextContent("Input");
+      mockSavedGoal = {
+        ...mockSavedGoal,
+        state: "running",
+        activeRunId: "run-browser",
+      };
+      mockBrowserHandoffSession = { state: "agent", runId: "run-browser" };
+      await act(async () => rerender(view()));
+      expect(
+        screen.getByRole("region", { name: "Agent goal" }),
+      ).toHaveTextContent("Pursuing goal");
+    });
+
+    it("holds queued work while a Goal needs input or is blocked and releases it after completion", async () => {
+      mockRouteParams = { id: "goal-queue-chat" };
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      mockRestoredChat = {
+        id: "goal-queue-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockSavedGoal = {
+        state: "needs_input",
+        generation: 4,
+        objective: "Choose a label",
+        criteria: ["Label received"],
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      // A reply in another tab publishes Goal admission before the run id.
+      for (const state of ["blocked", "queued", "running"]) {
+        mockSavedGoal = { ...mockSavedGoal, state };
+        await act(async () => rerender(view()));
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      }
+      mockSavedGoal = { ...mockSavedGoal, state: "achieved" };
+      await act(async () => rerender(view()));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
+    it("dispatches a new chat's queue after saving without a router navigation", async () => {
+      global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
+        ok: true,
+        json: async () => ({ enabled: true }),
+      } as Response);
+      window.history.replaceState({}, "", "/");
+      mockDesktopState = {
+        chatMode: "agent",
+        subscription: "pro",
+        sandboxPreference: "e2b",
+      };
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+      const view = () => (
+        <TestWrapper>
+          <RecoveryQueueProbe />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(
+        screen.getByRole("button", { name: "Queue recovery draft" }),
+      );
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      const id = mockChatHandlerArgs.chatId;
+      mockRestoredChat = {
+        id,
+        default_model_slug: "agent",
+        sandbox_type: "e2b",
+      };
+      const options = mockUseChat.mock.calls.at(-1)![0];
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "ready" });
+      await act(async () => {
+        options.onFinish({
+          isAbort: false,
+          isError: false,
+          message: {
+            id: "answer",
+            role: "assistant",
+            parts: [{ type: "text", text: "Done" }],
+          },
+          messages: [],
+        });
+        rerender(view());
+      });
+      expect(window.location.pathname).toBe(`/c/${id}`);
+      expect(mockRouteParams.id).toBeUndefined();
+      expect(mockChatHandlerArgs.isExistingChat).toBe(true);
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+    });
+
+    it("restores held queued messages only in their original chat after navigation", async () => {
+      mockRouteParams = { id: "held-chat" };
+      mockLocalConnections = [];
+      mockRestoredChat = {
+        id: "held-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockSavedGoal = {
+        state: "blocked",
+        generation: 4,
+        objective: "Wait",
+        criteria: ["Gate open"],
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      mockRouteParams = { id: "other-chat" };
+      mockRestoredChat = { ...mockRestoredChat, id: "other-chat" };
+      await act(async () => rerender(view()));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+      mockRouteParams = { id: "held-chat" };
+      mockRestoredChat = { ...mockRestoredChat, id: "held-chat" };
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      mockSavedGoal = undefined;
+      await act(async () => rerender(view()));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      mockSavedGoal = {
+        state: "blocked",
+        generation: 4,
+        objective: "Wait",
+        criteria: ["Gate open"],
+      };
+      await act(async () => rerender(view()));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
+    it("holds queued work after a wait clears until the resumed run finishes", async () => {
+      mockRouteParams = { id: "wait-queue-chat" };
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      mockRestoredChat = {
+        id: "wait-queue-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        active_trigger_run_id: "resumed-run",
+        active_agent_user_wait: {
+          runId: "resumed-run",
+          toolCallId: "wait-1",
+          status: "waiting",
+        },
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      delete mockRestoredChat.active_agent_user_wait;
+      await act(async () => rerender(view()));
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      delete mockRestoredChat.active_trigger_run_id;
+      await act(async () => rerender(view()));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
     });
 
     it("rejects goal sends when the SDK settles without admitting the request", async () => {
@@ -2197,7 +2557,9 @@ describe("Chat Component Integration", () => {
     });
 
     it("removes a queued item only when its actual Agent transport acknowledges the matching turn", async () => {
-      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
       let finish!: () => void;
       mockSendMessage.mockImplementationOnce(
         () =>
@@ -2510,6 +2872,87 @@ describe("Chat Component Integration", () => {
         screen.getByRole("textbox", { name: "Computer draft" }),
       ).toHaveValue("Unsaved goal edits");
     });
+    it("preserves the controller draft when the browser panel is closed and reopened", async () => {
+      const CloseComputer = () => {
+        const { closeSidebar } = useGlobalState();
+        return <button onClick={closeSidebar}>Close computer panel</button>;
+      };
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <CloseComputer />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Keep unsaved Goal edits" } },
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close computer panel" }),
+      );
+      expect(screen.queryByTestId("computer-sidebar")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+      expect(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("Keep unsaved Goal edits");
+    });
+    it("uses the Goal editor close action for overlay Escape after retaining the controller", async () => {
+      mockComputerOverlayMedia = true;
+      const OpenGoal = () => {
+        const { openSidebar } = useGlobalState();
+        return (
+          <button
+            onClick={() => openSidebar({ kind: "goal", chatId: "chat-1" })}
+          >
+            Open test goal
+          </button>
+        );
+      };
+      render(
+        <TestWrapper>
+          <OpenGoal />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Open test goal" }));
+      fireEvent.change(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+        { target: { value: "Discard this edit" } },
+      );
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(screen.queryByTestId("computer-sidebar")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open test goal" }));
+      expect(
+        await screen.findByRole("textbox", { name: "Computer draft" }),
+      ).toHaveValue("");
+    });
+    it.each(["handled", "composing"])(
+      "keeps the overlay open when Escape is %s",
+      async (state) => {
+        mockComputerOverlayMedia = true;
+        render(
+          <TestWrapper>
+            <OpenComputerSidebarHarness />
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+        await screen.findByTestId("computer-sidebar");
+        const event = new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+          isComposing: state === "composing",
+        });
+        if (state === "handled") event.preventDefault();
+        fireEvent(document, event);
+        expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+          "open",
+        );
+      },
+    );
     it("restarts takeover with a hidden signal without replaying the private popup note", async () => {
       render(
         <TestWrapper>

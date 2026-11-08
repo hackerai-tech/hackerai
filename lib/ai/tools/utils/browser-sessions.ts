@@ -14,6 +14,7 @@ import {
   cloudflareInitScript,
   cloudflareReleaseScript,
 } from "../../captcha/cloudflare";
+import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
 export { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -71,6 +72,7 @@ export class BrowserSessions {
   private connectedTargetSelected = false;
   private closed = false;
   private cleanupPromise?: Promise<void>;
+  private admissionProbeCount = 0;
   private readonly readCounts = {
     state: { calls: 0, succeeded: 0, rejected: 0 },
     notes: { calls: 0, succeeded: 0, rejected: 0 },
@@ -547,7 +549,98 @@ export class BrowserSessions {
     };
   }
 
-  /** Park a requested handoff without occupying a sandbox process. */
+  /** Observe existing daemon liveness without opening it or gating admission. */
+  private async observeHandoffAdmission(
+    session: BrowserSession,
+    signal?: AbortSignal,
+  ) {
+    if (this.admissionProbeCount >= 2) return;
+    const attempt = ++this.admissionProbeCount;
+    const remaining = this.expiresAt - Date.now();
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), 3_000);
+    let envIdleTimeout = "unavailable";
+    let result:
+      | "connected"
+      | "disconnected"
+      | "invalid_response"
+      | "command_failed"
+      | "transport_error"
+      | "deadline"
+      | "stopped" = "invalid_response";
+    try {
+      const response = await withCancellation(
+        session.sandbox.commands.run(
+          browserSessionCommand("status", session.directory, this.expiresAt),
+          {
+            ...buildSandboxCommandOptions(session.sandbox),
+            timeoutMs: 2_000,
+            requestTimeoutMs: 3_000,
+          },
+        ),
+        AbortSignal.any([deadline.signal, ...(signal ? [signal] : [])]),
+      );
+      if (response.exitCode !== 0) result = "command_failed";
+      else if (
+        typeof response.stdout === "string" &&
+        response.stdout.length <= 65_536
+      ) {
+        try {
+          const parsed = JSON.parse(response.stdout);
+          const ambientIdle = parsed?.hackerai_env_idle_timeout;
+          if (
+            typeof ambientIdle === "string" &&
+            [
+              "unset",
+              "disabled",
+              "lt_15m",
+              "15m",
+              "gt_15m",
+              "unparsed",
+            ].includes(ambientIdle)
+          )
+            envIdleTimeout = ambientIdle;
+          const data = parsed?.data ?? parsed;
+          if (parsed?.success === true && data?.connected === false)
+            result = "disconnected";
+          else if (
+            parsed?.success === true &&
+            data?.connected === true &&
+            Number.isInteger(data.port) &&
+            data.port > 0 &&
+            data.port <= 65_535
+          )
+            result = "connected";
+        } catch {
+          // Raw daemon output and parser errors are never diagnostic fields.
+        }
+      }
+    } catch {
+      result = signal?.aborted
+        ? "stopped"
+        : deadline.signal.aborted
+          ? "deadline"
+          : "transport_error";
+    } finally {
+      clearTimeout(timer);
+    }
+    return {
+      admission_probe_result: result,
+      admission_probe_attempt: attempt,
+      // Ambient command environment only; launch flags can override the daemon.
+      admission_env_idle_timeout: envIdleTimeout,
+      admission_owner_remaining:
+        remaining <= 0
+          ? "expired"
+          : remaining < 60_000
+            ? "lt_1m"
+            : remaining < 600_000
+              ? "lt_10m"
+              : "gte_10m",
+    };
+  }
+
+  /** Park a requested handoff without occupying a foreground wait process. */
   async waitForHumanHandoff(
     signal?: AbortSignal,
     requestAnotherTakeover = false,
@@ -612,6 +705,35 @@ export class BrowserSessions {
       throw new Error(
         "Browser ownership changed. Read the handoff context and inspect the current browser before deciding what to do next.",
       );
+    // Probe only after the unchanged authoritative admission read/write. This
+    // cannot delay its CAS or turn a diagnostic into an ownership decision.
+    const observation =
+      current.state.state === "agent"
+        ? await this.observeHandoffAdmission(current.session, signal)
+        : undefined;
+    signal?.throwIfAborted();
+    if (observation) {
+      try {
+        phLogger.info("browser_handoff_admission_diagnostics", {
+          diagnostic_version: 2,
+          ...observation,
+          // true can also mean a previously completed takeover was fulfilled.
+          // Correlate the later waiting/capture evidence; never infer a transition.
+          admission_request_accepted: true,
+          admission_observation_phase: "after_accepted_wait_request",
+          admission_state_before: "agent",
+          admission_request_another: requestAnotherTakeover,
+          browser_session_id: diagnosticId(
+            current.session.sessionId,
+            scope.serviceKey,
+          ),
+          trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
+          agent_id: diagnosticId(scope.agentId, scope.serviceKey),
+        });
+      } catch {
+        // Optional delivery must never change admission or control ownership.
+      }
+    }
     // Uses the same cancellation, ownership and recovery gate as every other
     // tool. Resume only admits work after the private note and browser gate
     // have been committed; no foreground sandbox timer needs to finish.

@@ -65,6 +65,94 @@ describe("AgentLongMemoryTelemetry", () => {
     Object.defineProperty(process, "platform", originalPlatform);
   });
 
+  it("reports current lifecycle and cumulative widths on existing quiet-stream checkpoints", () => {
+    jest.useFakeTimers();
+    try {
+      let now = 1_000;
+      const emit = jest.fn();
+      const telemetry = new AgentLongMemoryTelemetry({
+        runId: "run_activity",
+        chatId: "chat_activity",
+        userId: "user_activity",
+        now: () => now,
+        emit,
+        readMemory: () => ({
+          rss: 200 * MIB,
+          heapTotal: 180 * MIB,
+          heapUsed: 100 * MIB,
+          external: 0,
+          arrayBuffers: 0,
+        }),
+        readHeapLimit: () => 416 * MIB,
+      });
+      telemetry.recordActivity({ operation: "prepare_step" });
+      telemetry.checkpoint({ phase: "provider_request", providerRequest });
+      telemetry.startPeriodicCheckpoints();
+      now = 2_000;
+      telemetry.recordActivity({ operation: "provider_stream" });
+      telemetry.recordActivity({ delta: "text", utf16Units: 6 });
+      telemetry.recordActivity({ delta: "reasoning", utf16Units: 900 });
+      telemetry.recordActivity({ delta: "tool_input", utf16Units: 11 });
+      expect(emit).toHaveBeenCalledTimes(1);
+      now = 121_000;
+      jest.advanceTimersByTime(120_000);
+      expect(emit).toHaveBeenCalledTimes(2);
+      expect(emit.mock.calls[1]?.[0]).toMatchObject({
+        phase: "provider_request",
+        checkpoint_reason: "periodic",
+        activity_version: 1,
+        active_operation: "provider_stream",
+        operation_age_ms: 119_000,
+        stream_chunk_count: 3,
+        stream_text_utf16_units: 6,
+        stream_reasoning_utf16_units: 900,
+        stream_tool_input_utf16_units: 11,
+        stream_max_delta_utf16_units: 900,
+        stream_last_chunk_age_ms: 119_000,
+      });
+      now = 122_000;
+      telemetry.recordActivity({ operation: "tool_execution" });
+      telemetry.recordActivity({ delta: "text", utf16Units: NaN });
+      telemetry.recordActivity({ delta: "text", utf16Units: -1 });
+      telemetry.recordActivity({ operation: "private-canary" } as never);
+      telemetry.checkpoint({ phase: "run_failed", force: true });
+      expect(emit.mock.calls[2]?.[0]).toMatchObject({
+        active_operation: "tool_execution",
+        stream_chunk_count: 3,
+      });
+      expect(JSON.stringify(emit.mock.calls)).not.toContain("private-canary");
+      telemetry.dispose();
+      jest.advanceTimersByTime(120_000);
+      expect(emit).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps width counters finite without retaining supplied diagnostic objects", () => {
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_width",
+      chatId: "chat_width",
+      userId: "user_width",
+      emit,
+    });
+    const activity = {
+      delta: "text" as const,
+      utf16Units: Number.MAX_SAFE_INTEGER,
+      privateContent: "never-retain-this",
+    };
+    telemetry.recordActivity(activity);
+    activity.utf16Units = 1;
+    telemetry.recordActivity(activity);
+    telemetry.checkpoint({ phase: "run_failed", force: true });
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      stream_text_utf16_units: Number.MAX_SAFE_INTEGER,
+      stream_chunk_count: 2,
+    });
+    expect(JSON.stringify(emit.mock.calls)).not.toContain("never-retain-this");
+  });
+
   it("reads only numeric Linux RSS backing on emitted checkpoints", () => {
     setPlatform("linux");
     const open = jest.spyOn(fs, "openSync").mockReturnValue(123);
@@ -345,6 +433,15 @@ describe("AgentLongMemoryTelemetry", () => {
       chat_id: "chat_123",
       user_id: "user_123",
       phase: "provider_request",
+      activity_version: 1,
+      active_operation: "unobserved",
+      operation_age_ms: undefined,
+      stream_chunk_count: 0,
+      stream_text_utf16_units: 0,
+      stream_reasoning_utf16_units: 0,
+      stream_tool_input_utf16_units: 0,
+      stream_max_delta_utf16_units: 0,
+      stream_last_chunk_age_ms: undefined,
       checkpoint_reason: "initial",
       rss_bytes: 300 * MIB,
       rss_high_water_bytes: 300 * MIB,

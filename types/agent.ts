@@ -86,6 +86,8 @@ export interface SandboxResourceMetrics {
   cpuPct: number;
   memPct: number;
   diskPct: number;
+  /** Provider timestamp age (possibly a bucket start) at return; negative means clock skew. */
+  sampleAgeMs?: number;
 }
 
 export type SandboxReadinessFailureReason =

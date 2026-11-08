@@ -1107,6 +1107,57 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
   });
 
+  test("carries the real tool owner's run into a best-effort cloud no-space checkpoint", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "PRIVATE_SANDBOX",
+      files: {
+        write: jest.fn(async () => {
+          throw Object.assign(new Error("PRIVATE_PATH"), {
+            name: "NotEnoughSpaceError",
+          });
+        }),
+        read: jest.fn(async () => {
+          throw new Error("missing");
+        }),
+        list: jest.fn(async () => []),
+        remove: jest.fn(),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    context.triggerRunId = "run_0123456789abcdefghijklmn";
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    jest.mocked(fakeHandle.sendInput).mockImplementation(async () => {
+      fakeHandle.emit(new TextEncoder().encode("done\n"));
+      fakeHandle.resolveExit(0);
+    });
+    try {
+      await runTool(createRunTerminalCmd(context), {
+        command: "printf done",
+        brief: "bounded fixture",
+        interactive: true,
+        is_background: false,
+        timeout: 1,
+      });
+      const receipt = jest
+        .mocked(phLogger.info)
+        .mock.calls.find(
+          ([event]) => event === "terminal_record_checkpoint_unconfirmed",
+        );
+      expect(receipt?.[1]).toMatchObject({
+        cloud_error_kind: "no_space",
+        checkpoint_owner_diagnostic_version: 1,
+        checkpoint_owner_run_status: "recorded",
+        checkpoint_owner_trigger_run_id: context.triggerRunId,
+      });
+      expect(JSON.stringify(receipt)).not.toContain("PRIVATE_");
+      expect(e2b.files.write).toHaveBeenCalled();
+    } finally {
+      await context.ptySessionManager.closeAll(context.chatId);
+    }
+  });
+
   test("detectAgentBrowserUsage extracts sanitized actions", () => {
     const usage = detectAgentBrowserUsage(
       "agent-browser open https://secret.example/login && agent-browser snapshot -i",

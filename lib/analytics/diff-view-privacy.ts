@@ -12,6 +12,8 @@ const ALLOWED_PROPERTIES = new Set([
   "stage",
   "view_mode",
   "instance_observed_computed_before_view",
+  "instance_observed_computed_before_disposal",
+  "modified_editor_disposed_at",
   "hackerai_frontend_build_commit",
 ]);
 

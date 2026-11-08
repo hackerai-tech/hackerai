@@ -282,6 +282,7 @@ export const update = mutation({
       generation: goal.generation + 1,
       checkpoint: undefined,
       evidence: [],
+      evidenceSources: undefined,
       judgment: undefined,
       progress: "",
       noProgressRuns: 0,
@@ -430,6 +431,10 @@ export const claimRun = mutation({
       ...goalTimingForState(goal, "running", Date.now()),
       state: "running",
       activeRunId: args.runId,
+      evidenceSources: [
+        ...(goal.evidenceSources ?? []),
+        { runId: args.runId, messageId: args.runId },
+      ].slice(-32),
       continuationSourceRunId: undefined,
       runs: goal.runs + 1,
       waitUntil: undefined,
@@ -525,6 +530,19 @@ export const finish = mutation({
         q.eq("id", args.messageId ?? args.runId),
       )
       .unique();
+    // Claim-time ownership survives cancellation. An edit clears these sources,
+    // so late cleanup cannot import the previous objective's tools.
+    let evidenceSources = goal.evidenceSources ?? [];
+    if (evidenceSources.some((s) => s.runId === args.runId)) {
+      const sources = new Map(evidenceSources.map((s) => [s.messageId, s]));
+      // Cancellation can settle before the stream persists its final message.
+      // Register the worker's IDs now; both readers below validate saved
+      // chat/role/run ownership and successful tool output before using them.
+      for (const id of (args.messageIds ?? []).slice(0, 16))
+        sources.set(id, { runId: args.runId, messageId: id });
+      evidenceSources = [...sources.values()].slice(-32);
+      await ctx.db.patch(goal._id, { evidenceSources });
+    }
     // A canceled or edited run may finish after the user acted. Settle its
     // lease without importing evidence or judgments from the old objective.
     if (["paused", "canceled"].includes(goal.state)) {
@@ -555,6 +573,20 @@ export const finish = mutation({
       if (source?.chat_id === args.chatId && source.role === "assistant")
         runMessages.push(source);
     }
+    const priorMessages: { runId: string; message: Doc<"messages"> }[] = [];
+    for (const source of evidenceSources) {
+      if (source.runId === args.runId) continue;
+      const saved = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", source.messageId))
+        .unique();
+      if (
+        saved?.chat_id === args.chatId &&
+        saved.role === "assistant" &&
+        (saved.id === source.runId || saved.trigger_run_id === source.runId)
+      )
+        priorMessages.push({ runId: source.runId, message: saved });
+    }
     const verified = (
       args.judgment?.evidence ??
       goal.checkpoint?.evidence ??
@@ -563,7 +595,6 @@ export const finish = mutation({
       .slice(0, 8)
       .flatMap((e) => {
         if (
-          e.runId !== args.runId ||
           !Number.isInteger(e.criterion) ||
           e.criterion < 0 ||
           e.criterion >= goal.criteria.length ||
@@ -572,7 +603,13 @@ export const finish = mutation({
           e.toolCallId.length > 200
         )
           return [];
-        const source = runMessages.find((m) =>
+        const candidates =
+          e.runId === args.runId
+            ? runMessages
+            : priorMessages
+                .filter((p) => p.runId === e.runId)
+                .map((p) => p.message);
+        const source = candidates.find((m) =>
           m.parts?.some((p) => isGoalEvidencePart(p, e.toolCallId)),
         );
         return source ? [{ ...e, messageId: source.id }] : [];
@@ -591,7 +628,15 @@ export const finish = mutation({
     const judgment = args.judgment ? { ...args.judgment } : undefined;
     if (judgment && !responseEvidence) delete judgment.responseEvidence;
     const progressed =
-      verified.length > 0 ||
+      verified.some(
+        (entry) =>
+          !goal.evidence.some(
+            (saved) =>
+              saved.criterion === entry.criterion &&
+              saved.runId === entry.runId &&
+              saved.toolCallId === entry.toolCallId,
+          ),
+      ) ||
       runMessages.some((m) =>
         m.parts?.some((p) => {
           const id = (p as { toolCallId?: string }).toolCallId;
@@ -740,5 +785,51 @@ export const evidenceForBackend = query({
       if (part) result.push({ ...e, result: serializeGoalEvidence(part) });
     }
     return result;
+  },
+});
+
+// Return actual saved results only from runs admitted to the current objective.
+// The independent judge must still map each result to a success criterion.
+export const retainedResultsForBackend = query({
+  args: { serviceKey: v.string(), chatId: v.string(), userId: v.string() },
+  returns: v.array(
+    v.object({
+      runId: v.string(),
+      toolCallId: v.string(),
+      eligibleEvidence: v.boolean(),
+      result: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await owned(ctx, args.chatId, args.userId);
+    const goal = await byChat(ctx, args.chatId);
+    const results = [];
+    for (const source of (goal?.evidenceSources ?? []).slice(-32)) {
+      if (source.runId === goal?.activeRunId) continue;
+      const message = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", source.messageId))
+        .unique();
+      if (
+        message?.chat_id !== args.chatId ||
+        message.role !== "assistant" ||
+        (message.id !== source.runId && message.trigger_run_id !== source.runId)
+      )
+        continue;
+      for (const part of message.parts ?? []) {
+        if (
+          typeof part?.toolCallId === "string" &&
+          isGoalEvidencePart(part, part.toolCallId)
+        )
+          results.push({
+            runId: source.runId,
+            toolCallId: part.toolCallId,
+            eligibleEvidence: true,
+            result: serializeGoalEvidence(part),
+          });
+      }
+    }
+    return results.slice(-64);
   },
 });

@@ -323,12 +323,22 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(
       screen.queryByRole("textbox", { name: "Goal objective" }),
     ).not.toBeInTheDocument();
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
     mockSidebarContent = goalContent;
     rerender(
       <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
     );
     expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
       "Keep this edit",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close goal editor" }));
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    mockSidebarContent = goalContent;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Original",
     );
   });
   beforeEach(() => {
@@ -353,6 +363,7 @@ describe("ComputerSidebar reconnect behavior", () => {
   it("carries an explicit waiting-session takeover through the real sidebar viewer", async () => {
     const originalFetch = global.fetch;
     const actions: string[] = [];
+    const onNavigate = jest.fn();
     const frame = {
       image: "data:image/png;base64,test",
       width: 800,
@@ -378,6 +389,9 @@ describe("ComputerSidebar reconnect behavior", () => {
           sidebarOpen
           closeSidebar={mockCloseSidebar}
           browserChatId="chat"
+          messages={[otherToolMessage]}
+          status="ready"
+          onNavigate={onNavigate}
           sidebarContent={{
             ...activeSidebarContent,
             command: "agent-browser snapshot -i",
@@ -393,6 +407,7 @@ describe("ComputerSidebar reconnect behavior", () => {
         screen.getByRole("button", { name: "Exit takeover" }),
       ).toBeEnabled();
       expect(actions).toEqual(["take"]);
+      expect(onNavigate).not.toHaveBeenCalled();
       view.unmount();
       expect(actions).toEqual(["take", "release"]);
     } finally {
@@ -722,6 +737,89 @@ describe("ComputerSidebar reconnect behavior", () => {
 
     expect(closeSidebar).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it.each([{ messages: [] }, { messages: [otherToolMessage] }])(
+    "retains a persisted browser selection while live tools are missing (%#)",
+    ({ messages }) => {
+      const closeSidebar = jest.fn();
+      const onNavigate = jest.fn();
+      render(
+        <ComputerSidebarBase
+          sidebarOpen
+          sidebarContent={{
+            command: "agent-browser snapshot -i",
+            output: "",
+            isExecuting: false,
+            toolCallId: "persisted-browser",
+            browserTakeoverRequest: {
+              requestId: "request",
+              sessionId: "session",
+            },
+          }}
+          closeSidebar={closeSidebar}
+          messages={messages}
+          onNavigate={onNavigate}
+          status="ready"
+        />,
+      );
+      act(() => jest.advanceTimersByTime(6_000));
+      expect(closeSidebar).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("button", { name: "Jump to live" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+        "agent-browser snapshot -i",
+      );
+    },
+  );
+
+  it("allows explicit navigation to the newest tool while a browser selection is missing", () => {
+    const onNavigate = jest.fn();
+    const props = {
+      sidebarOpen: true,
+      sidebarContent: {
+        command: "agent-browser snapshot -i",
+        output: "",
+        isExecuting: false,
+        toolCallId: "saved-browser",
+      },
+      closeSidebar: jest.fn(),
+      onNavigate,
+      status: "ready" as const,
+    };
+    const { rerender } = render(
+      <ComputerSidebarBase {...props} messages={[otherToolMessage]} />,
+    );
+    const first = otherToolMessage.parts[0];
+    rerender(
+      <ComputerSidebarBase
+        {...props}
+        messages={[
+          {
+            ...otherToolMessage,
+            parts: [
+              first,
+              {
+                ...first,
+                toolCallId: "newest-tool",
+                input: { command: "date" },
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Next tool execution|Latest available tool execution/,
+      }),
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "newest-tool" }),
+    );
   });
 
   it("waits before navigating away from genuinely missing content", () => {

@@ -1,5 +1,6 @@
 import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
 import { useRef, RefObject, useEffect, useState } from "react";
+
 import { useMutation } from "convex/react";
 import { getConvexSize, type Value } from "convex/values";
 import { api } from "@/convex/_generated/api";
@@ -9,7 +10,16 @@ import { cancelDesktopRunLocally } from "@/app/services/desktop-command-cancella
 import { cancelAgentRunWithRetry } from "@/app/services/agent-run-cancellation";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
-import { AGENT_RESUME_ENDPOINT } from "@/lib/api/agent-endpoints";
+import {
+  AGENT_CANCEL_ENDPOINT,
+  AGENT_REPLY_ENDPOINT,
+  AGENT_RESUME_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
+import {
+  AgentReplyConflictError,
+  type ActiveAgentUserWait,
+} from "@/lib/chat/agent-user-wait";
+
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -75,6 +85,7 @@ interface UseChatHandlersProps {
   goalGeneration?: number;
   persistedTriggerRunId?: string;
   sendDisabledReason?: string;
+  pendingUserWait?: ActiveAgentUserWait | null;
   chatId: string;
   messages: ChatMessage[];
   sendMessage: (
@@ -152,10 +163,12 @@ export const useChatHandlers = ({
   onStopCallback,
   resetAutoContinueCount,
   sendDisabledReason,
+  pendingUserWait,
   goalState,
   goalGeneration,
   persistedTriggerRunId,
 }: UseChatHandlersProps) => {
+  const isSubmittingReplyRef = useRef(false);
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
@@ -203,6 +216,13 @@ export const useChatHandlers = ({
   const recoveryPendingRef = useRef(false);
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
+  useEffect(() => {
+    currentChatIdRef.current = chatId;
+    return () => {
+      // Pending reply requests may resolve after this chat unmounts.
+      currentChatIdRef.current = "";
+    };
+  }, [chatId, currentChatIdRef]);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
@@ -755,9 +775,12 @@ export const useChatHandlers = ({
   const handleSubmit = async (
     e: React.FormEvent,
     inputOverride?: string,
+    structuredReply = false,
   ): Promise<boolean> => {
     e.preventDefault();
-    if (sendDisabledReasonRef.current) return false;
+    // Completing a durable wait does not require this computer. Keep the
+    // original guard for queued sends, edits, retries and every other action.
+    if (sendDisabledReasonRef.current && !pendingUserWait) return false;
     let stopGeneration = stopGenerationRef.current;
     let stoppedGoalForMessage = false;
     const wasSummarizing = isSummarizingRef.current;
@@ -770,17 +793,20 @@ export const useChatHandlers = ({
     let goalCommand;
     let resumeMessage: string | undefined;
     let goalSettings: Record<string, unknown> = {};
-    try {
-      goalCommand = parseGoalCommand(input);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Invalid goal command",
-      );
-      return false;
+    if (!pendingUserWait && !structuredReply) {
+      try {
+        goalCommand = parseGoalCommand(input);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Invalid goal command",
+        );
+        return false;
+      }
     }
     // A reply to a request for help continues that goal; an explicitly paused
     // goal remains paused. The saved state is checked again before admission.
     const resumeOnReply =
+      !pendingUserWait &&
       !goalCommand &&
       isExistingChat &&
       shouldUseAgentLongForAgent({
@@ -841,7 +867,12 @@ export const useChatHandlers = ({
         status !== "ready" ||
         activeTriggerRunRef?.current ||
         (resumeOnReply && persistedTriggerRunId) ||
-        messageQueue.length
+        (messageQueue.length > 0 &&
+          !resumeOnReply &&
+          !(
+            goalCommand.action === "resume" &&
+            (goalState === "blocked" || goalState === "needs_input")
+          ))
       ) {
         toast.info(
           "Wait for this chat’s current work and queued messages to settle before starting or resuming a goal.",
@@ -907,6 +938,8 @@ export const useChatHandlers = ({
       }
     }
     const clearSubmittedDraft = () => {
+      // Structured answers own a separate request-scoped draft in the panel.
+      if (structuredReply) return;
       const currentFiles = getUploadedFiles();
       if (
         currentChatIdRef.current === chatId &&
@@ -930,8 +963,8 @@ export const useChatHandlers = ({
 
     setIsAutoResuming(false);
 
-    // Reset manual stop flag when user submits a new message
-    hasManuallyStoppedRef.current = false;
+    // A failed wait reply must not restart work held by an earlier Stop.
+    if (!pendingUserWait) hasManuallyStoppedRef.current = false;
     resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
@@ -966,6 +999,82 @@ export const useChatHandlers = ({
     if (!input.trim() && !hasValidFiles) {
       return false;
     }
+
+    if (pendingUserWait) {
+      if (isSubmittingReplyRef.current) return false;
+      if (uploadedFiles.length > 0) {
+        toast.info("Replies are text only for now", {
+          description:
+            "Remove attachments before replying to the paused Agent.",
+        });
+        return false;
+      }
+      const replyText = input.trim();
+      if (!replyText) return false;
+      isSubmittingReplyRef.current = true;
+      try {
+        const body = JSON.stringify({
+          chatId,
+          runId: pendingUserWait.runId,
+          toolCallId: pendingUserWait.toolCallId,
+          waitWasPublished: pendingUserWait.published,
+          text: replyText,
+        });
+        let response: Response | undefined;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          response = await fetch(AGENT_REPLY_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+          if (response.status !== 425 || attempt === 3) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, 250 * (attempt + 1)),
+          );
+        }
+        if (!response) return false;
+        if (!response.ok) {
+          let replyConflict = false;
+          if (response.status === 409) {
+            try {
+              replyConflict =
+                (await response.json()).error === "reply_conflict";
+            } catch {
+              // Older routes and ended waits return a plain-text error.
+            }
+          }
+          toast.error("Could not send your reply", {
+            description: replyConflict
+              ? "An earlier answer is already being delivered. Retry that same answer, or stop the Agent before sending a different one."
+              : response.status === 409
+                ? "This wait has ended. Reconnect the chat before sending again."
+                : response.status === 425
+                  ? "The Agent is still preparing to wait. Your draft is saved; try again shortly."
+                  : "Your draft is saved. Retry the same reply.",
+          });
+          if (replyConflict && structuredReply)
+            throw new AgentReplyConflictError();
+          return false;
+        }
+        if (
+          currentChatIdRef.current === chatId &&
+          stopGenerationRef.current === stopGeneration
+        ) {
+          hasManuallyStoppedRef.current = false;
+        }
+        clearSubmittedDraft();
+        return true;
+      } catch (error) {
+        if (error instanceof AgentReplyConflictError) throw error;
+        toast.error("Could not send your reply", {
+          description: "Your draft is saved. Retry the same reply.",
+        });
+        return false;
+      } finally {
+        isSubmittingReplyRef.current = false;
+      }
+    }
+
     const maxFilesLimit = getMaxFilesLimitForMode(chatMode);
     if (uploadedFiles.length > maxFilesLimit) {
       toast.error("Cannot send files in this mode", {

@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
       !chat.active_stream_id &&
       !chat.active_trigger_run_id &&
       !chat.active_agent_approval_pending &&
+      !chat.active_agent_user_wait &&
       !chat.canceled_at;
     if (!completed) return empty(409);
     const history = await convex.query(api.messages.getMessagesPageForBackend, {
@@ -100,6 +101,20 @@ export async function POST(req: NextRequest) {
       history.page[0]?.role !== "assistant"
     )
       return empty(409);
+    // Goal completion is persisted separately from model prose. Do not let a
+    // prediction reopen a finished workflow, including an older saved draft.
+    const goalAchieved = async () => {
+      const answer = await convex.query(api.messages.getLastAssistantMessage, {
+        serviceKey,
+        userId,
+        chatId,
+      });
+      return (
+        answer?.id === messageId &&
+        typeof answer.metadata?.goal?.achievedElapsedMs === "number"
+      );
+    };
+    if (await goalAchieved()) return empty();
     const sources = buildPredictionSources(history.page);
     if (
       !sources.some((source) => source.id === messageId && source.text.trim())
@@ -136,7 +151,7 @@ export async function POST(req: NextRequest) {
       return empty();
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
-      prompt_version: "natural-single-reply-v4",
+      prompt_version: "ordered-tool-single-reply-v6",
       draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
       provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,
@@ -248,7 +263,7 @@ export async function POST(req: NextRequest) {
       latestHistory.page[0]?.role !== "assistant"
     )
       return empty();
-    if (!result.suggestions.length) return empty();
+    if (!result.suggestions.length || (await goalAchieved())) return empty();
     const savedBatch = await convex.mutation(api.nextActions.saveForBackend, {
       serviceKey,
       userId,
@@ -274,13 +289,47 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * Consume optional suggestions with the existing empty-response contract,
+ * including auth/data failures; observe one pending stage before hard termination.
+ */
 export async function DELETE(req: NextRequest) {
+  let stage: "authenticate" | "read_request" | "consume" = "authenticate";
+  const startedAt = Date.now();
+  // The platform's 20s termination can bypass finally; record the pending
+  // boundary once beforehand, without delaying or retrying the request.
+  const slowTimer = setTimeout(() => {
+    try {
+      const requestId = req.headers.get("x-vercel-id");
+      console.warn(
+        JSON.stringify({
+          event: "next_actions_delete_slow_request",
+          diagnostic_version: 1,
+          stage,
+          elapsed_ms: Math.max(0, Date.now() - startedAt),
+          warning_threshold_ms: 10_000,
+          request_aborted: req.signal.aborted,
+          ...(requestId &&
+          /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? { request_id: requestId }
+            : {}),
+        }),
+      );
+    } catch {
+      /* Diagnostics cannot change optional prediction behavior. */
+    }
+  }, 10_000);
+  slowTimer.unref?.();
   try {
     const { userId } = await getUserIDAndPro(req);
+    stage = "read_request";
     const raw = await req.text();
     if (raw.length > 512) return empty(400);
     const parsed = nextActionsRequestSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) return empty(400);
+    stage = "consume";
     await getConvexClient(
       AbortSignal.any([req.signal, AbortSignal.timeout(5_000)]),
     ).mutation(api.nextActions.consumeForBackend, {
@@ -292,5 +341,7 @@ export async function DELETE(req: NextRequest) {
     return empty();
   } catch {
     return empty();
+  } finally {
+    clearTimeout(slowTimer);
   }
 }

@@ -3,6 +3,7 @@ import {
   checkpointFailureOrigin,
   checkpointCommandContext,
   checkpointCloudErrorContext,
+  checkpointNativeFilesystemErrorContext,
   type CheckpointFailureOrigin,
   type PersistenceFailureCategory,
 } from "./persistence-failure";
@@ -32,6 +33,19 @@ import {
 import { pruneLocalTerminalRecords } from "./local-terminal-retention";
 import { phLogger } from "@/lib/posthog/server";
 import type { RecordCheckpointIssue } from "./pty-session-manager";
+
+/** Read already-held metadata without allowing optional context to lose a receipt. */
+function nativeFilesystemReportedPlatform(sandbox: AnySandbox): unknown {
+  try {
+    if (!isCentrifugoSandbox(sandbox)) return undefined;
+    const connection = sandbox.getConnectionInfo();
+    const osInfo = Object.getOwnPropertyDescriptor(connection, "osInfo")?.value;
+    if (!osInfo || typeof osInfo !== "object") return undefined;
+    return Object.getOwnPropertyDescriptor(osInfo, "platform")?.value;
+  } catch {
+    return undefined;
+  }
+}
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -120,7 +134,23 @@ export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
   scopeId: string,
+  ownerTriggerRunId?: string,
 ) {
+  // Caller-supplied server context identifies the store owner, not necessarily
+  // the request interacting with a retained terminal. Keep storage scope hashes
+  // and provider sandbox identities out of this additional correlation field.
+  const ownerContext: Record<string, string | number> =
+    typeof ownerTriggerRunId === "string" &&
+    /^run_[a-z0-9]{20,40}$/.test(ownerTriggerRunId)
+      ? {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "recorded",
+          checkpoint_owner_trigger_run_id: ownerTriggerRunId,
+        }
+      : {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "unavailable",
+        };
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -248,6 +278,9 @@ export function createTerminalRecordStore(
         }
         try {
           const local = isCentrifugoSandbox(sandbox);
+          const cloudContext = !local
+            ? checkpointCloudErrorContext(error)
+            : undefined;
           const session = Object.getOwnPropertyDescriptor(
             record,
             "session",
@@ -265,7 +298,20 @@ export function createTerminalRecordStore(
                       : "native_file",
                     checkpoint_backend: local ? "local" : "cloud",
                     ...checkpointCommandContext(error),
-                    ...(!local ? checkpointCloudErrorContext(error) : {}),
+                    ...(local &&
+                    !ownerOnlyPosix &&
+                    failureOrigin === "local_file_request" &&
+                    fileFailure === "filesystem" &&
+                    failureCategory === "unknown"
+                      ? checkpointNativeFilesystemErrorContext(
+                          error,
+                          nativeFilesystemReportedPlatform(sandbox),
+                        )
+                      : {}),
+                    ...cloudContext,
+                    ...(cloudContext?.cloud_error_kind === "no_space"
+                      ? ownerContext
+                      : {}),
                   },
                 }
               : undefined;

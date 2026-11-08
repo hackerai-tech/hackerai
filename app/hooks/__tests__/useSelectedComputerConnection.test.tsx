@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
+import { LOCAL_SANDBOX_PRESENCE_GRACE_MS } from "@/lib/centrifugo/presence";
 import { hydrateRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 
@@ -7,10 +8,13 @@ const mockGlobalState = {
   chatMode: "agent",
   sandboxPreference: "desktop",
   desktopBridgeStatus: "failed",
-  localConnections: [{ connectionId: "stale-row", isDesktop: true }] as
+  localConnections: [
+    { connectionId: "stale-row", lastSeen: Date.now(), isDesktop: true },
+  ] as
     | Array<{
         connectionId: string;
         isDesktop: boolean;
+        lastSeen: number;
         environmentId?: string;
       }>
     | undefined,
@@ -45,6 +49,7 @@ describe("selected computer hydration", () => {
       {
         connectionId: "session-one",
         environmentId: "machine-a",
+        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -54,6 +59,7 @@ describe("selected computer hydration", () => {
       {
         connectionId: "other-session",
         environmentId: "machine-b",
+        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -63,6 +69,7 @@ describe("selected computer hydration", () => {
       {
         connectionId: "session-two",
         environmentId: "machine-a",
+        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -70,13 +77,63 @@ describe("selected computer hydration", () => {
     expect(result.current.selectedComputerUnavailable).toBe(false);
     expect(mockGlobalState.sandboxPreference).toBe("environment:machine-a");
   });
+  it("expires a disconnected computer without a database update and recovers on its new heartbeat", () => {
+    jest.useFakeTimers();
+    mockIsTauriEnvironment.mockReturnValue(false);
+    mockGlobalState.sandboxPreference = "desktop-environment:machine-a";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "old",
+        environmentId: "machine-a",
+        isDesktop: true,
+        lastSeen: Date.now() - LOCAL_SANDBOX_PRESENCE_GRACE_MS + 1000,
+      },
+    ];
+    const { result, rerender } = renderHook(useSelectedComputerConnection);
+    expect(result.current.selectedComputerUnavailable).toBe(false);
+    act(() => jest.advanceTimersByTime(2000));
+    expect(result.current.selectedComputerUnavailable).toBe(true);
+    expect(result.current.sendDisabledReason).toContain("Reconnect");
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "new",
+        environmentId: "machine-a",
+        isDesktop: true,
+        lastSeen: Date.now(),
+      },
+    ];
+    rerender();
+    expect(result.current.selectedComputerUnavailable).toBe(false);
+    expect(mockGlobalState.sandboxPreference).toBe(
+      "desktop-environment:machine-a",
+    );
+  });
+
+  it("keeps a healthy CLI session available between hourly token refreshes", () => {
+    jest.useFakeTimers();
+    mockIsTauriEnvironment.mockReturnValue(false);
+    mockGlobalState.sandboxPreference = "environment:cli-machine";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "cli-session",
+        environmentId: "cli-machine",
+        isDesktop: false,
+        lastSeen: Date.now() - 30 * 60_000,
+      },
+    ];
+    const { result } = renderHook(useSelectedComputerConnection);
+    act(() => jest.advanceTimersByTime(LOCAL_SANDBOX_PRESENCE_GRACE_MS + 1));
+    expect(result.current.selectedComputerUnavailable).toBe(false);
+    expect(result.current.sendDisabledReason).toBeUndefined();
+  });
+
   afterEach(() => {
     jest.useRealTimers();
     mockGlobalState.chatMode = "agent";
     mockGlobalState.sandboxPreference = "desktop";
     mockGlobalState.desktopBridgeStatus = "failed";
     mockGlobalState.localConnections = [
-      { connectionId: "stale-row", isDesktop: true },
+      { connectionId: "stale-row", lastSeen: Date.now(), isDesktop: true },
     ];
     mockIsTauriEnvironment.mockReturnValue(true);
   });
@@ -139,7 +196,7 @@ describe("selected computer hydration", () => {
     expect(result.current.computerConnectionPending).toBe(true);
 
     mockGlobalState.localConnections = [
-      { connectionId: "remote-kali", isDesktop: false },
+      { connectionId: "remote-kali", lastSeen: Date.now(), isDesktop: false },
     ];
     rerender();
 

@@ -4,6 +4,7 @@ import {
   AttachmentButton,
   type AttachmentButtonProps,
 } from "@/app/components/AttachmentButton";
+import { Button } from "@/components/ui/button";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
@@ -18,6 +19,8 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
+  attachmentsDisabled?: boolean;
+  replyBack?: { onClick: () => void; disabled: boolean };
   goalControl?: React.ReactNode;
   goalMenu?: AttachmentButtonProps["goalMenu"];
   onAttachClick: AttachmentButtonProps["onAttachClick"];
@@ -25,8 +28,10 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
 
 export function ChatInputToolbar({
   goalControl,
+  replyBack,
   goalMenu,
   onAttachClick,
+  attachmentsDisabled = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -63,52 +68,72 @@ export function ChatInputToolbar({
         className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2 md:flex-wrap"
         data-testid="chat-input-toolbar-controls"
       >
-        <div className="shrink-0">
-          <AttachmentButton
-            goalMenu={goalMenu}
-            onAttachClick={onAttachClick}
-            disabled={!isOnline}
-          />
-        </div>
-        {user && isAgentMode(chatMode) ? (
-          <div
-            className="shrink-0 md:hidden"
-            data-testid="chat-input-mobile-permission"
-          >
-            <AgentPermissionSelector analyticsSurface="chat_input" iconOnly />
-          </div>
-        ) : null}
-        {showChatModeSelector ? (
-          <ChatModeSelector className="shrink-0" />
-        ) : null}
-        {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
-        {user && isAgentMode(chatMode) ? (
+        {submitStopProps.isReplyingToAgent ? (
+          replyBack && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11 rounded-full px-3 text-sm sm:h-8"
+              {...replyBack}
+            >
+              Back
+            </Button>
+          )
+        ) : (
           <>
-            <div
-              className="hidden min-w-20 max-w-max flex-1 md:block"
-              data-testid="chat-input-desktop-permission"
-            >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
-            </div>
-            <div
-              className="hidden min-w-16 max-w-max flex-1 md:block"
-              data-testid="chat-input-desktop-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                size="toolbar"
+            <div className="shrink-0">
+              <AttachmentButton
+                goalMenu={goalMenu}
+                onAttachClick={onAttachClick}
+                disabled={!isOnline || attachmentsDisabled}
               />
             </div>
+            {user && isAgentMode(chatMode) ? (
+              <div
+                className="shrink-0 md:hidden"
+                data-testid="chat-input-mobile-permission"
+              >
+                <AgentPermissionSelector
+                  analyticsSurface="chat_input"
+                  iconOnly
+                />
+              </div>
+            ) : null}
+            {showChatModeSelector ? (
+              <ChatModeSelector className="shrink-0" />
+            ) : null}
+            {showFreeAskComputerActivation ? (
+              <FreeAskComputerActivation />
+            ) : null}
+            {user && isAgentMode(chatMode) ? (
+              <>
+                <div
+                  className="hidden min-w-20 max-w-max flex-1 md:block"
+                  data-testid="chat-input-desktop-permission"
+                >
+                  <AgentPermissionSelector analyticsSurface="chat_input" />
+                </div>
+                <div
+                  className="hidden min-w-16 max-w-max flex-1 md:block"
+                  data-testid="chat-input-desktop-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    size="toolbar"
+                  />
+                </div>
+              </>
+            ) : null}
+            {goalControl}
           </>
-        ) : null}
-        {goalControl}
+        )}
       </div>
       <div
         className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"
         data-testid="chat-input-primary-actions"
       >
-        {user ? (
+        {user && !submitStopProps.isReplyingToAgent ? (
           <ModelSelector
             value={selectedModel}
             onChange={setSelectedModel}

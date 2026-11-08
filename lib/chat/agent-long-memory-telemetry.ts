@@ -33,6 +33,13 @@ type V8MemoryFields = {
 type MemoryCheckpointPhase =
   "provider_request" | "stream_finished" | "run_failed";
 
+type MemoryOperation =
+  "prepare_step" | "provider_stream" | "tool_execution" | "step_finalize";
+
+export type AgentMemoryActivity =
+  | { operation: MemoryOperation }
+  | { delta: "text" | "reasoning" | "tool_input"; utf16Units: number };
+
 type MemoryCheckpointInput = {
   phase: MemoryCheckpointPhase;
   force?: boolean;
@@ -50,6 +57,15 @@ type MemoryCheckpointEvent = V8MemoryFields & {
   chat_id: string;
   user_id: string;
   phase: MemoryCheckpointPhase;
+  activity_version: 1;
+  active_operation: "unobserved" | MemoryOperation;
+  operation_age_ms?: number;
+  stream_chunk_count: number;
+  stream_text_utf16_units: number;
+  stream_reasoning_utf16_units: number;
+  stream_tool_input_utf16_units: number;
+  stream_max_delta_utf16_units: number;
+  stream_last_chunk_age_ms?: number;
   checkpoint_reason:
     | "initial"
     | "forced"
@@ -207,6 +223,14 @@ export class AgentLongMemoryTelemetry {
   private heapUsedHighWater = 0;
   private latestInput: MemoryCheckpointInput | undefined;
   private periodicTimer: ReturnType<typeof setInterval> | undefined;
+  private activeOperation: "unobserved" | MemoryOperation = "unobserved";
+  private operationStartedAt: number | undefined;
+  private lastChunkAt: number | undefined;
+  private streamChunkCount = 0;
+  private streamTextUnits = 0;
+  private streamReasoningUnits = 0;
+  private streamToolInputUnits = 0;
+  private streamMaxDeltaUnits = 0;
 
   constructor(private readonly options: AgentLongMemoryTelemetryOptions) {
     this.now = options.now ?? Date.now;
@@ -232,6 +256,48 @@ export class AgentLongMemoryTelemetry {
     if (!this.periodicTimer) return;
     clearInterval(this.periodicTimer);
     this.periodicTimer = undefined;
+  }
+
+  recordActivity(activity: AgentMemoryActivity): void {
+    try {
+      const now = this.now();
+      if ("operation" in activity) {
+        if (
+          ![
+            "prepare_step",
+            "provider_stream",
+            "tool_execution",
+            "step_finalize",
+          ].includes(activity.operation)
+        )
+          return;
+        this.activeOperation = activity.operation;
+        this.operationStartedAt = now;
+        return;
+      }
+      if (!["text", "reasoning", "tool_input"].includes(activity.delta)) return;
+      if (!Number.isSafeInteger(activity.utf16Units) || activity.utf16Units < 0)
+        return;
+      const add = (current: number) =>
+        Math.min(Number.MAX_SAFE_INTEGER, current + activity.utf16Units);
+      if (activity.delta === "text")
+        this.streamTextUnits = add(this.streamTextUnits);
+      if (activity.delta === "reasoning")
+        this.streamReasoningUnits = add(this.streamReasoningUnits);
+      if (activity.delta === "tool_input")
+        this.streamToolInputUnits = add(this.streamToolInputUnits);
+      this.streamChunkCount = Math.min(
+        Number.MAX_SAFE_INTEGER,
+        this.streamChunkCount + 1,
+      );
+      this.streamMaxDeltaUnits = Math.max(
+        this.streamMaxDeltaUnits,
+        activity.utf16Units,
+      );
+      this.lastChunkAt = now;
+    } catch {
+      // Observability must not affect streaming or tool execution.
+    }
   }
 
   checkpoint(input: MemoryCheckpointInput): boolean {
@@ -309,6 +375,23 @@ export class AgentLongMemoryTelemetry {
         chat_id: this.options.chatId,
         user_id: this.options.userId,
         phase: input.phase,
+        // Last observed lifecycle boundary, not an allocation-site attribution.
+        // Widths are cumulative UTF-16 units, not bytes, tokens or live heap.
+        activity_version: 1,
+        active_operation: this.activeOperation,
+        operation_age_ms:
+          this.operationStartedAt === undefined
+            ? undefined
+            : finiteNonNegative(now - this.operationStartedAt),
+        stream_chunk_count: this.streamChunkCount,
+        stream_text_utf16_units: this.streamTextUnits,
+        stream_reasoning_utf16_units: this.streamReasoningUnits,
+        stream_tool_input_utf16_units: this.streamToolInputUnits,
+        stream_max_delta_utf16_units: this.streamMaxDeltaUnits,
+        stream_last_chunk_age_ms:
+          this.lastChunkAt === undefined
+            ? undefined
+            : finiteNonNegative(now - this.lastChunkAt),
         checkpoint_reason: reason,
         // Time between successful in-process samples, not a physical OOM peak
         // or proof of why a callback/log export was absent before a kill.

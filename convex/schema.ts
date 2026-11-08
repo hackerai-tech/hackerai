@@ -1,3 +1,4 @@
+import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { nextActionsStateValidator } from "./lib/nextActionsState";
 import {
   settlementIdentityFields,
@@ -302,6 +303,17 @@ export default defineSchema({
     active_agent_approval_pending: v.optional(v.boolean()),
     active_agent_approval_request: v.optional(
       activeAgentApprovalRequestValidator,
+    ),
+    active_agent_user_wait: v.optional(
+      v.object({
+        questions: v.optional(userInputQuestionsValidator),
+        runId: v.string(),
+        toolCallId: v.string(),
+        tokenId: v.string(),
+        status: v.union(v.literal("waiting"), v.literal("submitting")),
+        replyId: v.optional(v.string()),
+        replyHash: v.optional(v.string()),
+      }),
     ),
     agent_approval_grants: v.optional(
       v.array(agentApprovalTargetGrantValidator),

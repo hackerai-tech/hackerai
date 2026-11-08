@@ -25,8 +25,14 @@ export async function sampleAttachmentFailureMetrics(
   if (!isE2BSandbox(sandbox)) return { metrics_status: "not_e2b" };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    const end = new Date(Date.now());
+    const start = new Date(end.getTime() - 5 * 60_000);
     const metrics = await Promise.race([
-      sandbox.getMetrics({ requestTimeoutMs: 1_000 }),
+      sandbox.getMetrics({
+        requestTimeoutMs: 1_000,
+        start,
+        end,
+      }),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), 1_000);
       }),
