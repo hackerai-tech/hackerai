@@ -249,7 +249,7 @@ export function ScheduleFormDialog({
           <DialogTitle>
             {editing ? "Edit schedule" : "New schedule"}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="max-sm:sr-only">
             Each run starts a new task with your instructions.
           </DialogDescription>
         </DialogHeader>
@@ -284,7 +284,10 @@ export function ScheduleFormDialog({
                     }
                     maxLength={16000}
                     rows={4}
-                    className="min-h-24 resize-y md:min-h-44"
+                    className={cn(
+                      "min-h-24 resize-y",
+                      execution ? "md:min-h-32" : "md:min-h-44",
+                    )}
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
@@ -370,14 +373,14 @@ export function ScheduleFormDialog({
                               : " Connect a computer to run schedules on it."
                           }`
                         : unavailable
-                          ? `${execution.name} is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud.`
-                          : `Runs only while ${execution.name} is awake and connected. Missed runs are skipped — not made up later or moved to the cloud.`}
+                          ? "This computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
+                          : "Runs only while this computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
                     </span>
                   </p>
                 </div>
                 {execution && (
                   <div className="space-y-2">
-                    <Label htmlFor={`${id}-folder`}>Folder</Label>
+                    <Label htmlFor={`${id}-folder`}>Starting folder</Label>
                     <Input
                       id={`${id}-folder`}
                       value={execution.workingDirectory}
@@ -393,20 +396,13 @@ export function ScheduleFormDialog({
                       }}
                       maxLength={4096}
                       className="font-mono"
-                      placeholder="/path/to/project"
-                      aria-describedby={`${id}-folder-help`}
+                      placeholder="/absolute/path/to/project"
                       autoCapitalize="none"
                       autoCorrect="off"
                       autoComplete="off"
                       spellCheck={false}
                       required
                     />
-                    <p
-                      id={`${id}-folder-help`}
-                      className="break-words text-xs text-muted-foreground"
-                    >
-                      Absolute path where each run starts on {execution.name}.
-                    </p>
                   </div>
                 )}
               </div>
@@ -671,13 +667,10 @@ export function ScheduleFormDialog({
                 {execution ? (
                   <p className="min-w-0 break-words">
                     <span className="font-medium text-foreground">
-                      Runs on {execution.name}.
+                      Runs unattended on this computer.
                     </span>{" "}
-                    Saving authorizes HackerAI to run these instructions
-                    unattended with full tool access in the selected
-                    environment. The folder only sets where each run starts; it
-                    doesn’t limit access. Runs use your account’s normal usage
-                    and spending limits.
+                    Saving authorizes full tool access, not limited to the
+                    starting folder. Normal usage and spending limits apply.
                   </p>
                 ) : (
                   <p>

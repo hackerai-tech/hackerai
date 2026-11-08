@@ -197,7 +197,7 @@ it("allows editing an unavailable saved computer without changing its execution 
       onClose={jest.fn()}
     />,
   );
-  expect(screen.getByLabelText("Folder")).toHaveValue("/tmp/original");
+  expect(screen.getByLabelText("Starting folder")).toHaveValue("/tmp/original");
   expect(screen.getByText(/You can still save changes/)).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Name"), {
     target: { value: "Renamed" },
@@ -238,13 +238,15 @@ it("keeps folders scoped to their computer when switching targets", () => {
     key: "ArrowDown",
   });
   fireEvent.click(screen.getByRole("option", { name: "Second computer" }));
-  expect(screen.getByLabelText("Folder")).toHaveValue("");
-  fireEvent.change(screen.getByLabelText("Folder"), {
+  expect(screen.getByLabelText("Starting folder")).toHaveValue("");
+  fireEvent.change(screen.getByLabelText("Starting folder"), {
     target: { value: "/second-project" },
   });
   fireEvent.keyDown(screen.getByRole("combobox", { name: "Run on" }), {
     key: "ArrowDown",
   });
   fireEvent.click(screen.getByRole("option", { name: "First computer" }));
-  expect(screen.getByLabelText("Folder")).toHaveValue("/first-project");
+  expect(screen.getByLabelText("Starting folder")).toHaveValue(
+    "/first-project",
+  );
 });
