@@ -65,6 +65,8 @@ it.each([true, false])(
       expect(getAttachmentCommandFailureContext(failure)).toMatchObject({
         attachment_command_stage: "wait",
         attachment_command_handle_acquired: true,
+        attachment_command_exit_observed: false,
+        attachment_command_cleanup_outcome: receipt ? "killed" : "not_found",
       });
     } finally {
       killed.resolve(receipt);
@@ -112,6 +114,10 @@ it.each(["rejected", "invalid", "disconnect_failed"] as const)(
     expect(sandbox.commands.kill).toHaveBeenCalledWith(702, {
       requestTimeoutMs: 5000,
     });
+    expect(getAttachmentCommandFailureContext(error)).toMatchObject({
+      attachment_command_cleanup_outcome:
+        mode === "invalid" ? "invalid_receipt" : "failed",
+    });
     expect(handle.disconnect).toHaveBeenCalledTimes(1);
   },
 );
@@ -141,6 +147,9 @@ it("does not cancel a command with an observed nonzero exit", async () => {
   ).rejects.toBe(failure);
   expect(sandbox.commands.kill).not.toHaveBeenCalled();
   expect(handle.disconnect).toHaveBeenCalledTimes(1);
+  expect(getAttachmentCommandFailureContext(failure)).toMatchObject({
+    attachment_command_exit_observed: true,
+  });
 });
 
 it("refuses cleanup with an invalid process identity without sending a kill", async () => {
@@ -209,6 +218,55 @@ it("kills only the late E2B process when Stop arrives during startup", async () 
   expect(sandbox.commands.run.mock.calls[0][1]).not.toHaveProperty("signal");
 });
 
+it("retains a confirmed successful exit when the SDK stream times out after its end event", async () => {
+  const handle = {
+    pid: 101,
+    exitCode: 0,
+    stdout: "complete output",
+    stderr: "",
+    wait: jest.fn(async () => {
+      throw Object.assign(new Error("stream deadline"), {
+        name: "TimeoutError",
+      });
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: { run: jest.fn(async () => handle), kill: jest.fn() },
+  };
+  await expect(
+    runAttachmentCommand(sandbox as any, "true", new AbortController().signal),
+  ).resolves.toEqual({ exitCode: 0, stdout: "complete output", stderr: "" });
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Stop authoritative when an observed successful exit races with a failed wait", async () => {
+  const controller = new AbortController();
+  const stopReason = new Error("Stop requested");
+  const handle = {
+    pid: 101,
+    exitCode: 0,
+    stdout: "complete output",
+    stderr: "",
+    wait: jest.fn(async () => {
+      controller.abort(stopReason);
+      throw new Error("stream deadline");
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: {
+      run: jest.fn(async () => handle),
+      kill: jest.fn(async () => false),
+    },
+  };
+  await expect(
+    runAttachmentCommand(sandbox as any, "true", controller.signal),
+  ).rejects.toBe(stopReason);
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
 it("disconnects a completed handle and removes its abort listener", async () => {
   const controller = new AbortController();
   const result = { stdout: "ok", stderr: "", exitCode: 0 };
@@ -270,6 +328,10 @@ it.each(["foreground", "start", "wait", "disconnect"] as const)(
       attachment_command_handle_acquired:
         stage === "wait" || stage === "disconnect",
       attachment_command_error_kind: "timeout",
+      ...(stage === "wait" && {
+        attachment_command_exit_observed: false,
+        attachment_command_cleanup_outcome: "killed",
+      }),
     });
     expect(JSON.stringify(context)).not.toMatch(
       /private|987654|stdout|command:/,
