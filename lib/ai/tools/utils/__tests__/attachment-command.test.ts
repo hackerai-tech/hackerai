@@ -218,6 +218,55 @@ it("kills only the late E2B process when Stop arrives during startup", async () 
   expect(sandbox.commands.run.mock.calls[0][1]).not.toHaveProperty("signal");
 });
 
+it("retains a confirmed successful exit when the SDK stream times out after its end event", async () => {
+  const handle = {
+    pid: 101,
+    exitCode: 0,
+    stdout: "complete output",
+    stderr: "",
+    wait: jest.fn(async () => {
+      throw Object.assign(new Error("stream deadline"), {
+        name: "TimeoutError",
+      });
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: { run: jest.fn(async () => handle), kill: jest.fn() },
+  };
+  await expect(
+    runAttachmentCommand(sandbox as any, "true", new AbortController().signal),
+  ).resolves.toEqual({ exitCode: 0, stdout: "complete output", stderr: "" });
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Stop authoritative when an observed successful exit races with a failed wait", async () => {
+  const controller = new AbortController();
+  const stopReason = new Error("Stop requested");
+  const handle = {
+    pid: 101,
+    exitCode: 0,
+    stdout: "complete output",
+    stderr: "",
+    wait: jest.fn(async () => {
+      controller.abort(stopReason);
+      throw new Error("stream deadline");
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: {
+      run: jest.fn(async () => handle),
+      kill: jest.fn(async () => false),
+    },
+  };
+  await expect(
+    runAttachmentCommand(sandbox as any, "true", controller.signal),
+  ).rejects.toBe(stopReason);
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
 it("disconnects a completed handle and removes its abort listener", async () => {
   const controller = new AbortController();
   const result = { stdout: "ok", stderr: "", exitCode: 0 };

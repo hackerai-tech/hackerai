@@ -41,6 +41,12 @@ invalid receipt. An unobserved exit with a `not_found` cleanup receipt does not
 prove successful execution. Preserve the failed result; never replay while
 cleanup is unconfirmed.
 
+E2B can acknowledge a successful process exit before its event stream closes.
+If waiting for that stream subsequently fails, use the acknowledged exit and
+collected output rather than replaying the completed command. An abort remains
+authoritative. A missing exit or a nonzero exit remains a failure; this recovery
+does not establish the cause of historical readiness timeouts.
+
 Cloud URL downloads give curl a ten-second connection deadline, a two-minute
 attempt deadline and a two-minute retry-start budget. The SDK command deadline
 is longer than curl's maximum combined budget, so a slow transfer can finish

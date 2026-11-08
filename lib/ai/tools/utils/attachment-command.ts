@@ -195,6 +195,18 @@ export async function runAttachmentCommand(
   try {
     return await Promise.race([handle.wait(), aborted]);
   } catch (error) {
+    // E2B records the process end before waiting for the transport's EOF.
+    // A later stream deadline must not turn an acknowledged successful exit
+    // into a failed readiness probe or replay a completed download. Stop still
+    // wins, even when it races with the end event.
+    signal.throwIfAborted();
+    if (!cancellation && handle.exitCode === 0) {
+      return {
+        exitCode: 0,
+        stdout: handle.stdout,
+        stderr: handle.stderr,
+      };
+    }
     const stage = cancellation ? "cancel" : "wait";
     const exitObserved = handle.exitCode !== undefined;
     // An SDK stream timeout does not prove process exit. Disconnect alone
