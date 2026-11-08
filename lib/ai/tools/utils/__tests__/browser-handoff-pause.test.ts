@@ -1,3 +1,6 @@
+// The SDK template builder imports an ESM parser unused by this error test.
+jest.mock("dockerfile-ast", () => ({}), { virtual: true });
+
 import {
   extractErrorDetails,
   isRetriableProviderStreamDisconnectError,
@@ -5,6 +8,7 @@ import {
 import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import type { AnySandbox } from "@/types";
 import { getFunctionName } from "convex/server";
+import { CommandExitError } from "@e2b/code-interpreter";
 import { createBrowserHandoff } from "../../browser-handoff";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -12,6 +16,9 @@ import {
   BrowserSessions,
 } from "../browser-sessions";
 
+const mockNameGetter = jest.fn(() => {
+  throw new Error("DO_NOT_LOG name getter must not run");
+});
 const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
 jest.mock("@/lib/db/convex-client", () => ({
@@ -53,7 +60,30 @@ it.each([
   ["invalid_response", { success: true, data: { connected: true, port: 0 } }],
   ["invalid_response", "DO_NOT_LOG https://private.example/page"],
   ["command_failed", null],
+  [
+    "command_failed",
+    new CommandExitError({
+      exitCode: 2,
+      stdout: "DO_NOT_LOG private stdout",
+      stderr: "DO_NOT_LOG private stderr",
+      error: "DO_NOT_LOG private error",
+    }),
+  ],
   ["transport_error", new Error("DO_NOT_LOG transport error")],
+  [
+    "transport_error",
+    Object.defineProperty(new Error("DO_NOT_LOG getter"), "name", {
+      get: mockNameGetter,
+    }),
+  ],
+  [
+    "transport_error",
+    new Proxy(new Error("DO_NOT_LOG proxy"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("DO_NOT_LOG descriptor unavailable");
+      },
+    }),
+  ],
 ] as const)(
   "records finite admission liveness %s without changing accepted handoff behavior",
   async (expected, response) => {
@@ -78,7 +108,7 @@ it.each([
     expect(phLogger.info).toHaveBeenCalledWith(
       "browser_handoff_admission_diagnostics",
       expect.objectContaining({
-        diagnostic_version: 2,
+        diagnostic_version: 3,
         admission_env_idle_timeout: "unavailable",
         admission_probe_result: expected,
         admission_probe_attempt: 1,
@@ -111,6 +141,7 @@ it.each([
       "diagnostic_version",
       "trigger_run_id",
     ]);
+    expect(mockNameGetter).not.toHaveBeenCalled();
     expect(jest.getTimerCount()).toBe(0);
   },
 );
@@ -139,7 +170,7 @@ it.each([
     expect(phLogger.info).toHaveBeenCalledWith(
       "browser_handoff_admission_diagnostics",
       expect.objectContaining({
-        diagnostic_version: 2,
+        diagnostic_version: 3,
         admission_probe_result: "connected",
         admission_env_idle_timeout: expected,
       }),

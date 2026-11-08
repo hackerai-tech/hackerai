@@ -615,12 +615,24 @@ export class BrowserSessions {
           // Raw daemon output and parser errors are never diagnostic fields.
         }
       }
-    } catch {
+    } catch (error) {
+      let commandFailed = false;
+      try {
+        // The SDK throws on nonzero exits. Read only its finite own data tag,
+        // without invoking getters or serializing command output/errors.
+        commandFailed =
+          Object.getOwnPropertyDescriptor(error, "name")?.value ===
+          "CommandExitError";
+      } catch {
+        // Optional attribution must not change handoff control flow.
+      }
       result = signal?.aborted
         ? "stopped"
         : deadline.signal.aborted
           ? "deadline"
-          : "transport_error";
+          : commandFailed
+            ? "command_failed"
+            : "transport_error";
     } finally {
       clearTimeout(timer);
     }
@@ -715,7 +727,8 @@ export class BrowserSessions {
     if (observation) {
       try {
         phLogger.info("browser_handoff_admission_diagnostics", {
-          diagnostic_version: 2,
+          // v2 grouped SDK nonzero command exits with transport failures.
+          diagnostic_version: 3,
           ...observation,
           // true can also mean a previously completed takeover was fulfilled.
           // Correlate the later waiting/capture evidence; never infer a transition.
