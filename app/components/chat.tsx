@@ -1135,7 +1135,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             pendingGoal.requestSent = true;
           let recordedRunId: string | undefined;
           const recordAdmission = (run: AgentLongRunStarted) => {
-            if (closedAgentLongRunIdsRef.current.has(run.runId)) return;
             const pending = goalAdmissionRef.current;
             if (
               pending &&
@@ -1176,12 +1175,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               removeDraft("new");
               setIsExistingChat(true);
             }
-            setAgentLongRunId(run.runId);
-            if (run.runCorrelationToken) {
-              agentLongRunCorrelationRef.current = {
-                runId: run.runId,
-                token: run.runCorrelationToken,
-              };
+            // An idempotent retry is still durably admitted even when the
+            // original run finished. Acknowledge it without restoring its lease.
+            if (!closedAgentLongRunIdsRef.current.has(run.runId)) {
+              setAgentLongRunId(run.runId);
+              if (run.runCorrelationToken) {
+                agentLongRunCorrelationRef.current = {
+                  runId: run.runId,
+                  token: run.runCorrelationToken,
+                };
+              }
             }
 
             recordedRunId = run.runId;
