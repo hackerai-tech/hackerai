@@ -6,6 +6,7 @@ import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
+import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import { browserBridgeCommand } from "./bridge-program";
 import {
   browserDaemonCommand,
@@ -32,6 +33,34 @@ export class BrowserPreviewUnavailable extends Error {
   constructor(readonly state: "loading" | "disconnected" | "closed") {
     super(`Browser preview ${state}`);
   }
+}
+
+// Keep only the existing bounded SDK projection, never the original error or
+// private file path. Other callers retain the same loading response.
+const sessionReadFailures = new WeakMap<
+  object,
+  ReturnType<typeof checkpointCloudErrorContext>
+>();
+
+/** Read optional diagnostics without adding error properties to HTTP responses. */
+export function browserSessionReadFailureContext(error: unknown) {
+  const context =
+    typeof error === "object" && error !== null
+      ? sessionReadFailures.get(error)
+      : undefined;
+  if (!context) return undefined;
+  return {
+    active_session_read_diagnostic_version: 1,
+    active_session_read_error_kind: context.cloud_error_kind,
+    active_session_read_http_status: context.cloud_http_status,
+    ...(context.cloud_type_error_signal === undefined
+      ? {}
+      : {
+          active_session_read_type_error_signal:
+            context.cloud_type_error_signal,
+          active_session_read_transport_code: context.cloud_transport_code,
+        }),
+  };
 }
 
 const SESSION_NAME_RE = /^[^/\u0000\r\n]{1,80}$/;
@@ -82,8 +111,10 @@ export async function getActiveBrowserSessionName(
         requestTimeoutMs: 8_000,
       })
     ).trim();
-  } catch {
-    throw new BrowserPreviewUnavailable("loading");
+  } catch (error) {
+    const unavailable = new BrowserPreviewUnavailable("loading");
+    sessionReadFailures.set(unavailable, checkpointCloudErrorContext(error));
+    throw unavailable;
   }
   if (!SESSION_NAME_RE.test(name))
     throw new BrowserPreviewUnavailable("closed");

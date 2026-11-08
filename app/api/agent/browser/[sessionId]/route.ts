@@ -15,6 +15,7 @@ import {
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
   resizeBrowserViewport,
@@ -102,6 +103,9 @@ const unavailableGet = (
               ? "other_error"
               : "thrown_value",
       fresh_requested: request.nextUrl.searchParams.get("fresh") === "1",
+      ...((stage === "read_active_session" ||
+        stage === "verify_active_session") &&
+        browserSessionReadFailureContext(error)),
       ...(stage === "capture_frame" && captureContext),
       web_build_commit:
         build && /^[a-f0-9]{40}$/i.test(build)
