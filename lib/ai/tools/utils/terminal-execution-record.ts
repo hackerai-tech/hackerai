@@ -34,6 +34,19 @@ import { pruneLocalTerminalRecords } from "./local-terminal-retention";
 import { phLogger } from "@/lib/posthog/server";
 import type { RecordCheckpointIssue } from "./pty-session-manager";
 
+/** Read already-held metadata without allowing optional context to lose a receipt. */
+function nativeFilesystemReportedPlatform(sandbox: AnySandbox): unknown {
+  try {
+    if (!isCentrifugoSandbox(sandbox)) return undefined;
+    const connection = sandbox.getConnectionInfo();
+    const osInfo = Object.getOwnPropertyDescriptor(connection, "osInfo")?.value;
+    if (!osInfo || typeof osInfo !== "object") return undefined;
+    return Object.getOwnPropertyDescriptor(osInfo, "platform")?.value;
+  } catch {
+    return undefined;
+  }
+}
+
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
 export const TERMINAL_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -290,7 +303,10 @@ export function createTerminalRecordStore(
                     failureOrigin === "local_file_request" &&
                     fileFailure === "filesystem" &&
                     failureCategory === "unknown"
-                      ? checkpointNativeFilesystemErrorContext(error)
+                      ? checkpointNativeFilesystemErrorContext(
+                          error,
+                          nativeFilesystemReportedPlatform(sandbox),
+                        )
                       : {}),
                     ...cloudContext,
                     ...(cloudContext?.cloud_error_kind === "no_space"
