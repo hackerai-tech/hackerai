@@ -19,6 +19,7 @@ import {
   throwIfAttachmentAborted,
   AttachmentCommandCleanupError,
   getAttachmentCommandFailureContext,
+  copyAttachmentCommandFailureContext,
   type AttachmentCommandFailureContext,
 } from "@/lib/ai/tools/utils/attachment-command";
 
@@ -224,7 +225,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
       : {};
   const message = error instanceof Error ? error.message : String(error);
 
-  return {
+  return copyAttachmentCommandFailureContext(error, {
     stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
     stderr:
       typeof commandError.stderr === "string" && commandError.stderr
@@ -232,7 +233,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
         : message,
     exitCode,
     error: message,
-  };
+  });
 };
 
 const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
@@ -969,11 +970,14 @@ const downloadFileToSandbox = async (
     safeUrl = url.split("?")[0];
   }
 
-  throw new Error(
-    `Failed to download file: ${result.stderr}\n` +
-      `  url: ${safeUrl}\n` +
-      `  path: ${localPath}\n` +
-      `  exitCode: ${result.exitCode}`,
+  throw copyAttachmentCommandFailureContext(
+    result,
+    new Error(
+      `Failed to download file: ${result.stderr}\n` +
+        `  url: ${safeUrl}\n` +
+        `  path: ${localPath}\n` +
+        `  exitCode: ${result.exitCode}`,
+    ),
   );
 };
 
@@ -1147,11 +1151,14 @@ const stageSandboxFile = async (
         diagnostics.write_probe_result === "disk_full" ||
         diagnostics.write_probe_result === "quota_exceeded");
     const transferError = diskFull
-      ? Object.assign(
-          new Error("No space left on device while staging attachment", {
-            cause: error,
-          }),
-          { exitCode: extractCommandExitCode(error) },
+      ? copyAttachmentCommandFailureContext(
+          error,
+          Object.assign(
+            new Error("No space left on device while staging attachment", {
+              cause: error,
+            }),
+            { exitCode: extractCommandExitCode(error) },
+          ),
         )
       : error;
     let fallbackPath: string | null;
@@ -1210,6 +1217,7 @@ const stageSandboxFile = async (
         ),
         { exitCode: extractCommandExitCode(fallbackError) },
       );
+      copyAttachmentCommandFailureContext(fallbackError, combinedError);
       if (file.kind === "localPath") {
         finalLocalCopyReasons.set(
           combinedError,

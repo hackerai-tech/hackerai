@@ -29,6 +29,109 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
 
+it.each(["exit", "disk_full", "fallback"] as const)(
+  "retains command context through %s conversion and reports the final fallback rejection",
+  async (mode) => {
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const exitCode = mode === "exit" ? 22 : 23;
+    const initial = Object.freeze(
+      Object.assign(new Error(`curl: (${exitCode}) transfer failed`), {
+        name: "CommandExitError",
+        exitCode,
+        stderr: `curl: (${exitCode}) transfer failed`,
+      }),
+    );
+    const final = Object.freeze(
+      Object.assign(new Error("SDK transfer failed"), { name: "TimeoutError" }),
+    );
+    let transfers = 0;
+    const sandbox = {
+      sandboxId: "test-sandbox",
+      commands: {
+        run: jest.fn(async (command: string) => {
+          if (command.startsWith("curl")) {
+            transfers++;
+            throw mode === "fallback" && transfers > 1 ? final : initial;
+          }
+          if (command.startsWith("timeout --kill-after"))
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                probe_status: "ok",
+                command_uid: 1000,
+                command_gid: 1000,
+                available_bytes: mode === "disk_full" ? 0 : 10000,
+                write_probe_result:
+                  mode === "disk_full" ? "disk_full" : "writable",
+              }),
+            };
+          return mode === "disk_full"
+            ? { exitCode: 1, stdout: "", stderr: "" }
+            : {
+                exitCode: 0,
+                stdout: "/tmp/hackerai-upload/fallback/private-file",
+                stderr: "",
+              };
+        }),
+      },
+    };
+    const ensureSandbox = jest.fn(async () => sandbox);
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://private.example/private?token=DO_NOT_LOG",
+            localPath:
+              mode === "exit"
+                ? "/tmp/private-file"
+                : "/home/user/upload/private-file",
+          },
+        ],
+        ensureSandbox,
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run_test",
+            userId: "test-user",
+            chatId: "test-chat",
+          },
+        },
+      );
+      const expected = {
+        attachment_command_diagnostic_version: 1,
+        attachment_command_stage: "foreground",
+        attachment_command_handle_acquired: false,
+        attachment_command_error_kind:
+          mode === "fallback" ? "timeout" : "command_exit",
+      };
+      expect(result.failedCount).toBe(1);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
+      const receipts = eventSpy.mock.calls.filter(([event]) =>
+        [
+          "sandbox_attachment_staging_failed",
+          "sandbox_attachment_failure_diagnostics",
+        ].includes(event),
+      );
+      expect(receipts).toHaveLength(2);
+      for (const [, fields] of receipts) expect(fields).toMatchObject(expected);
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(transfers).toBe(mode === "fallback" ? 2 : 1);
+      expect(JSON.stringify(receipts)).not.toMatch(
+        /DO_NOT_LOG|private\.example|private-file/,
+      );
+    } finally {
+      eventSpy.mockRestore();
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  },
+);
+
 it.each(["start", "wait"] as const)(
   "delivers finite cloud command %s evidence through existing upload events and terminal metadata without expanding retries",
   async (stage) => {

@@ -57,6 +57,16 @@ export function getAttachmentCommandFailureContext(
   return context && { ...context };
 }
 
+/** Carry recorded fields to an adapter-created result or error, returning it. */
+export function copyAttachmentCommandFailureContext<T extends object>(
+  from: unknown,
+  to: T,
+): T {
+  const context = getAttachmentCommandFailureContext(from);
+  if (context) commandFailures.set(to, context);
+  return to;
+}
+
 export class AttachmentCommandCleanupError extends Error {
   constructor(cause: unknown) {
     super("Attachment command cancellation could not be confirmed", { cause });
