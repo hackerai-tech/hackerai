@@ -18,6 +18,7 @@ it("saves the edited native date, not the original displayed value", async () =>
   const close = jest.fn();
   render(
     <ScheduleFormDialog
+      computers={[]}
       initial={initial}
       editing
       onSave={save}
@@ -42,6 +43,7 @@ it("keeps instructions and shows a retryable error when saving fails", async () 
   const close = jest.fn();
   render(
     <ScheduleFormDialog
+      computers={[]}
       initial={initial}
       editing
       onSave={save}
@@ -59,6 +61,7 @@ it("asks before discarding edited instructions", () => {
   const close = jest.fn();
   render(
     <ScheduleFormDialog
+      computers={[]}
       initial={initial}
       editing
       onSave={jest.fn()}
@@ -82,6 +85,7 @@ it("shows the saved interval time while renaming and a new time only after timin
     const at = Date.now() + 60000;
     render(
       <ScheduleFormDialog
+        computers={[]}
         initial={{ ...initial, timing: { minutes: 15, type: "interval" } }}
         editing
         saved={{ enabled: true, consumed: false, nextRunAt: at }}
@@ -109,6 +113,7 @@ it("shows the saved interval time while renaming and a new time only after timin
 it("describes a paused schedule without promising another run", () => {
   render(
     <ScheduleFormDialog
+      computers={[]}
       initial={{ ...initial, timing: { type: "interval", minutes: 15 } }}
       editing
       saved={{ enabled: false, consumed: false, nextRunAt: null }}
@@ -125,6 +130,7 @@ it("keeps an edited interval when its selected recurrence button is pressed agai
   const save = jest.fn().mockResolvedValue(undefined);
   render(
     <ScheduleFormDialog
+      computers={[]}
       initial={{ ...initial, timing: { type: "interval", minutes: 15 } }}
       editing
       onSave={save}
@@ -156,6 +162,7 @@ it.each([false, true])(
     };
     render(
       <ScheduleFormDialog
+        computers={[]}
         initial={past}
         editing
         saved={{ enabled: false, consumed, nextRunAt: null }}
@@ -172,3 +179,72 @@ it.each([false, true])(
     );
   },
 );
+
+it("allows editing an unavailable saved computer without changing its execution target", async () => {
+  const execution = {
+    type: "local" as const,
+    preference: "environment:12345678-1234-4123-8123-123456789abc",
+    name: "Lab computer",
+    workingDirectory: "/tmp/original",
+  };
+  const save = jest.fn().mockResolvedValue(undefined);
+  render(
+    <ScheduleFormDialog
+      computers={[]}
+      initial={{ ...initial, execution }}
+      editing
+      onSave={save}
+      onClose={jest.fn()}
+    />,
+  );
+  expect(screen.getByLabelText("Folder")).toHaveValue("/tmp/original");
+  expect(screen.getByText(/You can still save changes/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Name"), {
+    target: { value: "Renamed" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Renamed", execution }),
+    ),
+  );
+});
+it("keeps folders scoped to their computer when switching targets", () => {
+  const first = {
+    preference: "environment:12345678-1234-4123-8123-123456789abc",
+    name: "First computer",
+  };
+  const second = {
+    preference: "environment:12345678-1234-4123-8123-123456789abd",
+    name: "Second computer",
+  };
+  render(
+    <ScheduleFormDialog
+      computers={[first, second]}
+      initial={{
+        ...initial,
+        execution: {
+          type: "local",
+          ...first,
+          workingDirectory: "/first-project",
+        },
+      }}
+      editing
+      onSave={jest.fn()}
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Run on" }), {
+    key: "ArrowDown",
+  });
+  fireEvent.click(screen.getByRole("option", { name: "Second computer" }));
+  expect(screen.getByLabelText("Folder")).toHaveValue("");
+  fireEvent.change(screen.getByLabelText("Folder"), {
+    target: { value: "/second-project" },
+  });
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Run on" }), {
+    key: "ArrowDown",
+  });
+  fireEvent.click(screen.getByRole("option", { name: "First computer" }));
+  expect(screen.getByLabelText("Folder")).toHaveValue("/first-project");
+});

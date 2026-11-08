@@ -41,3 +41,9 @@ it.each([
 ])("provides recovery context for %s", (reason) => {
   expect(getResumeSection(reason)).toContain("<resume_context>");
 });
+
+it("checks uncertain local command outcomes before resuming after disconnect", () => {
+  const section = getResumeSection("local-connection-lost");
+  expect(section).toContain("Do not repeat completed work");
+  expect(section).toContain("inspect the current state before repeating");
+});

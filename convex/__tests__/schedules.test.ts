@@ -32,6 +32,7 @@ type Row = { _id: string; _creationTime: number; [key: string]: any };
 function store() {
   let serial = 0;
   const tables: Record<string, Row[]> = {
+    local_sandbox_connections: [],
     agent_schedules: [],
     schedule_runs: [],
     chats: [],
@@ -692,3 +693,65 @@ it.each([false, true])(
     }
   },
 );
+
+const localExecution = {
+  type: "local",
+  preference: "environment:12345678-1234-4123-8123-123456789abc",
+  name: "Forged label",
+  workingDirectory: "/tmp/lab",
+};
+it("binds local schedules only to the owner's computer, and retains offline edits", async () => {
+  const { ctx, tables } = store();
+  await ctx.db.insert("local_sandbox_connections", {
+    user_id: "other",
+    environment_id: localExecution.preference.split(":")[1],
+    client_version: "1.0",
+    mode: "dangerous",
+    connection_name: "Other computer",
+  });
+  await expect(
+    call(save, ctx, {
+      ...auth,
+      definition: { ...definition, execution: localExecution },
+    }),
+  ).rejects.toThrow("computer is unavailable");
+  await ctx.db.insert("local_sandbox_connections", {
+    user_id: "owner",
+    environment_id: localExecution.preference.split(":")[1],
+    client_version: "1.0",
+    mode: "dangerous",
+    connection_name: "My lab",
+  });
+  const id = await call(save, ctx, {
+    ...auth,
+    definition: { ...definition, execution: localExecution },
+  });
+  expect(tables.agent_schedules[0].definition.execution.name).toBe("My lab");
+  tables.local_sandbox_connections = [];
+  await call(save, ctx, {
+    ...auth,
+    id,
+    definition: {
+      ...definition,
+      name: "Renamed offline",
+      execution: localExecution,
+    },
+  });
+  expect(tables.agent_schedules[0].definition.execution.name).toBe("My lab");
+  await expect(
+    call(save, ctx, {
+      ...auth,
+      id,
+      definition: {
+        ...definition,
+        execution: {
+          ...localExecution,
+          preference: localExecution.preference.replace(
+            "environment:",
+            "desktop-environment:",
+          ),
+        },
+      },
+    }),
+  ).rejects.toThrow("computer is unavailable");
+});

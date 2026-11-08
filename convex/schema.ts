@@ -21,7 +21,11 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
-import { scheduleDefinition, scheduleRunStatus } from "./scheduleValidators";
+import {
+  scheduleDefinition,
+  scheduleRunStatus,
+  localScheduleExecution,
+} from "./scheduleValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -390,6 +394,7 @@ export default defineSchema({
     // Persisted user preference (`e2b` means managed cloud), not the runtime
     // telemetry `sandbox_type`. Cloud provider selection happens per run.
     sandbox_type: v.optional(v.string()),
+    scheduled_local_execution: v.optional(localScheduleExecution),
     selected_model: v.optional(v.string()),
     project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
@@ -1416,6 +1421,7 @@ export default defineSchema({
   })
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
+    .index("by_user_and_environment", ["user_id", "environment_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),

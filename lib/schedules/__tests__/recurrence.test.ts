@@ -116,3 +116,55 @@ describe("schedule recurrence", () => {
     );
   });
 });
+
+const localExecution = {
+  type: "local",
+  preference: "environment:12345678-1234-4123-8123-123456789abc",
+  name: "Lab",
+  workingDirectory: "/tmp/lab",
+};
+it.each([
+  "desktop",
+  "e2b",
+  "12345678-1234-4123-8123-123456789abc",
+  "environment:bad",
+])("rejects unstable or invalid computer identity %s", (preference) => {
+  expect(() =>
+    validateSchedule({
+      name: "Local",
+      prompt: "hello",
+      model: "default",
+      timing: { type: "interval", minutes: 15 },
+      execution: { ...localExecution, preference },
+    }),
+  ).toThrow("Choose a connected computer");
+});
+it.each(["relative/path", "~/lab", "/tmp/line\nbreak", ""])(
+  "rejects ambiguous local folder %s",
+  (workingDirectory) => {
+    expect(() =>
+      validateSchedule({
+        name: "Local",
+        prompt: "hello",
+        model: "default",
+        timing: { type: "interval", minutes: 15 },
+        execution: { ...localExecution, workingDirectory },
+      }),
+    ).toThrow("absolute folder");
+  },
+);
+it.each(["/tmp/lab", "C:\\Users\\QA\\lab", "\\\\server\\share\\lab"])(
+  "preserves an absolute local execution folder %s",
+  (workingDirectory) => {
+    const execution = { ...localExecution, workingDirectory };
+    expect(
+      validateSchedule({
+        name: "Local",
+        prompt: "hello",
+        model: "default",
+        timing: { type: "interval", minutes: 15 },
+        execution,
+      }).execution,
+    ).toEqual(execution);
+  },
+);

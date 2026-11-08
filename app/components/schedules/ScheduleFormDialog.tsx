@@ -1,6 +1,14 @@
 "use client";
-import { useId, useState } from "react";
-import { CalendarClock, Check, Cloud, Loader2 } from "lucide-react";
+import { useId, useRef, useState } from "react";
+import {
+  CalendarClock,
+  Check,
+  Cloud,
+  Laptop,
+  Loader2,
+  Monitor,
+  WifiOff,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,10 +34,14 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import {
   nextScheduledTime,
   describeTiming,
@@ -55,6 +67,8 @@ const KINDS: { value: ScheduleTiming["type"]; label: string }[] = [
   { value: "interval", label: "Interval" },
   { value: "once", label: "One time" },
 ];
+const CLOUD = "cloud";
+type ScheduleComputer = { preference: string; name: string };
 function localDateTime(at: number) {
   const date = new Date(at);
   return new Date(at - date.getTimezoneOffset() * 60000)
@@ -78,17 +92,60 @@ export function ScheduleFormDialog({
   initial,
   editing,
   saved,
+  computers,
   onClose,
   onSave,
 }: {
   initial: ScheduleDefinition;
   editing: boolean;
   saved?: Pick<AgentSchedule, "enabled" | "consumed" | "nextRunAt">;
+  computers: ScheduleComputer[];
   onClose: () => void;
   onSave: (value: ScheduleDefinition) => Promise<void>;
 }) {
   const id = useId();
   const [value, setValue] = useState(initial);
+  const folders = useRef<Record<string, string>>(
+    initial.execution
+      ? { [initial.execution.preference]: initial.execution.workingDirectory }
+      : {},
+  );
+  const execution = value.execution;
+  const listed = (preference: string) =>
+    computers.some((computer) => computer.preference === preference);
+  // A saved or selected computer stays choosable after it leaves the list.
+  const unlisted = [initial.execution, execution].flatMap((target) =>
+    target && !listed(target.preference) ? [target] : [],
+  );
+  const targets = [
+    ...computers.map((computer) => ({ ...computer, unavailable: false })),
+    ...unlisted
+      .filter(
+        (target, index) =>
+          unlisted.findIndex((t) => t.preference === target.preference) ===
+          index,
+      )
+      .map(({ preference, name }) => ({ preference, name, unavailable: true })),
+  ];
+  const unavailable = Boolean(execution && !listed(execution.preference));
+  const ExecutionIcon = !execution
+    ? Cloud
+    : isDesktopPreference(execution.preference)
+      ? Monitor
+      : Laptop;
+  const setRunOn = (preference: string) => {
+    if (preference === (execution?.preference ?? CLOUD)) return;
+    const target = targets.find((t) => t.preference === preference);
+    setValue({
+      ...value,
+      execution: target && {
+        type: "local",
+        preference: target.preference,
+        name: target.name,
+        workingDirectory: folders.current[target.preference] ?? "",
+      },
+    });
+  };
   const [onceAt, setOnceAt] = useState(
     localDateTime(
       initial.timing.type === "once" ? initial.timing.at : Date.now() + 3600000,
@@ -193,7 +250,7 @@ export function ScheduleFormDialog({
             {editing ? "Edit schedule" : "New schedule"}
           </DialogTitle>
           <DialogDescription>
-            Each run starts a new cloud task with your instructions.
+            Each run starts a new task with your instructions.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
@@ -227,11 +284,131 @@ export function ScheduleFormDialog({
                     }
                     maxLength={16000}
                     rows={4}
-                    className="min-h-24 resize-y md:min-h-56"
+                    className="min-h-24 resize-y md:min-h-44"
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor={`${id}-run-on`}>Run on</Label>
+                  <Select
+                    value={execution?.preference ?? CLOUD}
+                    onValueChange={setRunOn}
+                  >
+                    <SelectTrigger
+                      id={`${id}-run-on`}
+                      aria-describedby={`${id}-run-on-help`}
+                      className="h-11 w-full gap-2 sm:h-9 [&>span]:min-w-0 [&>span]:text-left"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={CLOUD}>
+                        <Cloud
+                          className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        Cloud
+                      </SelectItem>
+                      <SelectSeparator />
+                      <SelectGroup>
+                        <SelectLabel className="text-xs font-medium text-muted-foreground">
+                          Your computers
+                        </SelectLabel>
+                        {targets.length ? (
+                          targets.map((target) => {
+                            const Icon = isDesktopPreference(target.preference)
+                              ? Monitor
+                              : Laptop;
+                            return (
+                              <SelectItem
+                                key={target.preference}
+                                value={target.preference}
+                              >
+                                <Icon
+                                  className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
+                                  aria-hidden="true"
+                                />
+                                {target.name}
+                                {target.unavailable && (
+                                  <span className="text-muted-foreground">
+                                    {" "}
+                                    · Unavailable
+                                  </span>
+                                )}
+                              </SelectItem>
+                            );
+                          })
+                        ) : (
+                          <SelectItem value="none" disabled>
+                            No computers connected
+                          </SelectItem>
+                        )}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <p
+                    id={`${id}-run-on-help`}
+                    className={cn(
+                      "flex items-start gap-1.5 text-xs leading-relaxed",
+                      unavailable
+                        ? "text-amber-700 dark:text-amber-500"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {unavailable && (
+                      <WifiOff
+                        className="mt-0.5 size-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="min-w-0 break-words">
+                      {!execution
+                        ? `Runs in your cloud workspace, even while you’re away.${
+                            targets.length
+                              ? ""
+                              : " Connect a computer to run schedules on it."
+                          }`
+                        : unavailable
+                          ? `${execution.name} is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud.`
+                          : `Runs only while ${execution.name} is awake and connected. Missed runs are skipped — not made up later or moved to the cloud.`}
+                    </span>
+                  </p>
+                </div>
+                {execution && (
+                  <div className="space-y-2">
+                    <Label htmlFor={`${id}-folder`}>Folder</Label>
+                    <Input
+                      id={`${id}-folder`}
+                      value={execution.workingDirectory}
+                      onChange={(e) => {
+                        folders.current[execution.preference] = e.target.value;
+                        setValue({
+                          ...value,
+                          execution: {
+                            ...execution,
+                            workingDirectory: e.target.value,
+                          },
+                        });
+                      }}
+                      maxLength={4096}
+                      className="font-mono"
+                      placeholder="/path/to/project"
+                      aria-describedby={`${id}-folder-help`}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                    />
+                    <p
+                      id={`${id}-folder-help`}
+                      className="break-words text-xs text-muted-foreground"
+                    >
+                      Absolute path where each run starts on {execution.name}.
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="space-y-4">
                 <div className="space-y-4 border-t pt-5 md:border-t-0 md:pt-0">
@@ -487,18 +664,31 @@ export function ScheduleFormDialog({
           <div className="shrink-0 space-y-3 border-t bg-muted/20 px-5 py-3 sm:px-6">
             <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
               <div className="flex items-start gap-2">
-                <Cloud
+                <ExecutionIcon
                   className="mt-0.5 size-3.5 shrink-0"
                   aria-hidden="true"
                 />
-                <p>
-                  <span className="font-medium text-foreground">
-                    Runs in your cloud workspace.
-                  </span>{" "}
-                  Saving authorizes HackerAI to run these instructions with full
-                  tool access, even while you’re away. Runs use your account’s
-                  normal usage and spending limits.
-                </p>
+                {execution ? (
+                  <p className="min-w-0 break-words">
+                    <span className="font-medium text-foreground">
+                      Runs on {execution.name}.
+                    </span>{" "}
+                    Saving authorizes HackerAI to run these instructions
+                    unattended with full tool access in the selected
+                    environment. The folder only sets where each run starts; it
+                    doesn’t limit access. Runs use your account’s normal usage
+                    and spending limits.
+                  </p>
+                ) : (
+                  <p>
+                    <span className="font-medium text-foreground">
+                      Runs in your cloud workspace.
+                    </span>{" "}
+                    Saving authorizes HackerAI to run these instructions with
+                    full tool access, even while you’re away. Runs use your
+                    account’s normal usage and spending limits.
+                  </p>
+                )}
               </div>
             </div>
             {error && (

@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import {
+  CalendarClock,
   ChevronRight,
-  Cloud,
   GraduationCap,
   Check,
   X,
@@ -93,6 +93,7 @@ export function SchedulesPage() {
   const canCreate = Boolean(
     data?.enabled && data.schedules.length < MAX_SCHEDULES,
   );
+  const computers = data?.computers ?? [];
   async function action(
     schedule: AgentSchedule,
     kind: "run" | "pause" | "resume",
@@ -102,9 +103,12 @@ export function SchedulesPage() {
     setMessage("");
     try {
       await perform("PATCH", { id: schedule.id, action: kind });
+      const execution = schedule.definition.execution;
       setMessage(
         kind === "run"
-          ? "Run queued. Your new task will appear here shortly."
+          ? execution
+            ? `Run requested on ${execution.name}. If it isn’t connected, the run is recorded as skipped.`
+            : "Run queued. Your new task will appear here shortly."
           : kind === "pause"
             ? "Schedule paused. Any run already started will continue."
             : "Schedule resumed.",
@@ -203,8 +207,8 @@ export function SchedulesPage() {
                 Schedules aren’t available for this account yet
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Scheduled cloud runs require a paid plan and early access. You
-                can still pause or delete existing schedules.
+                Schedules require a paid plan and early access. You can still
+                pause or delete existing schedules.
               </p>
             </div>
           )}
@@ -341,6 +345,14 @@ export function SchedulesPage() {
                     key={schedule.id}
                     schedule={schedule}
                     enabled={data.enabled}
+                    computerUnavailable={Boolean(
+                      schedule.definition.execution &&
+                      !computers.some(
+                        (computer) =>
+                          computer.preference ===
+                          schedule.definition.execution?.preference,
+                      ),
+                    )}
                     pending={pending === schedule.id}
                     onAction={(kind) => action(schedule, kind)}
                     onEdit={() =>
@@ -360,11 +372,14 @@ export function SchedulesPage() {
           )}
           {data && (
             <p className="flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
-              <Cloud className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <CalendarClock
+                className="mt-0.5 size-3.5 shrink-0"
+                aria-hidden="true"
+              />
               <span>
-                HackerAI runs schedules in the cloud, even when you’re away.
-                Each run starts a new task and uses your account’s normal
-                limits.
+                Schedules run in the cloud or on a computer you choose. Each run
+                starts a new task and uses your account’s normal limits. Runs on
+                a computer are skipped while it’s unavailable.
               </span>
             </p>
           )}
@@ -378,6 +393,7 @@ export function SchedulesPage() {
           saved={
             form.id ? data?.schedules.find((s) => s.id === form.id) : undefined
           }
+          computers={computers}
           onClose={() => setForm(null)}
           onSave={async (definition) => {
             await perform(

@@ -5,7 +5,51 @@ export type ScheduleTiming =
   | { type: "interval"; minutes: number }
   | { type: "weekly"; time: string; weekdays: number[]; timezone: string };
 
+export type LocalScheduleExecution = {
+  type: "local";
+  preference: string;
+  name: string;
+  workingDirectory: string;
+};
+
+export function validateLocalScheduleExecution(
+  input: unknown,
+): LocalScheduleExecution {
+  const value = input as Partial<LocalScheduleExecution> | null;
+  if (
+    !value ||
+    value.type !== "local" ||
+    typeof value.preference !== "string" ||
+    !/^(desktop-environment|environment):[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.preference,
+    )
+  )
+    throw new Error(
+      "Choose a connected computer. Update its client if it is missing.",
+    );
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const workingDirectory =
+    typeof value.workingDirectory === "string"
+      ? value.workingDirectory.trim()
+      : "";
+  if (!name || name.length > 200) throw new Error("Choose a computer.");
+  if (
+    !workingDirectory ||
+    workingDirectory.length > 4096 ||
+    /[\x00-\x1f]/.test(workingDirectory) ||
+    !/^(\/|[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(workingDirectory)
+  )
+    throw new Error("Enter an absolute folder path on this computer.");
+  return {
+    type: "local",
+    preference: value.preference,
+    name,
+    workingDirectory,
+  };
+}
+
 export type ScheduleDefinition = {
+  execution?: LocalScheduleExecution;
   name: string;
   prompt: string;
   timing: ScheduleTiming;
@@ -91,6 +135,9 @@ export function validateSchedule(input: unknown): ScheduleDefinition {
   return {
     name,
     prompt,
+    ...(value.execution !== undefined
+      ? { execution: validateLocalScheduleExecution(value.execution) }
+      : {}),
     timing: cleanTiming,
     model: value.model as ScheduleDefinition["model"],
   };

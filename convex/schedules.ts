@@ -52,6 +52,8 @@ async function runState(
   if (!hasTask) return { status: "deleted", hasTask: false };
   if (chat?.active_trigger_run_id === run.trigger_run_id)
     return { status: "running", hasTask };
+  if (chat?.finish_reason === "local-connection-lost")
+    return { status: "interrupted", hasTask };
   if (chat?.canceled_at) return { status: "canceled", hasTask };
   return {
     status: run.status === "started" ? "finishing" : run.status,
@@ -139,6 +141,36 @@ export const save = mutation({
   handler: async (ctx, args) => {
     await authorize(ctx, args);
     const definition = validateSchedule(args.definition);
+    if (definition.execution) {
+      const execution = definition.execution;
+      const connections = await ctx.db
+        .query("local_sandbox_connections")
+        .withIndex("by_user_and_environment", (q) =>
+          q
+            .eq("user_id", args.userId)
+            .eq("environment_id", execution.preference.split(":")[1]),
+        )
+        .order("desc")
+        .take(20);
+      const connection = connections.find(
+        (c) =>
+          c.mode !== "cloud" &&
+          (c.client_version === "desktop") ===
+            execution.preference.startsWith("desktop-environment:"),
+      );
+      const saved = args.id ? await owned(ctx, args.id, args.userId) : null;
+      if (
+        !connection &&
+        saved?.definition.execution?.preference !== execution.preference
+      )
+        throw new ConvexError(
+          "This computer is unavailable. Connect it before saving.",
+        );
+      definition.execution = {
+        ...execution,
+        name: connection?.connection_name ?? saved!.definition.execution!.name,
+      };
+    }
     const now = Date.now();
     const next = nextScheduledTime(definition.timing, now);
     if (args.id) {

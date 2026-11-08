@@ -1,7 +1,8 @@
 # Scheduled Agent tasks
 
-Schedules run saved instructions as a **new cloud Agent task**. They do not inherit
-another task's messages, attachments, project folder, or local/desktop connection.
+Schedules run saved instructions as a **new Agent task**, in Cloud or on a selected
+computer. Local schedules bind a persistent environment identity and an absolute
+working folder. They do not inherit another task's messages or attachments.
 Saving a schedule authorizes full tool access; the form explains this and normal
 account usage/spending limits before saving.
 
@@ -13,7 +14,8 @@ its cron window must remain `0m` to avoid the provider's default scheduling wind
 `scheduled-agent-run` claims the occurrence transactionally, checks current
 billing-backed entitlement and the `scheduled-agent-tasks` flag, and starts the
 normal Agent handler with an internally supplied identity. HTTP request bodies
-cannot select that identity or override the fixed cloud/permission settings.
+cannot select that identity or override the saved execution target or full-access
+permission setting.
 
 Run now atomically reserves a queued receipt before the HTTP response acknowledges
 it. The clock drains this durable outbox, so a provider outage cannot silently
@@ -50,6 +52,23 @@ Each account may retain up to 20 schedules. Each schedule retains its latest 200
 run receipts and shows its latest five runs; normal task retention is independent.
 Account deletion fences execution immediately and deletes schedule instructions
 and receipts through the existing bounded cleanup.
+
+## Local execution
+
+Only authenticated clients with a persistent environment identity can be selected;
+legacy session IDs and the generic Desktop alias are not durable schedule targets.
+Saving verifies ownership. Each task retains its own computer/folder snapshot, so
+editing or deleting a schedule does not change the context of a manual resume.
+The folder sets the starting directory; it does not restrict full tool access.
+
+Local starts require live relay presence. Offline or unverifiable starts are
+recorded as missed without a child Agent. Clock occurrences delayed more than two
+minutes expire rather than catch up. The worker checks again before model work,
+pins that run to one relay session, and stops on loss of that session. It never
+switches to Cloud or a replacement session. Reconnect the selected computer,
+review saved progress (a command may already have completed), then explicitly
+resume the task. Local scheduled runs do not delegate independent subagents.
+The clock and model still run server-side; the selected environment executes tools.
 
 ## Environment and rollout
 

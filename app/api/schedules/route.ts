@@ -1,3 +1,4 @@
+import { environmentPreference } from "@/lib/sandbox/environment";
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexError } from "convex/values";
 import { randomUUID } from "node:crypto";
@@ -74,8 +75,22 @@ export async function GET(req: NextRequest) {
       api.schedules.list,
       ctx.args,
     );
+    const connections = await getConvexClient().query(
+      api.localSandbox.listConnectionsForBackend,
+      ctx.args,
+    );
+    const computers = [
+      ...new Map(
+        connections
+          .filter((c) => c.environmentId && c.capabilities.commands)
+          .map((c) => [
+            environmentPreference(c),
+            { preference: environmentPreference(c), name: c.name },
+          ]),
+      ).values(),
+    ];
     return NextResponse.json(
-      { enabled: ctx.enabled, schedules },
+      { enabled: ctx.enabled, schedules, computers },
       { headers: { "Cache-Control": "private, no-store" } },
     );
   } catch (error) {

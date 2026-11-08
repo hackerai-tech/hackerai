@@ -1,3 +1,4 @@
+import type { LocalScheduleExecution } from "@/lib/schedules/recurrence";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
@@ -633,10 +634,13 @@ export const finalizeStartedAgentRun = async ({
 export const createAgentTriggerPost = ({
   endpoint,
   resolveIdentity = getUserIDAndPro,
+  scheduledLocalExecution,
 }: {
   endpoint: AgentApiEndpoint;
   /** Trusted internal callers resolve current billing-backed identity, never request-body identity. */
   resolveIdentity?: typeof getUserIDAndPro;
+  /** Only the scheduler supplies this snapshot; never accepted from an HTTP body. */
+  scheduledLocalExecution?: LocalScheduleExecution;
 }) =>
   withServiceQueryRecovery(async (req: NextRequest) => {
     const routeStartedAt = Date.now();
@@ -834,6 +838,15 @@ export const createAgentTriggerPost = ({
         );
       if (existingChat && existingChat.user_id !== userId)
         throw new ChatSDKError("forbidden:chat");
+      if (
+        isAutomaticContinuation &&
+        existingChat?.scheduled_local_execution &&
+        existingChat.finish_reason === "local-connection-lost"
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Reconnect the scheduled computer and resume this task manually.",
+        );
       stage = "reconcile_goal";
       const existingGoal = existingChat
         ? await reconcileGoal(chatId, userId)
@@ -1027,6 +1040,7 @@ export const createAgentTriggerPost = ({
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
         sandboxType: sandboxPreference ?? "e2b",
+        scheduledLocalExecution,
         onPersistenceStep: (step) => {
           initialPersistenceStep = step;
         },

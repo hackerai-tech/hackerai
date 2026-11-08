@@ -1,3 +1,4 @@
+import { findScheduledConnection } from "@/lib/schedules/local-execution";
 import { randomUUID } from "node:crypto";
 import { schedules, schemaTask, tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
@@ -153,6 +154,40 @@ export const scheduledAgentRun = schemaTask({
       await finish("skipped", "Schedule changed before the run started.");
       return { status: "stale" };
     }
+    const execution = schedule.definition.execution;
+    if (execution) {
+      if (
+        !payload.manual &&
+        payload.at !== undefined &&
+        Date.now() - payload.at > 120_000
+      ) {
+        await finish(
+          "skipped",
+          "Missed: scheduled start expired. This run will not be replayed.",
+        );
+        return { status: "skipped" };
+      }
+      try {
+        if (
+          !(await findScheduledConnection(
+            schedule.userId,
+            execution.preference,
+          ))
+        ) {
+          await finish(
+            "skipped",
+            "Missed: computer offline. This run will not be replayed.",
+          );
+          return { status: "skipped" };
+        }
+      } catch {
+        await finish(
+          "skipped",
+          "Missed: could not verify the computer connection. Try Run now when connected.",
+        );
+        return { status: "skipped" };
+      }
+    }
     const request = new NextRequest(
       "https://internal.hackerai/scheduled-agent",
       {
@@ -168,7 +203,7 @@ export const scheduledAgentRun = schemaTask({
               parts: [{ type: "text", text: schedule.definition.prompt }],
             },
           ],
-          sandboxPreference: "e2b",
+          sandboxPreference: execution?.preference ?? "e2b",
           agentPermissionMode: "full_access",
           ...(schedule.definition.model !== "default"
             ? { selectedModel: `hackerai-${schedule.definition.model}` }
@@ -188,6 +223,7 @@ export const scheduledAgentRun = schemaTask({
     }
     const response = await createAgentTriggerPost({
       endpoint: "/api/agent",
+      ...(execution ? { scheduledLocalExecution: execution } : {}),
       resolveIdentity: async () => ({
         userId: schedule.userId,
         emailVerified: true,

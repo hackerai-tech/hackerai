@@ -46,6 +46,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 }));
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    localSandbox: { listConnectionsForBackend: "computers" },
     schedules: {
       list: "list",
       hasAny: "hasAny",
@@ -138,7 +139,11 @@ describe("schedule HTTP boundary", () => {
     try {
       const response = await GET(request("GET"));
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ enabled: true, schedules: [] });
+      expect(await response.json()).toEqual({
+        enabled: true,
+        schedules: [],
+        computers: [],
+      });
     } finally {
       log.mockRestore();
     }

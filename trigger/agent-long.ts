@@ -1,3 +1,7 @@
+import {
+  findScheduledConnection,
+  watchScheduledConnection,
+} from "@/lib/schedules/local-execution";
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
@@ -1990,6 +1994,9 @@ export const agentLongTask = task({
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
     let terminalAgentState: AgentStreamState | undefined;
+    let stopScheduledConnectionWatch: (() => void) | undefined;
+    let scheduledConnectionId: string | undefined;
+    let stopScheduledSandbox: (() => void) | undefined;
     const stopSignal = createAgentStopSignal({
       onAbort: (source) => {
         triggerLogger.warn("[agent-long] stop signal aborted", {
@@ -2142,6 +2149,31 @@ export const agentLongTask = task({
         }),
       ]);
       const { chat, fileTokens } = fetched;
+      if (chat?.scheduled_local_execution) {
+        const connection = await findScheduledConnection(
+          userId,
+          chat.scheduled_local_execution.preference,
+        );
+        if (!connection)
+          throw new ChatSDKError(
+            "offline:sandbox",
+            "The scheduled computer is offline. Reconnect it and resume this task.",
+          );
+        scheduledConnectionId = connection.connectionId;
+        stopScheduledConnectionWatch = watchScheduledConnection({
+          userId,
+          connectionId: connection.connectionId,
+          onLost: () => {
+            stopScheduledSandbox?.();
+            if (terminalAgentState)
+              terminalAgentState.streamFinishReason = "local-connection-lost";
+            stopSignal.abort(
+              "scheduled_computer_disconnected",
+              "local-connection-lost",
+            );
+          },
+        });
+      }
       const projectContextPromise = resolveProjectExecutionContext({
         chat,
         userId,
@@ -3202,6 +3234,19 @@ export const agentLongTask = task({
                 parentTriggerRunId: ctx.run.id,
                 profile: "general",
               });
+            }
+            if (scheduledConnectionId) {
+              if (
+                !sandboxManager.pinScheduledConnection ||
+                !sandboxManager.stopScheduledConnection
+              )
+                throw new Error(
+                  "Scheduled local execution requires a pinnable connection.",
+                );
+              sandboxManager.pinScheduledConnection(scheduledConnectionId);
+              stopScheduledSandbox = () =>
+                sandboxManager.stopScheduledConnection!();
+              if (userStopSignal.signal.aborted) stopScheduledSandbox();
             }
             cleanupBrowserSessions = cleanupToolBrowsers;
             approvalSandboxManager = sandboxManager;
@@ -5979,6 +6024,7 @@ export const agentLongTask = task({
                       if (
                         !activeGoal &&
                         autoContinueStopSource &&
+                        !userStopSignal.signal.aborted &&
                         !isAutomaticContinuation
                       ) {
                         writeAutoContinue(writer);
@@ -6129,6 +6175,7 @@ export const agentLongTask = task({
         });
       }
 
+      stopScheduledConnectionWatch?.();
       metadata.set(
         "status",
         preparationCanceled || userStopSignal.signal.aborted
@@ -6256,6 +6303,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      stopScheduledConnectionWatch?.();
       // Fill only missing reports; never repeat billing or manufacture a full cost.
       let reportingUsage:
         ReturnType<typeof triggerUsage.getCurrent> | undefined;
@@ -6276,6 +6324,19 @@ export const agentLongTask = task({
       // Flush fallback records and quota-check exposure before the worker exits.
       await posthog?.shutdown().catch(() => undefined);
       triggerSignal.removeEventListener("abort", forwardTriggerAbort);
+      if (userStopSignal.signal.reason === "local-connection-lost") {
+        await updateChat({
+          chatId,
+          expectedActiveTriggerRunId: ctx.run.id,
+          finishReason: "local-connection-lost",
+        }).catch((error) =>
+          recordAgentLongChatMetadataUpdateFailure(error, {
+            chatId,
+            userId,
+            runId: ctx.run.id,
+          }),
+        );
+      }
       stopSignal.dispose();
       await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();

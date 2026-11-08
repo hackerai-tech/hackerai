@@ -1,3 +1,4 @@
+import { localScheduleExecution } from "./scheduleValidators";
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { goalTimingForState } from "../lib/goals/timing";
@@ -591,6 +592,7 @@ export const getChatByIdFromClient = query({
       ),
       active_agent_user_wait: v.optional(clientAgentUserWaitValidator),
       sandbox_type: v.optional(v.string()),
+      scheduled_local_execution: v.optional(localScheduleExecution),
       selected_model: v.optional(v.string()),
       project_id: v.optional(v.id("projects")),
     }),
@@ -727,6 +729,7 @@ export const getChatById = query({
         v.array(agentApprovalTargetGrantValidator),
       ),
       sandbox_type: v.optional(v.string()),
+      scheduled_local_execution: v.optional(localScheduleExecution),
       selected_model: v.optional(v.string()),
       project_id: v.optional(v.id("projects")),
     }),
@@ -771,6 +774,7 @@ export const saveChat = mutation({
     title: v.string(),
     projectId: v.optional(v.string()),
     sandboxType: v.optional(v.string()),
+    scheduledLocalExecution: v.optional(localScheduleExecution),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -843,6 +847,9 @@ export const saveChat = mutation({
         user_id: args.userId,
         project_id: projectId,
         ...(args.sandboxType ? { sandbox_type: args.sandboxType } : {}),
+        ...(args.scheduledLocalExecution
+          ? { scheduled_local_execution: args.scheduledLocalExecution }
+          : {}),
         update_time: Date.now(),
       });
 

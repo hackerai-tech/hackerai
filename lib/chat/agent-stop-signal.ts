@@ -1,4 +1,5 @@
 type DirectStopSource =
+  | "scheduled_computer_disconnected"
   | "browser_ownership_lost"
   | "wait_for_user"
   | "trigger_platform"

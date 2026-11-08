@@ -14,7 +14,14 @@ export const scheduleModel = v.union(
   v.literal("pro"),
   v.literal("max"),
 );
+export const localScheduleExecution = v.object({
+  type: v.literal("local"),
+  preference: v.string(),
+  name: v.string(),
+  workingDirectory: v.string(),
+});
 export const scheduleDefinition = v.object({
+  execution: v.optional(localScheduleExecution),
   name: v.string(),
   prompt: v.string(),
   timing: scheduleTiming,

@@ -3321,7 +3321,9 @@ export async function createAgentStream(
           toolCallCount: state.postSummarizationToolCallCount,
         });
       }
-      if (hardReason !== null) {
+      if (ctx.abortController.signal.reason === "local-connection-lost") {
+        state.streamFinishReason = "local-connection-lost";
+      } else if (hardReason !== null) {
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
@@ -3558,6 +3560,8 @@ export async function createAgentStream(
     },
 
     onAbort: async ({ steps }) => {
+      if (ctx.abortController.signal.reason === "local-connection-lost")
+        state.streamFinishReason = "local-connection-lost";
       recordAssistantContentLoopAbortState(steps);
       await refundProviderContentBlockedIfSettled({
         error: state.providerError,

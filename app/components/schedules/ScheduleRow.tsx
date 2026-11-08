@@ -4,12 +4,16 @@ import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ArrowUpRight,
   ChevronDown,
+  Cloud,
   Ellipsis,
+  Laptop,
   Loader2,
+  Monitor,
   Pause,
   Pencil,
   Play,
   Trash2,
+  WifiOff,
 } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { describeTiming } from "@/lib/schedules/recurrence";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 
 const LABELS: Record<string, string> = {
@@ -35,6 +40,7 @@ const LABELS: Record<string, string> = {
   finishing: "Finishing",
   failed: "Failed",
   skipped: "Skipped",
+  interrupted: "Connection lost",
   canceled: "Canceled",
   deleted: "Task deleted",
 };
@@ -128,6 +134,7 @@ function RunResult({
 export function ScheduleRow({
   schedule,
   enabled,
+  computerUnavailable,
   pending,
   onAction,
   onEdit,
@@ -135,17 +142,25 @@ export function ScheduleRow({
 }: {
   schedule: AgentSchedule;
   enabled: boolean;
+  computerUnavailable: boolean;
   pending: boolean;
   onAction: (action: "run" | "pause" | "resume") => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const historyId = useId();
+  const unavailableId = useId();
   const [history, setHistory] = useState(false);
   const latest = schedule.runs[0];
   const busy = latest && BUSY.includes(latest.status);
   const hasLatestTask = latest?.hasTask && latest.status !== "deleted";
   const completed = !schedule.enabled && schedule.consumed;
+  const execution = schedule.definition.execution;
+  const ExecutionIcon = !execution
+    ? Cloud
+    : isDesktopPreference(execution.preference)
+      ? Monitor
+      : Laptop;
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:px-5">
       <div className="min-w-0 flex-1 pt-0.5">
@@ -168,7 +183,25 @@ export function ScheduleRow({
           {describeTiming(schedule.definition.timing)}
           {schedule.definition.timing.type === "weekly" &&
             ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
+          {" · "}
+          <ExecutionIcon
+            className="mr-1 inline size-3 align-[-2px]"
+            aria-hidden="true"
+          />
+          {execution ? execution.name : "Cloud"}
         </p>
+        {computerUnavailable && execution && (
+          <p
+            id={unavailableId}
+            className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-500"
+          >
+            <WifiOff className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 break-words">
+              {execution.name} is unavailable. Runs, including Run now, are
+              skipped until it reconnects.
+            </span>
+          </p>
+        )}
       </div>
       <div
         className={cn(
@@ -188,6 +221,7 @@ export function ScheduleRow({
           disabled={pending || !enabled || Boolean(busy)}
           onClick={() => onAction("run")}
           aria-label={`Run ${schedule.definition.name} now`}
+          aria-describedby={computerUnavailable ? unavailableId : undefined}
         >
           {pending ? (
             <Loader2 className="size-3.5 animate-spin" />

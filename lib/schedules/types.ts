@@ -17,5 +17,6 @@ export type AgentSchedule = {
 };
 export type SchedulesResponse = {
   enabled: boolean;
+  computers?: { preference: string; name: string }[];
   schedules: AgentSchedule[];
 };

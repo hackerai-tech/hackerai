@@ -1,3 +1,6 @@
+jest.mock("@/lib/schedules/local-execution", () => ({
+  findScheduledConnection: (...args: unknown[]) => mockLocalConnection(...args),
+}));
 jest.mock("@trigger.dev/sdk", () => ({
   schemaTask: (x: unknown) => x,
   schedules: { task: (x: unknown) => x },
@@ -52,6 +55,7 @@ jest.mock("@/convex/_generated/api", () => ({
 import { scheduledAgentRun, dispatchAgentSchedules } from "../schedules";
 import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
 import { tasks } from "@trigger.dev/sdk";
+const mockLocalConnection = jest.fn();
 const mockQuery = jest.fn(),
   mockMutation = jest.fn(),
   mockEntitlement = jest.fn(),
@@ -178,4 +182,58 @@ it("records start failures without claiming Agent completion", async () => {
       detail: expect.stringContaining("Usage limit"),
     }),
   );
+});
+
+const execution = {
+  type: "local",
+  preference: "environment:12345678-1234-4123-8123-123456789abc",
+  name: "Lab",
+  workingDirectory: "/tmp/lab",
+};
+it("starts local work with the exact environment and trusted folder snapshot", async () => {
+  mockQuery.mockResolvedValue({
+    ...schedule,
+    definition: { ...schedule.definition, execution },
+  });
+  mockLocalConnection.mockResolvedValue({ connectionId: "live-session" });
+  await run({ scheduleId: "s", revision: 1, at: Date.now() });
+  expect(mockLocalConnection).toHaveBeenCalledWith(
+    "owner",
+    execution.preference,
+  );
+  expect((await mockStart.mock.calls[0][0].json()).sandboxPreference).toBe(
+    execution.preference,
+  );
+  expect(mockIdentityConfig.scheduledLocalExecution).toEqual(execution);
+});
+it.each([null, "unavailable"])(
+  "records a missed local start without any Agent or cloud fallback (%s)",
+  async (state) => {
+    mockQuery.mockResolvedValue({
+      ...schedule,
+      definition: { ...schedule.definition, execution },
+    });
+    if (state)
+      mockLocalConnection.mockRejectedValue(Error("relay unavailable"));
+    else mockLocalConnection.mockResolvedValue(null);
+    await run({ scheduleId: "s", revision: 1, at: Date.now() });
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledWith(
+      "finish",
+      expect.objectContaining({
+        status: "skipped",
+        detail: expect.stringContaining("Missed:"),
+      }),
+    );
+  },
+);
+it("does not catch up a stale local occurrence after a dispatcher outage", async () => {
+  mockQuery.mockResolvedValue({
+    ...schedule,
+    definition: { ...schedule.definition, execution },
+  });
+  mockLocalConnection.mockResolvedValue({ connectionId: "live-session" });
+  await run({ scheduleId: "s", revision: 1, at: Date.now() - 180000 });
+  expect(mockStart).not.toHaveBeenCalled();
+  expect(mockLocalConnection).not.toHaveBeenCalled();
 });

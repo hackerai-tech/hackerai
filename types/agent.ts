@@ -31,6 +31,8 @@ export interface SandboxInfo {
 }
 
 export interface SandboxManager {
+  pinScheduledConnection?(connectionId: string): void;
+  stopScheduledConnection?(): void;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
