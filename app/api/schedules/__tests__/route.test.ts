@@ -71,8 +71,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
 const mockPresence = jest.fn(),
   mockQuery = jest.fn(),
-  mockMutation = jest.fn(),
-  mockTrigger = jest.fn();
+  mockMutation = jest.fn();
 const request = (
   method: string,
   body?: unknown,
@@ -109,7 +108,6 @@ describe("schedule HTTP boundary", () => {
       ),
     );
     mockQuery.mockResolvedValue([]);
-    mockTrigger.mockResolvedValue({ id: "dispatcher" });
   });
   it("requires authentication", async () => {
     (getUserIDAndPro as jest.Mock).mockRejectedValue(
@@ -157,7 +155,6 @@ describe("schedule HTTP boundary", () => {
     (canUseSchedules as jest.Mock).mockResolvedValue(false);
     expect((await POST(request("POST", definition))).status).toBe(403);
     expect(mockMutation).not.toHaveBeenCalled();
-    expect(mockTrigger).not.toHaveBeenCalled();
   });
   it("keeps safe pause and deletion available after rollback", async () => {
     (canUseSchedules as jest.Mock).mockResolvedValue(false);
@@ -203,7 +200,7 @@ describe("schedule HTTP boundary", () => {
     expect(
       (await PATCH(request("PATCH", { id: "s", action: "run" }))).status,
     ).toBe(404);
-    expect(mockTrigger).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
   });
   it("rejects invalid recurrence without writing", async () => {
     expect(
@@ -280,21 +277,16 @@ describe("schedule HTTP boundary", () => {
     });
     expect((await (await GET(request("GET"))).json()).computers).toEqual([]);
   });
-});
 
-it("returns an immediate throttle error instead of promising another task", async () => {
-  (getUserIDAndPro as jest.Mock).mockResolvedValue({
-    userId: "owner",
-    subscription: "pro",
-  });
-  (canUseSchedules as jest.Mock).mockResolvedValue(true);
-  mockQuery.mockResolvedValue({ userId: "owner", revision: 1 });
-  mockMutation.mockRejectedValueOnce(
-    new ConvexError("Wait a minute before running this schedule again."),
-  );
-  const response = await PATCH(request("PATCH", { id: "s", action: "run" }));
-  expect(response.status).toBe(429);
-  expect(await response.json()).toMatchObject({
-    message: expect.stringContaining("Wait a minute"),
+  it("returns an immediate throttle error instead of promising another task", async () => {
+    mockQuery.mockResolvedValue({ userId: "owner", revision: 1 });
+    mockMutation.mockRejectedValueOnce(
+      new ConvexError("Wait a minute before running this schedule again."),
+    );
+    const response = await PATCH(request("PATCH", { id: "s", action: "run" }));
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      message: expect.stringContaining("Wait a minute"),
+    });
   });
 });

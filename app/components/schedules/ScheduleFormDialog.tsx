@@ -1,5 +1,5 @@
 "use client";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   CalendarClock,
   Check,
@@ -146,11 +146,16 @@ export function ScheduleFormDialog({
       },
     });
   };
-  const [onceAt, setOnceAt] = useState(
+  const [onceAt, setOnceAt] = useState(() =>
     localDateTime(
       initial.timing.type === "once" ? initial.timing.at : Date.now() + 3600000,
     ),
   );
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [discard, setDiscard] = useState(false);
@@ -201,7 +206,7 @@ export function ScheduleFormDialog({
       next =
         saved && !timingChanged
           ? saved.nextRunAt
-          : nextScheduledTime(candidate, Date.now());
+          : nextScheduledTime(candidate, now);
   } catch {
     /* inline validation on save */
   }

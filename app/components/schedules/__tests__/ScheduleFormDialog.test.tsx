@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { ScheduleFormDialog } from "../ScheduleFormDialog";
 import type { ScheduleDefinition } from "@/lib/schedules/recurrence";
 const initial: ScheduleDefinition = {
@@ -249,4 +255,35 @@ it("keeps folders scoped to their computer when switching targets", () => {
   expect(screen.getByLabelText("Starting folder")).toHaveValue(
     "/first-project",
   );
+});
+
+it("refreshes an idle next-run preview and rejects a one-time date that has passed", async () => {
+  jest.useFakeTimers().setSystemTime(new Date("2026-11-07T23:00:00Z"));
+  const save = jest.fn();
+  const view = render(
+    <ScheduleFormDialog
+      computers={[]}
+      initial={{ ...initial, timing: { type: "once", at: Date.now() + 60000 } }}
+      editing={false}
+      onSave={save}
+      onClose={jest.fn()}
+    />,
+  );
+  try {
+    expect(screen.getByText(/Next run:/)).toBeInTheDocument();
+    act(() => {
+      jest.advanceTimersByTime(90000);
+    });
+    expect(
+      screen.getByText(/Choose a date and time in the future/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create schedule" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Choose a date and time in the future.",
+    );
+    expect(save).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    jest.useRealTimers();
+  }
 });
