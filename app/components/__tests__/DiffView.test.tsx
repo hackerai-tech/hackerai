@@ -11,6 +11,7 @@ const mockModels: Array<{ disposed: boolean; disposals: number }> = [];
 const mockCapture = jest.fn();
 const mockUuid = jest.fn();
 let mockInitiallyComputed = false;
+let mockDisposalObservationFailure = false;
 let mockSubscriptionFailure: "subscribe" | "dispose" | undefined;
 const mockPostHog = { __loaded: true, capture: mockCapture };
 const mockEditors: Array<{
@@ -19,6 +20,23 @@ const mockEditors: Array<{
   lateEmit: () => void;
   subscriptionsDisposed: number;
 }> = [];
+
+jest.mock("@/lib/analytics/diff-view-diagnostics", () => {
+  const actual = jest.requireActual("@/lib/analytics/diff-view-diagnostics");
+  return {
+    createDiffViewDiagnostics: () => {
+      const observer = actual.createDiffViewDiagnostics();
+      return {
+        ...observer,
+        modifiedEditorDisposed: () => {
+          if (mockDisposalObservationFailure)
+            throw new Error("optional observation failed");
+          observer.modifiedEditorDisposed();
+        },
+      };
+    },
+  };
+});
 
 jest.mock("posthog-js", () => ({ __esModule: true, default: mockPostHog }));
 jest.mock("uuid", () => ({
@@ -113,6 +131,7 @@ beforeEach(() => {
   mockModels.length = 0;
   mockEditors.length = 0;
   mockInitiallyComputed = false;
+  mockDisposalObservationFailure = false;
   mockSubscriptionFailure = undefined;
   mockUuid
     .mockReset()
@@ -162,7 +181,7 @@ it("switches views and releases every model after editor teardown, including par
   ).toBe(true);
 });
 
-it("records only a nonnull computed diff and three unique rendered views per StrictMode instance", async () => {
+it("records five bounded facts per StrictMode instance despite repeated editor remounts", async () => {
   const view = render(
     <React.StrictMode>
       <DiffView
@@ -172,7 +191,7 @@ it("records only a nonnull computed diff and three unique rendered views per Str
       />
     </React.StrictMode>,
   );
-  expect(capturedDiffs()).toHaveLength(1);
+  expect(capturedDiffs()).toHaveLength(2);
   expect(capturedDiffs()[0].properties).toMatchObject({
     stage: "view_rendered",
     view_mode: "diff",
@@ -181,10 +200,10 @@ it("records only a nonnull computed diff and three unique rendered views per Str
   const old = mockEditors[0];
   old.changes = [];
   act(() => old.lateEmit());
-  expect(capturedDiffs()).toHaveLength(1);
+  expect(capturedDiffs()).toHaveLength(2);
   const current = mockEditors.at(-1)!;
   act(() => current.emit());
-  expect(capturedDiffs()).toHaveLength(1); // reset/null is not computation
+  expect(capturedDiffs()).toHaveLength(2); // reset/null is not computation
   current.changes = [];
   act(() => {
     current.emit();
@@ -196,9 +215,10 @@ it("records only a nonnull computed diff and three unique rendered views per Str
     fireEvent.click(screen.getByRole("tab", { name: "Diff" }));
   }
   const captures = capturedDiffs();
-  expect(captures).toHaveLength(4);
+  expect(captures).toHaveLength(5);
   expect(captures.map(({ properties: p }) => [p.stage, p.view_mode])).toEqual([
     ["view_rendered", "diff"],
+    ["first_modified_editor_disposed", undefined],
     ["computed", undefined],
     ["view_rendered", "original"],
     ["view_rendered", "modified"],
@@ -206,8 +226,8 @@ it("records only a nonnull computed diff and three unique rendered views per Str
   expect(
     new Set(captures.map(({ properties: p }) => p.diff_view_instance_id)).size,
   ).toBe(1);
-  expect(new Set(captures.map(({ options: o }) => o.uuid)).size).toBe(4);
-  expect(captures[2].properties.instance_observed_computed_before_view).toBe(
+  expect(new Set(captures.map(({ options: o }) => o.uuid)).size).toBe(5);
+  expect(captures[3].properties.instance_observed_computed_before_view).toBe(
     true,
   );
   expect(JSON.stringify(captures)).not.toContain("private");
@@ -242,9 +262,9 @@ it("retains bounded facts until identity and SDK readiness, then flushes once", 
     mockPostHog.__loaded = true;
     confirmAuthenticatedAnalyticsUserId("diff-test-user");
   });
-  expect(capturedDiffs()).toHaveLength(4);
+  expect(capturedDiffs()).toHaveLength(5);
   act(() => confirmAuthenticatedAnalyticsUserId("diff-test-user"));
-  expect(capturedDiffs()).toHaveLength(4);
+  expect(capturedDiffs()).toHaveLength(5);
 });
 
 it("does not backfill view or computation facts observed before analytics permission", async () => {
@@ -371,7 +391,8 @@ it("observes an already computed diff and keeps facts scoped to the instance acr
   ).toBe(true);
   await act(async () => first.unmount());
   render(<DiffView {...props} />);
-  expect(capturedDiffs()[2].properties.diff_view_instance_id).not.toBe(firstId);
+  expect(capturedDiffs()[2].properties.diff_view_instance_id).toBe(firstId);
+  expect(capturedDiffs()[3].properties.diff_view_instance_id).not.toBe(firstId);
   if (originalBuild === undefined)
     delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
   else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
@@ -418,3 +439,89 @@ it.each(["subscribe", "dispose"] as const)(
     expect(mockModels.every((m) => m.disposed && m.disposals === 1)).toBe(true);
   },
 );
+
+it.each([false, true])(
+  "observes first teardown with prior computation %s and preserves observation time across SDK delay",
+  async (computed) => {
+    mockPostHog.__loaded = false;
+    const view = render(
+      <DiffView
+        originalContent="private-original"
+        modifiedContent="private-modified"
+        language="private-language"
+      />,
+    );
+    const editor = mockEditors.at(-1)!;
+    if (computed) {
+      editor.changes = [];
+      act(() => editor.emit());
+    }
+    const observedAt = 1794094000000;
+    const clock = jest.spyOn(Date, "now").mockReturnValue(observedAt);
+    try {
+      fireEvent.click(screen.getByRole("tab", { name: "Original" }));
+      expect(capturedDiffs()).toHaveLength(0);
+      clock.mockReturnValue(observedAt + 10000);
+      mockPostHog.__loaded = true;
+      act(() => confirmAuthenticatedAnalyticsUserId("diff-test-user"));
+      const disposal = capturedDiffs().filter(
+        ({ properties: p }) => p.stage === "first_modified_editor_disposed",
+      );
+      expect(disposal).toHaveLength(1);
+      expect(disposal[0].properties).toEqual({
+        diagnostic_version: 1,
+        diff_view_instance_id: expect.any(String),
+        stage: "first_modified_editor_disposed",
+        instance_observed_computed_before_disposal: computed,
+        modified_editor_disposed_at: observedAt,
+        hackerai_frontend_build_commit: expect.any(String),
+      });
+      const count = capturedDiffs().length;
+      editor.changes = [];
+      act(() => editor.lateEmit());
+      expect(capturedDiffs()).toHaveLength(count);
+      fireEvent.click(screen.getByRole("tab", { name: "Diff" }));
+      await act(async () => view.unmount());
+      expect(
+        capturedDiffs().filter(
+          ({ properties: p }) => p.stage === "first_modified_editor_disposed",
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(capturedDiffs())).not.toContain("private");
+    } finally {
+      clock.mockRestore();
+    }
+  },
+);
+
+it("observes parent unmount and releases models even if both optional disposers throw", async () => {
+  mockDisposalObservationFailure = true;
+  mockSubscriptionFailure = "dispose";
+  const view = render(
+    <DiffView
+      originalContent="alpha=1"
+      modifiedContent="alpha=2"
+      language="text"
+    />,
+  );
+  await act(async () => view.unmount());
+  expect(mockModels).toHaveLength(2);
+  expect(mockModels.every((m) => m.disposed && m.disposals === 1)).toBe(true);
+  expect(mockEditors.every((e) => e.subscriptionsDisposed === 1)).toBe(true);
+});
+
+it("enqueues the first disposal on parent unmount", async () => {
+  const view = render(
+    <DiffView
+      originalContent="alpha=1"
+      modifiedContent="alpha=2"
+      language="text"
+    />,
+  );
+  await act(async () => view.unmount());
+  expect(capturedDiffs().map(({ properties: p }) => p.stage)).toEqual([
+    "view_rendered",
+    "first_modified_editor_disposed",
+  ]);
+  expect(mockModels.every((m) => m.disposed && m.disposals === 1)).toBe(true);
+});

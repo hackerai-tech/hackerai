@@ -327,6 +327,25 @@ describe("PostHogProvider", () => {
     });
     expect(diff?.properties).toEqual(diffProperties);
     expect(JSON.stringify(diff)).not.toContain("private");
+    const disposalProperties = {
+      diagnostic_version: 1,
+      diff_view_instance_id: "opaque-instance",
+      stage: "first_modified_editor_disposed",
+      instance_observed_computed_before_disposal: false,
+      modified_editor_disposed_at: 1794094000000,
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const disposal = config.before_send({
+      event: "diff_view_diagnostic",
+      properties: {
+        ...disposalProperties,
+        $current_url: "private",
+        content: "private",
+        language: "private",
+      },
+    });
+    expect(disposal?.properties).toEqual(disposalProperties);
+    expect(JSON.stringify(disposal)).not.toContain("private");
     const summary = config.before_send({
       event: "desktop_ack_delivery_summary",
       properties: {
