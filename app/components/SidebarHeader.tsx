@@ -184,23 +184,6 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 
           {/* Sidebar Actions - Collapsed */}
           <div className="flex flex-col items-center gap-px">
-            {showSchedules && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    asChild
-                    variant="ghost"
-                    size="sm"
-                    className="size-9 p-0 hover:bg-sidebar-accent/50"
-                  >
-                    <Link href="/schedules" aria-label="Schedules">
-                      <CalendarClock className="size-[18px]" />
-                    </Link>
-                  </Button>
-                </TooltipTrigger>
-                <SidebarActionTooltip label="Schedules" side="right" />
-              </Tooltip>
-            )}
             {/* New Chat Button - Collapsed */}
             <div>
               <Tooltip>
@@ -255,6 +238,23 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 <ShieldAlert className="w-4 h-4" />
               </Button>
             </div>
+            {showSchedules && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="sm"
+                    className="size-9 p-0 hover:bg-sidebar-accent/50"
+                  >
+                    <Link href="/schedules" aria-label="Schedules">
+                      <CalendarClock className="size-[18px]" />
+                    </Link>
+                  </Button>
+                </TooltipTrigger>
+                <SidebarActionTooltip label="Schedules" side="right" />
+              </Tooltip>
+            )}
           </div>
         </div>
 
