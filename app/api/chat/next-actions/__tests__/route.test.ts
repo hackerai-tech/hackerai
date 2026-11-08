@@ -164,7 +164,7 @@ test.each([
   "old",
   "flag off",
   "duplicate",
-  "suspended",
+  "gate error",
   "stale message",
 ])("does not generate for %s", async (condition) => {
   if (condition === "wrong owner") chat.user_id = "someone-else";
@@ -177,7 +177,7 @@ test.each([
   if (condition === "flag off")
     jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue(false);
   if (condition === "duplicate") reserve.mockResolvedValue(0);
-  if (condition === "suspended")
+  if (condition === "gate error")
     jest
       .mocked(assertUserCanMakeCostIncurringRequest)
       .mockRejectedValueOnce(new Error("blocked"));
@@ -206,7 +206,7 @@ test.each([
     old: "source_expired",
     "flag off": "not_offered",
     duplicate: "generation_reserved_or_budgeted",
-    suspended: "server_error",
+    "gate error": "server_error",
     "stale message": "source_stale",
   };
   expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
@@ -390,7 +390,7 @@ test("ineligible control users are not enrolled", async () => {
   jest.mocked(getPostHogFlagWithoutExposure).mockResolvedValue("control");
   jest
     .mocked(assertUserCanMakeCostIncurringRequest)
-    .mockRejectedValueOnce(new Error("suspended"));
+    .mockRejectedValueOnce(new Error("gate error"));
   await POST(request());
   expect(capture).not.toHaveBeenCalled();
   expect(generateNextActions).not.toHaveBeenCalled();

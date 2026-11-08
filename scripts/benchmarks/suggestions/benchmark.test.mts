@@ -14,6 +14,7 @@ import {
   baselineSystem,
   reportedCost,
   benchmarkDestination,
+  benchmarkFailureMessage,
   root,
   retainProviderReceipt,
   withinRepository,
@@ -211,4 +212,26 @@ test("benchmark uses application rejection rules instead of treating formatting 
     parsePredictedNextAction({ suggestion: "how do i capture that output?" }),
     ["how do i capture that output?"],
   );
+});
+
+test("local setup diagnostics stay actionable while arbitrary errors remain private", () => {
+  try {
+    benchmarkDestination(process.cwd());
+    assert.fail("Expected repository path rejection");
+  } catch (error) {
+    assert.equal(
+      benchmarkFailureMessage(error),
+      "Keep generated results outside the repository",
+    );
+  }
+  for (const error of [
+    new Error("private provider payload"),
+    "secret value",
+    { message: "private filesystem path" },
+  ]) {
+    assert.equal(
+      benchmarkFailureMessage(error),
+      "Benchmark failed. Check inputs and receipts privately; no credentials or provider payload logged.",
+    );
+  }
 });

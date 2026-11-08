@@ -28,6 +28,16 @@ export type Fixture = {
 /** Pin source/configuration fingerprints in each run manifest. */
 export const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+// Only static messages written by this runner may reach the terminal.
+class BenchmarkUsageError extends Error {}
+
+/** Explain known local setup failures without echoing arbitrary SDK or IO errors. */
+export function benchmarkFailureMessage(error: unknown): string {
+  return error instanceof BenchmarkUsageError
+    ? error.message
+    : "Benchmark failed. Check inputs and receipts privately; no credentials or provider payload logged.";
+}
+
 /** Detect containment using path segments, including Windows drives and separators. */
 export function withinRepository(
   repository: string,
@@ -48,12 +58,16 @@ export function withinRepository(
 export function benchmarkDestination(destination: string) {
   const out = resolve(destination);
   if (withinRepository(root, out))
-    throw new Error("Keep generated results outside the repository");
+    throw new BenchmarkUsageError(
+      "Keep generated results outside the repository",
+    );
   mkdirSync(out, { recursive: true, mode: 0o700 });
   const actual = realpathSync(out),
     repository = realpathSync(root);
   if (withinRepository(repository, actual))
-    throw new Error("A result-directory symlink points into the repository");
+    throw new BenchmarkUsageError(
+      "A result-directory symlink points into the repository",
+    );
   return actual;
 }
 export const settings = {
@@ -325,7 +339,7 @@ async function main() {
     !["tuning", "holdout"].includes(split) ||
     !["regression", "task-progress"].includes(suite)
   )
-    throw new Error(
+    throw new BenchmarkUsageError(
       "Use prepare|run|review OUT_DIR [tuning|holdout] [regression|task-progress]",
     );
   const out = benchmarkDestination(destination);
@@ -345,7 +359,7 @@ async function main() {
       process.env.SUGGESTION_BENCH_LIVE !== "development" ||
       !process.env.OPENROUTER_API_KEY
     )
-      throw new Error(
+      throw new BenchmarkUsageError(
         "Supply a Development OPENROUTER_API_KEY and SUGGESTION_BENCH_LIVE=development explicitly",
       );
     const { generateText, Output, NoObjectGeneratedError } = await import("ai");
@@ -359,7 +373,9 @@ async function main() {
       JSON.stringify(plan) !==
       JSON.stringify(prepare(plan.manifest.split, plan.manifest.suite))
     )
-      throw new Error("Source or plan drift; prepare a fresh run");
+      throw new BenchmarkUsageError(
+        "Source or plan drift; prepare a fresh run",
+      );
     const provider = createOpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
     });
@@ -420,7 +436,9 @@ async function main() {
       JSON.stringify(plan) !==
       JSON.stringify(prepare(plan.manifest.split, plan.manifest.suite))
     )
-      throw new Error("Source or review rubric drift; use the pinned checkout");
+      throw new BenchmarkUsageError(
+        "Source or review rubric drift; use the pinned checkout",
+      );
     const receipts = readFileSync(resolve(out, "receipts.jsonl"), "utf8")
       .trim()
       .split("\n")
@@ -479,15 +497,13 @@ async function main() {
     console.log(
       "Wrote blinded review and operational summaries; no quality winner has been evaluated.",
     );
-  } else throw new Error("Unknown command");
+  } else throw new BenchmarkUsageError("Unknown command");
 }
 if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 )
-  main().catch(() => {
-    console.error(
-      "Benchmark failed. Check inputs and receipts privately; no credentials or provider payload logged.",
-    );
+  main().catch((error: unknown) => {
+    console.error(benchmarkFailureMessage(error));
     process.exitCode = 1;
   });
