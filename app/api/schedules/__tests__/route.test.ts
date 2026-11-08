@@ -1,3 +1,6 @@
+jest.mock("@/lib/ai/tools/utils/hybrid-sandbox-manager", () => ({
+  queryLiveSandboxConnectionIds: (...args: unknown[]) => mockPresence(...args),
+}));
 jest.mock("next/server", () => ({
   NextRequest: class {
     method: string;
@@ -66,7 +69,8 @@ import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import { ConvexError } from "convex/values";
 import { ChatSDKError } from "@/lib/errors";
 import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
-const mockQuery = jest.fn(),
+const mockPresence = jest.fn(),
+  mockQuery = jest.fn(),
   mockMutation = jest.fn(),
   mockTrigger = jest.fn();
 const request = (
@@ -92,6 +96,7 @@ const definition = {
 describe("schedule HTTP boundary", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (reconcileScheduleRuns as jest.Mock).mockResolvedValue(undefined);
     (getUserIDAndPro as jest.Mock).mockResolvedValue({
       userId: "owner",
       subscription: "pro",
@@ -237,6 +242,43 @@ describe("schedule HTTP boundary", () => {
         queueOnly: true,
       }),
     );
+  });
+
+  it("omits stale computer registrations from the selectable schedule targets", async () => {
+    const environmentId = "12345678-1234-4123-8123-123456789abc";
+    mockQuery.mockImplementation(async (name) =>
+      name === "computers"
+        ? [
+            {
+              environmentId,
+              connectionId: "stale",
+              name: "Offline lab",
+              capabilities: { commands: true },
+              isDesktop: false,
+            },
+            {
+              environmentId,
+              connectionId: "live",
+              name: "Connected lab",
+              capabilities: { commands: true },
+              isDesktop: false,
+            },
+          ]
+        : [],
+    );
+    mockPresence.mockResolvedValue({
+      reliable: true,
+      onlineConnectionIds: new Set(["live"]),
+    });
+    const response = await GET(request("GET"));
+    expect((await response.json()).computers).toEqual([
+      { preference: `environment:${environmentId}`, name: "Connected lab" },
+    ]);
+    mockPresence.mockResolvedValue({
+      reliable: false,
+      onlineConnectionIds: new Set(["live"]),
+    });
+    expect((await (await GET(request("GET"))).json()).computers).toEqual([]);
   });
 });
 

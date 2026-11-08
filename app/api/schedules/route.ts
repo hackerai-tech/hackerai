@@ -1,3 +1,4 @@
+import { queryLiveSandboxConnectionIds } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import { environmentPreference } from "@/lib/sandbox/environment";
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexError } from "convex/values";
@@ -79,10 +80,23 @@ export async function GET(req: NextRequest) {
       api.localSandbox.listConnectionsForBackend,
       ctx.args,
     );
+    const candidates = connections.filter(
+      (c) => c.environmentId && c.capabilities.commands,
+    );
+    const presence = candidates.length
+      ? await queryLiveSandboxConnectionIds(
+          ctx.userId,
+          candidates.map((c) => c.connectionId),
+        )
+      : null;
     const computers = [
       ...new Map(
-        connections
-          .filter((c) => c.environmentId && c.capabilities.commands)
+        candidates
+          .filter(
+            (c) =>
+              presence?.reliable &&
+              presence.onlineConnectionIds.has(c.connectionId),
+          )
           .map((c) => [
             environmentPreference(c),
             { preference: environmentPreference(c), name: c.name },
