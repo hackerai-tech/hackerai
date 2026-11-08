@@ -316,7 +316,7 @@ it.each(["human", "claiming", "resuming"])(
       state,
       sessionId: "paused-session",
       updatedAt: 90_000,
-      grantExpiresAt: 120_000,
+      grantExpiresAt: state === "resuming" ? 190_000 : 120_000,
       expiresAt: 200_000,
     };
     const view = render(
@@ -324,7 +324,12 @@ it.each(["human", "claiming", "resuming"])(
     );
     try {
       expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
-      act(() => jest.advanceTimersByTime(20_001));
+      act(() => jest.advanceTimersByTime(19_999));
+      expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+      act(() => jest.advanceTimersByTime(1));
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Browser takeover needs attention",
+      );
       fireEvent.click(screen.getByRole("button", { name: "Take control" }));
       expect(mockOpenSidebar).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -370,6 +375,36 @@ it("reschedules renewed grants and retires an expired session without query upda
     expect(screen.getByRole("button", { name: "Take control" })).toBeEnabled();
     expect(mockOpenSidebar).not.toHaveBeenCalled();
     act(() => jest.advanceTimersByTime(10_000));
+    expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
+  } finally {
+    view.unmount();
+    jest.useRealTimers();
+  }
+});
+
+it("refreshes abandoned control on wake even when suspended timers have not fired", () => {
+  jest.useFakeTimers();
+  jest.setSystemTime(100_000);
+  mockSession = {
+    state: "human",
+    sessionId: "session",
+    updatedAt: 100_000,
+    grantExpiresAt: 130_000,
+    expiresAt: 160_000,
+  };
+  const view = render(
+    <BrowserHandoffEntry chatId="chat" messages={messages} />,
+  );
+  try {
+    // Wall time advances while the tab sleeps; its scheduled callback does not run.
+    jest.setSystemTime(140_000);
+    fireEvent.focus(window);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Browser takeover needs attention",
+    );
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    jest.setSystemTime(170_000);
+    fireEvent(document, new Event("visibilitychange"));
     expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
   } finally {
     view.unmount();

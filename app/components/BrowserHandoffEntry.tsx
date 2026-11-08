@@ -68,16 +68,26 @@ export function BrowserHandoffEntry({
     // a reload, surface recovery even when no browser viewer is mounted.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const wake = () => {
+      clearTimeout(timer);
       const currentTime = Date.now();
       setNow(currentTime);
       const deadlines = [recoveryAt, expiresAt].filter(
         (value): value is number => value != null && value > currentTime,
       );
       if (deadlines.length > 0)
-        timer = setTimeout(wake, Math.min(...deadlines) - currentTime);
+        timer = setTimeout(
+          wake,
+          Math.min(Math.min(...deadlines) - currentTime, 2_147_483_647),
+        );
     };
     wake();
-    return () => clearTimeout(timer);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
   }, [recoveryAt, expiresAt]);
   const state = session
     ? effectiveBrowserHandoffState(
