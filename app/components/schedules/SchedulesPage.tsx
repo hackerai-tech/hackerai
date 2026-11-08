@@ -157,7 +157,22 @@ export function SchedulesPage() {
             <div role="status" className="space-y-3">
               <span className="sr-only">Loading schedules</span>
               <Skeleton className="h-4 w-40" />
-              <Skeleton className="h-64 w-full rounded-xl" />
+              <div className="divide-y rounded-xl border">
+                {[0, 1, 2].map((row) => (
+                  <div key={row} className="space-y-3 px-4 py-4 sm:px-5">
+                    <Skeleton className="h-4 w-48 max-w-full" />
+                    <Skeleton className="h-3 w-32" />
+                    <div className="grid grid-cols-2 gap-6 pt-2">
+                      {[0, 1].map((fact) => (
+                        <div key={fact} className="space-y-2">
+                          <Skeleton className="h-3 w-16" />
+                          <Skeleton className="h-4 w-28 max-w-full" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {error && !data && (
@@ -273,7 +288,7 @@ export function SchedulesPage() {
                             {t.description}
                           </span>
                         </span>
-                        <span className="mt-1.5 block text-xs tabular-nums text-muted-foreground sm:mt-0 sm:shrink-0">
+                        <span className="mt-1.5 block text-xs tabular-nums text-muted-foreground sm:mt-0 sm:w-28 sm:shrink-0 sm:text-left">
                           {t.label}
                         </span>
                       </span>
@@ -344,7 +359,7 @@ export function SchedulesPage() {
             </section>
           )}
           {data && (
-            <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+            <p className="flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
               <Cloud className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               <span>
                 HackerAI runs schedules in the cloud, even when you’re away.

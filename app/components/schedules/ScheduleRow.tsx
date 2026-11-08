@@ -54,8 +54,39 @@ function statusDot(status: string) {
   if (status === "unconfirmed") return "bg-amber-500";
   return "bg-muted-foreground/50";
 }
-function RunResult({ run }: { run: ScheduleRun }) {
-  const hasTask = run.hasTask && run.status !== "deleted";
+function RunTaskLink({
+  run,
+  className,
+}: {
+  run: ScheduleRun;
+  className?: string;
+}) {
+  if (!run.hasTask || run.status === "deleted") return null;
+  return (
+    <Link
+      href={`/c/${run.chatId}`}
+      onClick={() =>
+        captureAuthenticatedEvent("agent_schedule_result_opened", {
+          run_status: run.status,
+        })
+      }
+      className={cn(
+        "inline-flex min-h-11 items-center gap-1 rounded-md px-2 font-medium text-foreground underline-offset-4 hover:bg-muted/40 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-6 sm:px-0",
+        className,
+      )}
+    >
+      View task
+      <ArrowUpRight className="size-3" aria-hidden="true" />
+    </Link>
+  );
+}
+function RunResult({
+  run,
+  hideTaskOnMobile = false,
+}: {
+  run: ScheduleRun;
+  hideTaskOnMobile?: boolean;
+}) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
       <span className="inline-flex items-center gap-1.5">
@@ -82,20 +113,10 @@ function RunResult({ run }: { run: ScheduleRun }) {
           timeStyle: "short",
         })}
       </span>
-      {hasTask && (
-        <Link
-          href={`/c/${run.chatId}`}
-          onClick={() =>
-            captureAuthenticatedEvent("agent_schedule_result_opened", {
-              run_status: run.status,
-            })
-          }
-          className="inline-flex min-h-11 items-center gap-0.5 rounded-sm px-1 font-medium sm:min-h-6 sm:px-0 text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          View task
-          <ArrowUpRight className="size-3" aria-hidden="true" />
-        </Link>
-      )}
+      <RunTaskLink
+        run={run}
+        className={hideTaskOnMobile ? "hidden sm:inline-flex" : undefined}
+      />
       {run.detail && (
         <span className="w-full break-words text-muted-foreground">
           {run.detail}
@@ -123,15 +144,16 @@ export function ScheduleRow({
   const [history, setHistory] = useState(false);
   const latest = schedule.runs[0];
   const busy = latest && BUSY.includes(latest.status);
+  const hasLatestTask = latest?.hasTask && latest.status !== "deleted";
   const completed = !schedule.enabled && schedule.consumed;
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:px-5">
       <div className="min-w-0 flex-1 pt-0.5">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <h2 className="min-w-0 break-words text-[15px] font-medium">
+        <div className="leading-relaxed">
+          <h2 className="inline break-words text-[15px] font-medium">
             {schedule.definition.name}
           </h2>
-          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-px text-[11px] text-muted-foreground">
+          <span className="ml-2 inline-flex shrink-0 items-center gap-1.5 align-middle rounded-full border px-2 py-px text-[11px] text-muted-foreground">
             <span
               className={cn(
                 "size-1.5 rounded-full",
@@ -148,11 +170,21 @@ export function ScheduleRow({
             ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
         </p>
       </div>
-      <div className="col-span-2 row-start-3 flex justify-end sm:col-span-1 sm:col-start-2 sm:row-start-1">
+      <div
+        className={cn(
+          "col-span-2 row-start-3 flex items-center justify-between gap-2 border-t pt-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 sm:border-0 sm:pt-0",
+          !enabled && !hasLatestTask && "hidden sm:flex",
+        )}
+      >
+        {latest ? (
+          <RunTaskLink run={latest} className="sm:hidden" />
+        ) : (
+          <span className="sm:hidden" />
+        )}
         <Button
           variant="outline"
           size="sm"
-          className="h-11 sm:h-8"
+          className={cn("h-11 sm:h-8", !enabled && "hidden sm:inline-flex")}
           disabled={pending || !enabled || Boolean(busy)}
           onClick={() => onAction("run")}
           aria-label={`Run ${schedule.definition.name} now`}
@@ -207,10 +239,12 @@ export function ScheduleRow({
       </div>
       <dl className="col-span-2 row-start-2 grid gap-3 text-xs sm:col-span-3 sm:grid-cols-2 sm:gap-x-6">
         <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
-          <dt className="text-muted-foreground">Next run</dt>
+          <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Next run
+          </dt>
           <dd
             className={cn(
-              "min-w-0 tabular-nums",
+              "min-w-0 text-sm tabular-nums",
               schedule.enabled && schedule.nextRunAt
                 ? "text-foreground"
                 : "text-muted-foreground",
@@ -230,10 +264,12 @@ export function ScheduleRow({
           </dd>
         </div>
         <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
-          <dt className="text-muted-foreground">Last run</dt>
-          <dd className="min-w-0">
+          <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Last run
+          </dt>
+          <dd className="min-w-0 text-sm">
             {latest ? (
-              <RunResult run={latest} />
+              <RunResult run={latest} hideTaskOnMobile />
             ) : (
               <span className="text-muted-foreground">No runs yet</span>
             )}
