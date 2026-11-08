@@ -78,7 +78,8 @@ it.each([
     expect(phLogger.info).toHaveBeenCalledWith(
       "browser_handoff_admission_diagnostics",
       expect.objectContaining({
-        diagnostic_version: 1,
+        diagnostic_version: 2,
+        admission_env_idle_timeout: "unavailable",
         admission_probe_result: expected,
         admission_probe_attempt: 1,
         admission_request_accepted: true,
@@ -97,6 +98,7 @@ it.each([
     expect(
       Object.keys(jest.mocked(phLogger.info).mock.calls[0][1]!).sort(),
     ).toEqual([
+      "admission_env_idle_timeout",
       "admission_observation_phase",
       "admission_owner_remaining",
       "admission_probe_attempt",
@@ -110,6 +112,42 @@ it.each([
       "trigger_run_id",
     ]);
     expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
+it.each([
+  ["15m", "15m"],
+  ["PRIVATE_VALUE", "unavailable"],
+])(
+  "projects only a finite ambient idle bucket (%s)",
+  async (bucket, expected) => {
+    const { sessions, run } = await owner();
+    mockQuery.mockResolvedValue({
+      state: "agent",
+      runActive: true,
+      updatedAt: 123,
+    });
+    run.mockClear().mockResolvedValue({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        success: true,
+        data: { connected: true, port: 9223 },
+        hackerai_env_idle_timeout: bucket,
+      }),
+    });
+    await expect(sessions.waitForHumanHandoff()).resolves.toBeUndefined();
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "browser_handoff_admission_diagnostics",
+      expect.objectContaining({
+        diagnostic_version: 2,
+        admission_probe_result: "connected",
+        admission_env_idle_timeout: expected,
+      }),
+    );
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+      "PRIVATE_VALUE",
+    );
   },
 );
 

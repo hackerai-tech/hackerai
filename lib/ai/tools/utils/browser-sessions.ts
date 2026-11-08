@@ -283,6 +283,7 @@ export class BrowserSessions {
     const remaining = this.expiresAt - Date.now();
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), 3_000);
+    let envIdleTimeout = "unavailable";
     let result:
       | "connected"
       | "disconnected"
@@ -310,6 +311,19 @@ export class BrowserSessions {
       ) {
         try {
           const parsed = JSON.parse(response.stdout);
+          const ambientIdle = parsed?.hackerai_env_idle_timeout;
+          if (
+            typeof ambientIdle === "string" &&
+            [
+              "unset",
+              "disabled",
+              "lt_15m",
+              "15m",
+              "gt_15m",
+              "unparsed",
+            ].includes(ambientIdle)
+          )
+            envIdleTimeout = ambientIdle;
           const data = parsed?.data ?? parsed;
           if (parsed?.success === true && data?.connected === false)
             result = "disconnected";
@@ -337,6 +351,8 @@ export class BrowserSessions {
     return {
       admission_probe_result: result,
       admission_probe_attempt: attempt,
+      // Ambient command environment only; launch flags can override the daemon.
+      admission_env_idle_timeout: envIdleTimeout,
       admission_owner_remaining:
         remaining <= 0
           ? "expired"
@@ -404,7 +420,7 @@ export class BrowserSessions {
     if (observation) {
       try {
         phLogger.info("browser_handoff_admission_diagnostics", {
-          diagnostic_version: 1,
+          diagnostic_version: 2,
           ...observation,
           // true can also mean a previously completed takeover was fulfilled.
           // Correlate the later waiting/capture evidence; never infer a transition.
