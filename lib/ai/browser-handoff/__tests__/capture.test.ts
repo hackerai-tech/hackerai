@@ -749,3 +749,132 @@ it("rejects partial open details without retaining supplied private values", asy
   );
   expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
 });
+
+it.each([
+  [1, "unavailable"],
+  [1, "not_observed"],
+  [1, "unreadable"],
+  [1, "recorded", "completed", 0, "selected_session", "older", "after"],
+  [1, "recorded", "completed", 0, "all_sessions", "older", "after"],
+  [1, "recorded", "started", "none", "other_session", "lt10s", "unavailable"],
+])("projects only the bounded retained close tuple %j", async (...tuple) => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      close_receipt: tuple,
+      open_receipt_version: 1,
+      open_receipt_status: "recorded",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      open_age: "older",
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).toMatchObject({
+    capture_close_receipt_version: 1,
+    capture_close_receipt_status: tuple[1],
+  });
+  if (tuple[1] === "recorded") {
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_close_phase: tuple[2],
+      capture_close_exit_code: tuple[3],
+      capture_close_scope: tuple[4],
+      capture_close_age: tuple[5],
+      capture_close_open_order: tuple[6],
+    });
+  } else
+    expect(observed.mock.calls[0][0]).not.toHaveProperty("capture_close_phase");
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each([
+  [1, "recorded", "completed", 256, "selected_session", "older", "after"],
+  [1, "recorded", "started", 0, "selected_session", "older", "after"],
+  [1, "recorded", "completed", 0, "PRIVATE", "older", "after"],
+  [1, "recorded", "completed", 0, "selected_session", "PRIVATE", "after"],
+  [1, "recorded", "completed", 0, "selected_session", "older", "PRIVATE"],
+  [1, "unavailable", "PRIVATE"],
+  [1, "recorded", "completed", 0, "other_session", "older", "after"],
+])(
+  "rejects malformed close details without leaking supplied values: %j",
+  async (...tuple) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        close_receipt: tuple,
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed.mock.calls[0][0]).not.toHaveProperty(
+      "capture_close_receipt_version",
+    );
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it("censors close/open ordering when valid same-session open evidence is absent", async () => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        0,
+        "selected_session",
+        "older",
+        "after",
+      ],
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).not.toHaveProperty(
+    "capture_close_receipt_version",
+  );
+});

@@ -281,6 +281,14 @@ export type BrowserCaptureFailureContext = {
   capture_open_exit_code?: number | "none" | "other";
   capture_open_session_matches?: boolean;
   capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_close_receipt_version?: 1;
+  capture_close_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_close_phase?: "started" | "completed";
+  capture_close_exit_code?: number | "none" | "other";
+  capture_close_scope?: "selected_session" | "other_session" | "all_sessions";
+  capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
 };
 
 /**
@@ -427,6 +435,13 @@ export async function captureBrowserFrame(
         | "capture_open_exit_code"
         | "capture_open_session_matches"
         | "capture_open_age"
+        | "capture_close_receipt_version"
+        | "capture_close_receipt_status"
+        | "capture_close_phase"
+        | "capture_close_exit_code"
+        | "capture_close_scope"
+        | "capture_close_age"
+        | "capture_close_open_order"
       > = {};
       try {
         if (error instanceof CommandExitError) {
@@ -529,6 +544,48 @@ export async function captureBrowserFrame(
                   precondition.capture_open_session_matches =
                     parsed.open_session_matches;
                   precondition.capture_open_age = parsed.open_age;
+                }
+              }
+              const close = parsed?.close_receipt;
+              if (Array.isArray(close) && close[0] === 1) {
+                const [, status, phase, exit, scope, age, order] = close;
+                if (
+                  close.length === 2 &&
+                  ["unavailable", "not_observed", "unreadable"].includes(status)
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = status;
+                } else if (
+                  close.length === 7 &&
+                  status === "recorded" &&
+                  (phase === "started" || phase === "completed") &&
+                  [
+                    "selected_session",
+                    "other_session",
+                    "all_sessions",
+                  ].includes(scope) &&
+                  BROWSER_WRAPPER_AGES.includes(age) &&
+                  ["after", "before", "same_time", "unavailable"].includes(
+                    order,
+                  ) &&
+                  (order === "unavailable" ||
+                    (scope !== "other_session" &&
+                      precondition.capture_open_session_matches === true)) &&
+                  (phase === "started"
+                    ? exit === "none"
+                    : exit === "other" ||
+                      (typeof exit === "number" &&
+                        Number.isInteger(exit) &&
+                        exit >= 0 &&
+                        exit <= 255))
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = "recorded";
+                  precondition.capture_close_phase = phase;
+                  precondition.capture_close_exit_code = exit;
+                  precondition.capture_close_scope = scope;
+                  precondition.capture_close_age = age;
+                  precondition.capture_close_open_order = order;
                 }
               }
             }

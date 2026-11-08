@@ -80,7 +80,7 @@ function wrapperReceipt() {
     const receipt = readReceipt('wrapper-receipt.json');
     if (!validReceipt(receipt)) return {};
     const sessionKey = createHash('sha256').update(name, 'utf8').digest('hex');
-    const result = {
+    let result = {
       wrapper_receipt_version: 1,
       wrapper_action: receipt.action,
       wrapper_phase: receipt.phase,
@@ -91,17 +91,37 @@ function wrapperReceipt() {
       // Older workers do not write the sticky receipt; absence is not no-open evidence.
       open_receipt_status: receipt.open_receipt_support === 1 ? 'not_observed' : 'unavailable',
     };
-    if (receipt.open_receipt_support !== 1) return result;
-    try {
-      const open = readReceipt('open-receipt.json');
-      if (!validReceipt(open) || open.action !== 'open') throw new Error();
-      return { ...result, open_receipt_status: 'recorded',
-        open_phase: open.phase, open_exit: receiptExit(open),
-        open_session_matches: open.session_key === sessionKey, open_age: receiptAge(open.at) };
-    } catch (error) {
-      // Missing/unreadable records are censored observations, never proof no CLI ran.
-      return { ...result, open_receipt_status: error?.code === 'ENOENT' ? 'not_observed' : 'unreadable' };
+    let open;
+    if (receipt.open_receipt_support === 1) {
+      try {
+        const candidate = readReceipt('open-receipt.json');
+        if (!validReceipt(candidate) || candidate.action !== 'open') throw new Error();
+        open = candidate;
+        result = { ...result, open_receipt_status: 'recorded',
+          open_phase: open.phase, open_exit: receiptExit(open),
+          open_session_matches: open.session_key === sessionKey, open_age: receiptAge(open.at) };
+      } catch (error) {
+        // Missing/unreadable records are censored observations, never proof no CLI ran.
+        result.open_receipt_status = error?.code === 'ENOENT' ? 'not_observed' : 'unreadable';
+      }
     }
+    // Compact internal tuple keeps combined failure JSON below the existing 512-byte cap.
+    // [version, status, phase, exit, scope, age, close/open timestamp order].
+    result.close_receipt = [1, 'unavailable'];
+    if (receipt.close_receipt_support === 1) {
+      try {
+        const close = readReceipt('close-receipt.json');
+        if (!validReceipt(close) || close.action !== 'close' || typeof close.close_all !== 'boolean') throw new Error();
+        const scope = close.close_all ? 'all_sessions' : close.session_key === sessionKey ? 'selected_session' : 'other_session';
+        const order = open?.session_key === sessionKey && scope !== 'other_session' ?
+          close.at > open.at ? 'after' : close.at < open.at ? 'before' : 'same_time' : 'unavailable';
+        result.close_receipt = [1, 'recorded', close.phase, receiptExit(close),
+          scope, receiptAge(close.at), order];
+      } catch (error) {
+        result.close_receipt = [1, error?.code === 'ENOENT' ? 'not_observed' : 'unreadable'];
+      }
+    }
+    return result;
   } catch { return {}; }
 }
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
