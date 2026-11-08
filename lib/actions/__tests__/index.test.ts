@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter } from "ai";
-import { APICallError } from "ai";
+import {
+  APICallError,
+  JSONParseError,
+  NoOutputGeneratedError,
+  TypeValidationError,
+} from "ai";
 
 const mockGenerateText = jest.fn();
 const mockLanguageModel = jest.fn((modelName: string) => ({ modelName }));
@@ -9,6 +14,11 @@ jest.mock("ai", () => ({
   APICallError: jest.requireActual<typeof import("ai")>("ai").APICallError,
   NoObjectGeneratedError:
     jest.requireActual<typeof import("ai")>("ai").NoObjectGeneratedError,
+  NoOutputGeneratedError:
+    jest.requireActual<typeof import("ai")>("ai").NoOutputGeneratedError,
+  TypeValidationError:
+    jest.requireActual<typeof import("ai")>("ai").TypeValidationError,
+  JSONParseError: jest.requireActual<typeof import("ai")>("ai").JSONParseError,
   generateText: (...args: unknown[]) => mockGenerateText(...args),
   Output: {
     object: (config: unknown) => ({ type: "object", ...config }),
@@ -211,29 +221,121 @@ describe("generateTitleFromUserMessage", () => {
       write: jest.fn(),
     } as unknown as UIMessageStreamWriter;
 
-    await expect(
-      generateTitleFromUserMessageWithWriter(
-        makeMessage("debug truncated title JSON responses"),
-        writer,
-      ),
-    ).resolves.toBe("debug truncated title JSON responses");
+    try {
+      await expect(
+        generateTitleFromUserMessageWithWriter(
+          makeMessage("debug truncated title JSON responses"),
+          writer,
+        ),
+      ).resolves.toBe("debug truncated title JSON responses");
 
-    expect(writer.write).toHaveBeenCalledWith({
-      type: "data-title",
-      data: { chatTitle: "debug truncated title JSON responses" },
-      transient: true,
-    });
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
-    expect(consoleWarnSpy).toHaveBeenCalledWith(
-      "chat_title_generation_failed",
-      {
-        category: "provider_error",
-        statusCode: 400,
-      },
-    );
-
-    consoleWarnSpy.mockRestore();
+      expect(writer.write).toHaveBeenCalledWith({
+        type: "data-title",
+        data: { chatTitle: "debug truncated title JSON responses" },
+        transient: true,
+      });
+      expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        "chat_title_generation_failed",
+        {
+          category: "provider_error",
+          statusCode: 400,
+          error_kind_version: 1,
+          error_kind: "provider_api_error",
+        },
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
   });
+
+  it.each([
+    [
+      "sdk_no_output",
+      () => new NoOutputGeneratedError({ message: "fixture-private output" }),
+    ],
+    [
+      "sdk_type_validation",
+      () =>
+        new TypeValidationError({
+          value: { prompt: "fixture-private prompt" },
+          cause: new Error("fixture-private validation"),
+        }),
+    ],
+    [
+      "sdk_json_parse",
+      () =>
+        new JSONParseError({
+          text: "fixture-private response",
+          cause: new SyntaxError("fixture-private syntax"),
+        }),
+    ],
+    ["js_type_error", () => new TypeError("fixture-private type")],
+    ["js_range_error", () => new RangeError("fixture-private range")],
+    ["js_syntax_error", () => new SyntaxError("fixture-private syntax")],
+    [
+      "other_error",
+      () =>
+        Object.defineProperty(new Error("fixture-private message"), "name", {
+          get() {
+            throw new Error("fixture-private name must not be read");
+          },
+        }),
+    ],
+    ["non_error", () => ({ token: "fixture-private token" })],
+    [
+      "unavailable",
+      () =>
+        new Proxy(new NoOutputGeneratedError(), {
+          get(target, key, receiver) {
+            if (typeof key === "symbol")
+              throw new Error("fixture-private guard failure");
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+    ],
+  ] as const)(
+    "retains fallback delivery and emits only the closed %s error kind",
+    async (errorKind, makeError) => {
+      mockGenerateText.mockRejectedValue(makeError());
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
+      const persist = jest.fn(async () => undefined);
+      const onCost = jest.fn();
+
+      try {
+        await expect(
+          generateTitleFromUserMessageWithWriter(
+            makeMessage("retain the existing fallback title now"),
+            writer,
+            persist,
+            onCost,
+          ),
+        ).resolves.toBe("retain the existing fallback title");
+        expect(writer.write).toHaveBeenCalledWith({
+          type: "data-title",
+          data: { chatTitle: "retain the existing fallback title" },
+          transient: true,
+        });
+        expect(persist).toHaveBeenCalledWith(
+          "retain the existing fallback title",
+        );
+        expect(onCost).not.toHaveBeenCalled();
+        expect(mockGenerateText).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith("chat_title_generation_failed", {
+          category: "unknown_error",
+          error_kind_version: 1,
+          error_kind: errorKind,
+        });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(
+          "fixture-private",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it("persists the generated title after streaming it to the header", async () => {
     mockGenerateText.mockResolvedValue({
