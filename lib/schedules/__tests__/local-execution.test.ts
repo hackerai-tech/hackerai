@@ -103,3 +103,27 @@ it("does not report connection loss after the run has already finished", async (
   await Promise.resolve();
   expect(onLost).not.toHaveBeenCalled();
 });
+
+it("tolerates isolated presence timeouts but stops after sustained uncertainty", async () => {
+  jest.useFakeTimers();
+  const onLost = jest.fn();
+  const uncertain = { reliable: false, onlineConnectionIds: new Set() };
+  mockPresence
+    .mockResolvedValueOnce(uncertain)
+    .mockResolvedValueOnce(uncertain)
+    .mockResolvedValueOnce({
+      reliable: true,
+      onlineConnectionIds: new Set(["session"]),
+    })
+    .mockResolvedValue(uncertain);
+  const dispose = watchScheduledConnection({
+    userId: "owner",
+    connectionId: "session",
+    onLost,
+  });
+  await jest.advanceTimersByTimeAsync(25000);
+  expect(onLost).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(onLost).toHaveBeenCalledTimes(1);
+  dispose();
+});

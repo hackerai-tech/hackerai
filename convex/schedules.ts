@@ -143,21 +143,25 @@ export const save = mutation({
     const definition = validateSchedule(args.definition);
     if (definition.execution) {
       const execution = definition.execution;
-      const connections = await ctx.db
+      const connection = await ctx.db
         .query("local_sandbox_connections")
         .withIndex("by_user_and_environment", (q) =>
           q
             .eq("user_id", args.userId)
             .eq("environment_id", execution.preference.split(":")[1]),
         )
+        .filter((q) =>
+          q.and(
+            q.eq(q.field("status"), "connected"),
+            q.neq(q.field("ready"), false),
+            q.neq(q.field("mode"), "cloud"),
+            execution.preference.startsWith("desktop-environment:")
+              ? q.eq(q.field("client_version"), "desktop")
+              : q.neq(q.field("client_version"), "desktop"),
+          ),
+        )
         .order("desc")
-        .take(20);
-      const connection = connections.find(
-        (c) =>
-          c.mode !== "cloud" &&
-          (c.client_version === "desktop") ===
-            execution.preference.startsWith("desktop-environment:"),
-      );
+        .first();
       const saved = args.id ? await owned(ctx, args.id, args.userId) : null;
       if (
         !connection &&

@@ -71,6 +71,21 @@ function store() {
         build(q);
         let rows = tables[table].filter((r) => filters.every((f) => f(r)));
         const result: any = {
+          filter: (build: (q: any) => (r: Row) => boolean) => {
+            const q = {
+              field: (key: string) => (r: Row) => r[key],
+              eq: (field: (r: Row) => any, value: any) => (r: Row) =>
+                field(r) === value,
+              neq: (field: (r: Row) => any, value: any) => (r: Row) =>
+                field(r) !== value,
+              and:
+                (...tests: Array<(r: Row) => boolean>) =>
+                (r: Row) =>
+                  tests.every((test) => test(r)),
+            };
+            rows = rows.filter(build(q));
+            return result;
+          },
           first: async () => rows[0] ?? null,
           unique: async () => rows[0] ?? null,
           take: async (n: number) => rows.slice(0, n),
@@ -721,7 +736,21 @@ it("binds local schedules only to the owner's computer, and retains offline edit
     client_version: "1.0",
     mode: "dangerous",
     connection_name: "My lab",
+    status: "connected",
+    ready: true,
   });
+  // Disconnected historical rows must not hide the older active session.
+  for (let n = 0; n < 25; n++) {
+    await ctx.db.insert("local_sandbox_connections", {
+      user_id: "owner",
+      environment_id: localExecution.preference.split(":")[1],
+      client_version: "1.0",
+      mode: "dangerous",
+      connection_name: "Stale label",
+      status: "disconnected",
+      ready: true,
+    });
+  }
   const id = await call(save, ctx, {
     ...auth,
     definition: { ...definition, execution: localExecution },

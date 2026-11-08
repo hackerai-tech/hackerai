@@ -1749,7 +1749,7 @@ export const agentLongTask = task({
       analyticsRequestContext,
       genericDelegationEnabled = false,
     } = payload;
-    const subagentsEnabled = genericDelegationEnabled;
+    let subagentsEnabled = genericDelegationEnabled;
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
@@ -2150,6 +2150,10 @@ export const agentLongTask = task({
       ]);
       const { chat, fileTokens } = fetched;
       if (chat?.scheduled_local_execution) {
+        // Child runs do not inherit the parent's pinned relay session.
+        subagentsEnabled = false;
+        const scheduledCleanup = runCleanupMap.get(ctx.run.id);
+        if (scheduledCleanup) scheduledCleanup.subagentsEnabled = false;
         const connection = await findScheduledConnection(
           userId,
           chat.scheduled_local_execution.preference,
@@ -3227,7 +3231,7 @@ export const agentLongTask = task({
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
             };
-            if (genericDelegationEnabled) {
+            if (subagentsEnabled) {
               captureSubagentLifecycleEvent("subagent_available", {
                 userId,
                 eventUuid: subagentAvailabilityEventUuid(ctx.run.id, "general"),
@@ -3422,7 +3426,7 @@ export const agentLongTask = task({
                 userCustomization,
                 sandboxContext,
                 agentPermissionMode,
-                genericDelegationEnabled,
+                subagentsEnabled,
                 cloudSandboxProvider,
                 selectedModelOverride,
               ),

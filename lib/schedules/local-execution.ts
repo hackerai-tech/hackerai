@@ -41,13 +41,18 @@ export function watchScheduledConnection({
   onLost: () => void;
 }) {
   let disposed = false;
+  let unreliableProbes = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const check = async () => {
     const presence = await queryLiveSandboxConnectionIds(userId, [
       connectionId,
     ]);
     if (disposed) return;
-    if (!presence.reliable || !presence.onlineConnectionIds.has(connectionId)) {
+    unreliableProbes = presence.reliable ? 0 : unreliableProbes + 1;
+    if (
+      (presence.reliable && !presence.onlineConnectionIds.has(connectionId)) ||
+      unreliableProbes >= 3
+    ) {
       disposed = true;
       onLost();
       return;
