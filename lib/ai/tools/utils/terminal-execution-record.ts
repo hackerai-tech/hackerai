@@ -121,7 +121,23 @@ export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
   scopeId: string,
+  ownerTriggerRunId?: string,
 ) {
+  // Caller-supplied server context identifies the store owner, not necessarily
+  // the request interacting with a retained terminal. Keep storage scope hashes
+  // and provider sandbox identities out of this additional correlation field.
+  const ownerContext: Record<string, string | number> =
+    typeof ownerTriggerRunId === "string" &&
+    /^run_[a-z0-9]{20,40}$/.test(ownerTriggerRunId)
+      ? {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "recorded",
+          checkpoint_owner_trigger_run_id: ownerTriggerRunId,
+        }
+      : {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "unavailable",
+        };
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -249,6 +265,9 @@ export function createTerminalRecordStore(
         }
         try {
           const local = isCentrifugoSandbox(sandbox);
+          const cloudContext = !local
+            ? checkpointCloudErrorContext(error)
+            : undefined;
           const session = Object.getOwnPropertyDescriptor(
             record,
             "session",
@@ -273,7 +292,10 @@ export function createTerminalRecordStore(
                     failureCategory === "unknown"
                       ? checkpointNativeFilesystemErrorContext(error)
                       : {}),
-                    ...(!local ? checkpointCloudErrorContext(error) : {}),
+                    ...cloudContext,
+                    ...(cloudContext?.cloud_error_kind === "no_space"
+                      ? ownerContext
+                      : {}),
                   },
                 }
               : undefined;

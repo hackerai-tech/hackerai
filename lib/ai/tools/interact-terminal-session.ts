@@ -555,6 +555,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             sandbox as AnySandbox,
             context.userID,
             ptyScopeId,
+            context.triggerRunId,
           );
           const record = await store.read(sessionId);
           if (record) {
