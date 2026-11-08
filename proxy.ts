@@ -70,9 +70,16 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/manifest.json",
 ]);
 
-function getRedirectUri(): string | undefined {
+function getRedirectUri(request: NextRequest): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}/callback`;
+    // Keep the branch origin's auth cookie usable by its allowlisted relay.
+    // Never derive a callback from an arbitrary request/forwarded Host value.
+    const branchHost = process.env.VERCEL_BRANCH_URL;
+    const host =
+      branchHost && request.nextUrl.host === branchHost
+        ? branchHost
+        : process.env.VERCEL_URL;
+    return `https://${host}/callback`;
   }
   return undefined;
 }
@@ -359,7 +366,7 @@ export default async function proxy(request: NextRequest) {
   let authkitResult: Awaited<ReturnType<typeof authkit>>;
   try {
     authkitResult = await authkit(request, {
-      redirectUri: getRedirectUri(),
+      redirectUri: getRedirectUri(request),
       eagerAuth: true,
       onSessionRefreshError: ({ error, isTransient }) => {
         if (isInvalidRefreshTokenError(error)) {
@@ -446,7 +453,7 @@ export default async function proxy(request: NextRequest) {
       // cookie deletion alone leaves the invalid cookie on this request.
       // An error from this second call propagates, so recovery cannot loop.
       const { headers } = await authkit(request, {
-        redirectUri: getRedirectUri(),
+        redirectUri: getRedirectUri(request),
         eagerAuth: true,
       });
       return withSessionCookieCleared(

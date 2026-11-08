@@ -602,6 +602,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     subscription,
     activeProjectId,
   } = useGlobalState();
+  const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
+    useState(false);
+  useEffect(() => {
+    if (sidebarOpen) setHasOpenedComputerSidebar(true);
+  }, [sidebarOpen]);
+
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
   const { hasResolvedInitialPresentation, markInitialPresentationResolved } =
@@ -660,11 +666,18 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       // Takeover and its exit prompt render in portals above this dialog.
       if (hasNestedDialogFocus()) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        closeSidebar();
+        // Use the editor's explicit close path so Escape also discards its
+        // draft and respects the disabled close button during a save.
+        const closeGoalEditor = dialog.querySelector<HTMLButtonElement>(
+          'button[aria-label="Close goal editor"]',
+        );
+        if (closeGoalEditor) closeGoalEditor.click();
+        else closeSidebar();
         return;
       }
 
@@ -890,6 +903,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     api.agentGoals.get,
     chatDataForCurrentChat ? { chatId } : "skip",
   );
+  const browserHandoff = useQuery(
+    api.browserHandoffs.getForUser,
+    isConvexAuthenticated && chatDataForCurrentChat
+      ? { chatId, agentId: "parent" }
+      : "skip",
+  );
+  const browserNeedsInput =
+    !!browserHandoff &&
+    ["waiting", "claiming", "human", "recovery", "resuming"].includes(
+      browserHandoff.state,
+    );
 
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
@@ -2891,7 +2915,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     <AgentGoalPanel
       key={chatId}
       detached={placement === "detached"}
-      waitingForReply={!!pendingUserWait}
+      waitingForReply={
+        !!pendingUserWait ||
+        (browserNeedsInput &&
+          persistedGoal?.state === "running" &&
+          !!persistedGoal.activeRunId &&
+          browserHandoff?.runId === persistedGoal.activeRunId)
+      }
       onEdit={() => openSidebar({ kind: "goal", chatId })}
       chatId={chatId}
       exists={!!chatDataForCurrentChat}
@@ -3122,6 +3152,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                         <BrowserHandoffEntry
                           chatId={chatId}
                           messages={messages}
+                          persistedMessages={serverMessages}
                         />
                       ) : undefined
                     }
@@ -3170,7 +3201,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             </div>
           </div>
 
-          {/* Keep the controller mounted when switching between split and overlay. */}
+          {/* Load on first open, then retain Goal drafts across browser panel closes. */}
           <div
             ref={computerDialogRef}
             className={
@@ -3202,7 +3233,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                 computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
               }
             >
-              {sidebarOpen && (
+              {(sidebarOpen || hasOpenedComputerSidebar) && (
                 <ComputerSidebar
                   key={chatId}
                   stopGoalRunBeforeControl={stopGoalRunBeforeControl}

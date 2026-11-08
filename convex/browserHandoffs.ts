@@ -9,6 +9,23 @@ import {
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { effectiveBrowserHandoffState } from "./lib/browserHandoffState";
+import { syncGoalInputTiming } from "./lib/goalInputTiming";
+
+async function syncParentGoalTiming(
+  ctx: MutationCtx,
+  row: Pick<
+    Doc<"browser_handoffs">,
+    "agent_id" | "chat_id" | "user_id" | "run_id"
+  >,
+) {
+  if (row.agent_id === "parent") {
+    await syncGoalInputTiming(ctx, {
+      chatId: row.chat_id,
+      userId: row.user_id,
+      runId: row.run_id,
+    });
+  }
+}
 
 const state = v.union(
   v.literal("agent"),
@@ -229,6 +246,7 @@ export const registerForBackend = mutation({
       expires_at: args.expiresAt,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, probe);
     return true;
   },
 });
@@ -288,6 +306,7 @@ export const requestWaitForBackend = mutation({
       waiting_for_handoff: true,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -316,6 +335,7 @@ export const beginTakeoverForBackend = mutation({
       grant_expires_at: Date.now() + CLAIM_MS,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -366,6 +386,7 @@ export const abortTakeoverForBackend = mutation({
         controlled_session_name: undefined,
         updated_at: Date.now(),
       });
+      await syncParentGoalTiming(ctx, row);
     }
     return null;
   },
@@ -498,6 +519,7 @@ export const finishResumeForBackend = mutation({
       waiting_for_handoff: undefined,
       updated_at: Date.now(),
     });
+    await syncParentGoalTiming(ctx, row);
     return true;
   },
 });
@@ -547,6 +569,7 @@ export const closeForBackend = mutation({
         controlled_session_name: undefined,
         updated_at: Date.now(),
       });
+      await syncParentGoalTiming(ctx, row);
     }
     return null;
   },

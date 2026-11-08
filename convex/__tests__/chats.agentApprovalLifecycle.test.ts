@@ -1413,6 +1413,7 @@ describe("Goal clock during durable user waits", () => {
     ctx.db.query.mockImplementation((table: string) => ({
       withIndex: () => ({
         first: async () => (table === "agent_goals" ? goal : chat),
+        order: () => ({ first: async () => null }),
       }),
     }));
     patch.mockImplementation(async (id: string, fields: object) =>
@@ -1462,4 +1463,53 @@ describe("Goal clock during durable user waits", () => {
       now.mockRestore();
     }
   });
+});
+
+it("keeps Goal time frozen when approval ends during browser takeover", async () => {
+  const chat: any = {
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+    active_trigger_run_id: "run",
+    active_agent_approval_pending: true,
+    active_agent_approval_request: { approvalId: "approval" },
+  };
+  const goal: any = {
+    _id: "goal-doc",
+    chatId: "chat",
+    userId: "user",
+    activeRunId: "run",
+    state: "needs_approval",
+    elapsedMs: 2000,
+    activeSince: undefined,
+    updatedAt: 1000,
+  };
+  const browser = { user_id: "user", run_id: "run", state: "human" };
+  const { ctx, patch } = makeCtx(chat);
+  ctx.db.query.mockImplementation((table: string) => ({
+    withIndex: () => ({
+      first: async () => (table === "agent_goals" ? goal : chat),
+      unique: async () => goal,
+      order: () => ({ first: async () => browser }),
+    }),
+  }));
+  patch.mockImplementation(async (id: string, fields: object) =>
+    Object.assign(id === goal._id ? goal : chat, fields),
+  );
+  const now = jest.spyOn(Date, "now").mockReturnValue(64000);
+  try {
+    await expect(
+      setActiveAgentApprovalPending.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        pending: false,
+        expectedRunId: "run",
+        expectedApprovalId: "approval",
+      }),
+    ).resolves.toBe("released");
+    expect(goal.state).toBe("running");
+    expect(goalElapsedMs(goal, 124000)).toBe(2000);
+  } finally {
+    now.mockRestore();
+  }
 });

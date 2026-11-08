@@ -1,5 +1,6 @@
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
+import { syncGoalInputTiming } from "./lib/goalInputTiming";
 import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
@@ -1943,29 +1944,6 @@ export const setActiveTriggerRun = mutation({
   },
 });
 
-async function updateGoalUserWaitTiming(
-  ctx: MutationCtx,
-  identity: { chatId: string; userId: string; runId: string },
-  waiting: boolean,
-) {
-  const goal = await ctx.db
-    .query("agent_goals")
-    .withIndex("by_chatId", (q) => q.eq("chatId", identity.chatId))
-    .first();
-  if (
-    goal?.userId === identity.userId &&
-    goal.activeRunId === identity.runId &&
-    goal.state === "running"
-  ) {
-    // Preserve the running lease while its durable tool is suspended. The
-    // timer changes atomically with wait ownership, without dispatching a run.
-    await ctx.db.patch(
-      goal._id,
-      goalTimingForState(goal, waiting ? "needs_input" : "running", Date.now()),
-    );
-  }
-}
-
 /** Only the current Trigger run may expose a reply wait in this chat. */
 export const setActiveAgentUserWait = mutation({
   args: {
@@ -2018,14 +1996,14 @@ export const setActiveAgentUserWait = mutation({
           status: "waiting" as const,
         },
       });
-      await updateGoalUserWaitTiming(ctx, args, true);
+      await syncGoalInputTiming(ctx, args);
       return "acquired" as const;
     }
     if (!active || active.toolCallId !== args.toolCallId) {
       return "stale" as const;
     }
     await ctx.db.patch(chat._id, { active_agent_user_wait: undefined });
-    await updateGoalUserWaitTiming(ctx, args, false);
+    await syncGoalInputTiming(ctx, args);
     return "released" as const;
   },
 });
@@ -2165,12 +2143,18 @@ export const setActiveAgentApprovalPending = mutation({
     if (
       goal?.activeRunId === chat.active_trigger_run_id &&
       goal?.state === "needs_approval"
-    )
+    ) {
       await ctx.db.patch(goal._id, {
         ...goalTimingForState(goal, "running", Date.now()),
         state: "running",
         updatedAt: Date.now(),
       });
+      await syncGoalInputTiming(ctx, {
+        chatId: args.chatId,
+        userId: chat.user_id,
+        runId: chat.active_trigger_run_id!,
+      });
+    }
     return "released" as const;
   },
 });
