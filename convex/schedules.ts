@@ -141,7 +141,6 @@ export const save = mutation({
     const definition = validateSchedule(args.definition);
     const now = Date.now();
     const next = nextScheduledTime(definition.timing, now);
-    if (next === null) throw new ConvexError("Choose a time in the future.");
     if (args.id) {
       const row = await owned(ctx, args.id, args.userId);
       const sameTiming = sameScheduleTiming(
@@ -153,6 +152,8 @@ export const save = mutation({
         definition.timing.type === "once" &&
         !sameTiming;
       const enabled = row.enabled || rearmed;
+      if (enabled && next === null)
+        throw new ConvexError("Choose a time in the future.");
       await ctx.db.patch(row._id, {
         definition,
         organization_id: args.organizationId,
@@ -162,12 +163,13 @@ export const save = mutation({
         next_run_at: enabled
           ? sameTiming && row.next_run_at !== undefined
             ? row.next_run_at
-            : next
+            : (next ?? undefined)
           : undefined,
         updated_at: now,
       });
       return row._id;
     }
+    if (next === null) throw new ConvexError("Choose a time in the future.");
     const existing = await ctx.db
       .query("agent_schedules")
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))

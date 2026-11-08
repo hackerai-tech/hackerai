@@ -663,3 +663,32 @@ it("keeps an ambiguous start fenced instead of replaying it", async () => {
     jest.restoreAllMocks();
   }
 });
+
+it.each([false, true])(
+  "keeps a past one-time schedule disabled when renamed (consumed=%s)",
+  async (consumed) => {
+    const { ctx, tables } = store();
+    const at = Date.now() + 60000;
+    const original = { ...definition, timing: { type: "once" as const, at } };
+    const id = await call(save, ctx, { ...auth, definition: original });
+    tables.agent_schedules[0].enabled = false;
+    tables.agent_schedules[0].next_run_at = undefined;
+    if (consumed) tables.agent_schedules[0].consumed_at = at;
+    jest.spyOn(Date, "now").mockReturnValue(at + 60000);
+    try {
+      await call(save, ctx, {
+        ...auth,
+        id,
+        definition: { ...original, name: "Renamed schedule" },
+      });
+      expect(tables.agent_schedules[0]).toMatchObject({
+        definition: { ...original, name: "Renamed schedule" },
+        enabled: false,
+        next_run_at: undefined,
+        consumed_at: consumed ? at : undefined,
+      });
+    } finally {
+      jest.restoreAllMocks();
+    }
+  },
+);

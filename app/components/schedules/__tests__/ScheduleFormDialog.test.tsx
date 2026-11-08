@@ -145,3 +145,30 @@ it("keeps an edited interval when its selected recurrence button is pressed agai
     }),
   );
 });
+
+it.each([false, true])(
+  "saves a past one-time schedule without rearming it (consumed=%s)",
+  async (consumed) => {
+    const save = jest.fn().mockResolvedValue(undefined);
+    const past = {
+      ...initial,
+      timing: { type: "once" as const, at: Date.now() - 86400000 },
+    };
+    render(
+      <ScheduleFormDialog
+        initial={past}
+        editing
+        saved={{ enabled: false, consumed, nextRunAt: null }}
+        onSave={save}
+        onClose={jest.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Renamed schedule" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({ ...past, name: "Renamed schedule" }),
+    );
+  },
+);

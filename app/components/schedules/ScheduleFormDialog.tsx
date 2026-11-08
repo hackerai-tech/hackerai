@@ -155,7 +155,10 @@ export function ScheduleFormDialog({
         ...value,
         timing: candidate,
       });
-      if (nextScheduledTime(definition.timing, Date.now()) === null)
+      if (
+        enabledAfterSave &&
+        nextScheduledTime(definition.timing, Date.now()) === null
+      )
         throw new Error("Choose a date and time in the future.");
       setPending(true);
       await onSave(definition);
