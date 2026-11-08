@@ -9,6 +9,29 @@ function sandbox() {
 }
 
 describe("managed browser ownership", () => {
+  it.each([true, false])(
+    "checks the managed rollout once while sharing concurrent preparation: %s",
+    async (enabled) => {
+      const target = sandbox();
+      const decide = jest.fn(async () => enabled);
+      const owner = new BrowserSessions(undefined, undefined, undefined, {
+        enabled: decide,
+      });
+      const [a, b] = await Promise.all([
+        owner.prepare(target as unknown as AnySandbox),
+        owner.prepare(target as unknown as AnySandbox),
+      ]);
+      expect(a).toEqual(b);
+      expect(target.commands.run).toHaveBeenCalledTimes(1);
+      expect(decide).toHaveBeenCalledTimes(1);
+      const command = (
+        target.commands.run.mock.calls[0] as unknown as [string]
+      )[0];
+      if (enabled) expect(command).toContain("hackerai.cloudflareChallenge");
+      else expect(command).not.toContain("hackerai.cloudflareChallenge");
+      await owner.cleanup();
+    },
+  );
   it("isolates parent, sibling, and later-run sockets and encryption keys", async () => {
     const target = sandbox();
     const owners = [

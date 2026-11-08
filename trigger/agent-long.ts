@@ -3085,6 +3085,7 @@ export const agentLongTask = task({
             );
             const {
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools: baseTools,
               ensureSandbox,
               getTodoManager,
@@ -4145,6 +4146,7 @@ export const agentLongTask = task({
               trackedProvider,
               currentSystemPrompt,
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools,
               mode,
               endpoint,

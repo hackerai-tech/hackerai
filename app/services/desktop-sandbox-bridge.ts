@@ -271,6 +271,7 @@ interface DesktopBridgeConfig {
       pty: boolean;
       files?: boolean;
       operationChannels?: boolean;
+      commandStdin?: boolean;
     };
   }) => Promise<{
     connectionId: string;
@@ -584,6 +585,7 @@ export class DesktopSandboxBridge {
       ? platform!
       : "unknown";
     const files = await this.probeFileBridge();
+    const commandStdin = await this.probeCommandStdin();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
@@ -596,6 +598,7 @@ export class DesktopSandboxBridge {
           pty: true,
           files,
           operationChannels: true,
+          ...(commandStdin && { commandStdin: true }),
         },
       });
 
@@ -975,6 +978,25 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private async probeCommandStdin(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await Promise.race([
+        invoke<unknown>("get_command_stdin_support").then(
+          (supported) => supported === true,
+        ),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), 500);
+        }),
+      ]);
+    } catch {
+      return false; // Older native apps must never silently discard stdin.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async getOsInfo(): Promise<
     | { platform: string; arch: string; release: string; hostname: string }
     | undefined
@@ -1095,6 +1117,10 @@ export class DesktopSandboxBridge {
             command: command.command,
             cwd: command.cwd,
             env: command.env,
+            ...(command.stdin !== undefined && {
+              stdin: command.stdin,
+              stdinEncoding: command.stdinEncoding ?? "utf8",
+            }),
             timeoutMs: command.timeout ?? 30_000,
             onEvent: channel,
           });
@@ -1369,6 +1395,10 @@ export class DesktopSandboxBridge {
             command: command.command,
             cwd: command.cwd,
             env: command.env,
+            ...(command.stdin !== undefined && {
+              stdin: command.stdin,
+              stdinEncoding: command.stdinEncoding ?? "utf8",
+            }),
             timeoutMs: command.timeout ?? 30000,
             onEvent: channel,
           });

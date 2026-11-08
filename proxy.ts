@@ -243,6 +243,50 @@ function withSessionCookieCleared(response: NextResponse): NextResponse {
   return response;
 }
 
+/** Observe non-GET Desktop redirect decisions without retaining request contents or affecting auth. */
+function recordDesktopAuthRedirect(
+  request: NextRequest,
+  response: NextResponse,
+  reason: "missing_session_cookie" | "ended_session",
+): void {
+  try {
+    if (
+      request.method === "GET" ||
+      request.method === "HEAD" ||
+      !isDesktopApp(request)
+    ) {
+      return;
+    }
+
+    const pathname = request.nextUrl.pathname;
+    console.info(
+      JSON.stringify({
+        event: "desktop_auth_redirect_observed",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        reason,
+        request_method: ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(
+          request.method,
+        )
+          ? request.method
+          : "OTHER",
+        route_kind: pathname.startsWith("/c/")
+          ? "chat_page"
+          : pathname.startsWith("/api/")
+            ? "api"
+            : "other_protected",
+        next_action_header_present: request.headers.has(NEXT_ACTION_HEADER),
+        accepts_html: isBrowserRequest(request),
+        redirect_status: response.status,
+        destination: "desktop_callback",
+      }),
+    );
+  } catch {
+    // Diagnostics must never change authentication responses.
+  }
+}
+
+/** Retain the logged-out response contract and clear only the ended session cookie. */
 function buildEndedSessionResponse(
   request: NextRequest,
   pathname: string,
@@ -290,11 +334,14 @@ function buildEndedSessionResponse(
     ? new URL("/desktop-callback?error=unauthenticated", request.url)
     : new URL("/login", request.url);
 
-  return withSessionCookieCleared(
+  const response = withSessionCookieCleared(
     withAttributionCookies(request, NextResponse.redirect(redirectUrl)),
   );
+  recordDesktopAuthRedirect(request, response, "ended_session");
+  return response;
 }
 
+/** Keep Desktop cookie admission distinct from AuthKit refresh recovery and its response contract. */
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
@@ -350,12 +397,14 @@ export default async function proxy(request: NextRequest) {
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return withAttributionCookies(
+      const response = withAttributionCookies(
         request,
         NextResponse.redirect(
           new URL("/desktop-callback?error=unauthenticated", request.url),
         ),
       );
+      recordDesktopAuthRedirect(request, response, "missing_session_cookie");
+      return response;
     }
   }
 

@@ -1,11 +1,39 @@
 import { NextResponse } from "next/server";
 
-import { ChatSDKError } from "@/lib/errors";
-import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
+import { ChatSDKError, ERROR_TYPES, ERROR_SURFACES } from "@/lib/errors";
+import {
+  AGENT_API_ENDPOINT,
+  LEGACY_AGENT_API_ENDPOINT,
+  type AgentApiEndpoint,
+} from "@/lib/api/agent-endpoints";
 import type { InitialChatPersistenceStep } from "@/lib/db/actions";
 
 const MAX_ERROR_FIELD_LENGTH = 1000;
 const MAX_STACK_FIELD_LENGTH = 2000;
+
+// These stages belong to the start/status callers, not arbitrary request data.
+const SERVICE_UNAVAILABLE_STAGES = [
+  "parse_request",
+  "authenticate",
+  "access_gates",
+  "workspace_routing",
+  "load_chat_and_preferences",
+  "reconcile_goal",
+  "resolve_execution_context",
+  "prepare_desktop_attachments",
+  "persist_user_message",
+  "create_idempotency_key",
+  "sessions.start",
+  "tasks.trigger",
+  "create_tokens_and_associate_run",
+  "read_request",
+  "get_chat",
+  "retrieve_trigger_run",
+  "recover_crashed_trigger_run",
+  "clear_uninitialized_terminal_trigger_run",
+  "clear_terminal_trigger_run",
+  "clear_missing_trigger_run",
+] as const;
 
 type AgentRouteErrorContext = {
   requestId?: string;
@@ -68,6 +96,7 @@ const serializeRouteError = (error: unknown) => {
   };
 };
 
+/** Preserve typed responses; optional 503 diagnostics must never change delivery. */
 export function handleAgentRouteError({
   error,
   endpoint,
@@ -81,7 +110,67 @@ export function handleAgentRouteError({
   fallbackMessage: string;
   context?: AgentRouteErrorContext;
 }) {
-  if (error instanceof ChatSDKError) return error.toResponse();
+  if (error instanceof ChatSDKError) {
+    const response = error.toResponse();
+    try {
+      if (
+        (action === "start" || action === "status") &&
+        (endpoint === AGENT_API_ENDPOINT ||
+          endpoint === LEGACY_AGENT_API_ENDPOINT) &&
+        response.status === 503
+      ) {
+        const stage = Object.getOwnPropertyDescriptor(context, "stage")?.value;
+        const requestId = Object.getOwnPropertyDescriptor(
+          context,
+          "requestId",
+        )?.value;
+        const type = Object.getOwnPropertyDescriptor(error, "type")?.value;
+        const surface = Object.getOwnPropertyDescriptor(
+          error,
+          "surface",
+        )?.value;
+        const requestIdKind =
+          typeof requestId !== "string" || requestId.length > 256
+            ? "unavailable"
+            : /^(?:[a-z]{3}[0-9]::){0,3}[a-z0-9]{3,16}-[0-9]{10,17}-[a-f0-9]{8,64}$/.test(
+                  requestId,
+                )
+              ? "vercel"
+              : /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requestId)
+                ? "uuid"
+                : "unavailable";
+        // A receipt for this returned response, not proof of provider cause,
+        // request execution elsewhere, persistence or customer recovery.
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_route_service_unavailable",
+            service: "hackerai-web",
+            agent_route_error_diagnostic_version: 1,
+            http_status: 503,
+            endpoint,
+            action,
+            stage: SERVICE_UNAVAILABLE_STAGES.some((value) => value === stage)
+              ? stage
+              : "unknown",
+            error_code:
+              ERROR_TYPES.some((value) => value === type) &&
+              ERROR_SURFACES.some((value) => value === surface)
+                ? `${type}:${surface}`
+                : "unrecognized",
+            request_id_kind: requestIdKind,
+            ...(requestIdKind !== "unavailable"
+              ? { request_id: requestId }
+              : {}),
+          }),
+        );
+      }
+    } catch {
+      // Optional diagnostics must preserve the exact original response.
+    }
+    return response;
+  }
 
   const logSuffix =
     action === "start" ? "failed to trigger task" : `${action} failed`;

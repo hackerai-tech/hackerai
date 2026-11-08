@@ -18,6 +18,9 @@ import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
   AttachmentCommandCleanupError,
+  getAttachmentCommandFailureContext,
+  copyAttachmentCommandFailureContext,
+  type AttachmentCommandFailureContext,
 } from "@/lib/ai/tools/utils/attachment-command";
 
 import { createHash, randomUUID } from "node:crypto";
@@ -133,6 +136,7 @@ type SandboxUploadFailureDetail = {
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
+  commandFailureContext?: AttachmentCommandFailureContext;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -221,7 +225,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
       : {};
   const message = error instanceof Error ? error.message : String(error);
 
-  return {
+  return copyAttachmentCommandFailureContext(error, {
     stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
     stderr:
       typeof commandError.stderr === "string" && commandError.stderr
@@ -229,7 +233,7 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
         : message,
     exitCode,
     error: message,
-  };
+  });
 };
 
 const TRANSIENT_SANDBOX_COMMAND_ERROR_PATTERN =
@@ -410,11 +414,17 @@ const runSandboxCommand = async (
   sandbox: any,
   command: string,
   signal?: AbortSignal,
+  options?: { timeoutMs: number },
 ): Promise<SandboxCommandResult> => {
   for (let attempt = 1; attempt <= SANDBOX_COMMAND_MAX_ATTEMPTS; attempt++) {
     try {
       signal?.throwIfAborted();
-      const result = await runAttachmentCommand(sandbox, command, signal);
+      const result = await runAttachmentCommand(
+        sandbox,
+        command,
+        signal,
+        options,
+      );
       signal?.throwIfAborted();
       return {
         stdout: result?.stdout ?? "",
@@ -938,10 +948,22 @@ const downloadFileToSandbox = async (
   const MAX_ATTEMPTS = 3;
 
   const curlCmd =
-    `curl -fsSL --retry 3 --retry-connrefused --retry-delay 1 --create-dirs ` +
+    `curl -fsSL --connect-timeout 10 --max-time 120 ` +
+    `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
     `-o '${escapedLocalPath}' '${escapedUrl}'`;
 
-  let result = await runSandboxCommand(sandbox, curlCmd, signal);
+  // --retry-max-time bounds when another attempt may start, not its duration.
+  // The last attempt can consume another --max-time. Keep the SDK stream open
+  // beyond both budgets so curl reports its exit instead of replaying a healthy
+  // slow transfer after the SDK's default 60-second timeout. Stop still kills
+  // only the owned command through runAttachmentCommand.
+  const commandOptions = { timeoutMs: 250_000 };
+  let result = await runSandboxCommand(
+    sandbox,
+    curlCmd,
+    signal,
+    commandOptions,
+  );
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (result.exitCode === 0) return;
     if (
@@ -954,7 +976,7 @@ const downloadFileToSandbox = async (
       `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
     );
     await delay(500 * attempt, signal);
-    result = await runSandboxCommand(sandbox, curlCmd, signal);
+    result = await runSandboxCommand(sandbox, curlCmd, signal, commandOptions);
   }
 
   // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
@@ -966,11 +988,14 @@ const downloadFileToSandbox = async (
     safeUrl = url.split("?")[0];
   }
 
-  throw new Error(
-    `Failed to download file: ${result.stderr}\n` +
-      `  url: ${safeUrl}\n` +
-      `  path: ${localPath}\n` +
-      `  exitCode: ${result.exitCode}`,
+  throw copyAttachmentCommandFailureContext(
+    result,
+    new Error(
+      `Failed to download file: ${result.stderr}\n` +
+        `  url: ${safeUrl}\n` +
+        `  path: ${localPath}\n` +
+        `  exitCode: ${result.exitCode}`,
+    ),
   );
 };
 
@@ -1144,11 +1169,14 @@ const stageSandboxFile = async (
         diagnostics.write_probe_result === "disk_full" ||
         diagnostics.write_probe_result === "quota_exceeded");
     const transferError = diskFull
-      ? Object.assign(
-          new Error("No space left on device while staging attachment", {
-            cause: error,
-          }),
-          { exitCode: extractCommandExitCode(error) },
+      ? copyAttachmentCommandFailureContext(
+          error,
+          Object.assign(
+            new Error("No space left on device while staging attachment", {
+              cause: error,
+            }),
+            { exitCode: extractCommandExitCode(error) },
+          ),
         )
       : error;
     let fallbackPath: string | null;
@@ -1207,6 +1235,7 @@ const stageSandboxFile = async (
         ),
         { exitCode: extractCommandExitCode(fallbackError) },
       );
+      copyAttachmentCommandFailureContext(fallbackError, combinedError);
       if (file.kind === "localPath") {
         finalLocalCopyReasons.set(
           combinedError,
@@ -1295,6 +1324,7 @@ const summarizeSandboxUploadFailure = (
     acquisitionError instanceof CloudAcquisitionTimeoutError
       ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
       : undefined;
+  const commandFailureContext = getAttachmentCommandFailureContext(error);
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1322,6 +1352,7 @@ const summarizeSandboxUploadFailure = (
     ...(phase === "readiness" && {
       readinessProbeReason: classifySandboxUploadReadinessProbeFailure(error),
     }),
+    ...(commandFailureContext && { commandFailureContext }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1492,6 +1523,7 @@ const uploadSandboxFilesOnce = async (
         local_copy_failure_reason:
           primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...primaryFailure.commandFailureContext,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1533,6 +1565,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
+        ...primaryFailure.commandFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1573,6 +1606,7 @@ const uploadSandboxFilesOnce = async (
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
+        ...primaryFailure.commandFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1618,6 +1652,7 @@ export const getSandboxUploadFailureMetadata = (
       : undefined;
 
   return {
+    ...failure?.commandFailureContext,
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(acquisitionStage

@@ -25,6 +25,20 @@ export const BROWSER_WRAPPER_AGES = [
   "older",
   "unknown",
 ] as const;
+export const BROWSER_OPEN_IDLE_ENV_VALUES = [
+  "unset",
+  "disabled",
+  "lt_15m",
+  "15m",
+  "gt_15m",
+  "unparsed",
+] as const;
+
+export const BROWSER_DAEMON_DEADLINE_PHASES = [
+  "connecting",
+  "awaiting_response",
+  "partial_response",
+] as const;
 
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
@@ -38,42 +52,99 @@ let done = false;
 let precondition = 'arguments';
 let argumentsValid = false;
 let rootInfo;
-/** Read only a bounded private receipt and return finite observations, never its session key. */
-function wrapperReceipt() {
+// Socket progress only: a queued write is not a daemon acknowledgement.
+let deadlinePhase = 'connecting';
+/** Read only a bounded owned private file; never follow links or block on pipes. */
+function readReceipt(filename) {
   let fd;
+  try {
+    const receiptPath = path.join(directory, filename);
+    const entry = fs.lstatSync(receiptPath);
+    if (!entry.isFile() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0 ||
+        entry.size < 1 || entry.size > 512) throw new Error();
+    fd = fs.openSync(receiptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const info = fs.fstatSync(fd);
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 ||
+        info.size < 1 || info.size > 512) throw new Error();
+    const bytes = Buffer.alloc(513);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (size > 512) throw new Error();
+    return JSON.parse(bytes.subarray(0, size).toString('utf8'));
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
+function validReceipt(receipt) {
+  return receipt?.v === 1 && typeof receipt.session_key === 'string' &&
+    /^[a-f0-9]{64}$/.test(receipt.session_key) &&
+    ['open', 'close', 'version', 'other'].includes(receipt.action) &&
+    ['started', 'completed'].includes(receipt.phase) &&
+    Number.isSafeInteger(receipt.at) && receipt.at >= 0;
+}
+function receiptAge(at) {
+  const age = Date.now() - at;
+  return age < 0 ? 'unknown' : age < 10000 ? 'lt10s' : age < 60000 ? 'lt60s' : age < 300000 ? 'lt5m' : 'older';
+}
+function receiptExit(receipt) {
+  return receipt.phase === 'started' ? 'none' :
+    Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other';
+}
+/** Return finite observations only; session keys and private paths stay local. */
+function wrapperReceipt() {
   try {
     if (!argumentsValid || !rootInfo?.isDirectory() || rootInfo.uid !== process.getuid() ||
         (rootInfo.mode & 0o077) !== 0 || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
         typeof fs.constants.O_NONBLOCK !== 'number') return {};
-    const receiptPath = path.join(directory, 'wrapper-receipt.json');
-    const entry = fs.lstatSync(receiptPath);
-    if (!entry.isFile() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0 ||
-        entry.size < 1 || entry.size > 512) return {};
-    fd = fs.openSync(receiptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-    const info = fs.fstatSync(fd);
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 ||
-        info.size < 1 || info.size > 512) return {};
-    const bytes = Buffer.alloc(513);
-    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
-    if (size > 512) return {};
-    const receipt = JSON.parse(bytes.subarray(0, size).toString('utf8'));
-    if (receipt?.v !== 1 || typeof receipt.session_key !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(receipt.session_key) ||
-        !['open', 'close', 'version', 'other'].includes(receipt.action) ||
-        !['started', 'completed'].includes(receipt.phase) ||
-        !Number.isSafeInteger(receipt.at) || receipt.at < 0) return {};
-    const age = Date.now() - receipt.at;
-    return {
+    const receipt = readReceipt('wrapper-receipt.json');
+    if (!validReceipt(receipt)) return {};
+    const sessionKey = createHash('sha256').update(name, 'utf8').digest('hex');
+    let result = {
       wrapper_receipt_version: 1,
       wrapper_action: receipt.action,
       wrapper_phase: receipt.phase,
-      wrapper_exit: receipt.phase === 'started' ? 'none' :
-        Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other',
-      wrapper_session_matches: receipt.session_key === createHash('sha256').update(name, 'utf8').digest('hex'),
-      wrapper_age: age < 0 ? 'unknown' : age < 10000 ? 'lt10s' : age < 60000 ? 'lt60s' : age < 300000 ? 'lt5m' : 'older',
+      wrapper_exit: receiptExit(receipt),
+      wrapper_session_matches: receipt.session_key === sessionKey,
+      wrapper_age: receiptAge(receipt.at),
+      open_receipt_version: 1,
+      // Older workers do not write the sticky receipt; absence is not no-open evidence.
+      open_receipt_status: receipt.open_receipt_support === 1 ? 'not_observed' : 'unavailable',
     };
+    let open;
+    if (receipt.open_receipt_support === 1) {
+      try {
+        const candidate = readReceipt('open-receipt.json');
+        if (!validReceipt(candidate) || candidate.action !== 'open') throw new Error();
+        open = candidate;
+        result = { ...result, open_receipt_status: 'recorded',
+          open_phase: open.phase, open_exit: receiptExit(open),
+          open_session_matches: open.session_key === sessionKey, open_age: receiptAge(open.at) };
+      } catch (error) {
+        // Missing/unreadable records are censored observations, never proof no CLI ran.
+        result.open_receipt_status = error?.code === 'ENOENT' ? 'not_observed' : 'unreadable';
+      }
+    }
+    // Compact internal tuple keeps combined failure JSON below the existing 512-byte cap.
+    // [version, status, phase, exit, scope, age, close/open timestamp order].
+    result.close_receipt = [1, 'unavailable'];
+    if (receipt.close_receipt_support === 1) {
+      try {
+        const close = readReceipt('close-receipt.json');
+        if (!validReceipt(close) || close.action !== 'close' || typeof close.close_all !== 'boolean') throw new Error();
+        const scope = close.close_all ? 'all_sessions' : close.session_key === sessionKey ? 'selected_session' : 'other_session';
+        const order = open?.session_key === sessionKey && scope !== 'other_session' ?
+          close.at > open.at ? 'after' : close.at < open.at ? 'before' : 'same_time' : 'unavailable';
+        result.close_receipt = [1, 'recorded', close.phase, receiptExit(close),
+          scope, receiptAge(close.at), order];
+      } catch (error) {
+        result.close_receipt = [1, error?.code === 'ENOENT' ? 'not_observed' : 'unreadable'];
+      }
+    }
+    // Sticky open declaration only; later version/status commands can have a
+    // different environment. This is not an effective daemon policy or cause.
+    if (open?.session_key === sessionKey && open.idle_env_version === 1 &&
+        ['unset', 'disabled', 'lt_15m', '15m', 'gt_15m', 'unparsed'].includes(open.idle_env)) {
+      result.open_idle = [1, open.idle_env];
+    }
+    return result;
   } catch { return {}; }
-  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
@@ -119,11 +190,15 @@ try {
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
   let buffer = '';
-  timer = setTimeout(() => finish(3), 6000);
+  timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
   socket = net.createConnection(address);
   socket.setEncoding('utf8');
-  socket.on('connect', () => socket.write(JSON.stringify({ ...request, id }) + '\n'));
+  socket.on('connect', () => {
+    deadlinePhase = 'awaiting_response';
+    socket.write(JSON.stringify({ ...request, id }) + '\n');
+  });
   socket.on('data', chunk => {
+    if (chunk.length > 0) deadlinePhase = 'partial_response';
     buffer += chunk;
     if (buffer.length > 2 * 1024 * 1024) return finish(4);
     const newline = buffer.indexOf('\n');

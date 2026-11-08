@@ -6,12 +6,15 @@ import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
+import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import { browserBridgeCommand } from "./bridge-program";
 import {
   browserDaemonCommand,
   BROWSER_DAEMON_PRECONDITION_REASONS,
   BROWSER_WRAPPER_ACTIONS,
   BROWSER_WRAPPER_AGES,
+  BROWSER_OPEN_IDLE_ENV_VALUES,
+  BROWSER_DAEMON_DEADLINE_PHASES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -32,6 +35,34 @@ export class BrowserPreviewUnavailable extends Error {
   constructor(readonly state: "loading" | "disconnected" | "closed") {
     super(`Browser preview ${state}`);
   }
+}
+
+// Keep only the existing bounded SDK projection, never the original error or
+// private file path. Other callers retain the same loading response.
+const sessionReadFailures = new WeakMap<
+  object,
+  ReturnType<typeof checkpointCloudErrorContext>
+>();
+
+/** Read optional diagnostics without adding error properties to HTTP responses. */
+export function browserSessionReadFailureContext(error: unknown) {
+  const context =
+    typeof error === "object" && error !== null
+      ? sessionReadFailures.get(error)
+      : undefined;
+  if (!context) return undefined;
+  return {
+    active_session_read_diagnostic_version: 1,
+    active_session_read_error_kind: context.cloud_error_kind,
+    active_session_read_http_status: context.cloud_http_status,
+    ...(context.cloud_type_error_signal === undefined
+      ? {}
+      : {
+          active_session_read_type_error_signal:
+            context.cloud_type_error_signal,
+          active_session_read_transport_code: context.cloud_transport_code,
+        }),
+  };
 }
 
 const SESSION_NAME_RE = /^[^/\u0000\r\n]{1,80}$/;
@@ -70,6 +101,7 @@ export async function connectBrowserSandbox(session: BrowserSessionLocation) {
   });
 }
 
+/** Keep SDK read failures as loading; expose only bounded diagnostics to the owning GET. */
 export async function getActiveBrowserSessionName(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
@@ -82,8 +114,10 @@ export async function getActiveBrowserSessionName(
         requestTimeoutMs: 8_000,
       })
     ).trim();
-  } catch {
-    throw new BrowserPreviewUnavailable("loading");
+  } catch (error) {
+    const unavailable = new BrowserPreviewUnavailable("loading");
+    sessionReadFailures.set(unavailable, checkpointCloudErrorContext(error));
+    throw unavailable;
   }
   if (!SESSION_NAME_RE.test(name))
     throw new BrowserPreviewUnavailable("closed");
@@ -236,12 +270,31 @@ export type BrowserCaptureFailureContext = {
   capture_precondition_reason?: (typeof BROWSER_DAEMON_PRECONDITION_REASONS)[number];
   capture_precondition_error?:
     "missing" | "permission" | "not_directory" | "other";
+  capture_deadline_diagnostic_version?: 1;
+  capture_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
   capture_wrapper_receipt_version?: 1;
   capture_wrapper_action?: (typeof BROWSER_WRAPPER_ACTIONS)[number];
   capture_wrapper_phase?: "started" | "completed";
   capture_wrapper_exit_code?: number | "none" | "other";
   capture_wrapper_session_matches?: boolean;
   capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_open_receipt_version?: 1;
+  capture_open_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_open_phase?: "started" | "completed";
+  capture_open_exit_code?: number | "none" | "other";
+  capture_open_session_matches?: boolean;
+  capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_open_idle_env_version?: 1;
+  capture_open_idle_env?: (typeof BROWSER_OPEN_IDLE_ENV_VALUES)[number];
+  capture_close_receipt_version?: 1;
+  capture_close_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_close_phase?: "started" | "completed";
+  capture_close_exit_code?: number | "none" | "other";
+  capture_close_scope?: "selected_session" | "other_session" | "all_sessions";
+  capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
 };
 
 /**
@@ -382,6 +435,23 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_deadline_diagnostic_version"
+        | "capture_deadline_phase"
+        | "capture_open_receipt_version"
+        | "capture_open_receipt_status"
+        | "capture_open_phase"
+        | "capture_open_exit_code"
+        | "capture_open_session_matches"
+        | "capture_open_age"
+        | "capture_open_idle_env_version"
+        | "capture_open_idle_env"
+        | "capture_close_receipt_version"
+        | "capture_close_receipt_status"
+        | "capture_close_phase"
+        | "capture_close_exit_code"
+        | "capture_close_scope"
+        | "capture_close_age"
+        | "capture_close_open_order"
       > = {};
       try {
         if (error instanceof CommandExitError) {
@@ -414,6 +484,17 @@ export async function captureBrowserFrame(
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
             if (typeof stdout === "string" && stdout.length <= 512) {
               const parsed = JSON.parse(stdout);
+              const deadline = parsed?.deadline;
+              if (
+                code === 3 &&
+                Array.isArray(deadline) &&
+                deadline.length === 2 &&
+                deadline[0] === 1 &&
+                BROWSER_DAEMON_DEADLINE_PHASES.includes(deadline[1])
+              ) {
+                precondition.capture_deadline_diagnostic_version = 1;
+                precondition.capture_deadline_phase = deadline[1];
+              }
               const reason = parsed?.diagnostic_reason;
               if (
                 code === 2 &&
@@ -452,6 +533,93 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_session_matches =
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
+              }
+              const openStatus = parsed?.open_receipt_status;
+              const openPhase = parsed?.open_phase;
+              const openExit = parsed?.open_exit;
+              if (
+                parsed?.open_receipt_version === 1 &&
+                [
+                  "unavailable",
+                  "not_observed",
+                  "unreadable",
+                  "recorded",
+                ].includes(openStatus) &&
+                (openStatus !== "recorded" ||
+                  ((openPhase === "started" || openPhase === "completed") &&
+                    typeof parsed.open_session_matches === "boolean" &&
+                    BROWSER_WRAPPER_AGES.includes(parsed.open_age) &&
+                    (openPhase === "started"
+                      ? openExit === "none"
+                      : openExit === "other" ||
+                        (typeof openExit === "number" &&
+                          Number.isInteger(openExit) &&
+                          openExit >= 0 &&
+                          openExit <= 255))))
+              ) {
+                precondition.capture_open_receipt_version = 1;
+                precondition.capture_open_receipt_status = openStatus;
+                if (openStatus === "recorded") {
+                  precondition.capture_open_phase = openPhase;
+                  precondition.capture_open_exit_code = openExit;
+                  precondition.capture_open_session_matches =
+                    parsed.open_session_matches;
+                  precondition.capture_open_age = parsed.open_age;
+                }
+              }
+              const openIdle = parsed?.open_idle;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(openIdle) &&
+                openIdle.length === 2 &&
+                openIdle[0] === 1 &&
+                BROWSER_OPEN_IDLE_ENV_VALUES.includes(openIdle[1])
+              ) {
+                precondition.capture_open_idle_env_version = 1;
+                precondition.capture_open_idle_env = openIdle[1];
+              }
+              const close = parsed?.close_receipt;
+              if (Array.isArray(close) && close[0] === 1) {
+                const [, status, phase, exit, scope, age, order] = close;
+                if (
+                  close.length === 2 &&
+                  ["unavailable", "not_observed", "unreadable"].includes(status)
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = status;
+                } else if (
+                  close.length === 7 &&
+                  status === "recorded" &&
+                  (phase === "started" || phase === "completed") &&
+                  [
+                    "selected_session",
+                    "other_session",
+                    "all_sessions",
+                  ].includes(scope) &&
+                  BROWSER_WRAPPER_AGES.includes(age) &&
+                  ["after", "before", "same_time", "unavailable"].includes(
+                    order,
+                  ) &&
+                  (order === "unavailable" ||
+                    (scope !== "other_session" &&
+                      precondition.capture_open_session_matches === true)) &&
+                  (phase === "started"
+                    ? exit === "none"
+                    : exit === "other" ||
+                      (typeof exit === "number" &&
+                        Number.isInteger(exit) &&
+                        exit >= 0 &&
+                        exit <= 255))
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = "recorded";
+                  precondition.capture_close_phase = phase;
+                  precondition.capture_close_exit_code = exit;
+                  precondition.capture_close_scope = scope;
+                  precondition.capture_close_age = age;
+                  precondition.capture_close_open_order = order;
+                }
               }
             }
           }

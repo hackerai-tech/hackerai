@@ -1,5 +1,10 @@
 import type { ChatMode, SubscriptionTier } from "@/types";
 
+// The extra usage spending limit resets each UTC calendar month, not on the
+// subscription reset time passed to limit UIs, so cap copy omits it.
+export const SPENDING_LIMIT_EXPLANATION =
+  "Your credit balance and spending limit are separate, so buying credits won't raise the limit. Increase your limit to continue, or wait for it to reset at the start of next month (UTC).";
+
 export function getPaidDailyFreeAllowanceCtaText(mode?: ChatMode): string {
   if (mode === "agent") return "Use free Agent today";
   if (mode === "ask") return "Use free Ask today";

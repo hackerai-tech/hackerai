@@ -35,6 +35,25 @@ control plane responds within one second. `metrics_status=unavailable` is
 inconclusive; missing metrics must never replace the original error. Metrics
 are sampled on failure and may lag the actual command failure.
 
+Command failures also record whether the SDK observed an exit and whether
+cleanup killed the command, found it already gone, failed, or returned an
+invalid receipt. An unobserved exit with a `not_found` cleanup receipt does not
+prove successful execution. Preserve the failed result; never replay while
+cleanup is unconfirmed.
+
+E2B can acknowledge a successful process exit before its event stream closes.
+If waiting for that stream subsequently fails, use the acknowledged exit and
+collected output rather than replaying the completed command. An abort remains
+authoritative. A missing exit or a nonzero exit remains a failure; this recovery
+does not establish the cause of historical readiness timeouts.
+
+Cloud URL downloads give curl a ten-second connection deadline, a two-minute
+attempt deadline and a two-minute retry-start budget. The SDK command deadline
+is longer than curl's maximum combined budget, so a slow transfer can finish
+and a stalled transfer can report curl's download timeout instead of losing
+the command stream at the SDK's default deadline. Stop still cancels the
+specific transfer process and leaves the workspace available for another run.
+
 Local transfer failures distinguish a disconnected computer, missing Windows
 transfer client, DNS failure, and resource exhaustion. A curl DNS error with
 `getaddrinfo() thread failed to start` is resource exhaustion evidence, not

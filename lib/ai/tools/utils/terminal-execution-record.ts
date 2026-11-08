@@ -34,6 +34,19 @@ import { pruneLocalTerminalRecords } from "./local-terminal-retention";
 import { phLogger } from "@/lib/posthog/server";
 import type { RecordCheckpointIssue } from "./pty-session-manager";
 
+/** Read already-held metadata without allowing optional context to lose a receipt. */
+function nativeFilesystemReportedPlatform(sandbox: AnySandbox): unknown {
+  try {
+    if (!isCentrifugoSandbox(sandbox)) return undefined;
+    const connection = sandbox.getConnectionInfo();
+    const osInfo = Object.getOwnPropertyDescriptor(connection, "osInfo")?.value;
+    if (!osInfo || typeof osInfo !== "object") return undefined;
+    return Object.getOwnPropertyDescriptor(osInfo, "platform")?.value;
+  } catch {
+    return undefined;
+  }
+}
+
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
 export const TERMINAL_RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -45,13 +58,30 @@ let activeRetentionOperations = 0;
 const retentionWaiters: Array<() => void> = [];
 
 /** Share four retention I/O slots across all stores in this worker process. */
-async function withRetentionIo<T>(operation: () => Promise<T>): Promise<T> {
+async function withRetentionIo<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
   if (activeRetentionOperations >= RETENTION_IO_CONCURRENCY) {
-    await new Promise<void>((resolve) => retentionWaiters.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => {
+        signal?.removeEventListener("abort", aborted);
+        resolve();
+      };
+      const aborted = () => {
+        const index = retentionWaiters.indexOf(ready);
+        if (index !== -1) retentionWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      retentionWaiters.push(ready);
+      signal?.addEventListener("abort", aborted, { once: true });
+    });
   } else {
     activeRetentionOperations++;
   }
   try {
+    signal?.throwIfAborted();
     return await operation();
   } finally {
     const next = retentionWaiters.shift();
@@ -64,14 +94,16 @@ async function withRetentionIo<T>(operation: () => Promise<T>): Promise<T> {
 async function mapRetentionIo<T, R>(
   items: T[],
   operation: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = [];
   let failure: { reason: unknown } | undefined;
   for (let start = 0; start < items.length; start += RETENTION_IO_CONCURRENCY) {
+    signal?.throwIfAborted();
     const batch = await Promise.allSettled(
       items
         .slice(start, start + RETENTION_IO_CONCURRENCY)
-        .map((item) => withRetentionIo(() => operation(item))),
+        .map((item) => withRetentionIo(() => operation(item), signal)),
     );
     for (const result of batch) {
       if (result.status === "rejected") failure ??= { reason: result.reason };
@@ -121,7 +153,23 @@ export function createTerminalRecordStore(
   sandbox: AnySandbox,
   userId: string,
   scopeId: string,
+  ownerTriggerRunId?: string,
 ) {
+  // Caller-supplied server context identifies the store owner, not necessarily
+  // the request interacting with a retained terminal. Keep storage scope hashes
+  // and provider sandbox identities out of this additional correlation field.
+  const ownerContext: Record<string, string | number> =
+    typeof ownerTriggerRunId === "string" &&
+    /^run_[a-z0-9]{20,40}$/.test(ownerTriggerRunId)
+      ? {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "recorded",
+          checkpoint_owner_trigger_run_id: ownerTriggerRunId,
+        }
+      : {
+          checkpoint_owner_diagnostic_version: 1,
+          checkpoint_owner_run_status: "unavailable",
+        };
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -249,6 +297,15 @@ export function createTerminalRecordStore(
         }
         try {
           const local = isCentrifugoSandbox(sandbox);
+          const cloudContext = !local
+            ? checkpointCloudErrorContext(error)
+            : undefined;
+          const nativeFilesystemFailure =
+            local &&
+            !ownerOnlyPosix &&
+            failureOrigin === "local_file_request" &&
+            fileFailure === "filesystem" &&
+            failureCategory === "unknown";
           const session = Object.getOwnPropertyDescriptor(
             record,
             "session",
@@ -266,14 +323,17 @@ export function createTerminalRecordStore(
                       : "native_file",
                     checkpoint_backend: local ? "local" : "cloud",
                     ...checkpointCommandContext(error),
-                    ...(local &&
-                    !ownerOnlyPosix &&
-                    failureOrigin === "local_file_request" &&
-                    fileFailure === "filesystem" &&
-                    failureCategory === "unknown"
-                      ? checkpointNativeFilesystemErrorContext(error)
+                    ...(nativeFilesystemFailure
+                      ? checkpointNativeFilesystemErrorContext(
+                          error,
+                          nativeFilesystemReportedPlatform(sandbox),
+                        )
                       : {}),
-                    ...(!local ? checkpointCloudErrorContext(error) : {}),
+                    ...cloudContext,
+                    ...(nativeFilesystemFailure ||
+                    cloudContext?.cloud_error_kind === "no_space"
+                      ? ownerContext
+                      : {}),
                   },
                 }
               : undefined;
@@ -300,7 +360,8 @@ export function createTerminalRecordStore(
         ? record
         : null;
     },
-    async prune(): Promise<void> {
+    async prune(signal?: AbortSignal): Promise<void> {
+      if (signal?.aborted) return;
       // Avoid rereading every retained record on every command. This cache
       // bounds only retention work; it is never used for record retrieval.
       if (
@@ -322,36 +383,44 @@ export function createTerminalRecordStore(
       let fallbackOutcome: "success" | "failure" = "failure";
       try {
         if (
-          await withRetentionIo(() =>
-            pruneLocalTerminalRecords(sandbox, {
-              root,
-              directory,
-              sandboxInstance: terminalSandboxInstance(sandbox),
-              schema: z.toJSONSchema(recordSchema),
-              cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
-              maxRecords: MAX_RECORDS,
-            }),
+          await withRetentionIo(
+            () =>
+              pruneLocalTerminalRecords(sandbox, {
+                root,
+                directory,
+                sandboxInstance: terminalSandboxInstance(sandbox),
+                schema: z.toJSONSchema(recordSchema),
+                cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
+                maxRecords: MAX_RECORDS,
+              }),
+            signal,
           )
         )
           return;
         fallbackStarted = true;
-        const entries = await withRetentionIo(() =>
-          ownerOnlyPosix
-            ? listOwnerOnlyPosixFiles(sandbox, root, directory)
-            : files.list(directory),
+        const entries = await withRetentionIo(
+          () =>
+            ownerOnlyPosix
+              ? listOwnerOnlyPosixFiles(sandbox, root, directory)
+              : files.list(directory),
+          signal,
         );
-        const records = await mapRetentionIo(entries, async ({ name }) => {
-          // Never trust paths from a sandbox directory listing.
-          const match = /^([a-f0-9]{8})\.json$/.exec(
-            name.split(/[\\/]/).pop() ?? "",
-          );
-          if (!match) return null;
-          const record = await readRecord(match[1], "retention_read");
-          // A concurrent write or transport error is not proof of expiry.
-          return record
-            ? { session: match[1], updatedAt: record.updatedAt }
-            : null;
-        });
+        const records = await mapRetentionIo(
+          entries,
+          async ({ name }) => {
+            // Never trust paths from a sandbox directory listing.
+            const match = /^([a-f0-9]{8})\.json$/.exec(
+              name.split(/[\\/]/).pop() ?? "",
+            );
+            if (!match) return null;
+            const record = await readRecord(match[1], "retention_read");
+            // A concurrent write or transport error is not proof of expiry.
+            return record
+              ? { session: match[1], updatedAt: record.updatedAt }
+              : null;
+          },
+          signal,
+        );
         const sorted = records
           .filter((r) => r !== null)
           .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -370,6 +439,7 @@ export function createTerminalRecordStore(
                   pathFor(r.session),
                 )
               : files.remove(pathFor(r.session)),
+          signal,
         );
         fallbackOutcome = "success";
       } catch {

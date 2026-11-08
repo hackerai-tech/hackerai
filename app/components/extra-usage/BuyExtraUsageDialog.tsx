@@ -254,6 +254,10 @@ const BuyExtraUsageDialogContent = ({
             <span>Total due</span>
             <span>${formatWithCommas(String(parsedAmount))}</span>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Credits add to your balance. Any monthly spending limit still
+            applies.
+          </p>
         </div>
         <div className="mt-2">
           <div className="flex items-center justify-between p-5 border border-border rounded-lg">

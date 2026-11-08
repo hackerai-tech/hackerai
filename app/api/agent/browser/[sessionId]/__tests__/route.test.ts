@@ -97,6 +97,14 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserSessionReadFailureContext: () =>
+    mockFailure === "read-active"
+      ? {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }
+      : undefined,
   BrowserPreviewUnavailable: class extends Error {
     constructor(public state: string) {
       super(state);
@@ -225,6 +233,16 @@ it.each([
       }),
     );
     const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    if (failure === "read-active")
+      expect(fields).toMatchObject({
+        active_session_read_diagnostic_version: 1,
+        active_session_read_error_kind: "file_not_found",
+        active_session_read_http_status: 404,
+      });
+    else
+      expect(fields).not.toHaveProperty(
+        "active_session_read_diagnostic_version",
+      );
     if (failure === "lookup")
       expect(fields).not.toHaveProperty("trigger_run_id");
     else
@@ -238,25 +256,37 @@ it.each([
   },
 );
 
-it("attributes verification failure without replaying a successful capture", async () => {
-  mockFailure = "";
-  mockRunActive = false;
-  jest
-    .mocked(getActiveBrowserSessionName)
-    .mockResolvedValueOnce("default")
-    .mockRejectedValueOnce(new Error("PRIVATE verification"));
-  const response = await preview(false);
-  expect(response.status).toBe(503);
-  expect(mockCapture).toHaveBeenCalledTimes(1);
-  expect(phLogger.info).toHaveBeenCalledWith(
-    "agent_browser_preview_get_unavailable",
-    expect.objectContaining({
-      failure_stage: "verify_active_session",
-      preview_state: "disconnected",
-      run_active: false,
-    }),
-  );
-});
+it.each(["", "read-active"])(
+  "attributes verification failure without replaying a successful capture (%s)",
+  async (failure) => {
+    mockFailure = failure;
+    mockRunActive = false;
+    jest
+      .mocked(getActiveBrowserSessionName)
+      .mockResolvedValueOnce("default")
+      .mockRejectedValueOnce(
+        failure === "read-active"
+          ? new BrowserPreviewUnavailable("loading")
+          : new Error("PRIVATE verification"),
+      );
+    const response = await preview(false);
+    expect(response.status).toBe(503);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({
+        failure_stage: "verify_active_session",
+        preview_state: failure === "read-active" ? "loading" : "disconnected",
+        run_active: false,
+        ...(failure === "read-active" && {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }),
+      }),
+    );
+  },
+);
 
 it("does not add a failure diagnostic to an already closed browser", async () => {
   mockCapture.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
@@ -319,6 +349,14 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     });
     throw new Error("PRIVATE frame stream");
   });
@@ -333,6 +371,14 @@ it("adds capture suboperation context to the single existing GET failure event",
       capture_stage: "frame_bridge",
       capture_error_kind: "command_exit",
       capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
     }),
   );
   expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
