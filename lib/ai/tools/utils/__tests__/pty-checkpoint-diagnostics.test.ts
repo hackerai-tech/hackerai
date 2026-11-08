@@ -622,6 +622,36 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   });
 
   it.each([
+    ["TimeoutError", "dom_timeout"],
+    ["AbortError", "dom_abort"],
+    ["PRIVATE_NAME", "other_error"],
+  ])("projects only the native DOM exception subtype (%s)", (name, kind) => {
+    const error = new DOMException("PRIVATE_MESSAGE", name);
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_GETTER");
+    });
+    Object.defineProperty(error, "name", { get: getter });
+    Object.defineProperty(error, "message", { get: getter });
+    expect(checkpointCloudErrorContext(error)).toEqual({
+      cloud_error_kind: kind,
+      cloud_http_status: "none",
+    });
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(checkpointCloudErrorContext(error))).not.toContain(
+      "PRIVATE",
+    );
+  });
+
+  it("does not trust a forged native DOM prototype", () => {
+    expect(
+      checkpointCloudErrorContext(Object.create(DOMException.prototype)),
+    ).toEqual({
+      cloud_error_kind: "unreadable_error",
+      cloud_http_status: "none",
+    });
+  });
+
+  it.each([
     [
       new TypeError("fetch failed", {
         cause: Object.assign(new Error("PRIVATE_HOST"), { code: "ECONNRESET" }),
