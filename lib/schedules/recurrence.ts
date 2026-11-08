@@ -39,7 +39,7 @@ export function validateLocalScheduleExecution(
     /[\x00-\x1f]/.test(workingDirectory) ||
     !/^(\/|[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(workingDirectory)
   )
-    throw new Error("Enter an absolute folder path on this computer.");
+    throw new Error("Enter an absolute folder path.");
   return {
     type: "local",
     preference: value.preference,

@@ -301,12 +301,30 @@ export function ScheduleFormDialog({
                     <SelectTrigger
                       id={`${id}-run-on`}
                       aria-describedby={`${id}-run-on-help`}
-                      className="h-11 w-full gap-2 sm:h-9 [&>span]:min-w-0 [&>span]:text-left"
+                      className="h-11 w-full gap-2 sm:h-9 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:text-left [&>svg]:shrink-0"
                     >
-                      <SelectValue />
+                      <SelectValue>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <ExecutionIcon
+                            className="size-4 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          <span
+                            className="min-w-0 truncate"
+                            title={execution?.name}
+                          >
+                            {execution?.name ?? "Cloud"}
+                          </span>
+                        </span>
+                      </SelectValue>
+                      {unavailable && (
+                        <div className="shrink-0 text-xs text-amber-700 dark:text-amber-500">
+                          Unavailable
+                        </div>
+                      )}
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={CLOUD}>
+                      <SelectItem value={CLOUD} className="py-2.5 sm:py-1.5">
                         <Cloud
                           className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
                           aria-hidden="true"
@@ -327,6 +345,7 @@ export function ScheduleFormDialog({
                               <SelectItem
                                 key={target.preference}
                                 value={target.preference}
+                                className="py-2.5 sm:py-1.5"
                               >
                                 <Icon
                                   className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
@@ -373,8 +392,8 @@ export function ScheduleFormDialog({
                               : " Connect a computer to run schedules on it."
                           }`
                         : unavailable
-                          ? "This computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
-                          : "Runs only while this computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
+                          ? "The selected computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
+                          : "Runs only while the selected computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
                     </span>
                   </p>
                 </div>
@@ -667,10 +686,11 @@ export function ScheduleFormDialog({
                 {execution ? (
                   <p className="min-w-0 break-words">
                     <span className="font-medium text-foreground">
-                      Runs unattended on this computer.
+                      Runs unattended on the selected computer.
                     </span>{" "}
-                    Saving authorizes full tool access, not limited to the
-                    starting folder. Normal usage and spending limits apply.
+                    Saving authorizes full tool access in its environment, not
+                    limited to the starting folder. Normal usage and spending
+                    limits apply.
                   </p>
                 ) : (
                   <p>
