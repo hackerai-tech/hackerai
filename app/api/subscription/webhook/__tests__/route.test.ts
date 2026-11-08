@@ -165,15 +165,25 @@ jest.mock("@/lib/suspensions", () => ({
   hasActiveSuspensionForUser: mockHasActiveSuspensionForUser,
 }));
 
+/** Build the request-body and header boundary used by isolated webhook tests. */
 function makeWebhookRequest({
   body = "{}",
   signature = "sig_test",
-}: { body?: string; signature?: string | null } = {}) {
+  requestId = null,
+}: {
+  body?: string;
+  signature?: string | null;
+  requestId?: string | null;
+} = {}) {
   return {
     text: jest.fn().mockResolvedValue(body),
     headers: {
       get: jest.fn((name: string) =>
-        name === "stripe-signature" ? signature : null,
+        name === "stripe-signature"
+          ? signature
+          : name === "x-vercel-id"
+            ? requestId
+            : null,
       ),
     },
   } as any;
@@ -476,8 +486,17 @@ function mockInvoicePaymentFailedAnalytics({
 }
 
 describe("POST /api/subscription/webhook", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
+    mockPostHogWarn.mockReset();
+    mockPostHogFlush.mockReset();
+    const { after } = await import("next/server");
+    jest
+      .mocked(after)
+      .mockReset()
+      .mockImplementation((task) => {
+        if (typeof task === "function") task();
+      });
     process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET = "whsec_test";
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
 
@@ -526,6 +545,71 @@ describe("POST /api/subscription/webhook", () => {
     delete process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
   });
+
+  it.each([true, false])(
+    "records only bounded unhandled body context (valid correlation %s)",
+    async (valid) => {
+      jest.replaceProperty(process, "env", {
+        ...process.env,
+        VERCEL_GIT_COMMIT_SHA: valid ? "a".repeat(40) : "PRIVATE_BUILD",
+      });
+      const requestId = "iad1::bodyqa-1794168000000-abcdef123456";
+      const req = makeWebhookRequest({
+        body: "PRIVATE_BODY",
+        signature: "PRIVATE_SIGNATURE",
+        requestId: valid ? requestId : "PRIVATE_REQUEST",
+      });
+      const failure = new Error("PRIVATE_ERROR");
+      req.text.mockRejectedValueOnce(failure);
+      const { POST } = await import("../route");
+      await expect(POST(req)).rejects.toBe(failure);
+      expect(req.text).toHaveBeenCalledTimes(1);
+      expect(mockConstructEvent).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalled();
+      expect(mockPostHogWarn).toHaveBeenCalledWith(
+        "subscription_webhook_failure_context",
+        {
+          diagnostic_version: 1,
+          webhook_phase: "read_body",
+          ...(valid
+            ? { request_id: requestId, web_build_commit: "a".repeat(40) }
+            : {}),
+        },
+      );
+      expect(JSON.stringify(mockPostHogWarn.mock.calls)).not.toContain(
+        "PRIVATE",
+      );
+    },
+  );
+
+  it.each(["warn", "schedule", "flush"])(
+    "preserves the original thrown value if optional %s fails",
+    async (failedObserver) => {
+      const failure = new Error("PRIVATE_ORIGINAL");
+      const req = makeWebhookRequest();
+      req.text.mockRejectedValueOnce(failure);
+      const { after } = await import("next/server");
+      const observerFailure = () => {
+        throw new Error("PRIVATE_OBSERVER");
+      };
+      if (failedObserver === "warn")
+        mockPostHogWarn.mockImplementationOnce(observerFailure);
+      if (failedObserver === "schedule")
+        jest.mocked(after).mockImplementationOnce(observerFailure);
+      if (failedObserver === "flush")
+        mockPostHogFlush.mockImplementationOnce(observerFailure);
+      const { POST } = await import("../route");
+      await expect(POST(req)).rejects.toBe(failure);
+      expect(mockPostHogWarn).toHaveBeenCalledWith(
+        "subscription_webhook_failure_context",
+        expect.objectContaining({ webhook_phase: "read_body" }),
+      );
+      if (failedObserver !== "warn") expect(after).toHaveBeenCalledTimes(1);
+      if (failedObserver === "flush")
+        expect(mockPostHogFlush).toHaveBeenCalledTimes(1);
+      expect(mockConvexMutation).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not consume fulfillment idempotency for unrelated payment intents", async () => {
     mockConstructEvent.mockReturnValue({
@@ -816,16 +900,53 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("persists requested-cancellation review and retries a failed queue write", async () => {
+  it("keeps unhandled phases request-local while preserving failed review writes and retry", async () => {
     const { subscription, invoice } = mockLateRenewal();
     subscription.cancellation_details.reason = "cancellation_requested";
-    mockUpdateInvoice.mockRejectedValueOnce(
-      new Error("Stripe unavailable") as never,
-    );
+    const invoiceFailure = new Error("Stripe unavailable");
+    mockUpdateInvoice.mockRejectedValueOnce(invoiceFailure as never);
     const { POST } = await import("../route");
-    await expect(POST(makeWebhookRequest())).rejects.toThrow(
-      "Stripe unavailable",
+    let rejectBody!: (error: Error) => void;
+    const bodyRequest = makeWebhookRequest({
+      requestId: "iad1::bodyqa-1794168000000-abcdef123456",
+    });
+    bodyRequest.text.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectBody = reject;
+        }),
     );
+    const bodyFailure = new Error("PRIVATE_BODY_FAILURE");
+    const pendingBody = expect(POST(bodyRequest)).rejects.toBe(bodyFailure);
+    await expect(
+      POST(
+        makeWebhookRequest({
+          requestId: "iad1::invqa-1794168000000-abcdef123456",
+        }),
+      ),
+    ).rejects.toBe(invoiceFailure);
+    rejectBody(bodyFailure);
+    await pendingBody;
+    const context = mockPostHogWarn.mock.calls.filter(
+      ([event]) => event === "subscription_webhook_failure_context",
+    );
+    expect(context).toEqual([
+      [
+        "subscription_webhook_failure_context",
+        expect.objectContaining({
+          webhook_phase: "invoice_paid",
+          request_id: "iad1::invqa-1794168000000-abcdef123456",
+        }),
+      ],
+      [
+        "subscription_webhook_failure_context",
+        expect.objectContaining({
+          webhook_phase: "read_body",
+          request_id: "iad1::bodyqa-1794168000000-abcdef123456",
+        }),
+      ],
+    ]);
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
     expect(mockConvexMutation).not.toHaveBeenCalledWith(
       "extraUsage.checkAndMarkWebhook",
       expect.not.objectContaining({ checkOnly: true }),
