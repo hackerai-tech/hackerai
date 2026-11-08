@@ -255,7 +255,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
   }
 
   /** Model a failed cloud or native write without executing customer commands. */
-  function failingStore(error: unknown, local = false) {
+  function failingStore(error: unknown, local = false, ownerRunId?: unknown) {
     const write = jest
       .fn<Promise<void>, [string, string]>()
       .mockRejectedValue(error);
@@ -275,9 +275,117 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
       } as unknown as AnySandbox,
       "PRIVATE_USER",
       "PRIVATE_SCOPE",
+      ownerRunId as string | undefined,
     );
     return { store, write };
   }
+
+  const ownerRunId = "run_0123456789abcdefghijklmn";
+  it("correlates only the owning cloud no-space checkpoint without another event or I/O", async () => {
+    const error = Object.assign(new Error("PRIVATE_PATH"), {
+      name: "NotEnoughSpaceError",
+    });
+    const { store, write } = failingStore(error, false, ownerRunId);
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0][1]).toMatchObject({
+      checkpoint_backend: "cloud",
+      cloud_error_kind: "no_space",
+      checkpoint_owner_diagnostic_version: 1,
+      checkpoint_owner_run_status: "recorded",
+      checkpoint_owner_trigger_run_id: ownerRunId,
+    });
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    expect(info.mock.calls[0][1]).not.toHaveProperty("cloud_sandbox_id");
+    await manager.checkpoint(session);
+    expect(info).toHaveBeenCalledTimes(1);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: "12345678",
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_trigger_run_id",
+    );
+    write.mockResolvedValue(undefined);
+    await manager.checkpoint(session);
+    info.mockClear();
+    store.reportCheckpointIssue({
+      terminalSessionId: session.sessionId,
+      sessionKind: "command",
+      reason: "save_unacknowledged",
+    });
+    expect(info.mock.calls[0][1]).not.toHaveProperty(
+      "checkpoint_owner_trigger_run_id",
+    );
+  });
+
+  it.each(["PRIVATE_SCOPE", "run_" + "x".repeat(41), undefined])(
+    "censors missing or malformed run context without hiding the no-space condition (%s)",
+    async (id) => {
+      const { store } = failingStore(
+        Object.assign(new Error("PRIVATE_PATH"), {
+          name: "NotEnoughSpaceError",
+        }),
+        false,
+        id,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info.mock.calls[0][1]).toMatchObject({
+        cloud_error_kind: "no_space",
+        checkpoint_owner_diagnostic_version: 1,
+        checkpoint_owner_run_status: "unavailable",
+      });
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_trigger_run_id",
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it("does not coerce optional run context while reporting a cloud disk failure", async () => {
+    const coercion = jest.fn(() => {
+      throw new Error("PRIVATE_COERCION");
+    });
+    const { store } = failingStore(
+      Object.assign(new Error("PRIVATE_PATH"), { name: "NotEnoughSpaceError" }),
+      false,
+      { toString: coercion },
+    );
+    const { manager, session } = await fixture(store.save, undefined, store);
+    await manager.checkpoint(session);
+    expect(info.mock.calls[0][1]).toMatchObject({
+      cloud_error_kind: "no_space",
+      checkpoint_owner_run_status: "unavailable",
+    });
+    expect(coercion).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "omits new owner fields for native failure or unrelated cloud error (local=%s)",
+    async (local) => {
+      const { store } = failingStore(
+        Object.assign(new Error("PRIVATE_PATH"), {
+          name: local ? "NotEnoughSpaceError" : "TimeoutError",
+        }),
+        local,
+        ownerRunId,
+      );
+      const { manager, session } = await fixture(store.save, undefined, store);
+      await manager.checkpoint(session);
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_diagnostic_version",
+      );
+      expect(info.mock.calls[0][1]).not.toHaveProperty(
+        "checkpoint_owner_trigger_run_id",
+      );
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PRIVATE_");
+    },
+  );
 
   it("adds bounded filesystem context to the existing owning checkpoint warning", async () => {
     const { store, write } = failingStore(

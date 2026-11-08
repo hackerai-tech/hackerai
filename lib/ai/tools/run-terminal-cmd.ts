@@ -148,7 +148,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   } = context;
   const ptyScopeId = context.ptyScopeId ?? chatId;
   const executionRecord = (sandbox: AnySandbox, command: string) => ({
-    ...createTerminalRecordStore(sandbox, context.userID, ptyScopeId),
+    ...createTerminalRecordStore(
+      sandbox,
+      context.userID,
+      ptyScopeId,
+      context.triggerRunId,
+    ),
     sandboxInstance: terminalSandboxInstance(sandbox),
     artifactPaths: BackgroundProcessTracker.extractOutputFiles(command),
   });
