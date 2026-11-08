@@ -176,7 +176,7 @@ export function ScheduleFormDialog({
       }}
     >
       <DialogContent
-        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-h-[min(90dvh,52rem)] sm:max-w-xl"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-h-[min(90dvh,52rem)] sm:max-w-2xl"
         onInteractOutside={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -189,13 +189,12 @@ export function ScheduleFormDialog({
             {editing ? "Edit schedule" : "New schedule"}
           </DialogTitle>
           <DialogDescription>
-            Write the instructions once. Each run starts a new task you can open
-            later.
+            Each run starts a new cloud task with your instructions.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 sm:px-6">
-            <fieldset disabled={pending} className="min-w-0 space-y-6">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
+            <fieldset disabled={pending} className="min-w-0 space-y-5">
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-name`}>Name</Label>
@@ -220,14 +219,11 @@ export function ScheduleFormDialog({
                       setValue({ ...value, prompt: e.target.value })
                     }
                     maxLength={16000}
-                    rows={5}
-                    className="min-h-28 resize-y"
+                    rows={4}
+                    className="min-h-24 resize-y"
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Each run starts a new task with these instructions.
-                  </p>
                 </div>
               </div>
               <div className="space-y-4 border-t pt-5">
@@ -324,13 +320,13 @@ export function ScheduleFormDialog({
                           <Button
                             key={day}
                             type="button"
-                            variant={
-                              timing.weekdays.includes(day)
-                                ? "default"
-                                : "outline"
-                            }
+                            variant="outline"
                             size="sm"
-                            className="h-11 min-w-0 px-0 text-xs sm:h-9"
+                            className={cn(
+                              "h-11 min-w-0 px-0 text-xs sm:h-9",
+                              timing.weekdays.includes(day) &&
+                                "border-foreground/30 bg-muted font-medium dark:bg-input/60",
+                            )}
                             aria-label={DAYS[day]}
                             aria-pressed={timing.weekdays.includes(day)}
                             onClick={() =>
@@ -353,7 +349,7 @@ export function ScheduleFormDialog({
                         <Input
                           id={`${id}-time`}
                           type="time"
-                          className="tabular-nums"
+                          className="min-w-0 px-2 tabular-nums"
                           value={timing.time}
                           onInput={(e) =>
                             setTiming({
@@ -423,11 +419,7 @@ export function ScheduleFormDialog({
                   </SelectContent>
                 </Select>
               </div>
-            </fieldset>
-          </div>
-          <div className="shrink-0 space-y-3 border-t bg-muted/30 px-5 py-4 sm:px-6">
-            <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
-              <div className="flex items-start gap-2">
+              <div className="flex items-start gap-2 rounded-lg border bg-muted/20 p-3 text-xs leading-relaxed text-muted-foreground">
                 <CalendarClock
                   className="mt-0.5 size-3.5 shrink-0"
                   aria-hidden="true"
@@ -445,7 +437,6 @@ export function ScheduleFormDialog({
                       })}
                     </span>
                     {timing.type === "weekly" ? ` · ${timing.timezone}` : ""}.
-                    Starts within about a minute of the scheduled time.
                   </p>
                 ) : !enabledAfterSave ? (
                   <p>
@@ -461,6 +452,10 @@ export function ScheduleFormDialog({
                   </p>
                 )}
               </div>
+            </fieldset>
+          </div>
+          <div className="shrink-0 space-y-3 border-t bg-muted/20 px-5 py-3 sm:px-6">
+            <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
               <div className="flex items-start gap-2">
                 <Cloud
                   className="mt-0.5 size-3.5 shrink-0"
@@ -505,7 +500,7 @@ export function ScheduleFormDialog({
       </DialogContent>
       <AlertDialog open={discard} onOpenChange={setDiscard}>
         <AlertDialogContent>
-          <AlertDialogHeader>
+          <AlertDialogHeader className="text-left">
             <AlertDialogTitle>Discard your unsaved changes?</AlertDialogTitle>
             <AlertDialogDescription>
               {editing
@@ -516,7 +511,7 @@ export function ScheduleFormDialog({
           <AlertDialogFooter className="flex-col">
             <AlertDialogAction
               onClick={onClose}
-              className="bg-transparent text-destructive shadow-none hover:bg-destructive/10"
+              className="border border-destructive/30 bg-transparent text-destructive shadow-none hover:bg-destructive/10"
             >
               Discard changes
             </AlertDialogAction>

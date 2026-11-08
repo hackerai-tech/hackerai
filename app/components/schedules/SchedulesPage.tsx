@@ -4,6 +4,8 @@ import {
   ChevronRight,
   Cloud,
   GraduationCap,
+  Check,
+  X,
   Loader2,
   Newspaper,
   PanelLeft,
@@ -192,12 +194,22 @@ export function SchedulesPage() {
             </div>
           )}
           {message && (
-            <p
+            <div
               role="status"
-              className="rounded-lg border bg-muted/30 px-3 py-2 text-sm"
+              className="flex items-center gap-2 text-sm text-muted-foreground"
             >
-              {message}
-            </p>
+              <Check className="size-4 shrink-0" aria-hidden="true" />
+              <p className="flex-1">{message}</p>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-11 sm:size-8"
+                aria-label="Dismiss confirmation"
+                onClick={() => setMessage("")}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
           )}
           {actionError && (
             <p

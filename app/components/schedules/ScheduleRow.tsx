@@ -90,7 +90,7 @@ function RunResult({ run }: { run: ScheduleRun }) {
               run_status: run.status,
             })
           }
-          className="inline-flex items-center gap-0.5 rounded-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex min-h-11 items-center gap-0.5 rounded-sm px-1 font-medium sm:min-h-6 sm:px-0 text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           View task
           <ArrowUpRight className="size-3" aria-hidden="true" />
@@ -125,146 +125,150 @@ export function ScheduleRow({
   const busy = latest && BUSY.includes(latest.status);
   const completed = !schedule.enabled && schedule.consumed;
   return (
-    <li className="px-4 py-4 sm:px-5">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1 pt-0.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h2 className="min-w-0 break-words text-[15px] font-medium">
-              {schedule.definition.name}
-            </h2>
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-px text-[11px] text-muted-foreground">
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  schedule.enabled
-                    ? "bg-emerald-500"
-                    : "bg-muted-foreground/50",
-                )}
-                aria-hidden="true"
-              />
-              {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
-            </span>
-          </div>
-          <p className="mt-1 break-words text-xs text-muted-foreground">
-            {describeTiming(schedule.definition.timing)}
-            {schedule.definition.timing.type === "weekly" &&
-              ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
-          </p>
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:px-5">
+      <div className="min-w-0 flex-1 pt-0.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h2 className="min-w-0 break-words text-[15px] font-medium">
+            {schedule.definition.name}
+          </h2>
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-px text-[11px] text-muted-foreground">
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                schedule.enabled ? "bg-emerald-500" : "bg-muted-foreground/50",
+              )}
+              aria-hidden="true"
+            />
+            {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
+          </span>
         </div>
-        <div className="-mr-1 flex shrink-0 items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-11 sm:h-8"
-            disabled={pending || !enabled || Boolean(busy)}
-            onClick={() => onAction("run")}
-            aria-label={`Run ${schedule.definition.name} now`}
-          >
-            {pending ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-            Run now
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-11 sm:size-8"
-                disabled={pending}
-                aria-label={`More actions for ${schedule.definition.name}`}
-              >
-                <Ellipsis className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={onEdit} disabled={!enabled}>
-                <Pencil className="size-4" />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => onAction(schedule.enabled ? "pause" : "resume")}
-                disabled={!schedule.enabled && !enabled}
-              >
-                {schedule.enabled ? (
-                  <Pause className="size-4" />
-                ) : (
-                  <Play className="size-4" />
-                )}
-                {schedule.enabled ? "Pause" : "Resume"}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={onDelete}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete schedule
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        <p className="mt-1 break-words text-xs text-muted-foreground">
+          {describeTiming(schedule.definition.timing)}
+          {schedule.definition.timing.type === "weekly" &&
+            ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
+        </p>
       </div>
-      <dl className="mt-3 grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 rounded-lg bg-muted/30 px-3 py-2.5 text-xs">
-        <dt className="text-muted-foreground">Next run</dt>
-        <dd
-          className={cn(
-            "min-w-0 tabular-nums",
-            schedule.enabled && schedule.nextRunAt
-              ? "text-foreground"
-              : "text-muted-foreground",
-          )}
+      <div className="col-span-2 row-start-3 flex justify-end sm:col-span-1 sm:col-start-2 sm:row-start-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-11 sm:h-8"
+          disabled={pending || !enabled || Boolean(busy)}
+          onClick={() => onAction("run")}
+          aria-label={`Run ${schedule.definition.name} now`}
         >
-          {schedule.enabled && schedule.nextRunAt
-            ? new Date(schedule.nextRunAt).toLocaleString([], {
-                dateStyle: "medium",
-                timeStyle: "short",
-                ...(schedule.definition.timing.type === "weekly"
-                  ? { timeZone: schedule.definition.timing.timezone }
-                  : {}),
-              })
-            : completed
-              ? "No further runs"
-              : "None while paused"}
-        </dd>
-        <dt className="text-muted-foreground">Last run</dt>
-        <dd className="min-w-0">
-          {latest ? (
-            <RunResult run={latest} />
+          {pending ? (
+            <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <span className="text-muted-foreground">No runs yet</span>
+            <Play className="size-3.5" />
           )}
-        </dd>
-        {schedule.runs.length > 1 && (
-          <dd className="col-start-2 min-w-0">
-            <button
-              type="button"
-              className="-ml-1 inline-flex min-h-7 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => setHistory(!history)}
-              aria-expanded={history}
-              aria-controls={historyId}
+          Run now
+        </Button>
+      </div>
+      <div className="-mr-1 col-start-2 row-start-1 sm:col-start-3">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-11 sm:size-8"
+              disabled={pending}
+              aria-label={`More actions for ${schedule.definition.name}`}
             >
-              <ChevronDown
-                className={cn(
-                  "size-3 transition-transform motion-reduce:transition-none",
-                  history && "rotate-180",
-                )}
-                aria-hidden="true"
-              />
-              Recent runs
-              <span className="tabular-nums">({schedule.runs.length - 1})</span>
-            </button>
-            {history && (
-              <div id={historyId} className="mt-1.5 space-y-2 border-l pl-3">
-                {schedule.runs.slice(1).map((run) => (
-                  <RunResult key={run.id} run={run} />
-                ))}
-              </div>
+              <Ellipsis className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={onEdit} disabled={!enabled}>
+              <Pencil className="size-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => onAction(schedule.enabled ? "pause" : "resume")}
+              disabled={!schedule.enabled && !enabled}
+            >
+              {schedule.enabled ? (
+                <Pause className="size-4" />
+              ) : (
+                <Play className="size-4" />
+              )}
+              {schedule.enabled ? "Pause" : "Resume"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={onDelete}
+              className="text-destructive focus:text-destructive"
+            >
+              <Trash2 className="size-4" />
+              Delete schedule
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <dl className="col-span-2 row-start-2 grid gap-3 text-xs sm:col-span-3 sm:grid-cols-2 sm:gap-x-6">
+        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
+          <dt className="text-muted-foreground">Next run</dt>
+          <dd
+            className={cn(
+              "min-w-0 tabular-nums",
+              schedule.enabled && schedule.nextRunAt
+                ? "text-foreground"
+                : "text-muted-foreground",
+            )}
+          >
+            {schedule.enabled && schedule.nextRunAt
+              ? new Date(schedule.nextRunAt).toLocaleString([], {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                  ...(schedule.definition.timing.type === "weekly"
+                    ? { timeZone: schedule.definition.timing.timezone }
+                    : {}),
+                })
+              : completed
+                ? "No further runs"
+                : "None while paused"}
+          </dd>
+        </div>
+        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
+          <dt className="text-muted-foreground">Last run</dt>
+          <dd className="min-w-0">
+            {latest ? (
+              <RunResult run={latest} />
+            ) : (
+              <span className="text-muted-foreground">No runs yet</span>
             )}
           </dd>
-        )}
+          {schedule.runs.length > 1 && (
+            <dd className="col-start-2 min-w-0 sm:mt-1">
+              <button
+                type="button"
+                className="-ml-1 inline-flex min-h-11 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-7"
+                onClick={() => setHistory(!history)}
+                aria-expanded={history}
+                aria-controls={historyId}
+              >
+                <ChevronDown
+                  className={cn(
+                    "size-3 transition-transform motion-reduce:transition-none",
+                    history && "rotate-180",
+                  )}
+                  aria-hidden="true"
+                />
+                Recent runs
+                <span className="tabular-nums">
+                  ({schedule.runs.length - 1})
+                </span>
+              </button>
+              {history && (
+                <div id={historyId} className="mt-1.5 space-y-2 border-l pl-3">
+                  {schedule.runs.slice(1).map((run) => (
+                    <RunResult key={run.id} run={run} />
+                  ))}
+                </div>
+              )}
+            </dd>
+          )}
+        </div>
       </dl>
     </li>
   );
