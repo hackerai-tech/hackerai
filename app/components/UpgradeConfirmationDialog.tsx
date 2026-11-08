@@ -286,7 +286,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                   <div className="text-sm text-muted-foreground mt-1">
                     {details.billingIntervalChanged
                       ? `$${details.annualAmount?.toFixed(2)} billed annually. The switch takes effect after payment succeeds. Unused monthly time is credited below.`
-                      : "When you keep the same billing interval, the upgrade charge and additional included usage are prorated for the time left in your current cycle. Your renewal date stays the same; upgrading does not start a fresh full allowance."}
+                      : "When you keep the same billing interval, the upgrade charge is prorated for the time left in your billing period. Additional included usage is prorated for the time until your next monthly allowance refill. Your billing renewal date stays the same; upgrading does not start a fresh full allowance."}
                   </div>
                   {isValidUnix(details?.currentPeriodStart) &&
                     isValidUnix(details?.currentPeriodEnd) && (
