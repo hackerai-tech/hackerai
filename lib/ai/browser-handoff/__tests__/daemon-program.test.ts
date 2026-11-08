@@ -407,6 +407,60 @@ it("queries only the existing owned socket and accepts a complete correlated res
   expect(d.socket.destroy).toHaveBeenCalled();
 });
 
+it.each(["connecting", "awaiting_response", "partial_response"])(
+  "distinguishes %s at the unchanged daemon deadline without returning response bytes",
+  (phase) => {
+    const d = daemon();
+    if (phase !== "connecting") d.socket.emit("connect");
+    if (phase === "partial_response")
+      d.socket.emit("data", '{"PRIVATE_RESPONSE":');
+    d.timeout();
+    expect(d.exit).toHaveBeenCalledWith(3);
+    expect(d.socket.destroy).toHaveBeenCalled();
+    expect(JSON.parse(d.output.mock.calls[0]?.[0] ?? "null")).toEqual({
+      deadline: [1, phase],
+    });
+    expect(JSON.stringify(d.output.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it("preserves maximal wrapper receipts within the parser budget at a response deadline", () => {
+  const longest = { ...receipt, at: Date.now() + 60000, exit: 999 };
+  const d = daemon({
+    receipt: {
+      ...longest,
+      action: "version",
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      idle_env_version: 1,
+      idle_env: "unparsed",
+    },
+    closeReceipt: { ...longest, action: "close" },
+  });
+  d.socket.emit("connect");
+  d.timeout();
+  const text = d.output.mock.calls[0][0];
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expect(JSON.parse(text)).toMatchObject({
+    deadline: [1, "awaiting_response"],
+    open_idle: [1, "unparsed"],
+    close_receipt: [
+      1,
+      "recorded",
+      "completed",
+      "other",
+      "selected_session",
+      "unknown",
+      "same_time",
+    ],
+  });
+  expect(text).not.toContain("PRIVATE");
+});
+
 it("reports a bounded missing-socket precondition while preserving exit2 and no connection", () => {
   const d = daemon({ missingPath: directory + "/sockets/default.sock" });
   expect(d.exit).toHaveBeenCalledWith(2);
@@ -449,7 +503,11 @@ it.each(["error", "close", "timeout", "malformed", "oversized"])(
       d.socket.emit("data", "x".repeat(2 * 1024 * 1024 + 1));
     else d.socket.emit(failure);
     expect(d.exit.mock.calls[0][0]).not.toBe(0);
-    expect(d.output).not.toHaveBeenCalled();
+    if (failure === "timeout")
+      expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
+        deadline: [1, "connecting"],
+      });
+    else expect(d.output).not.toHaveBeenCalled();
   },
 );
 

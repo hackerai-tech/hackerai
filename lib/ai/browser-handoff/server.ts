@@ -14,6 +14,7 @@ import {
   BROWSER_WRAPPER_ACTIONS,
   BROWSER_WRAPPER_AGES,
   BROWSER_OPEN_IDLE_ENV_VALUES,
+  BROWSER_DAEMON_DEADLINE_PHASES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -269,6 +270,8 @@ export type BrowserCaptureFailureContext = {
   capture_precondition_reason?: (typeof BROWSER_DAEMON_PRECONDITION_REASONS)[number];
   capture_precondition_error?:
     "missing" | "permission" | "not_directory" | "other";
+  capture_deadline_diagnostic_version?: 1;
+  capture_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
   capture_wrapper_receipt_version?: 1;
   capture_wrapper_action?: (typeof BROWSER_WRAPPER_ACTIONS)[number];
   capture_wrapper_phase?: "started" | "completed";
@@ -432,6 +435,8 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_deadline_diagnostic_version"
+        | "capture_deadline_phase"
         | "capture_open_receipt_version"
         | "capture_open_receipt_status"
         | "capture_open_phase"
@@ -479,6 +484,17 @@ export async function captureBrowserFrame(
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
             if (typeof stdout === "string" && stdout.length <= 512) {
               const parsed = JSON.parse(stdout);
+              const deadline = parsed?.deadline;
+              if (
+                code === 3 &&
+                Array.isArray(deadline) &&
+                deadline.length === 2 &&
+                deadline[0] === 1 &&
+                BROWSER_DAEMON_DEADLINE_PHASES.includes(deadline[1])
+              ) {
+                precondition.capture_deadline_diagnostic_version = 1;
+                precondition.capture_deadline_phase = deadline[1];
+              }
               const reason = parsed?.diagnostic_reason;
               if (
                 code === 2 &&
