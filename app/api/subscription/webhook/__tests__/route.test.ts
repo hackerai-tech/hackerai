@@ -165,6 +165,7 @@ jest.mock("@/lib/suspensions", () => ({
   hasActiveSuspensionForUser: mockHasActiveSuspensionForUser,
 }));
 
+/** Build the request-body and header boundary used by isolated webhook tests. */
 function makeWebhookRequest({
   body = "{}",
   signature = "sig_test",
