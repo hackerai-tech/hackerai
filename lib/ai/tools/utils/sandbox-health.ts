@@ -92,6 +92,7 @@ function notifyResourceObserver(
   }
 }
 
+/** Preserve sampled resource context while excluding the human-readable warning from analytics. */
 function stripWarning(
   metrics: (SandboxResourceMetrics & { warning: string | null }) | null,
 ): SandboxResourceMetrics | null {

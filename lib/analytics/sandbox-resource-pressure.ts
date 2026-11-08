@@ -34,6 +34,7 @@ function classifyResourcePressure(
   return "none";
 }
 
+/** Emit bounded metrics and explicit age availability without treating missing or future samples as fresh. */
 function metricProperties(metrics: SandboxResourceMetrics | null) {
   if (!metrics) {
     return {
