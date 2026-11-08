@@ -3149,7 +3149,12 @@ export const agentLongTask = task({
                           : undefined,
                       pauseActiveTime: runtimeBudget.pause,
                       resumeActiveTime: runtimeBudget.resume,
-                      abortRun: () => stopSignal.abort("wait_for_user"),
+                      abortRun: (outcome) =>
+                        stopSignal.abort(
+                          outcome === "timed_out"
+                            ? "wait_for_user_timeout"
+                            : "wait_for_user",
+                        ),
                       revalidateAfterSuspend: revalidateAfterUserWait,
                     }),
                   }),
@@ -4084,6 +4089,7 @@ export const agentLongTask = task({
             const streamCtx: AgentStreamContext = {
               runtimeCheckpoint,
               canRecoverBrowserHandoff,
+              browserHandoffGoalObjective: activeGoal?.objective,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
@@ -4462,6 +4468,7 @@ export const agentLongTask = task({
                 sandboxInfo,
                 outcome,
                 abortSource: resolveAgentAbortSource({
+                  stopSource: stopSignal.source,
                   outcome,
                   stoppedDueToBudgetExhaustion:
                     state.stoppedDueToBudgetExhaustion,
@@ -5717,6 +5724,7 @@ export const agentLongTask = task({
                           sandboxInfo,
                           outcome,
                           abortSource: resolveAgentAbortSource({
+                            stopSource: stopSignal.source,
                             outcome,
                             stoppedDueToBudgetExhaustion:
                               state.stoppedDueToBudgetExhaustion,

@@ -786,6 +786,11 @@ describe("resolveAgentAbortSource", () => {
     ],
     ["agent_spend_cap", { stoppedDueToAgentRunSpendCap: true }],
     ["elapsed_timeout", { stoppedDueToElapsedTimeout: true }],
+    [
+      "user_wait_timeout",
+      { stopSource: "wait_for_user_timeout", requestCancelled: true },
+    ],
+    ["user_wait_failed", { stopSource: "wait_for_user" }],
     ["user_stop", { userStopRequested: true }],
     ["request_cancel", { requestCancelled: true }],
     ["unknown", {}],

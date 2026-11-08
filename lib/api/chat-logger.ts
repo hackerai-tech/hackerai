@@ -1333,6 +1333,8 @@ export type AgentAbortSource =
   | "budget_exhausted"
   | "agent_spend_cap"
   | "elapsed_timeout"
+  | "user_wait_timeout"
+  | "user_wait_failed"
   | "user_stop"
   | "request_cancel"
   | "unknown";
@@ -1344,6 +1346,7 @@ export function resolveAgentAbortSource({
   stoppedDueToElapsedTimeout = false,
   userStopRequested = false,
   requestCancelled = false,
+  stopSource,
 }: {
   outcome: AgentRunOutcome;
   stoppedDueToBudgetExhaustion?: boolean;
@@ -1351,11 +1354,14 @@ export function resolveAgentAbortSource({
   stoppedDueToElapsedTimeout?: boolean;
   userStopRequested?: boolean;
   requestCancelled?: boolean;
+  stopSource?: import("@/lib/chat/agent-stop-signal").AgentStopSignalSource;
 }): AgentAbortSource | undefined {
   if (outcome !== "aborted") return undefined;
   if (stoppedDueToBudgetExhaustion) return "budget_exhausted";
   if (stoppedDueToAgentRunSpendCap) return "agent_spend_cap";
   if (stoppedDueToElapsedTimeout) return "elapsed_timeout";
+  if (stopSource === "wait_for_user_timeout") return "user_wait_timeout";
+  if (stopSource === "wait_for_user") return "user_wait_failed";
   if (userStopRequested) return "user_stop";
   if (requestCancelled) return "request_cancel";
   return "unknown";

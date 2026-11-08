@@ -234,6 +234,8 @@ export function createAgentRunReporting(context: {
             "budget_exhausted",
             "agent_spend_cap",
             "elapsed_timeout",
+            "user_wait_timeout",
+            "user_wait_failed",
             "user_stop",
             "request_cancel",
             "unknown",

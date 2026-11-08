@@ -789,6 +789,7 @@ const buildProviderRequestDiagnostics = (args: {
 export type AgentStreamContext = {
   runtimeCheckpoint?: import("@/lib/chat/agent-runtime-checkpoint").AgentRuntimeCheckpoint;
   canRecoverBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
+  browserHandoffGoalObjective?: string;
   waitForBrowserHandoff?: (signal?: AbortSignal) => Promise<boolean>;
   getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
@@ -1259,6 +1260,7 @@ export async function createAgentStream(
         ? recoverBrowserHandoffCompletion(guardedModel, {
             state: (state.browserHandoffRecovery ??= {}),
             canRecover: ctx.canRecoverBrowserHandoff,
+            goalObjective: ctx.browserHandoffGoalObjective,
           })
         : guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,

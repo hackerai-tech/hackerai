@@ -2768,6 +2768,82 @@ describe("Chat Component Integration", () => {
       },
     );
 
+    it("accepts an idempotent Goal admission for a closed run without restoring it", async () => {
+      mockDesktopState = { chatMode: "agent" };
+      require("convex/react").useConvex().query.mockResolvedValue(false);
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockResumeAgentLongStream.mockResolvedValueOnce({} as Response);
+      await options.transport.fetch(
+        "/api/agent/resume?chatId=queued-message-id",
+        { method: "GET" },
+      );
+      act(() =>
+        mockResumeAgentLongStream.mock.calls.at(-1)![2]!("already-finished"),
+      );
+      mockFetchAgentLongStream.mockImplementationOnce(
+        async (_init, _started, _closed, admitted) => {
+          admitted?.({
+            chatId: "queued-message-id",
+            runId: "already-finished",
+          });
+          return {} as Response;
+        },
+      );
+      mockSendMessage.mockImplementationOnce(async () => {
+        const payload = mockSendMessage.mock.calls.at(-1)![0];
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "queued-message-id",
+            messages: [payload],
+          }),
+        });
+      });
+      await act(async () => {
+        await expect(
+          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+        ).resolves.toBeUndefined();
+      });
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
+    it("does not restore a closed local run from buffered correlation data", async () => {
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockResumeAgentLongStream.mockResolvedValueOnce({} as Response);
+      await options.transport.fetch(
+        "/api/agent/resume?chatId=queued-message-id",
+        { method: "GET" },
+      );
+      const onRunClosed = mockResumeAgentLongStream.mock.calls.at(-1)![2]!;
+      act(() => onRunClosed("run-finished"));
+      act(() =>
+        options.onData({
+          type: "data-agent-run-correlation",
+          data: { runId: "run-finished", token: "synthetic" },
+        }),
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
     it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
       render(
         <TestWrapper>

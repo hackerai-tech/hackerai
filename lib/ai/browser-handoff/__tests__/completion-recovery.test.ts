@@ -52,6 +52,8 @@ const promise =
   "Handing control over now. Take control in the browser sidebar.";
 const pausingPromise =
   "The page is open and loaded, with the form fields interactable (Text input is @e3). I'm now pausing for your takeover — please click Take control, type a harmless marker into the Text input field, choose Exit takeover, then click Send and continue. I will not submit the form.";
+const goalPromise =
+  "Please take control of the browser now from the Computer sidebar: click Take control, inspect the page, then choose Exit takeover and Send and continue. I'll wait here.";
 
 const params = (text = request, overrides = {}) => ({
   prompt: [{ role: "user", content: [{ type: "text", text }] }],
@@ -66,11 +68,12 @@ async function parts(
     reason = "stop",
     state = {} as { attempted?: boolean },
     canRecover = jest.fn(async () => true),
+    goalObjective = undefined as string | undefined,
   } = {},
 ) {
   const wrapped = recoverBrowserHandoffCompletion(
     model(jest.fn(async () => response(text, extra, reason))),
-    { state, canRecover },
+    { state, canRecover, goalObjective },
   );
   if (typeof wrapped === "string") throw Error("Expected model");
   const result = await wrapped.doStream(input as never);
@@ -86,9 +89,10 @@ it.each([
       "QA explicit takeover check: reopen the web form with agent-browser, take a snapshot, and call browser_handoff so I can enter a harmless marker in Text input. After I send and continue, first take a fresh interactive snapshot in that same browser session, report the exact Text input value, and finish. Do not submit the form.",
     declaration: pausingPromise,
   },
+  { request: "Beta", declaration: goalPromise, goalObjective: request },
 ])(
   "executes the real wait before completion for $declaration",
-  async ({ request, declaration }) => {
+  async ({ request, declaration, goalObjective }) => {
     let release!: () => void;
     let entered!: () => void;
     const waiting = new Promise<void>((resolve) => (entered = resolve));
@@ -107,6 +111,7 @@ it.each([
       model: recoverBrowserHandoffCompletion(model(calls), {
         state: {},
         canRecover: async () => true,
+        goalObjective,
       }),
       prompt: request,
       tools: { browser_handoff: tool({ inputSchema: z.object({}), execute }) },
@@ -134,6 +139,64 @@ it.each([
     );
   },
 );
+
+it.each([
+  "Do not call browser_handoff.",
+  "Do not wait for me to take control.",
+])(
+  "keeps the current reply's refusal ahead of the saved Goal: %s",
+  async (reply) => {
+    const { output, canRecover } = await parts(goalPromise, {
+      input: params(reply),
+      goalObjective: request,
+    });
+    expect(output.some((part) => part.type === "tool-call")).toBe(false);
+    expect(canRecover).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  "does not replay a previous Goal handoff after another reply (reminder=%s)",
+  async (withReminder) => {
+    const input = params(request);
+    input.prompt.push({
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolName: "browser_handoff",
+          toolCallId: "done",
+          input: {},
+        },
+      ],
+    } as never);
+    input.prompt.push({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: withReminder
+            ? `Beta\n\n<system-reminder>\n${request}\n</system-reminder>`
+            : "Beta",
+        },
+      ],
+    } as never);
+    const { output, canRecover } = await parts(goalPromise, {
+      input,
+      goalObjective: request,
+    });
+    expect(output.some((part) => part.type === "tool-call")).toBe(false);
+    expect(canRecover).not.toHaveBeenCalled();
+  },
+);
+
+it("does not treat a platform reminder as a direct user request", async () => {
+  const { output, canRecover } = await parts(goalPromise, {
+    input: params(`Beta\n\n<system-reminder>\n${request}\n</system-reminder>`),
+  });
+  expect(output.some((part) => part.type === "tool-call")).toBe(false);
+  expect(canRecover).not.toHaveBeenCalled();
+});
 
 it.each([
   "HANDING CONTROL OVER NOW! TAKE CONTROL IN THE SIDEBAR.",
