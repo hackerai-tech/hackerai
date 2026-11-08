@@ -1389,6 +1389,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const e2b = makeFakeE2BSandbox();
     mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
     const { context } = makeContext({ sandbox: e2b });
+    context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     setTimeout(() => fakeHandle.resolveExit(0), 10);
     await runTool(createRunTerminalCmd(context), {
@@ -1403,6 +1404,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       e2b,
       expect.objectContaining({
         envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      }),
+    );
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "agent_browser_terminal_command_used",
+      expect.objectContaining({
+        agent_browser_usage_event_version: 3,
+        usage_observation_phase: "before_terminal_dispatch",
+        usage_owner_run_status: "recorded",
+        usage_owner_trigger_run_id: context.triggerRunId,
+        interactive: true,
       }),
     );
   });
@@ -2536,59 +2547,83 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
   });
 
-  test("logs sanitized agent-browser terminal usage to PostHog", async () => {
-    const nonE2B = {
-      sandboxKind: "centrifugo" as const,
-      isWindows: () => false,
-      commands: {
-        run: jest.fn(
-          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
-            opts?.onStdout?.("opened\n");
-            return { stdout: "opened\n", stderr: "", exitCode: 0 };
-          },
-        ),
-      },
-    };
+  test.each([
+    ["recorded", "run_aaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["unavailable", undefined],
+    ["unavailable", "PRIVATE_OWNER https://secret.example/owner"],
+    ["unavailable", `run_${"a".repeat(41)}`],
+  ] as const)(
+    "logs sanitized browser usage with %s run attribution",
+    async (status, runId) => {
+      const nonE2B = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+              opts?.onStdout?.("opened\n");
+              return { stdout: "opened\n", stderr: "", exitCode: 0 };
+            },
+          ),
+        },
+      };
 
-    const { context } = makeContext({ sandbox: nonE2B });
-    const tool = createRunTerminalCmd(context);
+      const { context } = makeContext({ sandbox: nonE2B });
+      context.triggerRunId = runId;
+      const tool = createRunTerminalCmd(context);
 
-    await runTool(tool, {
-      command:
-        "agent-browser open https://secret.example/login && agent-browser screenshot",
-      brief: "open a browser page",
-      is_background: false,
-      timeout: 5,
-    });
-
-    expect(mockPhEvent).toHaveBeenCalledWith(
-      "agent_browser_terminal_command_used",
-      expect.objectContaining({
-        userId: "u1",
-        chat_id: "chat-1",
-        mode: "agent",
-        subscription_tier: "pro",
-        sandbox_type: "remote-connection",
-        primary_action: "open",
-        actions: ["open", "screenshot"],
-        invocation_count: 2,
-        used_via_npx: false,
-        interactive: false,
+      await runTool(tool, {
+        command:
+          "agent-browser open https://secret.example/login && agent-browser screenshot",
+        brief: "open a browser page",
         is_background: false,
-        agent_browser_usage_event_version: 2,
-      }),
-    );
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
-      "configured_model",
-    );
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
-    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
-      "secret.example",
-    );
-    expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
-  });
+        timeout: 5,
+      });
+
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_command_used",
+        expect.objectContaining({
+          userId: "u1",
+          chat_id: "chat-1",
+          mode: "agent",
+          subscription_tier: "pro",
+          sandbox_type: "remote-connection",
+          primary_action: "open",
+          actions: ["open", "screenshot"],
+          invocation_count: 2,
+          used_via_npx: false,
+          interactive: false,
+          is_background: false,
+          agent_browser_usage_event_version: 3,
+          usage_observation_phase: "before_terminal_dispatch",
+          usage_owner_run_status: status,
+        }),
+      );
+      if (status === "recorded") {
+        expect(mockPhEvent.mock.calls[0]?.[1]).toHaveProperty(
+          "usage_owner_trigger_run_id",
+          runId,
+        );
+      } else {
+        expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+          "usage_owner_trigger_run_id",
+        );
+      }
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+        "configured_model",
+      );
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
+      expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+        "secret.example",
+      );
+      expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+        "PRIVATE_OWNER",
+      );
+      expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
+    },
+  );
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {
     // A bare `{command}` must flow through the legacy path
