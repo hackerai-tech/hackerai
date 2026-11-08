@@ -647,13 +647,17 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             </button>
           </div>
 
-          <div className="mt-2 mb-4 flex justify-center px-6">
+          <div className="mt-2 mb-4 flex flex-col items-center gap-2 px-6">
             <BillingFrequencySelector
               value={isYearly ? "yearly" : "monthly"}
               showSavings={!hasSubscription}
               onChange={handleBillingChange}
               isOpen={isOpen}
             />
+            <p className="text-muted-foreground text-center text-xs">
+              Included usage refills every month, whether you pay monthly or
+              yearly.
+            </p>
           </div>
 
           <div className="px-6 pb-8">
