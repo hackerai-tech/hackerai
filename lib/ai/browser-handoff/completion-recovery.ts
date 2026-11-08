@@ -60,6 +60,9 @@ function requestedHandoff(
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n")
+    // Goals and saved notes are appended to this text as platform reminders.
+    // They are not a new user request to repeat an already completed handoff.
+    .replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "")
     .replace(/[\u2018\u2019]/g, "'")
     .split("\n")
     .filter(createProseLineFilter())

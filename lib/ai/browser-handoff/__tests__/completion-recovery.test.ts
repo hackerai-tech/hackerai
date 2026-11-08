@@ -155,26 +155,44 @@ it.each([
   },
 );
 
-it("does not replay a previous handoff from the saved Goal after another reply", async () => {
-  const input = params(request);
-  input.prompt.push({
-    role: "assistant",
-    content: [
-      {
-        type: "tool-call",
-        toolName: "browser_handoff",
-        toolCallId: "done",
-        input: {},
-      },
-    ],
-  } as never);
-  input.prompt.push({
-    role: "user",
-    content: [{ type: "text", text: "Beta" }],
-  } as never);
+it.each([false, true])(
+  "does not replay a previous Goal handoff after another reply (reminder=%s)",
+  async (withReminder) => {
+    const input = params(request);
+    input.prompt.push({
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolName: "browser_handoff",
+          toolCallId: "done",
+          input: {},
+        },
+      ],
+    } as never);
+    input.prompt.push({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: withReminder
+            ? `Beta\n\n<system-reminder>\n${request}\n</system-reminder>`
+            : "Beta",
+        },
+      ],
+    } as never);
+    const { output, canRecover } = await parts(goalPromise, {
+      input,
+      goalObjective: request,
+    });
+    expect(output.some((part) => part.type === "tool-call")).toBe(false);
+    expect(canRecover).not.toHaveBeenCalled();
+  },
+);
+
+it("does not treat a platform reminder as a direct user request", async () => {
   const { output, canRecover } = await parts(goalPromise, {
-    input,
-    goalObjective: request,
+    input: params(`Beta\n\n<system-reminder>\n${request}\n</system-reminder>`),
   });
   expect(output.some((part) => part.type === "tool-call")).toBe(false);
   expect(canRecover).not.toHaveBeenCalled();
