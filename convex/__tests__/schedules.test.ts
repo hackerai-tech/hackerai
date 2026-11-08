@@ -784,3 +784,102 @@ it("binds local schedules only to the owner's computer, and retains offline edit
     }),
   ).rejects.toThrow("computer is unavailable");
 });
+
+it.each(["finished", "active", "unknown"] as const)(
+  "does not redispatch an uncertain attempt and preserves %s execution evidence",
+  async (evidence) => {
+    const { ctx, tables } = store();
+    const firstAt = Date.now();
+    const clock = jest.spyOn(Date, "now").mockReturnValue(firstAt);
+    try {
+      const id = await call(save, ctx, { ...auth, definition });
+      const receipt = await call(claim, ctx, {
+        ...auth,
+        id,
+        revision: 1,
+        manual: true,
+        dispatcherId: "retrying-dispatcher",
+        chatId: "same-task",
+      });
+      const dispatch = {
+        serviceKey: auth.serviceKey,
+        id: receipt.id,
+        dispatcherId: "retrying-dispatcher",
+      };
+      expect(await call(beginDispatch, ctx, dispatch)).toBe(true);
+      // The Agent may start/finish while its dispatch receipt write fails.
+      if (evidence !== "unknown")
+        tables.chats.push({
+          _id: "chat",
+          _creationTime: 1,
+          id: "same-task",
+          user_id: "owner",
+          ...(evidence === "finished"
+            ? { last_run_finished_at: firstAt + 1000 }
+            : { active_trigger_run_id: "original-child" }),
+        });
+      clock.mockReturnValue(firstAt + 2000);
+      expect(await call(beginDispatch, ctx, dispatch)).toBe(false);
+      await call(finishDispatch, ctx, { ...dispatch, status: "skipped" });
+      expect(tables.schedule_runs[0]).toMatchObject({
+        dispatch_requested_at: firstAt,
+        status: "uncertain_start",
+      });
+      clock.mockReturnValue(firstAt + 35000);
+      await call(recoverUncertainStarts, ctx, auth);
+      expect(tables.schedule_runs[0].status).toBe(
+        evidence === "finished"
+          ? "unconfirmed"
+          : evidence === "active"
+            ? "started"
+            : "uncertain_start",
+      );
+      if (evidence === "active") {
+        expect(tables.schedule_runs[0].trigger_run_id).toBe("original-child");
+      }
+      clock.mockReturnValue(firstAt + 65000);
+      const replacement = call(claim, ctx, {
+        ...auth,
+        id,
+        revision: 1,
+        manual: true,
+        dispatcherId: "replacement",
+        chatId: "another-task",
+      });
+      if (evidence === "finished")
+        await expect(replacement).resolves.not.toBeNull();
+      else await expect(replacement).rejects.toThrow("already has a run");
+    } finally {
+      clock.mockRestore();
+    }
+  },
+);
+
+it("allows another occurrence after an ordinary pre-dispatch skip", async () => {
+  const { ctx, tables } = store();
+  const id = await call(save, ctx, { ...auth, definition });
+  const args = {
+    ...auth,
+    id,
+    revision: 1,
+    manual: true,
+    dispatcherId: "offline",
+    chatId: "no-task",
+  };
+  const receipt = await call(claim, ctx, args);
+  await call(finishDispatch, ctx, {
+    serviceKey: auth.serviceKey,
+    id: receipt.id,
+    dispatcherId: "offline",
+    status: "skipped",
+  });
+  expect(tables.schedule_runs[0].status).toBe("skipped");
+  const clock = jest.spyOn(Date, "now").mockReturnValue(Date.now() + 65000);
+  try {
+    await expect(
+      call(claim, ctx, { ...args, dispatcherId: "next", chatId: "next-task" }),
+    ).resolves.not.toBeNull();
+  } finally {
+    clock.mockRestore();
+  }
+});

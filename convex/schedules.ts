@@ -434,10 +434,16 @@ export const finishDispatch = mutation({
     const r = await ctx.db.get(args.id);
     if (!r || r.dispatcher_id !== args.dispatcherId) return null;
     if (!["queued", "starting"].includes(r.status)) return null;
+    // A retry can fail a preflight after its earlier request already started work.
+    // Skipping that retry is not proof that the original request never ran.
+    const uncertainSkip =
+      args.status === "skipped" && r.dispatch_requested_at !== undefined;
     await ctx.db.patch(r._id, {
-      status: args.status,
+      status: uncertainSkip ? "uncertain_start" : args.status,
       trigger_run_id: args.triggerRunId,
-      detail: args.detail?.slice(0, 160),
+      detail: uncertainSkip
+        ? "Could not confirm the earlier Agent request. Check its task before replacing this schedule."
+        : args.detail?.slice(0, 160),
     });
     return null;
   },
@@ -673,6 +679,9 @@ export const beginDispatch = mutation({
       row.dispatcher_id !== args.dispatcherId
     )
       return false;
+    // Cross the external-dispatch boundary once. A retry must reconcile the
+    // original request, not replace its timestamp or start a distinct child.
+    if (row.dispatch_requested_at !== undefined) return false;
     const schedule = await ctx.db.get(row.schedule_id);
     if (
       !schedule ||

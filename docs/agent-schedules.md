@@ -43,8 +43,11 @@ the provider outcome is unavailable, independently verified task cleanup permits
 an **unconfirmed** result without claiming success; a still-active task remains
 fenced. Final dispatcher failure
 checks for an already-started child instead of replaying an uncertain start.
-An ambiguous start remains fenced as **Start unconfirmed** until it can be
-verified. Reconciliation revisits those receipts for matching task execution or
+The external dispatch boundary is recorded once per receipt. A dispatcher retry
+reconciles that original request instead of sending it again or replacing its
+first-request timestamp. Even a retry skipped by a changed preflight keeps the
+original request fenced. An ambiguous start remains **Start unconfirmed** until
+it can be verified. Reconciliation revisits those receipts for matching task execution or
 cleanup evidence. Retention preserves the active receipt even when overlapping
 ticks accumulate. A failed status read never authorizes an automatic replacement run.
 
