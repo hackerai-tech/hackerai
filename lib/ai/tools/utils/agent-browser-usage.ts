@@ -33,6 +33,7 @@ function getAgentBrowserSandboxLogFields(
   return getSandboxLogFields(sandbox);
 }
 
+/** Record detected browser invocation intent, not dispatch or browser success. */
 export function captureAgentBrowserUsage(args: {
   context: ToolContext;
   command: string;
@@ -42,6 +43,11 @@ export function captureAgentBrowserUsage(args: {
 }): void {
   const usage = detectAgentBrowserUsage(args.command);
   if (!usage) return;
+  // The executing tool context owns this observation, not necessarily the
+  // browser or a retained interactive shell. Never infer it from user/chat.
+  const runId = args.context.triggerRunId;
+  const recordedRun =
+    typeof runId === "string" && /^run_[a-z0-9]{20,40}$/.test(runId);
 
   phLogger.event("agent_browser_terminal_command_used", {
     userId: args.context.userID,
@@ -55,6 +61,9 @@ export function captureAgentBrowserUsage(args: {
     used_via_npx: usage.usedViaNpx,
     interactive: args.interactive,
     is_background: args.isBackground,
-    agent_browser_usage_event_version: 2,
+    agent_browser_usage_event_version: 3,
+    usage_observation_phase: "before_terminal_dispatch",
+    usage_owner_run_status: recordedRun ? "recorded" : "unavailable",
+    ...(recordedRun && { usage_owner_trigger_run_id: runId }),
   });
 }
