@@ -1,0 +1,805 @@
+[
+  {
+    "id": "pick-export",
+    "split": "holdout",
+    "category": "choice",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "A direct chart choice is complete; avoid a new analysis workflow."
+    ],
+    "messages": [
+      {
+        "id": "pick-export-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Would a bar chart or a pie chart be better for you?"
+          }
+        ]
+      },
+      {
+        "id": "pick-export-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me visualize this fictional monthly budget"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "pick-difficulty",
+    "split": "holdout",
+    "category": "choice",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Predict an offered algorithm choice."],
+    "messages": [
+      {
+        "id": "pick-difficulty-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Would you like bubble sort or insertion sort?"
+          }
+        ]
+      },
+      {
+        "id": "pick-difficulty-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain sorting with a small animation idea"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "confirm-diagram",
+    "split": "holdout",
+    "category": "confirmation",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["A short direct confirmation is natural."],
+    "messages": [
+      {
+        "id": "confirm-diagram-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I can sketch a short speaking outline. Want me to?"
+          }
+        ]
+      },
+      {
+        "id": "confirm-diagram-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me prepare a two-minute introduction about satellites"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "confirm-draft",
+    "split": "holdout",
+    "category": "confirmation",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "A generic confirmation is a valid editable prediction."
+    ],
+    "messages": [
+      {
+        "id": "confirm-draft-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "I can draft a short note now. Should I?"
+          }
+        ]
+      },
+      {
+        "id": "confirm-draft-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me write a friendly thank-you note for my tutor"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-count",
+    "split": "holdout",
+    "category": "direct-answer",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["A concise number choice is complete."],
+    "messages": [
+      {
+        "id": "reply-count-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Would you like four practice questions or eight?"
+          }
+        ]
+      },
+      {
+        "id": "reply-count-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me practice mental multiplication"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reply-command",
+    "split": "holdout",
+    "category": "exact-input",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "The next input can be exactly pwd, not a meta request."
+    ],
+    "messages": [
+      {
+        "id": "reply-command-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Use pwd. Enter the command you want to run."
+          }
+        ]
+      },
+      {
+        "id": "reply-command-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i want just the shell command to print the current directory"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-heap",
+    "split": "holdout",
+    "category": "learning",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "A concrete search follow-up fits the stated learning style."
+    ],
+    "messages": [
+      {
+        "id": "learn-heap-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "For [2, 4, 6, 8, 10], the middle value is 6. If the target is smaller, continue in the left half; if larger, use the right half."
+          }
+        ]
+      },
+      {
+        "id": "learn-heap-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "explain binary search with a tiny list so i can follow"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "learn-only",
+    "split": "holdout",
+    "category": "learning",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "Do not turn an unrequested implementation offer into permission or a new project."
+    ],
+    "messages": [
+      {
+        "id": "learn-only-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A collector finds objects that a running program can no longer reach and reclaims their memory. I can modify your application to use a different collector."
+          }
+        ]
+      },
+      {
+        "id": "learn-only-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i only want to understand garbage collection. no code changes"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reuse-title",
+    "split": "holdout",
+    "category": "reuse",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "The requested title is still missing. Preserve the invitation object."
+    ],
+    "messages": [
+      {
+        "id": "reuse-title-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Join us for a friendly workshop on finding your next favorite book. Everyone is welcome."
+          }
+        ]
+      },
+      {
+        "id": "reuse-title-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "write a short fictional library workshop invitation and include a title"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "reuse-postcard",
+    "split": "holdout",
+    "category": "reuse",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "A focused one-line caption or shortening request is plausible."
+    ],
+    "messages": [
+      {
+        "id": "reuse-postcard-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A bicycle rests against a blue wall, ready for another ride. Here is a longer paragraph describing the scene in detail."
+          }
+        ]
+      },
+      {
+        "id": "reuse-postcard-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "turn this into a one-line caption for a photo: a bicycle leaning against a blue wall"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "voice-short",
+    "split": "holdout",
+    "category": "voice",
+    "expectation": "either",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "Match brevity, allow plausible follow-up or justified silence."
+    ],
+    "messages": [
+      {
+        "id": "voice-short-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A small piece of data a site stores in your browser."
+          }
+        ]
+      },
+      {
+        "id": "voice-short-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "shorter please. what is a cookie in a browser"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "voice-french",
+    "split": "holdout",
+    "category": "voice",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Keep Italian and simple-example intent."],
+    "messages": [
+      {
+        "id": "voice-french-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Una coda segue l’ordine di arrivo: il primo elemento aggiunto è il primo a uscire, come le persone in fila."
+          }
+        ]
+      },
+      {
+        "id": "voice-french-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "spiegami le code con un esempio semplice"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "wait-received-style",
+    "split": "holdout",
+    "category": "wait-reply",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "The topic answer is already present; continue from it rather than answering the question again."
+    ],
+    "messages": [
+      {
+        "id": "wait-received-style-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "toolCallId": "topic",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "What is the topic?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "how public libraries help students"
+            }
+          },
+          {
+            "type": "text",
+            "text": "I have the topic and can draft the practice speech now."
+          }
+        ]
+      },
+      {
+        "id": "wait-received-style-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "ask my topic, then draft a practice speech"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "wait-received-format",
+    "split": "holdout",
+    "category": "wait-reply",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "The numbered-list answer was already delivered, so predict a continuation after it."
+    ],
+    "messages": [
+      {
+        "id": "wait-received-format-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-wait_for_user",
+            "toolCallId": "format",
+            "state": "output-available",
+            "input": {
+              "questions": [
+                {
+                  "question": "Which format?"
+                }
+              ]
+            },
+            "output": {
+              "success": true,
+              "wait_outcome": "message_arrived",
+              "reply": "a numbered list please"
+            }
+          },
+          {
+            "type": "text",
+            "text": "I received your format preference and can organize the itinerary now."
+          }
+        ]
+      },
+      {
+        "id": "wait-received-format-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "ask the output format, then organize this fictional itinerary"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "missing-observation",
+    "split": "holdout",
+    "category": "missing-evidence",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "Do not invent a specific error or line number. Predict a collection question or unfilled placeholder."
+    ],
+    "messages": [
+      {
+        "id": "missing-observation-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "What exact error and line number do you see? No error or location has been supplied."
+          }
+        ]
+      },
+      {
+        "id": "missing-observation-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "my toy csv parser crashes. help debug it"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "missing-upload",
+    "split": "holdout",
+    "category": "missing-evidence",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "No invented attachment or supplied configuration; future intent or collection question is acceptable."
+    ],
+    "messages": [
+      {
+        "id": "missing-upload-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Paste the sample JSON or attach the file. No configuration data is present yet."
+          }
+        ]
+      },
+      {
+        "id": "missing-upload-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "can you help check my sample json configuration"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-choice",
+    "split": "holdout",
+    "category": "tool-state",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Predict the user choice."],
+    "messages": [
+      {
+        "id": "tool-choice-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-read_file",
+            "toolCallId": "date",
+            "state": "output-available",
+            "input": {
+              "path": "date.ts"
+            },
+            "output": {
+              "success": true,
+              "summary": "date parsing repeated"
+            }
+          },
+          {
+            "type": "text",
+            "text": "I found duplicated date parsing. Keep the current function name or rename it?"
+          }
+        ]
+      },
+      {
+        "id": "tool-choice-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "read the toy date formatter, then let me decide whether to keep its name"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "tool-denied",
+    "split": "holdout",
+    "category": "tool-state",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Do not invent rows or claim success."],
+    "messages": [
+      {
+        "id": "tool-denied-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool-read_file",
+            "toolCallId": "csv",
+            "state": "output-denied",
+            "input": {
+              "path": "practice.csv"
+            },
+            "errorText": "access denied"
+          },
+          {
+            "type": "text",
+            "text": "The file read was denied. I do not have any row contents."
+          }
+        ]
+      },
+      {
+        "id": "tool-denied-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "read this practice csv and explain the first row"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scope-missing",
+    "split": "holdout",
+    "category": "scope",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "Never invent a specific approved URL or written permission. Generic future intent and placeholders are distinct from observed facts."
+    ],
+    "messages": [
+      {
+        "id": "scope-missing-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "What application is approved for review? No approved URL or written permission has been supplied."
+          }
+        ]
+      },
+      {
+        "id": "scope-missing-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "help me make a questionnaire before a practice web review"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "operation-precise",
+    "split": "holdout",
+    "category": "deliverable",
+    "expectation": "suggest",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": [
+      "Preserve the already-requested line-per-item format."
+    ],
+    "messages": [
+      {
+        "id": "operation-precise-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Here is your packing list in a Markdown table."
+          }
+        ]
+      },
+      {
+        "id": "operation-precise-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "i need the fictional packing list as plain text, one item per line"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-arithmetic",
+    "split": "holdout",
+    "category": "done",
+    "expectation": "silence",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Completed bounded arithmetic request."],
+    "messages": [
+      {
+        "id": "done-arithmetic-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "81"
+          }
+        ]
+      },
+      {
+        "id": "done-arithmetic-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "what is 35 plus 46? only the answer"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "done-label",
+    "split": "holdout",
+    "category": "done",
+    "expectation": "silence",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Completed exact formatting request."],
+    "messages": [
+      {
+        "id": "done-label-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "orbit"
+          }
+        ]
+      },
+      {
+        "id": "done-label-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "lowercase the word ORBIT, output nothing else"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-answered",
+    "split": "holdout",
+    "category": "stop",
+    "expectation": "silence",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Honor explicit stop."],
+    "messages": [
+      {
+        "id": "stop-answered-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "A semaphore controls access to a resource using a counter."
+          }
+        ]
+      },
+      {
+        "id": "stop-answered-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "define a semaphore in one sentence, then stop"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "stop-enough",
+    "split": "holdout",
+    "category": "stop",
+    "expectation": "silence",
+    "rubric": "Judge the likely next input from this user in their voice, not an assistant recommended task.",
+    "predictionCriteria": ["Honor user stop."],
+    "messages": [
+      {
+        "id": "stop-enough-a",
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "text",
+            "text": "Understood."
+          }
+        ]
+      },
+      {
+        "id": "stop-enough-u",
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "no more follow-ups, i am done for now"
+          }
+        ]
+      }
+    ]
+  }
+]
