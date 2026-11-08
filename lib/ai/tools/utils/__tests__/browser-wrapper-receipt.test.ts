@@ -33,7 +33,7 @@ script.write_text(wrapper)
 result=subprocess.run([sys.executable,str(script),*x['args']],capture_output=True)
 receipt=root/'wrapper-receipt.json'
 observed=root/'observed.json'
-print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_text()) if observed.exists() else None,'finished':json.loads(receipt.read_text()) if receipt.is_file() else None,'leftovers':len(list(root.glob('.wrapper-receipt-*'))),'verify_required':(root/'verify-required').exists()}))`,
+print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_text()) if observed.exists() else None,'finished':json.loads(receipt.read_text()) if receipt.is_file() else None,'open':json.loads((root/'open-receipt.json').read_text()) if (root/'open-receipt.json').is_file() else None,'leftovers':len(list(root.glob('.wrapper-receipt-*'))),'verify_required':(root/'verify-required').exists()}))`,
       ],
       {
         input: JSON.stringify({
@@ -103,4 +103,36 @@ it("retains the verification gate and preserves successful snapshot admission", 
   expect(resumed.status).toBe(0);
   expect(resumed.started.phase).toBe("started");
   expect(resumed.verify_required).toBe(false);
+});
+
+it("retains the latest wrapped open after a version check without retaining arguments", () => {
+  const opened = exercise(root, 37);
+  expect(opened.open).toMatchObject({
+    action: "open",
+    phase: "completed",
+    exit: 37,
+  });
+  const version = exercise(root, 0, false, ["--version"]);
+  expect(version.finished).toMatchObject({
+    action: "version",
+    open_receipt_support: 1,
+  });
+  expect(version.open).toEqual(opened.open);
+  expect(JSON.stringify(version.open)).not.toMatch(
+    /PRIVATE_TARGET|PRIVATE_SESSION/,
+  );
+  expect(version.leftovers).toBe(0);
+});
+
+it("retains a blocked-open observation without admitting the CLI or bypassing snapshot verification", () => {
+  const blocked = exercise(root, 0, false, ["open", "PRIVATE_TARGET"], true);
+  expect(blocked.open).toMatchObject({
+    action: "open",
+    phase: "completed",
+    exit: 75,
+  });
+  const version = exercise(root, 0, false, ["--version"]);
+  expect(version.status).toBe(75);
+  expect(version.open).toEqual(blocked.open);
+  expect(version.verify_required).toBe(true);
 });

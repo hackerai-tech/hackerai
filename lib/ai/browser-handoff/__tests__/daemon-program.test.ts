@@ -15,6 +15,11 @@ function daemon(
     missingPath?: string;
     name?: string;
     receipt?: unknown;
+    openReceipt?: unknown;
+    openReceiptOwner?: number;
+    openReceiptMode?: number;
+    openReceiptSize?: number;
+    openReceiptSymlink?: boolean;
     receiptOwner?: number;
     receiptMode?: number;
     receiptSize?: number;
@@ -43,14 +48,31 @@ function daemon(
     output.mockImplementation(() => {
       throw new Error("PRIVATE broken output");
     });
-  const readReceipt = jest.fn((_: number, bytes: Buffer) => {
-    return bytes.write(JSON.stringify(options.receipt), "utf8");
+  const fileReceipt = (open: boolean) =>
+    open ? options.openReceipt : options.receipt;
+  const receiptStat = (open: boolean) => ({
+    uid: (open ? options.openReceiptOwner : options.receiptOwner) ?? 1000,
+    mode: (open ? options.openReceiptMode : options.receiptMode) ?? 0o600,
+    size:
+      (open ? options.openReceiptSize : options.receiptSize) ??
+      JSON.stringify(fileReceipt(open))?.length,
+    isFile: () =>
+      fileReceipt(open) !== undefined &&
+      !(open ? options.openReceiptSymlink : options.receiptSymlink) &&
+      (open || options.receiptRegular !== false),
   });
+  const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
+    bytes.write(JSON.stringify(fileReceipt(fd === 8)), "utf8"),
+  );
   const closeReceipt = jest.fn();
-  const openReceipt = jest.fn(() => {
-    if (options.receipt === undefined || options.receiptSymlink)
+  const openReceipt = jest.fn((file: string) => {
+    const open = file.endsWith("/open-receipt.json");
+    if (
+      fileReceipt(open) === undefined ||
+      (open ? options.openReceiptSymlink : options.receiptSymlink)
+    )
       throw new Error("PRIVATE unavailable receipt");
-    return 7;
+    return open ? 8 : 7;
   });
   let deadline: (() => void) | undefined;
   runInNewContext(BROWSER_DAEMON_PROGRAM, {
@@ -62,27 +84,21 @@ function daemon(
         return {
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
-          fstatSync: () => ({
-            uid: options.receiptOwner ?? 1000,
-            mode: options.receiptMode ?? 0o600,
-            size: options.receiptSize ?? JSON.stringify(options.receipt).length,
-            isFile: () => options.receiptRegular !== false,
-          }),
+          fstatSync: (fd: number) => receiptStat(fd === 8),
           readSync: readReceipt,
           closeSync: closeReceipt,
           lstatSync: (file: string) => {
-            if (file.endsWith("/wrapper-receipt.json"))
-              return {
-                uid: options.receiptOwner ?? 1000,
-                mode: options.receiptMode ?? 0o600,
-                size:
-                  options.receiptSize ??
-                  JSON.stringify(options.receipt)?.length,
-                isFile: () =>
-                  options.receipt !== undefined &&
-                  !options.receiptSymlink &&
-                  options.receiptRegular !== false,
-              };
+            if (
+              file.endsWith("/wrapper-receipt.json") ||
+              file.endsWith("/open-receipt.json")
+            ) {
+              const open = file.endsWith("/open-receipt.json");
+              if (fileReceipt(open) === undefined)
+                throw Object.assign(new Error("PRIVATE missing receipt"), {
+                  code: "ENOENT",
+                });
+              return receiptStat(open);
+            }
             if (file === options.missingPath)
               throw Object.assign(new Error("PRIVATE filesystem path"), {
                 code: "ENOENT",
@@ -157,6 +173,8 @@ it("reports only bounded same-session wrapper context when an owned socket is mi
     wrapper_exit: 37,
     wrapper_session_matches: true,
     wrapper_age: "lt10s",
+    open_receipt_version: 1,
+    open_receipt_status: "unavailable",
   });
   expect(JSON.stringify(d.output.mock.calls)).not.toMatch(
     /PRIVATE|default|\/dev\/shm/,
@@ -354,3 +372,93 @@ it.each([
     expect(d.exit).toHaveBeenCalledWith(2);
   },
 );
+
+it("retains a prior open observation when the latest command was a version check", () => {
+  const d = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+    openReceipt: { ...receipt, action: "open", exit: 0 },
+  });
+  const value = JSON.parse(d.output.mock.calls[0][0]);
+  expect(value).toMatchObject({
+    wrapper_action: "version",
+    open_receipt_version: 1,
+    open_receipt_status: "recorded",
+    open_phase: "completed",
+    open_exit: 0,
+    open_session_matches: true,
+    open_age: "lt10s",
+  });
+  expect(JSON.stringify(value)).not.toMatch(
+    /PRIVATE|session_key|default|dev\/shm/,
+  );
+  expect(d.closeReceipt).toHaveBeenCalledWith(8);
+});
+
+it("distinguishes an older writer from an unobserved open without reading an unsupported record", () => {
+  const old = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt,
+    openReceipt: { ...receipt, action: "open" },
+  });
+  expect(JSON.parse(old.output.mock.calls[0][0]).open_receipt_status).toBe(
+    "unavailable",
+  );
+  expect(old.readReceipt).toHaveBeenCalledTimes(1);
+  const missing = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: { ...receipt, open_receipt_support: 1 },
+  });
+  expect(JSON.parse(missing.output.mock.calls[0][0]).open_receipt_status).toBe(
+    "not_observed",
+  );
+});
+
+it.each([
+  { openReceiptOwner: 0 },
+  { openReceiptMode: 0o644 },
+  { openReceiptSymlink: true },
+  { openReceiptSize: 513 },
+  { openReceipt: { ...receipt, action: "PRIVATE" } },
+])(
+  "censors an unsafe open receipt while preserving last-command evidence: %j",
+  (invalid) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...receipt, open_receipt_support: 1 },
+      openReceipt: { ...receipt, action: "open" },
+      ...invalid,
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toMatchObject({
+      wrapper_action: "close",
+      open_receipt_status: "unreadable",
+    });
+    expect(value).not.toHaveProperty("open_phase");
+    expect(JSON.stringify(value)).not.toContain("PRIVATE");
+  },
+);
+
+it("bounds the combined receipt below the existing 512-byte parser limit and preserves session mismatch", () => {
+  const d = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: { ...receipt, open_receipt_support: 1 },
+    openReceipt: {
+      ...receipt,
+      action: "open",
+      phase: "started",
+      session_key: "a".repeat(64),
+      at: 0,
+    },
+  });
+  const text = d.output.mock.calls[0][0];
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expect(JSON.parse(text)).toMatchObject({
+    open_receipt_status: "recorded",
+    open_phase: "started",
+    open_exit: "none",
+    open_session_matches: false,
+    open_age: "older",
+  });
+});

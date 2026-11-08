@@ -45,6 +45,12 @@ it.each([2, 3])(
         wrapper_exit: 37,
         wrapper_session_matches: false,
         wrapper_age: "lt60s",
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
         session: "PRIVATE_NAME",
         command: "PRIVATE_COMMAND",
       }),
@@ -71,6 +77,12 @@ it.each([2, 3])(
       capture_wrapper_exit_code: 37,
       capture_wrapper_session_matches: false,
       capture_wrapper_age: "lt60s",
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
     });
     expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
   },
@@ -573,4 +585,69 @@ it("rejects unbounded viewport dimensions before executing a command", async () 
     ),
   ).rejects.toThrow("Invalid browser viewport");
   expect(sandbox.commands.run).not.toHaveBeenCalled();
+});
+
+it.each(["unavailable", "not_observed", "unreadable"])(
+  "preserves the finite %s observation without invented open details",
+  async (status) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        open_receipt_version: 1,
+        open_receipt_status: status,
+        open_phase: "PRIVATE",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: status,
+    });
+    expect(observed.mock.calls[0][0]).not.toHaveProperty("capture_open_phase");
+  },
+);
+
+it("rejects partial open details without retaining supplied private values", async () => {
+  const sandbox = fixture();
+  const error = new CommandExitError({
+    exitCode: 2,
+    stderr: "PRIVATE",
+    stdout: JSON.stringify({
+      open_receipt_version: 1,
+      open_receipt_status: "recorded",
+      open_phase: "completed",
+      open_exit: 999,
+      open_session_matches: "PRIVATE",
+      open_age: "PRIVATE",
+    }),
+  });
+  sandbox.commands.run.mockRejectedValueOnce(error);
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    ),
+  ).rejects.toBe(error);
+  expect(observed.mock.calls[0][0]).not.toHaveProperty(
+    "capture_open_receipt_version",
+  );
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
 });

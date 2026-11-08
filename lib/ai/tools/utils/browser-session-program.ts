@@ -75,12 +75,30 @@ for i, arg in enumerate(sys.argv[1:]):
 if not name or len(name) > 80 or '/' in name or '\\x00' in name:
     raise RuntimeError('Invalid browser session name')
 (root / 'active-session').write_text(name)
+def write_receipt(filename, value):
+    temporary = None
+    created = False
+    try:
+        temporary = root / ('.wrapper-receipt-' + os.urandom(12).hex())
+        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
+        with os.fdopen(fd, 'w') as output:
+            __import__('json').dump(value, output)
+        os.replace(temporary, root / filename)
+    except Exception:
+        pass
+    finally:
+        if temporary is not None and created:
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def record_wrapper(phase, status=None):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
     # targets or output; the reader exports session equality, not its name.
-    temporary = None
-    created = False
     try:
         info = root.lstat()
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -99,22 +117,15 @@ def record_wrapper(phase, status=None):
                 break
         if sys.argv[1:] in (['--version'], ['-V']):
             action = 'version'
-        value = dict(v=1, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
+        value = dict(v=1, open_receipt_support=1, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
-        temporary = root / ('.wrapper-receipt-' + os.urandom(12).hex())
-        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        created = True
-        with os.fdopen(fd, 'w') as output:
-            __import__('json').dump(value, output)
-        os.replace(temporary, root / 'wrapper-receipt.json')
+        # Keep the most recent wrapped open even after version/other commands.
+        # These are observations, not proof that a browser is still running.
+        write_receipt('wrapper-receipt.json', value)
+        if action == 'open':
+            write_receipt('open-receipt.json', value)
     except Exception:
         pass
-    finally:
-        if temporary is not None and created:
-            try:
-                temporary.unlink(missing_ok=True)
-            except Exception:
-                pass
 
 record_wrapper('started')
 verify = root / 'verify-required'

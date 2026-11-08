@@ -38,42 +38,71 @@ let done = false;
 let precondition = 'arguments';
 let argumentsValid = false;
 let rootInfo;
-/** Read only a bounded private receipt and return finite observations, never its session key. */
-function wrapperReceipt() {
+/** Read only a bounded owned private file; never follow links or block on pipes. */
+function readReceipt(filename) {
   let fd;
+  try {
+    const receiptPath = path.join(directory, filename);
+    const entry = fs.lstatSync(receiptPath);
+    if (!entry.isFile() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0 ||
+        entry.size < 1 || entry.size > 512) throw new Error();
+    fd = fs.openSync(receiptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const info = fs.fstatSync(fd);
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 ||
+        info.size < 1 || info.size > 512) throw new Error();
+    const bytes = Buffer.alloc(513);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (size > 512) throw new Error();
+    return JSON.parse(bytes.subarray(0, size).toString('utf8'));
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
+function validReceipt(receipt) {
+  return receipt?.v === 1 && typeof receipt.session_key === 'string' &&
+    /^[a-f0-9]{64}$/.test(receipt.session_key) &&
+    ['open', 'close', 'version', 'other'].includes(receipt.action) &&
+    ['started', 'completed'].includes(receipt.phase) &&
+    Number.isSafeInteger(receipt.at) && receipt.at >= 0;
+}
+function receiptAge(at) {
+  const age = Date.now() - at;
+  return age < 0 ? 'unknown' : age < 10000 ? 'lt10s' : age < 60000 ? 'lt60s' : age < 300000 ? 'lt5m' : 'older';
+}
+function receiptExit(receipt) {
+  return receipt.phase === 'started' ? 'none' :
+    Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other';
+}
+/** Return finite observations only; session keys and private paths stay local. */
+function wrapperReceipt() {
   try {
     if (!argumentsValid || !rootInfo?.isDirectory() || rootInfo.uid !== process.getuid() ||
         (rootInfo.mode & 0o077) !== 0 || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
         typeof fs.constants.O_NONBLOCK !== 'number') return {};
-    const receiptPath = path.join(directory, 'wrapper-receipt.json');
-    const entry = fs.lstatSync(receiptPath);
-    if (!entry.isFile() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0 ||
-        entry.size < 1 || entry.size > 512) return {};
-    fd = fs.openSync(receiptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-    const info = fs.fstatSync(fd);
-    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 ||
-        info.size < 1 || info.size > 512) return {};
-    const bytes = Buffer.alloc(513);
-    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
-    if (size > 512) return {};
-    const receipt = JSON.parse(bytes.subarray(0, size).toString('utf8'));
-    if (receipt?.v !== 1 || typeof receipt.session_key !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(receipt.session_key) ||
-        !['open', 'close', 'version', 'other'].includes(receipt.action) ||
-        !['started', 'completed'].includes(receipt.phase) ||
-        !Number.isSafeInteger(receipt.at) || receipt.at < 0) return {};
-    const age = Date.now() - receipt.at;
-    return {
+    const receipt = readReceipt('wrapper-receipt.json');
+    if (!validReceipt(receipt)) return {};
+    const sessionKey = createHash('sha256').update(name, 'utf8').digest('hex');
+    const result = {
       wrapper_receipt_version: 1,
       wrapper_action: receipt.action,
       wrapper_phase: receipt.phase,
-      wrapper_exit: receipt.phase === 'started' ? 'none' :
-        Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other',
-      wrapper_session_matches: receipt.session_key === createHash('sha256').update(name, 'utf8').digest('hex'),
-      wrapper_age: age < 0 ? 'unknown' : age < 10000 ? 'lt10s' : age < 60000 ? 'lt60s' : age < 300000 ? 'lt5m' : 'older',
+      wrapper_exit: receiptExit(receipt),
+      wrapper_session_matches: receipt.session_key === sessionKey,
+      wrapper_age: receiptAge(receipt.at),
+      open_receipt_version: 1,
+      // Older workers do not write the sticky receipt; absence is not no-open evidence.
+      open_receipt_status: receipt.open_receipt_support === 1 ? 'not_observed' : 'unavailable',
     };
+    if (receipt.open_receipt_support !== 1) return result;
+    try {
+      const open = readReceipt('open-receipt.json');
+      if (!validReceipt(open) || open.action !== 'open') throw new Error();
+      return { ...result, open_receipt_status: 'recorded',
+        open_phase: open.phase, open_exit: receiptExit(open),
+        open_session_matches: open.session_key === sessionKey, open_age: receiptAge(open.at) };
+    } catch (error) {
+      // Missing/unreadable records are censored observations, never proof no CLI ran.
+      return { ...result, open_receipt_status: error?.code === 'ENOENT' ? 'not_observed' : 'unreadable' };
+    }
   } catch { return {}; }
-  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
