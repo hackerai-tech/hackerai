@@ -96,6 +96,7 @@ const serializeRouteError = (error: unknown) => {
   };
 };
 
+/** Preserve typed responses; optional 503 diagnostics must never change delivery. */
 export function handleAgentRouteError({
   error,
   endpoint,
