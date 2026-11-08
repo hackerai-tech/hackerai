@@ -8,7 +8,7 @@ import type {
 
 export const E2B_CPU_SATURATION_THRESHOLD_PCT = 99;
 export const E2B_MEMORY_PRESSURE_THRESHOLD_PCT = 90;
-export const E2B_RESOURCE_PRESSURE_EVENT_VERSION = 3;
+export const E2B_RESOURCE_PRESSURE_EVENT_VERSION = 4;
 const E2B_FAILURE_RECOVERY_EVENT_VERSION = 1;
 
 const roundPercentage = (value: number): number =>
@@ -38,11 +38,16 @@ function metricProperties(metrics: SandboxResourceMetrics | null) {
   if (!metrics) {
     return {
       metrics_available: false,
+      metrics_sample_age_available: false,
     };
   }
 
   return {
     metrics_available: true,
+    metrics_sample_age_available: Number.isSafeInteger(metrics.sampleAgeMs),
+    ...(Number.isSafeInteger(metrics.sampleAgeMs) && {
+      metrics_sample_age_ms: metrics.sampleAgeMs,
+    }),
     cpu_used_pct: roundPercentage(metrics.cpuPct),
     memory_used_pct: roundPercentage(metrics.memPct),
     disk_used_pct: roundPercentage(metrics.diskPct),

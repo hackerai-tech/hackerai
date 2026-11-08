@@ -45,6 +45,11 @@ async function checkSandboxMetrics(
     if (!metrics.length) return null;
 
     const latest = metrics[metrics.length - 1];
+    const sampleTime =
+      latest.timestamp instanceof Date
+        ? Date.prototype.getTime.call(latest.timestamp)
+        : NaN;
+    const sampleAgeMs = Date.now() - sampleTime;
     const cpuPct = latest.cpuUsedPct;
     const memPct =
       latest.memTotal > 0 ? (latest.memUsed / latest.memTotal) * 100 : 0;
@@ -65,6 +70,7 @@ async function checkSandboxMetrics(
       cpuPct,
       memPct,
       diskPct,
+      ...(Number.isSafeInteger(sampleAgeMs) && { sampleAgeMs }),
       warning: warnings.length > 0 ? warnings.join(", ") : null,
     };
   } catch {
@@ -94,6 +100,9 @@ function stripWarning(
     cpuPct: metrics.cpuPct,
     memPct: metrics.memPct,
     diskPct: metrics.diskPct,
+    ...(metrics.sampleAgeMs !== undefined && {
+      sampleAgeMs: metrics.sampleAgeMs,
+    }),
   };
 }
 
