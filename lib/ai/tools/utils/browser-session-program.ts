@@ -115,15 +115,26 @@ def record_wrapper(phase, status=None):
             else:
                 action = arg if arg in ('open', 'close') else 'other'
                 break
+        close_all = False
+        if action == 'close':
+            for arg in args:
+                if arg == '--session':
+                    next(args, None)
+                elif arg == '--all':
+                    close_all = True
+                elif arg in ('--help', '-h'):
+                    action = 'other'
         if sys.argv[1:] in (['--version'], ['-V']):
             action = 'version'
-        value = dict(v=1, open_receipt_support=1, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
+        value = dict(v=1, open_receipt_support=1, close_receipt_support=1, close_all=close_all, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
-        # Keep the most recent wrapped open even after version/other commands.
+        # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', value)
         if action == 'open':
             write_receipt('open-receipt.json', value)
+        elif action == 'close':
+            write_receipt('close-receipt.json', value)
     except Exception:
         pass
 

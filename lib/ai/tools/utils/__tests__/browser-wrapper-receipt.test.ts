@@ -33,7 +33,7 @@ script.write_text(wrapper)
 result=subprocess.run([sys.executable,str(script),*x['args']],capture_output=True)
 receipt=root/'wrapper-receipt.json'
 observed=root/'observed.json'
-print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_text()) if observed.exists() else None,'finished':json.loads(receipt.read_text()) if receipt.is_file() else None,'open':json.loads((root/'open-receipt.json').read_text()) if (root/'open-receipt.json').is_file() else None,'leftovers':len(list(root.glob('.wrapper-receipt-*'))),'verify_required':(root/'verify-required').exists()}))`,
+print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_text()) if observed.exists() else None,'finished':json.loads(receipt.read_text()) if receipt.is_file() else None,'open':json.loads((root/'open-receipt.json').read_text()) if (root/'open-receipt.json').is_file() else None,'close':json.loads((root/'close-receipt.json').read_text()) if (root/'close-receipt.json').is_file() else None,'leftovers':len(list(root.glob('.wrapper-receipt-*'))),'verify_required':(root/'verify-required').exists()}))`,
       ],
       {
         input: JSON.stringify({
@@ -135,4 +135,54 @@ it("retains a blocked-open observation without admitting the CLI or bypassing sn
   expect(version.status).toBe(75);
   expect(version.open).toEqual(blocked.open);
   expect(version.verify_required).toBe(true);
+});
+
+it("retains a close across other commands and a later reopen without replacing either CLI result", () => {
+  const opened = exercise(root, 0);
+  const closed = exercise(root, 37, false, [
+    "--session",
+    "PRIVATE_SESSION",
+    "close",
+  ]);
+  expect(closed.status).toBe(37);
+  expect(closed.close).toMatchObject({
+    action: "close",
+    phase: "completed",
+    exit: 37,
+  });
+  expect(closed.open).toEqual(opened.open);
+  for (const args of [["--version"], ["snapshot", "-i"]]) {
+    const later = exercise(root, 0, false, args);
+    expect(later.close).toEqual(closed.close);
+    expect(later.finished.close_receipt_support).toBe(1);
+  }
+  const reopened = exercise(root, 17);
+  expect(reopened.status).toBe(17);
+  expect(reopened.open.exit).toBe(17);
+  expect(reopened.close).toEqual(closed.close);
+  expect(JSON.stringify(reopened.close)).not.toMatch(
+    /PRIVATE_TARGET|PRIVATE_SESSION/,
+  );
+  expect(reopened.leftovers).toBe(0);
+});
+
+it("records close-all scope without mistaking a session argument for the flag", () => {
+  const one = exercise(root, 0, false, ["close", "--session", "--all"]);
+  expect(one.close.close_all).toBe(false);
+  const all = exercise(root, 0, false, [
+    "--session",
+    "PRIVATE_SESSION",
+    "close",
+    "--all",
+  ]);
+  expect(all.close.close_all).toBe(true);
+  expect(JSON.stringify(all.close)).not.toContain("PRIVATE_SESSION");
+});
+
+it("does not replace the retained close with a help-only invocation", () => {
+  const closed = exercise(root, 0, false, ["close"]);
+  const help = exercise(root, 0, false, ["close", "--help"]);
+  expect(help.status).toBe(0);
+  expect(help.finished.action).toBe("other");
+  expect(help.close).toEqual(closed.close);
 });

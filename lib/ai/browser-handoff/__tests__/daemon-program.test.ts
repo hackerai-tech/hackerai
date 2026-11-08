@@ -16,6 +16,11 @@ function daemon(
     name?: string;
     receipt?: unknown;
     openReceipt?: unknown;
+    closeReceipt?: unknown;
+    closeReceiptOwner?: number;
+    closeReceiptMode?: number;
+    closeReceiptSize?: number;
+    closeReceiptSymlink?: boolean;
     openReceiptOwner?: number;
     openReceiptMode?: number;
     openReceiptSize?: number;
@@ -48,31 +53,54 @@ function daemon(
     output.mockImplementation(() => {
       throw new Error("PRIVATE broken output");
     });
-  const fileReceipt = (open: boolean) =>
-    open ? options.openReceipt : options.receipt;
-  const receiptStat = (open: boolean) => ({
-    uid: (open ? options.openReceiptOwner : options.receiptOwner) ?? 1000,
-    mode: (open ? options.openReceiptMode : options.receiptMode) ?? 0o600,
+  const fileReceipt = (open: boolean, close = false) =>
+    close ? options.closeReceipt : open ? options.openReceipt : options.receipt;
+  const receiptStat = (open: boolean, close = false) => ({
+    uid:
+      (close
+        ? options.closeReceiptOwner
+        : open
+          ? options.openReceiptOwner
+          : options.receiptOwner) ?? 1000,
+    mode:
+      (close
+        ? options.closeReceiptMode
+        : open
+          ? options.openReceiptMode
+          : options.receiptMode) ?? 0o600,
     size:
-      (open ? options.openReceiptSize : options.receiptSize) ??
-      JSON.stringify(fileReceipt(open))?.length,
+      (close
+        ? options.closeReceiptSize
+        : open
+          ? options.openReceiptSize
+          : options.receiptSize) ??
+      JSON.stringify(fileReceipt(open, close))?.length,
     isFile: () =>
-      fileReceipt(open) !== undefined &&
-      !(open ? options.openReceiptSymlink : options.receiptSymlink) &&
+      fileReceipt(open, close) !== undefined &&
+      !(close
+        ? options.closeReceiptSymlink
+        : open
+          ? options.openReceiptSymlink
+          : options.receiptSymlink) &&
       (open || options.receiptRegular !== false),
   });
   const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
-    bytes.write(JSON.stringify(fileReceipt(fd === 8)), "utf8"),
+    bytes.write(JSON.stringify(fileReceipt(fd === 8, fd === 9)), "utf8"),
   );
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
     const open = file.endsWith("/open-receipt.json");
+    const close = file.endsWith("/close-receipt.json");
     if (
-      fileReceipt(open) === undefined ||
-      (open ? options.openReceiptSymlink : options.receiptSymlink)
+      fileReceipt(open, close) === undefined ||
+      (close
+        ? options.closeReceiptSymlink
+        : open
+          ? options.openReceiptSymlink
+          : options.receiptSymlink)
     )
       throw new Error("PRIVATE unavailable receipt");
-    return open ? 8 : 7;
+    return close ? 9 : open ? 8 : 7;
   });
   let deadline: (() => void) | undefined;
   runInNewContext(BROWSER_DAEMON_PROGRAM, {
@@ -84,20 +112,22 @@ function daemon(
         return {
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
-          fstatSync: (fd: number) => receiptStat(fd === 8),
+          fstatSync: (fd: number) => receiptStat(fd === 8, fd === 9),
           readSync: readReceipt,
           closeSync: closeReceipt,
           lstatSync: (file: string) => {
             if (
               file.endsWith("/wrapper-receipt.json") ||
-              file.endsWith("/open-receipt.json")
+              file.endsWith("/open-receipt.json") ||
+              file.endsWith("/close-receipt.json")
             ) {
               const open = file.endsWith("/open-receipt.json");
-              if (fileReceipt(open) === undefined)
+              const close = file.endsWith("/close-receipt.json");
+              if (fileReceipt(open, close) === undefined)
                 throw Object.assign(new Error("PRIVATE missing receipt"), {
                   code: "ENOENT",
                 });
-              return receiptStat(open);
+              return receiptStat(open, close);
             }
             if (file === options.missingPath)
               throw Object.assign(new Error("PRIVATE filesystem path"), {
@@ -156,6 +186,7 @@ const receipt = {
   exit: 37,
   at: Date.now(),
   private: "PRIVATE_TARGET",
+  close_all: false,
 };
 
 it("reports only bounded same-session wrapper context when an owned socket is missing", () => {
@@ -175,6 +206,7 @@ it("reports only bounded same-session wrapper context when an owned socket is mi
     wrapper_age: "lt10s",
     open_receipt_version: 1,
     open_receipt_status: "unavailable",
+    close_receipt: [1, "unavailable"],
   });
   expect(JSON.stringify(d.output.mock.calls)).not.toMatch(
     /PRIVATE|default|\/dev\/shm/,
@@ -461,4 +493,149 @@ it("bounds the combined receipt below the existing 512-byte parser limit and pre
     open_session_matches: false,
     open_age: "older",
   });
+});
+
+it.each([
+  [100, "after"],
+  [-100, "before"],
+  [0, "same_time"],
+])(
+  "retains close/open order %s after a later unrelated command",
+  (delta, order) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: {
+        ...receipt,
+        action: "other",
+        open_receipt_support: 1,
+        close_receipt_support: 1,
+      },
+      openReceipt: { ...receipt, action: "open", exit: 0 },
+      closeReceipt: {
+        ...receipt,
+        action: "close",
+        at: receipt.at + Number(delta),
+        exit: 0,
+      },
+    });
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toMatchObject({
+      wrapper_action: "other",
+      open_receipt_status: "recorded",
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        0,
+        "selected_session",
+        expect.any(String),
+        order,
+      ],
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.closeReceipt).toHaveBeenCalledWith(9);
+    expect(JSON.stringify(value)).not.toMatch(
+      /PRIVATE|session_key|default|dev\/shm/,
+    );
+  },
+);
+
+it("distinguishes a legacy close writer from an unobserved close", () => {
+  const old = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt,
+    closeReceipt: { ...receipt, action: "close" },
+  });
+  expect(JSON.parse(old.output.mock.calls[0][0]).close_receipt).toEqual([
+    1,
+    "unavailable",
+  ]);
+  expect(old.readReceipt).toHaveBeenCalledTimes(1);
+  const missing = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: { ...receipt, close_receipt_support: 1 },
+  });
+  expect(JSON.parse(missing.output.mock.calls[0][0]).close_receipt).toEqual([
+    1,
+    "not_observed",
+  ]);
+});
+
+it.each([
+  { closeReceiptOwner: 0 },
+  { closeReceiptMode: 0o644 },
+  { closeReceiptSymlink: true },
+  { closeReceiptSize: 513 },
+  { closeReceipt: { ...receipt, action: "PRIVATE" } },
+])(
+  "censors an unsafe close while preserving the original failure: %j",
+  (invalid) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...receipt, close_receipt_support: 1 },
+      closeReceipt: { ...receipt, action: "close" },
+      ...invalid,
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toMatchObject({
+      wrapper_action: "close",
+      close_receipt: [1, "unreadable"],
+    });
+    expect(JSON.stringify(value)).not.toContain("PRIVATE");
+  },
+);
+
+it("keeps the combined close/open diagnostic within512 bytes and censors cross-session order", () => {
+  const longest = {
+    ...receipt,
+    at: Date.now() + 60000,
+    exit: 999,
+    session_key: "a".repeat(64),
+  };
+  const d = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: {
+      ...longest,
+      action: "version",
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+    },
+    openReceipt: { ...longest, action: "open" },
+    closeReceipt: { ...longest, action: "close" },
+  });
+  const text = d.output.mock.calls[0][0];
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expect(JSON.parse(text).close_receipt).toEqual([
+    1,
+    "recorded",
+    "completed",
+    "other",
+    "other_session",
+    "unknown",
+    "unavailable",
+  ]);
+});
+
+it("attributes a completed close-all to the selected session without requiring its name to match", () => {
+  const d = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    receipt: { ...receipt, open_receipt_support: 1, close_receipt_support: 1 },
+    openReceipt: { ...receipt, action: "open", at: 0 },
+    closeReceipt: {
+      ...receipt,
+      close_all: true,
+      session_key: "a".repeat(64),
+      exit: 0,
+    },
+  });
+  expect(JSON.parse(d.output.mock.calls[0][0]).close_receipt).toEqual([
+    1,
+    "recorded",
+    "completed",
+    0,
+    "all_sessions",
+    expect.any(String),
+    "after",
+  ]);
 });
