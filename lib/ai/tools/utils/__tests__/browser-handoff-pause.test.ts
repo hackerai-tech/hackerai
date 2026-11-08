@@ -6,6 +6,7 @@ import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import type { AnySandbox } from "@/types";
 import { getFunctionName } from "convex/server";
 import { createBrowserHandoff } from "../../browser-handoff";
+import { phLogger } from "@/lib/posthog/server";
 import {
   BROWSER_SESSION_MAX_LIFETIME_MS,
   BrowserSessions,
@@ -15,6 +16,9 @@ const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockQuery, mutation: mockMutation }),
+}));
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { info: jest.fn() },
 }));
 
 async function owner(agentId = "parent") {
@@ -39,8 +43,177 @@ beforeEach(() => {
   jest.useFakeTimers();
   mockQuery.mockReset();
   mockMutation.mockReset().mockResolvedValue(true);
+  jest.mocked(phLogger.info).mockReset();
 });
 afterEach(() => jest.useRealTimers());
+
+it.each([
+  ["connected", { success: true, data: { connected: true, port: 9223 } }],
+  ["disconnected", { success: true, data: { connected: false } }],
+  ["invalid_response", { success: true, data: { connected: true, port: 0 } }],
+  ["invalid_response", "DO_NOT_LOG https://private.example/page"],
+  ["command_failed", null],
+  ["transport_error", new Error("DO_NOT_LOG transport error")],
+] as const)(
+  "records finite admission liveness %s without changing accepted handoff behavior",
+  async (expected, response) => {
+    const { sessions, run } = await owner();
+    mockQuery.mockResolvedValue({
+      state: "agent",
+      runActive: true,
+      updatedAt: 123,
+    });
+    mockMutation.mockClear();
+    if (response instanceof Error) run.mockRejectedValue(response);
+    else
+      run.mockResolvedValue({
+        exitCode: response === null ? 1 : 0,
+        stdout:
+          typeof response === "string" ? response : JSON.stringify(response),
+      });
+    await expect(sessions.waitForHumanHandoff()).resolves.toBeUndefined();
+    expect(mockMutation.mock.calls[0][1]).toMatchObject({
+      expectedUpdatedAt: 123,
+    });
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "browser_handoff_admission_diagnostics",
+      expect.objectContaining({
+        diagnostic_version: 1,
+        admission_probe_result: expected,
+        admission_probe_attempt: 1,
+        admission_request_accepted: true,
+        admission_observation_phase: "after_accepted_wait_request",
+        admission_state_before: "agent",
+        admission_owner_remaining: "gte_10m",
+        admission_request_another: false,
+        trigger_run_id: "run",
+        agent_id: "parent",
+        browser_session_id: expect.stringMatching(/^[a-f0-9]{32}$/),
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toMatch(
+      /DO_NOT_LOG|private\.example|test-key|stdout|stderr|\/dev\/shm/,
+    );
+    expect(
+      Object.keys(jest.mocked(phLogger.info).mock.calls[0][1]!).sort(),
+    ).toEqual([
+      "admission_observation_phase",
+      "admission_owner_remaining",
+      "admission_probe_attempt",
+      "admission_probe_result",
+      "admission_request_accepted",
+      "admission_request_another",
+      "admission_state_before",
+      "agent_id",
+      "browser_session_id",
+      "diagnostic_version",
+      "trigger_run_id",
+    ]);
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
+it("keeps the observation outside the ownership read/write race window", async () => {
+  const { sessions, run } = await owner();
+  let version = 123;
+  mockQuery.mockImplementation(async () => ({
+    state: "agent",
+    runActive: true,
+    updatedAt: version,
+  }));
+  mockMutation.mockClear();
+  mockMutation.mockImplementation(
+    async (_fn, args) => args.expectedUpdatedAt === version,
+  );
+  let finish!: () => void;
+  run.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ exitCode: 0, stdout: "{}" });
+      }),
+  );
+  const pending = sessions.waitForHumanHandoff();
+  await jest.advanceTimersByTimeAsync(0);
+  expect(mockMutation.mock.calls[0][1].expectedUpdatedAt).toBe(123);
+  version = 456;
+  finish();
+  await expect(pending).resolves.toBeUndefined();
+  expect(mockMutation).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("caps admission observation across repeated handoffs without capping admission", async () => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 123,
+  });
+  mockMutation.mockClear();
+  for (let i = 0; i < 4; i++)
+    await sessions.waitForHumanHandoff(undefined, true);
+  expect(mockMutation).toHaveBeenCalledTimes(4);
+  expect(run).toHaveBeenCalledTimes(3); // preparation and at most two passive probes
+  expect(phLogger.info).toHaveBeenCalledTimes(2);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("bounds a hung observation and admits after a censored deadline", async () => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 123,
+  });
+  mockMutation.mockClear();
+  run.mockImplementation(() => new Promise(() => {}));
+  const pending = sessions.waitForHumanHandoff();
+  await jest.advanceTimersByTimeAsync(0);
+  await jest.advanceTimersByTimeAsync(2999);
+  expect(mockMutation).toHaveBeenCalledTimes(1);
+  await jest.advanceTimersByTimeAsync(1);
+  await pending;
+  expect(mockMutation).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "browser_handoff_admission_diagnostics",
+    expect.objectContaining({ admission_probe_result: "deadline" }),
+  );
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("honors Stop during the observation without reporting a completed handoff", async () => {
+  const { sessions, run } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 123,
+  });
+  mockMutation.mockClear();
+  run.mockImplementation(() => new Promise(() => {}));
+  const stop = new AbortController();
+  const pending = sessions.waitForHumanHandoff(stop.signal);
+  const rejected = expect(pending).rejects.toThrow("Stopped by user");
+  await jest.advanceTimersByTimeAsync(0);
+  stop.abort(new Error("Stopped by user"));
+  await rejected;
+  expect(mockMutation).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("does not let optional admission logging prevent accepted control flow", async () => {
+  const { sessions } = await owner();
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 123,
+  });
+  jest.mocked(phLogger.info).mockImplementation(() => {
+    throw new Error("logging unavailable");
+  });
+  await expect(sessions.waitForHumanHandoff()).resolves.toBeUndefined();
+  expect(jest.getTimerCount()).toBe(0);
+});
 
 it("only permits recovery for this run's already connected private browser", async () => {
   const { sessions, run } = await owner();
@@ -140,7 +313,7 @@ it("waits through takeover and resumes within one check without a sandbox sleep"
   expect(finished).toHaveBeenCalledWith(
     expect.objectContaining({ status: "resumed" }),
   );
-  expect(run).toHaveBeenCalledTimes(1); // preparation only, no foreground wait
+  expect(run).toHaveBeenCalledTimes(2); // preparation and bounded observation, no foreground wait
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -194,6 +367,7 @@ it("does not overwrite a resume that wins the wait registration race", async () 
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     "ownership changed",
   );
+  expect(phLogger.info).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
 });
 
