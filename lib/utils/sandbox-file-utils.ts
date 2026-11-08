@@ -414,11 +414,17 @@ const runSandboxCommand = async (
   sandbox: any,
   command: string,
   signal?: AbortSignal,
+  options?: { timeoutMs: number },
 ): Promise<SandboxCommandResult> => {
   for (let attempt = 1; attempt <= SANDBOX_COMMAND_MAX_ATTEMPTS; attempt++) {
     try {
       signal?.throwIfAborted();
-      const result = await runAttachmentCommand(sandbox, command, signal);
+      const result = await runAttachmentCommand(
+        sandbox,
+        command,
+        signal,
+        options,
+      );
       signal?.throwIfAborted();
       return {
         stdout: result?.stdout ?? "",
@@ -942,10 +948,22 @@ const downloadFileToSandbox = async (
   const MAX_ATTEMPTS = 3;
 
   const curlCmd =
-    `curl -fsSL --retry 3 --retry-connrefused --retry-delay 1 --create-dirs ` +
+    `curl -fsSL --connect-timeout 10 --max-time 120 ` +
+    `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
     `-o '${escapedLocalPath}' '${escapedUrl}'`;
 
-  let result = await runSandboxCommand(sandbox, curlCmd, signal);
+  // --retry-max-time bounds when another attempt may start, not its duration.
+  // The last attempt can consume another --max-time. Keep the SDK stream open
+  // beyond both budgets so curl reports its exit instead of replaying a healthy
+  // slow transfer after the SDK's default 60-second timeout. Stop still kills
+  // only the owned command through runAttachmentCommand.
+  const commandOptions = { timeoutMs: 250_000 };
+  let result = await runSandboxCommand(
+    sandbox,
+    curlCmd,
+    signal,
+    commandOptions,
+  );
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (result.exitCode === 0) return;
     if (
@@ -958,7 +976,7 @@ const downloadFileToSandbox = async (
       `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
     );
     await delay(500 * attempt, signal);
-    result = await runSandboxCommand(sandbox, curlCmd, signal);
+    result = await runSandboxCommand(sandbox, curlCmd, signal, commandOptions);
   }
 
   // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.

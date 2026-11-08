@@ -21,10 +21,5 @@
       "path": "/api/cron/influencer-analytics",
       "schedule": "* * * * *"
     }
-  ],
-  "git": {
-    "deploymentEnabled": {
-      "codex/cloud-attachment-command-recovery": false
-    }
-  }
+  ]
 }

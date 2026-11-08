@@ -9,6 +9,9 @@ export type AttachmentCommandFailureContext = {
   attachment_command_handle_acquired: boolean;
   attachment_command_error_kind:
     "timeout" | "abort" | "command_exit" | "rpc" | "other";
+  attachment_command_exit_observed?: boolean;
+  attachment_command_cleanup_outcome?:
+    "killed" | "not_found" | "failed" | "invalid_receipt";
 };
 
 const commandFailures = new WeakMap<object, AttachmentCommandFailureContext>();
@@ -18,6 +21,10 @@ function recordCommandFailure(
   error: unknown,
   stage: AttachmentCommandFailureContext["attachment_command_stage"],
   handleAcquired: boolean,
+  details?: Pick<
+    AttachmentCommandFailureContext,
+    "attachment_command_exit_observed" | "attachment_command_cleanup_outcome"
+  >,
 ) {
   if (
     (typeof error !== "object" || error === null) &&
@@ -41,6 +48,7 @@ function recordCommandFailure(
     attachment_command_stage: stage,
     attachment_command_handle_acquired: handleAcquired,
     attachment_command_error_kind: kind,
+    ...details,
   });
 }
 
@@ -138,12 +146,14 @@ export async function runAttachmentCommand(
     throw error;
   }
   let cancellation: Promise<void> | undefined;
+  let cleanupOutcome: AttachmentCommandFailureContext["attachment_command_cleanup_outcome"];
   // One acknowledgement for this handle, shared by Stop and failed-wait cleanup.
   const cancelCommand = () => {
     if (
       !cancellation &&
       (!Number.isSafeInteger(handle.pid) || handle.pid <= 0)
     ) {
+      cleanupOutcome = "invalid_receipt";
       cancellation = Promise.reject(
         new AttachmentCommandCleanupError(
           new Error("Invalid attachment command process receipt"),
@@ -156,12 +166,15 @@ export async function runAttachmentCommand(
         (killed) => {
           // false is the SDK's authoritative "process not found" receipt.
           if (typeof killed !== "boolean") {
+            cleanupOutcome = "invalid_receipt";
             throw new AttachmentCommandCleanupError(
               new Error("Invalid attachment command cancellation receipt"),
             );
           }
+          cleanupOutcome = killed ? "killed" : "not_found";
         },
         (error) => {
+          cleanupOutcome = "failed";
           throw new AttachmentCommandCleanupError(error);
         },
       );
@@ -182,10 +195,20 @@ export async function runAttachmentCommand(
   try {
     return await Promise.race([handle.wait(), aborted]);
   } catch (error) {
-    recordCommandFailure(error, cancellation ? "cancel" : "wait", true);
+    const stage = cancellation ? "cancel" : "wait";
+    const exitObserved = handle.exitCode !== undefined;
     // An SDK stream timeout does not prove process exit. Disconnect alone
     // leaves it running, so do not allow a retry until its cleanup is known.
-    if (!cancellation && handle.exitCode === undefined) await cancelCommand();
+    try {
+      if (!cancellation && !exitObserved) await cancelCommand();
+    } finally {
+      recordCommandFailure(error, stage, true, {
+        attachment_command_exit_observed: exitObserved,
+        ...(cleanupOutcome && {
+          attachment_command_cleanup_outcome: cleanupOutcome,
+        }),
+      });
+    }
     throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
@@ -195,7 +218,11 @@ export async function runAttachmentCommand(
       await cancellation;
     } catch (error) {
       cancellationFailed = true;
-      recordCommandFailure(error, "cancel", true);
+      recordCommandFailure(error, "cancel", true, {
+        ...(cleanupOutcome && {
+          attachment_command_cleanup_outcome: cleanupOutcome,
+        }),
+      });
       throw error;
     } finally {
       try {

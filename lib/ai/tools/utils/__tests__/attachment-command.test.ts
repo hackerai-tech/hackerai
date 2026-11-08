@@ -65,6 +65,8 @@ it.each([true, false])(
       expect(getAttachmentCommandFailureContext(failure)).toMatchObject({
         attachment_command_stage: "wait",
         attachment_command_handle_acquired: true,
+        attachment_command_exit_observed: false,
+        attachment_command_cleanup_outcome: receipt ? "killed" : "not_found",
       });
     } finally {
       killed.resolve(receipt);
@@ -112,6 +114,10 @@ it.each(["rejected", "invalid", "disconnect_failed"] as const)(
     expect(sandbox.commands.kill).toHaveBeenCalledWith(702, {
       requestTimeoutMs: 5000,
     });
+    expect(getAttachmentCommandFailureContext(error)).toMatchObject({
+      attachment_command_cleanup_outcome:
+        mode === "invalid" ? "invalid_receipt" : "failed",
+    });
     expect(handle.disconnect).toHaveBeenCalledTimes(1);
   },
 );
@@ -141,6 +147,9 @@ it("does not cancel a command with an observed nonzero exit", async () => {
   ).rejects.toBe(failure);
   expect(sandbox.commands.kill).not.toHaveBeenCalled();
   expect(handle.disconnect).toHaveBeenCalledTimes(1);
+  expect(getAttachmentCommandFailureContext(failure)).toMatchObject({
+    attachment_command_exit_observed: true,
+  });
 });
 
 it("refuses cleanup with an invalid process identity without sending a kill", async () => {
@@ -270,6 +279,10 @@ it.each(["foreground", "start", "wait", "disconnect"] as const)(
       attachment_command_handle_acquired:
         stage === "wait" || stage === "disconnect",
       attachment_command_error_kind: "timeout",
+      ...(stage === "wait" && {
+        attachment_command_exit_observed: false,
+        attachment_command_cleanup_outcome: "killed",
+      }),
     });
     expect(JSON.stringify(context)).not.toMatch(
       /private|987654|stdout|command:/,
