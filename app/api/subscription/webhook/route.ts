@@ -3021,6 +3021,15 @@ type SubscriptionWebhookPhase =
   | "mark_processed"
   | "respond";
 
+/** Drain failure context without creating a second error during request teardown. */
+async function flushWebhookFailureContext() {
+  try {
+    await phLogger.flush();
+  } catch {
+    // Optional telemetry cannot introduce a second request failure.
+  }
+}
+
 /** Add only the last entered phase; Next retains the original error report. */
 export async function POST(req: NextRequest) {
   const diagnostic: { phase: SubscriptionWebhookPhase } = {
@@ -3045,13 +3054,7 @@ export async function POST(req: NextRequest) {
           ? { web_build_commit: build.toLowerCase() }
           : {}),
       });
-      after(async () => {
-        try {
-          await phLogger.flush();
-        } catch {
-          // Optional telemetry cannot introduce a second request failure.
-        }
-      });
+      after(flushWebhookFailureContext);
     } catch {
       // Preserve thrown identity and the existing retry/idempotency contract.
     }
