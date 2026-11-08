@@ -99,6 +99,7 @@ export async function connectBrowserSandbox(session: BrowserSessionLocation) {
   });
 }
 
+/** Keep SDK read failures as loading; expose only bounded diagnostics to the owning GET. */
 export async function getActiveBrowserSessionName(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
