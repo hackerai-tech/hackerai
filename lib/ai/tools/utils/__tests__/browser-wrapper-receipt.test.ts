@@ -27,13 +27,18 @@ real=root/'fake-browser'
 real.write_text('#!/usr/bin/env python3\\nimport json,pathlib,sys\\nr=pathlib.Path('+repr(str(root))+')\\np=r/"wrapper-receipt.json"\\n(r/"observed.json").write_text(p.read_text() if p.is_file() else "null")\\nsys.exit('+str(x['exit'])+')\\n')
 real.chmod(0o700)
 if x['blocked']: (root/'wrapper-receipt.json').mkdir()
-if x['verify']: (root/'verify-required').touch()
 tree=ast.parse(x['program'])
 assignment=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='wrapper' for t in n.targets))
 wrapper=assignment.value.left.value % (str(root),str(real),str(real))
 script=root/'wrapper'
 script.write_text(wrapper)
-result=subprocess.run([sys.executable,str(script),*x['args']],capture_output=True)
+env={**os.environ,'AGENT_BROWSER_SESSION':'default','AGENT_BROWSER_SOCKET_DIR':str(root/'sockets'),'AGENT_BROWSER_CONFIG':str(root/'config.json')}
+if x['verify']:
+    # Resume verification follows a successful call in the same browser environment.
+    subprocess.run([sys.executable,str(script),'snapshot','-i'],env=env,capture_output=True,check=True)
+    (root/'observed.json').unlink()
+    (root/'verify-required').touch()
+result=subprocess.run([sys.executable,str(script),*x['args']],env=env,capture_output=True)
 receipt=root/'wrapper-receipt.json'
 observed=root/'observed.json'
 print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_text()) if observed.exists() else None,'finished':json.loads(receipt.read_text()) if receipt.is_file() else None,'open':json.loads((root/'open-receipt.json').read_text()) if (root/'open-receipt.json').is_file() else None,'close':json.loads((root/'close-receipt.json').read_text()) if (root/'close-receipt.json').is_file() else None,'leftovers':len(list(root.glob('.wrapper-receipt-*'))),'verify_required':(root/'verify-required').exists()}))`,

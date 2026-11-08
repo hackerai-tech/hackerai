@@ -805,6 +805,8 @@ export type AgentStreamContext = {
   currentSystemPrompt: string;
   /** Reloads bounded workspace network context for E2B runs only. */
   cloudNetworkPrompt?: () => Promise<string>;
+  /** Trusted per-run receipt, absent until an automatic solver was attempted. */
+  getCaptchaReceiptPrompt?: () => string;
   tools: ToolSet;
   mode: ChatMode;
   endpoint: ChatApiEndpoint;
@@ -1908,6 +1910,7 @@ export async function createAgentStream(
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
   const runtimePrompt = async () =>
     ((await ctx.cloudNetworkPrompt?.()) ?? "") +
+    (ctx.getCaptchaReceiptPrompt?.() ?? "") +
     (ctx.mode === "agent"
       ? getSandboxBrowserGuidance(ctx.sandboxManager.getSandboxInfo?.())
       : "");
