@@ -239,6 +239,87 @@ describe("terminal execution records", () => {
     expect(await store.read("abcdef12")).toBeNull();
   });
 
+  it("stops queued retention at shutdown while letting the active batch settle", async () => {
+    const { sandbox, data } = sandboxFixture();
+    const store = createTerminalRecordStore(sandbox, "u", "shutdown-retention");
+    for (let i = 0; i < 12; i++)
+      await store.save(
+        record({
+          session: i.toString(16).padStart(8, "0"),
+          updatedAt: 0,
+        }),
+      );
+    let release!: () => void;
+    const receipts = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const batchStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    sandbox.files.read.mockImplementation(async (path: string) => {
+      started();
+      await receipts;
+      return data.get(path)!;
+    });
+    const controller = new AbortController();
+    let completed = false;
+    const prune = store.prune(controller.signal).then(() => {
+      completed = true;
+    });
+    await batchStarted;
+    controller.abort();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    release();
+    await prune;
+    expect(sandbox.files.read).toHaveBeenCalledTimes(4);
+    expect(sandbox.files.remove).not.toHaveBeenCalled();
+    expect(data.size).toBe(12);
+    // Aborted work releases the global I/O slots for an unrelated scope.
+    const other = createTerminalRecordStore(sandbox, "u", "after-shutdown");
+    await other.prune();
+  });
+
+  it("cancels a queued prune without waiting for another chat's active I/O", async () => {
+    const { sandbox } = sandboxFixture();
+    const busy = createTerminalRecordStore(
+      sandbox,
+      "u",
+      "busy-retention-slots",
+    );
+    for (let i = 0; i < 4; i++)
+      await busy.save(record({ session: i.toString(16).padStart(8, "0") }));
+    let release!: () => void;
+    const receipts = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const allStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let count = 0;
+    sandbox.files.read.mockImplementation(async () => {
+      if (++count === 4) started();
+      await receipts;
+      throw new Error("unavailable");
+    });
+    const active = busy.prune();
+    await allStarted;
+    const controller = new AbortController();
+    const queued = createTerminalRecordStore(
+      sandbox,
+      "u",
+      "queued-shutdown",
+    ).prune(controller.signal);
+    controller.abort();
+    await queued;
+    expect(sandbox.files.list).toHaveBeenCalledTimes(1);
+    release();
+    await active;
+    await createTerminalRecordStore(sandbox, "u", "slots-still-usable").prune();
+  });
+
   it("bounds retained records and ignores foreign files", async () => {
     const { sandbox, data } = sandboxFixture();
     const store = createTerminalRecordStore(sandbox, "u", "c");
