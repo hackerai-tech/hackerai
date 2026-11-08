@@ -391,7 +391,7 @@ export function AgentBrowserPreview({
         // this request. Its image and connection state must win.
         if (stopped || frameEpoch.current !== epoch) return;
         if (!response.ok || !data.frame) {
-          captureFailed = fresh;
+          captureFailed = true;
           const transient =
             response.status >= 500 ||
             response.status === 408 ||
@@ -406,13 +406,14 @@ export function AgentBrowserPreview({
         }
       } catch {
         if (!stopped && frameEpoch.current === epoch) {
-          captureFailed = fresh;
+          captureFailed = true;
           if (!relayActive) setPreviewState("disconnected");
         }
       } finally {
         clearTimeout(timeout);
         if (!stopped) {
-          // Fast failures must not turn the watchdog into a screenshot loop.
+          // Fast failures must not turn initial polling or the watchdog into
+          // a screenshot loop.
           // Retry promptly once, then back off without renewing image freshness.
           const delay = captureFailed
             ? 1000 * 2 ** Math.min(captureFailures++, 3)
