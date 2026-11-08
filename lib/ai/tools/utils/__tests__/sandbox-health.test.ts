@@ -90,6 +90,10 @@ describe("sandbox health resource observations", () => {
         );
         // One fixture read and one existing health/failure sample, no extra probe.
         expect(sandbox.getMetrics).toHaveBeenCalledTimes(2);
+        expect(sandbox.getMetrics).toHaveBeenLastCalledWith({
+          start: new Date(now - 5 * 60_000),
+          end: new Date(now),
+        });
       } finally {
         clock.mockRestore();
       }

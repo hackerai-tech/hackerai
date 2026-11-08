@@ -86,7 +86,7 @@ export interface SandboxResourceMetrics {
   cpuPct: number;
   memPct: number;
   diskPct: number;
-  /** Provider sample age when the existing metrics request returned; negative means clock skew. */
+  /** Provider timestamp age (possibly a bucket start) at return; negative means clock skew. */
   sampleAgeMs?: number;
 }
 

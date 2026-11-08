@@ -41,7 +41,10 @@ async function checkSandboxMetrics(
   if (!isE2BSandbox(sandbox)) return null;
 
   try {
-    const metrics = await sandbox.getMetrics();
+    // Keep health diagnostics scoped to recent activity, not the sandbox's lifetime.
+    const end = new Date(Date.now());
+    const start = new Date(end.getTime() - 5 * 60_000);
+    const metrics = await sandbox.getMetrics({ start, end });
     if (!metrics.length) return null;
 
     const latest = metrics[metrics.length - 1];
