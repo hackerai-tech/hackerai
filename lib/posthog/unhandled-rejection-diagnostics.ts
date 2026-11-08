@@ -364,7 +364,8 @@ export type NearbyDispatchGroup =
   | "get_head_body_typeerror"
   | "wallet_property_typeerror"
   | "synthetic_stackless_error"
-  | "stackless_end_of_script_syntaxerror";
+  | "stackless_end_of_script_syntaxerror"
+  | "stackless_unexpected_token_syntaxerror";
 
 /** Prune a bounded ring, including samples made invalid by a clock reset. */
 function recentSamples<T extends { at: number }>(
@@ -413,6 +414,7 @@ export function getNearbyDispatchDiagnostics(
         "wallet_property_typeerror",
         "synthetic_stackless_error",
         "stackless_end_of_script_syntaxerror",
+        "stackless_unexpected_token_syntaxerror",
       ].includes(group) ||
       !active
     )

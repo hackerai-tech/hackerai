@@ -361,7 +361,7 @@ it("reads only a branded rejection slot and never properties of its reason", () 
   }
 });
 
-it("enriches only four retained shapes, preserving original exceptions and filtering", () => {
+it("enriches retained shapes, preserving original exceptions and filtering", () => {
   const cases = [
     entry(),
     {
@@ -379,6 +379,12 @@ it("enriches only four retained shapes, preserving original exceptions and filte
     {
       type: "SyntaxError",
       value: "Unexpected end of script",
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+      stacktrace: { frames: [] },
+    },
+    {
+      type: "SyntaxError",
+      value: "SyntaxError: Unexpected token",
       mechanism: { handled: false, synthetic: false, type: "generic" },
       stacktrace: { frames: [] },
     },
@@ -499,4 +505,80 @@ it("keeps near-miss SyntaxErrors out of this specific attribution gate", () => {
       properties: { $exception_list: [entry, entry] },
     }).properties,
   ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+});
+
+it.each([false, true])(
+  "adds finite nearby context for retained unexpected-token SyntaxErrors (frames absent: %s)",
+  (absent) => {
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        message: "PRIVATE browser message",
+        filename: `${location.origin}/PRIVATE-path?token=PRIVATE`,
+        error: new SyntaxError("PRIVATE error"),
+        lineno: 2,
+      }),
+    );
+    for (const value of [
+      "Unexpected token 'PRIVATE', PRIVATE response is not valid JSON",
+      "SyntaxError: unexpected TOKEN PRIVATE",
+    ]) {
+      const exception = { ...syntaxEntry(), value };
+      if (absent) Reflect.deleteProperty(exception, "stacktrace");
+      const context = snapshot(exception);
+      expect(context).toMatchObject({
+        hackerai_nearby_dispatch_group:
+          "stackless_unexpected_token_syntaxerror",
+        hackerai_nearby_dispatch_association: "nearby_only",
+        hackerai_nearby_dispatch_error_latest_source: "same_origin",
+      });
+      expect(JSON.stringify(context)).not.toMatch(/PRIVATE|token=|path/);
+      const event = {
+        event: "$exception",
+        properties: { $exception_list: [exception] },
+      };
+      const enriched = enrichFrontendExceptionEvent(event);
+      expect(enriched.properties.$exception_list).toBe(
+        event.properties.$exception_list,
+      );
+      expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+      expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    }
+  },
+);
+
+it("keeps unexpected-token attribution within the retained shape and active owner", () => {
+  const exception = {
+    ...syntaxEntry(),
+    value: "SyntaxError: Unexpected token",
+  };
+  for (const candidate of [
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    {
+      ...exception,
+      mechanism: { ...exception.mechanism, type: "onunhandledrejection" },
+    },
+    { ...exception, stacktrace: { frames: [{}] } },
+    { ...exception, type: "Error" },
+    { ...exception, value: "Unexpected identifier PRIVATE" },
+    { ...exception, value: `Unexpected token ${"PRIVATE".repeat(40)}` },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+  const enriched = enrichFrontendExceptionEvent({
+    event: "$exception",
+    properties: { $exception_list: [exception] },
+  });
+  identity.mockReturnValue(null);
+  expect(
+    Object.keys(enrichFrontendExceptionEvent(enriched).properties).some((key) =>
+      key.startsWith("hackerai_nearby_dispatch_"),
+    ),
+  ).toBe(false);
 });
