@@ -233,6 +233,32 @@ describe("MessageErrorState", () => {
     expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
   });
 
+  it("explains a spending-cap block without showing the subscription reset countdown", () => {
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "Server message with the subscription renewal date.",
+      {
+        capReason: "extra_usage_cap",
+        resetTimestamp: Date.now() + 86_400_000,
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    expect(
+      screen.getByText(/buying credits won't raise the limit/i),
+    ).toBeVisible();
+    expect(screen.getByText(/start of next month \(UTC\)/i)).toBeVisible();
+    expect(screen.queryByText(/Server message/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Resets in/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Increase Limit" }));
+    expect(openSettingsDialog).toHaveBeenCalledWith("Extra Usage");
+  });
+
   it("shows a focused Add Credits plus free Ask CTA when allowance is available", async () => {
     const user = userEvent.setup();
     const onRetry = jest.fn();

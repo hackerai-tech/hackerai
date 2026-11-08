@@ -300,32 +300,39 @@ describe("RateLimitWarning", () => {
     ).toBeInTheDocument();
   });
 
-  it("names the spending limit when extra usage balance exists but the monthly cap is hit", () => {
-    render(
-      <RateLimitWarning
-        data={{
-          warningType: "token-bucket",
-          bucketType: "monthly",
-          remainingPercent: 0,
-          resetTime: new Date(Date.now() + 60_000),
-          subscription: "ultra",
-          capReason: "extra_usage_cap",
-          cutOff: true,
-        }}
-        onDismiss={jest.fn()}
-      />,
-    );
+  it.each([true, false])(
+    "names the spending cap without the subscription reset (cutOff=%s)",
+    (cutOff) => {
+      render(
+        <RateLimitWarning
+          data={{
+            warningType: "token-bucket",
+            bucketType: "monthly",
+            remainingPercent: 0,
+            resetTime: new Date(Date.now() + 60_000),
+            subscription: "ultra",
+            capReason: "extra_usage_cap",
+            cutOff,
+          }}
+          onDismiss={jest.fn()}
+        />,
+      );
 
-    expect(screen.getByText(/extra usage spending limit/i)).toHaveTextContent(
-      "Increase your limit to continue",
-    );
-    expect(
-      screen.queryByText(/extra usage balance is empty/i),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /increase limit/i }),
-    ).toBeInTheDocument();
-  });
+      expect(screen.getByText(/extra usage spending limit/i)).toHaveTextContent(
+        "Increase your limit to continue",
+      );
+      expect(screen.queryByText(/resets in/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/extra usage spending limit/i)).toHaveTextContent(
+        "buying credits won't raise the limit",
+      );
+      expect(
+        screen.queryByText(/extra usage balance is empty/i),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /increase limit/i }),
+      ).toBeInTheDocument();
+    },
+  );
 });
 
 it("shows the daily Free Agent allowance and reset on a mid-stream cutoff", () => {
