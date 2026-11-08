@@ -364,7 +364,7 @@ export function ScheduleFormDialog({
                           ))}
                         </div>
                       </div>
-                      <div className="grid gap-3 min-[380px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
+                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
                         <div className="min-w-0 space-y-2">
                           <Label htmlFor={`${id}-time`}>Time</Label>
                           <Input
