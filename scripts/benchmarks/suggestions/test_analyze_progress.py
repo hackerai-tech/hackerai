@@ -52,6 +52,22 @@ class ProgressAnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(result["known_evaluator_usd"], .02)
         self.assertEqual(result["generation_requests"], 8)
 
+    def test_prediction_protocol_uses_fit_not_task_progress_or_usefulness(self):
+        for score in self.scores:
+            score["predictionFit"] = score["taskProgress"]
+            score["taskProgress"] = 0
+            score["usefulness"] = 2
+        self.write()
+        plan_path = self.root / "plan.json"
+        plan = json.loads(plan_path.read_text())
+        plan["manifest"]["suite"] = "prediction"
+        plan_path.write_text(json.dumps(plan))
+        result = MODULE.analyze(self.root)
+        self.assertEqual(result["primary_field"], "predictionFit")
+        self.assertEqual(result["paired_prediction_difference"], 2)
+        self.assertEqual([a["mean_prediction_fit"] for a in result["arms"]], [1, 3])
+        self.assertEqual([a["mean_usefulness"] for a in result["arms"]], [2, 2])
+
     def test_missing_continuation_cannot_be_rewarded_as_success(self):
         self.reviews[0]["suggestion"] = None
         self.write()

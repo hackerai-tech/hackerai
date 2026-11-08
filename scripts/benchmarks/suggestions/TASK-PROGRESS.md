@@ -1,6 +1,7 @@
 # Usefulness and task-progress comparison
 
-This protocol replaces performance thresholds for new prompt decisions. The earlier
+This historical protocol evaluated task progress rather than latency. The current
+next-input prediction objective is described in [PREDICTION.md](PREDICTION.md). The earlier
 regression benchmark and its recorded result remain historical evidence; they are
 not regraded under these criteria. Latency and company cost are operational checks,
 not winning metrics. This isolated evaluation does not alter the live retention

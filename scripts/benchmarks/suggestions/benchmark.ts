@@ -23,6 +23,7 @@ export type Fixture = {
   rubric: string;
   goal?: string;
   progressCriteria?: string[];
+  predictionCriteria?: string[];
   messages: Parameters<typeof buildPredictionSources>[0];
 };
 /** Pin source/configuration fingerprints in each run manifest. */
@@ -112,15 +113,17 @@ export function baselineSystem() {
   return system;
 }
 /** Load committed synthetic cases without consulting application/chat services. */
-export type BenchmarkSuite = "regression" | "task-progress";
+export type BenchmarkSuite = "regression" | "task-progress" | "prediction";
 export function fixtures(suite: BenchmarkSuite = "regression"): Fixture[] {
   return JSON.parse(
     readFileSync(
       resolve(
         directory,
-        suite === "task-progress"
-          ? "task-progress-fixtures.json"
-          : "fixtures.json",
+        suite === "prediction"
+          ? "prediction-fixtures.json"
+          : suite === "task-progress"
+            ? "task-progress-fixtures.json"
+            : "fixtures.json",
       ),
       "utf8",
     ),
@@ -337,10 +340,10 @@ async function main() {
   if (
     !destination ||
     !["tuning", "holdout"].includes(split) ||
-    !["regression", "task-progress"].includes(suite)
+    !["regression", "task-progress", "prediction"].includes(suite)
   )
     throw new BenchmarkUsageError(
-      "Use prepare|run|review OUT_DIR [tuning|holdout] [regression|task-progress]",
+      "Use prepare|run|review OUT_DIR [tuning|holdout] [regression|task-progress|prediction]",
     );
   const out = benchmarkDestination(destination);
   if (command === "prepare") {
@@ -458,6 +461,9 @@ async function main() {
           context: JSON.parse(request.prompt),
           expectation: fixture.expectation,
           rubric: fixture.rubric,
+          ...(fixture.predictionCriteria && {
+            predictionCriteria: fixture.predictionCriteria,
+          }),
           ...(fixture.goal && { goal: fixture.goal }),
           ...(fixture.progressCriteria && {
             progressCriteria: fixture.progressCriteria,

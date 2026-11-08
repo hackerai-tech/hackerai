@@ -1,10 +1,11 @@
-# Offline usefulness and task-progress benchmark
+# Offline next-input prediction benchmark
 
-The current decision protocol is [TASK-PROGRESS.md](TASK-PROGRESS.md). Usefulness
-and advancing the user's task decide prompt changes. Latency and company spend
-remain operational measurements, with no speed or price threshold for promotion.
-The earlier 40-case comparison remains historical evidence under its original
-protocol; do not retroactively regrade it under the new criteria.
+The current product objective is next-user-input prediction; see
+[PREDICTION.md](PREDICTION.md). Score plausible replies in the user's voice, with
+usefulness and factual/tool-state handling as separate guardrails. Latency and
+company spend are operational measurements, not winning metrics. The earlier
+[task-progress protocol](TASK-PROGRESS.md) and regression results are historical
+comparisons; do not retroactively regrade them under a new objective.
 
 This is an isolated synthetic evaluation. It does not call HackerAI APIs, read
 customer conversations, emit analytics, or change flags, preferences, billing or
@@ -14,11 +15,12 @@ actual context builder, tool renderer, stop gate and parser. The manifest pins
 source/configuration hashes. This compares prompts on the same model route, not
 complete application delivery or real customer outcomes.
 
-`task-progress-fixtures.json` contains fresh tuning/reserved-test scenarios and
+`prediction-fixtures.json` contains prediction-fit cases and reviewer-only criteria.
+`task-progress-fixtures.json` retains the earlier tuning/reserved-test scenarios and
 reviewer-only goals/criteria. `fixtures.json` retains the older regression set for
 compatibility; it is not the new reserved test set. `candidate.txt` is the
 benchmark comparison arm. After promoting a tested revision, it can match the
-application prompt, as it does at this revision: a fresh run would compare the same
+application prompt after promotion: a fresh run would then compare the same
 system text. Edit the candidate before a new comparison. To repeat an earlier
 comparison, use its original plan and pinned source/configuration, including
 `baselineCommit` and recorded source hashes. Preparation during development may
@@ -30,9 +32,9 @@ A successful run never automatically promotes a candidate.
 Use a fresh absolute output directory outside the checkout:
 
 ```sh
-corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts prepare /private/tmp/progress-tuning tuning task-progress
-corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts run /private/tmp/progress-tuning
-corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts review /private/tmp/progress-tuning
+corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts prepare /private/tmp/prediction-review holdout prediction
+corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts run /private/tmp/prediction-review
+corepack pnpm exec tsx scripts/benchmarks/suggestions/benchmark.ts review /private/tmp/prediction-review
 ```
 
 `prepare` writes `plan.json` with balanced paired requests and a frozen manifest.
@@ -57,11 +59,21 @@ and keep all generation outputs and cases. Numeric scores are model evaluations,
 not human ratings. Do not award success to absent drafts when continuation is needed.
 
 For reproducible analysis, save completed independent reviews as `grok-scores.json`
-and `glm-scores.json`, with anonymous IDs and task-progress/usefulness scores from
-the registered rubric. Preserve failed evaluator receipts in `failedAttempts`.
+and `glm-scores.json`. Each file has `complete: true` and `rows[]`; every row has
+`costUsd` (finite nonnegative USD or null for unknown) and `scores[]`. Every score
+has the anonymous `id`, integer 0–3 `predictionFit` and `usefulness`, and boolean
+`factualFailure`, `toolTrustFailure` and `ignoresStop`. Historical task-progress
+runs use `taskProgress` instead of `predictionFit`. Keep failed evaluator receipts
+with their `costUsd` in optional `failedAttempts[]`.
+
+The legacy null placeholders in `blind-review.json` are review inputs, not scores.
+Make fresh factual and tool-state judgments: invented observations or specific
+authorization are factual failures; claims contradicting recorded tool activity
+are tool-trust failures. Do not copy null flags or treat invented authorization
+only as a tool-state issue.
 
 ```sh
-python3 scripts/benchmarks/suggestions/analyze-progress.py /private/tmp/progress-tuning
+python3 scripts/benchmarks/suggestions/analyze-progress.py /private/tmp/prediction-review
 ```
 
 The analyzer validates complete ID coverage and score/price types, keeps whole

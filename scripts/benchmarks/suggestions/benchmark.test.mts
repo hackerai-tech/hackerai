@@ -235,3 +235,17 @@ test("local setup diagnostics stay actionable while arbitrary errors remain priv
     );
   }
 });
+
+test("prediction review plans keep direct choices and delivered replies in actual context", () => {
+  const cases = fixtures("prediction");
+  const plan = prepare("holdout", "prediction");
+  assert(cases.every((f) => f.predictionCriteria?.length));
+  assert.equal(plan.manifest.plannedBatches, 4 * cases.length);
+  for (const f of cases.filter((f) => f.category === "wait-reply")) {
+    const rows = plan.rows.filter((r) => r.caseId === f.id);
+    assert(rows.every((r) => r.prompt.includes("message_arrived")));
+  }
+  for (const f of cases.filter((f) => f.category === "stop")) {
+    assert(plan.rows.filter((r) => r.caseId === f.id).every((r) => r.skip));
+  }
+});

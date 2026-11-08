@@ -22,8 +22,10 @@ def analyze(directory):
     """Require complete blinded reviews and retain failed/nonempty denominators."""
     directory = pathlib.Path(directory)
     plan = json.loads((directory / "plan.json").read_text())
-    if plan["manifest"].get("suite") != "task-progress":
-        raise ValueError("Expected the task-progress protocol")
+    suite = plan["manifest"].get("suite")
+    if suite not in ("task-progress", "prediction"):
+        raise ValueError("Expected a supported paired-review protocol")
+    primary = "predictionFit" if suite == "prediction" else "taskProgress"
     receipts = [json.loads(s) for s in (directory / "receipts.jsonl").read_text().splitlines() if s]
     expected = {r["id"] for r in plan["rows"]}
     if len(receipts) != len(expected) or {r["id"] for r in receipts} != expected:
@@ -46,7 +48,7 @@ def analyze(directory):
         if len(scores) != len(reviews) or {s["id"] for s in scores} != set(reviews):
             raise ValueError("Reviewer ID coverage mismatch")
         for score in scores:
-            for field in ["taskProgress", "usefulness"]:
+            for field in [primary, "usefulness"]:
                 if type(score[field]) is not int or not 0 <= score[field] <= 3:
                     raise ValueError("Invalid rating")
             if any(type(score[f]) is not bool for f in ["factualFailure", "toolTrustFailure", "ignoresStop"]):
@@ -63,12 +65,12 @@ def analyze(directory):
         review = reviews[rid]
         scores = {r: score_sets[r][rid] for r in score_sets}
         if review["expectation"] == "suggest" and (review["unavailable"] or review["suggestion"] is None):
-            if any(s["taskProgress"] != 0 or s["usefulness"] != 0 for s in scores.values()):
+            if any(s[primary] != 0 or s["usefulness"] != 0 for s in scores.values()):
                 raise ValueError("Missing continuation was not scored as zero")
         rows.append(dict(request, review=review, scores=scores))
     active = [r for r in rows if r["review"]["expectation"] == "suggest"]
     cases = sorted({r["caseId"] for r in active})
-    metric = lambda r: statistics.mean(s["taskProgress"] for s in r["scores"].values())
+    metric = lambda r: statistics.mean(s[primary] for s in r["scores"].values())
     differences = [statistics.mean(metric(r) for r in active if r["caseId"] == case and r["arm"] == 1) -
                    statistics.mean(metric(r) for r in active if r["caseId"] == case and r["arm"] == 0) for case in cases]
     arms = []
@@ -77,18 +79,22 @@ def analyze(directory):
         needed = [r for r in active if r["arm"] == arm]
         closed = [r for r in arm_rows if r["review"]["expectation"] == "silence"]
         model_closed = [r for r in closed if not r.get("skip", False)]
+        ambiguous = [r for r in arm_rows if r["review"]["expectation"] == "either"]
         arms.append({"arm": arm, "continuation_runs": len(needed), "continuation_cases": len(cases),
-                     "mean_task_progress": statistics.mean(metric(r) for r in needed),
-                     "per_reviewer_progress": {name: statistics.mean(r["scores"][name]["taskProgress"] for r in needed) for name in score_sets},
-                     "useful_nonempty_agreed": sum(r["review"]["suggestion"] is not None and all(s["taskProgress"] >= 2 and s["usefulness"] >= 2 for s in r["scores"].values()) for r in needed),
+                     ("mean_prediction_fit" if suite == "prediction" else "mean_task_progress"): statistics.mean(metric(r) for r in needed),
+                     "mean_usefulness": statistics.mean(s["usefulness"] for r in needed for s in r["scores"].values()),
+                     ("per_reviewer_fit" if suite == "prediction" else "per_reviewer_progress"): {name: statistics.mean(r["scores"][name][primary] for r in needed) for name in score_sets},
+                     "useful_nonempty_agreed": sum(r["review"]["suggestion"] is not None and all(s[primary] >= 2 and s["usefulness"] >= 2 for s in r["scores"].values()) for r in needed),
+                     "ambiguous_runs": len(ambiguous),
+                     "ambiguous_nonempty": sum(r["review"]["suggestion"] is not None for r in ambiguous),
                      "closed_runs": len(closed), "unwanted_closed_followups": sum(r["review"]["suggestion"] is not None for r in closed),
                      "explicit_stop_batches": sum(bool(r.get("skip")) for r in arm_rows),
                      "model_completed_runs": len(model_closed), "unwanted_model_completed_followups": sum(r["review"]["suggestion"] is not None for r in model_closed)})
     flags = [{"id": r["review"]["reviewId"], "caseId": r["caseId"], "arm": r["arm"],
               "context": r["review"]["context"], "suggestion": r["review"]["suggestion"], "scores": r["scores"]} for r in rows
              if any(s[f] for s in r["scores"].values() for f in ["factualFailure", "toolTrustFailure", "ignoresStop"])]
-    return {"split": plan["manifest"]["split"], "arms": arms,
-            "paired_progress_difference": statistics.mean(differences), "scenario_bootstrap_95_interval": cluster_interval(differences),
+    return {"split": plan["manifest"]["split"], "suite": suite, "primary_field": primary, "arms": arms,
+            ("paired_prediction_difference" if suite == "prediction" else "paired_progress_difference"): statistics.mean(differences), "scenario_bootstrap_95_interval": cluster_interval(differences),
             "flags_for_adjudication": flags, "generation_batches": len(rows),
             "generation_requests": sum(r["providerCalls"] for r in receipts),
             "known_generation_usd": sum(r["costUsd"] for r in receipts if r["costUsd"] is not None),
