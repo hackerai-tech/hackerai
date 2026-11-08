@@ -14,6 +14,18 @@ def validate():
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise RuntimeError('Invalid browser session owner')
 
+def ambient_idle_timeout():
+    # Observe only this nonsensitive declaration, not daemon flags or effective state.
+    raw = os.environ.get('AGENT_BROWSER_IDLE_TIMEOUT_MS')
+    if raw is None: return 'unset'
+    if len(raw) > 128: return 'unparsed'
+    value = raw.strip()
+    if value.startswith('+'): value = value[1:]
+    if not value or any(c < '0' or c > '9' for c in value): return 'unparsed'
+    timeout = int(value)
+    if timeout > 18446744073709551615: return 'unparsed'
+    return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
+
 def cleanup():
     try:
         if root.exists():
@@ -230,7 +242,14 @@ elif action == 'status':
             line = response.readline(65537)
             if not line or len(line) > 65536:
                 raise RuntimeError('Invalid browser status')
-            print(json.dumps(json.loads(line)))
+            result = json.loads(line)
+            output = json.dumps(result)
+            if isinstance(result, dict) and len(output) + 1 <= 65536:
+                result['hackerai_env_idle_timeout'] = ambient_idle_timeout()
+                observed = json.dumps(result)
+                # Optional metadata must not push a valid status past its existing cap.
+                if len(observed) + 1 <= 65536: output = observed
+            print(output)
 elif action in ('pause', 'resume'):
     validate()
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
