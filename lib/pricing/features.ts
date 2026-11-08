@@ -31,16 +31,16 @@ export const proFeatures: Array<PricingFeature> = [
 ];
 
 export const proPlusFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "3x more usage than Pro" },
+  { icon: Check, text: "More usage than Pro" },
 ];
 
 export const ultraFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "10x more usage than Pro" },
+  { icon: Check, text: "Much more usage than Pro" },
   { icon: Check, text: "Priority access to new features" },
 ];
 
 export const teamFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "2x more usage than Pro" },
+  { icon: Check, text: "More usage per seat than Pro" },
   { icon: Check, text: "Centralized billing and invoicing" },
   { icon: Check, text: "Advanced team + seat management" },
 ];
