@@ -37,6 +37,60 @@ const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
 it.each([
+  [[1, "15m"], true, "15m"],
+  [[1, "unset"], true, "unset"],
+  [[1, "PRIVATE_ENV"], true, undefined],
+  [[2, "15m"], true, undefined],
+  [[1, "15m", "PRIVATE"], true, undefined],
+  [[1, "15m"], false, undefined],
+  [undefined, true, undefined],
+])(
+  "projects only a matching versioned open idle declaration (%#)",
+  async (tuple, matches, expected) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: matches,
+        open_age: "lt5m",
+        open_idle: tuple,
+      }),
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+    });
+    if (expected)
+      expect(context).toMatchObject({
+        capture_open_idle_env_version: 1,
+        capture_open_idle_env: expected,
+      });
+    else expect(context).not.toHaveProperty("capture_open_idle_env");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
   [
     new DOMException("PRIVATE native timer", "TimeoutError"),
     {

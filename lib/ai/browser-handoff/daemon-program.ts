@@ -25,6 +25,14 @@ export const BROWSER_WRAPPER_AGES = [
   "older",
   "unknown",
 ] as const;
+export const BROWSER_OPEN_IDLE_ENV_VALUES = [
+  "unset",
+  "disabled",
+  "lt_15m",
+  "15m",
+  "gt_15m",
+  "unparsed",
+] as const;
 
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
@@ -120,6 +128,12 @@ function wrapperReceipt() {
       } catch (error) {
         result.close_receipt = [1, error?.code === 'ENOENT' ? 'not_observed' : 'unreadable'];
       }
+    }
+    // Sticky open declaration only; later version/status commands can have a
+    // different environment. This is not an effective daemon policy or cause.
+    if (open?.session_key === sessionKey && open.idle_env_version === 1 &&
+        ['unset', 'disabled', 'lt_15m', '15m', 'gt_15m', 'unparsed'].includes(open.idle_env)) {
+      result.open_idle = [1, open.idle_env];
     }
     return result;
   } catch { return {}; }

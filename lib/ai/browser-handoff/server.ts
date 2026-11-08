@@ -13,6 +13,7 @@ import {
   BROWSER_DAEMON_PRECONDITION_REASONS,
   BROWSER_WRAPPER_ACTIONS,
   BROWSER_WRAPPER_AGES,
+  BROWSER_OPEN_IDLE_ENV_VALUES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -281,6 +282,8 @@ export type BrowserCaptureFailureContext = {
   capture_open_exit_code?: number | "none" | "other";
   capture_open_session_matches?: boolean;
   capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_open_idle_env_version?: 1;
+  capture_open_idle_env?: (typeof BROWSER_OPEN_IDLE_ENV_VALUES)[number];
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -435,6 +438,8 @@ export async function captureBrowserFrame(
         | "capture_open_exit_code"
         | "capture_open_session_matches"
         | "capture_open_age"
+        | "capture_open_idle_env_version"
+        | "capture_open_idle_env"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -545,6 +550,18 @@ export async function captureBrowserFrame(
                     parsed.open_session_matches;
                   precondition.capture_open_age = parsed.open_age;
                 }
+              }
+              const openIdle = parsed?.open_idle;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(openIdle) &&
+                openIdle.length === 2 &&
+                openIdle[0] === 1 &&
+                BROWSER_OPEN_IDLE_ENV_VALUES.includes(openIdle[1])
+              ) {
+                precondition.capture_open_idle_env_version = 1;
+                precondition.capture_open_idle_env = openIdle[1];
               }
               const close = parsed?.close_receipt;
               if (Array.isArray(close) && close[0] === 1) {
