@@ -4088,6 +4088,7 @@ export const agentLongTask = task({
             const streamCtx: AgentStreamContext = {
               runtimeCheckpoint,
               canRecoverBrowserHandoff,
+              browserHandoffGoalObjective: activeGoal?.objective,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
