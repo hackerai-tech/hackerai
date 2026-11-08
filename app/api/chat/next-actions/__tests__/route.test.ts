@@ -480,6 +480,7 @@ test("emits partial known spend and unknown-call coverage on unavailable generat
       event: "contextual_next_actions_generated",
       properties: expect.objectContaining({
         outcome: "unavailable",
+        prompt_version: "task-progress-single-reply-v7",
         cost_usd: undefined,
         known_cost_usd: 0.0001,
         provider_calls: 2,

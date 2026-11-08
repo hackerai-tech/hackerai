@@ -79,6 +79,38 @@ test("both fixed splits prepare balanced paired requests from actual context and
   }
 });
 
+test("task-progress cases preserve goals, delivered replies and balanced active/finished cases", () => {
+  assert.equal(fixtures("task-progress").length, 48);
+  for (const split of ["tuning", "holdout"] as const) {
+    const cases = fixtures("task-progress").filter((f) => f.split === split);
+    assert.equal(cases.filter((f) => f.expectation === "suggest").length, 20);
+    assert.equal(cases.filter((f) => f.expectation === "silence").length, 4);
+    assert(cases.every((f) => f.goal && f.progressCriteria?.length));
+    const plan = prepare(split, "task-progress");
+    assert.equal(plan.rows.length, 96);
+    assert.equal(plan.manifest.plannedProviderCalls, 88);
+    for (const fixture of cases) {
+      const context = buildPredictionSources(fixture.messages);
+      assert.equal(context[0].role, "user");
+      assert.equal(context.at(-1)?.role, "assistant");
+      if (fixture.category === "wait-reply")
+        assert(
+          context.at(-1)?.text.includes('"waitOutcome":"message_arrived"'),
+        );
+      if (fixture.category === "stop")
+        assert(
+          plan.rows.filter((r) => r.caseId === fixture.id).every((r) => r.skip),
+        );
+      else
+        assert(
+          plan.rows
+            .filter((r) => r.caseId === fixture.id)
+            .every((r) => !r.skip),
+        );
+    }
+  }
+});
+
 test("receipt coverage distinguishes priced calls, unknown calls, noncalls and missing tokens", () => {
   assert.equal(reportedCost({}), null);
   assert.equal(reportedCost({ cost: 0 }), 0);

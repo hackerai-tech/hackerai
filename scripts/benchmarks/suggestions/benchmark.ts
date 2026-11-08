@@ -21,6 +21,8 @@ export type Fixture = {
   category: string;
   expectation: "suggest" | "silence" | "either";
   rubric: string;
+  goal?: string;
+  progressCriteria?: string[];
   messages: Parameters<typeof buildPredictionSources>[0];
 };
 /** Pin source/configuration fingerprints in each run manifest. */
@@ -96,12 +98,26 @@ export function baselineSystem() {
   return system;
 }
 /** Load committed synthetic cases without consulting application/chat services. */
-export function fixtures(): Fixture[] {
-  return JSON.parse(readFileSync(resolve(directory, "fixtures.json"), "utf8"));
+export type BenchmarkSuite = "regression" | "task-progress";
+export function fixtures(suite: BenchmarkSuite = "regression"): Fixture[] {
+  return JSON.parse(
+    readFileSync(
+      resolve(
+        directory,
+        suite === "task-progress"
+          ? "task-progress-fixtures.json"
+          : "fixtures.json",
+      ),
+      "utf8",
+    ),
+  );
 }
 /** Freeze a paired, balanced request schedule before observing provider results. */
-export function prepare(split: "tuning" | "holdout") {
-  const cases = fixtures().filter((f) => f.split === split);
+export function prepare(
+  split: "tuning" | "holdout",
+  suite: BenchmarkSuite = "regression",
+) {
+  const cases = fixtures(suite).filter((f) => f.split === split);
   if (!cases.length || new Set(cases.map((f) => f.id)).size !== cases.length)
     throw new Error("Missing cases or duplicate IDs");
   const systems = [
@@ -139,6 +155,7 @@ export function prepare(split: "tuning" | "holdout") {
         cwd: root,
         encoding: "utf8",
       }).trim(),
+      suite,
       split,
       caseCount: cases.length,
       plannedBatches: rows.length,
@@ -301,12 +318,22 @@ export function summarize(rows: Receipt[]) {
 
 /** Run the explicitly selected workflow without loading application services. */
 async function main() {
-  const [command, destination, split = "tuning"] = process.argv.slice(2);
-  if (!destination || !["tuning", "holdout"].includes(split))
-    throw new Error("Use prepare|run|review OUT_DIR [tuning|holdout]");
+  const [command, destination, split = "tuning", suite = "regression"] =
+    process.argv.slice(2);
+  if (
+    !destination ||
+    !["tuning", "holdout"].includes(split) ||
+    !["regression", "task-progress"].includes(suite)
+  )
+    throw new Error(
+      "Use prepare|run|review OUT_DIR [tuning|holdout] [regression|task-progress]",
+    );
   const out = benchmarkDestination(destination);
   if (command === "prepare") {
-    const plan = prepare(split as "tuning" | "holdout");
+    const plan = prepare(
+      split as "tuning" | "holdout",
+      suite as BenchmarkSuite,
+    );
     writeFileSync(resolve(out, "plan.json"), JSON.stringify(plan, null, 2), {
       flag: "wx",
       mode: 0o600,
@@ -328,7 +355,10 @@ async function main() {
     const plan = JSON.parse(
       readFileSync(resolve(out, "plan.json"), "utf8"),
     ) as ReturnType<typeof prepare>;
-    if (JSON.stringify(plan) !== JSON.stringify(prepare(plan.manifest.split)))
+    if (
+      JSON.stringify(plan) !==
+      JSON.stringify(prepare(plan.manifest.split, plan.manifest.suite))
+    )
       throw new Error("Source or plan drift; prepare a fresh run");
     const provider = createOpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
@@ -386,7 +416,10 @@ async function main() {
     const plan = JSON.parse(
       readFileSync(resolve(out, "plan.json"), "utf8"),
     ) as ReturnType<typeof prepare>;
-    if (JSON.stringify(plan) !== JSON.stringify(prepare(plan.manifest.split)))
+    if (
+      JSON.stringify(plan) !==
+      JSON.stringify(prepare(plan.manifest.split, plan.manifest.suite))
+    )
       throw new Error("Source or review rubric drift; use the pinned checkout");
     const receipts = readFileSync(resolve(out, "receipts.jsonl"), "utf8")
       .trim()
@@ -395,7 +428,7 @@ async function main() {
       .map((s) => JSON.parse(s) as Receipt);
     summarize(receipts); // Validates duplicates and financial fields before review export.
     const byId = new Map(plan.rows.map((r) => [r.id, r]));
-    const cases = new Map(fixtures().map((f) => [f.id, f]));
+    const cases = new Map(fixtures(plan.manifest.suite).map((f) => [f.id, f]));
     const blind = receipts
       .map((r) => {
         const request = byId.get(r.id);
@@ -407,9 +440,14 @@ async function main() {
           context: JSON.parse(request.prompt),
           expectation: fixture.expectation,
           rubric: fixture.rubric,
+          ...(fixture.goal && { goal: fixture.goal }),
+          ...(fixture.progressCriteria && {
+            progressCriteria: fixture.progressCriteria,
+          }),
           suggestion: parsePredictedNextAction(r.output)[0] ?? null,
           unavailable: r.unavailable,
           usefulness: null,
+          taskProgress: null,
           inventedEvidence: null,
           inventedSpecificAuthorization: null,
           ignoresStop: null,
