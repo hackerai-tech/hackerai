@@ -8,7 +8,7 @@ remain plain text and are not fetched by the intake or review page.
 
 Enable only after a named operator owns intake review, escalation, and preservation
 review. Record those assignments and review dates in the owning internal issue.
-Configure each environment independently:
+Before enabling intake for real reports, the owner must approve and record the retention policy described below. Proposed periods are not an adopted policy. Configure each environment independently:
 
 - Web: `ABUSE_EVIDENCE_KEYS`, a JSON keyring with `active` key ID and `keys` mapping
   key IDs to 32-byte hexadecimal keys. Keep keys in the environment secret store.
@@ -90,8 +90,29 @@ Resolve with a recorded reason. An exonerated case can restore its verified orig
 restriction, leaves independent restrictions intact, and does not restore a
 snapshot. The evidence hold remains on until a separate reviewed release.
 
-There is no automatic evidence deletion or fixed public retention promise. Review
-necessity periodically using the assigned owner and date. After resolution and
+There is no automatic evidence deletion or fixed public retention promise. Before
+real-report enablement, record the following table in the owning internal issue.
+Each row requires an accountable owner, an explicit review interval, an explicit
+deletion period and its starting event, and a verification method. Do not replace
+these with an undefined “periodic” review. Distinguish proposed periods from the
+owner-approved policy; this runbook does not adopt or invent legally mandated
+periods.
+
+| Evidence class                             | Required policy decision                                                                 | Deletion verification                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Report content and contact details         | Review interval; deletion period measured from the chosen closure event; owner           | Case ciphertext absent after all deletion batches                     |
+| Review notes and copied evidence           | Review interval; deletion period and starting event; owner                               | Note ciphertext absent, including historical pages                    |
+| Audit metadata and containment identifiers | Separate review and deletion periods; justified need for continued identification; owner | Authorized backend audit verifies the specific metadata scope removed |
+| Provider snapshots                         | Necessity review interval; explicit deletion deadline/starting event; owner              | Provider readback confirms the exact snapshot is absent               |
+
+Lawful preservation requirements and active case holds override scheduled deletion;
+record the basis, scope, owner and next review date without placing privileged
+advice in public records. A reviewer must check that basis before releasing a hold.
+The metadata row requires a separately authorized backend procedure because the
+case-evidence button intentionally retains audit metadata. Do not describe that
+button as full account erasure. Track every due review and deletion in the internal
+case workflow and record completion or a justified hold extension.
+After resolution and
 hold release, an operator can delete report and note contents by typing the full
 reference. Deletion runs in bounded batches; repeat while the UI says more remain.
 Audit metadata and containment identifiers remain. Provider snapshots are separate:
