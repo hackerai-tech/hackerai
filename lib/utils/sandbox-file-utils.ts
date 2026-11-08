@@ -18,6 +18,8 @@ import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
   AttachmentCommandCleanupError,
+  getAttachmentCommandFailureContext,
+  type AttachmentCommandFailureContext,
 } from "@/lib/ai/tools/utils/attachment-command";
 
 import { createHash, randomUUID } from "node:crypto";
@@ -133,6 +135,7 @@ type SandboxUploadFailureDetail = {
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
+  commandFailureContext?: AttachmentCommandFailureContext;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -1295,6 +1298,7 @@ const summarizeSandboxUploadFailure = (
     acquisitionError instanceof CloudAcquisitionTimeoutError
       ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
       : undefined;
+  const commandFailureContext = getAttachmentCommandFailureContext(error);
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1322,6 +1326,7 @@ const summarizeSandboxUploadFailure = (
     ...(phase === "readiness" && {
       readinessProbeReason: classifySandboxUploadReadinessProbeFailure(error),
     }),
+    ...(commandFailureContext && { commandFailureContext }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1492,6 +1497,7 @@ const uploadSandboxFilesOnce = async (
         local_copy_failure_reason:
           primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
+        ...primaryFailure.commandFailureContext,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1533,6 +1539,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
+        ...primaryFailure.commandFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1573,6 +1580,7 @@ const uploadSandboxFilesOnce = async (
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
+        ...primaryFailure.commandFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1618,6 +1626,7 @@ export const getSandboxUploadFailureMetadata = (
       : undefined;
 
   return {
+    ...failure?.commandFailureContext,
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(acquisitionStage

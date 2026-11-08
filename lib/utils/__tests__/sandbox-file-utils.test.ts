@@ -29,6 +29,110 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
 
+it.each(["start", "wait"] as const)(
+  "delivers finite cloud command %s evidence through existing upload events and terminal metadata without expanding retries",
+  async (stage) => {
+    jest.useFakeTimers();
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const failure = Object.freeze(
+      Object.assign(new Error(PRODUCTION_COMMAND_TIMEOUT_MESSAGE), {
+        name: "TimeoutError",
+      }),
+    );
+    const handle = {
+      pid: 987654,
+      wait: jest.fn(async () => {
+        throw failure;
+      }),
+      disconnect: jest.fn(),
+    };
+    const sandbox = {
+      sandboxId: "test-sandbox",
+      commands: {
+        run: jest.fn(async () => {
+          if (stage === "start") throw failure;
+          return handle;
+        }),
+        kill: jest.fn(),
+      },
+    };
+    const ensureSandbox = jest.fn(async () => sandbox);
+    const controller = new AbortController();
+    try {
+      const pending = uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://private.example/private?token=DO_NOT_LOG",
+            localPath: "/tmp/private-file",
+          },
+        ],
+        ensureSandbox,
+        {
+          signal: controller.signal,
+          retryAfterReconnectOnTransientFailure: true,
+          logContext: {
+            service: "agent-long",
+            requestId: "run_test",
+            userId: "test-user",
+            chatId: "test-chat",
+          },
+        },
+      );
+      await jest.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+      expect(result.failedCount).toBe(1);
+      expect(result.retriedAfterReconnect).toBe(true);
+      expect(ensureSandbox).toHaveBeenCalledTimes(2);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(6);
+      const expected = {
+        attachment_command_diagnostic_version: 1,
+        attachment_command_stage: stage,
+        attachment_command_handle_acquired: stage === "wait",
+        attachment_command_error_kind: "timeout",
+      };
+      const receipts = eventSpy.mock.calls.filter(([event]) =>
+        [
+          "sandbox_attachment_staging_failed",
+          "sandbox_attachment_failure_diagnostics",
+        ].includes(event),
+      );
+      expect(receipts).toHaveLength(4);
+      for (const [, fields] of receipts) expect(fields).toMatchObject(expected);
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
+      const consoleReceipts = errorSpy.mock.calls.flatMap(([value]) => {
+        try {
+          const parsed =
+            typeof value === "string" ? JSON.parse(value) : undefined;
+          return parsed?.event === "sandbox_attachment_staging_failed"
+            ? [parsed]
+            : [];
+        } catch {
+          return [];
+        }
+      });
+      expect(consoleReceipts).toHaveLength(2);
+      for (const fields of consoleReceipts)
+        expect(fields).toMatchObject(expected);
+      expect(JSON.stringify(receipts)).not.toMatch(
+        /DO_NOT_LOG|private\.example|private-file|987654/,
+      );
+      controller.abort();
+      expect(sandbox.commands.kill).not.toHaveBeenCalled();
+      expect(handle.disconnect).toHaveBeenCalledTimes(stage === "wait" ? 6 : 0);
+    } finally {
+      jest.useRealTimers();
+      eventSpy.mockRestore();
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  },
+);
+
 it.each([
   "E2BAcquisitionError",
   "CloudWorkspaceUnavailableError",
