@@ -14,6 +14,158 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+it.each([true, false])(
+  "waits for owned-process cleanup acknowledgement %s after an unfinished wait failure",
+  async (receipt) => {
+    jest.useFakeTimers();
+    const waited = deferred<never>();
+    const killed = deferred<boolean>();
+    const failure = Object.assign(new Error("SDK wait timed out"), {
+      name: "TimeoutError",
+    });
+    const handle = {
+      pid: 701,
+      exitCode: undefined,
+      wait: jest.fn(() => waited.promise),
+      disconnect: jest.fn(),
+    };
+    const sandbox = {
+      commands: {
+        run: jest.fn(async () => handle),
+        kill: jest.fn(() => killed.promise),
+      },
+      kill: jest.fn(),
+    };
+    const controller = new AbortController();
+    let settled = false;
+    const pending = runAttachmentCommand(
+      sandbox as any,
+      "private command",
+      controller.signal,
+    ).catch((error) => {
+      settled = true;
+      return error;
+    });
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+      waited.reject(failure);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sandbox.commands.kill).toHaveBeenCalledWith(701, {
+        requestTimeoutMs: 5000,
+      });
+      expect(settled).toBe(false);
+      expect(handle.disconnect).not.toHaveBeenCalled();
+      // Stop racing the failed-wait cleanup must reuse the same command kill.
+      controller.abort();
+      killed.resolve(receipt);
+      expect(await pending).toBe(failure);
+      expect(sandbox.commands.kill).toHaveBeenCalledTimes(1);
+      expect(handle.disconnect).toHaveBeenCalledTimes(1);
+      expect(sandbox.kill).not.toHaveBeenCalled();
+      expect(getAttachmentCommandFailureContext(failure)).toMatchObject({
+        attachment_command_stage: "wait",
+        attachment_command_handle_acquired: true,
+      });
+    } finally {
+      killed.resolve(receipt);
+      await pending;
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each(["rejected", "invalid", "disconnect_failed"] as const)(
+  "blocks replay when failed-wait cleanup is %s",
+  async (mode) => {
+    const failure = new Error("SDK wait failed");
+    const killFailure = new Error("SDK kill failed");
+    const handle = {
+      pid: 702,
+      exitCode: undefined,
+      wait: jest.fn(async () => {
+        throw failure;
+      }),
+      disconnect: jest.fn(async () => {
+        if (mode === "disconnect_failed") {
+          throw Object.assign(new Error("disconnect failed"), {
+            name: "TimeoutError",
+          });
+        }
+      }),
+    };
+    const sandbox = {
+      commands: {
+        run: jest.fn(async () => handle),
+        kill: jest.fn(async () => {
+          if (mode !== "invalid") throw killFailure;
+          return undefined;
+        }),
+      },
+    };
+    const error = await runAttachmentCommand(
+      sandbox as any,
+      "private command",
+      new AbortController().signal,
+    ).catch((error) => error);
+    expect(error).toBeInstanceOf(AttachmentCommandCleanupError);
+    if (mode !== "invalid") expect(error.cause).toBe(killFailure);
+    expect(sandbox.commands.kill).toHaveBeenCalledWith(702, {
+      requestTimeoutMs: 5000,
+    });
+    expect(handle.disconnect).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("does not cancel a command with an observed nonzero exit", async () => {
+  const failure = Object.assign(new Error("Command exited"), {
+    name: "CommandExitError",
+    exitCode: 23,
+  });
+  const handle = {
+    pid: 703,
+    exitCode: 23,
+    wait: jest.fn(async () => {
+      throw failure;
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: { run: jest.fn(async () => handle), kill: jest.fn() },
+  };
+  await expect(
+    runAttachmentCommand(
+      sandbox as any,
+      "private command",
+      new AbortController().signal,
+    ),
+  ).rejects.toBe(failure);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
+it("refuses cleanup with an invalid process identity without sending a kill", async () => {
+  const handle = {
+    pid: 0,
+    exitCode: undefined,
+    wait: jest.fn(async () => {
+      throw new Error("wait failed");
+    }),
+    disconnect: jest.fn(),
+  };
+  const sandbox = {
+    commands: { run: jest.fn(async () => handle), kill: jest.fn() },
+  };
+  await expect(
+    runAttachmentCommand(
+      sandbox as any,
+      "private command",
+      new AbortController().signal,
+    ),
+  ).rejects.toBeInstanceOf(AttachmentCommandCleanupError);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(handle.disconnect).toHaveBeenCalledTimes(1);
+});
+
 it("kills only the late E2B process when Stop arrives during startup", async () => {
   const controller = new AbortController();
   const start = deferred<any>();
@@ -100,7 +252,7 @@ it.each(["foreground", "start", "wait", "disconnect"] as const)(
           if (stage === "start" || stage === "foreground") throw failure;
           return handle;
         }),
-        kill: jest.fn(),
+        kill: jest.fn(async () => true),
       },
     };
     const controller = new AbortController();
@@ -124,13 +276,17 @@ it.each(["foreground", "start", "wait", "disconnect"] as const)(
     );
     expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
     controller.abort();
-    expect(sandbox.commands.kill).not.toHaveBeenCalled();
+    expect(sandbox.commands.kill).toHaveBeenCalledTimes(
+      stage === "wait" ? 1 : 0,
+    );
     if (stage === "wait" || stage === "disconnect")
       expect(handle.disconnect).toHaveBeenCalledTimes(1);
   },
 );
 
-it("reports failed cancellation separately and still disconnects the exact acquired handle", async () => {
+it("awaits a Stop cleanup failure even when wait rejects before its acknowledgement", async () => {
+  const waited = deferred<never>();
+  const killed = deferred<boolean>();
   const enteredWait = deferred<void>();
   const controller = new AbortController();
   const killFailure = new Error("private kill failure");
@@ -138,16 +294,14 @@ it("reports failed cancellation separately and still disconnects the exact acqui
     pid: 43,
     wait: jest.fn(() => {
       enteredWait.resolve();
-      return new Promise(() => {});
+      return waited.promise;
     }),
     disconnect: jest.fn(),
   };
   const sandbox = {
     commands: {
       run: jest.fn(async () => handle),
-      kill: jest.fn(async () => {
-        throw killFailure;
-      }),
+      kill: jest.fn(() => killed.promise),
     },
     kill: jest.fn(),
   };
@@ -158,6 +312,11 @@ it("reports failed cancellation separately and still disconnects the exact acqui
   ).catch((error) => error);
   await enteredWait.promise;
   controller.abort();
+  waited.reject(new Error("wait failed before cancellation acknowledgement"));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(handle.disconnect).not.toHaveBeenCalled();
+  killed.reject(killFailure);
   const error = await pending;
   expect(error).toBeInstanceOf(AttachmentCommandCleanupError);
   expect(error.cause).toBe(killFailure);

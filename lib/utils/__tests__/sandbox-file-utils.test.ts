@@ -152,14 +152,21 @@ it.each(["start", "wait"] as const)(
       }),
       disconnect: jest.fn(),
     };
+    let activeCommands = 0;
+    let maxActiveCommands = 0;
     const sandbox = {
       sandboxId: "test-sandbox",
       commands: {
         run: jest.fn(async () => {
           if (stage === "start") throw failure;
+          activeCommands++;
+          maxActiveCommands = Math.max(maxActiveCommands, activeCommands);
           return handle;
         }),
-        kill: jest.fn(),
+        kill: jest.fn(async () => {
+          activeCommands--;
+          return true;
+        }),
       },
     };
     const ensureSandbox = jest.fn(async () => sandbox);
@@ -224,7 +231,11 @@ it.each(["start", "wait"] as const)(
         /DO_NOT_LOG|private\.example|private-file|987654/,
       );
       controller.abort();
-      expect(sandbox.commands.kill).not.toHaveBeenCalled();
+      expect(sandbox.commands.kill).toHaveBeenCalledTimes(
+        stage === "wait" ? 6 : 0,
+      );
+      expect(activeCommands).toBe(0);
+      expect(maxActiveCommands).toBe(stage === "wait" ? 1 : 0);
       expect(handle.disconnect).toHaveBeenCalledTimes(stage === "wait" ? 6 : 0);
     } finally {
       jest.useRealTimers();

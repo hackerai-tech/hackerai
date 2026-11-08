@@ -138,18 +138,39 @@ export async function runAttachmentCommand(
     throw error;
   }
   let cancellation: Promise<void> | undefined;
+  // One acknowledgement for this handle, shared by Stop and failed-wait cleanup.
+  const cancelCommand = () => {
+    if (
+      !cancellation &&
+      (!Number.isSafeInteger(handle.pid) || handle.pid <= 0)
+    ) {
+      cancellation = Promise.reject(
+        new AttachmentCommandCleanupError(
+          new Error("Invalid attachment command process receipt"),
+        ),
+      );
+    }
+    cancellation ??= sandbox.commands
+      .kill(handle.pid, { requestTimeoutMs: 5_000 })
+      .then(
+        (killed) => {
+          // false is the SDK's authoritative "process not found" receipt.
+          if (typeof killed !== "boolean") {
+            throw new AttachmentCommandCleanupError(
+              new Error("Invalid attachment command cancellation receipt"),
+            );
+          }
+        },
+        (error) => {
+          throw new AttachmentCommandCleanupError(error);
+        },
+      );
+    return cancellation;
+  };
   let onAbort!: () => void;
   const aborted = new Promise<never>((_, reject) => {
     onAbort = () => {
-      cancellation ??= sandbox.commands
-        .kill(handle.pid, { requestTimeoutMs: 5_000 })
-        .then(
-          () => undefined,
-          (error) => {
-            throw new AttachmentCommandCleanupError(error);
-          },
-        );
-      void cancellation.then(
+      void cancelCommand().then(
         () => reject(signal.reason),
         (error) => reject(error),
       );
@@ -162,13 +183,18 @@ export async function runAttachmentCommand(
     return await Promise.race([handle.wait(), aborted]);
   } catch (error) {
     recordCommandFailure(error, cancellation ? "cancel" : "wait", true);
+    // An SDK stream timeout does not prove process exit. Disconnect alone
+    // leaves it running, so do not allow a retry until its cleanup is known.
+    if (!cancellation && handle.exitCode === undefined) await cancelCommand();
     throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
+    let cancellationFailed = false;
     try {
       // A killed process can settle wait() before the kill acknowledgement.
       await cancellation;
     } catch (error) {
+      cancellationFailed = true;
       recordCommandFailure(error, "cancel", true);
       throw error;
     } finally {
@@ -176,7 +202,8 @@ export async function runAttachmentCommand(
         await handle.disconnect();
       } catch (error) {
         recordCommandFailure(error, "disconnect", true);
-        throw error;
+        // A transport disconnect must not make unconfirmed cleanup retryable.
+        if (!cancellationFailed) throw error;
       }
     }
   }
