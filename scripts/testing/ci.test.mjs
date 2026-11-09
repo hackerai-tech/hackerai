@@ -99,9 +99,11 @@ test("a committed frontend edit uses related tests even when the working tree is
   assert.equal(plan.jest, "related");
   assert.equal(plan.typecheck, true);
   assert.deepEqual(plan.languages, ["javascript-typescript"]);
+  assert.deepEqual(JSON.parse(planOutputs(plan).shards), [1]);
+  assert.equal(planOutputs(plan).shard_count, "1");
   const args = jestArgs({
     mode: plan.jest,
-    shard: "1/4",
+    shard: "1/1",
     coverage: false,
     paths: changedSince(base, fixture.cwd),
   });

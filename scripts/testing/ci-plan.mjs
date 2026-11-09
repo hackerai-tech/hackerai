@@ -135,6 +135,7 @@ export function planForEvent(env = process.env, root = process.cwd()) {
 }
 
 export function planOutputs(plan) {
+  const shards = plan.coverage || plan.jest !== "full" ? [1] : [1, 2, 3, 4];
   return {
     jest: plan.jest,
     typecheck: String(plan.typecheck),
@@ -146,8 +147,8 @@ export function planOutputs(plan) {
       plan.languages.length ? plan.languages : ["javascript-typescript"],
     ),
     coverage: String(plan.coverage),
-    shards: JSON.stringify(plan.coverage ? [1] : [1, 2, 3, 4]),
-    shard_count: plan.coverage ? "1" : "4",
+    shards: JSON.stringify(shards),
+    shard_count: String(shards.length),
   };
 }
 
