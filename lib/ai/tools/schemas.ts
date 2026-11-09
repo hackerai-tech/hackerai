@@ -1,3 +1,4 @@
+import { findingEvidenceStatusSchema } from "@/lib/findings/evidence-status";
 import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";
@@ -977,6 +978,11 @@ const findingReportToolFieldsSchema = z
     ),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: findingProseText("Assumptions", 4_000),
+    evidence_status: findingEvidenceStatusSchema.optional(),
+    evidence_status_reason: findingProseText(
+      "Evidence status reason",
+      2_000,
+    ).optional(),
     confidence: z.enum(["low", "medium", "high"]),
     confidence_rationale: findingProseText(
       "Confidence rationale",
@@ -1047,6 +1053,8 @@ export const createVulnerabilityReportTool = tool({
   description: `When saved captures support the finding, supply their actual paths in evidence_refs (up to eight). File references are checked in the current sandbox without starting a new environment. Missing files must be corrected; unavailable checks preserve the report with a warning. Omit references when no saved capture exists; reference existence alone does not confirm vulnerability validity.
 
 Persist one fully confirmed vulnerability as a structured finding.
+
+Record evidence_status with evidence_status_reason when the evidence basis is known. Use source_review_only for source proof without runtime execution, runtime_reproduced only when actual execution reproduced the vulnerable behavior with direct observed evidence, or inconclusive when a later retest cannot reach a verdict. Describe exactly what was observed and what remains untested. These are Agent-reported evidence labels, not independent validation attestations. Never infer reproduction from confidence, CVSS, a scanner assertion, or file existence. Supply both fields together. When correcting the target, PoC, analysis, or evidence, reassess the status and provide both fields again; otherwise the old evidence label is cleared. Do not file an unconfirmed new vulnerability merely to obtain a label.
 
 <when_to_use>
 Use this tool only after all of the following are true:

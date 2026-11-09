@@ -515,6 +515,15 @@ export default defineSchema({
     }),
 
   findings: defineTable({
+    project_id: v.optional(v.id("projects")),
+    evidence_status: v.optional(
+      v.union(
+        v.literal("source_review_only"),
+        v.literal("runtime_reproduced"),
+        v.literal("inconclusive"),
+      ),
+    ),
+    evidence_status_reason: v.optional(v.string()),
     finding_id: v.string(),
     user_id: v.string(),
     chat_id: v.string(),
@@ -672,9 +681,64 @@ export default defineSchema({
       "created_at",
     ])
     .index("by_user_chat_dedupe", ["user_id", "chat_id", "dedupe_key"])
+    .index("by_user_project_created", ["user_id", "project_id", "created_at"])
+    .index("by_user_project_status_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "created_at",
+    ])
+    .index("by_user_project_category_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_severity_created", [
+      "user_id",
+      "project_id",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_status_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_category_severity_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "severity",
+      "created_at",
+    ])
     .searchIndex("search_findings", {
       searchField: "search_text",
-      filterFields: ["user_id", "status", "category", "severity", "chat_id"],
+      filterFields: [
+        "user_id",
+        "project_id",
+        "status",
+        "category",
+        "severity",
+        "chat_id",
+      ],
     }),
 
   // Compact source-chat metadata keeps the Findings filter bounded without

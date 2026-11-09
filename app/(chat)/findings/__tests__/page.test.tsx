@@ -2,6 +2,13 @@ import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+const mockUseProjects = jest.fn();
+jest.mock("@/app/hooks/useProjects", () => ({
+  useProjects: () => mockUseProjects(),
+}));
+jest.mock("@/app/components/findings/FindingFollowupActions", () => ({
+  FindingFollowupActions: () => null,
+}));
 const mockUsePaginatedQuery = jest.fn();
 const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
   args?.findingId ? mockFinding : undefined,
@@ -96,6 +103,11 @@ const Page = require("../page").default as typeof import("../page").default;
 describe("FindingsPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseProjects.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
     for (const key of [...mockSearchParams.keys()]) {
       mockSearchParams.delete(key);
     }
@@ -143,7 +155,9 @@ describe("FindingsPage", () => {
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
     expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Start new scan" }),
@@ -169,6 +183,55 @@ describe("FindingsPage", () => {
       expect(window.location.search).toBe("");
     });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
+  });
+
+  it("scopes the query to an owned project and clears selection when filters change", async () => {
+    const projectId = "ps74erapv3qema2sc8ea8h0dph8hxjdw";
+    mockUseProjects.mockReturnValue({
+      results: [{ _id: projectId, name: "Lab" }],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+    render(<Page />);
+    fireEvent.click(screen.getByLabelText("Filter by project"));
+    fireEvent.click(screen.getByRole("option", { name: "Lab" }));
+    await waitFor(() =>
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { projectId },
+        { initialNumItems: 25 },
+      ),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select loaded" }));
+    expect(
+      screen.getByRole("region", { name: "Selected findings" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "changed" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Selected findings" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("never sends an unverified project URL to the findings query", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/findings?project=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    mockSearchParams.set("project", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    render(<Page />);
+    await waitFor(() =>
+      expect(screen.getByText("Project filter unavailable")).toBeVisible(),
+    );
+    expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "skip",
+      { initialNumItems: 25 },
+    );
   });
 
   it("filters by category and lifecycle status", async () => {
@@ -204,7 +267,9 @@ describe("FindingsPage", () => {
     render(<Page />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     );
 
     await waitFor(() => {
@@ -238,7 +303,9 @@ describe("FindingsPage", () => {
     render(<Page />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     );
 
     await waitFor(() => {

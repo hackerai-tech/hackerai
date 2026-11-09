@@ -3,6 +3,7 @@ import {
   isTauriEnvironment,
   revealFileInDir,
   saveFileToLocal,
+  saveBinaryFileToLocal,
 } from "@/app/hooks/useTauri";
 
 /**
@@ -11,8 +12,8 @@ import {
 interface DownloadFileOptions {
   /** The suggested filename for the save dialog */
   filename: string;
-  /** The file content as a string */
-  content: string;
+  /** UTF-8 text or exact binary bytes. */
+  content: string | Uint8Array<ArrayBuffer>;
   /** MIME type for the blob fallback (default: "text/plain") */
   mimeType?: string;
 }
@@ -57,7 +58,10 @@ export async function downloadFile({
   // Tauri: cancellation is a successful no-op, distinct from a failed write.
   if (isTauriEnvironment()) {
     try {
-      const filePath = await saveFileToLocal(filename, content);
+      const filePath =
+        typeof content === "string"
+          ? await saveFileToLocal(filename, content)
+          : await saveBinaryFileToLocal(filename, content);
       if (filePath) {
         toast.success("File saved successfully", {
           action: {
@@ -70,7 +74,7 @@ export async function downloadFile({
     } catch (error) {
       const unsupported =
         typeof error === "string" &&
-        /command.*save_file_with_dialog.*not found/i.test(error);
+        /command.*save_(?:binary_)?file_with_dialog.*not found/i.test(error);
       toast.error(
         unsupported ? "Update Desktop to save reports" : "Failed to save file",
       );

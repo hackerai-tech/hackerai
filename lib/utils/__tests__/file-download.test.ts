@@ -1,6 +1,7 @@
 import { downloadFile } from "../file-download";
 import {
   saveFileToLocal,
+  saveBinaryFileToLocal,
   revealFileInDir,
   isTauriEnvironment,
 } from "@/app/hooks/useTauri";
@@ -9,6 +10,7 @@ import { toast } from "sonner";
 jest.mock("@/app/hooks/useTauri", () => ({
   isTauriEnvironment: jest.fn(() => true),
   saveFileToLocal: jest.fn(),
+  saveBinaryFileToLocal: jest.fn(),
   revealFileInDir: jest.fn(),
 }));
 jest.mock("sonner", () => ({
@@ -102,4 +104,30 @@ it("identifies an older Desktop shell without a save command", async () => {
     reason: "unsupported_native",
   });
   expect(toast.error).toHaveBeenCalledWith("Update Desktop to save reports");
+});
+
+it("saves binary reports byte-for-byte without passing them to the text command", async () => {
+  const bytes = new Uint8Array([37, 80, 68, 70, 0, 255, 128]);
+  jest.mocked(saveBinaryFileToLocal).mockResolvedValue("/chosen/report.pdf");
+  await expect(
+    downloadFile({
+      filename: "report.pdf",
+      content: bytes,
+      mimeType: "application/pdf",
+    }),
+  ).resolves.toEqual({ outcome: "success" });
+  expect(saveBinaryFileToLocal).toHaveBeenCalledWith("report.pdf", bytes);
+  expect(save).not.toHaveBeenCalled();
+});
+it("requires a Desktop update when the binary command is unavailable", async () => {
+  jest
+    .mocked(saveBinaryFileToLocal)
+    .mockRejectedValue("Command save_binary_file_with_dialog not found");
+  await expect(
+    downloadFile({
+      filename: "report.pdf",
+      content: new Uint8Array([37, 80, 68, 70]),
+    }),
+  ).resolves.toEqual({ outcome: "failed", reason: "unsupported_native" });
+  expect(save).not.toHaveBeenCalled();
 });

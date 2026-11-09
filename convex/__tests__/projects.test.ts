@@ -8,6 +8,7 @@ jest.mock("../lib/serviceFunctions", () => ({
 jest.mock("../_generated/api", () => ({
   internal: {
     projects: { detachProjectTasksBatch: "detachProjectTasksBatch" },
+    findings: { syncChatFindingProject: "syncChatFindingProject" },
   },
 }));
 jest.mock("convex/values", () => ({
@@ -224,7 +225,10 @@ describe("projects", () => {
   });
 
   it("deletes a project while preserving its tasks", async () => {
-    const tasks = [{ _id: "task-1" }, { _id: "task-2" }];
+    const tasks = [
+      { _id: "task-1", id: "chat-1" },
+      { _id: "task-2", id: "chat-2" },
+    ];
     const take = jest.fn<any>().mockResolvedValue(tasks);
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {
@@ -266,7 +270,11 @@ describe("projects", () => {
       agent_approval_grants: undefined,
     });
     expect(deleteDocument).toHaveBeenCalledWith("project-1");
-    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "syncChatFindingProject",
+      expect.objectContaining({ userId: "user-1", cursor: null }),
+    );
     expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
     expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
   });

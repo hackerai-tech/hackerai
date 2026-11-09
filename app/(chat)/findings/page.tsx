@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useDeferredValue, useEffect, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useConvex, useConvexAuth, usePaginatedQuery } from "convex/react";
 import {
   ChevronRight,
@@ -16,6 +23,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,8 +44,14 @@ import {
   getFindingSeverityClasses,
   getFindingSeverityDotClasses,
 } from "@/app/components/findings/FindingCard";
+import { FindingEvidenceBadge } from "@/app/components/findings/FindingEvidenceBadge";
+import {
+  FindingExportMenu,
+  FindingExportUnavailableError,
+} from "@/app/components/findings/FindingExportMenu";
 import { FindingRelativeTime } from "@/app/components/findings/FindingTime";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useProjects } from "@/app/hooks/useProjects";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
@@ -49,6 +63,7 @@ import { downloadFile } from "@/lib/utils/file-download";
 import { cn } from "@/lib/utils";
 import type {
   FindingCategory,
+  FindingDetailRecord,
   FindingSeverity,
   FindingStatus,
   FindingSummary,
@@ -63,6 +78,13 @@ const SEVERITIES: FindingSeverity[] = [
   "info",
 ];
 
+const MAX_SELECTED_FINDINGS = 50;
+const SELECTED_EXPORT_CONCURRENCY = 4;
+// Convex document IDs are lowercase alphanumerics. Anything else would fail
+// the v.id("projects") validator, so it is treated as an unavailable filter.
+const PROJECT_ID_PATTERN = /^[a-z0-9]{16,64}$/;
+const NO_SELECTION: string[] = [];
+
 const getSeverityFilter = (value: string | null): "all" | FindingSeverity =>
   SEVERITIES.includes(value as FindingSeverity)
     ? (value as FindingSeverity)
@@ -76,6 +98,9 @@ const getCategoryFilter = (value: string | null): "all" | FindingCategory =>
 const getStatusFilter = (value: string | null): "all" | FindingStatus =>
   value === "active" || value === "closed" ? value : "all";
 
+const getProjectFilter = (value: string | null): string | null =>
+  value ? value : null;
+
 const escapeCsvCell = (value: string | number) => {
   const raw = String(value);
   const guarded = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
@@ -83,20 +108,34 @@ const escapeCsvCell = (value: string | number) => {
   return `"${guarded.replaceAll('"', '""')}"`;
 };
 
+type FindingsUrlState = {
+  search: string;
+  severity: "all" | FindingSeverity;
+  category: "all" | FindingCategory;
+  status: "all" | FindingStatus;
+  project: string | null;
+  findingId: string | null;
+};
+
+const readFindingsUrlState = (params: URLSearchParams): FindingsUrlState => ({
+  search: params.get("q") ?? "",
+  severity: getSeverityFilter(params.get("severity")),
+  category: getCategoryFilter(params.get("category")),
+  status: getStatusFilter(params.get("status")),
+  project: getProjectFilter(params.get("project")),
+  findingId: params.get("finding"),
+});
+
 const getFindingsHref = ({
   search,
   severity,
   category,
   status,
+  project,
   findingId,
-}: {
-  search: string;
-  severity: "all" | FindingSeverity;
-  category: "all" | FindingCategory;
-  status: "all" | FindingStatus;
-  findingId: string | null;
-}) => {
+}: FindingsUrlState) => {
   const params = new URLSearchParams();
+  if (project) params.set("project", project);
   if (search) params.set("q", search);
   if (severity !== "all") params.set("severity", severity);
   if (category !== "all") params.set("category", category);
@@ -135,12 +174,48 @@ function FindingsPageContent() {
   const [status, setStatus] = useState<"all" | FindingStatus>(() =>
     getStatusFilter(searchParams.get("status")),
   );
+  const [project, setProject] = useState<string | null>(() =>
+    getProjectFilter(searchParams.get("project")),
+  );
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
     () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
   const findingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+
+  const projectIdFilter =
+    project && PROJECT_ID_PATTERN.test(project)
+      ? (project as Id<"projects">)
+      : undefined;
+  const isProjectFilterInvalid = project !== null && !projectIdFilter;
+
+  // Selection belongs to one exact filter scope; changing any filter or the
+  // project drops it without an effect, while load-more keeps it.
+  const selectionScope = JSON.stringify([
+    deferredSearch,
+    severity,
+    category,
+    status,
+    project,
+  ]);
+  const [selection, setSelection] = useState<{
+    scope: string;
+    ids: string[];
+  }>({ scope: selectionScope, ids: NO_SELECTION });
+  const selectedIds =
+    selection.scope === selectionScope ? selection.ids : NO_SELECTION;
+  const setSelectedIds = (ids: string[]) =>
+    setSelection({ scope: selectionScope, ids });
+
+  const applyUrlState = useCallback((state: FindingsUrlState) => {
+    setSearch(state.search);
+    setSeverity(state.severity);
+    setCategory(state.category);
+    setStatus(state.status);
+    setProject(state.project);
+    setSelectedFindingId(state.findingId);
+  }, []);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) navigateToAuth("/login");
@@ -159,17 +234,37 @@ function FindingsPageContent() {
         const query = params.toString();
         updateFindingsHistory(query ? `/findings?${query}` : "/findings");
       }
-      setSearch(params.get("q") ?? "");
-      setSeverity(getSeverityFilter(params.get("severity")));
-      setCategory(getCategoryFilter(params.get("category")));
-      setStatus(getStatusFilter(params.get("status")));
-      setSelectedFindingId(params.get("finding"));
+      applyUrlState(readFindingsUrlState(params));
     };
 
     syncFromBrowserHistory();
     window.addEventListener("popstate", syncFromBrowserHistory);
     return () => window.removeEventListener("popstate", syncFromBrowserHistory);
-  }, []);
+  }, [applyUrlState]);
+
+  // In-app links (e.g. a project's "View findings") navigate to this already
+  // mounted page; adopt their URL when it points at a different project.
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+  const urlProject = getProjectFilter(searchParams.get("project"));
+  useEffect(() => {
+    if (urlProject === projectRef.current) return;
+    projectRef.current = urlProject;
+    applyUrlState(readFindingsUrlState(new URLSearchParams(searchParams)));
+  }, [applyUrlState, searchParams, urlProject]);
+
+  const getHref = (overrides: Partial<FindingsUrlState> = {}) =>
+    getFindingsHref({
+      search: deferredSearch,
+      severity,
+      category,
+      status,
+      project,
+      findingId: selectedFindingId,
+      ...overrides,
+    });
 
   useEffect(() => {
     const currentSearch =
@@ -181,33 +276,73 @@ function FindingsPageContent() {
         severity,
         category,
         status,
+        project,
         findingId: selectedFindingId,
       }),
     );
-  }, [category, deferredSearch, selectedFindingId, severity, status]);
+  }, [category, deferredSearch, project, selectedFindingId, severity, status]);
 
   useEffect(() => {
     if (!selectedFindingId) return;
     captureAuthenticatedEvent("finding_viewed", { surface: "findings_page" });
   }, [selectedFindingId]);
 
+  const {
+    results: projectResults,
+    status: projectsStatus,
+    loadMore: loadMoreProjects,
+  } = useProjects(50, isAuthenticated);
+  const projectOptions = projectResults ?? [];
+  const selectedProject = projectIdFilter
+    ? projectOptions.find((item) => item._id === projectIdFilter)
+    : undefined;
+  const isResolvingProject =
+    Boolean(projectIdFilter) &&
+    !selectedProject &&
+    (projectResults === undefined ||
+      projectsStatus === "CanLoadMore" ||
+      projectsStatus === "LoadingMore");
+  const isProjectUnavailable =
+    project !== null && !selectedProject && !isResolvingProject;
+
+  // A linked project may sit beyond the first page of the project list.
+  useEffect(() => {
+    if (!isResolvingProject || projectsStatus !== "CanLoadMore") return;
+    loadMoreProjects(50);
+  }, [isResolvingProject, loadMoreProjects, projectsStatus]);
+
+  const queryFilters = {
+    ...(deferredSearch ? { search: deferredSearch } : {}),
+    ...(severity !== "all" ? { severity } : {}),
+    ...(category !== "all" ? { category } : {}),
+    ...(status !== "all" ? { status } : {}),
+    ...(projectIdFilter ? { projectId: projectIdFilter } : {}),
+  };
+
   const findingsQuery = usePaginatedQuery(
     api.findings.listFindings,
-    isAuthenticated
-      ? {
-          ...(deferredSearch ? { search: deferredSearch } : {}),
-          ...(severity !== "all" ? { severity } : {}),
-          ...(category !== "all" ? { category } : {}),
-          ...(status !== "all" ? { status } : {}),
-        }
+    isAuthenticated &&
+      !isProjectFilterInvalid &&
+      (project === null || Boolean(selectedProject))
+      ? queryFilters
       : "skip",
     { initialNumItems: 25 },
   );
-  const findings = (findingsQuery.results ?? []) as FindingSummary[];
+  const findings = (
+    isProjectFilterInvalid || isProjectUnavailable || isResolvingProject
+      ? []
+      : (findingsQuery.results ?? [])
+  ) as FindingSummary[];
   const lastObservedSearch = useRef<string | null>(null);
   useEffect(() => {
     if (!isAuthenticated || findingsQuery.status === "LoadingFirstPage") return;
-    const key = JSON.stringify([deferredSearch, severity, category, status]);
+    const key = JSON.stringify([
+      deferredSearch,
+      severity,
+      category,
+      status,
+      project,
+    ]);
     if (lastObservedSearch.current === key) return;
     lastObservedSearch.current = key;
     captureFindingEvent({
@@ -223,6 +358,7 @@ function FindingsPageContent() {
     severity,
     category,
     status,
+    project,
     findingsQuery.status,
     findings.length,
   ]);
@@ -230,7 +366,8 @@ function FindingsPageContent() {
     Boolean(deferredSearch) ||
     severity !== "all" ||
     category !== "all" ||
-    status !== "all";
+    status !== "all" ||
+    project !== null;
   const visibleSeverityCounts = findings.reduce<
     Record<FindingSeverity, number>
   >(
@@ -252,17 +389,70 @@ function FindingsPageContent() {
     { active: 0, closed: 0 },
   );
 
+  const selectedIdSet = new Set(selectedIds);
+  const loadedIds = findings.map((finding) => finding.finding_id);
+  const selectedLoadedCount = loadedIds.filter((id) =>
+    selectedIdSet.has(id),
+  ).length;
+  const allLoadedSelected =
+    loadedIds.length > 0 && selectedLoadedCount === loadedIds.length;
+
+  const toggleFindingSelection = (findingId: string) => {
+    if (selectedIdSet.has(findingId)) {
+      setSelectedIds(selectedIds.filter((id) => id !== findingId));
+      return;
+    }
+    if (selectedIds.length >= MAX_SELECTED_FINDINGS) {
+      toast.warning(
+        `You can select up to ${MAX_SELECTED_FINDINGS} findings at a time.`,
+      );
+      return;
+    }
+    setSelectedIds([...selectedIds, findingId]);
+  };
+
+  const toggleLoadedSelection = () => {
+    if (allLoadedSelected) {
+      const loadedIdSet = new Set(loadedIds);
+      setSelectedIds(selectedIds.filter((id) => !loadedIdSet.has(id)));
+      return;
+    }
+    const unselected = loadedIds.filter((id) => !selectedIdSet.has(id));
+    const room = Math.max(0, MAX_SELECTED_FINDINGS - selectedIds.length);
+    setSelectedIds([...selectedIds, ...unselected.slice(0, room)]);
+    if (unselected.length > room) {
+      toast.warning(
+        `Selection is limited to ${MAX_SELECTED_FINDINGS} findings. The first ${MAX_SELECTED_FINDINGS} are selected.`,
+      );
+    }
+  };
+
+  const getSelectedFindings = async (): Promise<FindingDetailRecord[]> => {
+    const ids = [...selectedIds];
+    const records: FindingDetailRecord[] = [];
+    const chunkSize = SELECTED_EXPORT_CONCURRENCY;
+    for (let index = 0; index < ids.length; index += chunkSize) {
+      const chunk = await Promise.all(
+        ids
+          .slice(index, index + chunkSize)
+          .map((findingId) =>
+            convex.query(api.findings.getFinding, { findingId }),
+          ),
+      );
+      for (const record of chunk) {
+        // Never export a partial report: one missing finding fails the export.
+        if (!record) throw new FindingExportUnavailableError();
+        records.push(record as FindingDetailRecord);
+      }
+    }
+    return records;
+  };
+
   const selectFinding = (findingId: string, trigger: HTMLAnchorElement) => {
     selectedFindingTriggerRef.current = trigger;
     setSelectedFindingId(findingId);
     updateFindingsHistory(
-      getFindingsHref({
-        search: deferredSearch,
-        severity,
-        category,
-        status,
-        findingId,
-      }),
+      getHref({ findingId }),
       selectedFindingId ? "replace" : "push",
     );
     closeSidebar();
@@ -270,15 +460,7 @@ function FindingsPageContent() {
 
   const clearSelectedFinding = () => {
     setSelectedFindingId(null);
-    updateFindingsHistory(
-      getFindingsHref({
-        search: deferredSearch,
-        severity,
-        category,
-        status,
-        findingId: null,
-      }),
-    );
+    updateFindingsHistory(getHref({ findingId: null }));
   };
 
   const startNewScan = () => {
@@ -293,12 +475,14 @@ function FindingsPageContent() {
     setSeverity("all");
     setCategory("all");
     setStatus("all");
+    setProject(null);
     updateFindingsHistory(
       getFindingsHref({
         search: "",
         severity: "all",
         category: "all",
         status: "all",
+        project: null,
         findingId: selectedFindingId,
       }),
     );
@@ -307,12 +491,7 @@ function FindingsPageContent() {
   const handleExport = async () => {
     setIsExporting(true);
     try {
-      const filters = {
-        ...(deferredSearch ? { search: deferredSearch } : {}),
-        ...(severity !== "all" ? { severity } : {}),
-        ...(category !== "all" ? { category } : {}),
-        ...(status !== "all" ? { status } : {}),
-      };
+      const filters = queryFilters;
       const exportedFindings: FindingSummary[] = [];
       let cursor: string | null = null;
       let isDone = false;
@@ -422,11 +601,11 @@ function FindingsPageContent() {
               size="sm"
               disabled={isExporting || findings.length === 0}
               onClick={() => void handleExport()}
-              aria-label="Export findings as CSV"
+              aria-label="Export all matching findings as CSV"
             >
               <Download className="size-4" aria-hidden="true" />
               <span className="hidden sm:inline">
-                {isExporting ? "Exporting…" : "Export"}
+                {isExporting ? "Exporting…" : "Export all as CSV"}
               </span>
             </Button>
             <Button
@@ -538,6 +717,64 @@ function FindingsPageContent() {
 
                   <div className="space-y-4">
                     <div className="space-y-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Project
+                      </span>
+                      <Select
+                        value={project ?? "all"}
+                        onValueChange={(value) => {
+                          const nextProject = value === "all" ? null : value;
+                          setProject(nextProject);
+                          updateFindingsHistory(
+                            getHref({ project: nextProject }),
+                          );
+                        }}
+                      >
+                        <SelectTrigger
+                          className="w-full"
+                          aria-label="Filter by project"
+                        >
+                          <SelectValue placeholder="All projects" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All projects</SelectItem>
+                          {project !== null && !selectedProject ? (
+                            <SelectItem value={project}>
+                              {isResolvingProject
+                                ? "Loading project…"
+                                : "Unavailable project"}
+                            </SelectItem>
+                          ) : null}
+                          {projectOptions.map((item) => (
+                            <SelectItem key={item._id} value={item._id}>
+                              <span className="truncate">{item.name}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {isProjectUnavailable ? (
+                        <p
+                          role="status"
+                          className="text-xs leading-5 text-muted-foreground"
+                        >
+                          This project is unavailable. It may have been deleted.
+                        </p>
+                      ) : null}
+                      {projectsStatus === "CanLoadMore" &&
+                      !isResolvingProject ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-muted-foreground"
+                          onClick={() => loadMoreProjects(50)}
+                        >
+                          Load more projects
+                        </Button>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-1.5">
                       <label
                         htmlFor="finding-search"
                         className="text-xs font-medium text-muted-foreground"
@@ -572,13 +809,7 @@ function FindingsPageContent() {
                           const nextCategory = value as "all" | FindingCategory;
                           setCategory(nextCategory);
                           updateFindingsHistory(
-                            getFindingsHref({
-                              search: deferredSearch,
-                              severity,
-                              category: nextCategory,
-                              status,
-                              findingId: selectedFindingId,
-                            }),
+                            getHref({ category: nextCategory }),
                           );
                         }}
                       >
@@ -609,13 +840,7 @@ function FindingsPageContent() {
                           const nextStatus = value as "all" | FindingStatus;
                           setStatus(nextStatus);
                           updateFindingsHistory(
-                            getFindingsHref({
-                              search: deferredSearch,
-                              severity,
-                              category,
-                              status: nextStatus,
-                              findingId: selectedFindingId,
-                            }),
+                            getHref({ status: nextStatus }),
                           );
                         }}
                       >
@@ -643,13 +868,7 @@ function FindingsPageContent() {
                           const nextSeverity = value as "all" | FindingSeverity;
                           setSeverity(nextSeverity);
                           updateFindingsHistory(
-                            getFindingsHref({
-                              search: deferredSearch,
-                              severity: nextSeverity,
-                              category,
-                              status,
-                              findingId: selectedFindingId,
-                            }),
+                            getHref({ severity: nextSeverity }),
                           );
                         }}
                       >
@@ -683,7 +902,8 @@ function FindingsPageContent() {
                       id="findings-results-heading"
                       className="text-base font-semibold text-foreground"
                     >
-                      {findingsQuery.status === "LoadingFirstPage"
+                      {findingsQuery.status === "LoadingFirstPage" ||
+                      isProjectFilterInvalid
                         ? "Findings"
                         : `${visibleFindingCount} ${
                             findings.length === 1 ? "finding" : "findings"
@@ -698,9 +918,48 @@ function FindingsPageContent() {
                         : "Newest findings first"}
                     </p>
                   </div>
+                  {findings.length > 0 ? (
+                    <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:min-h-9">
+                      <input
+                        type="checkbox"
+                        ref={(element) => {
+                          if (element) {
+                            element.indeterminate =
+                              selectedLoadedCount > 0 && !allLoadedSelected;
+                          }
+                        }}
+                        checked={allLoadedSelected}
+                        onChange={toggleLoadedSelection}
+                        className="size-4 cursor-pointer accent-foreground"
+                      />
+                      Select loaded
+                    </label>
+                  ) : null}
                 </div>
 
-                {findingsQuery.status === "LoadingFirstPage" ? (
+                {isProjectFilterInvalid || isProjectUnavailable ? (
+                  <div className="flex min-h-80 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border p-8 text-center">
+                    <div className="flex size-12 items-center justify-center rounded-xl border border-border bg-muted/30">
+                      <ShieldAlert
+                        className="size-6 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <div>
+                      <p className="font-medium text-foreground">
+                        Project filter unavailable
+                      </p>
+                      <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                        This project link is invalid or no longer available.
+                        Clear your filters to see all findings.
+                      </p>
+                    </div>
+                    <Button variant="outline" onClick={clearFilters}>
+                      Clear filters
+                    </Button>
+                  </div>
+                ) : isResolvingProject ||
+                  findingsQuery.status === "LoadingFirstPage" ? (
                   <div className="flex min-h-64 items-center justify-center rounded-xl border border-border text-sm text-muted-foreground">
                     Loading findings…
                   </div>
@@ -737,158 +996,209 @@ function FindingsPageContent() {
                 ) : (
                   <>
                     <div
-                      className="hidden grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] items-center gap-4 px-4 pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground @min-[58rem]:grid"
+                      className="hidden items-center gap-1 pb-2 @min-[58rem]:flex"
                       aria-hidden="true"
                     >
-                      <div>Finding</div>
-                      <div>Category</div>
-                      <div>Severity</div>
-                      <div>Status</div>
-                      <div className="text-right">Found</div>
-                      <div />
+                      <div className="w-11 shrink-0" />
+                      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] items-center gap-4 px-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        <div>Finding</div>
+                        <div>Category</div>
+                        <div>Severity</div>
+                        <div>Status</div>
+                        <div className="text-right">Found</div>
+                        <div />
+                      </div>
                     </div>
                     <ul className="space-y-2" aria-label="Findings">
-                      {findings.map((finding) => (
-                        <li key={finding.finding_id}>
-                          <Link
-                            href={getFindingsHref({
-                              search: deferredSearch,
-                              severity,
-                              category,
-                              status,
-                              findingId: finding.finding_id,
-                            })}
-                            prefetch={false}
-                            ref={(element) => {
-                              if (
-                                element &&
-                                selectedFindingId === finding.finding_id
-                              ) {
-                                selectedFindingTriggerRef.current = element;
-                              }
-                            }}
-                            onClick={(event) => {
-                              if (
-                                event.button !== 0 ||
-                                event.metaKey ||
-                                event.ctrlKey ||
-                                event.shiftKey ||
-                                event.altKey
-                              ) {
-                                return;
-                              }
-                              event.preventDefault();
-                              selectFinding(
-                                finding.finding_id,
-                                event.currentTarget,
-                              );
-                            }}
-                            className={cn(
-                              "group block min-w-0 rounded-xl border border-border bg-card/30 p-4 text-left shadow-sm transition-[background-color,border-color] hover:border-foreground/15 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @min-[58rem]:grid @min-[58rem]:grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] @min-[58rem]:items-center @min-[58rem]:gap-4",
-                              selectedFindingId === finding.finding_id &&
-                                "border-foreground/20 bg-muted/40",
-                            )}
+                      {findings.map((finding) => {
+                        const isChecked = selectedIdSet.has(finding.finding_id);
+                        return (
+                          <li
+                            key={finding.finding_id}
+                            className="flex items-stretch gap-1"
                           >
-                            <div className="flex min-w-0 items-start gap-3">
-                              <span
-                                className={cn(
-                                  "mt-1.5 size-2.5 shrink-0 rounded-full",
-                                  getFindingSeverityDotClasses(
-                                    finding.severity,
-                                  ),
-                                )}
-                                aria-hidden="true"
+                            <label className="flex w-11 shrink-0 cursor-pointer items-start justify-center rounded-xl pt-[18px] transition-colors hover:bg-muted/30 has-[input:focus-visible]:ring-2 has-[input:focus-visible]:ring-ring @min-[58rem]:items-center @min-[58rem]:pt-0">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() =>
+                                  toggleFindingSelection(finding.finding_id)
+                                }
+                                aria-label={`Select finding: ${finding.title}`}
+                                className="size-4 cursor-pointer accent-foreground focus-visible:outline-none"
                               />
-                              <div className="min-w-0 flex-1">
-                                <div className="line-clamp-2 text-sm font-medium leading-5 text-foreground @min-[58rem]:truncate">
-                                  {finding.title}
-                                </div>
-                                <div
-                                  className="mt-1 truncate font-mono text-xs text-muted-foreground"
-                                  translate="no"
-                                >
-                                  {finding.target}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="mt-3 min-w-0 break-words text-xs text-muted-foreground @min-[58rem]:mt-0">
-                              {FINDING_CATEGORY_LABELS[finding.category]}
-                            </div>
-
-                            <div className="mt-3 flex items-center justify-between gap-3 @min-[58rem]:mt-0 @min-[58rem]:block">
-                              <span className="inline-flex items-center gap-1.5 text-xs font-medium capitalize text-foreground">
+                            </label>
+                            <Link
+                              href={getHref({ findingId: finding.finding_id })}
+                              prefetch={false}
+                              ref={(element) => {
+                                if (
+                                  element &&
+                                  selectedFindingId === finding.finding_id
+                                ) {
+                                  selectedFindingTriggerRef.current = element;
+                                }
+                              }}
+                              onClick={(event) => {
+                                if (
+                                  event.button !== 0 ||
+                                  event.metaKey ||
+                                  event.ctrlKey ||
+                                  event.shiftKey ||
+                                  event.altKey
+                                ) {
+                                  return;
+                                }
+                                event.preventDefault();
+                                selectFinding(
+                                  finding.finding_id,
+                                  event.currentTarget,
+                                );
+                              }}
+                              className={cn(
+                                "group block min-w-0 flex-1 rounded-xl border border-border bg-card/30 p-4 text-left shadow-sm transition-[background-color,border-color] hover:border-foreground/15 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @min-[58rem]:grid @min-[58rem]:grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] @min-[58rem]:items-center @min-[58rem]:gap-4",
+                                isChecked && "border-foreground/25 bg-muted/20",
+                                selectedFindingId === finding.finding_id &&
+                                  "border-foreground/20 bg-muted/40",
+                              )}
+                            >
+                              <div className="flex min-w-0 items-start gap-3">
                                 <span
                                   className={cn(
-                                    "size-2 rounded-full",
+                                    "mt-1.5 size-2.5 shrink-0 rounded-full",
                                     getFindingSeverityDotClasses(
                                       finding.severity,
                                     ),
                                   )}
                                   aria-hidden="true"
-                                  data-testid={`finding-severity-dot-${finding.finding_id}`}
                                 />
-                                {finding.severity}
-                                <span className="tabular-nums text-muted-foreground">
-                                  {finding.cvss_score.toFixed(1)}
+                                <div className="min-w-0 flex-1">
+                                  <div className="line-clamp-2 text-sm font-medium leading-5 text-foreground @min-[58rem]:truncate">
+                                    {finding.title}
+                                  </div>
+                                  <div
+                                    className="mt-1 truncate font-mono text-xs text-muted-foreground"
+                                    translate="no"
+                                  >
+                                    {finding.target}
+                                  </div>
+                                  <div className="mt-1.5 flex min-w-0 flex-wrap">
+                                    <FindingEvidenceBadge
+                                      status={finding.evidence_status}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 min-w-0 break-words text-xs text-muted-foreground @min-[58rem]:mt-0">
+                                {FINDING_CATEGORY_LABELS[finding.category]}
+                              </div>
+
+                              <div className="mt-3 flex items-center justify-between gap-3 @min-[58rem]:mt-0 @min-[58rem]:block">
+                                <span className="inline-flex items-center gap-1.5 text-xs font-medium capitalize text-foreground">
+                                  <span
+                                    className={cn(
+                                      "size-2 rounded-full",
+                                      getFindingSeverityDotClasses(
+                                        finding.severity,
+                                      ),
+                                    )}
+                                    aria-hidden="true"
+                                    data-testid={`finding-severity-dot-${finding.finding_id}`}
+                                  />
+                                  {finding.severity}
+                                  <span className="tabular-nums text-muted-foreground">
+                                    {finding.cvss_score.toFixed(1)}
+                                  </span>
                                 </span>
-                              </span>
-                              <span className="text-xs tabular-nums text-muted-foreground @min-[58rem]:hidden">
+                                <span className="text-xs tabular-nums text-muted-foreground @min-[58rem]:hidden">
+                                  <FindingRelativeTime
+                                    timestamp={finding.created_at}
+                                  />
+                                </span>
+                              </div>
+
+                              <div className="mt-2 @min-[58rem]:mt-0">
+                                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
+                                  <span
+                                    className={cn(
+                                      "size-2 rounded-full",
+                                      finding.status === "active"
+                                        ? "bg-emerald-500"
+                                        : "bg-muted-foreground/50",
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  {finding.status === "active"
+                                    ? "Active"
+                                    : "Closed"}
+                                </span>
+                              </div>
+
+                              <div className="hidden text-right text-xs tabular-nums text-muted-foreground @min-[58rem]:block">
                                 <FindingRelativeTime
                                   timestamp={finding.created_at}
                                 />
-                              </span>
-                            </div>
+                              </div>
 
-                            <div className="mt-2 @min-[58rem]:mt-0">
-                              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
-                                <span
-                                  className={cn(
-                                    "size-2 rounded-full",
-                                    finding.status === "active"
-                                      ? "bg-emerald-500"
-                                      : "bg-muted-foreground/50",
-                                  )}
-                                  aria-hidden="true"
-                                />
-                                {finding.status === "active"
-                                  ? "Active"
-                                  : "Closed"}
-                              </span>
-                            </div>
-
-                            <div className="hidden text-right text-xs tabular-nums text-muted-foreground @min-[58rem]:block">
-                              <FindingRelativeTime
-                                timestamp={finding.created_at}
+                              <ChevronRight
+                                className="hidden size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none @min-[58rem]:block"
+                                aria-hidden="true"
                               />
-                            </div>
-
-                            <ChevronRight
-                              className="hidden size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none @min-[58rem]:block"
-                              aria-hidden="true"
-                            />
-                          </Link>
-                        </li>
-                      ))}
+                            </Link>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </>
                 )}
 
-                {findingsQuery.status === "CanLoadMore" && (
-                  <div className="flex justify-center p-4">
-                    <Button
-                      variant="outline"
-                      onClick={() => findingsQuery.loadMore(25)}
+                {!isProjectFilterInvalid &&
+                  findingsQuery.status === "CanLoadMore" && (
+                    <div className="flex justify-center p-4">
+                      <Button
+                        variant="outline"
+                        onClick={() => findingsQuery.loadMore(25)}
+                      >
+                        Load more
+                      </Button>
+                    </div>
+                  )}
+                {!isProjectFilterInvalid &&
+                  findingsQuery.status === "LoadingMore" && (
+                    <div className="p-4 text-center text-sm text-muted-foreground">
+                      Loading more…
+                    </div>
+                  )}
+
+                {selectedIds.length > 0 ? (
+                  <div
+                    role="region"
+                    aria-label="Selected findings"
+                    className="sticky bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-10 mt-4 flex items-center gap-2 rounded-xl border border-border bg-background/95 py-2 pr-2 pl-4 shadow-lg backdrop-blur-sm"
+                  >
+                    <p
+                      className="min-w-0 flex-1 truncate text-sm font-medium tabular-nums text-foreground"
+                      aria-live="polite"
                     >
-                      Load more
+                      {selectedIds.length} selected
+                    </p>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedIds(NO_SELECTION)}
+                      aria-label="Clear selection"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                      <span className="hidden min-[360px]:inline">Clear</span>
                     </Button>
+                    <FindingExportMenu
+                      getFindings={getSelectedFindings}
+                      label="Export"
+                    />
                   </div>
-                )}
-                {findingsQuery.status === "LoadingMore" && (
-                  <div className="p-4 text-center text-sm text-muted-foreground">
-                    Loading more…
-                  </div>
-                )}
+                ) : null}
               </section>
             </div>
           </div>
