@@ -52,6 +52,8 @@ test.each([
         "browser_open_failure_version",
         "observation_scope",
         "public_output_hint",
+        "public_json_error_state",
+        "json_candidate_limit_reached",
         "output_sample_present",
         "output_sample_truncated",
         "detected_invocation_count",
@@ -134,10 +136,127 @@ test("retains public hints for option-prefixed browser intent without asserting 
   expect(event).toHaveBeenCalledWith(
     "agent_browser_terminal_open_failure",
     expect.objectContaining({
-      browser_open_failure_version: 2,
+      browser_open_failure_version: 3,
       observation_scope: "terminal_result_option_intent",
       public_output_hint: "daemon_start",
     }),
   );
   expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+});
+
+test("recognizes a supported CLI JSON error without exporting its contents", () => {
+  captureAgentBrowserOpenFailure({
+    ...base,
+    command: "agent-browser --json open https://private.example/secret",
+    result: {
+      ...base.result,
+      output: JSON.stringify({
+        success: false,
+        error: "Navigation failed: PRIVATE_URL",
+        data: { private: "PRIVATE_DATA" },
+      }),
+    },
+  });
+  expect(event.mock.calls[0][1]).toMatchObject({
+    browser_open_failure_version: 3,
+    public_output_hint: "navigation",
+    public_json_error_state: "observed",
+    json_candidate_limit_reached: false,
+  });
+  expect(JSON.stringify(event.mock.calls)).not.toMatch(
+    /PRIVATE|private.example/,
+  );
+});
+
+test.each([
+  [{ success: true, error: "Navigation failed: PRIVATE" }, "not_observed"],
+  [
+    { data: { success: false, error: "Navigation failed: PRIVATE" } },
+    "not_observed",
+  ],
+  [[{ success: false, error: "Navigation failed: PRIVATE" }], "not_observed"],
+  [
+    { success: false, error: { message: "Navigation failed: PRIVATE" } },
+    "not_observed",
+  ],
+])(
+  "does not traverse data or classify successful/nonstandard JSON (%#)",
+  (response, state) => {
+    captureAgentBrowserOpenFailure({
+      ...base,
+      result: { ...base.result, output: JSON.stringify(response) },
+    });
+    expect(event.mock.calls[0][1]).toMatchObject({
+      public_output_hint: "no_known_marker",
+      public_json_error_state: state,
+    });
+  },
+);
+
+test("caps JSON candidates across output and error, retaining observed markers honestly", () => {
+  const benign = JSON.stringify({ success: true });
+  const hidden = JSON.stringify({
+    success: false,
+    error: "Navigation failed: PRIVATE",
+  });
+  captureAgentBrowserOpenFailure({
+    ...base,
+    result: {
+      ...base.result,
+      output: Array(8).fill(benign).join("\n"),
+      error: hidden,
+    },
+  });
+  expect(event.mock.calls[0][1]).toMatchObject({
+    public_output_hint: "no_known_marker",
+    public_json_error_state: "incomplete",
+    json_candidate_limit_reached: true,
+  });
+  event.mockClear();
+  captureAgentBrowserOpenFailure({
+    ...base,
+    result: {
+      ...base.result,
+      output: hidden + "\n" + Array(8).fill(benign).join("\n"),
+    },
+  });
+  expect(event.mock.calls[0][1]).toMatchObject({
+    public_output_hint: "navigation",
+    public_json_error_state: "observed",
+    json_candidate_limit_reached: true,
+  });
+});
+
+test("combines text and decoded markers and reports incomplete JSON without exporting it", () => {
+  captureAgentBrowserOpenFailure({
+    ...base,
+    result: {
+      ...base.result,
+      output:
+        "Failed to read: PRIVATE\n" +
+        JSON.stringify({
+          success: false,
+          error: "\u001b[31m✗ Navigation failed: PRIVATE\u001b[0m",
+        }),
+      error: "{PRIVATE_INCOMPLETE",
+    },
+  });
+  expect(event.mock.calls[0][1]).toMatchObject({
+    public_output_hint: "multiple_markers",
+    public_json_error_state: "observed",
+  });
+  expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
+  event.mockClear();
+  captureAgentBrowserOpenFailure({
+    ...base,
+    result: {
+      ...base.result,
+      output: '{"success":false,"error":"' + "PRIVATE".repeat(1500),
+    },
+  });
+  expect(event.mock.calls[0][1]).toMatchObject({
+    public_output_hint: "no_known_marker",
+    public_json_error_state: "incomplete",
+    output_sample_truncated: true,
+  });
 });
