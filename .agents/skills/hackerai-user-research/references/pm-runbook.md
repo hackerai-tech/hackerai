@@ -76,6 +76,58 @@ the completed result may be copied into Linear when requested.
 The scoped gateway key authenticates the PM runner to the restricted production
 endpoint. It is not a per-run approval and does not require a Linear issue.
 
+### Deterministic selection and recovery
+
+Use `--cohort <protected-export.json>` with the runner to compile a ranked
+PostHog export into gateway membership. Keep the question, cohort label and
+`evidenceWindowDays` in the payload; omit its `userIds`, groups and anchors when
+using a cohort export. Example export (owner-only, outside the repository):
+
+```json
+{
+  "posthogProjectId": 144137,
+  "cohortSelectedAt": "2026-11-09T12:00:00Z",
+  "selectionQuery": "the actual bounded PostHog selection query",
+  "maxUsers": 20,
+  "requirePayerMapping": false,
+  "exclusions": { "userIds": [], "payerIds": [], "organizationIds": [] },
+  "candidates": [
+    {
+      "userId": "user_example",
+      "payerId": null,
+      "organizationId": null,
+      "internal": false,
+      "test": false,
+      "fraud": false
+    }
+  ]
+}
+```
+
+Populate classifications and mappings from PostHog evidence, not assumptions.
+Rows with missing classifications are excluded. The builder joins shared users,
+payers and organizations transitively, then applies exclusions to the connected
+group and chooses its first ranked eligible user. Missing mappings remain visible
+as selection limitations; `requirePayerMapping: true` excludes unmapped users.
+The query is hashed locally and is never sent to the gateway. Optional `group`
+and `anchorAt` fields preserve comparison membership and per-user event anchors.
+Resolve multiple different anchors for the same user before selection. Shared
+billing across different comparison groups is excluded and reported, not assigned
+to whichever arm appeared first. A comparison with fewer than three independent
+selected users per group is rejected. The builder reads no billing or message APIs.
+
+Use `--payload - --handle <protected-handle-path>` for stdin, optionally with
+`--cohort <protected-export-path>`. Existing `--payload <protected-file>` works
+and defaults to `<protected-file>.run.json`. Use `--resume <handle-path>` or
+`--status <handle-path>` after interruption. An accepted run is only polled;
+`--no-wait` reports submission, not completion. If no run ID was received,
+resubmit the identical payload with the same handle within 23 hours. This retains
+the original idempotency key inside the gateway's 24-hour retention. An older
+unknown submission is blocked; do not create a new handle merely to retry it.
+A fresh handle is for an intentionally new analysis. Handles contain no payloads,
+queries, payer mappings or credentials and must remain owner-only. Remove temporary
+payload/export files after they are read; preserve recovery handles as needed.
+
 ### Run from Slack
 
 Slack requests must explicitly mention Codex and carry the complete bounded
