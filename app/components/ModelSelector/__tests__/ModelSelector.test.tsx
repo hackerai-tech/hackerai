@@ -136,7 +136,7 @@ describe("ModelSelector", () => {
         await screen.findAllByText("Maximum intelligence for complex work"),
       ).not.toHaveLength(0);
       expect(
-        await screen.findAllByText("Powered by Grok 4.6 · High reasoning"),
+        await screen.findAllByText("Powered by Grok 4.6"),
       ).not.toHaveLength(0);
     },
   );
