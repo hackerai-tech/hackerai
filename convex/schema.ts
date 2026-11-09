@@ -214,7 +214,8 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_caseId", ["caseId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"]),
   // Evidence is encrypted before transport; ordinary users have no read path.
   abuse_cases: defineTable(abuseCaseFields)
     .index("by_active_containment_user", ["activeContainmentUserId"])

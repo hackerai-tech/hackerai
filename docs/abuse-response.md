@@ -229,7 +229,10 @@ independently verified. Reconcile `failed` and `uncertain` entries during intake
 review. Explicit transient SMTP rejection and preflight connection errors retry
 up to five attempts with increasing delays. Permanent rejection/configuration
 failure remains `failed`. Disabling notifications pauses existing queued work;
-a five-minute sweep resumes it after re-enablement. New reports received while
+a five-minute sweep resumes it after re-enablement. The sweep also recovers
+stale pending work whose scheduled action never claimed it, waiting beyond the
+64-minute maximum retry delay plus five minutes. Recovery uses a bounded index
+query and the same single-claim protection. New reports received while
 disabled do not queue notifications. Lost acknowledgements after DATA and expired send
 leases become `uncertain`; these are not blindly retried because SMTP has no
 exactly-once delivery guarantee. A stable Message-ID assists reconciliation.

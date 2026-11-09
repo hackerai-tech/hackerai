@@ -59,6 +59,23 @@ export const resumePaused = internalMutation({
         { notificationId: row._id },
       );
     }
+    // Scheduled actions are at-most-once. Recover a dropped action without
+    // advancing any legitimate retry (maximum backoff is 64 minutes).
+    const staleBefore = Date.now() - (60_000 * 4 ** 3 + 5 * 60_000);
+    const pending = await ctx.db
+      .query("abuse_notifications")
+      .withIndex("by_status_and_updatedAt", (q) =>
+        q.eq("status", "pending").lt("updatedAt", staleBefore),
+      )
+      .take(25);
+    for (const row of pending) {
+      await ctx.db.patch(row._id, { updatedAt: Date.now() });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.abuseNotificationActions.deliver,
+        { notificationId: row._id },
+      );
+    }
     return null;
   },
 });

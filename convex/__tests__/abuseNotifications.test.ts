@@ -19,9 +19,21 @@ function fixture() {
   const ctx: any = {
     db: {
       query: () => ({
-        withIndex: () => ({
-          take: async () => (row.status === "paused" ? [row] : []),
-        }),
+        withIndex: (_name: string, callback: (q: any) => unknown) => {
+          let matches = true;
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              matches = matches && row[field] === value;
+              return q;
+            },
+            lt: (field: string, value: number) => {
+              matches = matches && row[field] < value;
+              return q;
+            },
+          };
+          callback(q);
+          return { take: async () => (matches ? [row] : []) };
+        },
       }),
       get: async (id: string) => (id === "notification" ? row : report),
       patch: async (_id: string, patch: any) => Object.assign(row, patch),
@@ -155,4 +167,23 @@ test("an admin can retry a confirmed failure after repair, but cannot duplicate 
       expectedAttempts: 1,
     }),
   ).rejects.toThrow();
+});
+test("the sweep recovers a dropped pending action without advancing a legitimate delayed retry", async () => {
+  const { row, ctx } = fixture();
+  const now = Date.now();
+  row.attempts = 4;
+  row.updatedAt = now - 65 * 60_000;
+  await run("resumePaused", ctx, {});
+  expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  row.updatedAt = now - 70 * 60_000;
+  await run("resumePaused", ctx, {});
+  await run("resumePaused", ctx, {});
+  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+  expect(row.status).toBe("pending");
+  expect(
+    await run("claim", ctx, { notificationId: "notification" }),
+  ).toMatchObject({ attempt: 5 });
+  expect(
+    await run("claim", ctx, { notificationId: "notification" }),
+  ).toBeNull();
 });
