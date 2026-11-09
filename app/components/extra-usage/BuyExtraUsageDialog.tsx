@@ -284,7 +284,7 @@ const BuyExtraUsageDialogContent = ({
           </label>
           <Input
             id="extra-usage-purchase-amount"
-            placeholder="$15"
+            placeholder={selectedBundle ? "Custom amount" : "$15"}
             className="w-full"
             type="text"
             inputMode="numeric"

@@ -617,7 +617,7 @@ export const createPurchaseSession = action({
         const subscriptions = await stripe.subscriptions.list({
           customer: stripeCustomerId,
           status: "active",
-          limit: 1,
+          limit: 100,
         });
         if (
           !subscriptions.data.some((subscription) =>

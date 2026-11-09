@@ -60,9 +60,14 @@ describe("bundle checkout fulfillment", () => {
   it("defaults sales off without disabling paid fulfillment", () => {
     const before = process.env.EXTRA_USAGE_BUNDLES_ENABLED;
     delete process.env.EXTRA_USAGE_BUNDLES_ENABLED;
-    expect(extraUsageBundlesEnabled("synthetic_non_allowlisted_user")).toBe(
-      false,
-    );
-    if (before !== undefined) process.env.EXTRA_USAGE_BUNDLES_ENABLED = before;
+    try {
+      expect(extraUsageBundlesEnabled("synthetic_non_allowlisted_user")).toBe(
+        false,
+      );
+    } finally {
+      if (before !== undefined)
+        process.env.EXTRA_USAGE_BUNDLES_ENABLED = before;
+      else delete process.env.EXTRA_USAGE_BUNDLES_ENABLED;
+    }
   });
 });

@@ -242,6 +242,7 @@ describe("extraUsageActions billing authorization", () => {
   });
 
   it("prices a bundle server-side and rejects mismatched credit values", async () => {
+    const previousAllowlist = process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
     process.env.EXTRA_USAGE_BUNDLES_USER_IDS = "user_member";
     mockListOrganizationMemberships.mockResolvedValue({
       data: [
@@ -253,7 +254,10 @@ describe("extraUsageActions billing authorization", () => {
       ],
     } as never);
     mockSubscriptionsList.mockResolvedValue({
-      data: [{ items: { data: [{ price: { lookup_key: "pro-monthly" } }] } }],
+      data: [
+        { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        { items: { data: [{ price: { lookup_key: "pro-monthly" } }] } },
+      ],
     } as never);
     try {
       const result = await callCreatePurchaseSession(makeCtx(), {
@@ -261,6 +265,9 @@ describe("extraUsageActions billing authorization", () => {
         bundleId: "usage-250-v1",
       });
       expect(result.url).toBeTruthy();
+      expect(mockSubscriptionsList).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 }),
+      );
       expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           line_items: [
@@ -285,8 +292,25 @@ describe("extraUsageActions billing authorization", () => {
         ).url,
       ).toBeNull();
       expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+      mockSubscriptionsList.mockResolvedValue({
+        data: [
+          { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        ],
+      } as never);
+      expect(
+        await callCreatePurchaseSession(makeCtx(), {
+          amountDollars: 250,
+          bundleId: "usage-250-v1",
+        }),
+      ).toEqual({
+        url: null,
+        error: "An active paid subscription is required",
+      });
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
     } finally {
-      delete process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+      if (previousAllowlist === undefined)
+        delete process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+      else process.env.EXTRA_USAGE_BUNDLES_USER_IDS = previousAllowlist;
     }
   });
 

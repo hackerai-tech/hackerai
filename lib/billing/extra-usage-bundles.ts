@@ -20,6 +20,7 @@ export const EXTRA_USAGE_BUNDLES = [
   },
 ] as const;
 
+/** Resolve a historical offer; never accept prices supplied by a client. */
 export function getExtraUsageBundle(id: string) {
   const bundle = EXTRA_USAGE_BUNDLES.find((offer) => offer.id === id);
   if (!bundle) throw new Error("Unknown Extra Usage bundle");
@@ -37,6 +38,7 @@ export function extraUsageBundlesEnabled(userId: string): boolean {
   );
 }
 
+/** Validate Stripe bundle totals before granting credit, retaining legacy top-ups. */
 export function readExtraUsagePurchase(session: {
   metadata: Record<string, string> | null;
   currency?: string | null;

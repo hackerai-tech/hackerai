@@ -128,6 +128,9 @@ const ExtraUsageSection = () => {
   ) => {
     setIsPurchasing(true);
     try {
+      const paidDollars = bundleId
+        ? getExtraUsageBundle(bundleId).paidDollars
+        : amountDollars;
       const checkoutAttemptId = newCheckoutAttemptId();
       const result = await createPurchaseSession({
         amountDollars,
@@ -150,9 +153,7 @@ const ExtraUsageSection = () => {
             checkout_type: "extra_usage_purchase",
             surface: "extra_usage_settings",
             source: "buy_extra_usage_dialog",
-            amount_dollars: bundleId
-              ? getExtraUsageBundle(bundleId).paidDollars
-              : amountDollars,
+            amount_dollars: paidDollars,
             credit_amount_dollars: amountDollars,
             bundle_id: bundleId,
             stripe_checkout_session_id: result.checkoutSessionId,

@@ -52,7 +52,23 @@ export async function GET(req: NextRequest) {
     }
 
     const userId = session.metadata.userId;
-    const purchase = readExtraUsagePurchase(session);
+    let purchase: ReturnType<typeof readExtraUsagePurchase>;
+    try {
+      purchase = readExtraUsagePurchase(session);
+    } catch (error) {
+      logExtraUsagePurchase("error", "extra_usage_purchase_invalid_metadata", {
+        route: ROUTE,
+        requestHeaders: req.headers,
+        stripeCheckoutSessionId: session.id,
+        paymentStatus: session.payment_status,
+        reason: "invalid_purchase_metadata",
+        error,
+      });
+      return NextResponse.redirect(
+        getExtraUsageReturnUrl(origin, session.metadata.returnPath),
+        { status: 303 },
+      );
+    }
     const { amountDollars } = purchase;
     const stripeCustomerId = stripeObjectId(session.customer);
     const stripePaymentIntentId = stripeObjectId(session.payment_intent);
