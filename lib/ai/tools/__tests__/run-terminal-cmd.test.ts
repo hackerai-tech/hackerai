@@ -2693,7 +2693,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       expect(mockPhEvent).toHaveBeenCalledWith(
         "agent_browser_terminal_open_failure",
         expect.objectContaining({
-          browser_open_failure_version: 1,
+          browser_open_failure_version: 2,
           observation_scope: "terminal_result_open_intent",
           public_output_hint: "navigation",
           exit_code: 1,

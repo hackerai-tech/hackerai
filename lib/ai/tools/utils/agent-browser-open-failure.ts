@@ -39,7 +39,9 @@ export function captureAgentBrowserOpenFailure(args: {
     )
       return;
     const usage = detectAgentBrowserUsage(args.command);
-    if (!usage?.actions.includes("open")) return;
+    if (!usage) return;
+    const openIntent = usage.actions.includes("open");
+    if (!openIntent && !usage.actions.includes("option")) return;
 
     let truncated = false;
     const samples = [r.output, r.error].map((value) => {
@@ -61,8 +63,11 @@ export function captureAgentBrowserOpenFailure(args: {
     phLogger.event("agent_browser_terminal_open_failure", {
       userId: args.context.userID,
       chat_id: args.context.chatId,
-      browser_open_failure_version: 1,
-      observation_scope: "terminal_result_open_intent",
+      browser_open_failure_version: 2,
+      // Option-prefixed syntax is intentionally not parsed into an OPEN claim.
+      observation_scope: openIntent
+        ? "terminal_result_open_intent"
+        : "terminal_result_option_intent",
       public_output_hint:
         matches.length > 1
           ? "multiple_markers"
