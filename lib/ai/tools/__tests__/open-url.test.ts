@@ -7,6 +7,7 @@ jest.mock("@/lib/posthog/server", () => ({
 
 import { phLogger } from "@/lib/posthog/server";
 import { createOpenUrlTool } from "../open-url";
+import { safeCountTokens } from "@/lib/token-utils";
 
 async function runTool(
   tool: ReturnType<typeof createOpenUrlTool>,
@@ -42,6 +43,130 @@ describe("open_url", () => {
     global.fetch = originalFetch;
     delete process.env.JINA_API_KEY;
     jest.clearAllMocks();
+  });
+
+  it("retrieves full Markdown and supports continuation through a rebuilt tool", async () => {
+    const content =
+      "Title: Advisory\n\nMarkdown Content:\n" +
+      "Detailed security finding.\n".repeat(7000) +
+      "Critical final mitigation.";
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, text: async () => content });
+    const first = (await runTool(createOpenUrlTool(), {
+      url: "https://example.com/advisory",
+      brief: "Read advisory",
+    })) as string;
+    expect(safeCountTokens(first)).toBeLessThanOrEqual(12000);
+    const cursor = first.match(/cursor="([A-Za-z0-9_-]+)"/)?.[1];
+    expect(cursor).toBeDefined();
+    const second = (await runTool(createOpenUrlTool(), {
+      url: "https://example.com/advisory",
+      cursor,
+      brief: "Continue advisory",
+    })) as string;
+    expect(second).toContain("Page content tokens");
+    expect(second).not.toContain("Error");
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-Respond-With": "markdown",
+          "X-Retain-Images": "none",
+        }),
+      }),
+    );
+  });
+
+  it("reports an upstream error hidden in a successful Reader response without logging page text", async () => {
+    const onToolFailure = jest.fn();
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () =>
+        "Title: Not Found\nWarning: Target URL returned error 404: Not Found\n\nMarkdown Content:\nPRIVATE_PAGE_TEXT",
+    });
+    const result = await runTool(createOpenUrlTool({ onToolFailure }), {
+      url: "https://example.com/private-path?token=secret",
+      brief: "Read",
+    });
+    expect(result).toContain("requested page returned HTTP 404");
+    expect(onToolFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "open_url_content_unavailable",
+        url_hostname: "example.com",
+      }),
+    );
+    expect(JSON.stringify(onToolFailure.mock.calls)).not.toMatch(
+      /PRIVATE_PAGE_TEXT|private-path|secret/,
+    );
+  });
+
+  it("reuses one scoped snapshot for continuation, and honors cancellation before a cache hit", async () => {
+    const content =
+      "Title: Reference\n\nMarkdown Content:\n" +
+      "Important technical details.\n".repeat(7000);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue({ ok: true, text: async () => content });
+    const tool = createOpenUrlTool();
+    const first = (await runTool(tool, {
+      url: "https://example.com/reference",
+      brief: "Read",
+    })) as string;
+    const cursor = first.match(/cursor="([A-Za-z0-9_-]+)"/)?.[1];
+    await runTool(tool, {
+      url: "https://example.com/reference",
+      cursor,
+      brief: "Continue",
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      tool.execute!(
+        { url: "https://example.com/reference", cursor, brief: "Continue" },
+        { toolCallId: "cancel", messages: [], abortSignal: controller.signal },
+      ),
+    ).resolves.toBe("Error: Operation aborted");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    // A different instance does not reuse another chat's document.
+    await runTool(createOpenUrlTool(), {
+      url: "https://example.com/reference",
+      cursor,
+      brief: "Resume",
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches an expired snapshot and rejects a continuation when the page changed", async () => {
+    const now = jest.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1000);
+      const content = "Reference details.\n".repeat(15000);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce({ ok: true, text: async () => content })
+        .mockResolvedValueOnce({
+          ok: true,
+          text: async () => content + "Updated mitigation.",
+        });
+      const tool = createOpenUrlTool();
+      const first = (await runTool(tool, {
+        url: "https://example.com/reference",
+        brief: "Read",
+      })) as string;
+      const cursor = first.match(/cursor="([A-Za-z0-9_-]+)"/)?.[1];
+      now.mockReturnValue(1000 + 5 * 60_000 + 1);
+      const next = await runTool(tool, {
+        url: "https://example.com/reference",
+        cursor,
+        brief: "Continue",
+      });
+      expect(next).toContain("Page content changed");
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("logs expected Jina network timeouts as warnings without raw error objects", async () => {

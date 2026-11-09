@@ -1,9 +1,13 @@
 import { tool } from "ai";
 import { phLogger } from "@/lib/posthog/server";
-import { truncateContent } from "@/lib/token-utils";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
 import type { ToolContext } from "@/types";
 import { reportToolFailure } from "./tool-failure";
+import {
+  JINA_CONTENT_HEADERS,
+  formatUrlContentPage,
+  getUrlContentFailure,
+} from "./utils/url-content";
 import {
   createOpenUrlToolSchema,
   openUrlTool,
@@ -111,15 +115,23 @@ const toDiagnosticError = (error: unknown, message: string): Error => {
  * Retrieves and returns the full contents of a webpage
  */
 export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
+  // Keep only the latest document, scoped to this tool instance (never global or
+  // shared across chats). A rebuilt worker can refetch and verify the cursor.
+  let snapshot: { url: string; content: string; expiresAt: number } | undefined;
   return tool({
     ...openUrlTool,
     inputSchema: createOpenUrlToolSchema({
       modelName: context?.getCurrentModelName?.() ?? context?.modelName,
     }).inputSchema,
-    execute: async ({ url }: OpenUrlToolInput, { abortSignal }) => {
+    execute: async ({ url, cursor }: OpenUrlToolInput, { abortSignal }) => {
       const startedAt = Date.now();
 
       try {
+        if (abortSignal?.aborted) return "Error: Operation aborted";
+        if (snapshot && snapshot.expiresAt <= startedAt) snapshot = undefined;
+        if (cursor && snapshot?.url === url) {
+          return formatUrlContentPage(snapshot.content, url, cursor);
+        }
         // Construct the Jina AI reader URL with proper encoding
         const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
 
@@ -128,9 +140,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           method: "GET",
           headers: {
             Authorization: `Bearer ${process.env.JINA_API_KEY}`,
-            "X-Timeout": "30",
-            "X-Base": "final",
-            "X-Token-Budget": "200000",
+            ...JINA_CONTENT_HEADERS,
           },
           signal: abortSignal,
         });
@@ -151,9 +161,25 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         }
 
         const content = await response.text();
-        const truncated = truncateContent(content, undefined, 2048);
-
-        return truncated;
+        const failure = getUrlContentFailure(content);
+        if (failure) {
+          reportToolFailure(context?.onToolFailure, {
+            event: "open_url_content_unavailable",
+            tool_name: "open_url",
+            provider: "jina",
+            duration_ms: Date.now() - startedAt,
+            url_hostname: getUrlHostname(url),
+            // Static classification only; page text/URLs never enter analytics.
+            error_message: failure,
+          });
+          return `Error opening URL: ${failure} Do not retry the same URL unless the user asks.`;
+        }
+        // Bound retained memory even when Reader returns an unusually large page.
+        snapshot =
+          Buffer.byteLength(content, "utf8") <= 2 * 1024 * 1024
+            ? { url, content, expiresAt: Date.now() + 5 * 60_000 }
+            : undefined;
+        return formatUrlContentPage(content, url, cursor);
       } catch (error) {
         // Handle abort errors gracefully without logging
         if (isOpenUrlCancellation(error, abortSignal)) {
