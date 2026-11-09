@@ -1513,6 +1513,10 @@ export async function createAgentStream(
         requestedModelSlug,
         selectedModelOverride: ctx.selectedModelOverride,
         cacheSessionId,
+        isPaidAutoAgentRequest:
+          ctx.mode === "agent" &&
+          ctx.subscription !== "free" &&
+          (!ctx.selectedModelOverride || ctx.selectedModelOverride === "auto"),
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
