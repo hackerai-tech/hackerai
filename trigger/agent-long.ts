@@ -6080,10 +6080,19 @@ export const agentLongTask = task({
             if (canceledDuringPreparation || localConnectionLost()) {
               preparationCanceled = true;
               if (localConnectionLost()) {
-                await updateChat({
-                  chatId,
-                  finishReason: LOCAL_CONNECTION_LOST_FINISH_REASON,
-                });
+                try {
+                  await updateChat({
+                    chatId,
+                    expectedActiveTriggerRunId: ctx.run.id,
+                    finishReason: LOCAL_CONNECTION_LOST_FINISH_REASON,
+                  });
+                } catch (updateError) {
+                  recordAgentLongChatMetadataUpdateFailure(updateError, {
+                    chatId,
+                    userId,
+                    runId: ctx.run.id,
+                  });
+                }
               }
               await usageRefundTracker.refund().catch(() => {});
               writer.write({ type: "abort" });

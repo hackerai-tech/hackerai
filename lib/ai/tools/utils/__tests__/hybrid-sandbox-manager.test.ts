@@ -1859,6 +1859,30 @@ describe("selected-computer failure diagnostics", () => {
 });
 
 describe("Agent connection interruption", () => {
+  it.each(["prompt", "acquisition"])(
+    "keeps an initially offline computer on reconnect-required recovery during %s",
+    async (phase) => {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        "environment:machine",
+        "key",
+        null,
+        "pro",
+      );
+      const onLost = jest.fn();
+      const stop = manager.stopOnLocalDisconnect(onLost);
+      jest.spyOn(manager, "listConnections").mockResolvedValue([]);
+      await expect(
+        phase === "prompt"
+          ? manager.getSandboxContextForPrompt()
+          : manager.getSandbox(),
+      ).rejects.toThrow("selected computer is disconnected");
+      expect(onLost).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+
   it("pins the session before model/tool execution and refuses a replacement until a new run", async () => {
     const manager = new HybridSandboxManager(
       "u",

@@ -947,7 +947,7 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
-    if (this.onLocalConnectionLost) throw this.loseRunConnection();
+    if (this.watchedConnectionId) throw this.loseRunConnection();
     // Legacy session IDs and the Desktop alias select a computer just as
     // persistent environment IDs do. Fail before acquiring a different host
     // so all offline selections reach the reconnect-required recovery path.
@@ -1214,7 +1214,7 @@ export class HybridSandboxManager implements SandboxManager {
       return this.buildSandboxContext(preferredConnection);
     }
 
-    if (this.onLocalConnectionLost) throw this.loseRunConnection();
+    if (this.watchedConnectionId) throw this.loseRunConnection();
     throw selectedComputerOfflineError(
       this.selectedComputerLookup(connections),
       "prompt_context",

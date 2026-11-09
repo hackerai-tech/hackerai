@@ -114,3 +114,52 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
     }
   },
 );
+
+it("refunds and aborts after local loss even when finish metadata cannot be saved", async () => {
+  const userStopSignal = new AbortController();
+  const error = new Error("connection lost");
+  userStopSignal.abort(error);
+  const failure = new Error("database unavailable");
+  const updateChat = jest.fn(async () => {
+    throw failure;
+  });
+  const refund = jest.fn(async () => {});
+  const writer = { write: jest.fn() };
+  const recordAgentLongChatMetadataUpdateFailure = jest.fn();
+  await expect(
+    executeCatch(
+      "trigger/agent-long.ts",
+      "releasePaidDailyFreeAllowanceReservation",
+      {
+        userStopSignal,
+        localConnectionLost: () => true,
+        agentLongDurationExceeded: false,
+        runReporting: { fail: jest.fn() },
+        isHandledUserRateLimitError: () => false,
+        hasObservedUsage: () => false,
+        releasePaidDailyFreeAllowanceReservation: jest.fn(async () => {}),
+        releaseFreeRunLockOnce: jest.fn(async () => {}),
+        usageRefundTracker: { refund },
+        updateChat,
+        recordAgentLongChatMetadataUpdateFailure,
+        chatId: "test-chat",
+        userId: "test-user",
+        ctx: { run: { id: "test-run" } },
+        LOCAL_CONNECTION_LOST_FINISH_REASON: "local-connection-lost",
+        writer,
+      },
+      error,
+    ),
+  ).resolves.toBeUndefined();
+  expect(updateChat).toHaveBeenCalledWith({
+    chatId: "test-chat",
+    expectedActiveTriggerRunId: "test-run",
+    finishReason: "local-connection-lost",
+  });
+  expect(recordAgentLongChatMetadataUpdateFailure).toHaveBeenCalledWith(
+    failure,
+    { chatId: "test-chat", userId: "test-user", runId: "test-run" },
+  );
+  expect(refund).toHaveBeenCalledTimes(1);
+  expect(writer.write).toHaveBeenCalledWith({ type: "abort" });
+});

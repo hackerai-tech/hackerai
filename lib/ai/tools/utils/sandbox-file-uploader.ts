@@ -275,6 +275,7 @@ async function getSandboxFileSize(
   throw formatFileSizeFailure(fullPath, statResult);
 }
 
+/** Keep cmd.exe metadata failures unclassified: they do not prove source absence. */
 async function getWindowsSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
