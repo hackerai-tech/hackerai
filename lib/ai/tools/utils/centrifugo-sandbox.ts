@@ -1,3 +1,4 @@
+import { recordAttachmentDownloadFailure } from "./attachment-download-diagnostics";
 import {
   DesktopFileBridgeError,
   desktopFileUnavailableMessage,
@@ -3101,13 +3102,28 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             path,
             nativePath,
           ]);
-          throw new Error(
-            `Failed to download file: ${safeStderr}\n` +
-              `  source: [redacted-url]\n` +
-              `  destination: [redacted-destination-path]\n` +
-              `  command: ${httpClient}\n` +
-              `  exitCode: ${result.exitCode}\n` +
-              `  diagnostics: ${diagnosticOutput}`,
+          throw recordAttachmentDownloadFailure(
+            new Error(
+              `Failed to download file: ${safeStderr}\n` +
+                `  source: [redacted-url]\n` +
+                `  destination: [redacted-destination-path]\n` +
+                `  command: ${httpClient}\n` +
+                `  exitCode: ${result.exitCode}\n` +
+                `  diagnostics: ${diagnosticOutput}`,
+            ),
+            {
+              platform: this.isWindows()
+                ? "windows"
+                : ["linux", "darwin", "freebsd", "openbsd"].includes(
+                      this.connectionInfo.osInfo?.platform ?? "",
+                    )
+                  ? "posix"
+                  : "unknown",
+              shell: useBash ? "bash" : "cmd",
+              httpClient,
+              exitCode: result.exitCode,
+              stderr: result.stderr,
+            },
           );
         }
       } finally {

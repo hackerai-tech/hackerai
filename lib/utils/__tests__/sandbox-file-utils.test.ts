@@ -1,3 +1,4 @@
+import { recordAttachmentDownloadFailure } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
 jest.mock("../sandbox-upload-readiness", () => ({
   checkAttachmentReadiness: jest.fn(),
   sampleAttachmentFailureMetrics: jest.fn(async () => ({
@@ -2534,3 +2535,101 @@ it("skips attachment refresh when an earlier acquisition has already spent the f
     errorSpy.mockRestore();
   }
 });
+
+it.each([false, true])(
+  "retains only the final download diagnostic through image fallback (path fallback=%s)",
+  async (fallback) => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const url = "https://private.example/secret.png?signature=secret";
+    const path = "/home/user/upload/private-image.png";
+    const makeError = (final: boolean) =>
+      recordAttachmentDownloadFailure(
+        new Error(
+          `Failed to download file: private detail\nexitCode: ${final ? 1 : 23}`,
+        ),
+        {
+          platform: "windows",
+          shell: "bash",
+          httpClient: final ? "powershell" : "curl",
+          exitCode: final ? 1 : 23,
+          stderr: final
+            ? "The remote server returned an error: (403) private detail"
+            : "permission denied",
+        },
+      );
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+      files: {
+        downloadFromUrl: jest
+          .fn()
+          .mockRejectedValueOnce(makeError(!fallback))
+          .mockRejectedValueOnce(makeError(true)),
+      },
+      commands: {
+        run: jest.fn(async () => ({
+          stdout: "/tmp/fallback-image.png",
+          stderr: "",
+          exitCode: 0,
+        })),
+      },
+    };
+    try {
+      const result = await uploadSandboxFiles(
+        [{ kind: "url", url, localPath: path }],
+        async () => sandbox,
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run-diag",
+            userId: "opaque-user",
+            chatId: "opaque-chat",
+          },
+        },
+      );
+      expect(result.failedCount).toBe(1);
+      const expected = {
+        attachment_download_diagnostic_version: 1,
+        attachment_download_http_client: "powershell",
+        attachment_download_exit_code: 1,
+        attachment_download_reported_http_status: 403,
+      };
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
+      expect(event).toHaveBeenCalledWith(
+        "sandbox_attachment_staging_failed",
+        expect.objectContaining(expected),
+      );
+      const messages = [
+        {
+          id: "m1",
+          role: "user",
+          parts: [{ type: "file", url, mediaType: "image/png" }],
+        },
+      ] as UIMessage[];
+      const recovered = recoverProviderVisibleImagesAfterSandboxUploadFailure(
+        messages,
+        [{ kind: "url", url, localPath: path }],
+        result,
+        { service: "agent-long", userId: "opaque-user", chatId: "opaque-chat" },
+      );
+      expect(recovered).not.toBeNull();
+      const bypass = warn.mock.calls
+        .map(([line]) =>
+          typeof line === "string" && line.startsWith("{")
+            ? JSON.parse(line)
+            : null,
+        )
+        .find((x) => x?.event === "sandbox_image_attachment_staging_bypassed");
+      expect(bypass).toMatchObject(expected);
+      expect(JSON.stringify(bypass)).not.toMatch(
+        /private\.example|secret|private detail|private-image|fallback-image/,
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      event.mockRestore();
+    }
+  },
+);
