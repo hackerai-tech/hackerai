@@ -170,7 +170,7 @@ export interface SandboxContext {
 /** Optional: when set, terminal chunks are awaited so the run yields and stream delivery can happen in real time. */
 export type AppendMetadataStreamFn = (event: {
   type: "data-terminal";
-  data: { terminal: string; toolCallId: string; captchaStartedAt?: number };
+  data: { terminal: string; toolCallId: string };
 }) => Promise<void>;
 
 /** Provider/tool-scoped failure data. Host runtimes attach request/user context separately. */

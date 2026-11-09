@@ -13,6 +13,7 @@ import {
   Maximize2,
   Minimize2,
   Terminal,
+  Puzzle,
   Play,
   SkipBack,
   SkipForward,
@@ -390,6 +391,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     canGoNext,
   } = useSidebarNavigation({
     messages,
+    isRunActive: status === "streaming" || status === "submitted",
     sidebarContent,
     onNavigate: onNavigate ? navigateManually : undefined,
   });
@@ -799,6 +801,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Proxy
                     </div>
+                  ) : isTerminal && resolvedTerminal?.captcha ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Puzzle size={14} aria-hidden="true" />
+                      CAPTCHA solver
+                    </div>
                   ) : isTerminal ? (
                     <Terminal
                       size={14}
@@ -847,6 +854,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     />
                   )}
                   {!isWebSearch &&
+                    !(isTerminal && resolvedTerminal?.captcha) &&
                     !isNotes &&
                     !isFinding &&
                     !isToolError &&

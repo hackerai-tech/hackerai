@@ -10,7 +10,9 @@ export type CaptchaActivity = NonNullable<SidebarTerminal["captcha"]>;
 export function getCaptchaStartedAt(
   parts: readonly unknown[],
   toolCallId: string,
+  command: string | undefined,
 ) {
+  if (parseCaptchaRuntimeCommand(command)?.action !== "solve") return;
   for (const part of parts) {
     const p = part as {
       type?: string;

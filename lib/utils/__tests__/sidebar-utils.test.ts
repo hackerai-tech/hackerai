@@ -1,4 +1,5 @@
 import {
+  extractAllSidebarContent,
   extractSidebarContentFromMessage,
   isSameSidebarContent,
   reconcileSidebarContentAfterRegeneration,
@@ -14,7 +15,7 @@ describe("terminal sidebar output", () => {
       input: { command: "hackerai-captcha solve --session owned" },
     };
     const startedAt = Date.parse("2026-11-08T12:00:00Z");
-    const [live] = extractSidebarContentFromMessage({
+    const message = {
       role: "assistant",
       parts: [
         tool,
@@ -27,8 +28,16 @@ describe("terminal sidebar output", () => {
           },
         },
       ],
-    });
+    };
+    const [live] = extractSidebarContentFromMessage(message, true);
     expect(live).toMatchObject({ captcha: { state: "solving", startedAt } });
+    const [stopped] = extractSidebarContentFromMessage(message, false);
+    expect(stopped).toMatchObject({ captcha: { state: "stopped" } });
+    const [historical] = extractAllSidebarContent(
+      [message, { role: "assistant", parts: [] }],
+      true,
+    );
+    expect(historical).toMatchObject({ captcha: { state: "stopped" } });
     const [saved] = extractSidebarContentFromMessage({
       role: "assistant",
       parts: [

@@ -122,8 +122,13 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
   const captchaStartedAt = useMemo(
-    () => getCaptchaStartedAt(message.parts, effectiveToolCallId),
-    [message.parts, effectiveToolCallId],
+    () =>
+      getCaptchaStartedAt(
+        message.parts,
+        effectiveToolCallId,
+        terminalInput?.command,
+      ),
+    [message.parts, effectiveToolCallId, terminalInput?.command],
   );
 
   const { blockAction, blockTarget, sidebarContent } = useMemo(

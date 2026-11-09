@@ -66,6 +66,7 @@ const getWebSearchQuery = (input: unknown): string => {
  */
 export function extractSidebarContentFromMessage(
   message: Message,
+  isRunActive = false,
 ): SidebarContent[] {
   const contentList: SidebarContent[] = [];
   if (message.role !== "assistant" || !message.parts) return contentList;
@@ -266,7 +267,12 @@ export function extractSidebarContentFromMessage(
         executionPhase,
         hasResult: part.output !== undefined,
         isExecuting: executionPhase === "executing",
-        startedAt: getCaptchaStartedAt(message.parts!, part.toolCallId || ""),
+        isRunActive,
+        startedAt: getCaptchaStartedAt(
+          message.parts!,
+          part.toolCallId || "",
+          command,
+        ),
       });
 
       contentList.push({
@@ -1000,8 +1006,14 @@ export function extractSidebarContentFromMessage(
 
 export function extractAllSidebarContent(
   messages: Message[],
+  isRunActive = false,
 ): SidebarContent[] {
-  return messages.flatMap(extractSidebarContentFromMessage);
+  return messages.flatMap((message, index) =>
+    extractSidebarContentFromMessage(
+      message,
+      isRunActive && index === messages.length - 1,
+    ),
+  );
 }
 
 const getToolCallId = (content: SidebarContent): string | undefined =>

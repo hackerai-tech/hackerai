@@ -64,7 +64,7 @@ export function CaptchaSolverActivity({
     failed:
       "The solve could not finish. Check the Agent’s result for the next step.",
     stopped:
-      "The Agent stopped this request. Check its result for any provider cost.",
+      "Solve stopped. A provider charge may still apply; check the Agent’s recap.",
     unavailable: "Automatic solving is unavailable for this request.",
     preparation_required:
       "The browser needs preparation before a paid solve can start.",
@@ -73,7 +73,7 @@ export function CaptchaSolverActivity({
   return (
     <section
       aria-label="CAPTCHA solver"
-      className="p-4 text-sm text-foreground"
+      className="whitespace-normal p-4 font-sans text-sm text-foreground"
     >
       <div className="rounded-[15px] border border-border bg-muted/20 p-4">
         <div className="flex min-w-0 items-center gap-2">

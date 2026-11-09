@@ -54,6 +54,7 @@ it("uses only this tool's start event and never presents a verification failure 
       },
     ],
     "owned",
+    command,
   );
   expect(startedAt).toBe(25);
   const block = computeShellTerminalBlock({

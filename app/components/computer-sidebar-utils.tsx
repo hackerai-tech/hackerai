@@ -262,7 +262,7 @@ export function getDisplayTarget(content: SidebarContent): string {
     return spaceIndex !== -1 ? content.command.slice(spaceIndex + 1) : "";
   }
   if (isSidebarTerminal(content)) {
-    if (content.captcha) return "CAPTCHA";
+    if (content.captcha) return "";
     if (content.shellAction === "send" && content.input) {
       if (Array.isArray(content.input)) {
         return content.input.map((t) => formatSendInput(t)).join(" ");
