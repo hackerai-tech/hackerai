@@ -1,18 +1,20 @@
 "use client";
 import { useEffect, useId, useRef, useState } from "react";
 import {
-  CalendarClock,
-  Check,
+  CircleAlert,
   Cloud,
   Laptop,
   Loader2,
   Monitor,
+  Shield,
   WifiOff,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -68,6 +70,9 @@ const KINDS: { value: ScheduleTiming["type"]; label: string }[] = [
   { value: "once", label: "One time" },
 ];
 const CLOUD = "cloud";
+// validateLocalScheduleExecution owns the path rules; this is the message it
+// uses for a bad folder, so that error can be shown at the folder field.
+const FOLDER_ERROR = "Enter an absolute folder path.";
 type ScheduleComputer = { preference: string; name: string };
 function localDateTime(at: number) {
   const date = new Date(at);
@@ -110,6 +115,7 @@ export function ScheduleFormDialog({
       ? { [initial.execution.preference]: initial.execution.workingDirectory }
       : {},
   );
+  const [folderError, setFolderError] = useState("");
   const execution = value.execution;
   const listed = (preference: string) =>
     computers.some((computer) => computer.preference === preference);
@@ -136,6 +142,7 @@ export function ScheduleFormDialog({
   const setRunOn = (preference: string) => {
     if (preference === (execution?.preference ?? CLOUD)) return;
     const target = targets.find((t) => t.preference === preference);
+    setFolderError("");
     setValue({
       ...value,
       execution: target && {
@@ -158,6 +165,10 @@ export function ScheduleFormDialog({
   }, []);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  useEffect(() => {
+    if (folderError && !pending)
+      document.getElementById(`${id}-folder`)?.focus();
+  }, [folderError, pending, id]);
   const [discard, setDiscard] = useState(false);
   const dirty =
     JSON.stringify(value) !== JSON.stringify(initial) ||
@@ -227,9 +238,12 @@ export function ScheduleFormDialog({
       await onSave(definition);
       onClose();
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Could not save this schedule.",
-      );
+      const message =
+        e instanceof Error ? e.message : "Could not save this schedule.";
+      if (execution && message === FOLDER_ERROR) {
+        setFolderError(message);
+        document.getElementById(`${id}-folder`)?.focus();
+      } else setError(message);
     } finally {
       setPending(false);
     }
@@ -242,7 +256,8 @@ export function ScheduleFormDialog({
       }}
     >
       <DialogContent
-        className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-h-[min(90dvh,52rem)] sm:max-w-2xl md:max-w-3xl"
+        showCloseButton={false}
+        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-auto sm:max-h-[min(92dvh,56rem)] sm:max-w-[calc(100%-2rem)] sm:rounded-lg sm:border md:max-w-2xl lg:max-w-[min(calc(100%-4rem),68rem)]"
         onInteractOutside={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -250,21 +265,28 @@ export function ScheduleFormDialog({
           if (pending) e.preventDefault();
         }}
       >
-        <DialogHeader className="shrink-0 gap-1.5 border-b px-5 py-4 pr-12 text-left sm:px-6">
-          <DialogTitle>
-            {editing ? "Edit schedule" : "New schedule"}
-          </DialogTitle>
-          <DialogDescription className="max-sm:sr-only">
-            Each run starts a new task with your instructions.
-          </DialogDescription>
+        <DialogHeader className="min-h-14 shrink-0 flex-row items-center gap-3 border-b py-2.5 pr-14 pl-4 text-left sm:py-4 sm:pl-6 lg:pl-8">
+          <div className="min-w-0 flex-1 space-y-1">
+            <DialogTitle className="text-lg tracking-tight lg:text-xl">
+              {editing ? "Edit schedule" : "New schedule"}
+            </DialogTitle>
+            <DialogDescription className="max-sm:sr-only">
+              Each run starts a new task with your instructions.
+            </DialogDescription>
+          </div>
+          {dirty && (
+            <span className="shrink-0 text-xs text-muted-foreground">
+              Unsaved<span className="max-sm:hidden"> changes</span>
+            </span>
+          )}
         </DialogHeader>
         <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <fieldset
               disabled={pending}
-              className="min-w-0 space-y-5 md:grid md:grid-cols-[minmax(0,1fr)_20rem] md:gap-6 md:space-y-0"
+              className="min-w-0 lg:grid lg:min-h-full lg:grid-cols-[minmax(0,1fr)_22rem]"
             >
-              <div className="space-y-4">
+              <div className="space-y-6 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-name`}>Name</Label>
                   <Input
@@ -274,6 +296,7 @@ export function ScheduleFormDialog({
                       setValue({ ...value, name: e.target.value })
                     }
                     maxLength={80}
+                    className="h-11 lg:h-12 lg:text-lg lg:font-medium"
                     placeholder="e.g. Morning security brief"
                     required
                     autoFocus
@@ -288,150 +311,205 @@ export function ScheduleFormDialog({
                       setValue({ ...value, prompt: e.target.value })
                     }
                     maxLength={16000}
-                    rows={4}
-                    className={cn(
-                      "min-h-24 resize-y",
-                      execution ? "md:min-h-32" : "md:min-h-44",
-                    )}
+                    rows={6}
+                    aria-describedby={`${id}-prompt-help`}
+                    className="min-h-32 resize-y leading-relaxed lg:min-h-52"
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor={`${id}-run-on`}>Run on</Label>
-                  <Select
-                    value={execution?.preference ?? CLOUD}
-                    onValueChange={setRunOn}
-                  >
-                    <SelectTrigger
-                      id={`${id}-run-on`}
-                      aria-describedby={`${id}-run-on-help`}
-                      className="h-11 w-full gap-2 sm:h-9 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:text-left [&>svg]:shrink-0"
-                    >
-                      <SelectValue>
-                        <span className="flex min-w-0 items-center gap-2">
-                          <ExecutionIcon
-                            className="size-4 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                          />
-                          <span
-                            className="min-w-0 truncate"
-                            title={execution?.name}
-                          >
-                            {execution?.name ?? "Cloud"}
-                          </span>
-                        </span>
-                      </SelectValue>
-                      {unavailable && (
-                        <div className="shrink-0 text-xs text-amber-700 dark:text-amber-500">
-                          Unavailable
-                        </div>
-                      )}
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={CLOUD} className="py-2.5 sm:py-1.5">
-                        <Cloud
-                          className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                        Cloud
-                      </SelectItem>
-                      <SelectSeparator />
-                      <SelectGroup>
-                        <SelectLabel className="text-xs font-medium text-muted-foreground">
-                          Your computers
-                        </SelectLabel>
-                        {targets.length ? (
-                          targets.map((target) => {
-                            const Icon = isDesktopPreference(target.preference)
-                              ? Monitor
-                              : Laptop;
-                            return (
-                              <SelectItem
-                                key={target.preference}
-                                value={target.preference}
-                                className="py-2.5 sm:py-1.5"
-                              >
-                                <Icon
-                                  className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
-                                  aria-hidden="true"
-                                />
-                                {target.name}
-                                {target.unavailable && (
-                                  <span className="text-muted-foreground">
-                                    {" "}
-                                    · Unavailable
-                                  </span>
-                                )}
-                              </SelectItem>
-                            );
-                          })
-                        ) : (
-                          <SelectItem value="none" disabled>
-                            No computers connected
-                          </SelectItem>
-                        )}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
                   <p
-                    id={`${id}-run-on-help`}
-                    className={cn(
-                      "flex items-start gap-1.5 text-xs leading-relaxed",
-                      unavailable
-                        ? "text-amber-700 dark:text-amber-500"
-                        : "text-muted-foreground",
-                    )}
+                    id={`${id}-prompt-help`}
+                    className="text-xs leading-relaxed text-muted-foreground"
                   >
-                    {unavailable && (
-                      <WifiOff
-                        className="mt-0.5 size-3.5 shrink-0"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="min-w-0 break-words">
-                      {!execution
-                        ? `Runs in your cloud workspace, even while you’re away.${
-                            targets.length
-                              ? ""
-                              : " Connect a computer to run schedules on it."
-                          }`
-                        : unavailable
-                          ? "The selected computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
-                          : "Runs only while the selected computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
-                    </span>
+                    Each run starts a new task with these instructions. Say
+                    exactly what to touch and what to report.
                   </p>
                 </div>
-                {execution && (
-                  <div className="space-y-2">
-                    <Label htmlFor={`${id}-folder`}>Starting folder</Label>
-                    <Input
-                      id={`${id}-folder`}
-                      value={execution.workingDirectory}
-                      onChange={(e) => {
-                        folders.current[execution.preference] = e.target.value;
-                        setValue({
-                          ...value,
-                          execution: {
-                            ...execution,
-                            workingDirectory: e.target.value,
-                          },
-                        });
-                      }}
-                      maxLength={4096}
-                      className="font-mono"
-                      placeholder="/absolute/path/to/project"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      autoComplete="off"
-                      spellCheck={false}
-                      required
-                    />
+                <div
+                  className={cn(
+                    "grid gap-6",
+                    execution && "md:grid-cols-2 md:gap-5",
+                  )}
+                >
+                  <div className="min-w-0 space-y-2">
+                    <Label htmlFor={`${id}-run-on`}>Run on</Label>
+                    <Select
+                      value={execution?.preference ?? CLOUD}
+                      onValueChange={setRunOn}
+                    >
+                      <SelectTrigger
+                        id={`${id}-run-on`}
+                        aria-describedby={`${id}-run-on-help`}
+                        className="h-auto min-h-11 w-full items-start gap-2 py-2.5 text-left whitespace-normal sm:min-h-9 sm:py-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:line-clamp-none [&>svg]:mt-0.5 [&>svg]:shrink-0"
+                      >
+                        <SelectValue>
+                          <span className="flex min-w-0 items-start gap-2">
+                            <ExecutionIcon
+                              className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0">
+                              <span
+                                className="line-clamp-2 wrap-anywhere"
+                                title={execution?.name}
+                              >
+                                {execution?.name ?? "Cloud"}
+                              </span>
+                              {unavailable && (
+                                <span className="mt-0.5 flex items-center gap-1 text-xs text-amber-700 dark:text-amber-500">
+                                  <WifiOff
+                                    className="size-3 shrink-0"
+                                    aria-hidden="true"
+                                  />
+                                  Unavailable
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-[min(22rem,var(--radix-select-content-available-height))] max-w-[min(28rem,var(--radix-select-content-available-width))]">
+                        <SelectItem value={CLOUD} className="py-2.5 sm:py-1.5">
+                          <Cloud
+                            className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                          Cloud
+                        </SelectItem>
+                        <SelectSeparator />
+                        <SelectGroup>
+                          <SelectLabel className="text-xs font-medium text-muted-foreground">
+                            Your computers
+                          </SelectLabel>
+                          {targets.length ? (
+                            targets.map((target) => {
+                              const Icon = isDesktopPreference(
+                                target.preference,
+                              )
+                                ? Monitor
+                                : Laptop;
+                              return (
+                                <SelectItem
+                                  key={target.preference}
+                                  value={target.preference}
+                                  className="py-2.5 wrap-anywhere sm:py-1.5"
+                                >
+                                  <Icon
+                                    className="mr-2 inline size-4 align-[-3px] text-muted-foreground"
+                                    aria-hidden="true"
+                                  />
+                                  {target.name}
+                                  {target.unavailable && (
+                                    <span className="text-muted-foreground">
+                                      {" "}
+                                      · Unavailable
+                                    </span>
+                                  )}
+                                </SelectItem>
+                              );
+                            })
+                          ) : (
+                            <SelectItem value="none" disabled>
+                              No computers connected
+                            </SelectItem>
+                          )}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <p
+                      id={`${id}-run-on-help`}
+                      className={cn(
+                        "flex items-start gap-1.5 text-xs leading-relaxed",
+                        unavailable
+                          ? "text-amber-700 dark:text-amber-500"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {unavailable && (
+                        <WifiOff
+                          className="mt-0.5 size-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="min-w-0 break-words">
+                        {!execution
+                          ? `Runs in your cloud workspace while you’re away.${
+                              targets.length
+                                ? ""
+                                : " Connect a computer to run schedules on it."
+                            }`
+                          : unavailable
+                            ? "The selected computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
+                            : "Runs only while the selected computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
+                      </span>
+                    </p>
                   </div>
-                )}
+                  {execution && (
+                    <div className="min-w-0 space-y-2">
+                      <Label htmlFor={`${id}-folder`}>Starting folder</Label>
+                      <Input
+                        id={`${id}-folder`}
+                        value={execution.workingDirectory}
+                        onChange={(e) => {
+                          folders.current[execution.preference] =
+                            e.target.value;
+                          setFolderError("");
+                          setValue({
+                            ...value,
+                            execution: {
+                              ...execution,
+                              workingDirectory: e.target.value,
+                            },
+                          });
+                        }}
+                        maxLength={4096}
+                        className="h-11 font-mono sm:h-9"
+                        placeholder="/home/you/project"
+                        aria-invalid={folderError ? true : undefined}
+                        aria-describedby={
+                          folderError
+                            ? `${id}-folder-error ${id}-folder-help`
+                            : `${id}-folder-help`
+                        }
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        autoComplete="off"
+                        spellCheck={false}
+                        required
+                      />
+                      {folderError && (
+                        <p
+                          id={`${id}-folder-error`}
+                          role="alert"
+                          className="flex items-start gap-1.5 text-xs leading-relaxed text-destructive"
+                        >
+                          <CircleAlert
+                            className="mt-0.5 size-3.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          {folderError}
+                        </p>
+                      )}
+                      <p
+                        id={`${id}-folder-help`}
+                        className="text-xs leading-relaxed wrap-anywhere text-muted-foreground"
+                      >
+                        Absolute path where each task starts, such as{" "}
+                        <code className="font-mono">/home/you/project</code>,{" "}
+                        <code className="font-mono">C:\Users\you\project</code>{" "}
+                        or{" "}
+                        <code className="font-mono">
+                          \\server\share\project
+                        </code>
+                        . It’s a starting point, not a boundary: tools can reach
+                        anything the selected computer can.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="space-y-4">
-                <div className="space-y-4 border-t pt-5 md:border-t-0 md:pt-0">
+              <div className="space-y-6 border-t bg-muted/30 px-4 py-5 sm:px-6 lg:border-t-0 lg:border-l lg:py-6">
+                <div className="space-y-4">
                   <div className="space-y-2">
                     <div
                       id={`${id}-kind`}
@@ -474,7 +552,7 @@ export function ScheduleFormDialog({
                         min={15}
                         max={43200}
                         step={1}
-                        className="tabular-nums sm:w-40"
+                        className="h-11 tabular-nums sm:h-9 sm:w-40"
                         value={timing.minutes}
                         onChange={(e) =>
                           setTiming({
@@ -501,7 +579,7 @@ export function ScheduleFormDialog({
                       <Input
                         id={`${id}-at`}
                         type="datetime-local"
-                        className="sm:w-64"
+                        className="h-11 min-w-0 max-w-full sm:h-9 sm:w-64 lg:w-full"
                         value={onceAt}
                         onInput={(e) => setOnceAt(e.currentTarget.value)}
                         required
@@ -533,10 +611,10 @@ export function ScheduleFormDialog({
                               variant="outline"
                               size="sm"
                               className={cn(
-                                "h-11 min-w-0 flex-col gap-0 px-0 text-xs sm:h-10",
+                                "h-11 min-w-0 px-0 text-xs sm:h-9",
                                 timing.weekdays.includes(day)
-                                  ? "border-foreground/50 bg-foreground/15 font-medium text-foreground dark:bg-foreground/15"
-                                  : "bg-transparent text-muted-foreground dark:bg-transparent",
+                                  ? "border-foreground bg-foreground font-medium text-background hover:bg-foreground/90 hover:text-background dark:border-foreground dark:bg-foreground dark:hover:bg-foreground/90"
+                                  : "bg-background text-muted-foreground dark:bg-transparent",
                               )}
                               aria-label={DAYS[day]}
                               aria-pressed={timing.weekdays.includes(day)}
@@ -550,13 +628,6 @@ export function ScheduleFormDialog({
                               }
                             >
                               {DAYS[day].slice(0, 3)}
-                              <Check
-                                className={cn(
-                                  "size-3",
-                                  !timing.weekdays.includes(day) && "invisible",
-                                )}
-                                aria-hidden="true"
-                              />
                             </Button>
                           ))}
                         </div>
@@ -567,7 +638,7 @@ export function ScheduleFormDialog({
                           <Input
                             id={`${id}-time`}
                             type="time"
-                            className="min-w-0 px-2 tabular-nums"
+                            className="h-11 min-w-0 px-2 tabular-nums sm:h-9"
                             value={timing.time}
                             onInput={(e) =>
                               setTiming({
@@ -586,6 +657,7 @@ export function ScheduleFormDialog({
                             onChange={(e) =>
                               setTiming({ ...timing, timezone: e.target.value })
                             }
+                            className="h-11 sm:h-9"
                             placeholder="America/Chicago"
                             list={`${id}-zones`}
                             autoComplete="off"
@@ -617,25 +689,36 @@ export function ScheduleFormDialog({
                     </>
                   )}
                 </div>
-                <div className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-                  <CalendarClock
-                    className="mt-0.5 size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
+                <div className="space-y-1.5 border-t pt-5 text-sm leading-relaxed text-muted-foreground">
                   {next ? (
-                    <p>
-                      Next run:{" "}
-                      <span className="font-medium text-foreground tabular-nums">
-                        {new Date(next).toLocaleString([], {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                          ...(timing.type === "weekly"
-                            ? { timeZone: timing.timezone }
-                            : {}),
-                        })}
-                      </span>
-                      {timing.type === "weekly" ? ` · ${timing.timezone}` : ""}.
-                    </p>
+                    <>
+                      <p className="text-xs">
+                        Next run:
+                        <span className="mt-1 block text-lg leading-snug font-semibold tracking-tight text-foreground tabular-nums">
+                          {new Date(next).toLocaleString([], {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                            ...(timing.type === "weekly"
+                              ? { timeZone: timing.timezone }
+                              : {}),
+                          })}
+                        </span>
+                      </p>
+                      {timing.type === "weekly" && (
+                        <p className="break-words">
+                          {timing.timezone.replaceAll("_", " ")}
+                        </p>
+                      )}
+                      {unavailable && (
+                        <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-500">
+                          <WifiOff
+                            className="mt-1 size-3.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          Skipped if the computer is still unavailable then.
+                        </p>
+                      )}
+                    </>
                   ) : !enabledAfterSave ? (
                     <p>
                       {saved?.consumed && !timingChanged
@@ -650,7 +733,7 @@ export function ScheduleFormDialog({
                     </p>
                   )}
                 </div>
-                <div className="flex flex-col gap-2 border-t pt-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <div className="space-y-2 border-t pt-5">
                   <Label htmlFor={`${id}-model`}>Model</Label>
                   <Select
                     value={value.model}
@@ -663,7 +746,7 @@ export function ScheduleFormDialog({
                   >
                     <SelectTrigger
                       id={`${id}-model`}
-                      className="w-full sm:w-52"
+                      className="h-11 w-full sm:h-9"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -676,65 +759,88 @@ export function ScheduleFormDialog({
                 </div>
               </div>
             </fieldset>
-            <div
-              aria-hidden="true"
-              className="pointer-events-none sticky bottom-0 -mx-5 -mb-4 h-6 bg-gradient-to-t from-background sm:-mx-6"
-            />
           </div>
-          <div className="shrink-0 space-y-3 border-t bg-muted/20 px-5 py-3 sm:px-6">
-            <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
-              <div className="flex items-start gap-2">
-                <ExecutionIcon
-                  className="mt-0.5 size-3.5 shrink-0"
+          <div className="shrink-0 space-y-3 border-t bg-background px-4 py-3 sm:px-6 sm:py-4 lg:px-8">
+            {error && (
+              <p
+                role="alert"
+                className="flex items-start gap-1.5 text-sm text-destructive"
+              >
+                <CircleAlert
+                  className="mt-0.5 size-4 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 break-words">{error}</span>
+              </p>
+            )}
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-8">
+              <div className="flex min-w-0 flex-1 items-start gap-2 text-xs leading-relaxed text-muted-foreground sm:text-sm">
+                <Shield
+                  className="mt-0.5 size-3.5 shrink-0 max-sm:hidden sm:size-4"
                   aria-hidden="true"
                 />
                 {execution ? (
                   <p className="min-w-0 break-words">
                     <span className="font-medium text-foreground">
-                      Runs unattended on the selected computer.
+                      Saving lets HackerAI run these instructions unattended on{" "}
+                      <span className="wrap-anywhere max-sm:hidden">
+                        {execution.name}
+                      </span>
+                      <span className="sm:hidden">the selected computer</span>{" "}
+                      with full tool access.
                     </span>{" "}
-                    Saving authorizes full tool access in its environment, not
-                    limited to the starting folder. Normal usage and spending
-                    limits apply.
+                    Access isn’t limited to the starting folder. Normal usage
+                    and spending limits apply.
                   </p>
                 ) : (
-                  <p>
+                  <p className="min-w-0">
                     <span className="font-medium text-foreground">
-                      Runs in your cloud workspace.
+                      Saving lets HackerAI run these instructions unattended in
+                      your cloud workspace with full tool access,
                     </span>{" "}
-                    Saving authorizes HackerAI to run these instructions with
-                    full tool access, even while you’re away. Runs use your
-                    account’s normal usage and spending limits.
+                    including while you’re away. Normal usage and spending
+                    limits apply.
                   </p>
                 )}
               </div>
-            </div>
-            {error && (
-              <p role="alert" className="text-sm text-destructive">
-                {error}
-              </p>
-            )}
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                className="h-11 sm:h-9"
-                onClick={close}
-                disabled={pending}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" className="h-11 sm:h-9" disabled={pending}>
-                {pending && <Loader2 className="size-4 animate-spin" />}
-                {pending
-                  ? "Saving…"
-                  : editing
-                    ? "Save changes"
-                    : "Create schedule"}
-              </Button>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end lg:shrink-0">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 sm:h-9"
+                  onClick={close}
+                  disabled={pending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  className="h-11 sm:h-9"
+                  disabled={pending}
+                >
+                  {pending && <Loader2 className="size-4 animate-spin" />}
+                  {pending
+                    ? "Saving…"
+                    : editing
+                      ? "Save changes"
+                      : "Create schedule"}
+                </Button>
+              </div>
             </div>
           </div>
         </form>
+        {/* After the form so the name field keeps initial focus. */}
+        <DialogClose asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="absolute top-1.5 right-2 size-11 text-muted-foreground sm:top-4 sm:right-4 sm:size-9"
+            disabled={pending}
+            aria-label="Close"
+          >
+            <X className="size-4" />
+          </Button>
+        </DialogClose>
       </DialogContent>
       <AlertDialog open={discard} onOpenChange={setDiscard}>
         <AlertDialogContent>

@@ -3,7 +3,12 @@ import Link from "next/link";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   ArrowUpRight,
+  Ban,
+  Check,
   ChevronDown,
+  Circle,
+  CircleAlert,
+  CircleDashed,
   Cloud,
   Ellipsis,
   Laptop,
@@ -13,7 +18,9 @@ import {
   Pencil,
   Play,
   Trash2,
+  Unplug,
   WifiOff,
+  X,
 } from "lucide-react";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +35,11 @@ import { cn } from "@/lib/utils";
 import { describeTiming } from "@/lib/schedules/recurrence";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
+
+// Shared by the desktop column headers in SchedulesPage and every row; the
+// fixed action lane keeps headers aligned with rows of varying content.
+export const SCHEDULE_COLUMNS =
+  "@4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_9rem] @4xl:gap-x-6";
 
 const LABELS: Record<string, string> = {
   queued: "Queued",
@@ -52,13 +64,58 @@ const BUSY = [
   "finishing",
   "uncertain_start",
 ];
-// Dot color mirrors the stored run status; it never implies success on its own.
-function statusDot(status: string) {
-  if (status === "finished") return "bg-emerald-500";
-  if (status === "failed") return "bg-destructive";
-  if (BUSY.includes(status)) return "bg-amber-500 motion-safe:animate-pulse";
-  if (status === "unconfirmed") return "bg-amber-500";
-  return "bg-muted-foreground/50";
+// The icon mirrors the stored run status; it never implies success on its own.
+function StatusIcon({ status }: { status: string }) {
+  const className = "size-3.5 shrink-0";
+  if (status === "finished")
+    return (
+      <Check
+        className={cn(className, "text-emerald-700 dark:text-emerald-500")}
+      />
+    );
+  if (status === "failed")
+    return <CircleAlert className={cn(className, "text-destructive")} />;
+  if (BUSY.includes(status))
+    return (
+      <Loader2
+        className={cn(
+          className,
+          "text-muted-foreground motion-safe:animate-spin",
+        )}
+      />
+    );
+  if (status === "unconfirmed")
+    return <CircleDashed className={cn(className, "text-muted-foreground")} />;
+  if (status === "skipped")
+    return <Ban className={cn(className, "text-muted-foreground")} />;
+  if (status === "interrupted")
+    return <Unplug className={cn(className, "text-muted-foreground")} />;
+  if (status === "canceled")
+    return <X className={cn(className, "text-muted-foreground")} />;
+  return <Circle className={cn(className, "text-muted-foreground")} />;
+}
+function formatRunTime(at: number) {
+  return new Date(at).toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+function RunStatus({ run }: { run: ScheduleRun }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span aria-hidden="true" className="inline-flex">
+        <StatusIcon status={run.status} />
+      </span>
+      <span
+        className={cn(
+          "font-medium",
+          run.status === "failed" ? "text-destructive" : "text-foreground",
+        )}
+      >
+        {LABELS[run.status] ?? run.status}
+      </span>
+    </span>
+  );
 }
 function RunTaskLink({
   run,
@@ -77,58 +134,13 @@ function RunTaskLink({
         })
       }
       className={cn(
-        "inline-flex min-h-11 items-center gap-1 rounded-md px-2 font-medium text-foreground underline-offset-4 hover:bg-muted/40 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-6 sm:px-0",
+        "inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @4xl:min-h-8",
         className,
       )}
     >
-      View task
-      <ArrowUpRight className="size-3" aria-hidden="true" />
+      {run.status === "finished" ? "Open result" : "Open task"}
+      <ArrowUpRight className="size-3.5" aria-hidden="true" />
     </Link>
-  );
-}
-function RunResult({
-  run,
-  hideTaskOnMobile = false,
-}: {
-  run: ScheduleRun;
-  hideTaskOnMobile?: boolean;
-}) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <span className="inline-flex items-center gap-1.5">
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            statusDot(run.status),
-          )}
-          aria-hidden="true"
-        />
-        <span
-          className={
-            run.status === "failed"
-              ? "font-medium text-destructive"
-              : "text-foreground"
-          }
-        >
-          {LABELS[run.status] ?? run.status}
-        </span>
-      </span>
-      <span className="tabular-nums text-muted-foreground">
-        {new Date(run.createdAt).toLocaleString([], {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })}
-      </span>
-      <RunTaskLink
-        run={run}
-        className={hideTaskOnMobile ? "hidden sm:inline-flex" : undefined}
-      />
-      {run.detail && (
-        <span className="w-full break-words text-muted-foreground">
-          {run.detail}
-        </span>
-      )}
-    </div>
   );
 }
 export function ScheduleRow({
@@ -155,100 +167,254 @@ export function ScheduleRow({
   const busy = latest && BUSY.includes(latest.status);
   const hasLatestTask = latest?.hasTask && latest.status !== "deleted";
   const completed = !schedule.enabled && schedule.consumed;
-  const execution = schedule.definition.execution;
+  const { name, timing, execution } = schedule.definition;
   const ExecutionIcon = !execution
     ? Cloud
     : isDesktopPreference(execution.preference)
       ? Monitor
       : Laptop;
+  const fact =
+    "grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-3 @4xl:block";
+  const term = "text-xs text-muted-foreground @4xl:sr-only";
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:px-5">
-      <div className="min-w-0 flex-1 pt-0.5">
-        <div className="leading-relaxed">
-          <h2 className="inline break-words text-[15px] font-medium">
-            {schedule.definition.name}
-          </h2>
-          <span className="ml-2 inline-flex shrink-0 items-center gap-1.5 align-middle rounded-full border px-2 py-px text-[11px] text-muted-foreground">
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                schedule.enabled ? "bg-emerald-500" : "bg-muted-foreground/50",
-              )}
-              aria-hidden="true"
-            />
+    <li
+      className={cn(
+        "grid grid-cols-1 gap-y-4 py-5 @4xl:items-start @4xl:gap-y-3",
+        SCHEDULE_COLUMNS,
+      )}
+    >
+      <div className="min-w-0">
+        <h2 className="text-base font-medium break-words wrap-anywhere">
+          {name}
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+            {schedule.enabled ? (
+              <span
+                className="size-2 rounded-full bg-foreground"
+                aria-hidden="true"
+              />
+            ) : completed ? (
+              <Check className="size-3" aria-hidden="true" />
+            ) : (
+              <Pause className="size-3 fill-current" aria-hidden="true" />
+            )}
             {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
           </span>
-        </div>
-        <p className="mt-1 break-words text-xs text-muted-foreground">
-          {describeTiming(schedule.definition.timing)}
-          {schedule.definition.timing.type === "weekly" &&
-            ` · ${schedule.definition.timing.timezone.replaceAll("_", " ")}`}
-          {" · "}
-          <ExecutionIcon
-            className="mr-1 inline size-3 align-[-2px]"
-            aria-hidden="true"
-          />
-          {execution ? execution.name : "Cloud"}
+          <span className="break-words">
+            {" · "}
+            {describeTiming(timing)}
+          </span>
         </p>
-        {computerUnavailable && execution && (
-          <p
-            id={unavailableId}
-            className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-500"
-          >
-            <WifiOff className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 break-words">
-              {execution.name} is unavailable. Runs, including Run now, are
-              skipped until it reconnects.
-            </span>
-          </p>
-        )}
       </div>
+      <dl className="grid min-w-0 gap-y-2.5 text-sm @4xl:col-span-3 @4xl:grid-cols-subgrid">
+        <div className={fact}>
+          <dt className={term}>Next run</dt>
+          <dd className="min-w-0 tabular-nums">
+            {schedule.enabled && schedule.nextRunAt ? (
+              <>
+                <span className="font-medium text-foreground">
+                  {new Date(schedule.nextRunAt).toLocaleString([], {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                    ...(timing.type === "weekly"
+                      ? { timeZone: timing.timezone }
+                      : {}),
+                  })}
+                </span>
+                {timing.type === "weekly" && (
+                  <span className="block break-words text-muted-foreground @4xl:mt-0.5">
+                    {timing.timezone.replaceAll("_", " ")}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-muted-foreground">
+                {completed ? "No further runs" : "None while paused"}
+              </span>
+            )}
+            {!schedule.enabled && !completed && enabled && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 h-11 @4xl:h-8"
+                disabled={pending}
+                onClick={() => onAction("resume")}
+              >
+                <Play className="size-3" aria-hidden="true" />
+                Resume schedule
+              </Button>
+            )}
+          </dd>
+        </div>
+        <div className={fact}>
+          <dt className={term}>Runs on</dt>
+          <dd className="min-w-0">
+            <span className="flex items-start gap-1.5">
+              <ExecutionIcon
+                className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 font-medium wrap-anywhere">
+                {execution ? execution.name : "Cloud"}
+              </span>
+            </span>
+            {computerUnavailable && execution ? (
+              <span className="mt-0.5 flex items-center gap-1.5 text-amber-700 dark:text-amber-500">
+                <WifiOff className="size-3.5 shrink-0" aria-hidden="true" />
+                Unavailable
+              </span>
+            ) : execution ? (
+              <span className="mt-0.5 hidden font-mono text-xs break-all text-muted-foreground @4xl:block">
+                {execution.workingDirectory}
+              </span>
+            ) : (
+              <span className="mt-0.5 hidden text-muted-foreground @4xl:block">
+                Runs while you’re away
+              </span>
+            )}
+          </dd>
+        </div>
+        <div className={fact}>
+          <dt className={term}>Latest result</dt>
+          <dd className="min-w-0">
+            {latest ? (
+              <>
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <RunStatus run={latest} />
+                  <span className="tabular-nums text-muted-foreground">
+                    {formatRunTime(latest.createdAt)}
+                  </span>
+                </span>
+                {latest.detail && (
+                  <span className="mt-0.5 block break-words text-muted-foreground">
+                    {latest.detail}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-muted-foreground">No runs yet</span>
+            )}
+            {(hasLatestTask || schedule.runs.length > 1) && (
+              <span className="flex flex-wrap items-center gap-x-4 @4xl:mt-1">
+                {latest && (
+                  <RunTaskLink
+                    run={latest}
+                    className="hidden @4xl:inline-flex"
+                  />
+                )}
+                {schedule.runs.length > 1 && (
+                  <button
+                    type="button"
+                    className="-ml-1 inline-flex min-h-11 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @4xl:ml-0 @4xl:min-h-8 @4xl:px-0"
+                    onClick={() => setHistory(!history)}
+                    aria-expanded={history}
+                    aria-controls={historyId}
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "size-3.5 transition-transform motion-reduce:transition-none",
+                        history && "rotate-180",
+                      )}
+                      aria-hidden="true"
+                    />
+                    Recent runs
+                    <span className="tabular-nums">
+                      ({schedule.runs.length - 1})
+                    </span>
+                  </button>
+                )}
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
+      {computerUnavailable && execution && (
+        <p
+          id={unavailableId}
+          className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-800 @4xl:col-span-full dark:text-amber-400"
+        >
+          <WifiOff className="mt-1 size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 wrap-anywhere">
+            <span className="font-medium">
+              {execution.name} is unavailable.
+            </span>{" "}
+            Runs, including Run now, are skipped until it reconnects. Skipped
+            runs aren’t made up later and never move to the cloud.
+          </span>
+        </p>
+      )}
+      {history && (
+        <ul
+          id={historyId}
+          aria-label={`Recent runs for ${name}`}
+          className="divide-y rounded-lg border px-3 text-sm @4xl:col-span-full @4xl:px-4"
+        >
+          {schedule.runs.slice(1).map((run) => (
+            <li
+              key={run.id}
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 py-2 @2xl:grid-cols-[10rem_12rem_minmax(0,1fr)_auto]"
+            >
+              <RunStatus run={run} />
+              <span className="col-start-1 row-start-2 tabular-nums text-muted-foreground @2xl:col-start-auto @2xl:row-start-auto">
+                {formatRunTime(run.createdAt)}
+              </span>
+              <span className="col-start-1 min-w-0 break-words text-muted-foreground empty:hidden @2xl:col-start-auto">
+                {run.detail}
+              </span>
+              <RunTaskLink
+                run={run}
+                className="col-start-2 row-span-2 row-start-1 justify-self-end @2xl:col-start-auto @2xl:row-span-1 @2xl:row-start-auto"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
       <div
         className={cn(
-          "col-span-2 row-start-3 flex items-center justify-between gap-2 border-t pt-2 sm:col-span-1 sm:col-start-2 sm:row-start-1 sm:border-0 sm:pt-0",
-          !enabled && !hasLatestTask && "hidden sm:flex",
+          "flex items-center gap-2 @4xl:col-start-5 @4xl:row-start-1 @4xl:justify-end",
+          !enabled && !hasLatestTask && "@max-4xl:justify-end",
         )}
       >
-        {latest ? (
-          <RunTaskLink run={latest} className="sm:hidden" />
-        ) : (
-          <span className="sm:hidden" />
-        )}
         <Button
           variant="outline"
           size="sm"
-          className={cn("h-11 sm:h-8", !enabled && "hidden sm:inline-flex")}
+          className={cn(
+            "h-11 flex-1 @4xl:h-8 @4xl:flex-none",
+            !enabled && "hidden @4xl:inline-flex",
+          )}
           disabled={pending || !enabled || Boolean(busy)}
           onClick={() => onAction("run")}
-          aria-label={`Run ${schedule.definition.name} now`}
+          aria-label={`Run ${name} now`}
           aria-describedby={computerUnavailable ? unavailableId : undefined}
         >
           {pending ? (
             <Loader2 className="size-3.5 animate-spin" />
           ) : (
-            <Play className="size-3.5" />
+            <Play className="size-3.5 fill-current" />
           )}
           Run now
         </Button>
-      </div>
-      <div className="-mr-1 col-start-2 row-start-1 sm:col-start-3">
+        {latest && hasLatestTask && (
+          <RunTaskLink
+            run={latest}
+            className="h-11 flex-1 justify-center rounded-md border px-3 no-underline hover:bg-muted/40 @4xl:hidden"
+          />
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 sm:size-8"
+              className="size-11 shrink-0 @4xl:size-8"
               disabled={pending}
-              aria-label={`More actions for ${schedule.definition.name}`}
+              aria-label={`More actions for ${name}`}
             >
               <Ellipsis className="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onEdit} disabled={!enabled}>
-              <Pencil className="size-4" />
-              Edit
-            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => onAction(schedule.enabled ? "pause" : "resume")}
               disabled={!schedule.enabled && !enabled}
@@ -258,7 +424,11 @@ export function ScheduleRow({
               ) : (
                 <Play className="size-4" />
               )}
-              {schedule.enabled ? "Pause" : "Resume"}
+              {schedule.enabled ? "Pause schedule" : "Resume schedule"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onEdit} disabled={!enabled}>
+              <Pencil className="size-4" />
+              Edit
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -271,75 +441,6 @@ export function ScheduleRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <dl className="col-span-2 row-start-2 grid gap-3 text-xs sm:col-span-3 sm:grid-cols-2 sm:gap-x-6">
-        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
-          <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Next run
-          </dt>
-          <dd
-            className={cn(
-              "min-w-0 text-sm tabular-nums",
-              schedule.enabled && schedule.nextRunAt
-                ? "text-foreground"
-                : "text-muted-foreground",
-            )}
-          >
-            {schedule.enabled && schedule.nextRunAt
-              ? new Date(schedule.nextRunAt).toLocaleString([], {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                  ...(schedule.definition.timing.type === "weekly"
-                    ? { timeZone: schedule.definition.timing.timezone }
-                    : {}),
-                })
-              : completed
-                ? "No further runs"
-                : "None while paused"}
-          </dd>
-        </div>
-        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 sm:block sm:space-y-1.5">
-          <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Last run
-          </dt>
-          <dd className="min-w-0 text-sm">
-            {latest ? (
-              <RunResult run={latest} hideTaskOnMobile />
-            ) : (
-              <span className="text-muted-foreground">No runs yet</span>
-            )}
-          </dd>
-          {schedule.runs.length > 1 && (
-            <dd className="col-start-2 min-w-0 sm:mt-1">
-              <button
-                type="button"
-                className="-ml-1 inline-flex min-h-11 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-7"
-                onClick={() => setHistory(!history)}
-                aria-expanded={history}
-                aria-controls={historyId}
-              >
-                <ChevronDown
-                  className={cn(
-                    "size-3 transition-transform motion-reduce:transition-none",
-                    history && "rotate-180",
-                  )}
-                  aria-hidden="true"
-                />
-                Recent runs
-                <span className="tabular-nums">
-                  ({schedule.runs.length - 1})
-                </span>
-              </button>
-              {history && (
-                <div id={historyId} className="mt-1.5 space-y-2 border-l pl-3">
-                  {schedule.runs.slice(1).map((run) => (
-                    <RunResult key={run.id} run={run} />
-                  ))}
-                </div>
-              )}
-            </dd>
-          )}
-        </div>
-      </dl>
     </li>
   );
 }

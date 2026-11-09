@@ -287,3 +287,40 @@ it("refreshes an idle next-run preview and rejects a one-time date that has pass
     jest.useRealTimers();
   }
 });
+
+it("associates a rejected folder with its field and allows correcting it to a Windows path", async () => {
+  const execution = {
+    type: "local" as const,
+    preference: "environment:12345678-1234-4123-8123-123456789abc",
+    name: "Windows lab",
+    workingDirectory: "relative/project",
+  };
+  const save = jest.fn().mockResolvedValue(undefined);
+  render(
+    <ScheduleFormDialog
+      computers={[]}
+      initial={{ ...initial, execution }}
+      editing
+      onSave={save}
+      onClose={jest.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  const folder = screen.getByLabelText("Starting folder");
+  expect(folder).toHaveAttribute("aria-invalid", "true");
+  expect(folder).toHaveFocus();
+  expect(folder).toHaveAccessibleDescription(
+    expect.stringContaining("Enter an absolute folder path."),
+  );
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.change(folder, { target: { value: "C:\\labs\\project" } });
+  expect(folder).not.toHaveAttribute("aria-invalid");
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution: { ...execution, workingDirectory: "C:\\labs\\project" },
+      }),
+    ),
+  );
+});
