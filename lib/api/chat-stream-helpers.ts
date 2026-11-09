@@ -747,6 +747,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 type FallbackOptions = {
   /** Max uses explicit recovery so each model gets its own reasoning policy. */
   selectedModelOverride?: SelectedModel;
+  /** Authenticated paid Agent request using Auto (including the default selector). */
+  isPaidAutoAgentRequest?: boolean;
   /** Preserve the authenticated free Ask policy across model retries. */
   isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
@@ -1085,9 +1087,10 @@ export function buildProviderOptions(
       modelName === "ask-model-free-deepseek-v41");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
-  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
-  // mode-scoped for any future route that does not also include Grok.
+  // Agent DeepSeek routes default to high; paid Auto opts into max below.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
+  const usesMaxDeepSeekReasoning =
+    isAgentDeepSeekV4 && options.isPaidAutoAgentRequest === true;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoningFallbackSlugs = options.excludedModelSlugs?.length
     ? getFallbackSlugs(modelName, mode, {
@@ -1185,7 +1188,11 @@ export function buildProviderOptions(
   return {
     openrouter: {
       ...(!usesDefaultGlmFlashAgentReasoning && {
-        reasoning: isFreeAsk ? { enabled: true, effort: "low" } : reasoning,
+        reasoning: isFreeAsk
+          ? { enabled: true, effort: "low" }
+          : usesMaxDeepSeekReasoning
+            ? { enabled: true, effort: "max" }
+            : reasoning,
       }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
@@ -1200,10 +1207,14 @@ export function buildProviderOptions(
       ...(userId && { user: userId }),
       ...buildPromptCacheOptions(modelId ?? "", options.cacheSessionId)
         .openrouter,
-      ...((providerRouting || isExplicitPaidFlashTier) && {
+      ...((providerRouting ||
+        isExplicitPaidFlashTier ||
+        usesMaxDeepSeekReasoning) && {
         provider: {
           ...providerRouting,
-          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+          ...((isExplicitPaidFlashTier || usesMaxDeepSeekReasoning) && {
+            require_parameters: true,
+          }),
         },
       }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
