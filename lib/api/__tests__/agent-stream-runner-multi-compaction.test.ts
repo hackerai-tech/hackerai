@@ -6333,4 +6333,89 @@ describe("createAgentStream repeated compaction", () => {
       wrap.mockImplementation(({ model }: any) => model);
     }
   });
+  it.each(["/api/chat", "/api/agent"])(
+    "keeps failed-image attribution scoped to the latest prepared request on %s",
+    async (endpoint) => {
+      jest
+        .mocked(require("ai").convertToModelMessages)
+        .mockImplementationOnce(
+          jest.requireActual("ai").convertToModelMessages,
+        );
+      const url =
+        "https://private.test/PRIVATE_IMAGE?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20200101T000000Z&X-Amz-Expires=600&X-Amz-Signature=PRIVATE_SECRET";
+      const state = initAgentStreamState(
+        [uiMessage("initial", "PRIVATE_PROMPT")],
+        { usedTokens: 1_000, maxTokens: 128_000 },
+      );
+      state.finalMessages[0].parts.push(
+        Object.assign({ type: "file", mediaType: "image/png", url } as const, {
+          fileId: "PRIVATE_FILE_ID",
+        }),
+      );
+      const recordProviderError = jest.fn();
+      const onProviderRequestDiagnostics = jest.fn();
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          endpoint,
+          mode: endpoint === "/api/chat" ? "ask" : "agent",
+          usageTracker: { hasUsage: true },
+          chatLogger: {
+            recordProviderError,
+            recordProviderRequestDiagnostics: jest.fn(),
+            setModelResponse: jest.fn(),
+          },
+          onProviderRequestDiagnostics,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const error = Object.assign(new Error("Provider returned error"), {
+        statusCode: 400,
+        responseBody: JSON.stringify({
+          error: { message: `Error fetching image '${url}': HTTP403` },
+        }),
+      });
+      await stream.onError({ error });
+      const first = recordProviderError.mock.calls.at(-1)[1].providerRequest;
+      expect(first.failed_image_reference).toMatchObject({
+        status: "matched",
+        observation: "error_boundary",
+        matches: {
+          user_image_parts: 1,
+          url_expiry_hint_expired_images: 1,
+          user_url_images_with_file_reference_match: 1,
+        },
+      });
+      expect(
+        onProviderRequestDiagnostics.mock.calls[0][0].failed_image_reference,
+      ).toBeUndefined();
+      expect(JSON.stringify(first.failed_image_reference)).not.toMatch(
+        /PRIVATE|private|https|X-Amz/,
+      );
+      const next = await stream.prepareStep({
+        steps: [],
+        stepNumber: 1,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", image: "https://private.test/NEW_REQUEST" },
+            ],
+          },
+        ],
+      });
+      expect(next.messages).toBeDefined();
+      await stream.onError({ error });
+      expect(
+        recordProviderError.mock.calls.at(-1)[1].providerRequest
+          .failed_image_reference,
+      ).toMatchObject({ status: "unmatched", matches: { image_parts: 0 } });
+      await stream.onError({ error: new TypeError("terminated") });
+      expect(
+        recordProviderError.mock.calls.at(-1)[1].providerRequest
+          .failed_image_reference,
+      ).toBeUndefined();
+    },
+  );
 });

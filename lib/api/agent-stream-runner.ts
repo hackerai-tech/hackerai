@@ -34,6 +34,7 @@ import {
 import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { getProviderRequestMediaCounts } from "@/lib/ai/provider-request-media";
+import { getProviderFailedImageReferenceDiagnostics } from "@/lib/ai/provider-failed-image-reference";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
@@ -3556,7 +3557,16 @@ export async function createAgentStream(
             fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
           userId: ctx.userId,
           subscription: ctx.subscription,
-          providerRequest: latestProviderRequestDiagnostics,
+          providerRequest: latestProviderRequestDiagnostics && {
+            ...latestProviderRequestDiagnostics,
+            failed_image_reference:
+              rejectedRequestSource &&
+              getProviderFailedImageReferenceDiagnostics(
+                error,
+                rejectedRequestSource.messages,
+                state.finalMessages,
+              ),
+          },
           openRouterMetadata: state.providerErrorMetadata,
         });
       }
