@@ -77,6 +77,10 @@ export default function ReportForm({
   const [resetChallenge, setResetChallenge] = useState(0);
   const onToken = useCallback((token: string | null) => {
     challenge.current = token ? { token, issuedAt: Date.now() } : null;
+    if (token)
+      setFailure((current) =>
+        current.startsWith("Complete the security check") ? "" : current,
+      );
   }, []);
   useEffect(() => {
     if (receipt) resultHeading.current?.focus();
@@ -280,7 +284,7 @@ export default function ReportForm({
       onSubmit={submit}
       noValidate
       aria-busy={pending}
-      className="ph-no-capture space-y-8"
+      className="ph-no-capture min-w-0 space-y-8"
       data-ph-no-capture
     >
       {!available && (
@@ -577,16 +581,11 @@ export default function ReportForm({
         </div>
       )}
       {available && siteKey && (
-        <>
-          <p className="text-[13px] leading-5 text-muted-foreground">
-            Cloudflare Turnstile helps prevent automated submissions.
-          </p>
-          <SecurityCheck
-            siteKey={siteKey}
-            resetKey={resetChallenge}
-            onToken={onToken}
-          />
-        </>
+        <SecurityCheck
+          siteKey={siteKey}
+          resetKey={resetChallenge}
+          onToken={onToken}
+        />
       )}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <Button

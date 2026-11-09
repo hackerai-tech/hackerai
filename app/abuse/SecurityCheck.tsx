@@ -57,7 +57,7 @@ export default function SecurityCheck({
           sitekey: siteKey,
           action: "abuse_report",
           theme: "auto",
-          size: compact ? "compact" : "flexible",
+          size: compact ? "compact" : "normal",
           "response-field": false,
           retry: "never",
           "refresh-expired": "auto",
@@ -116,6 +116,9 @@ export default function SecurityCheck({
       <h3 id="security-check-label" className="text-sm font-medium">
         Security check
       </h3>
+      <p className="text-[13px] leading-5 text-muted-foreground">
+        Cloudflare Turnstile helps prevent automated submissions.
+      </p>
       <div ref={container} />
       <p
         id="security-check-status"

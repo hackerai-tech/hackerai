@@ -127,6 +127,7 @@ test("slow composition and expired callbacks require renewal without discarding 
   );
   expect(widgets).toHaveLength(2);
   verified("fresh-challenge");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   act(() => widgets.at(-1)!["expired-callback"]());
   submit();
   expect(global.fetch).not.toHaveBeenCalled();
