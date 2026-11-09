@@ -35,7 +35,10 @@ First inspect the latest assistant progress, todos, files, and current sandbox s
 with only the remaining work. Consult the transcript file on the sandbox if you need to recover \
 specific details from the earlier conversation.
 </resume_context>`;
-  } else if (finishReason === CLIENT_SAVED_FINISH_REASON) {
+  } else if (
+    finishReason === CLIENT_SAVED_FINISH_REASON ||
+    finishReason === "local-connection-lost"
+  ) {
     return `<resume_context>
 The previous Agent run ended unexpectedly. Continue the original task using the saved messages, tool results, files, and current todos. Do not repeat completed work. If a tool has no confirmed result, inspect the current state before repeating an action that may already have taken effect.
 </resume_context>`;

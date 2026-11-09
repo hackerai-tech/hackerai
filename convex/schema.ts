@@ -22,6 +22,11 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
+import {
+  scheduleDefinition,
+  scheduleRunStatus,
+  localScheduleExecution,
+} from "./scheduleValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -286,6 +291,45 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  agent_schedules: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    definition: scheduleDefinition,
+    enabled: v.boolean(),
+    revision: v.number(),
+    next_run_at: v.optional(v.number()),
+    active_run_id: v.optional(v.id("schedule_runs")),
+    last_manual_at: v.optional(v.number()),
+    consumed_at: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_enabled_and_next_run_at", ["enabled", "next_run_at"]),
+  schedule_runs: defineTable({
+    schedule_id: v.id("agent_schedules"),
+    user_id: v.string(),
+    occurrence: v.string(),
+    revision: v.number(),
+    dispatcher_id: v.string(),
+    dispatcher_run_id: v.optional(v.string()),
+    dispatch_requested_at: v.optional(v.number()),
+    last_checked_at: v.optional(v.number()),
+    chat_id: v.string(),
+    trigger_run_id: v.optional(v.string()),
+    status: scheduleRunStatus,
+    detail: v.optional(v.string()),
+    created_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_schedule_id", ["schedule_id"])
+    .index("by_status_and_last_check", ["status", "last_checked_at"])
+    .index("by_user_status_and_last_check", [
+      "user_id",
+      "status",
+      "last_checked_at",
+    ])
+    .index("by_schedule_and_occurrence", ["schedule_id", "occurrence"]),
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
@@ -351,6 +395,7 @@ export default defineSchema({
     // Persisted user preference (`e2b` means managed cloud), not the runtime
     // telemetry `sandbox_type`. Cloud provider selection happens per run.
     sandbox_type: v.optional(v.string()),
+    scheduled_local_execution: v.optional(localScheduleExecution),
     selected_model: v.optional(v.string()),
     project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
@@ -1401,6 +1446,7 @@ export default defineSchema({
   })
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
+    .index("by_user_and_environment", ["user_id", "environment_id"])
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),

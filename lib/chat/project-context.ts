@@ -1,3 +1,4 @@
+import type { LocalScheduleExecution } from "@/lib/schedules/recurrence";
 import "server-only";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 
@@ -9,6 +10,7 @@ import type { ChatMode, SandboxPreference } from "@/types";
 type ProjectLinkedChat =
   | {
       project_id?: unknown;
+      scheduled_local_execution?: LocalScheduleExecution;
     }
   | null
   | undefined;
@@ -31,6 +33,15 @@ export async function resolveProjectExecutionContext({
   mode: ChatMode;
   sandboxPreference?: SandboxPreference;
 }): Promise<ProjectExecutionContext> {
+  const execution = chat?.scheduled_local_execution;
+  if (execution && isAgentMode(mode)) {
+    if (sandboxPreference !== execution.preference)
+      throw new ChatSDKError(
+        "bad_request:api",
+        "This scheduled task is bound to its original computer. Select that computer to continue.",
+      );
+    return { workingDirectory: execution.workingDirectory };
+  }
   const persistedProjectId =
     typeof chat?.project_id === "string" ? chat.project_id : undefined;
   const projectId =

@@ -1,3 +1,4 @@
+import type { LocalScheduleExecution } from "@/lib/schedules/recurrence";
 import "server-only";
 import { getAgentHistoryBudget } from "@/lib/ai/agent-context-budget";
 import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
@@ -1041,12 +1042,14 @@ export async function saveChat({
   title,
   projectId,
   sandboxType,
+  scheduledLocalExecution,
 }: {
   id: string;
   userId: string;
   title: string;
   projectId?: string;
   sandboxType?: string;
+  scheduledLocalExecution?: LocalScheduleExecution;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -1055,6 +1058,7 @@ export async function saveChat({
     title,
     ...(projectId ? { projectId } : {}),
     ...(sandboxType ? { sandboxType } : {}),
+    ...(scheduledLocalExecution ? { scheduledLocalExecution } : {}),
   };
 
   try {
@@ -1363,6 +1367,7 @@ export async function handleInitialChatAndUserMessage({
   isHidden,
   projectId,
   sandboxType,
+  scheduledLocalExecution,
   onPersistenceStep,
 }: {
   chatId: string;
@@ -1373,6 +1378,7 @@ export async function handleInitialChatAndUserMessage({
   isHidden?: boolean;
   projectId?: string;
   sandboxType?: string;
+  scheduledLocalExecution?: LocalScheduleExecution;
   onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
   const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
@@ -1412,6 +1418,7 @@ export async function handleInitialChatAndUserMessage({
       title,
       projectId,
       sandboxType,
+      scheduledLocalExecution,
     });
   } else {
     // Check if user owns the chat

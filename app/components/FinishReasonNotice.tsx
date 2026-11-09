@@ -16,6 +16,8 @@ import {
 import type { SelectedModel } from "@/types/chat";
 import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
+const LOCAL_CONNECTION_LOST_FINISH_REASON = "local-connection-lost";
+
 interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
@@ -101,6 +103,16 @@ export const FinishReasonNotice = ({
       return <>Agent stopped unexpectedly. Saved progress is available.</>;
     }
 
+    if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
+      return (
+        <>
+          The selected computer disconnected. Reconnect it, review the saved
+          progress, then resume. Commands may have completed before the
+          connection was lost.
+        </>
+      );
+    }
+
     if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
       return (
         <>Reached the time limit for this turn. Completed work was saved.</>
@@ -145,7 +157,10 @@ export const FinishReasonNotice = ({
   // Replaying an unchanged request can restart the cycle that was just halted.
   const showContinue = !!onContinue && finishReason !== DOOM_LOOP_FINISH_REASON;
   const continueButtonLabel =
-    finishReason === CLIENT_SAVED_FINISH_REASON ? "Resume task" : "Continue";
+    finishReason === CLIENT_SAVED_FINISH_REASON ||
+    finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
+      ? "Resume task"
+      : "Continue";
 
   return (
     <div className="mt-2 w-full" role="status">

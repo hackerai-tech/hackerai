@@ -75,6 +75,8 @@ import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
 import type * as settlementReceipts from "../settlementReceipts.js";
+import type * as scheduleValidators from "../scheduleValidators.js";
+import type * as schedules from "../schedules.js";
 import type * as sharedChats from "../sharedChats.js";
 import type * as subagents from "../subagents.js";
 import type * as subscriptionPauses from "../subscriptionPauses.js";
@@ -166,6 +168,8 @@ declare const fullApi: ApiFromModules<{
   s3Cleanup: typeof s3Cleanup;
   s3Utils: typeof s3Utils;
   settlementReceipts: typeof settlementReceipts;
+  scheduleValidators: typeof scheduleValidators;
+  schedules: typeof schedules;
   sharedChats: typeof sharedChats;
   subagents: typeof subagents;
   subscriptionPauses: typeof subscriptionPauses;

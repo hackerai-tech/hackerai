@@ -83,3 +83,33 @@ describe("resolveProjectExecutionContext", () => {
     expect(error.cause).toContain("linked to a Desktop folder");
   });
 });
+
+it("keeps the scheduled folder across resumes and rejects a different execution target", async () => {
+  const execution = {
+    type: "local" as const,
+    preference: "environment:12345678-1234-4123-8123-123456789abc",
+    name: "Lab",
+    workingDirectory: "/tmp/original",
+  };
+  const request = {
+    chat: { scheduled_local_execution: execution },
+    userId: "user-1",
+    mode: "agent" as const,
+    sandboxPreference: execution.preference,
+  };
+  await expect(resolveProjectExecutionContext(request)).resolves.toEqual({
+    workingDirectory: "/tmp/original",
+  });
+  const error = await resolveProjectExecutionContext({
+    ...request,
+    sandboxPreference: "e2b",
+  }).catch((e) => e);
+  expect(error.cause).toContain("original computer");
+  await expect(
+    resolveProjectExecutionContext({
+      ...request,
+      mode: "ask",
+      sandboxPreference: "e2b",
+    }),
+  ).resolves.toEqual({});
+});
