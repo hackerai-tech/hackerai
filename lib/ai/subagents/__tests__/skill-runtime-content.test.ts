@@ -32,6 +32,11 @@ describe("worker skill runtime compatibility", () => {
         expect(rendered).toContain("Relationship");
         expect(rendered).toContain("source-to-sink");
         expect(rendered).not.toContain("the tool rejects a report");
+        expect(rendered).not.toContain("## Why this skill exists");
+        expect(rendered).not.toContain(
+          "### Reachability is a confidence modifier",
+        );
+        expect(rendered).not.toContain("## Anti-patterns");
       }
     },
   );
