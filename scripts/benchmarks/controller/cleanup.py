@@ -183,6 +183,31 @@ def claim_cleanup_intent(path, payload):
         os.close(directory)
 
 
+def record_claim_failure(root, state, error):
+    """A failed one-use claim cannot leave a healthy-looking running state."""
+    from .diagnostics import exception_record
+    failure = exception_record(error)
+    if isinstance(error, DockerObservationError):
+        failure['guard'] = error.record
+    state.setdefault('firstCleanupClaimFailure', failure)
+    state.update(status='native_cleanup_unconfirmed', cleanupVerified=False,
+                 cleanupClaimConfirmed=False, cleanupFailure=failure,
+                 finishedAt=time.time())
+    state.setdefault('errorClass', type(error).__name__)
+    # A storage failure here must propagate too; it is never a cleanup receipt.
+    persist_state(root / 'native-state.json', state)
+
+
+def claim_for_state(root, state, payload):
+    try:
+        if not isinstance(state.get('status'), str):
+            raise DockerObservationError('native_state_status_missing')
+        claim_cleanup_intent(root / 'independent-cleanup-intent.json', payload)
+    except BaseException as error:
+        record_claim_failure(root, state, error)
+        raise
+
+
 def exact_process_alive(pid, start_ticks, proc=Path('/proc')):
     if type(pid) is not int or pid <= 1 or not str(start_ticks).isdecimal() or int(start_ticks) <= 0:
         raise DockerObservationError('process_identity_invalid')
@@ -226,7 +251,7 @@ def reconcile_dead_undispatched(root, authorization, key, proc=Path('/proc'), cl
             exact_process_alive(owner['pid'], owner['startTicks'], proc) or
             exact_process_alive(state['childPid'], state['childStartTicks'], proc)):
         raise DockerObservationError('undispatched_cleanup_native_owner_unconfirmed')
-    claim_cleanup_intent(root / 'independent-cleanup-intent.json',
+    claim_for_state(root, state,
         {'job': root.name, 'noProductDispatchConfirmed': True,
          'supervisorExited': True, 'harborExited': True, 'at': time.time()})
     state['statusBeforeIndependentCleanup'] = state['status']
@@ -279,7 +304,7 @@ def reconcile_dead_job(root, envelope, key, proc=Path('/proc'), cleanup=None):
         raise DockerObservationError('cleanup_harbor_identity_missing')
     if exact_process_alive(state['childPid'], state['childStartTicks'], proc):
         raise DockerObservationError('cleanup_harbor_still_running')
-    claim_cleanup_intent(root / 'independent-cleanup-intent.json',
+    claim_for_state(root, state,
         {'job': root.name, 'requestSha256': payload['requestSha256'],
          'supervisorExited': True, 'harborExited': True,
          'productCleanupConfirmed': True, 'at': time.time()})

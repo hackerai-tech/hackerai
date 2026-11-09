@@ -74,4 +74,5 @@ def exception_record(error):
                        'function': tb.tb_frame.f_code.co_name, 'line': tb.tb_lineno})
         tb = tb.tb_next
     return {'errorClass': type(error).__name__, 'frames': frames[-20:],
+            'filesystemErrno': error.errno if isinstance(error, OSError) else None,
             'guard': error.record if isinstance(error, GuardFailure) else None, 'at': time.time()}

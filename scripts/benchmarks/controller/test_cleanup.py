@@ -5,6 +5,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -341,6 +343,37 @@ class CleanupTests(unittest.TestCase):
                 self.assertEqual(result['guard'], 'supervisor_envelope')
                 if elapsed==600:self.assertEqual(result['elapsedSeconds'],600)
                 self.assertNotIn('NaN',path.read_text())
+
+    def test_claim_fsync_failure_is_durable_unconfirmed_and_never_mutates_resources(self):
+        receipt, proc = self.receipt_fixture()
+        original=os.fsync
+        count=0
+        def fail_first(fd):
+            nonlocal count
+            count+=1
+            if count==1:raise OSError(28,'PRIVATE_CLAIM_ERROR')
+            return original(fd)
+        with patch('controller.cleanup.os.fsync',side_effect=fail_first), self.assertRaises(OSError):
+            reconcile_dead_job(self.root,receipt,self.key,proc=proc,
+                cleanup=lambda root:cleanup_job(root,self.docker))
+        saved=json.loads((self.root/'native-state.json').read_text())
+        self.assertEqual(saved['status'],'native_cleanup_unconfirmed')
+        self.assertFalse(saved['cleanupClaimConfirmed'])
+        self.assertFalse(saved['cleanupVerified'])
+        self.assertEqual(saved['firstCleanupClaimFailure']['filesystemErrno'],28)
+        self.assertNotIn('PRIVATE',json.dumps(saved))
+        self.assertEqual(self.fake.removals,[])
+        with self.assertRaises(FileExistsError):
+            reconcile_dead_job(self.root,receipt,self.key,proc=proc)
+
+    def test_missing_native_status_cannot_consume_a_cleanup_claim(self):
+        receipt,proc=self.receipt_fixture()
+        state=json.loads((self.root/'native-state.json').read_text());state.pop('status')
+        self.write('native-state.json',state)
+        with self.assertRaises(DockerObservationError):
+            reconcile_dead_job(self.root,receipt,self.key,proc=proc)
+        self.assertFalse((self.root/'independent-cleanup-intent.json').exists())
+        self.assertEqual(json.loads((self.root/'native-state.json').read_text())['status'], 'native_cleanup_unconfirmed')
 
 
 if __name__ == '__main__':
