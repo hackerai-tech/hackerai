@@ -100,3 +100,19 @@ test("rejects incomplete cohorts, inconsistent anchors and unauthorized project 
   ])
     assert.throws(() => buildResearchCohort(input));
 });
+
+test("strict selection uses later mappings for the same user without changing rank or input rows", () => {
+  const candidates = [
+    row("user_first"),
+    row("user_second", { payerId: "cus_other" }),
+    row("user_first", { payerId: "cus_known" }),
+  ];
+  const result = buildResearchCohort({
+    ...spec(candidates),
+    requirePayerMapping: true,
+  });
+  assert.deepEqual(result.payload.userIds, ["user_first", "user_second"]);
+  assert.equal(result.coverage.missingPayerMapping, 0);
+  assert.equal(result.coverage.duplicates, 1);
+  assert.equal(candidates[0].payerId, undefined);
+});

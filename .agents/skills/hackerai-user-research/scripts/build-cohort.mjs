@@ -149,7 +149,18 @@ export function buildResearchCohort(spec) {
         );
       anchorsByUser.set(r.userId, anchor);
     }
-    const representative = members[0];
+    const first = members[0];
+    const mapping = records.find(
+      (r) => r.userId === first.row.userId && (r.payerId || r.organizationId),
+    );
+    const representative = {
+      ...first,
+      row: {
+        ...first.row,
+        payerId: first.row.payerId ?? mapping?.payerId,
+        organizationId: first.row.organizationId ?? mapping?.organizationId,
+      },
+    };
     if (
       spec.requirePayerMapping === true &&
       !representative.row.payerId &&
