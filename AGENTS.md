@@ -110,15 +110,18 @@ as credentials or substitute Production.
 Run `pnpm test:changed` for local iteration: it runs Jest tests related to
 uncommitted changes with one worker, plus relevant Node tooling suites outside
 Jest. Tooling selection includes staged, unstaged and untracked paths; unknown
-paths or Git discovery failures run every tooling suite. CI always runs them all.
+paths or Git discovery failures run every tooling suite.
 The commit hook retains staged lint/format checks and type checking, then uses
 this focused command. It includes staged, unstaged and untracked files.
 Documentation-only changes may select no Jest tests. Configuration changes,
 dynamic imports, and missing dependency links can escape automatic selection, so
-this is a feedback shortcut, not full acceptance: required CI still runs the
-entire suite with coverage. Run an explicit affected suite when the dependency
-graph cannot represent the change. Do not rerun the full suite locally for every
-review correction; use `pnpm test` when a local full run is needed.
+this is a feedback shortcut, not full acceptance. PR CI compares committed
+changes against the PR base, runs related frontend tests or the full suite for
+shared runtime changes, and falls back to all checks for unknown paths or missing
+history. Main and nightly CI run all checks with coverage. The required `CI` gate
+rejects failed, cancelled, missing, or unexpectedly skipped jobs. Run an explicit
+affected suite when the dependency graph cannot represent the change. Do not rerun
+the full suite locally for every review correction; use `pnpm test` when a local full run is needed.
 
 Run focused local tests first, with one worker for small suites. The repository
 limits Jest to two workers by default so concurrent worktrees do not each consume

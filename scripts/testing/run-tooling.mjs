@@ -9,6 +9,7 @@ export const suites = [
     name: "research",
     files: [
       ".agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
+      ".agents/skills/hackerai-user-research/scripts/build-cohort.test.mjs",
     ],
   },
   {

@@ -36,7 +36,7 @@ function summarize(input: DownloadInput) {
                 stderr,
               )
             ? "dns"
-            : /certificate|TLS handshake|SSL connect error|schannel:/i.test(
+            : /certificate|TLS handshake|SSL connect error|schannel:|Could not create SSL\/TLS secure channel/i.test(
                   stderr,
                 )
               ? "tls"

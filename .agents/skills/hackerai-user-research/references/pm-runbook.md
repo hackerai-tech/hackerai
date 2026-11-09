@@ -76,6 +76,72 @@ the completed result may be copied into Linear when requested.
 The scoped gateway key authenticates the PM runner to the restricted production
 endpoint. It is not a per-run approval and does not require a Linear issue.
 
+### Deterministic selection and recovery
+
+Use `--cohort <protected-export.json>` with the runner to compile a ranked
+PostHog export into gateway membership. Keep the question and cohort label in
+the payload; omit its `userIds`, groups and anchors when using a cohort export.
+For ordinary representative-history research, omit `evidenceWindowDays`.
+Include it only for event-based research, with an anchor for every selected user
+in the export. Example export (owner-only, outside the repository):
+
+```json
+{
+  "posthogProjectId": 144137,
+  "cohortSelectedAt": "2026-11-09T12:00:00Z",
+  "selectionQuery": "the actual bounded PostHog selection query",
+  "maxUsers": 20,
+  "requirePayerMapping": false,
+  "exclusions": { "userIds": [], "payerIds": [], "organizationIds": [] },
+  "candidates": [
+    {
+      "userId": "user_example",
+      "payerId": null,
+      "organizationId": null,
+      "internal": false,
+      "test": false,
+      "fraud": false
+    }
+  ]
+}
+```
+
+Populate classifications and mappings from PostHog evidence, not assumptions.
+Rows with missing classifications are excluded. The builder joins shared users,
+payers and organizations transitively, then applies exclusions to the connected
+group and chooses its first ranked eligible user. Missing mappings remain visible
+as selection limitations; `requirePayerMapping: true` excludes unmapped users.
+The query is hashed locally and is never sent to the gateway. Optional `group`
+and `anchorAt` fields preserve comparison membership and per-user event anchors.
+Resolve multiple different anchors for the same user before selection. Shared
+billing across different comparison groups is excluded and reported, not assigned
+to whichever arm appeared first. A comparison with fewer than three independent
+selected users per group is rejected. The builder reads no billing or message APIs.
+
+Use `--payload - --handle <protected-handle-path>` for stdin, optionally with
+`--cohort <protected-export-path>`. Existing `--payload <protected-file>` works
+and defaults to `<protected-file>.run.json`. Use `--resume <handle-path>` or
+`--status <handle-path>` after interruption. An accepted run is only polled;
+`--no-wait` reports submission, not completion. Before POST, the runner atomically
+saves the exact compiled request in an owner-only `<handle-path>.request.json`
+sidecar. It contains the question and selected user IDs, without the gateway key
+or the cohort export's raw query and payer mappings. `--resume` can retry an unknown
+submission directly from this copy within 23 hours, using the original idempotency
+key inside the gateway's 24-hour retention. `--status` never submits a request.
+The runner removes the sidecar only after the run ID is durably saved. Preserve
+both files while the outcome is unknown, including after expiry. Older unknown submissions are blocked;
+do not create a new handle merely to retry one. Handles created by older runner
+versions without a sidecar still need the identical original payload for an
+unknown submission. A gateway rejection alone does not prove an earlier or
+concurrent attempt was never accepted, so the runner does not retire that key or
+delete its recovery files on rejection. Resolve the existing submission before
+starting a changed request with a fresh handle.
+Handles contain no payloads, queries, payer mappings or credentials and must remain
+owner-only. Keep handles and sidecars in a private directory outside the repository.
+Remove temporary input payload/export files only after a run ID or matching
+request sidecar is durably saved. Preserve the originals when neither exists,
+including for legacy unknown handles or a failure before sidecar publication.
+
 ### Run from Slack
 
 Slack requests must explicitly mention Codex and carry the complete bounded

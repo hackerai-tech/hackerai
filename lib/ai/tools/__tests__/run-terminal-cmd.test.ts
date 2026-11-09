@@ -2661,11 +2661,18 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
   });
 
-  test.each([false, true])(
-    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s)",
-    async (rejected) => {
-      const privateOutput =
+  test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s,json=%s)",
+    async (rejected, json) => {
+      const privateError =
         "Navigation failed: net::ERR_NAME_NOT_RESOLVED https://private.example/token";
+      const privateOutput = json
+        ? JSON.stringify({ success: false, error: privateError })
+        : privateError;
       const sandbox = {
         sandboxKind: "centrifugo" as const,
         isWindows: () => false,
@@ -2693,7 +2700,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       expect(mockPhEvent).toHaveBeenCalledWith(
         "agent_browser_terminal_open_failure",
         expect.objectContaining({
-          browser_open_failure_version: 1,
+          browser_open_failure_version: 3,
           observation_scope: "terminal_result_open_intent",
           public_output_hint: "navigation",
           exit_code: 1,

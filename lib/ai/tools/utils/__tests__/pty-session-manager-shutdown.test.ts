@@ -95,6 +95,10 @@ describe("terminal record work at response shutdown", () => {
     });
     await manager.forget("shutdown", session.sessionId);
     expect(manager.list("shutdown")).toHaveLength(0);
+    // Retention owns separate transport work, not a pending record checkpoint.
+    expect(
+      await manager.waitForPendingRecord("shutdown", session.sessionId),
+    ).toBe(false);
     let workerFinished = false;
     const shutdown = manager.closeAll("shutdown").then(() => {
       workerFinished = true;

@@ -39,7 +39,9 @@ export function captureAgentBrowserOpenFailure(args: {
     )
       return;
     const usage = detectAgentBrowserUsage(args.command);
-    if (!usage?.actions.includes("open")) return;
+    if (!usage) return;
+    const openIntent = usage.actions.includes("open");
+    if (!openIntent && !usage.actions.includes("option")) return;
 
     let truncated = false;
     const samples = [r.output, r.error].map((value) => {
@@ -51,22 +53,66 @@ export function captureAgentBrowserOpenFailure(args: {
         stripAnsi(value.slice(0, 2048)) + "\n" + stripAnsi(value.slice(-2048))
       );
     });
-    const text = samples.join("\n").replace(/^[ \t]*[✗×][ \t]*/gm, "");
-    const matches = Object.entries(PUBLIC_MARKERS)
-      .filter(([, pattern]) => pattern.test(text))
-      .map(([name]) => name);
+    const normalize = (value: string) =>
+      stripAnsi(value).replace(/^[ \t]*[✗×][ \t]*/gm, "");
+    const text = normalize(samples.join("\n"));
+    const matches = new Set<string>();
+    const collectMarkers = (value: string) => {
+      for (const [name, pattern] of Object.entries(PUBLIC_MARKERS))
+        if (pattern.test(value)) matches.add(name);
+    };
+    collectMarkers(text);
+    let jsonCandidates = 0;
+    let jsonObserved = false;
+    let jsonUnreadable = false;
+    let jsonLimit = false;
+    // The public CLI prints one compact JSON response per line. Parse at most
+    // eight candidates from the existing 8192-unit sample, never nested data.
+    for (const line of text.split("\n")) {
+      if (!line.trimStart().startsWith("{")) continue;
+      if (jsonCandidates === 8) {
+        jsonLimit = true;
+        break;
+      }
+      jsonCandidates++;
+      try {
+        const response: unknown = JSON.parse(line);
+        if (
+          response !== null &&
+          typeof response === "object" &&
+          !Array.isArray(response) &&
+          "success" in response &&
+          response.success === false &&
+          "error" in response &&
+          typeof response.error === "string"
+        ) {
+          jsonObserved = true;
+          collectMarkers(normalize(response.error));
+        }
+      } catch {
+        jsonUnreadable = true;
+      }
+    }
+    const hints = [...matches];
     const runId = args.context.triggerRunId;
     const recordedRun =
       typeof runId === "string" && /^run_[a-z0-9]{20,40}$/.test(runId);
     phLogger.event("agent_browser_terminal_open_failure", {
       userId: args.context.userID,
       chat_id: args.context.chatId,
-      browser_open_failure_version: 1,
-      observation_scope: "terminal_result_open_intent",
+      browser_open_failure_version: 3,
+      // Option-prefixed syntax is intentionally not parsed into an OPEN claim.
+      observation_scope: openIntent
+        ? "terminal_result_open_intent"
+        : "terminal_result_option_intent",
       public_output_hint:
-        matches.length > 1
-          ? "multiple_markers"
-          : (matches[0] ?? "no_known_marker"),
+        hints.length > 1 ? "multiple_markers" : (hints[0] ?? "no_known_marker"),
+      public_json_error_state: jsonObserved
+        ? "observed"
+        : jsonUnreadable || jsonLimit
+          ? "incomplete"
+          : "not_observed",
+      json_candidate_limit_reached: jsonLimit,
       output_sample_present: samples.some(Boolean),
       output_sample_truncated: truncated,
       detected_invocation_count: Math.min(usage.invocationCount, 16),

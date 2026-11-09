@@ -1,0 +1,274 @@
+{
+  "createdAt": "2026-11-09",
+  "definition": "Five manually selected content anchors per page, derived from independent direct-source or rendered-browser reference. This is content-anchor recall, not exhaustive semantic accuracy. Frozen before detailed provider-output inspection; some latency and size metadata and the SSRF pilot were already observed.",
+  "excluded": {
+    "h1-report": "Origin returns HTTP403; browser redirects to sign-in/security verification. No report ground truth; availability only.",
+    "h1-pdf": "Original source HTTP404 at capture. Score error signaling and cached content separately, not content recall."
+  },
+  "anchors": {
+    "h1-home": [
+      {
+        "label": "Current hero",
+        "text": "Not every vulnerability matters"
+      },
+      {
+        "label": "H1 Agentic Pentest",
+        "text": "H1 Agentic Pentest"
+      },
+      {
+        "label": "AI orchestrator",
+        "text": "agentic AI orchestrator"
+      },
+      {
+        "label": "Code security product",
+        "text": "H1 Code"
+      },
+      {
+        "label": "Researcher CTA",
+        "text": "Help build a safer internet"
+      }
+    ],
+    "h1-policy": [
+      {
+        "label": "Testing header",
+        "text": "X-Bug-Bounty"
+      },
+      {
+        "label": "Current sandbox limit",
+        "text": "30 sandbox programs"
+      },
+      {
+        "label": "Approved test report",
+        "text": "3863297"
+      },
+      {
+        "label": "Program-state table",
+        "text": "security-test-ep-invite-only"
+      },
+      {
+        "label": "DoS constraints",
+        "text": "Single request, single user"
+      }
+    ],
+    "h1-safe-harbor": [
+      {
+        "label": "Traditional safe harbor",
+        "text": "Gold Standard Safe Harbor"
+      },
+      {
+        "label": "AI safe harbor",
+        "text": "AI Research Safe Harbor"
+      },
+      {
+        "label": "Scope unchanged",
+        "text": "does not change the program scopes"
+      },
+      {
+        "label": "Not retroactive",
+        "text": "may not be removed retroactively"
+      },
+      {
+        "label": "Disclaimer",
+        "text": "does not constitute legal advice"
+      }
+    ],
+    "ps-ssrf": [
+      {
+        "label": "Loopback target",
+        "text": "127.0.0.1"
+      },
+      {
+        "label": "HTTP form parameter",
+        "text": "stockApi="
+      },
+      {
+        "label": "Internal target example",
+        "text": "192.168.0.68/admin"
+      },
+      {
+        "label": "Redirect example",
+        "text": "nextProduct?currentProductId=6"
+      },
+      {
+        "label": "Late-page Referer behavior",
+        "text": "logs the Referer header"
+      }
+    ],
+    "ps-sqli": [
+      {
+        "label": "Boolean payload",
+        "text": "OR 1=1"
+      },
+      {
+        "label": "UNION example",
+        "text": "UNION SELECT"
+      },
+      {
+        "label": "Encoded XML payload",
+        "text": "&#x53;ELECT"
+      },
+      {
+        "label": "Prepared statement code",
+        "text": "statement.setString(1, input)"
+      },
+      {
+        "label": "Late-page query limitation",
+        "text": "table or column names"
+      }
+    ],
+    "owasp-wstg": [
+      {
+        "label": "Testing ID",
+        "text": "WSTG-INPV-01"
+      },
+      {
+        "label": "Non-persistence",
+        "text": "non-persistent"
+      },
+      {
+        "label": "XSS test payload",
+        "text": "<script>alert(123)</script>"
+      },
+      {
+        "label": "Parameter pollution technique",
+        "text": "HTTP Parameter Pollution"
+      },
+      {
+        "label": "Late-page tools",
+        "text": "Hackvertor"
+      }
+    ],
+    "owasp-ssrf": [
+      {
+        "label": "IP validation library",
+        "text": "IPAddress.TryParse"
+      },
+      {
+        "label": "AWS defense",
+        "text": "IMDSv2"
+      },
+      {
+        "label": "DNS rebinding warning",
+        "text": "checking DNS answers separately does not prevent DNS rebinding"
+      },
+      {
+        "label": "Metadata endpoint",
+        "text": "169.254.169.254"
+      },
+      {
+        "label": "Late-page semgrep",
+        "text": "Semgrep"
+      }
+    ],
+    "nvd-log4shell": [
+      {
+        "label": "Affected version boundary",
+        "text": "2.0-beta9 through 2.15.0"
+      },
+      {
+        "label": "Attack mechanism",
+        "text": "LDAP"
+      },
+      {
+        "label": "CVSS vector",
+        "text": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"
+      },
+      {
+        "label": "KEV presence",
+        "text": "Known Exploited Vulnerabilities Catalog"
+      },
+      {
+        "label": "Component caveat",
+        "text": "log4j-core"
+      }
+    ],
+    "mitre-cwe79": [
+      {
+        "label": "Weakness definition",
+        "text": "Improper Neutralization of Input During Web Page Generation"
+      },
+      {
+        "label": "Mitigation section",
+        "text": "Potential Mitigations"
+      },
+      {
+        "label": "Code example",
+        "text": "document.write"
+      },
+      {
+        "label": "Observed CVE example",
+        "text": "CVE-2024-49038"
+      },
+      {
+        "label": "Late-page reference",
+        "text": "ASCSM-CWE-79"
+      }
+    ],
+    "hacktricks-ssrf": [
+      {
+        "label": "Gopher protocol",
+        "text": "Gopher://"
+      },
+      {
+        "label": "SMTP code example",
+        "text": "HELO%20localhost"
+      },
+      {
+        "label": "HTTP/2 CONNECT section",
+        "text": "HTTP/2 CONNECT"
+      },
+      {
+        "label": "Late-page CFITSIO example",
+        "text": "fits_open_file()"
+      },
+      {
+        "label": "Metadata header example",
+        "text": "Metadata-Flavor: Google"
+      }
+    ],
+    "github-ssrf": [
+      {
+        "label": "AWS metadata URL",
+        "text": "169.254.169.254/latest/meta-data/"
+      },
+      {
+        "label": "Loopback URL",
+        "text": "127.0.0.1:80"
+      },
+      {
+        "label": "DNS rebinding",
+        "text": "DNS Rebinding"
+      },
+      {
+        "label": "Gopher SMTP example",
+        "text": "_MAIL%20FROM:"
+      },
+      {
+        "label": "Late-page lab reference",
+        "text": "Root Me - Nginx - SSRF Misconfiguration"
+      }
+    ],
+    "working-pdf": [
+      {
+        "label": "Page1 authentication",
+        "text": "AUTHENTICATION"
+      },
+      {
+        "label": "Page1 API control",
+        "text": "API rate limiting"
+      },
+      {
+        "label": "Page2 crypto",
+        "text": "ENCRYPTION"
+      },
+      {
+        "label": "Page2 security standards",
+        "text": "ISO-22307"
+      },
+      {
+        "label": "Page2 endpoint policy",
+        "text": "ENDPOINT SECURITY"
+      }
+    ]
+  }
+}
