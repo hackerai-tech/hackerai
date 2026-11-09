@@ -7,6 +7,12 @@ import {
   beforeEach,
   afterAll,
 } from "@jest/globals";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../../lib/pricing/pro-yearly";
+import {
+  HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+  PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+} from "../../lib/billing/included-usage";
 import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -282,6 +288,26 @@ describe("extraUsageActions billing authorization", () => {
           }),
         }),
       );
+      for (const priceId of [
+        GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
+        GRANDFATHERED_PRO_YEARLY_PRICE_ID,
+        HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+        PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+      ]) {
+        mockSubscriptionsList.mockResolvedValue({
+          data: [
+            { items: { data: [{ price: { id: priceId, lookup_key: null } }] } },
+          ],
+        } as never);
+        expect(
+          (
+            await callCreatePurchaseSession(makeCtx(), {
+              amountDollars: 250,
+              bundleId: "usage-250-v1",
+            })
+          ).url,
+        ).toBeTruthy();
+      }
       mockCheckoutSessionCreate.mockClear();
       expect(
         (

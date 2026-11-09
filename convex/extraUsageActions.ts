@@ -14,6 +14,9 @@ import {
   extraUsageBundlesEnabled,
 } from "../lib/billing/extra-usage-bundles";
 import { planLookupKeyToTier } from "../lib/analytics/paid-funnel";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../lib/pricing/pro-yearly";
+import { includedUsagePointsForStripePrice } from "../lib/billing/included-usage";
 import { BILLING_ERRORS } from "../lib/billing/billing-errors";
 import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
@@ -622,6 +625,13 @@ export const createPurchaseSession = action({
         if (
           !subscriptions.data.some((subscription) =>
             subscription.items.data.some((item) => {
+              // Lookup keys move to new prices; existing Pro subscribers retain these IDs.
+              if (
+                item.price.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID ||
+                item.price.id === GRANDFATHERED_PRO_YEARLY_PRICE_ID ||
+                includedUsagePointsForStripePrice(item.price.id) !== undefined
+              )
+                return true;
               const tier = planLookupKeyToTier(
                 item.price.lookup_key ?? undefined,
               );
