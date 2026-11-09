@@ -118,9 +118,31 @@ describe("legacy Pro renewal migration", () => {
   });
   it("requires 30 days notice and 48 hours operational lead time", () => {
     expect(() => validate()).not.toThrow();
+    const noticeTime = (days: number) => entry.effectiveAt - days * 86400;
     expect(() =>
-      validate(undefined, { notifiedAt: entry.effectiveAt - 29 * 86400 }),
+      validateMigrationSubscription(
+        manifest,
+        { ...entry, notifiedAt: noticeTime(29) },
+        subscription(),
+        noticeTime(29),
+      ),
     ).toThrow();
+    expect(() =>
+      validateMigrationSubscription(
+        manifest,
+        { ...entry, notifiedAt: noticeTime(30) },
+        subscription(),
+        noticeTime(30),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateMigrationSubscription(
+        manifest,
+        entry,
+        subscription(),
+        entry.effectiveAt - 2 * 86400,
+      ),
+    ).not.toThrow();
     expect(() => validate(undefined, { notifiedAt: now + 1 })).toThrow();
     expect(() =>
       validateMigrationSubscription(

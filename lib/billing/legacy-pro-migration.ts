@@ -46,13 +46,17 @@ export const legacyProManifestSchema = z
 export type LegacyProManifest = z.infer<typeof legacyProManifestSchema>;
 type Entry = LegacyProManifest["entries"][number];
 
+/** Only static, content-free validation messages may use this error type. */
+export class LegacyProMigrationValidationError extends Error {}
+
 function requireCondition(value: unknown, message: string): asserts value {
-  if (!value) throw new Error(message);
+  if (!value) throw new LegacyProMigrationValidationError(message);
 }
 function objectId(value: string | { id: string } | null): string | null {
   return typeof value === "string" ? value : (value?.id ?? null);
 }
 
+/** Refuse a different product, interval, amount or environment before enrollment. */
 export function validateMigrationPrices(
   manifest: LegacyProManifest,
   source: Stripe.Price,
@@ -115,6 +119,7 @@ export function isMonthlyRenewal(
   return false;
 }
 
+/** Enforce notice timing and reject subscriptions whose existing commitments may be lost. */
 export function validateMigrationSubscription(
   manifest: LegacyProManifest,
   entry: Entry,
@@ -179,6 +184,7 @@ export function validateMigrationSubscription(
   );
 }
 
+/** Customer-level credits and discounts need individual review, never implicit removal. */
 export function validateMigrationCustomer(
   customer: Stripe.Customer | Stripe.DeletedCustomer,
 ) {
