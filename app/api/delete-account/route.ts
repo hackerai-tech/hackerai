@@ -34,6 +34,21 @@ import { waitForDeletion } from "@/lib/utils/wait-for-deletion";
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
 const MAX_CONVEX_ORGANIZATION_CLEANUP_BATCHES = 50;
 
+// Request-local client acknowledgements, never proof of the failed mutation's
+// commit or of completed account/storage/identity deletion.
+type ConvexCleanupDiagnostic = {
+  convex_cleanup_diagnostic_version: 1;
+  convex_cleanup_phase:
+    | "not_started"
+    | "membership_lock"
+    | "mutation"
+    | "parse_result"
+    | "wait_storage";
+  convex_cleanup_batch: number;
+  convex_cleanup_mutation_acks: number;
+  convex_cleanup_last_result_has_more: boolean | null;
+};
+
 type ConvexCleanupProgress = {
   deletedDocuments: number;
   anonymizedDocuments: number;
@@ -240,6 +255,7 @@ async function deleteConvexUserData(
   requestId: string,
   preservedOrganizationIds: string[],
   assertMembershipLocksOwned: () => Promise<void>,
+  diagnostic: ConvexCleanupDiagnostic,
 ): Promise<boolean> {
   const convex = getConvexClient();
   let progressStatsBatches = 0;
@@ -250,7 +266,10 @@ async function deleteConvexUserData(
   let lastProgress: ConvexCleanupProgress | undefined;
 
   for (let batch = 0; batch < MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES; batch++) {
+    diagnostic.convex_cleanup_batch = batch + 1;
+    diagnostic.convex_cleanup_phase = "membership_lock";
     await assertMembershipLocksOwned();
+    diagnostic.convex_cleanup_phase = "mutation";
     const result = await convex.mutation(
       api.userDeletion.deleteAllUserDataByService,
       {
@@ -260,7 +279,11 @@ async function deleteConvexUserData(
       },
     );
 
+    diagnostic.convex_cleanup_mutation_acks += 1;
+    diagnostic.convex_cleanup_last_result_has_more = null;
+    diagnostic.convex_cleanup_phase = "parse_result";
     const parsedResult = parseConvexCleanupResult(result);
+    diagnostic.convex_cleanup_last_result_has_more = parsedResult.hasMore;
     if (parsedResult.progress) {
       progressStatsBatches += 1;
       deletedDocuments += parsedResult.progress.deletedDocuments;
@@ -276,6 +299,7 @@ async function deleteConvexUserData(
     }
 
     if (!parsedResult.hasMore) {
+      diagnostic.convex_cleanup_phase = "wait_storage";
       await waitForDeletion(
         () =>
           convex.query(api.deletions.getStatusForBackend, {
@@ -334,6 +358,13 @@ async function deleteDeletedOrganizationPauseRows(
 
 export const POST = async (req: NextRequest) => {
   let stage = "authenticate";
+  const convexCleanupDiagnostic: ConvexCleanupDiagnostic = {
+    convex_cleanup_diagnostic_version: 1,
+    convex_cleanup_phase: "not_started",
+    convex_cleanup_batch: 0,
+    convex_cleanup_mutation_acks: 0,
+    convex_cleanup_last_result_has_more: null,
+  };
   let userIdForLog: string | undefined;
   let membershipCount: number | undefined;
   let freeQuotaSubjectPresent: boolean | undefined;
@@ -470,6 +501,7 @@ export const POST = async (req: NextRequest) => {
       requestId,
       preservedOrganizationIds,
       assertMembershipLocksOwned,
+      convexCleanupDiagnostic,
     );
     if (!cleanupComplete) {
       return NextResponse.json(
@@ -583,6 +615,7 @@ export const POST = async (req: NextRequest) => {
         user_id: userIdForLog,
         membership_count: membershipCount,
         free_quota_subject_present: freeQuotaSubjectPresent,
+        ...(stage === "delete_convex_user_data" ? convexCleanupDiagnostic : {}),
         error_name: errorName,
         error_message: message,
       },
