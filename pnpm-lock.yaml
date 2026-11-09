@@ -302,6 +302,9 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      nodemailer:
+        specifier: ^10.4.0
+        version: 10.4.0
       openai:
         specifier: 6.49.0
         version: 6.49.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -423,6 +426,9 @@ importers:
       '@types/node':
         specifier: ^25.9.3
         version: 25.9.3
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -4402,6 +4408,9 @@ packages:
   '@types/node@25.9.5':
     resolution: {integrity: sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg==}
 
+  '@types/nodemailer@8.0.2':
+    resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
+
   '@types/parse-json@4.0.2':
     resolution: {integrity: sha512-dISoDXWWQwUquiKsyZ4Ng+HX2KsPL7LyHKHQwgGFEA3IaKac4Obd+h2a/a6waisAoepJlBcx9paWqjA8/HVjCw==}
 
@@ -7320,6 +7329,10 @@ packages:
     resolution: {integrity: sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ==}
     engines: {node: '>=18'}
 
+  nodemailer@10.4.0:
+    resolution: {integrity: sha512-fyy6r4Q5euRJ9Qr3Cts9K7SZrfe9zmz9oLOYiAR02MEJRDRci+99y0OoYBYBgpLffOqkkjXrB/d26VfiMje/kA==}
+    engines: {node: '>=20.0.0'}
+
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
@@ -10130,7 +10143,7 @@ snapshots:
 
   '@jest/pattern@30.0.1':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       jest-regex-util: 30.0.1
 
   '@jest/pattern@30.5.0':
@@ -10227,7 +10240,7 @@ snapshots:
       '@jest/schemas': 30.0.5
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       '@types/yargs': 17.0.34
       chalk: 4.1.2
 
@@ -12518,6 +12531,10 @@ snapshots:
   '@types/node@25.9.5':
     dependencies:
       undici-types: 7.24.6
+
+  '@types/nodemailer@8.0.2':
+    dependencies:
+      '@types/node': 25.9.5
 
   '@types/parse-json@4.0.2':
     optional: true
@@ -15171,7 +15188,7 @@ snapshots:
   jest-mock@30.2.0:
     dependencies:
       '@jest/types': 30.2.0
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       jest-util: 30.2.0
 
   jest-mock@30.5.1:
@@ -15286,7 +15303,7 @@ snapshots:
   jest-util@30.2.0:
     dependencies:
       '@jest/types': 30.2.0
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       chalk: 4.1.2
       ci-info: 4.3.1
       graceful-fs: 4.2.11
@@ -16162,6 +16179,8 @@ snapshots:
 
   node-releases@2.0.54: {}
 
+  nodemailer@10.4.0: {}
+
   normalize-path@3.0.0: {}
 
   npm-run-path@4.0.1:
@@ -16534,7 +16553,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.1
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       long: 5.3.2
 
   proxy-addr@2.0.8:

@@ -16,6 +16,7 @@ import {
 } from "./lib/abuseValidators";
 import type { Doc } from "./_generated/dataModel";
 import { MAX_SUBAGENTS_PER_PARENT_RUN } from "../lib/ai/subagents/contracts";
+import { internal } from "./_generated/api";
 
 const operatorArgs = { serviceKey: v.string(), actor: v.string() };
 const caseArgs = { ...operatorArgs, reference: v.string() };
@@ -164,6 +165,20 @@ export const receive = mutation({
       kind: "received",
       createdAt: now,
     });
+    // Enqueue atomically with the first receipt, never on idempotent retries.
+    if (process.env.ABUSE_NOTIFICATIONS_ENABLED === "true") {
+      const notificationId = await ctx.db.insert("abuse_notifications", {
+        caseId,
+        status: "pending",
+        attempts: 0,
+        updatedAt: now,
+      });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.abuseNotificationActions.deliver,
+        { notificationId },
+      );
+    }
     return { outcome: "received" as const, reference: args.reference };
   },
 });

@@ -200,6 +200,20 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  abuse_notifications: defineTable({
+    caseId: v.id("abuse_cases"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("sending"),
+      v.literal("sent"),
+      v.literal("failed"),
+      v.literal("uncertain"),
+    ),
+    attempts: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_caseId", ["caseId"])
+    .index("by_status", ["status"]),
   // Evidence is encrypted before transport; ordinary users have no read path.
   abuse_cases: defineTable(abuseCaseFields)
     .index("by_active_containment_user", ["activeContainmentUserId"])

@@ -9,7 +9,8 @@
  */
 
 import type * as abuseCases from "../abuseCases.js";
-import type * as lib_abuseValidators from "../lib/abuseValidators.js";
+import type * as abuseNotificationActions from "../abuseNotificationActions.js";
+import type * as abuseNotifications from "../abuseNotifications.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
 import type * as agentGoals from "../agentGoals.js";
@@ -40,11 +41,14 @@ import type * as influencerAnalytics from "../influencerAnalytics.js";
 import type * as influencerValidators from "../influencerValidators.js";
 import type * as influencers from "../influencers.js";
 import type * as involuntaryChurn from "../involuntaryChurn.js";
+import type * as lib_abuseValidators from "../lib/abuseValidators.js";
 import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
+import type * as lib_browserHandoffState from "../lib/browserHandoffState.js";
 import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
+import type * as lib_goalInputTiming from "../lib/goalInputTiming.js";
 import type * as lib_goalValidators from "../lib/goalValidators.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
 import type * as lib_legacyEngagementScope from "../lib/legacyEngagementScope.js";
@@ -56,16 +60,17 @@ import type * as lib_settlementAction from "../lib/settlementAction.js";
 import type * as lib_settlementReceiptValidators from "../lib/settlementReceiptValidators.js";
 import type * as lib_settlementReceipts from "../lib/settlementReceipts.js";
 import type * as lib_sharedChatSnapshot from "../lib/sharedChatSnapshot.js";
+import type * as lib_sidebarChatAttention from "../lib/sidebarChatAttention.js";
 import type * as lib_subscriptionPauseResume from "../lib/subscriptionPauseResume.js";
 import type * as lib_suspensionGuards from "../lib/suspensionGuards.js";
 import type * as lib_userDeletionFence from "../lib/userDeletionFence.js";
+import type * as lib_userInputQuestions from "../lib/userInputQuestions.js";
 import type * as lib_userResearchAuth from "../lib/userResearchAuth.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as modelHistory from "../modelHistory.js";
 import type * as nextActions from "../nextActions.js";
-
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
@@ -102,7 +107,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   abuseCases: typeof abuseCases;
-  "lib/abuseValidators": typeof lib_abuseValidators;
+  abuseNotificationActions: typeof abuseNotificationActions;
+  abuseNotifications: typeof abuseNotifications;
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
   agentGoals: typeof agentGoals;
@@ -133,11 +139,14 @@ declare const fullApi: ApiFromModules<{
   influencerValidators: typeof influencerValidators;
   influencers: typeof influencers;
   involuntaryChurn: typeof involuntaryChurn;
+  "lib/abuseValidators": typeof lib_abuseValidators;
   "lib/branchedChatTitle": typeof lib_branchedChatTitle;
+  "lib/browserHandoffState": typeof lib_browserHandoffState;
   "lib/chatAccessSuspensions": typeof lib_chatAccessSuspensions;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
+  "lib/goalInputTiming": typeof lib_goalInputTiming;
   "lib/goalValidators": typeof lib_goalValidators;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
   "lib/legacyEngagementScope": typeof lib_legacyEngagementScope;
@@ -149,16 +158,17 @@ declare const fullApi: ApiFromModules<{
   "lib/settlementReceiptValidators": typeof lib_settlementReceiptValidators;
   "lib/settlementReceipts": typeof lib_settlementReceipts;
   "lib/sharedChatSnapshot": typeof lib_sharedChatSnapshot;
+  "lib/sidebarChatAttention": typeof lib_sidebarChatAttention;
   "lib/subscriptionPauseResume": typeof lib_subscriptionPauseResume;
   "lib/suspensionGuards": typeof lib_suspensionGuards;
   "lib/userDeletionFence": typeof lib_userDeletionFence;
+  "lib/userInputQuestions": typeof lib_userInputQuestions;
   "lib/userResearchAuth": typeof lib_userResearchAuth;
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;
   messages: typeof messages;
   modelHistory: typeof modelHistory;
   nextActions: typeof nextActions;
-
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;

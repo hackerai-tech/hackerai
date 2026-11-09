@@ -178,6 +178,20 @@ test("receipts survive key rotation; changed retries conflict and do not duplica
     true,
   );
 });
+test("an accepted report atomically queues one notification across receipt retries", async () => {
+  process.env.ABUSE_NOTIFICATIONS_ENABLED = "true";
+  const ctx = { ...database(), scheduler: { runAfter: jest.fn() } };
+  await invoke("receive", ctx, intake);
+  await invoke("receive", ctx, intake);
+  expect(ctx.tables.abuse_cases).toHaveLength(1);
+  expect(ctx.tables.abuse_notifications).toHaveLength(1);
+  expect(ctx.tables.abuse_notifications[0]).toMatchObject({
+    status: "pending",
+    attempts: 0,
+    caseId: ctx.tables.abuse_cases[0]._id,
+  });
+  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+});
 test("intake alone never restricts an account and per-email limits cannot be bypassed by rotating a retained key", async () => {
   const ctx = database();
   for (let i = 0; i < 3; i++)

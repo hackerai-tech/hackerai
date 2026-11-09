@@ -203,3 +203,38 @@ independent-user continuity, blocked restart/reconnect/Goal continuation, partia
 provider failure, retry after interruption, and resolution with an independent
 billing hold still active. Preserve separate evidence for web, cloud, local, and
 native Desktop paths; never infer one from another.
+
+## Email notifications
+
+The case receipt confirms durable storage, independently of email delivery. On the
+Convex deployment, configure `ABUSE_NOTIFICATIONS_ENABLED=true`, a dedicated
+`ABUSE_SMTP_PASSWORD` token paired with `abuse@hackerai.co`, and
+`ABUSE_NOTIFICATION_REVIEW_URL` as the exact web origin for that environment.
+Use separate SMTP tokens for Preview and Production. Do not use a mailbox login
+password. SMTP submission uses Proton's fixed host and port with mandatory
+STARTTLS and certificate verification. No sender, recipient, or SMTP endpoint is
+accepted from a report.
+
+The initial case transaction creates one outbox row and schedules delivery;
+receipt retries do not enqueue duplicates. Notifications contain only the case
+reference and restricted operator-page link, without report text, evidence,
+contact email, or submitted targets. Email recipients still need operator access.
+
+Inspect `abuse_notifications` in the authorized Convex dashboard, using its status
+index. `sent` means Proton accepted the message, not that inbox delivery was
+independently verified. Reconcile `failed` and `uncertain` entries during intake
+review. Explicit transient SMTP rejection and pre-DATA connection errors retry
+up to five attempts with increasing delays. Permanent rejection/configuration
+failure remains `failed`. Lost acknowledgements after DATA and expired send
+leases become `uncertain`; these are not blindly retried because SMTP has no
+exactly-once delivery guarantee. A stable Message-ID assists reconciliation.
+Before any manually authorized resend, check the recipient inbox and Proton Sent
+folder for the case reference and record the decision in the internal case record.
+Do not mutate an unfamiliar outbox entry to work around delivery uncertainty.
+
+Before enabling real notifications, submit a synthetic report through the actual
+web form and independently confirm the matching reference in the intended inbox.
+Verify receipt retries keep one outbox entry, and test transient failure and
+uncertain-send behavior. Confirm mailbox ownership and monitoring separately;
+SMTP acceptance alone does not establish either. `ABUSE_EMAIL_VERIFIED` only
+controls the public email link and does not activate notifications.
