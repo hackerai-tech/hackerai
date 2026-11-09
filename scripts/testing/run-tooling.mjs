@@ -11,7 +11,13 @@ export const suites = [
       ".agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
     ],
   },
-  { name: "desktop", files: ["scripts/desktop-qa/qa.test.mjs"] },
+  {
+    name: "desktop",
+    files: [
+      "scripts/desktop-qa/qa.test.mjs",
+      "scripts/desktop-qa/verify-targets.test.mjs",
+    ],
+  },
   {
     name: "diagnostics",
     files: readdirSync(resolve(root, "scripts/diagnostics"))
