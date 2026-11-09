@@ -769,6 +769,89 @@ describe("POST /api/delete-account", () => {
     },
   );
 
+  it.each([0, 1, 49])(
+    "retains cleanup progress after %s acknowledged mutation batches without retrying",
+    async (acknowledged) => {
+      mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+      const failure = new TypeError("fetch failed");
+      let cleanupCalls = 0;
+      mockConvexMutation.mockImplementation(async (reference) => {
+        if (reference !== "userDeletion.deleteAllUserDataByService")
+          return null;
+        cleanupCalls++;
+        if (cleanupCalls > acknowledged) throw failure;
+        return { hasMore: true };
+      });
+      const response = await POST(request() as any);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: "fetch failed" });
+      expect(cleanupCalls).toBe(acknowledged + 1);
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        "account_deletion_failed",
+        failure,
+        expect.objectContaining({
+          stage: "delete_convex_user_data",
+          request_id: "iad1::opaque-request",
+          convex_cleanup_diagnostic_version: 1,
+          convex_cleanup_phase: "mutation",
+          convex_cleanup_batch: acknowledged + 1,
+          convex_cleanup_mutation_acks: acknowledged,
+          convex_cleanup_last_result_has_more: acknowledged > 0 ? true : null,
+        }),
+      );
+      expect(mockDeleteUser).not.toHaveBeenCalled();
+      expect(mockDeleteCustomer).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["parse_result", "wait_storage"] as const)(
+    "separates an acknowledged batch from a failure in %s",
+    async (phase) => {
+      mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+      mockConvexMutation.mockImplementation(async (reference) =>
+        reference === "userDeletion.deleteAllUserDataByService"
+          ? phase === "parse_result"
+            ? {}
+            : { hasMore: false }
+          : null,
+      );
+      if (phase === "wait_storage")
+        mockConvexQuery.mockRejectedValueOnce(
+          new TypeError("storage status unavailable"),
+        );
+      const response = await POST(request() as any);
+      expect(response.status).toBe(500);
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        "account_deletion_failed",
+        expect.any(Error),
+        expect.objectContaining({
+          convex_cleanup_diagnostic_version: 1,
+          convex_cleanup_phase: phase,
+          convex_cleanup_batch: 1,
+          convex_cleanup_mutation_acks: 1,
+          convex_cleanup_last_result_has_more:
+            phase === "parse_result" ? null : false,
+        }),
+      );
+      expect(mockDeleteUser).not.toHaveBeenCalled();
+      expect(mockDeleteCustomer).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not label a later identity-provider error as a Convex cleanup failure", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    mockDeleteUser.mockRejectedValueOnce(
+      new Error("identity provider unavailable"),
+    );
+    const response = await POST(request() as any);
+    expect(response.status).toBe(500);
+    const fields = mockLoggerError.mock.calls.find(
+      ([event]) => event === "account_deletion_failed",
+    )?.[2];
+    expect(fields).toMatchObject({ stage: "delete_workos_user" });
+    expect(fields).not.toHaveProperty("convex_cleanup_diagnostic_version");
+  });
+
   it("does not delete WorkOS or billing resources if Convex cleanup fails", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
