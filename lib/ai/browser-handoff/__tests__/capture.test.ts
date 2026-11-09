@@ -1145,3 +1145,100 @@ it.each(["accessor", "unbounded", "unreadable"] as const)(
     expect(JSON.stringify(fields)).not.toContain("PRIVATE");
   },
 );
+
+it.each([
+  [[1, 0, 0], "missing", "unavailable"],
+  [[1, 1, 0], "invalid", "unavailable"],
+  [[1, 2, 0], "unreadable", "unavailable"],
+  [[1, 3, 0], "recorded", "unavailable"],
+  [[1, 3, 1], "recorded", "not_found"],
+  [[1, 3, 2], "recorded", "same_uid"],
+  [[1, 3, 3], "recorded", "other_uid"],
+  [[1, 3, 4], "recorded", "permission"],
+  [[1, 3, 5], "recorded", "other"],
+  [[1, 0, 2], undefined, undefined],
+  [[2, 3, 2], undefined, undefined],
+  [[1, 3, "PRIVATE"], undefined, undefined],
+  [[1, 3, 6], undefined, undefined],
+  [[1, 3, 2, "PRIVATE"], undefined, undefined],
+])(
+  "projects only the closed process tuple beside a matching successful OPEN (%#)",
+  async (p1, status, visibility) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        p1,
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+        private: "PRIVATE",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    const context = observe.mock.calls[0][0];
+    expect(context.capture_daemon_process_version).toBe(status ? 1 : undefined);
+    expect(context.capture_daemon_pid_status).toBe(status);
+    expect(context.capture_daemon_process_visibility).toBe(visibility);
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  { open_session_matches: false },
+  { open_phase: "started", open_exit: "none" },
+  { open_exit: 1 },
+  { open_receipt_version: 2 },
+])(
+  "keeps process evidence censored without a matching successful OPEN: %j",
+  async (override) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        p1: [1, 3, 2],
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+        ...override,
+      }),
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    expect(
+      observe.mock.calls[0][0].capture_daemon_process_version,
+    ).toBeUndefined();
+  },
+);

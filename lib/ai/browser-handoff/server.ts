@@ -330,6 +330,16 @@ export type BrowserCaptureFailureContext = {
   capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_open_idle_env_version?: 1;
   capture_open_idle_env?: (typeof BROWSER_OPEN_IDLE_ENV_VALUES)[number];
+  capture_daemon_process_version?: 1;
+  capture_daemon_pid_status?: "missing" | "invalid" | "unreadable" | "recorded";
+  // A PID can be reused; this is not daemon identity, execution or health.
+  capture_daemon_process_visibility?:
+    | "unavailable"
+    | "not_found"
+    | "same_uid"
+    | "other_uid"
+    | "permission"
+    | "other";
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -492,6 +502,9 @@ export async function captureBrowserFrame(
         | "capture_open_age"
         | "capture_open_idle_env_version"
         | "capture_open_idle_env"
+        | "capture_daemon_process_version"
+        | "capture_daemon_pid_status"
+        | "capture_daemon_process_visibility"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -526,10 +539,11 @@ export async function captureBrowserFrame(
           ) {
             // Only this controlled helper's bounded failure JSON is eligible;
             // never inspect successful image responses or bridge command output.
+            // Existing <=512-byte context plus the fixed compact process tuple.
             const stdout =
               result &&
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
-            if (typeof stdout === "string" && stdout.length <= 512) {
+            if (typeof stdout === "string" && stdout.length <= 544) {
               const parsed = JSON.parse(stdout);
               const deadline = parsed?.deadline;
               if (
@@ -622,6 +636,38 @@ export async function captureBrowserFrame(
                     parsed.open_session_matches;
                   precondition.capture_open_age = parsed.open_age;
                 }
+              }
+              const processObservation = parsed?.p1;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(processObservation) &&
+                processObservation.length === 3 &&
+                processObservation[0] === 1 &&
+                Number.isInteger(processObservation[1]) &&
+                processObservation[1] >= 0 &&
+                processObservation[1] <= 3 &&
+                Number.isInteger(processObservation[2]) &&
+                processObservation[2] >= 0 &&
+                processObservation[2] <= 5 &&
+                (processObservation[1] === 3 || processObservation[2] === 0)
+              ) {
+                precondition.capture_daemon_process_version = 1;
+                precondition.capture_daemon_pid_status = (
+                  ["missing", "invalid", "unreadable", "recorded"] as const
+                )[processObservation[1]];
+                precondition.capture_daemon_process_visibility = (
+                  [
+                    "unavailable",
+                    "not_found",
+                    "same_uid",
+                    "other_uid",
+                    "permission",
+                    "other",
+                  ] as const
+                )[processObservation[2]];
               }
               const openIdle = parsed?.open_idle;
               if (

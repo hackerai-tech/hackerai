@@ -87,6 +87,43 @@ function receiptExit(receipt) {
   return receipt.phase === 'started' ? 'none' :
     Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other';
 }
+/** Read one selected PID sidecar; never scan processes, signal them, or export its value.
+ * Visibility is only in this helper's procfs view, not PID-namespace or daemon identity/health.
+ */
+function daemonProcess() {
+  let fd;
+  try {
+    const sockets = fs.lstatSync(path.join(directory, 'sockets'));
+    if (!sockets.isDirectory() || sockets.uid !== process.getuid() || (sockets.mode & 0o077) !== 0)
+      return [1, 2, 0];
+    const filename = path.join(directory, 'sockets', name + '.pid');
+    const valid = entry => entry.isFile() && entry.uid === process.getuid() &&
+      (entry.mode & 0o022) === 0 && entry.size >= 1 && entry.size <= 32;
+    const entry = fs.lstatSync(filename);
+    if (!valid(entry)) return [1, 2, 0];
+    fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!valid(fs.fstatSync(fd))) return [1, 2, 0];
+    const bytes = Buffer.alloc(33);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (size > 32) return [1, 2, 0];
+    const text = bytes.subarray(0, size).toString('utf8').trim();
+    if (!/^[1-9][0-9]{0,9}$/.test(text)) return [1, 1, 0];
+    const pid = Number(text);
+    if (!Number.isSafeInteger(pid) || pid > 2147483647) return [1, 1, 0];
+    if (process.platform !== 'linux') return [1, 3, 0];
+    // An unavailable procfs view cannot establish an absent process entry.
+    try { if (!fs.statSync('/proc').isDirectory()) return [1, 3, 0]; } catch { return [1, 3, 0]; }
+    try {
+      const info = fs.statSync('/proc/' + pid);
+      return [1, 3, info.uid === process.getuid() ? 2 : 3];
+    } catch (error) {
+      return [1, 3, error?.code === 'ENOENT' ? 1 :
+        error?.code === 'EACCES' || error?.code === 'EPERM' ? 4 : 5];
+    }
+  } catch (error) {
+    return [1, error?.code === 'ENOENT' ? 0 : 2, 0];
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
 /** Return finite observations only; session keys and private paths stay local. */
 function wrapperReceipt() {
   try {
@@ -151,6 +188,10 @@ function wrapperReceipt() {
         ['unset', 'disabled', 'lt_15m', '15m', 'gt_15m', 'unparsed'].includes(open.idle_env)) {
       result.open_idle = [1, open.idle_env];
     }
+    // Only a matching successful OPEN makes this the selected daemon's sidecar.
+    // Compact tuple: v1, PID-file status, process visibility (finite codes only).
+    if (open?.session_key === sessionKey && open.phase === 'completed' && open.exit === 0)
+      result.p1 = daemonProcess();
     return result;
   } catch { return {}; }
 }
