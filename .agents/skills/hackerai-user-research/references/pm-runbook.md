@@ -120,13 +120,21 @@ Use `--payload - --handle <protected-handle-path>` for stdin, optionally with
 `--cohort <protected-export-path>`. Existing `--payload <protected-file>` works
 and defaults to `<protected-file>.run.json`. Use `--resume <handle-path>` or
 `--status <handle-path>` after interruption. An accepted run is only polled;
-`--no-wait` reports submission, not completion. If no run ID was received,
-resubmit the identical payload with the same handle within 23 hours. This retains
-the original idempotency key inside the gateway's 24-hour retention. An older
-unknown submission is blocked; do not create a new handle merely to retry it.
-A fresh handle is for an intentionally new analysis. Handles contain no payloads,
-queries, payer mappings or credentials and must remain owner-only. Remove temporary
-payload/export files after they are read; preserve recovery handles as needed.
+`--no-wait` reports submission, not completion. Before POST, the runner atomically
+saves the exact compiled request in an owner-only `<handle-path>.request.json`
+sidecar. It contains the question and selected user IDs, without the gateway key
+or the cohort export's raw query and payer mappings. `--resume` can retry an unknown
+submission directly from this copy within 23 hours, using the original idempotency
+key inside the gateway's 24-hour retention. `--status` never submits a request.
+The runner removes the sidecar only after the run ID is durably saved. Preserve
+both files while the outcome is unknown. Older unknown submissions are blocked;
+do not create a new handle merely to retry one. Handles created by older runner
+versions without a sidecar still need the identical original payload for an
+unknown submission. A fresh handle is for an intentionally new analysis.
+Handles contain no payloads, queries, payer mappings or credentials and must remain
+owner-only. Keep handles and sidecars in a private directory outside the repository.
+Remove temporary input payload/export files after the runner returns; preserve
+recovery files as described above.
 
 ### Run from Slack
 

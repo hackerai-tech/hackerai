@@ -338,6 +338,66 @@ test("a lost start response keeps the same retry key; resuming a known run only 
   assert.equal(resumed.analysisId, "analysis_test");
 });
 
+test("lost stdin submissions resume the protected exact request without original inputs", async (t) => {
+  const f = await requestFixture(t);
+  const payload = { question: "private stdin question", userIds: ["user_test"] };
+  let retryKey;
+  await assert.rejects(
+    runResearch(parseArgs(["--payload", "-", "--handle", f.handlePath]), {
+      ...quiet,
+      key: "synthetic-gateway-key",
+      input: [JSON.stringify(payload)],
+      request: async (url, key, init) => {
+        retryKey = init.headers["idempotency-key"];
+        throw new Error("start response lost");
+      },
+    }),
+  );
+  const pending = `${f.handlePath}.request.json`;
+  assert.equal((await stat(pending)).mode & 0o077, 0);
+  assert.deepEqual(JSON.parse(await readFile(pending, "utf8")), payload);
+  assert.doesNotMatch(await readFile(pending, "utf8"), /synthetic-gateway-key/);
+  await rm(f.payloadPath);
+  await assert.rejects(
+    runResearch(parseArgs(["--status", f.handlePath]), {
+      ...quiet,
+      request: async () => assert.fail("status must not retry submission"),
+    }),
+    /unknown/,
+  );
+  let posts = 0;
+  const result = await runResearch(parseArgs(["--resume", f.handlePath]), {
+    ...quiet,
+    request: async (url, key, init) => {
+      if (init?.method === "POST") {
+        posts++;
+        assert.equal(init.headers["idempotency-key"], retryKey);
+        assert.deepEqual(JSON.parse(init.body), payload);
+        return { runId: "run_recovered" };
+      }
+      assert.equal(url.searchParams.get("runId"), "run_recovered");
+      assert.equal(JSON.parse(await readFile(f.handlePath, "utf8")).runId, "run_recovered");
+      await assert.rejects(stat(pending), { code: "ENOENT" });
+      return { status: "completed", result: { analysisId: "analysis_recovered" } };
+    },
+  });
+  assert.equal(posts, 1);
+  assert.equal(result.analysisId, "analysis_recovered");
+});
+
+test("modified pending requests cannot be submitted through resume", async (t) => {
+  const f = await requestFixture(t);
+  await assert.rejects(runResearch(parseArgs(["--payload", f.payloadPath]), {
+    ...quiet,
+    request: async () => { throw new Error("lost"); },
+  }));
+  await writeFile(`${f.handlePath}.request.json`, JSON.stringify({question: "different request"}));
+  await assert.rejects(runResearch(parseArgs(["--resume", f.handlePath]), {
+    ...quiet,
+    request: async () => assert.fail("modified request must not reach the gateway"),
+  }), /does not match/);
+});
+
 test("changed payloads and expired unknown submissions cannot replay an existing handle", async (t) => {
   const f = await requestFixture(t);
   const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);

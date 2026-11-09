@@ -286,6 +286,10 @@ const canonical = (value) => {
     );
   return value;
 };
+const fingerprint = (payload) =>
+  createHash("sha256")
+    .update(JSON.stringify(canonical(payload)))
+    .digest("hex");
 function validateHandle(handle) {
   if (
     !handle ||
@@ -312,12 +316,12 @@ function validateHandle(handle) {
 async function loadHandle(path) {
   return validateHandle(await readProtectedJson(path, 4096));
 }
-async function saveHandle(path, handle, createOnly = false) {
+async function saveProtectedJson(path, value, createOnly = false) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, "wx", 0o600);
     try {
-      await file.writeFile(JSON.stringify(handle));
+      await file.writeFile(JSON.stringify(value));
       await file.sync();
     } finally {
       await file.close();
@@ -337,6 +341,13 @@ async function saveHandle(path, handle, createOnly = false) {
   }
 }
 
+async function loadPendingRequest(path, handle) {
+  const payload = await readProtectedJson(path, MAX_PAYLOAD_BYTES);
+  if (fingerprint(payload) !== handle.requestHash)
+    throw new ResearchRunnerError("Pending request does not match the handle");
+  return payload;
+}
+
 export async function runResearch(
   args,
   {
@@ -349,8 +360,10 @@ export async function runResearch(
   } = {},
 ) {
   let handle;
+  let payload;
+  const pendingPath = `${args.handlePath}.request.json`;
   if (args.payloadPath) {
-    let payload = await readPayload(args, input);
+    payload = await readPayload(args, input);
     if (args.cohortPath) {
       if (
         !payload ||
@@ -394,9 +407,9 @@ export async function runResearch(
       };
       log(JSON.stringify({ cohortCoverage: cohort.coverage }));
     }
-    const requestHash = createHash("sha256")
-      .update(JSON.stringify(canonical(payload)))
-      .digest("hex");
+    if (Buffer.byteLength(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES)
+      throw new ResearchRunnerError("Compiled request exceeds 32 KiB");
+    const requestHash = fingerprint(payload);
     const proposed = {
       version: 1,
       requestHash,
@@ -404,7 +417,7 @@ export async function runResearch(
       createdAt: now(),
     };
     try {
-      await saveHandle(args.handlePath, proposed, true);
+      await saveProtectedJson(args.handlePath, proposed, true);
       handle = proposed;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
@@ -414,7 +427,12 @@ export async function runResearch(
           "Handle belongs to a different request; choose a new handle",
         );
     }
-    if (!handle.runId) {
+  } else handle = await loadHandle(args.handlePath);
+  if (!handle.runId) {
+    if (args.statusPath)
+      throw new ResearchRunnerError(
+        "Submission outcome is unknown; use --resume to recover the saved request",
+      );
       // Server idempotency expires after 24 hours. Never replay an uncertain old submission.
       if (
         now() < handle.createdAt ||
@@ -423,6 +441,28 @@ export async function runResearch(
         throw new ResearchRunnerError(
           "Submission outcome is unknown and its safe retry window expired; do not replay",
         );
+    if (payload === undefined) {
+      try {
+        payload = await loadPendingRequest(pendingPath, handle);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        // Another process may have saved the accepted run and removed the copy.
+        handle = await loadHandle(args.handlePath);
+        if (!handle.runId)
+          throw new ResearchRunnerError(
+            "Submission outcome is unknown and no saved request exists; retry the original payload with this handle",
+          );
+      }
+    }
+    if (!handle.runId) {
+      // Keep the exact compiled request durable before POST, including for stdin.
+      // The sidecar contains no gateway key, raw cohort query or payer mapping.
+      try {
+        await saveProtectedJson(pendingPath, payload, true);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        await loadPendingRequest(pendingPath, handle);
+      }
       const started = await request(ENDPOINT, key, {
         method: "POST",
         headers: {
@@ -434,13 +474,16 @@ export async function runResearch(
       if (!/^run_[A-Za-z0-9]+$/.test(started.runId))
         throw new ResearchRunnerError("Gateway returned an invalid run handle");
       handle.runId = started.runId;
-      await saveHandle(args.handlePath, handle);
+      await saveProtectedJson(args.handlePath, handle);
     }
-  } else handle = await loadHandle(args.handlePath);
-  if (!handle.runId)
-    throw new ResearchRunnerError(
-      "Submission outcome is unknown; retry the same payload with this handle within its safe retry window",
-    );
+  }
+  try {
+    await loadPendingRequest(pendingPath, handle);
+    await unlink(pendingPath);
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      log("Run ID is saved; private request sidecar cleanup needs attention.");
+  }
   if (!args.wait && !args.statusPath)
     return { runId: handle.runId, status: "submitted" };
   const statusUrl = new URL(ENDPOINT);

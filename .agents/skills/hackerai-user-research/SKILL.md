@@ -51,11 +51,14 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 5. Preserve the handle. It stores only a request fingerprint, stable retry key,
    timestamp and accepted run ID. Use `--resume <handle-path>` to wait for that
    existing run or `--status <handle-path>` to inspect it once. Once a run ID is
-   known, these commands never start another run. If the start response was lost,
-   explicitly rerun the same payload and handle within the safe retry window;
-   expired unknown submissions are blocked. A deliberate new analysis requires
-   a new handle. Remove temporary payload/cohort files after the runner reads them,
-   retaining the handle for recovery and the returned `analysisId` for audit lookup.
+   known, these commands only use GET. Before submission the runner durably saves
+   the exact compiled request in an owner-only `<handle-path>.request.json` sidecar.
+   If the start response is lost, `--resume` retries that saved request with the
+   same key within 23 hours; `--status` never resubmits. The sidecar is removed
+   after the accepted run ID is durably saved. Preserve it with the handle while
+   the outcome is unknown; expired unknown submissions are blocked. A deliberate
+   new analysis requires a new handle. Remove temporary input payload/cohort files
+   after the runner returns, retaining the handle and returned `analysisId` for audit lookup.
 6. Present the returned internal Convex/WorkOS user IDs together
    with the aggregate answer, evidence coverage, supported user types, avatars,
    primary/secondary target, confidence, unknowns, and experiments. User IDs are
