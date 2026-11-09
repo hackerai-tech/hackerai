@@ -117,18 +117,6 @@ GitHub Actions workflow (`.github/workflows/desktop-build.yml`) builds for:
 | Windows  | `x86_64-pc-windows-msvc`   | `.msi`, `.exe`      |
 | Linux    | `x86_64-unknown-linux-gnu` | `.AppImage`, `.deb` |
 
-### Pull request builds
-
-Relevant PRs compile and package the actual release-mode Desktop app on Windows
-x64, macOS arm64/x64, and Linux arm64/x64. Download the `desktop-pr-*` artifacts
-from **Desktop PR Builds** for inspection within seven days. They are unsigned
-validation builds; Apple notarization, release signing, and updater publication
-are verified by the release pipeline.
-
-The required **Desktop PR builds** check reports on every PR. Unrelated PRs skip
-platform builds while still completing the gate; a failed applicable package
-blocks the gate. **Run workflow** can build any branch manually as well.
-
 ### Building and releasing
 
 Desktop-related merges to `main` build a release candidate using the next
