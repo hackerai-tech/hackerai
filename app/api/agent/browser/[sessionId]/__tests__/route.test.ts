@@ -97,6 +97,11 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserRelayRenewFailureContext: () => ({
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: "other_error",
+    relay_renew_command_exit_code: "none",
+  }),
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
       ? {
@@ -895,7 +900,17 @@ it.each([
             "run_active",
             "trigger_run_id",
           ]
-      ).sort(),
+      )
+        .concat(
+          failure === "renew"
+            ? [
+                "relay_renew_diagnostic_version",
+                "relay_renew_error_kind",
+                "relay_renew_command_exit_code",
+              ]
+            : [],
+        )
+        .sort(),
     );
     expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
   },

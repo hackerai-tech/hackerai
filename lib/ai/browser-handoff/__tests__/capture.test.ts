@@ -1,10 +1,11 @@
 import {
   browserSessionReadFailureContext,
+  browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
   resizeBrowserViewport,
 } from "../server";
-import { CommandExitError } from "@e2b/code-interpreter";
+import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
 
 jest.mock("server-only", () => ({}));
@@ -1037,3 +1038,61 @@ it("censors close/open ordering when valid same-session open evidence is absent"
     "capture_close_receipt_version",
   );
 });
+
+it.each([
+  [
+    "command exit",
+    () =>
+      new CommandExitError({
+        exitCode: 17,
+        stdout: "PRIVATE",
+        stderr: "PRIVATE",
+      }),
+    "command_exit",
+    17,
+  ],
+  ["SDK timeout", () => new TimeoutError("PRIVATE"), "timeout", "none"],
+  ["other error", () => new Error("PRIVATE"), "other_error", "none"],
+  ["non-Error throw", () => "PRIVATE", "thrown_value", "none"],
+] as const)(
+  "attributes a relay renewal %s without exporting its contents",
+  (_label, createError, kind, exitCode) => {
+    const fields = browserRelayRenewFailureContext(createError());
+    expect(fields).toEqual({
+      relay_renew_diagnostic_version: 1,
+      relay_renew_error_kind: kind,
+      relay_renew_command_exit_code: exitCode,
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each(["accessor", "unbounded", "unreadable"] as const)(
+  "preserves renewal recovery and privacy for %s SDK exit data",
+  async (shape) => {
+    const error = new CommandExitError({
+      exitCode: 1,
+      stdout: "PRIVATE",
+      stderr: "PRIVATE",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE getter");
+    });
+    const result =
+      shape === "unreadable"
+        ? new Proxy({}, { getOwnPropertyDescriptor: getter })
+        : shape === "accessor"
+          ? Object.defineProperty({}, "exitCode", { get: getter })
+          : { exitCode: "PRIVATE" };
+    Object.defineProperty(error, "result", { value: result });
+    const fields = browserRelayRenewFailureContext(error);
+    expect(fields).toEqual({
+      relay_renew_diagnostic_version: 1,
+      relay_renew_error_kind:
+        shape === "unreadable" ? "unreadable" : "command_exit",
+      relay_renew_command_exit_code: "other",
+    });
+    expect(getter).toHaveBeenCalledTimes(shape === "unreadable" ? 1 : 0);
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
