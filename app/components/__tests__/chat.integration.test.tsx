@@ -2628,6 +2628,33 @@ describe("Chat Component Integration", () => {
       expect(mockChatHandlerArgs.sendQueuedMessage).toBeUndefined();
     });
 
+    it("does not flush queued work when an interrupted local run reconnects", async () => {
+      mockRouteParams = { id: "stopped-local" };
+      mockRestoredChat = {
+        id: "stopped-local",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        finish_reason: "local-connection-lost",
+      };
+      mockLocalConnections = [];
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+    });
+
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
       render(
         <TestWrapper>

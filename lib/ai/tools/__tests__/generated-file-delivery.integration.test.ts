@@ -71,6 +71,8 @@ describe("generated artifact delivery over HTTP", () => {
   let file: { s3Key: string } | undefined;
   let generation: number;
   let dropUpload: boolean;
+  let rejectNextUpload: boolean;
+  let uploadAttempts: Buffer[];
   const key = "users/test-user/report.txt";
   const location = { region: "us-west-2", bucket: "fixture-bucket" };
   const contents = "File delivery acceptance: café, evidence retained.\n";
@@ -84,7 +86,14 @@ describe("generated artifact delivery over HTTP", () => {
         const chunks: Buffer[] = [];
         req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
         req.on("end", () => {
-          if (!dropUpload) object = Buffer.concat(chunks);
+          const uploaded = Buffer.concat(chunks);
+          uploadAttempts.push(uploaded);
+          if (rejectNextUpload) {
+            rejectNextUpload = false;
+            res.writeHead(403).end("AccessDenied");
+            return;
+          }
+          if (!dropUpload) object = uploaded;
           res.writeHead(200).end();
         });
         return;
@@ -117,6 +126,8 @@ describe("generated artifact delivery over HTTP", () => {
     file = undefined;
     generation = 0;
     dropUpload = false;
+    rejectNextUpload = false;
+    uploadAttempts = [];
     process.env.NEXT_PUBLIC_CONVEX_URL = "https://test.convex.cloud";
     process.env.CONVEX_SERVICE_ROLE_KEY = "test-service-key";
     delete process.env.UPSTASH_REDIS_REST_URL;
@@ -164,6 +175,59 @@ describe("generated artifact delivery over HTTP", () => {
       server.close((error) => (error ? reject(error) : resolve())),
     );
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it("does not send a different same-named source after a real HTTP rejection", async () => {
+    // The command adapter maps the conventional Cloud home into the isolated
+    // fixture filesystem; both candidates exist with deliberately different bytes.
+    const preferred = join(directory, "preferred-report.txt");
+    await writeFile(preferred, "REQUESTED_REPORT\n");
+    await writeFile(join(directory, "report.txt"), "UNRELATED_REPORT\n");
+    rejectNextUpload = true;
+    const sandbox = {
+      sandboxKind: "e2b",
+      commands: {
+        run: async (command: string) => ({
+          ...(await exec(
+            "/bin/sh",
+            ["-c", command.replaceAll("/home/user/report.txt", preferred)],
+            { cwd: directory },
+          )),
+          exitCode: 0,
+        }),
+      },
+    };
+    const context = {
+      userID: "test-user",
+      chatId: "chat-fixture",
+      sandboxManager: {
+        getSandbox: async () => ({ sandbox }),
+        getSandboxInfo: () => ({ type: "cloud" }),
+      },
+      backgroundProcessTracker: {
+        hasActiveProcessesForFiles: async () => ({
+          active: false,
+          processes: [],
+        }),
+      },
+      fileAccumulator: new FileAccumulator(),
+      writer: { write: jest.fn() },
+    } as unknown as ToolContext;
+
+    const result = await (createGetTerminalFiles(context).execute as any)(
+      { files: ["report.txt"] },
+      { toolCallId: "rejected-report" },
+    );
+    expect(result).toMatchObject({
+      files: [],
+      deliveryReceipts: [],
+      failedFiles: [{ path: "report.txt" }],
+    });
+    expect(uploadAttempts.map((body) => body.toString())).toEqual([
+      "REQUESTED_REPORT\n",
+    ]);
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(context.fileAccumulator.getAll()).toEqual([]);
   });
 
   async function deliverAfterReconnect(

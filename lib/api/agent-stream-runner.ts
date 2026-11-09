@@ -18,6 +18,10 @@ import {
 } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
+import {
+  LocalConnectionLostError,
+  LOCAL_CONNECTION_LOST_FINISH_REASON,
+} from "@/lib/chat/local-connection-stop";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
@@ -3327,7 +3331,11 @@ export async function createAgentStream(
           toolCallCount: state.postSummarizationToolCallCount,
         });
       }
-      if (hardReason !== null) {
+      if (
+        ctx.abortController.signal.reason instanceof LocalConnectionLostError
+      ) {
+        state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      } else if (hardReason !== null) {
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
@@ -3573,6 +3581,11 @@ export async function createAgentStream(
     },
 
     onAbort: async ({ steps }) => {
+      if (
+        ctx.abortController.signal.reason instanceof LocalConnectionLostError
+      ) {
+        state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      }
       recordAssistantContentLoopAbortState(steps);
       await refundProviderContentBlockedIfSettled({
         error: state.providerError,

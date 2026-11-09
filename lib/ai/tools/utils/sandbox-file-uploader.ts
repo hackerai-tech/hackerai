@@ -20,6 +20,7 @@ import {
 } from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 import { getLocalFileRequestFailure } from "./local-sandbox-errors";
+import { SandboxFileNotFoundError } from "./sandbox-file-errors";
 import {
   buildPosixCurlUploadCommand,
   getUploadFailureDiagnostics,
@@ -177,7 +178,7 @@ async function getSandboxFileSize(
       const metadata = await sandbox.files.stat(fullPath);
       if (metadata.kind === "missing") {
         failureReason = "file_missing";
-        throw new Error(`File not found: ${fullPath}`);
+        throw new SandboxFileNotFoundError(fullPath);
       }
       if (metadata.kind !== "file") {
         failureReason = "not_regular_file";
@@ -268,6 +269,9 @@ async function getSandboxFileSize(
     stat_stderr: statResult.stderr?.slice(0, 500),
     stat_stdout: statResult.stdout?.slice(0, 500),
   });
+  // The metadata command reserves 66 for its explicit missing-file check.
+  // Other stat failures do not prove that a different path is safe to use.
+  if (statResult.exitCode === 66) throw new SandboxFileNotFoundError(fullPath);
   throw formatFileSizeFailure(fullPath, statResult);
 }
 
