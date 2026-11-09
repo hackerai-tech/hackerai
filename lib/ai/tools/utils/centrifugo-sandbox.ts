@@ -1649,6 +1649,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   () => {
                     commandPublicationStarted = true;
                   },
+                  diagnostics.dispatchPhase,
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do

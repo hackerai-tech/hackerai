@@ -12,6 +12,13 @@ export class RelayOperationReadinessTimeout extends Error {
   }
 }
 
+export type IsolatedOperationPhase =
+  | "control_ready"
+  | "presence"
+  | "publish"
+  | "operation_ready"
+  | "ready_received";
+
 /** Use the connection channel only while dispatching, then stop receiving its fanout. */
 export async function dispatchIsolatedOperation(
   client: Centrifuge,
@@ -21,7 +28,15 @@ export async function dispatchIsolatedOperation(
   isActive: () => boolean,
   reply: Subscription,
   onBeforePublish?: () => void,
+  onPhase?: (phase: IsolatedOperationPhase) => void,
 ): Promise<void> {
+  const observe = (phase: IsolatedOperationPhase) => {
+    try {
+      onPhase?.(phase);
+    } catch {
+      // Diagnostics must never change command publication or cleanup.
+    }
+  };
   let onReady: (ctx: PublicationContext) => void;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let rejectReady!: (error: Error) => void;
@@ -48,10 +63,13 @@ export async function dispatchIsolatedOperation(
   });
   control.subscribe();
   try {
+    observe("control_ready");
     await control.ready(5000);
+    observe("presence");
     const presence = await control.presence();
     if (!presenceHasConnectionId(presence, connectionId))
       throw new LocalCommandRelayUnsubscribedError(connectionId);
+    observe("publish");
     for (const fragment of fragmentCentrifugoMessage({
       ...request,
       operationChannel: true,
@@ -61,11 +79,13 @@ export async function dispatchIsolatedOperation(
       onBeforePublish?.();
       await control.publish(fragment);
     }
+    observe("operation_ready");
     timeout = setTimeout(
       () => rejectReady(new RelayOperationReadinessTimeout()),
       5000,
     );
     await ready;
+    observe("ready_received");
   } finally {
     clearTimeout(timeout);
     reply.removeListener("publication", onReady!);
