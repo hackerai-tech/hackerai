@@ -267,6 +267,36 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
+    const { context, writerWrites } = makeContext({});
+    let finish!: (value: { status: string }) => void;
+    context.requestBrowserChallenge = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = runTool(createRunTerminalCmd(context), {
+      command: "hackerai-captcha solve --session owned",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(writerWrites).toContainEqual({
+      type: "data-terminal",
+      id: "captcha-start-call-1",
+      data: {
+        terminal: "",
+        toolCallId: "call-1",
+        captchaStartedAt: expect.any(Number),
+      },
+    });
+    finish({ status: "token_delivered" });
+    expect(await pending).toMatchObject({
+      result: {
+        browserChallenge: { status: "token_delivered" },
+        callTiming: { elapsedMs: expect.any(Number) },
+      },
+    });
+  });
   test.each(["solve", "release"])(
     "routes the on-demand %s request without executing a shell command",
     async (action) => {

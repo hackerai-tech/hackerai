@@ -949,6 +949,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       )}
                       {isTerminal && resolvedTerminal && (
                         <TerminalCodeBlock
+                          captcha={resolvedTerminal.captcha}
                           command={resolvedTerminal.command}
                           output={resolvedTerminal.output}
                           isExecuting={resolvedTerminal.isExecuting}

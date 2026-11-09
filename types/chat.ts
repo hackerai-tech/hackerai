@@ -277,6 +277,19 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  captcha?: {
+    state:
+      | "solving"
+      | "response_delivered"
+      | "needs_verification"
+      | "failed"
+      | "stopped"
+      | "unavailable"
+      | "preparation_required"
+      | "not_needed";
+    startedAt?: number;
+    elapsedMs?: number;
+  };
   /** One explicit user click; discarded when the sidebar selection closes. */
   browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;

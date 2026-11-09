@@ -19,6 +19,10 @@ import {
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
 import { parseAgentAutoReviewLifecycle } from "@/types";
+import {
+  getCaptchaActivity,
+  getCaptchaStartedAt,
+} from "@/app/components/tools/captcha-tool-utils";
 
 interface MessagePart {
   type: string;
@@ -256,6 +260,14 @@ export function extractSidebarContentFromMessage(
           ? rawSnapshot
           : streamingOutput || rawSnapshot || undefined
         : undefined;
+      const captcha = getCaptchaActivity({
+        command,
+        output: part.output,
+        executionPhase,
+        hasResult: part.output !== undefined,
+        isExecuting: executionPhase === "executing",
+        startedAt: getCaptchaStartedAt(message.parts!, part.toolCallId || ""),
+      });
 
       contentList.push({
         command,
@@ -266,6 +278,7 @@ export function extractSidebarContentFromMessage(
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
+        ...(captcha ? { captcha } : {}),
         ...(isInteractive
           ? {
               shellAction: action,

@@ -24,6 +24,7 @@ export const browserChallengeObservation = z.object({
     )
     .max(10),
   interstitial: z.boolean(),
+  hcaptchaChallengeOpen: z.boolean().optional(),
 });
 export type BrowserChallengeObservation = z.infer<
   typeof browserChallengeObservation
@@ -101,6 +102,16 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
     url: managed ? ${CLOUDFLARE_PAGE_URL_SCRIPT} : location.href,
     documentId: String(performance.timeOrigin),
     widgets,
+    hcaptchaChallengeOpen: [...document.querySelectorAll('iframe')].some(frame => {
+      let src;
+      try { src = new URL(frame.src); } catch { return false; }
+      if (!(src.hostname === 'hcaptcha.com' || src.hostname.endsWith('.hcaptcha.com')) ||
+          new URLSearchParams(src.hash.slice(1)).get('frame') !== 'challenge') return false;
+      const bounds = frame.getBoundingClientRect();
+      const style = getComputedStyle(frame);
+      return bounds.width > 0 && bounds.height > 0 &&
+        style.display !== 'none' && style.visibility !== 'hidden';
+    }),
     interstitial: !!managed || !!document.querySelector(
       '#challenge-running, #challenge-stage, form#challenge-form',
     ) || (!!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]') &&
@@ -153,6 +164,7 @@ export function buildDeliverCaptchaScript(
       const callback = parent?.[parts.at(-1)];
       if (typeof callback === 'function') callback.call(parent, token);
     }
-    return {status: 'token_delivered', websiteAccepted: false};
+    return {status: 'token_delivered', websiteAccepted: false,
+      ...(widget.kind === 'hcaptcha' ? {responseRetained: fields[0].isConnected && fields[0].value === token} : {})};
   })(${JSON.stringify({ url: observation.url, documentId: observation.documentId })}, ${JSON.stringify(widget)}, ${JSON.stringify(token)})`;
 }

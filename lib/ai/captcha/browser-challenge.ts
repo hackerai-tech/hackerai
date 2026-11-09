@@ -264,6 +264,16 @@ export function createBrowserChallengeHandler(
           status: "handoff_required",
           reason: "unsupported_transport",
         });
+      // Canceling hCaptcha's visual challenge can clear response fields. Do it
+      // before spending/applying a response, including when the overlay opened
+      // after the earlier offer. A fresh snapshot must revalidate the widget.
+      if (widget.kind === "hcaptcha" && observation.hcaptchaChallengeOpen)
+        return respond({
+          status: "preparation_required",
+          providerTaskCreated: false,
+          providerCostUSD: 0,
+          message: `Close the open hCaptcha visual challenge BEFORE requesting a solve: press Escape once in this same browser session${target ? ` with agent-browser --session ${target.sessionName} press Escape` : ""}, then take a fresh standalone snapshot. No paid task has been created. Do not press Escape, reset, or reopen the widget after a response is delivered.`,
+        });
       const key = process.env.TWOCAPTCHA_API_KEY;
       if (!key)
         return respond({
@@ -335,7 +345,10 @@ export function createBrowserChallengeHandler(
       if (widget.managed && !solution.userAgent)
         throw new Error("Missing managed challenge user agent.");
       const delivered = z
-        .object({ status: z.enum(["page_changed", "token_delivered"]) })
+        .object({
+          status: z.enum(["page_changed", "token_delivered"]),
+          responseRetained: z.boolean().optional(),
+        })
         .parse(
           widget.managed
             ? await browser.deliverCloudflare!(
@@ -356,6 +369,15 @@ export function createBrowserChallengeHandler(
       });
       managedDelivered = delivered.status === "token_delivered";
       if (managedDelivered) deliveryOutcome = "delivered";
+      if (delivered.responseRetained === false)
+        return respond({
+          status: "handoff_required",
+          reason: "response_not_retained",
+          responseDelivered: true,
+          websiteAccepted: false,
+          message:
+            "The response was delivered, but the page no longer retains it. A callback may have submitted or reset the form. Check the current website result without another paid solve, widget reset, or repeated submission. If acceptance is uncertain, stop for manual verification.",
+        });
       if (widget.managed && managedDelivered) {
         managedGateOutcome = "unknown";
         // Navigation can destroy the first evaluation. Retry only this owned,
@@ -407,6 +429,9 @@ export function createBrowserChallengeHandler(
           ? {
               status: "token_delivered",
               websiteAccepted: false,
+              ...(delivered.responseRetained !== undefined && {
+                responseRetained: delivered.responseRetained,
+              }),
               ...(widget.managed && {
                 managedGateCleared:
                   managedGateOutcome === "unknown"
