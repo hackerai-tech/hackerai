@@ -7,9 +7,9 @@ import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 import { phLogger } from "@/lib/posthog/server";
 
 /**
- * Stripe Subscription Schedules are used for one thing here: applying a
- * retention downgrade at the end of the paid period. While a schedule is
- * attached, Stripe rejects direct item changes on the subscription, so every
+ * Stripe Subscription Schedules apply retention downgrades and operator-run
+ * legacy Pro price migrations at renewal. While a schedule is attached,
+ * Stripe rejects direct item changes on the subscription, so every
  * other plan mutation (cancel, pause, keep, upgrade) releases it first.
  */
 
