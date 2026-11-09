@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { randomUUID } from "node:crypto";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { abuseOperatorRequest, isAbuseOperator } from "@/lib/abuse/operator";
@@ -202,6 +203,13 @@ export async function POST(request: NextRequest) {
     }
     return reply({ saved: true });
   } catch (error) {
+    if (
+      error instanceof ConvexError &&
+      error.data &&
+      typeof error.data === "object" &&
+      error.data.code === "ABUSE_ACTIVE_ROOT_CHANGED"
+    )
+      return reply({ code: "ABUSE_ACTIVE_ROOT_CHANGED" }, 409);
     if (error instanceof AbuseRequestError)
       return reply({ error: "The action could not be read." }, error.status);
     // Provider exceptions and Convex validation errors can include evidence. Never log or forward them.

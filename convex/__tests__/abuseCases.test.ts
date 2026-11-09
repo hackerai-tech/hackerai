@@ -292,7 +292,15 @@ test("reviewed containment is scoped and resolution leaves billing and independe
   await expect(
     invoke("beginContainment", ctx, { ...begin, userId: "other" }),
   ).rejects.toThrow("ownership changed");
+  expect(ctx.tables.abuse_cases[0].revision).toBe(1);
+  expect(ctx.tables.user_suspensions).toHaveLength(2);
   const row = await invoke("beginContainment", ctx, begin);
+  const readCase = () =>
+    invoke("read", ctx, {
+      ...operator,
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+  expect((await readCase()).restrictionStatus).toBe("active");
   expect(row.containment.childRunIds).toEqual(["run_child"]);
   expect(ctx.tables.subagent_runs.map((child) => child.status)).toEqual([
     "canceled",
@@ -331,6 +339,7 @@ test("reviewed containment is scoped and resolution leaves billing and independe
     "resolved",
   ]);
   expect(row.evidenceHold).toBe(true);
+  expect((await readCase()).restrictionStatus).toBe("resolved");
   await expect(
     invoke("eraseEvidence", ctx, {
       ...operator,

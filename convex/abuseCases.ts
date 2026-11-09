@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import {
   mutation,
@@ -217,6 +217,11 @@ export const read = mutation({
   args: { ...caseArgs, paginationOpts: paginationOptsValidator },
   returns: v.object({
     case: abuseCase,
+    restrictionStatus: v.union(
+      v.literal("active"),
+      v.literal("resolved"),
+      v.null(),
+    ),
     events: v.array(abuseEvent),
     isDone: v.boolean(),
     continueCursor: v.string(),
@@ -224,6 +229,16 @@ export const read = mutation({
   handler: async (ctx, args) => {
     operator(args.serviceKey, args.actor);
     const row = await findCase(ctx, args.reference);
+    const restriction = row.containment
+      ? await ctx.db
+          .query("user_suspensions")
+          .withIndex("by_user_and_source", (q) =>
+            q
+              .eq("user_id", row.containment!.userId)
+              .eq("source_id", `abuse:${row.reference}`),
+          )
+          .unique()
+      : null;
     const events = await ctx.db
       .query("abuse_events")
       .withIndex("by_caseId", (q) => q.eq("caseId", row._id))
@@ -235,6 +250,11 @@ export const read = mutation({
     await event(ctx, row, args.actor, "read");
     return {
       case: row,
+      restrictionStatus:
+        restriction?.category === "security_abuse" &&
+        restriction.source === "support"
+          ? restriction.status
+          : null,
       events: events.page,
       isDone: events.isDone,
       continueCursor: events.continueCursor,
@@ -321,7 +341,10 @@ export const beginContainment = mutation({
       chat.active_trigger_run_id !== args.runId ||
       chat.deletion_started_at
     )
-      throw new Error("Run ownership changed; inspect before acting");
+      throw new ConvexError({
+        code: "ABUSE_ACTIVE_ROOT_CHANGED",
+        message: "Run ownership changed; inspect before acting",
+      });
     if (args.transport === "cloud" && (!args.sandboxId || !args.region))
       throw new Error("Cloud workspace identity required");
     const children = await ctx.db

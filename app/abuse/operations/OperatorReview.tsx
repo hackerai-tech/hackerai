@@ -50,6 +50,7 @@ const selectClass =
   "h-11 w-full rounded-md border border-input bg-background px-3 text-sm";
 const date = (time: number) =>
   new Date(time).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+class OperatorRequestError extends Error {}
 
 async function request(body: unknown) {
   const response = await fetch("/api/internal/abuse", {
@@ -58,10 +59,16 @@ async function request(body: unknown) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(305_000),
   });
-  if (!response.ok)
-    throw new Error(
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null);
+    if (failure?.code === "ABUSE_ACTIVE_ROOT_CHANGED")
+      throw new OperatorRequestError(
+        "Rejected: the selected root is not the current active run for this user and chat. This action changed nothing. For a completed or replaced run, use the late-report procedure in the abuse-response runbook.",
+      );
+    throw new OperatorRequestError(
       "Action unconfirmed. Reload the case to inspect saved progress. Check the revision, reviewed attribution, existing containment, and action requirements before retrying. An interrupted operation remains locked for up to ten minutes.",
     );
+  }
   return response.json();
 }
 
@@ -71,10 +78,14 @@ export default function OperatorReview() {
   const [queueCursor, setQueueCursor] = useState<string | null>(null);
   const [reference, setReference] = useState("");
   const [selected, setSelected] = useState<Case | null>(null);
+  const [restrictionStatus, setRestrictionStatus] = useState<
+    "active" | "resolved" | null
+  >(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [eventsCursor, setEventsCursor] = useState<string | null>(null);
   const [operation, setOperation] = useState<Operation>("annotate");
   const [cloud, setCloud] = useState(false);
+  const [scopeInputs, setScopeInputs] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -88,8 +99,7 @@ export default function OperatorReview() {
       await work();
     } catch (failure) {
       setError(
-        failure instanceof Error &&
-          failure.message.startsWith("Action unconfirmed.")
+        failure instanceof OperatorRequestError
           ? failure.message
           : "Action unconfirmed. Reload the case before acting again. No process stop has been established by this error.",
       );
@@ -100,6 +110,7 @@ export default function OperatorReview() {
   async function loadCase(value: string, cursor: string | null = null) {
     const result = await request({ action: "read", reference: value, cursor });
     setSelected(result.case);
+    setRestrictionStatus(result.restrictionStatus);
     setReference(value);
     setEvents((previous) =>
       cursor ? [...previous, ...result.events] : result.events,
@@ -327,7 +338,13 @@ export default function OperatorReview() {
               <dl className="grid gap-3 text-sm sm:grid-cols-2">
                 {Object.entries({
                   Transport: scope.transport,
+                  "Case security restriction":
+                    restrictionStatus ?? "No matching restriction recorded",
+                  "Restriction source": `abuse:${selected.reference}`,
                   "Trigger runs": scope.triggerState,
+                  "Child run scope": scope.childRunIds.length
+                    ? scope.childRunIds.join(", ")
+                    : "No recorded child runs",
                   "Underlying process": scope.processState,
                   "Workspace release": scope.workspaceState,
                   "Snapshot requested": scope.snapshotRequested
@@ -407,7 +424,10 @@ export default function OperatorReview() {
               <select
                 className={selectClass}
                 value={operation}
-                onChange={(e) => setOperation(e.target.value as Operation)}
+                onChange={(e) => {
+                  setOperation(e.target.value as Operation);
+                  setScopeInputs({});
+                }}
               >
                 {operations.map(([key, label]) => (
                   <option key={key} value={key}>
@@ -447,10 +467,21 @@ export default function OperatorReview() {
                     <span>{label}</span>
                     <Input
                       name={name}
-                      className="h-11 font-mono"
+                      className="h-11 font-mono text-xs sm:text-sm"
+                      onChange={(event) =>
+                        setScopeInputs((values) => ({
+                          ...values,
+                          [name]: event.target.value,
+                        }))
+                      }
                       required
                       maxLength={160}
                     />
+                    {scopeInputs[name]?.length > 36 && (
+                      <span className="block break-all font-mono text-xs text-muted-foreground">
+                        {scopeInputs[name]}
+                      </span>
+                    )}
                   </label>
                 ))}
                 <label className="flex items-start gap-3 text-sm">
@@ -472,8 +503,19 @@ export default function OperatorReview() {
                       <Input
                         name="sandboxId"
                         required
-                        className="h-11 font-mono"
+                        className="h-11 font-mono text-xs sm:text-sm"
+                        onChange={(event) =>
+                          setScopeInputs((values) => ({
+                            ...values,
+                            sandboxId: event.target.value,
+                          }))
+                        }
                       />
+                      {scopeInputs.sandboxId?.length > 36 && (
+                        <span className="block break-all font-mono text-xs text-muted-foreground">
+                          {scopeInputs.sandboxId}
+                        </span>
+                      )}
                     </label>
                     <label className="block space-y-2 text-sm">
                       <span>Region</span>

@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { ConvexError } from "convex/values";
 jest.mock("server-only", () => ({}));
 jest.mock("next/server", () => ({
   NextResponse: {
@@ -105,4 +106,28 @@ test("authenticated reads use the audited mutation before returning decrypted ev
   expect(JSON.stringify(body)).not.toContain("private-token");
   expect(JSON.stringify(body)).not.toContain("private-digest");
   expect(response.headers.get("cache-control")).toContain("no-store");
+});
+
+test("reports only the known no-change rejection without forwarding backend evidence", async () => {
+  mockAuth.mockResolvedValue({ session: { user: { id: "operator" } } });
+  mockMutation.mockRejectedValue(
+    new ConvexError({
+      code: "ABUSE_ACTIVE_ROOT_CHANGED",
+      message: "private backend evidence",
+    }),
+  );
+  const response = await POST(request());
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ code: "ABUSE_ACTIVE_ROOT_CHANGED" });
+
+  mockMutation.mockRejectedValue(
+    new ConvexError({
+      code: "UNKNOWN_FAILURE",
+      message: "private backend evidence",
+    }),
+  );
+  const unknown = await POST(request());
+  expect(await unknown.json()).toEqual({
+    error: expect.stringContaining("not confirmed"),
+  });
 });
