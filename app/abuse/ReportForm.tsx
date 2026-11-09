@@ -296,7 +296,7 @@ export default function ReportForm({ available }: { available: boolean }) {
                   setKind(option.value);
                   setErrors({});
                 }}
-                className="mt-1 size-4 accent-foreground"
+                className="mt-1 size-4 accent-foreground [color-scheme:light] dark:[color-scheme:dark]"
               />
               <span>
                 <span className="block text-sm font-medium">
@@ -393,7 +393,7 @@ export default function ReportForm({ available }: { available: boolean }) {
               maxLength={32}
               disabled={pending}
               className="h-11"
-              placeholder="UTC or UTC−6"
+              placeholder="UTC"
               aria-describedby="occurredAt-hint"
             />
           </div>

@@ -84,15 +84,13 @@ export function PostHogProvider({
   const userLocale = user?.locale;
   const referralHandled = useRef(false);
   const pathname = usePathname();
+  const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
 
-    const privatePage = isAbuseReportingPath(
-      pathname ?? window.location.pathname,
-    );
     const replayBlockKey = "hackerai_abuse_replay_blocked";
     const blockReplay = () => {
       privateReplaySession.current = true;
@@ -332,7 +330,7 @@ export function PostHogProvider({
     };
   }, [
     analyticsAllowed,
-    pathname,
+    privatePage,
     consentRequired,
     consentDeclined,
     firstTouchAttribution,

@@ -37,7 +37,7 @@ function boundedCiphertext(value: string) {
     !/^v1\.[a-zA-Z0-9_-]{1,32}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(
       value,
     ) ||
-    value.length > 48_000
+    value.length > 128 * 1024
   ) {
     throw new Error("Invalid encrypted evidence");
   }
@@ -194,11 +194,12 @@ export const list = query({
       .withIndex("by_status", (q) => q.eq("status", args.status))
       .order("desc")
       .paginate({
-        ...args.paginationOpts,
+        cursor: args.paginationOpts.cursor,
         numItems: Math.min(50, Math.max(1, args.paginationOpts.numItems)),
       });
     return {
-      ...result,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
       page: result.page.map(
         ({ reference, kind, status, createdAt, updatedAt }) => ({
           reference,

@@ -75,6 +75,8 @@ function database() {
             page: rows.slice(offset, offset + numItems),
             isDone: offset + numItems >= rows.length,
             continueCursor: String(offset + numItems),
+            splitCursor: null,
+            pageStatus: null,
           };
         },
       };
@@ -211,6 +213,40 @@ test("only explicit operators can read evidence and every authorized read is aud
     "received",
     "read",
   ]);
+});
+test("queue returns only its validated pagination contract, including continuation", async () => {
+  const ctx = database();
+  await invoke("receive", ctx, intake);
+  const result = await invoke("list", ctx, {
+    ...operator,
+    status: "new",
+    paginationOpts: { cursor: null, numItems: 1 },
+  });
+  expect(Object.keys(result).sort()).toEqual([
+    "continueCursor",
+    "isDone",
+    "page",
+  ]);
+  expect(result.page).toHaveLength(1);
+  expect(result.page[0]).not.toHaveProperty("ciphertext");
+  expect(result.isDone).toBe(true);
+  expect(result.continueCursor).toBe("1");
+});
+test("persists bounded maximum-length non-Latin evidence after encryption", async () => {
+  const ctx = database();
+  process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
+    active: "test",
+    keys: { test: "11".repeat(32) },
+  });
+  const encoded = encryptAbuseEvidence(reference, {
+    description: "報".repeat(6000),
+    evidence: "證".repeat(6000),
+    target: "例".repeat(500),
+  });
+  expect(encoded.length).toBeGreaterThan(48_000);
+  await expect(
+    invoke("receive", ctx, { ...intake, ciphertext: encoded }),
+  ).resolves.toEqual({ outcome: "received", reference });
 });
 test("reviewed containment is scoped and resolution leaves billing and independent security holds intact", async () => {
   const ctx = database();

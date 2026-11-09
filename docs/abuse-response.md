@@ -42,6 +42,12 @@ The reporting and operator routes suppress PostHog events and Intercom startup.
 
 ## Containment and recovery
 
+The operator's containment action requires the selected root to remain the chat's
+active run. It deliberately rejects a completed or replaced root; do not remove
+that guard or attach an old run to bypass it. A report may arrive after completion
+while a detached cloud process is still running. In that case use the late-report
+procedure below.
+
 The reviewed action adds a support `security_abuse` suspension owned by the case.
 It blocks new cost-incurring work, reconnects, root/child attachment and existing
 Goal continuations through the shared suspension gates. It cancels the selected
@@ -83,6 +89,39 @@ For local and Desktop runs, cancellation is a request. Verify the actual machine
 including detached child processes and ongoing network activity. Record the
 verification method, scope, timestamp, and evidence before choosing the manual
 process-stop confirmation. Cloud tests do not establish local or native acceptance.
+
+### Reports received after a run finishes
+
+This path requires an authorized operator with service access; it is not exposed
+as an automatic case action. Keep the case in review or follow-up until the
+separate restriction and runtime checks are recorded.
+
+1. Record a verified-fact note tying the report to the historical root, account,
+   chat, provider sandbox and region, and a decision naming the reviewer and
+   reason for restriction. Recheck the current workspace selection; the old run's
+   sandbox must not be inferred to be the user's current sandbox.
+2. Using the existing signed `userSuspensions.upsertActive` mutation, set only
+   that verified user's `support` / `security_abuse` restriction with a unique
+   case-specific source ID such as `abuse-late:<full AB reference>`. Record the
+   exact source ID and read back the active restriction in the case. Preserve all
+   other sources. This blocks new work; it does not prove existing processes stop.
+3. Independently inspect the historical sandbox at the recorded provider/region.
+   Verify its provider ownership and the current workspace state before any
+   destructive action. Preserve the minimum necessary evidence first. If it still
+   exists, terminate only the verified sandbox through the authorized provider
+   procedure, preserving or recovering only its matching workspace cleanup fence.
+   Do not clear an unfamiliar fence or terminate a replacement workspace by guess.
+   Unknown ownership or selection requires escalation while the restriction stays
+   active. Cancel any separately verified active root/children in that workspace.
+4. Record provider absence, Trigger terminal state, and any workspace-fence
+   release separately, with timestamps and the verification method. For a local
+   or Desktop process, require machine-level verification. A restriction or a
+   completed historical run alone is never process-stop evidence.
+5. After appeal or resolution review, use `userSuspensions.resolveBySource` only
+   with the exact recorded user and `abuse-late:` source ID. Verify the selected
+   restriction is resolved and independent restrictions remain active, then
+   record the result before resolving the case. The case's normal Resolve action
+   does not remove this separately recorded late-report restriction.
 
 ## Resolution and evidence lifecycle
 

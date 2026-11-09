@@ -43,7 +43,8 @@ export type AbuseReportField = Exclude<
   keyof AbuseReport,
   "submissionId" | "website"
 >;
-export const ABUSE_REQUEST_MAX_BYTES = 24 * 1024;
+// Allow every bounded field even when JSON escapes each UTF-16 code unit.
+export const ABUSE_REQUEST_MAX_BYTES = 96 * 1024;
 export const ABUSE_EMAIL = "abuse@hackerai.co";
 
 export class AbuseRequestError extends Error {

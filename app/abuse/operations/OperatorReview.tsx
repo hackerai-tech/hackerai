@@ -15,6 +15,14 @@ type Event = Omit<Doc<"abuse_events">, "ciphertext"> & {
   detail: { text: string } | null;
 };
 type QueueItem = Pick<Case, "reference" | "kind" | "status" | "updatedAt">;
+const statusLabels: Record<Case["status"], string> = {
+  new: "New",
+  reviewing: "Reviewing",
+  containing: "Containment in progress",
+  contained: "Contained",
+  needs_followup: "Needs follow-up",
+  resolved: "Resolved",
+};
 const operations = [
   ["annotate", "Add review note"],
   ["contain", "Restrict and contain"],
@@ -191,14 +199,14 @@ export default function OperatorReview() {
             >
               {abuseStatuses.map((item) => (
                 <option key={item} value={item}>
-                  {item.replaceAll("_", " ")}
+                  {statusLabels[item]}
                 </option>
               ))}
             </select>
           </label>
           <Button
             disabled={pending}
-            className="sm:self-end"
+            className="h-11 sm:self-end"
             onClick={() => run(() => loadQueue())}
           >
             Load queue
@@ -210,8 +218,8 @@ export default function OperatorReview() {
               <p className="break-all font-mono text-xs">{row.reference}</p>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <span className="text-muted-foreground">
-                  {row.kind} · {row.status.replaceAll("_", " ")} ·{" "}
-                  {date(row.updatedAt)}
+                  {row.kind === "abuse" ? "Report" : "Appeal"} ·{" "}
+                  {statusLabels[row.status]} · {date(row.updatedAt)}
                 </span>
                 <Button
                   size="sm"
@@ -253,7 +261,9 @@ export default function OperatorReview() {
             className="h-11 font-mono text-xs"
             required
           />
-          <Button disabled={pending}>Open (audited)</Button>
+          <Button className="h-11" disabled={pending}>
+            Open (audited)
+          </Button>
         </div>
         <p className="text-xs text-muted-foreground">
           Opening evidence records your operator identity and time.
@@ -279,9 +289,9 @@ export default function OperatorReview() {
               {selected.reference}
             </h2>
             <p className="text-sm">
-              {selected.kind} · {selected.status.replaceAll("_", " ")} ·
-              Revision {selected.revision} · Evidence hold{" "}
-              {selected.evidenceHold ? "on" : "off"}
+              {selected.kind === "abuse" ? "Report" : "Appeal"} ·{" "}
+              {statusLabels[selected.status]} · Revision {selected.revision} ·
+              Evidence hold {selected.evidenceHold ? "on" : "off"}
             </p>
             <p className="text-xs leading-6 text-muted-foreground">
               Submitted fields are allegations. Links are displayed as plain
@@ -419,17 +429,19 @@ export default function OperatorReview() {
             {operation === "contain" && (
               <>
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Record verified attribution before acting. This adds a
-                  temporary security restriction to this user, cancels the
-                  selected root and its children, and stops the verified cloud
-                  workspace. Other work in the same workspace is affected. A
-                  competing active case must be reviewed in its existing
-                  workflow.
+                  Record verified attribution before acting. This action
+                  requires the chat&apos;s current active root. For a completed
+                  or replaced run, use the separate late-report procedure in the
+                  abuse-response runbook. When accepted, this adds a temporary
+                  security restriction to this user, cancels the selected root
+                  and its children, and stops the verified cloud workspace.
+                  Other work in the same workspace is affected. A competing
+                  active case must be reviewed in its existing workflow.
                 </p>
                 {[
                   ["userId", "User ID"],
                   ["chatId", "Chat ID"],
-                  ["runId", "Trigger run ID"],
+                  ["runId", "Trigger run ID (current active root)"],
                 ].map(([name, label]) => (
                   <label key={name} className="block space-y-2 text-sm">
                     <span>{label}</span>

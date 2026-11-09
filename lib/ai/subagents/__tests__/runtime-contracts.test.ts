@@ -277,8 +277,10 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain('attachOutcome === "terminal"');
     expect(child).toContain("reusePersistedTerminalState");
     expect(child).toContain('event: "subagent_terminal_state_reused"');
-    expect(child).toContain('failureCode: "setup_failed"');
-    expect(child).toContain('errorCategory: "setup_failed"');
+    expect(child).toContain(
+      'restricted ? "account_restricted" : "setup_failed"',
+    );
+    expect(child).toContain("errorCategory: failureCode");
     expect(child).toContain("onError: (error) =>");
     expect(child).toContain("const terminalFailure = activeTimedOut");
     expect(child).toContain(": spendCapExceeded");

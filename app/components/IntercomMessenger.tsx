@@ -16,8 +16,9 @@ export function IntercomMessenger({
   identity: IntercomMessengerIdentity | null;
 }) {
   const pathname = usePathname();
+  const suppressed = isAbuseReportingPath(pathname ?? "");
   useEffect(() => {
-    if (!identity || isAbuseReportingPath(pathname ?? "")) {
+    if (!identity || suppressed) {
       shutdownIntercomSession();
       activeUserId = null;
       return;
@@ -58,7 +59,7 @@ export function IntercomMessenger({
     return () => {
       cancelled = true;
     };
-  }, [identity, pathname]);
+  }, [identity, suppressed]);
 
   return null;
 }

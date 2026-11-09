@@ -16,6 +16,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 jest.mock("@vercel/functions", () => ({ ipAddress: () => "198.51.100.9" }));
 import { POST } from "../route";
 import { decryptAbuseEvidence } from "@/lib/abuse/evidence";
+import { ABUSE_REQUEST_MAX_BYTES } from "@/lib/abuse/report";
 const originalEnv = { ...process.env };
 const report = {
   submissionId: "123e4567-e89b-42d3-a456-426614174000",
@@ -101,8 +102,29 @@ test("rejects foreign origins, malformed private bodies, and oversized streams w
   );
   expect(malformed.status).toBe(400);
   expect(JSON.stringify(await malformed.json())).not.toContain(report.evidence);
-  expect((await POST(request("x".repeat(25 * 1024)))).status).toBe(413);
+  expect(
+    (await POST(request("x".repeat(ABUSE_REQUEST_MAX_BYTES + 1)))).status,
+  ).toBe(413);
   expect(mockMutation).not.toHaveBeenCalled();
+});
+test("accepts maximum-length non-Latin fields without a contradictory size error", async () => {
+  const multilingual = {
+    ...report,
+    description: "報".repeat(6000),
+    evidence: "證".repeat(6000),
+    target: "例".repeat(500),
+  };
+  mockMutation.mockImplementation(async (_ref, args) => ({
+    outcome: "received",
+    reference: args.reference,
+  }));
+  const response = await POST(request(JSON.stringify(multilingual)));
+  expect(response.status).toBe(201);
+  const args = mockMutation.mock.calls[0][1];
+  expect(decryptAbuseEvidence(args.reference, args.ciphertext)).toMatchObject(
+    multilingual,
+  );
+  expect(args.ciphertext.length).toBeLessThanOrEqual(128 * 1024);
 });
 test("does not expose provider errors or receipt fields for validation and rate-limit failures", async () => {
   const invalid = await POST(

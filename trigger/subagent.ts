@@ -452,7 +452,6 @@ export const subagentTask = task({
     }
     const row = await getSubagent(payload.subagentId);
     if (!row) throw new Error("Subagent reservation not found");
-    await assertUserCanMakeCostIncurringRequest(row.user_id);
     if (SUBAGENT_TERMINAL_STATUSES.has(row.status)) {
       return await reusePersistedTerminalState(row, ctx.run.id, "pre_attach");
     }
@@ -482,6 +481,10 @@ export const subagentTask = task({
         providerHistory.flush(true, "cancellation_hook"),
     });
     try {
+      // Keep authorization failures inside setup finalization so an unattached
+      // reservation cannot remain queued. Terminal persisted results are reused
+      // above without starting new work.
+      await assertUserCanMakeCostIncurringRequest(row.user_id);
       const attachOutcome = await attachSubagentTriggerRun(
         row.subagent_id,
         ctx.run.id,
@@ -528,12 +531,22 @@ export const subagentTask = task({
         .set("profile", row.profile);
     } catch (error) {
       const setupError = extractErrorDetails(error);
+      const restricted =
+        error instanceof ChatSDKError &&
+        error.type === "forbidden" &&
+        error.surface === "chat" &&
+        typeof error.metadata?.suspensionCategory === "string";
+      const status = restricted ? "canceled" : "failed";
+      const failureCode = restricted ? "account_restricted" : "setup_failed";
       const finishOutcome = await finishSubagent({
         subagentId: row.subagent_id,
         triggerRunId: ctx.run.id,
-        status: "failed",
-        summary: "Subagent failed during setup.",
-        failureCode: "setup_failed",
+        status,
+        summary: restricted
+          ? "Subagent was canceled because the account is restricted."
+          : "Subagent failed during setup.",
+        failureCode,
+        ...(restricted ? { cancelReason: failureCode } : {}),
         failureReason:
           typeof setupError.errorMessage === "string"
             ? setupError.errorMessage
@@ -545,16 +558,16 @@ export const subagentTask = task({
           subagentId: row.subagent_id,
           parentTriggerRunId: row.parent_trigger_run_id,
           profile: row.profile,
-          status: "failed",
+          status,
           durationMs: Date.now() - startedAt,
-          errorCategory: "setup_failed",
+          errorCategory: failureCode,
           failureStage: "setup",
         });
       }
       cancellationCleanup.delete(ctx.run.id);
       metadata
-        .set("status", "failed")
-        .set("failureCode", "setup_failed")
+        .set("status", status)
+        .set("failureCode", failureCode)
         .set("failureStage", "setup");
       await phLogger.flush().catch(() => undefined);
       throw error;

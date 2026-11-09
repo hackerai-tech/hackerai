@@ -1593,6 +1593,7 @@ describe("suspended child attachment", () => {
   afterEach(() => mockBlocked.mockResolvedValue(false));
   it.each([
     ["running", "run_authoritative", "run_stale", "stale"],
+    ["running", "run_authoritative", "run_authoritative", "terminal"],
     ["completed", "run_authoritative", "run_authoritative", "terminal"],
     ["failed", "run_authoritative", "run_authoritative", "terminal"],
     ["queued", undefined, "run_new", "terminal"],
@@ -1627,10 +1628,14 @@ describe("suspended child attachment", () => {
           triggerRunId: incoming,
         }),
       ).toBe(outcome);
-      if (status === "queued")
+      if (
+        status === "queued" ||
+        (status === "running" && outcome === "terminal")
+      )
         expect(row).toMatchObject({
           status: "canceled",
-          trigger_run_id: "run_new",
+          trigger_run_id: incoming,
+          cancel_reason: "account_restricted",
         });
       else
         expect(row).toMatchObject({
