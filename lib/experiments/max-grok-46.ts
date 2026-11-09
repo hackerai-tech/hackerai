@@ -240,8 +240,10 @@ export class MaxModelTelemetry {
           this.attempts > 0 &&
           usage.usage_model_calls_started === this.attempts &&
           usage.usage_model_records >= usage.usage_model_calls_started &&
-          usage.usage_input_reported_records >= usage.usage_model_records &&
-          usage.usage_cache_read_reported_records >= usage.usage_model_records,
+          usage.usage_input_reported_records >=
+            usage.usage_model_records + usage.usage_summary_records &&
+          usage.usage_cache_read_reported_records >=
+            usage.usage_model_records + usage.usage_summary_records,
       },
       "outcome",
     );

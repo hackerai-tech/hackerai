@@ -508,6 +508,73 @@ it("does not deliver a late response after Stop", async () => {
     "stopped",
   );
   expect(evaluate).toHaveBeenCalledTimes(1);
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
+});
+
+it("classifies Stop while waiting for the provider without retrying or delivering", async () => {
+  const { tool, solve, evaluate, journal } = setup();
+  const controller = new AbortController();
+  const reason = new Error("private-stop-detail");
+  let started!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  solve.mockImplementation(
+    () =>
+      new Promise((_resolve, reject) => {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(controller.signal.reason),
+          { once: true },
+        );
+        started();
+      }),
+  );
+  const pending = run(tool, "solve", controller.signal);
+  const rejected = expect(pending).rejects.toBe(reason);
+  await waiting;
+  controller.abort(reason);
+  await rejected;
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
+  expect(phLogger.event).not.toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "provider_outcome_unknown" }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toContain(
+    "private-stop-detail",
+  );
+  expect(evaluate).toHaveBeenCalledTimes(1);
+  expect(journal.reserve).toHaveBeenCalledTimes(1);
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("preserves delivery uncertainty when Stop races with response application", async () => {
+  const { tool, evaluate } = setup();
+  const controller = new AbortController();
+  const reason = new Error("stopped during delivery");
+  evaluate.mockImplementation(async (script) => {
+    if (script === DETECT_CHALLENGES_SCRIPT) return cloneObservation();
+    controller.abort(reason);
+    throw reason;
+  });
+  await expect(run(tool, "solve", controller.signal)).rejects.toBe(reason);
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "delivery_outcome_unknown" }),
+  );
+  expect(phLogger.event).not.toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
 });
 
 it("does not load guidance or the provider when inspection fails before detecting a challenge", async () => {

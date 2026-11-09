@@ -1,3 +1,4 @@
+import { UsageTracker } from "@/lib/usage-tracker";
 import {
   evaluateMaxGrok46,
   MaxModelTelemetry,
@@ -242,6 +243,48 @@ describe("Max measurement boundaries", () => {
       }),
     ).toBe("model-grok-4.6");
   });
+  it.each([false, true])(
+    "requires every model and summary record to report cache usage (model covered=%s)",
+    (modelCovered) => {
+      const posthog = client("test");
+      const recorder = new MaxModelTelemetry(
+        posthog as any,
+        "user",
+        assignment,
+        context,
+      );
+      const usage = new UsageTracker();
+      usage.recordModelCall();
+      recorder.providerStarted("x-ai/grok-4.6", false);
+      usage.accumulateStep(
+        {
+          inputTokens: 20,
+          outputTokens: 2,
+          ...(modelCovered
+            ? { inputTokenDetails: { cacheReadTokens: 0 } }
+            : {}),
+        },
+        "model-grok-4.6",
+      );
+      usage.accumulateSummarization({
+        inputTokens: 10,
+        outputTokens: 1,
+        inputTokensReported: true,
+        cacheReadTokens: 0,
+        cost: 0.01,
+        model: "model-grok-4.6",
+      });
+      recorder.recordTerminal({
+        outcome: "success",
+        naturalCompletion: true,
+        usage: usage.measurementProperties("model-grok-4.6"),
+      });
+      expect(
+        (posthog.capture.mock.calls.at(-1) as any)[0].properties
+          .cost_reporting_complete,
+      ).toBe(modelCovered);
+    },
+  );
   it("retains pre-model failures and treats absent usage as unknown", () => {
     const posthog = client("test");
     const recorder = new MaxModelTelemetry(

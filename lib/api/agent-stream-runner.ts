@@ -1139,13 +1139,27 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel => {
     const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
-      const historyModel = ctx.chatLogger
-        ? withProviderModelHistory(attemptModel, {
-            configured: activeStepModelName,
-            generationStep: stepIndex + 1,
-            onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
-          })
-        : attemptModel;
+      const historyModel =
+        ctx.chatLogger || ctx.maxModelTelemetry
+          ? withProviderModelHistory(attemptModel, {
+              configured: activeStepModelName,
+              generationStep: stepIndex + 1,
+              onStart: (entry) => {
+                ctx.chatLogger?.recordProviderModelCall(entry);
+                if (ctx.maxModelTelemetry && !abortSignal.aborted) {
+                  // Below recovery middleware: each real adapter call counts,
+                  // including rejected requests and compacted same-step retries.
+                  ctx.usageTracker.recordModelCall?.();
+                  ctx.maxModelTelemetry.providerStarted(
+                    entry.requested,
+                    streamHasImageViewResults ||
+                      uiMessagesContainImageAttachment(state.finalMessages),
+                  );
+                  ctx.onProviderRequestStart?.(entry.requested);
+                }
+              },
+            })
+          : attemptModel;
       const telemetryModel =
         ctx.abliteratedTelemetry?.wrap(
           historyModel,
@@ -2210,18 +2224,13 @@ export async function createAgentStream(
           $process_person_profile: false,
         });
       }
-      if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
+      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
+        ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
-      if (!abortSignal.aborted) {
-        ctx.maxModelTelemetry?.providerStarted(
-          model.modelId,
-          streamHasImageViewResults ||
-            uiMessagesContainImageAttachment(state.finalMessages),
-        );
+      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
         ctx.onProviderRequestStart?.(model.modelId);
-      }
     },
     experimental_onToolCallStart: () => {
       reportMemoryActivity({ operation: "tool_execution" });

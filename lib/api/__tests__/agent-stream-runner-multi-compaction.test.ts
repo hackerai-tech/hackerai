@@ -1257,11 +1257,34 @@ describe("createAgentStream repeated compaction", () => {
           doGenerate: jest.fn(),
           doStream,
         };
+        const capture = jest.fn();
+        const telemetry =
+          mode === "agent"
+            ? new MaxModelTelemetry(
+                { capture } as any,
+                "qa-user",
+                {
+                  key: MAX_GROK_46_KEY,
+                  variant: "test",
+                  modelKey: "model-grok-4.6",
+                  baselineModel: "model-glm-5.3",
+                  hasImages: false,
+                },
+                {
+                  requestId: "size-request",
+                  chatId: "qa-chat",
+                  subscription: "ultra",
+                  environment: "preview",
+                },
+              )
+            : undefined;
+        const recordModelCall = jest.fn();
         let handoffReadCount = 0;
         const stream = (await createAgentStream(
           modelName,
           createTestStreamContext({
             mode,
+            maxModelTelemetry: telemetry,
             platformAuthorized: authorized,
             getBrowserHandoffNotes: async () => [
               {
@@ -1278,7 +1301,7 @@ describe("createAgentStream repeated compaction", () => {
                 : []),
             ],
             trackedProvider: { languageModel: () => model },
-            usageTracker: {},
+            usageTracker: { recordModelCall },
             summarizationTracker: tracker,
           }) as any,
           state,
@@ -1287,6 +1310,14 @@ describe("createAgentStream repeated compaction", () => {
           { role: "user", content: "old evidence ".repeat(1000) },
         ];
         const prepared = await stream.prepareStep({ steps: [], messages: raw });
+        stream.experimental_onStepStart({
+          model: prepared.model ?? stream.model,
+        });
+        expect(
+          capture.mock.calls.filter(
+            ([e]) => e.event === "max_model_provider_started",
+          ),
+        ).toHaveLength(0);
         const request = (prepared.model ?? stream.model).doStream({
           prompt: [
             { role: "system", content: "system" },
@@ -1299,6 +1330,12 @@ describe("createAgentStream repeated compaction", () => {
         } else {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
+          expect(recordModelCall).toHaveBeenCalledTimes(2);
+          expect(
+            capture.mock.calls.filter(
+              ([e]) => e.event === "max_model_provider_started",
+            ),
+          ).toHaveLength(2);
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
           expect(retryText).toContain("HANDOFF: keep my selected account.");
           expect(
@@ -3701,115 +3738,138 @@ describe("createAgentStream repeated compaction", () => {
   it.each(["upload", "tool-result"])(
     "preserves native Max Grok %s images through a continuation",
     async (source) => {
-      jest
-        .requireMock("@/lib/chat/multimodal-tool-result-recovery")
-        .uiMessagesContainImageViewResult.mockImplementationOnce(
-          jest.requireActual("@/lib/chat/multimodal-tool-result-recovery")
-            .uiMessagesContainImageViewResult,
-        );
-      mockGetProviderPromptPressure.mockReturnValue(null);
-      const image = "data:image/png;base64,aW1hZ2U=";
-      const message: UIMessage =
-        source === "upload"
-          ? {
-              id: "max-image",
-              role: "user",
-              parts: [{ type: "file", mediaType: "image/png", url: image }],
-            }
-          : {
-              id: "max-image",
-              role: "assistant",
-              parts: [
-                {
-                  type: "tool-file",
-                  toolCallId: "max-image-view",
-                  state: "output-available",
-                  input: { action: "view" },
-                  output: {
-                    action: "view",
-                    kind: "image",
-                    mediaType: "image/png",
-                    data: "aW1hZ2U=",
+      const sdk = jest.requireActual("ai");
+      const wrap = jest.mocked(require("ai").wrapLanguageModel);
+      wrap.mockImplementation(sdk.wrapLanguageModel);
+      try {
+        jest
+          .requireMock("@/lib/chat/multimodal-tool-result-recovery")
+          .uiMessagesContainImageViewResult.mockImplementationOnce(
+            jest.requireActual("@/lib/chat/multimodal-tool-result-recovery")
+              .uiMessagesContainImageViewResult,
+          );
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const image = "data:image/png;base64,aW1hZ2U=";
+        const message: UIMessage =
+          source === "upload"
+            ? {
+                id: "max-image",
+                role: "user",
+                parts: [{ type: "file", mediaType: "image/png", url: image }],
+              }
+            : {
+                id: "max-image",
+                role: "assistant",
+                parts: [
+                  {
+                    type: "tool-file",
+                    toolCallId: "max-image-view",
+                    state: "output-available",
+                    input: { action: "view" },
+                    output: {
+                      action: "view",
+                      kind: "image",
+                      mediaType: "image/png",
+                      data: "aW1hZ2U=",
+                    },
                   },
-                },
-              ],
-            };
-      const modelMessages: ModelMessage[] = [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Inspect this fixture" },
-            { type: "image", image },
-          ],
-        },
-      ];
-      jest
-        .requireMock("ai")
-        .convertToModelMessages.mockResolvedValueOnce(modelMessages);
-      const state = initAgentStreamState([message], {
-        usedTokens: 100,
-        maxTokens: 200_000,
-      });
-      const capture = jest.fn();
-      const telemetry = new MaxModelTelemetry(
-        { capture } as any,
-        "qa-user",
-        {
-          key: MAX_GROK_46_KEY,
-          variant: "test",
-          modelKey: "model-grok-4.6",
-          baselineModel: "model-glm-5.3",
-          hasImages: false,
-        },
-        {
-          requestId: "qa-request",
-          chatId: "qa-chat",
-          subscription: "ultra",
-          environment: "preview",
-        },
-      );
-      const stream = (await createAgentStream(
-        "model-grok-4.6",
-        createTestStreamContext({
-          maxModelTelemetry: telemetry,
-          subscription: "ultra",
-          selectedModelOverride: "hackerai-max",
-          directGlmVisionEnabled: true,
-          agentModelContextEnabled: true,
-          trackedProvider: {
-            languageModel: (name: string) => ({
-              modelId: name === "model-grok-4.6" ? "x-ai/grok-4.6" : name,
-            }),
+                ],
+              };
+        const modelMessages: ModelMessage[] = [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Inspect this fixture" },
+              { type: "image", image },
+            ],
           },
-          usageTracker: {},
-          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-        }) as any,
-        state,
-      )) as any;
-      const prepared = await stream.prepareStep({
-        steps: [],
-        stepNumber: 0,
-        messages: stream.messages,
-      });
-      expect(telemetry.hasAssignedExposure).toBe(false);
-      stream.experimental_onStepStart({ model: prepared.model });
-      expect(telemetry.hasAssignedExposure).toBe(true);
-      expect(telemetry.hasImageInputs).toBe(true);
-      expect(capture).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: "flash_routing_experiment_exposed",
-          properties: expect.objectContaining({
-            experiment_key: MAX_GROK_46_KEY,
-            configured_model: "x-ai/grok-4.6",
-            has_image_inputs: true,
+        ];
+        jest
+          .requireMock("ai")
+          .convertToModelMessages.mockResolvedValueOnce(modelMessages);
+        const state = initAgentStreamState([message], {
+          usedTokens: 100,
+          maxTokens: 200_000,
+        });
+        const capture = jest.fn();
+        const telemetry = new MaxModelTelemetry(
+          { capture } as any,
+          "qa-user",
+          {
+            key: MAX_GROK_46_KEY,
+            variant: "test",
+            modelKey: "model-grok-4.6",
+            baselineModel: "model-glm-5.3",
+            hasImages: false,
+          },
+          {
+            requestId: "qa-request",
+            chatId: "qa-chat",
+            subscription: "ultra",
+            environment: "preview",
+          },
+        );
+        const stream = (await createAgentStream(
+          "model-grok-4.6",
+          createTestStreamContext({
+            maxModelTelemetry: telemetry,
+            subscription: "ultra",
+            selectedModelOverride: "hackerai-max",
+            directGlmVisionEnabled: true,
+            agentModelContextEnabled: true,
+            trackedProvider: {
+              languageModel: (name: string) => ({
+                specificationVersion: "v3",
+                provider: "test",
+                supportedUrls: {},
+                doGenerate: jest.fn(),
+                doStream: jest.fn(async () => ({
+                  stream: new ReadableStream({
+                    start(controller) {
+                      controller.close();
+                    },
+                  }),
+                })),
+                modelId: name === "model-grok-4.6" ? "x-ai/grok-4.6" : name,
+              }),
+            },
+            usageTracker: {},
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        const prepared = await stream.prepareStep({
+          steps: [],
+          stepNumber: 0,
+          messages: stream.messages,
+        });
+        expect(telemetry.hasAssignedExposure).toBe(false);
+        stream.experimental_onStepStart({ model: prepared.model });
+        expect(telemetry.hasAssignedExposure).toBe(false);
+        await prepared.model.doStream({ prompt: prepared.messages });
+        expect(telemetry.hasAssignedExposure).toBe(true);
+        expect(telemetry.hasImageInputs).toBe(true);
+        expect(capture).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "flash_routing_experiment_exposed",
+            properties: expect.objectContaining({
+              experiment_key: MAX_GROK_46_KEY,
+              configured_model: "x-ai/grok-4.6",
+              has_image_inputs: true,
+            }),
           }),
-        }),
-      );
-      expect(stream.model.modelId).toBe("x-ai/grok-4.6");
-      expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
-      expect(JSON.stringify(prepared.messages)).toContain(image);
-      expect(mockDescribeImage).not.toHaveBeenCalled();
-      expect(state.finalMessages).toEqual([message]);
+        );
+        expect(stream.model.modelId).toBe("x-ai/grok-4.6");
+        expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
+        expect(JSON.stringify(prepared.messages)).toContain(image);
+        expect(mockDescribeImage).not.toHaveBeenCalled();
+        expect(state.finalMessages).toEqual([message]);
+      } finally {
+        wrap.mockImplementation(({ model }: any) => model);
+      }
     },
   );
 
