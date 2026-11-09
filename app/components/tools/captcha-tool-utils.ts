@@ -58,6 +58,8 @@ export function getCaptchaActivity({
     state = "response_delivered";
   else if (challenge?.status === "preparation_required")
     state = "preparation_required";
+  else if (challenge?.status === "capture_incomplete")
+    state = "capture_incomplete";
   else if (challenge?.status === "handoff_required")
     state = "needs_verification";
   else if (challenge?.status === "no_pending_challenge") state = "not_needed";
@@ -87,6 +89,7 @@ export function getCaptchaActivityLabel(state: CaptchaActivity["state"]) {
     stopped: "Stopped CAPTCHA solve",
     unavailable: "Solver unavailable",
     preparation_required: "Preparation needed",
+    capture_incomplete: "Challenge not ready",
     not_needed: "No pending CAPTCHA",
   }[state];
 }

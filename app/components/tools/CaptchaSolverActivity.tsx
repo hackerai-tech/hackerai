@@ -62,6 +62,7 @@ export function CaptchaSolverActivity({
     stopped: "A provider charge may still apply. Check the Agent’s recap.",
     unavailable: "Automatic solving is unavailable for this request.",
     preparation_required: "Close the open challenge before solving.",
+    capture_incomplete: "No paid solve started.",
     not_needed: undefined,
   }[activity.state];
   return (

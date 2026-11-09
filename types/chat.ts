@@ -286,6 +286,7 @@ export interface SidebarTerminal {
       | "stopped"
       | "unavailable"
       | "preparation_required"
+      | "capture_incomplete"
       | "not_needed";
     startedAt?: number;
     elapsedMs?: number;

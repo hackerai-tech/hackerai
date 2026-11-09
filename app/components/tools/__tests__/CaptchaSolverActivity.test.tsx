@@ -92,3 +92,29 @@ it("stops the live indicator when a run ends without a tool result", () => {
   });
   expect(block.sidebarContent?.captcha?.state).toBe("stopped");
 });
+
+it("shows incomplete capture as preparation without a paid solve or a running timer", () => {
+  jest.useFakeTimers();
+  const block = computeShellTerminalBlock({
+    isShellTool: false,
+    shellInput: undefined,
+    legacyCommand: command,
+    toolCallId: "owned",
+    isExecuting: false,
+    hasResult: true,
+    shellOutput: {
+      result: {
+        exitCode: 0,
+        browserChallenge: { status: "capture_incomplete" },
+        callTiming: { elapsedMs: 2000 },
+      },
+    },
+  });
+  render(<CaptchaSolverActivity activity={block.sidebarContent!.captcha!} />);
+  expect(screen.getByRole("status")).toHaveTextContent("Challenge not ready");
+  expect(screen.getByText("No paid solve started.")).toBeVisible();
+  expect(screen.queryByText("Solver unavailable")).not.toBeInTheDocument();
+  act(() => jest.advanceTimersByTime(10_000));
+  expect(screen.getByText("· 0:02")).toBeVisible();
+  expect(jest.getTimerCount()).toBe(0);
+});
