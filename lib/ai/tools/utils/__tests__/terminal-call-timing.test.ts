@@ -171,6 +171,7 @@ describe("routine terminal log sampling", () => {
     { timedOut: true, exitCode: 0 },
     { recovered: true, exitCode: 0 },
     { recordPersistenceFailed: true, exitCode: 0 },
+    { recordPersistenceStatus: "pending", exitCode: 0 },
     { status: "unknown", session: "PRIVATE" },
     { success: false, exitCode: 0 },
     {},
@@ -296,5 +297,23 @@ test.each([
     const logged = JSON.stringify(jest.mocked(phLogger.info).mock.calls);
     expect(logged).not.toContain("a1b2c3d4");
     expect(logged).not.toContain("private session");
+  },
+);
+
+// Pending saves must remain diagnosable without claiming lost evidence.
+test.each(["run_terminal_cmd", "interact_terminal_session"] as const)(
+  "%s logs pending checkpoint state separately from failure",
+  async (toolName) => {
+    await withTerminalCallTiming(context, toolName, async () => ({
+      result: { exitCode: 0, recordPersistenceStatus: "pending" },
+    }))({}, options);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "terminal_call_finished",
+      expect.objectContaining({
+        record_persistence_status: "pending",
+        record_persistence_failed: false,
+        telemetry_selection: "diagnostic",
+      }),
+    );
   },
 );

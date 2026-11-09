@@ -40,6 +40,7 @@ import {
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
+  terminalRecordPersistenceFields,
   type PtySession,
 } from "./utils/pty-session-manager";
 import {
@@ -178,9 +179,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
-          ...(session.recordPersistenceFailed
-            ? { recordPersistenceFailed: true }
-            : {}),
+          ...terminalRecordPersistenceFields(session),
         }
       : {};
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
