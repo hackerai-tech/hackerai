@@ -17,6 +17,27 @@ import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
 
+jest.mock("../MessageErrorState", () => ({
+  MessageErrorState: ({
+    onRetry,
+  }: {
+    onRetry: (
+      options: import("../../hooks/useChatHandlers").RetryOptions,
+    ) => void;
+  }) => (
+    <button
+      onClick={() =>
+        onRetry({
+          selectedModel: "auto",
+          limitRescue: { type: "paid_daily_free_allowance" },
+        })
+      }
+    >
+      Use daily allowance
+    </button>
+  ),
+}));
+
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
     canEdit,
@@ -899,6 +920,47 @@ test("offers Resume when the local connection is lost before an assistant messag
   fireEvent.click(screen.getByRole("button", { name: "Resume" }));
   expect(onContinue).toHaveBeenCalledTimes(1);
 });
+
+test.each(["local-connection-lost", undefined])(
+  "preserves the explicit allowance choice when retrying (%s)",
+  (finishReason) => {
+    const onContinue = jest.fn();
+    const onRetry = jest.fn();
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="resume-with-allowance"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={onRetry}
+          onContinue={onContinue}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={new Error("Monthly usage limit reached")}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          finishReason={finishReason}
+          mode="agent"
+        />
+      </DataStreamProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use daily allowance" }),
+    );
+    const limitRescue = { type: "paid_daily_free_allowance" };
+    if (finishReason === "local-connection-lost") {
+      expect(onContinue).toHaveBeenCalledWith("auto", limitRescue);
+      expect(onRetry).not.toHaveBeenCalled();
+    } else {
+      expect(onRetry).toHaveBeenCalledWith({
+        selectedModel: "auto",
+        limitRescue,
+      });
+      expect(onContinue).not.toHaveBeenCalled();
+    }
+  },
+);
 
 test("updates a settled virtualized row when stop metadata arrives and the computer reconnects", () => {
   const onContinue = jest.fn();

@@ -1000,7 +1000,8 @@ export const Messages = ({
             error={error}
             onRetry={
               finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
-                ? (options) => onContinue?.(options?.selectedModel)
+                ? (options) =>
+                    onContinue?.(options?.selectedModel, options?.limitRescue)
                 : onRetry
             }
             onReconnect={onReconnect}
