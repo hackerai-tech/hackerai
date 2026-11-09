@@ -17,6 +17,12 @@ success on one transport does not prove the others work.
 
 ## Code Design and Maintenance
 
+When fixing recurring engineering mistakes or proposing a new rule, skill, or
+`AGENTS.md` instruction, follow the
+[code-first engineering skill](.agents/skills/hackerai-code-first-engineering/SKILL.md).
+Prefer clearer APIs and safe defaults, then automated checks and verification;
+reserve prose for the judgment and constraints those mechanisms cannot express.
+
 Prefer the smallest design that handles the actual requirement. Keep provider
 and transport differences at their adapters and share domain logic across
 callers. Extract a module when it gives a responsibility a clear owner, not just
