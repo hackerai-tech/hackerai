@@ -166,8 +166,9 @@ export function ScheduleRow({
   const latest = schedule.runs[0];
   const busy = latest && BUSY.includes(latest.status);
   const hasLatestTask = latest?.hasTask && latest.status !== "deleted";
-  const completed = !schedule.enabled && schedule.consumed;
   const { name, timing, execution } = schedule.definition;
+  const completed =
+    !schedule.enabled && schedule.consumed && timing.type === "once";
   const ExecutionIcon = !execution
     ? Cloud
     : isDesktopPreference(execution.preference)
@@ -420,7 +421,7 @@ export function ScheduleRow({
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               onSelect={() => onAction(schedule.enabled ? "pause" : "resume")}
-              disabled={!schedule.enabled && !enabled}
+              disabled={!schedule.enabled && (!enabled || completed)}
             >
               {schedule.enabled ? (
                 <Pause className="size-4" />

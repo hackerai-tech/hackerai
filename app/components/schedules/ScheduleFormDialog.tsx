@@ -275,8 +275,8 @@ export function ScheduleFormDialog({
             </DialogDescription>
           </div>
           {dirty && (
-            <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:self-start">
-              Unsaved<span className="max-sm:hidden"> changes</span>
+            <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:gap-1 sm:self-start">
+              Unsaved<span className="max-sm:hidden">changes</span>
             </span>
           )}
         </DialogHeader>
