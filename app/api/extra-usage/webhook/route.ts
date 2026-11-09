@@ -1,3 +1,4 @@
+import { readExtraUsagePurchase } from "@/lib/billing/extra-usage-bundles";
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -104,9 +105,8 @@ export async function POST(req: NextRequest) {
 
       const userId = session.metadata.userId;
       // Support both new (amountDollars) and old (amountCents) metadata formats
-      const amountDollars = session.metadata.amountDollars
-        ? parseFloat(session.metadata.amountDollars)
-        : parseInt(session.metadata.amountCents, 10) / 100;
+      const purchase = readExtraUsagePurchase(session);
+      const { amountDollars } = purchase;
       const stripeCustomerId = stripeObjectId(session.customer);
       const stripePaymentIntentId = stripeObjectId(session.payment_intent);
       const stripeInvoiceId = stripeObjectId(session.invoice);
@@ -143,6 +143,10 @@ export async function POST(req: NextRequest) {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             userId,
             amountDollars,
+            ...(purchase.bundleId && {
+              bundleId: purchase.bundleId,
+              paidAmountDollars: purchase.paidAmountDollars,
+            }),
             stripeCheckoutSessionId: session.id,
             stripePaymentIntentId,
             stripeInvoiceId,
@@ -210,6 +214,10 @@ export async function POST(req: NextRequest) {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           userId,
           amountDollars,
+          ...(purchase.bundleId && {
+            bundleId: purchase.bundleId,
+            paidAmountDollars: purchase.paidAmountDollars,
+          }),
           stripeCheckoutSessionId: session.id,
           stripePaymentIntentId,
           stripeInvoiceId,
@@ -220,6 +228,10 @@ export async function POST(req: NextRequest) {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           userId,
           amountDollars,
+          ...(purchase.bundleId && {
+            bundleId: purchase.bundleId,
+            paidAmountDollars: purchase.paidAmountDollars,
+          }),
           idempotencyKey: `cs_${session.id}`,
           revenueSource: "extra_usage_purchase",
           stripeCustomerId,
@@ -255,7 +267,9 @@ export async function POST(req: NextRequest) {
               userId,
               checkout_attempt_id: session.metadata.checkoutAttemptId,
               checkout_type: "extra_usage_purchase",
-              amount_dollars: amountDollars,
+              amount_dollars: purchase.paidAmountDollars ?? amountDollars,
+              credit_amount_dollars: amountDollars,
+              bundle_id: purchase.bundleId,
               stripe_customer_id: stripeCustomerId,
               stripe_checkout_session_id: session.id,
               stripe_payment_intent_id: stripePaymentIntentId,
@@ -290,6 +304,10 @@ export async function POST(req: NextRequest) {
             serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
             userId,
             amountDollars,
+            ...(purchase.bundleId && {
+              bundleId: purchase.bundleId,
+              paidAmountDollars: purchase.paidAmountDollars,
+            }),
             stripeCheckoutSessionId: session.id,
             stripePaymentIntentId,
             stripeInvoiceId,

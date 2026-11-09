@@ -9,6 +9,11 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
+import {
+  getExtraUsageBundle,
+  extraUsageBundlesEnabled,
+} from "../lib/billing/extra-usage-bundles";
+import { planLookupKeyToTier } from "../lib/analytics/paid-funnel";
 import { BILLING_ERRORS } from "../lib/billing/billing-errors";
 import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
@@ -521,6 +526,7 @@ export const getPaymentStatus = action({
 export const createPurchaseSession = action({
   args: {
     amountDollars: v.number(),
+    bundleId: v.optional(v.string()),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
     returnPath: v.optional(v.string()),
@@ -549,6 +555,18 @@ export const createPurchaseSession = action({
       return { url: null, error: BILLING_ERRORS.accountSuspended };
     }
 
+    let bundle;
+    if (args.bundleId !== undefined) {
+      if (!extraUsageBundlesEnabled(identity.subject))
+        return { url: null, error: "Bundles are not available" };
+      try {
+        bundle = getExtraUsageBundle(args.bundleId);
+      } catch {
+        return { url: null, error: "Unknown bundle" };
+      }
+      if (args.amountDollars !== bundle.creditDollars)
+        return { url: null, error: "Bundle amount mismatch" };
+    }
     // Validate amount
     if (!Number.isInteger(args.amountDollars)) {
       return { url: null, error: "Amount must be a whole dollar value" };
@@ -595,7 +613,28 @@ export const createPurchaseSession = action({
       }
 
       const stripe = getStripe();
-      const amountCents = args.amountDollars * 100;
+      if (bundle) {
+        const subscriptions = await stripe.subscriptions.list({
+          customer: stripeCustomerId,
+          status: "active",
+          limit: 1,
+        });
+        if (
+          !subscriptions.data.some((subscription) =>
+            subscription.items.data.some((item) => {
+              const tier = planLookupKeyToTier(
+                item.price.lookup_key ?? undefined,
+              );
+              return tier === "pro" || tier === "pro-plus" || tier === "ultra";
+            }),
+          )
+        )
+          return {
+            url: null,
+            error: "An active paid subscription is required",
+          };
+      }
+      const amountCents = (bundle?.paidDollars ?? args.amountDollars) * 100;
 
       const session = await stripe.checkout.sessions.create({
         customer: stripeCustomerId,
@@ -624,6 +663,10 @@ export const createPurchaseSession = action({
           type: "extra_usage_purchase",
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: String(bundle.paidDollars),
+          }),
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
@@ -641,6 +684,10 @@ export const createPurchaseSession = action({
         await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
           userId: identity.subject,
           amountDollars: args.amountDollars,
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: bundle.paidDollars,
+          }),
           stripeCheckoutSessionId: session.id,
         });
       } catch (error) {

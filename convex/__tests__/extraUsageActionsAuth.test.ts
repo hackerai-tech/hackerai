@@ -241,6 +241,55 @@ describe("extraUsageActions billing authorization", () => {
     } as never);
   });
 
+  it("prices a bundle server-side and rejects mismatched credit values", async () => {
+    process.env.EXTRA_USAGE_BUNDLES_USER_IDS = "user_member";
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_personal",
+          status: "active",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockSubscriptionsList.mockResolvedValue({
+      data: [{ items: { data: [{ price: { lookup_key: "pro-monthly" } }] } }],
+    } as never);
+    try {
+      const result = await callCreatePurchaseSession(makeCtx(), {
+        amountDollars: 250,
+        bundleId: "usage-250-v1",
+      });
+      expect(result.url).toBeTruthy();
+      expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [
+            expect.objectContaining({
+              price_data: expect.objectContaining({ unit_amount: 20000 }),
+            }),
+          ],
+          metadata: expect.objectContaining({
+            amountDollars: "250",
+            paidAmountDollars: "200",
+            bundleId: "usage-250-v1",
+          }),
+        }),
+      );
+      mockCheckoutSessionCreate.mockClear();
+      expect(
+        (
+          await callCreatePurchaseSession(makeCtx(), {
+            amountDollars: 1000,
+            bundleId: "usage-250-v1",
+          })
+        ).url,
+      ).toBeNull();
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+    }
+  });
+
   it("blocks Checkout creation while the account has an active dispute hold", async () => {
     const ctx = makeCtx("user_suspended");
     ctx.runQuery.mockResolvedValueOnce({

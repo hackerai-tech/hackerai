@@ -57,3 +57,29 @@ describe("BuyExtraUsageDialog", () => {
     expect(onPurchase).toHaveBeenCalledWith(75);
   });
 });
+
+it("shows discount, submits the bundle, then restores a standard custom purchase", () => {
+  const onPurchase = jest.fn(async () => {});
+  render(
+    <BuyExtraUsageDialog
+      open
+      onOpenChange={jest.fn()}
+      onPurchase={onPurchase}
+      isLoading={false}
+      paymentMethodMode="checkout"
+      bundlesEnabled
+    />,
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: /\$250 credit Pay \$200 Save 20%/ }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Pay $200 for $250 credit" }),
+  );
+  expect(onPurchase).toHaveBeenLastCalledWith(250, "usage-250-v1");
+  fireEvent.change(screen.getByLabelText("Purchase amount"), {
+    target: { value: "$75" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Purchase" }));
+  expect(onPurchase).toHaveBeenLastCalledWith(75);
+});

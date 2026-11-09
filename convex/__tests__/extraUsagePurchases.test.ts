@@ -435,3 +435,40 @@ describe("extra usage purchase ledger", () => {
     });
   });
 });
+
+describe("discounted bundle grants", () => {
+  it("grants face-value credit once and records discounted cash revenue", async () => {
+    jest.clearAllMocks();
+    const { ctx, tables } = createMockCtx();
+    const { addCredits } = await import("../extraUsage");
+    const args = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      amountDollars: 250,
+      paidAmountDollars: 200,
+      bundleId: "usage-250-v1",
+      stripeCheckoutSessionId: "cs_bundle",
+      idempotencyKey: "cs_cs_bundle",
+      purchaseRoute: "confirm",
+    };
+    await (addCredits as any).handler(ctx, args);
+    const balance = tables.extra_usage[0].balance_points;
+    expect(balance).toBe(Math.floor((250 / 1.5) * 10000));
+    expect(mockRecordRevenueEventInternal).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ grossRevenueDollars: 200 }),
+    );
+    expect(tables.extra_usage_purchases[0]).toMatchObject({
+      amount_dollars: 250,
+      paid_amount_dollars: 200,
+      bundle_id: "usage-250-v1",
+    });
+    const retry = await (addCredits as any).handler(ctx, {
+      ...args,
+      purchaseRoute: "webhook",
+    });
+    expect(retry.alreadyProcessed).toBe(true);
+    expect(tables.extra_usage[0].balance_points).toBe(balance);
+    expect(mockRecordRevenueEventInternal).toHaveBeenCalledTimes(1);
+  });
+});

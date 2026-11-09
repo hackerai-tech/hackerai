@@ -5,6 +5,7 @@ import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { getExtraUsageBundle } from "@/lib/billing/extra-usage-bundles";
 import { toast } from "sonner";
 import {
   TurnOffExtraUsageDialog,
@@ -29,6 +30,17 @@ import {
 } from "@/lib/analytics/paid-funnel";
 
 const ExtraUsageSection = () => {
+  const bundlesEnabled = useQuery(api.extraUsage.areBundlesAvailable) === true;
+  const bundleExposure = useRef(false);
+  useEffect(() => {
+    if (bundlesEnabled && !bundleExposure.current) {
+      bundleExposure.current = true;
+      captureAuthenticatedEvent("extra_usage_bundles_viewed", {
+        surface: "extra_usage_settings",
+        offer_version: "v1",
+      });
+    }
+  }, [bundlesEnabled]);
   // User customization for extra usage enabled flag
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -110,12 +122,16 @@ const ExtraUsageSection = () => {
   };
 
   // Purchase credits (redirects to Stripe Checkout with saved cards shown)
-  const handlePurchaseCredits = async (amountDollars: number) => {
+  const handlePurchaseCredits = async (
+    amountDollars: number,
+    bundleId?: string,
+  ) => {
     setIsPurchasing(true);
     try {
       const checkoutAttemptId = newCheckoutAttemptId();
       const result = await createPurchaseSession({
         amountDollars,
+        ...(bundleId && { bundleId }),
         baseUrl: window.location.origin,
         checkoutAttemptId,
         // Return to the stopped chat so its live balance can offer Continue.
@@ -134,7 +150,11 @@ const ExtraUsageSection = () => {
             checkout_type: "extra_usage_purchase",
             surface: "extra_usage_settings",
             source: "buy_extra_usage_dialog",
-            amount_dollars: amountDollars,
+            amount_dollars: bundleId
+              ? getExtraUsageBundle(bundleId).paidDollars
+              : amountDollars,
+            credit_amount_dollars: amountDollars,
+            bundle_id: bundleId,
             stripe_checkout_session_id: result.checkoutSessionId,
           }),
         );
@@ -250,6 +270,20 @@ const ExtraUsageSection = () => {
         data-testid="extra-usage-section"
         className="flex flex-col gap-6"
       >
+        {bundlesEnabled && (
+          <div className="rounded-lg border border-border p-4 space-y-2">
+            <p className="text-sm font-medium">
+              Save up to 30% with prepaid bundles
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Get $50 credit for $45, $250 for $200, or $1,000 for $700.
+              One-time purchases; auto-reload stays at standard pricing.
+            </p>
+            <Button variant="outline" onClick={() => setShowBuyDialog(true)}>
+              View bundles
+            </Button>
+          </div>
+        )}
         {/* Toggle Row */}
         <div className="w-full min-w-0 flex flex-row gap-x-8 gap-y-3 justify-between items-center">
           <div className="w-full min-w-0 flex flex-row gap-4 items-center">
@@ -406,6 +440,7 @@ const ExtraUsageSection = () => {
       />
 
       <BuyExtraUsageDialog
+        bundlesEnabled={bundlesEnabled}
         open={showBuyDialog}
         onOpenChange={setShowBuyDialog}
         onPurchase={handlePurchaseCredits}
