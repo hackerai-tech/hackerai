@@ -2,40 +2,115 @@ name: Run Tests
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only superseded PR validation is cancelled; every main/scheduled run is kept.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
+  changes:
+    name: Plan CI
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    strategy:
-      matrix:
-        node-version: [22.23.4]
-
+    timeout-minutes: 5
+    outputs:
+      jest: ${{ steps.plan.outputs.jest }}
+      typecheck: ${{ steps.plan.outputs.typecheck }}
+      tooling: ${{ steps.plan.outputs.tooling }}
+      tooling_suites: ${{ steps.plan.outputs.tooling_suites }}
+      integrations: ${{ steps.plan.outputs.integrations }}
+      security: ${{ steps.plan.outputs.security }}
+      languages: ${{ steps.plan.outputs.languages }}
+      coverage: ${{ steps.plan.outputs.coverage }}
+      shards: ${{ steps.plan.outputs.shards }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify planning and failure propagation
+        run: node --test scripts/testing/ci.test.mjs
+      - name: Select affected checks
+        id: plan
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/testing/ci.mjs plan
+
+  typecheck:
+    name: Typecheck and skill integrity
+    needs: changes
+    if: needs.changes.outputs.typecheck == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
+      - run: pnpm typecheck
+      - run: pnpm skills:sync:strix:check
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+  jest:
+    name: Jest (${{ matrix.shard }}/${{ needs.changes.outputs.shard_count }})
+    needs: changes
+    if: needs.changes.outputs.jest != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: "pnpm"
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Run selected tests
+        env:
+          CI_JEST_MODE: ${{ needs.changes.outputs.jest }}
+          CI_SHARD: ${{ matrix.shard }}/${{ needs.changes.outputs.shard_count }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI_COVERAGE: ${{ needs.changes.outputs.coverage }}
+        run: node scripts/testing/ci.mjs jest
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+  tooling:
+    name: Node tooling
+    needs: changes
+    if: needs.changes.outputs.tooling == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Run selected tooling suites
+        env:
+          CI_TOOLING_SUITES: ${{ needs.changes.outputs.tooling_suites }}
+        run: node scripts/testing/ci.mjs tooling
 
+  integrations:
+    name: Linux safety integrations
+    needs: changes
+    if: needs.changes.outputs.integrations == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
       - name: Test pip bootstrap integrity
         run: python3 -B -m unittest discover -s docker -p 'test_pip_bootstrap.py' -v
 
@@ -62,9 +137,6 @@ jobs:
           print("Verified scanner detects root-user fixture without network access")
           PYTHON
 
-      - name: Type check
-        run: pnpm typecheck
-
       - name: Verify build compiler isolation and failure gate
         run: node --test scripts/build.test.mjs
 
@@ -81,5 +153,56 @@ jobs:
           node scripts/verify-cloud-recovery-admission.mjs
           pnpm exec jest --runInBand --testMatch "**/cloud-workspace-identity.integration.ts"
 
-      - name: Run tests with coverage
-        run: pnpm test:ci
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.security == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(needs.changes.outputs.languages) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
+      - uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        if: matrix.language == 'go'
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: /language:${{ matrix.language }}
+          output: codeql-results
+          # During migration, default setup stays active while this replacement
+          # is verified. Remove the temporary repository variable after handoff.
+          upload: ${{ vars.HACKERAI_CODEQL_UPLOAD == 'false' && 'never' || 'always' }}
+      - name: Preserve security analysis evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-${{ matrix.language }}
+          path: codeql-results/*.sarif
+          if-no-files-found: error
+          retention-days: 7
+
+  ci:
+    name: CI
+    needs: [changes, typecheck, jest, tooling, integrations, codeql]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every planned result
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/testing/ci.mjs gate
