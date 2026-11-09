@@ -1,3 +1,4 @@
+// Temporary comment-only CI selection probe; this draft is never merged.
 const ROBOTS_CONTENT = `User-agent: *
 Allow: /
 Disallow: /api/
