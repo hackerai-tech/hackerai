@@ -32,7 +32,7 @@
     "benchmark:prompt-cache:live": "tsx scripts/benchmark-prompt-cache.ts --live",
     "test:coverage": "jest --coverage",
     "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:tooling",
-    "test:user-research-runner": "node --test .agents/skills/hackerai-user-research/scripts/*.test.mjs",
+    "test:user-research-runner": "node --test .agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
     "skills:sync:strix": "node scripts/sync-strix-skills.mjs",
     "skills:sync:strix:check": "node scripts/sync-strix-skills.mjs --check",
     "test:e2e": "playwright test",
