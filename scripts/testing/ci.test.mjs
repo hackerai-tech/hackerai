@@ -233,4 +233,18 @@ test("the actual aggregate command accepts intentional skips and fails closed fo
   const needs = results(all);
   delete needs.changes.outputs.security;
   assert.notEqual(gate(needs).status, 0);
+  const failed = results(all);
+  failed.jest.result = "failure";
+  assert.match(gate(failed).stderr, /CI job did not satisfy its plan: jest/);
+  const malformed = spawnSync(
+    process.execPath,
+    ["scripts/testing/ci.mjs", "gate"],
+    {
+      cwd: root,
+      env: { ...env, CI_NEEDS: "invalid-private-sentinel" },
+      encoding: "utf8",
+    },
+  );
+  assert.notEqual(malformed.status, 0);
+  assert.doesNotMatch(malformed.stderr, /invalid-private-sentinel/);
 });

@@ -151,17 +151,20 @@ export function planOutputs(plan) {
   };
 }
 
+/** Gate diagnostics contain only fixed messages and repository-owned job names. */
+export class CIGateError extends Error {}
+
 /** Intentional skips pass; a failed, missing, cancelled or unexpectedly skipped job fails. */
 export function assertGate(needs) {
   if (needs.changes?.result !== "success")
-    throw new Error("CI planning did not succeed");
+    throw new CIGateError("CI planning did not succeed");
   const outputs = needs.changes.outputs;
   for (const name of ["typecheck", "integrations", "tooling", "security"]) {
     if (!["true", "false"].includes(outputs?.[name]))
-      throw new Error("Invalid CI plan");
+      throw new CIGateError("Invalid CI plan");
   }
   if (!["none", "related", "full"].includes(outputs.jest))
-    throw new Error("Invalid Jest plan");
+    throw new CIGateError("Invalid Jest plan");
   const expected = {
     typecheck: outputs.typecheck === "true",
     integrations: outputs.integrations === "true",
@@ -171,6 +174,6 @@ export function assertGate(needs) {
   };
   for (const [job, required] of Object.entries(expected)) {
     if (needs[job]?.result !== (required ? "success" : "skipped"))
-      throw new Error(`CI job did not satisfy its plan: ${job}`);
+      throw new CIGateError(`CI job did not satisfy its plan: ${job}`);
   }
 }

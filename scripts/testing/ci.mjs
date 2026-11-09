@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import {
   assertGate,
+  CIGateError,
   changedSince,
   planForEvent,
   planOutputs,
@@ -90,8 +91,12 @@ if (
 ) {
   try {
     process.exitCode = main(process.argv[2]);
-  } catch {
-    console.error("CI execution failed; check the plan and job results.");
+  } catch (error) {
+    console.error(
+      error instanceof CIGateError
+        ? `CI execution failed: ${error.message}`
+        : "CI execution failed; check the plan and job results.",
+    );
     process.exitCode = 1;
   }
 }
