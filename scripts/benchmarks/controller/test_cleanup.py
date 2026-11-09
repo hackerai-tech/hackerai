@@ -44,6 +44,7 @@ class FakeDocker:
     def run(self, args):
         """Model shared snapshots and removals without a Docker daemon."""
         def reply(code=0, value=b''):
+            """Expose daemon diagnostics only on failure, as subprocess.run does."""
             return subprocess.CompletedProcess(args, code, value, b'PRIVATE_DAEMON_DETAIL' if code else b'')
         if args[:2] == ['ps', '-aq']:
             return reply(1) if self.inventory_fault else reply(value='\n'.join(self.containers).encode())
@@ -88,6 +89,7 @@ class CleanupTests(unittest.TestCase):
     def test_other_job_disappearing_during_inspection_does_not_strand_cleanup(self):
         """A concurrent foreign deletion must not prevent exact-owned cleanup."""
         def disappear(kind, identity, values):
+            """Remove the foreign snapshot entry exactly when it is inspected."""
             if identity == FOREIGN:
                 values.pop(identity, None)
                 return True
@@ -125,6 +127,7 @@ class CleanupTests(unittest.TestCase):
     def test_network_disappearance_uses_fresh_read_without_replaying_delete(self):
         """Confirm a disappeared network with a new read, never a second delete."""
         def disappear(kind, identity, values):
+            """Simulate an owned network disappearing between inventory and inspect."""
             if kind == 'network':
                 values.pop(identity, None)
                 return True
@@ -266,6 +269,7 @@ class CleanupTests(unittest.TestCase):
         """Accept failed removal only when a new inventory independently proves absence."""
         original = self.fake.run
         def failed_delete(args):
+            """Fail removal while leaving the resource visible in fresh reads."""
             if args[:2] == ['rm', '-f']:
                 return subprocess.CompletedProcess(args, 1, b'', b'PRIVATE_ERROR')
             return original(args)
@@ -273,6 +277,7 @@ class CleanupTests(unittest.TestCase):
             cleanup_job(self.root, Docker(failed_delete))
         self.assertTrue((self.root / 'control/signing-key').exists())
         def removed_concurrently(args):
+            """Report failed removal after another owner has already removed it."""
             if args[:2] == ['rm', '-f']:
                 self.fake.containers.pop(args[-1])
                 return subprocess.CompletedProcess(args, 1, b'', b'PRIVATE_ERROR')
@@ -361,6 +366,7 @@ class CleanupTests(unittest.TestCase):
         original=os.fsync
         count=0
         def fail_first(fd):
+            """Fail claim durability once, then allow failure evidence to be saved."""
             nonlocal count
             count+=1
             if count==1:raise OSError(28,'PRIVATE_CLAIM_ERROR')
