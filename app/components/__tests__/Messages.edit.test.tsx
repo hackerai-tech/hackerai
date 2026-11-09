@@ -27,6 +27,9 @@ jest.mock("../MessageItem", () => ({
     onSaveEdit,
     onBranchMessage,
     status,
+    finishReason,
+    continueDisabledReason,
+    onContinue,
   }: {
     canEdit: boolean;
     isEditing: boolean;
@@ -36,37 +39,53 @@ jest.mock("../MessageItem", () => ({
     onSaveEdit: (content: string, files: string[]) => Promise<void>;
     onBranchMessage: (messageId: string) => Promise<void>;
     status: string;
-  }) => (
-    <div
-      data-testid={`message-${message.id}`}
-      data-status={status}
-      data-last-user-message-index={lastUserMessageIndex}
-    >
-      <button
-        type="button"
-        aria-label={`Branch ${message.id}`}
-        onClick={() => onBranchMessage(message.id)}
+    finishReason?: string;
+    continueDisabledReason?: string;
+    onContinue?: () => void;
+  }) => {
+    const { FinishReasonNotice } = jest.requireActual("../FinishReasonNotice");
+    return (
+      <div
+        data-testid={`message-${message.id}`}
+        data-status={status}
+        data-last-user-message-index={lastUserMessageIndex}
       >
-        Branch
-      </button>
-      {isEditing ? (
-        <div data-testid="message-editor">
-          Editing {message.id}
-          <button onClick={() => onSaveEdit("Revised goal", [])}>
-            Save edit
-          </button>
-        </div>
-      ) : canEdit ? (
         <button
           type="button"
-          aria-label="Edit message"
-          onClick={() => onStartEdit(message.id)}
+          aria-label={`Branch ${message.id}`}
+          onClick={() => onBranchMessage(message.id)}
         >
-          Edit
+          Branch
         </button>
-      ) : null}
-    </div>
-  ),
+        {message.role === "assistant" &&
+          finishReason === "local-connection-lost" && (
+            <FinishReasonNotice
+              finishReason={finishReason}
+              continueDisabledReason={continueDisabledReason}
+              onContinue={onContinue}
+              mode="agent"
+              status={status}
+            />
+          )}
+        {isEditing ? (
+          <div data-testid="message-editor">
+            Editing {message.id}
+            <button onClick={() => onSaveEdit("Revised goal", [])}>
+              Save edit
+            </button>
+          </div>
+        ) : canEdit ? (
+          <button
+            type="button"
+            aria-label="Edit message"
+            onClick={() => onStartEdit(message.id)}
+          >
+            Edit
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 jest.mock("../AgentActivityRow", () => ({
@@ -877,6 +896,50 @@ test("offers Resume when the local connection is lost before an assistant messag
     </DataStreamProvider>,
   );
   expect(onContinue).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(onContinue).toHaveBeenCalledTimes(1);
+});
+
+test("updates a settled virtualized row when stop metadata arrives and the computer reconnects", () => {
+  const onContinue = jest.fn();
+  const props = {
+    chatId: "late-local-stop",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onEditMessage: jest.fn(),
+    onContinue,
+    status: "ready" as const,
+    error: null,
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+  };
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} />
+    </DataStreamProvider>,
+  );
+  expect(
+    screen.queryByRole("button", { name: "Resume" }),
+  ).not.toBeInTheDocument();
+  rerender(
+    <DataStreamProvider>
+      <Messages
+        {...props}
+        finishReason="local-connection-lost"
+        continueDisabledReason="Reconnect your computer."
+      />
+    </DataStreamProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(onContinue).not.toHaveBeenCalled();
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} finishReason="local-connection-lost" />
+    </DataStreamProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Resume" }));
   expect(onContinue).toHaveBeenCalledTimes(1);
 });
