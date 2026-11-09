@@ -79,9 +79,11 @@ endpoint. It is not a per-run approval and does not require a Linear issue.
 ### Deterministic selection and recovery
 
 Use `--cohort <protected-export.json>` with the runner to compile a ranked
-PostHog export into gateway membership. Keep the question, cohort label and
-`evidenceWindowDays` in the payload; omit its `userIds`, groups and anchors when
-using a cohort export. Example export (owner-only, outside the repository):
+PostHog export into gateway membership. Keep the question and cohort label in
+the payload; omit its `userIds`, groups and anchors when using a cohort export.
+For ordinary representative-history research, omit `evidenceWindowDays`.
+Include it only for event-based research, with an anchor for every selected user
+in the export. Example export (owner-only, outside the repository):
 
 ```json
 {
@@ -127,14 +129,18 @@ or the cohort export's raw query and payer mappings. `--resume` can retry an unk
 submission directly from this copy within 23 hours, using the original idempotency
 key inside the gateway's 24-hour retention. `--status` never submits a request.
 The runner removes the sidecar only after the run ID is durably saved. Preserve
-both files while the outcome is unknown. Older unknown submissions are blocked;
+both files while the outcome is unknown, including after expiry. Older unknown submissions are blocked;
 do not create a new handle merely to retry one. Handles created by older runner
 versions without a sidecar still need the identical original payload for an
-unknown submission. A fresh handle is for an intentionally new analysis.
+unknown submission. A gateway rejection alone does not prove an earlier or
+concurrent attempt was never accepted, so the runner does not retire that key or
+delete its recovery files on rejection. Resolve the existing submission before
+starting a changed request with a fresh handle.
 Handles contain no payloads, queries, payer mappings or credentials and must remain
 owner-only. Keep handles and sidecars in a private directory outside the repository.
-Remove temporary input payload/export files after the runner returns; preserve
-recovery files as described above.
+Remove temporary input payload/export files only after a run ID or matching
+request sidecar is durably saved. Preserve the originals when neither exists,
+including for legacy unknown handles or a failure before sidecar publication.
 
 ### Run from Slack
 

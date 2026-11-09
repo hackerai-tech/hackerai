@@ -424,7 +424,7 @@ export async function runResearch(
       handle = await loadHandle(args.handlePath);
       if (handle.requestHash !== requestHash)
         throw new ResearchRunnerError(
-          "Handle belongs to a different request; choose a new handle",
+          "Handle belongs to a different request; preserve its recovery files and resolve that submission before starting a new analysis",
         );
     }
   } else handle = await loadHandle(args.handlePath);

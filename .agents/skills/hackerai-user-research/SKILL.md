@@ -57,8 +57,11 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    same key within 23 hours; `--status` never resubmits. The sidecar is removed
    after the accepted run ID is durably saved. Preserve it with the handle while
    the outcome is unknown; expired unknown submissions are blocked. A deliberate
-   new analysis requires a new handle. Remove temporary input payload/cohort files
-   after the runner returns, retaining the handle and returned `analysisId` for audit lookup.
+   new analysis requires a new handle after the existing submission is resolved.
+   Remove temporary input payload/cohort files only after a run ID or matching
+   request sidecar is durably saved. Otherwise preserve the original inputs,
+   including for legacy unknown handles. Retain the handle and returned
+   `analysisId` for audit lookup.
 6. Present the returned internal Convex/WorkOS user IDs together
    with the aggregate answer, evidence coverage, supported user types, avatars,
    primary/secondary target, confidence, unknowns, and experiments. User IDs are
