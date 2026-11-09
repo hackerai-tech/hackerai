@@ -328,8 +328,9 @@ const BuyExtraUsageDialogContent = ({
             </span>
           </div>
           <p className="text-xs text-muted-foreground">
-            Credits add to your balance. Any monthly spending limit still
-            applies.
+            {bundlesEnabled
+              ? "Your monthly spending limit counts credit used, not the discounted price paid."
+              : "Credits add to your balance. Any monthly spending limit still applies."}
           </p>
         </div>
         <div className="mt-2">

@@ -470,5 +470,9 @@ describe("discounted bundle grants", () => {
     expect(retry.alreadyProcessed).toBe(true);
     expect(tables.extra_usage[0].balance_points).toBe(balance);
     expect(mockRecordRevenueEventInternal).toHaveBeenCalledTimes(1);
+    await expect(
+      (addCredits as any).handler(ctx, { ...args, paidAmountDollars: 1 }),
+    ).rejects.toThrow("Invalid bundle credit");
+    expect(tables.extra_usage_purchases[0].paid_amount_dollars).toBe(200);
   });
 });
