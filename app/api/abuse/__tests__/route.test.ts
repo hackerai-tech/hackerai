@@ -141,7 +141,7 @@ test.each([
   },
 );
 
-test.each(["missing", "dummy", "foreign-host"])(
+test.each(["missing", "dummy", "foreign-host", "malformed-host"])(
   "fails closed for %s configuration",
   async (configuration) => {
     if (configuration === "missing")
@@ -151,6 +151,8 @@ test.each(["missing", "dummy", "foreign-host"])(
         "1x0000000000000000000000000000000AA";
     if (configuration === "foreign-host")
       process.env.ABUSE_TURNSTILE_HOSTNAMES = "other.test";
+    if (configuration === "malformed-host")
+      process.env.ABUSE_TURNSTILE_HOSTNAMES = `0${"-".repeat(248)}!`;
     const response = await POST(request());
     expect(response.status).toBe(configuration === "foreign-host" ? 403 : 503);
     expect(mockVerify).not.toHaveBeenCalled();

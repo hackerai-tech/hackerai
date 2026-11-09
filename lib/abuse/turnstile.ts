@@ -19,7 +19,16 @@ export function abuseTurnstileConfig() {
     hostnames.length > 10 ||
     hostnames.some(
       (host) =>
-        host.length > 253 || !/^[a-z0-9]+(?:[.-][a-z0-9-]+)*$/.test(host),
+        host.length > 253 ||
+        host
+          .split(".")
+          .some(
+            (label) =>
+              label.length > 63 ||
+              !/^[a-z0-9-]+$/.test(label) ||
+              label.startsWith("-") ||
+              label.endsWith("-"),
+          ),
     )
   )
     return null;
