@@ -32,6 +32,7 @@ function daemon(
     receiptSymlink?: boolean;
     receiptRegular?: boolean;
     stdoutThrows?: boolean;
+    procUnavailable?: boolean;
     pidFile?: string;
     pidOwner?: number;
     pidMode?: number;
@@ -134,6 +135,13 @@ function daemon(
           fstatSync: (fd: number) =>
             fd === 10 ? pidStat() : receiptStat(fd === 8, fd === 9),
           statSync: (file: string) => {
+            if (file === "/proc") {
+              if (options.procUnavailable)
+                throw Object.assign(new Error("PRIVATE unavailable procfs"), {
+                  code: "ENOENT",
+                });
+              return { isDirectory: () => true };
+            }
             if (file !== "/proc/314159")
               throw new Error("Unexpected process path");
             if (
@@ -846,6 +854,7 @@ const successfulOpen = {
 it.each([
   [{}, [1, 0, 0]],
   [{ pidFile: "314159", processVisibility: "same_uid" }, [1, 3, 2]],
+  [{ pidFile: "314159", procUnavailable: true }, [1, 3, 0]],
   [{ pidFile: "314159", processVisibility: "missing" }, [1, 3, 1]],
   [{ pidFile: "314159", processVisibility: "other_uid" }, [1, 3, 3]],
   [{ pidFile: "314159", processVisibility: "permission" }, [1, 3, 4]],

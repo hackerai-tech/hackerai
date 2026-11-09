@@ -88,7 +88,7 @@ function receiptExit(receipt) {
     Number.isInteger(receipt.exit) && receipt.exit >= 0 && receipt.exit <= 255 ? receipt.exit : 'other';
 }
 /** Read one selected PID sidecar; never scan processes, signal them, or export its value.
- * Visibility is only in this helper's current Linux namespace, not daemon identity/health.
+ * Visibility is only in this helper's procfs view, not PID-namespace or daemon identity/health.
  */
 function daemonProcess() {
   let fd;
@@ -111,6 +111,8 @@ function daemonProcess() {
     const pid = Number(text);
     if (!Number.isSafeInteger(pid) || pid > 2147483647) return [1, 1, 0];
     if (process.platform !== 'linux') return [1, 3, 0];
+    // An unavailable procfs view cannot establish an absent process entry.
+    try { if (!fs.statSync('/proc').isDirectory()) return [1, 3, 0]; } catch { return [1, 3, 0]; }
     try {
       const info = fs.statSync('/proc/' + pid);
       return [1, 3, info.uid === process.getuid() ? 2 : 3];
