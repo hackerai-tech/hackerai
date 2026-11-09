@@ -337,7 +337,9 @@ const BuyExtraUsageDialogContent = ({
           <div className="flex items-center justify-between p-5 border border-border rounded-lg">
             <span className="font-medium text-sm">Payment method</span>
             <div className="flex items-center gap-3">
-              {paymentMethodMode === "checkout" ? (
+              {selectedBundle ? (
+                <p className="text-sm">Choose at checkout</p>
+              ) : paymentMethodMode === "checkout" ? (
                 <p className="text-sm flex items-center gap-2">
                   <CreditCard className="h-5 w-5" />
                   Team billing account
@@ -356,7 +358,7 @@ const BuyExtraUsageDialogContent = ({
                   Link by Stripe
                 </p>
               )}
-              {paymentMethodMode === "personal" && (
+              {paymentMethodMode === "personal" && !selectedBundle && (
                 <button
                   type="button"
                   className="text-muted-foreground hover:text-foreground"

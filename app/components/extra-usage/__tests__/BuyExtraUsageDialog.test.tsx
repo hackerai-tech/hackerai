@@ -72,6 +72,10 @@ describe("BuyExtraUsageDialog", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /\$250 credit Pay \$200 Save 20%/ }),
     );
+    expect(screen.getByText("Choose at checkout")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Edit payment method" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Pay $200 for $250 credit" }),
     );
