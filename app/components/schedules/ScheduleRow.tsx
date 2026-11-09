@@ -15,7 +15,6 @@ import {
   Loader2,
   Monitor,
   Pause,
-  Pencil,
   Play,
   Trash2,
   Unplug,
@@ -39,7 +38,7 @@ import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 // Shared by the desktop column headers in SchedulesPage and every row; the
 // fixed action lane keeps headers aligned with rows of varying content.
 export const SCHEDULE_COLUMNS =
-  "@4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_9rem] @4xl:gap-x-6";
+  "@4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_11rem] @4xl:gap-x-6";
 
 const LABELS: Record<string, string> = {
   queued: "Queued",
@@ -234,19 +233,6 @@ export function ScheduleRow({
                 {completed ? "No further runs" : "None while paused"}
               </span>
             )}
-            {!schedule.enabled && !completed && enabled && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2 h-11 @4xl:h-8"
-                disabled={pending}
-                onClick={() => onAction("resume")}
-              >
-                <Play className="size-3" aria-hidden="true" />
-                Resume schedule
-              </Button>
-            )}
           </dd>
         </div>
         <div className={fact}>
@@ -302,12 +288,7 @@ export function ScheduleRow({
             )}
             {(hasLatestTask || schedule.runs.length > 1) && (
               <span className="flex flex-wrap items-center gap-x-4 @4xl:mt-1">
-                {latest && (
-                  <RunTaskLink
-                    run={latest}
-                    className="hidden @4xl:inline-flex"
-                  />
-                )}
+                {latest && <RunTaskLink run={latest} />}
                 {schedule.runs.length > 1 && (
                   <button
                     type="button"
@@ -377,34 +358,40 @@ export function ScheduleRow({
       )}
       <div
         className={cn(
-          "flex items-center gap-2 @4xl:col-start-5 @4xl:row-start-1 @4xl:justify-end",
-          !enabled && !hasLatestTask && "@max-4xl:justify-end",
+          "flex items-center gap-2 @4xl:col-start-5 @4xl:row-start-1 @4xl:justify-end @4xl:gap-1",
+          !enabled && !schedule.enabled && "@max-4xl:justify-end",
         )}
       >
         <Button
           variant="outline"
           size="sm"
           className={cn(
-            "h-11 flex-1 @4xl:h-8 @4xl:flex-none",
+            "h-11 flex-1 @4xl:h-8 @4xl:w-14 @4xl:flex-none",
             !enabled && "hidden @4xl:inline-flex",
           )}
-          disabled={pending || !enabled || Boolean(busy)}
-          onClick={() => onAction("run")}
-          aria-label={`Run ${name} now`}
-          aria-describedby={computerUnavailable ? unavailableId : undefined}
+          disabled={pending || !enabled}
+          onClick={onEdit}
+          aria-label={`Edit ${name}`}
         >
-          {pending ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Play className="size-3.5 fill-current" />
-          )}
-          Run now
+          Edit
         </Button>
-        {latest && hasLatestTask && (
-          <RunTaskLink
-            run={latest}
-            className="h-11 flex-1 justify-center rounded-md border px-3 no-underline hover:bg-muted/40 @4xl:hidden"
-          />
+        {(schedule.enabled || (!completed && enabled)) && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-11 flex-1 @4xl:h-8 @4xl:w-[4.75rem] @4xl:flex-none"
+            disabled={pending}
+            onClick={() => onAction(schedule.enabled ? "pause" : "resume")}
+            aria-label={`${schedule.enabled ? "Pause" : "Resume"} ${name}`}
+          >
+            {pending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : schedule.enabled ? (
+              "Pause"
+            ) : (
+              "Resume"
+            )}
+          </Button>
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -420,19 +407,12 @@ export function ScheduleRow({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              onSelect={() => onAction(schedule.enabled ? "pause" : "resume")}
-              disabled={!schedule.enabled && (!enabled || completed)}
+              onSelect={() => onAction("run")}
+              disabled={pending || !enabled || Boolean(busy)}
+              aria-describedby={computerUnavailable ? unavailableId : undefined}
             >
-              {schedule.enabled ? (
-                <Pause className="size-4" />
-              ) : (
-                <Play className="size-4" />
-              )}
-              {schedule.enabled ? "Pause schedule" : "Resume schedule"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onEdit} disabled={!enabled}>
-              <Pencil className="size-4" />
-              Edit
+              <Play className="size-4" />
+              Run now
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem

@@ -2,111 +2,133 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { ScheduleRow } from "../ScheduleRow";
 import type { AgentSchedule } from "@/lib/schedules/types";
 
-it("keeps running once distinct from resuming a paused schedule", () => {
-  const schedule: AgentSchedule = {
-    id: "schedule",
-    definition: {
-      name: "Lab check",
-      prompt: "Reply hello",
-      model: "default",
-      timing: { type: "interval", minutes: 60 },
-    },
-    enabled: false,
-    consumed: false,
-    nextRunAt: null,
-    runs: [],
-  };
-  const onAction = jest.fn();
-  const props = {
+const paused: AgentSchedule = {
+  id: "schedule",
+  definition: {
+    name: "Lab check",
+    prompt: "Reply hello",
+    model: "default",
+    timing: { type: "interval", minutes: 60 },
+  },
+  enabled: false,
+  consumed: false,
+  nextRunAt: null,
+  runs: [],
+};
+
+function rowProps(schedule = paused) {
+  return {
     schedule,
     enabled: true,
     computerUnavailable: false,
     pending: false,
-    onAction,
+    onAction: jest.fn(),
     onEdit: jest.fn(),
     onDelete: jest.fn(),
   };
-  const view = render(
-    <ul>
-      <ScheduleRow {...props} />
-    </ul>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Run Lab check now" }));
-  fireEvent.click(screen.getByRole("button", { name: "Resume schedule" }));
-  expect(onAction.mock.calls).toEqual([["run"], ["resume"]]);
+}
 
-  view.rerender(
-    <ul>
-      <ScheduleRow {...props} enabled={false} />
-    </ul>,
+async function openRunMenu() {
+  fireEvent.keyDown(
+    screen.getByRole("button", { name: "More actions for Lab check" }),
+    { key: "ArrowDown" },
   );
-  expect(
-    screen.getByRole("button", { name: "Run Lab check now" }),
-  ).toBeDisabled();
-  expect(
-    screen.queryByRole("button", { name: "Resume schedule" }),
-  ).not.toBeInTheDocument();
+  return screen.findByRole("menuitem", { name: "Run now" });
+}
+
+it("edits and resumes directly while keeping a one-off run separate", async () => {
+  const props = rowProps();
+  const view = render(<ScheduleRow {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Edit Lab check" }));
+  expect(props.onEdit).toHaveBeenCalledTimes(1);
+  expect(props.onAction).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Resume Lab check" }));
+  fireEvent.click(await openRunMenu());
+  expect(props.onAction.mock.calls).toEqual([["resume"], ["run"]]);
+
+  props.onAction.mockClear();
+  view.rerender(<ScheduleRow {...props} enabled={false} />);
+  expect(screen.getByRole("button", { name: "Edit Lab check" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Resume Lab check" })).toBeNull();
+  const run = await openRunMenu();
+  expect(run).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(run);
+  expect(props.onAction).not.toHaveBeenCalled();
 });
 
 it.each(["once", "interval"] as const)(
   "only keeps a consumed %s schedule ended while it is still one-time",
   async (type) => {
-    const onAction = jest.fn();
-    render(
-      <ul>
-        <ScheduleRow
-          schedule={{
-            id: "schedule",
-            definition: {
-              name: "Lab check",
-              prompt: "Reply hello",
-              model: "default",
-              timing:
-                type === "once"
-                  ? { type, at: Date.now() - 60_000 }
-                  : { type, minutes: 60 },
-            },
-            enabled: false,
-            consumed: true,
-            nextRunAt: null,
-            runs: [],
-          }}
-          enabled
-          computerUnavailable={false}
-          pending={false}
-          onAction={onAction}
-          onEdit={jest.fn()}
-          onDelete={jest.fn()}
-        />
-      </ul>,
-    );
+    const props = rowProps({
+      ...paused,
+      consumed: true,
+      definition: {
+        ...paused.definition,
+        timing:
+          type === "once"
+            ? { type, at: Date.now() - 60_000 }
+            : { type, minutes: 60 },
+      },
+    });
+    render(<ScheduleRow {...props} />);
     expect(
       screen.getByText(type === "once" ? "Ended" : "Paused"),
     ).toBeVisible();
     if (type === "once") {
       expect(
-        screen.queryByRole("button", { name: "Resume schedule" }),
+        screen.queryByRole("button", { name: "Resume Lab check" }),
       ).toBeNull();
     } else {
-      fireEvent.click(screen.getByRole("button", { name: "Resume schedule" }));
-      expect(onAction).toHaveBeenCalledWith("resume");
-      onAction.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Resume Lab check" }));
+      expect(props.onAction).toHaveBeenCalledWith("resume");
+      props.onAction.mockClear();
     }
-    fireEvent.keyDown(
-      screen.getByRole("button", { name: "More actions for Lab check" }),
-      { key: "ArrowDown" },
-    );
-    const resume = await screen.findByRole("menuitem", {
-      name: "Resume schedule",
-    });
-    if (type === "once") {
-      expect(resume).toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(resume);
-      expect(onAction).not.toHaveBeenCalled();
-    } else {
-      expect(resume).not.toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(resume);
-      expect(onAction).toHaveBeenCalledWith("resume");
-    }
+    fireEvent.click(await openRunMenu());
+    expect(props.onAction.mock.calls).toEqual([["run"]]);
   },
 );
+
+it("retains pause after eligibility loss and prevents actions while pending", () => {
+  const props = rowProps({ ...paused, enabled: true });
+  const view = render(<ScheduleRow {...props} enabled={false} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pause Lab check" }));
+  expect(props.onAction).toHaveBeenCalledWith("pause");
+
+  props.onAction.mockClear();
+  view.rerender(<ScheduleRow {...props} pending />);
+  for (const name of [
+    "Edit Lab check",
+    "Pause Lab check",
+    "More actions for Lab check",
+  ]) {
+    const button = screen.getByRole("button", { name });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+  }
+  expect(props.onAction).not.toHaveBeenCalled();
+  expect(props.onEdit).not.toHaveBeenCalled();
+});
+
+it("blocks another run while a task is busy but still allows pausing future runs", async () => {
+  const props = rowProps({
+    ...paused,
+    enabled: true,
+    runs: [
+      {
+        id: "run",
+        chatId: "chat",
+        hasTask: true,
+        status: "running",
+        detail: null,
+        createdAt: Date.now(),
+      },
+    ],
+  });
+  render(<ScheduleRow {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pause Lab check" }));
+  expect(props.onAction.mock.calls).toEqual([["pause"]]);
+  const run = await openRunMenu();
+  expect(run).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(run);
+  expect(props.onAction.mock.calls).toEqual([["pause"]]);
+});
