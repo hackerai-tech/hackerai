@@ -948,7 +948,6 @@ function FindingsPageContent() {
                         type="button"
                         variant="outline"
                         size="sm"
-                        aria-pressed={isSelecting}
                         aria-label={
                           isSelecting ? "Cancel selection" : "Select findings"
                         }
