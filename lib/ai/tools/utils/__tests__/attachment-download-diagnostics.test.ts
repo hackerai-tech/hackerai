@@ -1,5 +1,6 @@
 import {
   copyAttachmentDownloadFailureContext,
+  recordAttachmentDownloadBoundary,
   getAttachmentDownloadFailureContext,
   recordAttachmentDownloadFailure,
 } from "../attachment-download-diagnostics";
@@ -94,4 +95,31 @@ it("copies final-attempt evidence without serializing the error or sharing mutab
     getAttachmentDownloadFailureContext(new Error("unrecorded")),
   ).toBeUndefined();
   expect(getAttachmentDownloadFailureContext(null)).toBeUndefined();
+});
+
+it("records unreadable rejection identity without reading private properties and copies the finite boundary", () => {
+  const privateRead = jest.fn(() => {
+    throw new Error("private getter");
+  });
+  const unreadable = new Proxy({}, { getPrototypeOf: privateRead });
+  Object.defineProperty(unreadable, "message", { get: privateRead });
+  recordAttachmentDownloadBoundary(unreadable, {
+    phase: "download_command",
+    attempt: 1,
+    resultState: "not_observed",
+  });
+  const wrapped = copyAttachmentDownloadFailureContext(
+    unreadable,
+    new Error("existing wrapper"),
+  );
+  expect(getAttachmentDownloadFailureContext(wrapped)).toMatchObject({
+    attachment_download_error_kind: "unreadable",
+    attachment_download_result_context_present: false,
+    attachment_download_phase: "download_command",
+  });
+  // instanceof may inspect the prototype, but private name/message getters are never read.
+  expect(privateRead).toHaveBeenCalledTimes(1);
+  expect(
+    JSON.stringify(getAttachmentDownloadFailureContext(wrapped)),
+  ).not.toContain("private");
 });
