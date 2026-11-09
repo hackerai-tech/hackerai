@@ -44,6 +44,50 @@ it.each([
     }),
   );
 });
+it.each([
+  [
+    "handled rate limit",
+    {
+      metadata: { status: "rate_limited", blockedCode: "rate_limit:chat" },
+      tags: ["rate_limited", "blocked_code_rate_limit_chat"],
+    },
+  ],
+  ["rate-limit metadata", { metadata: { status: "rate_limited" } }],
+  ["blocked-code tag", { tags: ["blocked_code_rate_limit_chat"] }],
+  ["rate-limit tag", { tags: ["rate_limited"] }],
+  ["user-correctable metadata", { metadata: { status: "user_correctable" } }],
+  ["offline metadata", { metadata: { status: "reconnect_required" } }],
+  ["missing-chat metadata", { metadata: { status: "chat_not_found" } }],
+  ["failure metadata", { metadata: { status: "failed" } }],
+  [
+    "user-correctable tag",
+    { tags: ["user_correctable_subscription_required"] },
+  ],
+])("records a completed Agent's %s as failed", async (_reason, terminal) => {
+  // agent-long returns normally after emitting these handled terminal errors.
+  mockRetrieve.mockResolvedValue({ status: "COMPLETED", ...terminal });
+  await reconcileScheduleRuns("owner");
+  expect(mockMutation).toHaveBeenCalledWith(
+    "recordOutcome",
+    expect.objectContaining({
+      id: "receipt",
+      triggerRunId: "run",
+      status: "failed",
+    }),
+  );
+});
+it("waits for a blocked Agent to finish before settling its receipt", async () => {
+  mockRetrieve.mockResolvedValue({
+    status: "EXECUTING",
+    metadata: { status: "rate_limited" },
+    tags: ["rate_limited", "blocked_code_rate_limit_chat"],
+  });
+  await reconcileScheduleRuns("owner");
+  expect(mockMutation).toHaveBeenCalledWith(
+    "recordOutcome",
+    expect.objectContaining({ status: "pending" }),
+  );
+});
 it("preserves an unknown outcome when a status request fails", async () => {
   mockRetrieve.mockRejectedValue(Error("unavailable"));
   await reconcileScheduleRuns();
