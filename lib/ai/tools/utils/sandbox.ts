@@ -97,6 +97,9 @@ export class E2BAcquisitionError extends Error {
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
 
+/** Preserve the existing cluster/target hash domain for cross-phase correlation.
+ * Invalid inputs or hashing failures yield null; matching hashes do not validate identity.
+ */
 function fingerprintE2BTarget(
   cluster: E2BCluster | null,
   sandboxId: string | null | undefined,
