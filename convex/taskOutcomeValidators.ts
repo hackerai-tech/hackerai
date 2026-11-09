@@ -1,4 +1,8 @@
 import { v } from "convex/values";
+import {
+  MAX_GROK_46_KEY,
+  MAX_GROK_46_FEEDBACK_PHASE,
+} from "../lib/experiments/max-grok-46";
 import { AGENT_CONTEXT_FEEDBACK_PHASE } from "../lib/feedback/agent-context";
 import {
   ABLITERATED_PRO_THREE_STEPS_KEY,
@@ -42,6 +46,7 @@ export const experimentTaskOutcomeContext = {
   ...taskOutcomeContext,
   survey_kind: v.literal("current_experiment"),
   experiment_key: v.union(
+    v.literal(MAX_GROK_46_KEY),
     v.literal(ABLITERATED_PRO_THREE_STEPS_KEY),
     v.literal(ABLITERATED_MAX_EXPERIMENT_KEY),
     v.literal(ABLITERATED_PAID_FIRST_STEP_KEY),
@@ -58,6 +63,7 @@ export const experimentTaskOutcomeContext = {
   assigned_model: v.string(),
   baseline_model: v.string(),
   feedback_phase: v.union(
+    v.literal(MAX_GROK_46_FEEDBACK_PHASE),
     v.literal(PRO_THREE_STEPS_TASK_OUTCOME_PHASE),
     v.literal(EXPERIMENT_TASK_OUTCOME_PHASE),
     v.literal(PAID_FIRST_STEP_TASK_OUTCOME_PHASE),

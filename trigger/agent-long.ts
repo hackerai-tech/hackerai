@@ -1,3 +1,7 @@
+import {
+  evaluateMaxGrok46,
+  MaxModelTelemetry,
+} from "@/lib/experiments/max-grok-46";
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
@@ -1990,6 +1994,8 @@ export const agentLongTask = task({
       getFailureSignalContext: (error) =>
         agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
     });
+    let maxModelTelemetry: MaxModelTelemetry | undefined;
+    let taskOutcomeSurvey: Awaited<ReturnType<typeof selectTaskOutcomeSurvey>>;
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
     let terminalAgentState: AgentStreamState | undefined;
@@ -2120,18 +2126,7 @@ export const agentLongTask = task({
         agentModelContextVariant,
         getAgentModelContextFlag(selectedModelOverride),
       );
-      const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
-        posthog,
-        userId,
-        chatId,
-        messageId: assistantMessageId,
-        triggerRunId: ctx.run.id,
-        mode,
-        subscription,
-        selectedModelOverride,
-        variant: agentModelContextVariant,
-        release: ctx.deployment?.version ?? "unknown",
-      });
+
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
         getMessagesByChatId({
@@ -2262,6 +2257,47 @@ export const agentLongTask = task({
         );
       }
 
+      const maxGrokAssignment = await evaluateMaxGrok46({
+        posthog,
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+        hasImages:
+          countFileAttachments(messagesForProcessing).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+        limitRescue: Boolean(limitRescue),
+      });
+      if (maxGrokAssignment) {
+        selectedModel = maxGrokAssignment.modelKey;
+        maxModelTelemetry = new MaxModelTelemetry(
+          posthog,
+          userId,
+          maxGrokAssignment,
+          {
+            requestId: assistantMessageId,
+            chatId,
+            subscription,
+            release: ctx.deployment?.version,
+            environment: ctx.environment.type.toLowerCase(),
+          },
+        );
+      }
+      const contextTaskOutcomeSurvey = maxGrokAssignment
+        ? undefined
+        : await selectContextTaskOutcomeSurvey({
+            posthog,
+            userId,
+            chatId,
+            messageId: assistantMessageId,
+            triggerRunId: ctx.run.id,
+            mode,
+            subscription,
+            selectedModelOverride,
+            variant: agentModelContextVariant,
+            release: ctx.deployment?.version ?? "unknown",
+          });
+
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           ctx.environment.type === "PRODUCTION"
@@ -2301,10 +2337,11 @@ export const agentLongTask = task({
           })
         : undefined;
 
-      const taskOutcomeSurvey =
+      taskOutcomeSurvey =
         contextTaskOutcomeSurvey ??
         (await selectTaskOutcomeSurvey({
           assignment: abliteratedExperiment,
+          modelExperimentAssignment: maxGrokAssignment,
           selectedModelOverride,
           release: ctx.deployment?.version,
           posthog,
@@ -3493,7 +3530,7 @@ export const agentLongTask = task({
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
+            let fallbackModel =
               !(mode === "agent" && selectedModelOverride === "hackerai-max") &&
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
@@ -3502,6 +3539,10 @@ export const agentLongTask = task({
                     selectedModel,
                     mode,
                     selectedModelOverride,
+                    {
+                      hasImageInputs:
+                        maxModelTelemetry?.hasImageInputs ?? requestHasImages,
+                    },
                   );
             let activeModelName = selectedModel;
 
@@ -4132,8 +4173,19 @@ export const agentLongTask = task({
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
+              maxModelTelemetry,
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
+                if (maxModelTelemetry?.hasAssignedExposure)
+                  taskOutcomeSurvey?.expose?.();
+                if (maxModelTelemetry?.hasImageInputs) {
+                  fallbackModel = getRetryFallbackModel(
+                    selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    { hasImageInputs: true },
+                  );
+                }
               },
               trackedProvider,
               currentSystemPrompt,
@@ -4442,6 +4494,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               runReporting.captureTerminal(captureAgentCompletionAnalytics, {
+                maxModelTelemetry,
                 responseMessageId: retryMessageId,
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
@@ -5694,6 +5747,7 @@ export const agentLongTask = task({
                       runReporting.captureTerminal(
                         captureAgentCompletionAnalytics,
                         {
+                          maxModelTelemetry,
                           responseMessageId: assistantMessageId,
                           cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                           usageMeasurement:
@@ -6279,6 +6333,16 @@ export const agentLongTask = task({
             : undefined,
         triggerDurationMs: reportingUsage?.compute?.total?.durationMs,
         observedAccumulatedCostDollars: observedUsageTracker?.providerCost,
+      });
+      await taskOutcomeSurvey?.flush?.();
+      maxModelTelemetry?.recordTerminal({
+        outcome: userStopSignal.signal.aborted ? "aborted" : "error",
+        naturalCompletion: false,
+        finishReason: terminalAgentState?.streamFinishReason,
+        responseModel: terminalAgentState?.responseModel,
+        usage: observedUsageTracker?.measurementProperties(
+          maxModelTelemetry.assignment.modelKey,
+        ),
       });
       // Flush fallback records and quota-check exposure before the worker exits.
       await posthog?.shutdown().catch(() => undefined);

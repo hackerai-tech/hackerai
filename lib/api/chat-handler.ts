@@ -1,3 +1,7 @@
+import {
+  evaluateMaxGrok46,
+  MaxModelTelemetry,
+} from "@/lib/experiments/max-grok-46";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -586,6 +590,27 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
+      const maxGrokAssignment = await evaluateMaxGrok46({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+        hasImages:
+          countFileAttachments(processedMessages).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+        limitRescue: Boolean(limitRescue),
+      });
+      if (maxGrokAssignment) selectedModel = maxGrokAssignment.modelKey;
+      const maxModelTelemetry = maxGrokAssignment
+        ? new MaxModelTelemetry(posthog, userId, maxGrokAssignment, {
+            requestId: assistantMessageId,
+            chatId,
+            subscription,
+            release: process.env.VERCEL_GIT_COMMIT_SHA,
+            environment: process.env.VERCEL_ENV ?? "development",
+          })
+        : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           process.env.VERCEL_ENV === "production" ||
@@ -626,6 +651,7 @@ export const createChatHandler = () => {
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         assignment: abliteratedExperiment,
+        modelExperimentAssignment: maxGrokAssignment,
         selectedModelOverride,
         posthog,
         userId,
@@ -1267,11 +1293,19 @@ export const createChatHandler = () => {
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
+            let fallbackModel =
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    {
+                      hasImageInputs:
+                        maxModelTelemetry?.hasImageInputs ?? requestHasImages,
+                    },
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1722,8 +1756,19 @@ export const createChatHandler = () => {
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
+              maxModelTelemetry,
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
+                if (maxModelTelemetry?.hasAssignedExposure)
+                  taskOutcomeSurvey?.expose?.();
+                if (maxModelTelemetry?.hasImageInputs) {
+                  fallbackModel = getRetryFallbackModel(
+                    selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    { hasImageInputs: true },
+                  );
+                }
               },
               trackedProvider,
               currentSystemPrompt,
@@ -2565,7 +2610,9 @@ export const createChatHandler = () => {
                                   : providerContentBlocked || retryEmptyResponse
                                     ? "error"
                                     : "success";
+                                await taskOutcomeSurvey?.flush?.();
                                 captureAgentCompletionAnalytics({
+                                  maxModelTelemetry,
                                   responseMessageId: retryMessageId,
                                   cacheHistoryTelemetry:
                                     state.cacheHistoryTelemetry,
@@ -2968,7 +3015,9 @@ export const createChatHandler = () => {
                             state.streamFinishReason === "error")
                         ? "error"
                         : "success";
+                    await taskOutcomeSurvey?.flush?.();
                     captureAgentCompletionAnalytics({
+                      maxModelTelemetry,
                       responseMessageId: assistantMessageId,
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:

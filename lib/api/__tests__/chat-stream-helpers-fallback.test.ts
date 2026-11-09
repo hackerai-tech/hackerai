@@ -947,7 +947,9 @@ describe("buildProviderOptions fallback chain", () => {
       });
       expect(opts.openrouter).not.toHaveProperty("models");
       expect(
-        getRetryFallbackModel("model-grok-4.6", "agent", "hackerai-max"),
+        getRetryFallbackModel("model-grok-4.6", "agent", "hackerai-max", {
+          hasImageInputs: true,
+        }),
       ).toBe(DEEPSEEK_1017_MODEL_KEY);
     },
   );

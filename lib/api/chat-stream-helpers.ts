@@ -789,9 +789,12 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
   selectedModelOverride?: SelectedModel,
+  options: { hasImageInputs?: boolean } = {},
 ): ModelName {
   if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    // Recovery starts with DeepSeek; a final Grok attempt is context-checked.
+    if (modelName === "model-grok-4.6" && !options.hasImageInputs)
+      return "model-glm-5.3";
+    // Images and the control route retain DeepSeek recovery.
     return DEEPSEEK_1017_MODEL_KEY;
   }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {

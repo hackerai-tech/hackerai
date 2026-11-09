@@ -1,3 +1,4 @@
+import type { MaxModelTelemetry } from "@/lib/experiments/max-grok-46";
 import {
   INFERENCE_CYBER_MODEL_KEY,
   INFERENCE_MAX_IMAGES_PER_REQUEST,
@@ -866,6 +867,7 @@ export type AgentStreamContext = {
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   /** Called after step preparation, immediately before the actual provider call. */
+  maxModelTelemetry?: MaxModelTelemetry;
   onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
@@ -2208,7 +2210,14 @@ export async function createAgentStream(
       exposeHistory();
       reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
-      if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
+      if (!abortSignal.aborted) {
+        ctx.maxModelTelemetry?.providerStarted(
+          model.modelId,
+          streamHasImageViewResults ||
+            uiMessagesContainImageAttachment(state.finalMessages),
+        );
+        ctx.onProviderRequestStart?.(model.modelId);
+      }
     },
     experimental_onToolCallStart: () => {
       reportMemoryActivity({ operation: "tool_execution" });
@@ -3081,6 +3090,14 @@ export async function createAgentStream(
       text,
       finishReason,
     }) => {
+      ctx.maxModelTelemetry?.providerCompleted({
+        responseModel: response?.modelId,
+        finishReason,
+        toolCalls: toolCalls?.length ?? 0,
+        hasImageToolResults: toolResultsContainImageViewResult(
+          toolResults ?? [],
+        ),
+      });
       reportMemoryActivity({ operation: "step_finalize" });
       lastCompletedResponseMessages = response?.messages ?? [];
       if (ctx.subscription === "free") {

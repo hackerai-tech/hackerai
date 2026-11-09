@@ -1,3 +1,7 @@
+import {
+  MaxModelTelemetry,
+  MAX_GROK_46_KEY,
+} from "@/lib/experiments/max-grok-46";
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
@@ -3653,6 +3657,12 @@ describe("createAgentStream repeated compaction", () => {
   it.each(["upload", "tool-result"])(
     "preserves native Max Grok %s images through a continuation",
     async (source) => {
+      jest
+        .requireMock("@/lib/chat/multimodal-tool-result-recovery")
+        .uiMessagesContainImageViewResult.mockImplementationOnce(
+          jest.requireActual("@/lib/chat/multimodal-tool-result-recovery")
+            .uiMessagesContainImageViewResult,
+        );
       mockGetProviderPromptPressure.mockReturnValue(null);
       const image = "data:image/png;base64,aW1hZ2U=";
       const message: UIMessage =
@@ -3696,9 +3706,28 @@ describe("createAgentStream repeated compaction", () => {
         usedTokens: 100,
         maxTokens: 200_000,
       });
+      const capture = jest.fn();
+      const telemetry = new MaxModelTelemetry(
+        { capture } as any,
+        "qa-user",
+        {
+          key: MAX_GROK_46_KEY,
+          variant: "test",
+          modelKey: "model-grok-4.6",
+          baselineModel: "model-glm-5.3",
+          hasImages: false,
+        },
+        {
+          requestId: "qa-request",
+          chatId: "qa-chat",
+          subscription: "ultra",
+          environment: "preview",
+        },
+      );
       const stream = (await createAgentStream(
         "model-grok-4.6",
         createTestStreamContext({
+          maxModelTelemetry: telemetry,
           subscription: "ultra",
           selectedModelOverride: "hackerai-max",
           directGlmVisionEnabled: true,
@@ -3718,6 +3747,20 @@ describe("createAgentStream repeated compaction", () => {
         stepNumber: 0,
         messages: stream.messages,
       });
+      expect(telemetry.hasAssignedExposure).toBe(false);
+      stream.experimental_onStepStart({ model: prepared.model });
+      expect(telemetry.hasAssignedExposure).toBe(true);
+      expect(telemetry.hasImageInputs).toBe(true);
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "flash_routing_experiment_exposed",
+          properties: expect.objectContaining({
+            experiment_key: MAX_GROK_46_KEY,
+            configured_model: "x-ai/grok-4.6",
+            has_image_inputs: true,
+          }),
+        }),
+      );
       expect(stream.model.modelId).toBe("x-ai/grok-4.6");
       expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
       expect(JSON.stringify(prepared.messages)).toContain(image);

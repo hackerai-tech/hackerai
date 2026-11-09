@@ -34,7 +34,7 @@ const client = (variant: unknown) => ({
 
 describe("paid 1017 routing", () => {
   it.each([false, true])(
-    "uses Grok 4.6 with high reasoning for Max text, uploads and image tool results (direct vision=%s)",
+    "preserves control GLM text and exact 1017 maximum reasoning for Max uploads and image tool results (direct vision=%s)",
     (directGlmVisionEnabled) => {
       const attachmentModel = selectModel(
         "agent",
@@ -45,7 +45,7 @@ describe("paid 1017 routing", () => {
         { directGlmVisionEnabled },
       );
       const textModel = selectModel("agent", "ultra", "hackerai-max");
-      expect(textModel).toBe("model-grok-4.6");
+      expect(textModel).toBe("model-glm-5.3");
       const toolImageModel = resolveAgentModelForImageToolResults(
         textModel,
         "agent",
@@ -55,9 +55,9 @@ describe("paid 1017 routing", () => {
         directGlmVisionEnabled,
         "ultra",
       );
-      for (const modelKey of [textModel, attachmentModel, toolImageModel]) {
+      for (const modelKey of [attachmentModel, toolImageModel]) {
         expect(myProvider.languageModel(modelKey).modelId).toBe(
-          "x-ai/grok-4.6",
+          DEEPSEEK_1017_SLUG,
         );
         expect(supportsMultimodalToolResults(modelKey)).toBe(true);
         const options = buildProviderOptions(
@@ -73,7 +73,7 @@ describe("paid 1017 routing", () => {
         );
         expect(options.openrouter.reasoning).toEqual({
           enabled: true,
-          effort: "high",
+          effort: "max",
         });
         expect(options.openrouter.models).toBeUndefined();
         expect(
