@@ -126,7 +126,9 @@ export interface CreateSessionOpts {
 }
 
 type RecordWork = {
+  sessionId: string;
   pending: Set<Promise<void>>;
+  checkpoints: Set<Promise<void>>;
   retention: Set<AbortController>;
 };
 
@@ -188,6 +190,7 @@ export class PtySessionManager {
     chatId: string,
     work: RecordWork,
     operation: Promise<void>,
+    checkpoint = false,
   ): void {
     let groups = this.recordWork.get(chatId);
     if (!groups) this.recordWork.set(chatId, (groups = new Set()));
@@ -196,6 +199,7 @@ export class PtySessionManager {
       .catch(() => undefined)
       .finally(() => {
         work.pending.delete(pending);
+        work.checkpoints.delete(pending);
         if (!work.pending.size && !work.retention.size) {
           const groups = this.recordWork.get(chatId);
           groups?.delete(work);
@@ -203,6 +207,42 @@ export class PtySessionManager {
         }
       });
     work.pending.add(pending);
+    if (checkpoint) work.checkpoints.add(pending);
+  }
+
+  /** Wait only for this record's writes; a slow transport must remain pending. */
+  async waitForPendingRecord(
+    chatId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const checkpoints = () =>
+      [...(this.recordWork.get(chatId) ?? [])]
+        .filter((work) => work.sessionId === sessionId)
+        .flatMap((work) => [...work.checkpoints]);
+    if (checkpoints().length === 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false;
+    try {
+      return await Promise.race([
+        (async () => {
+          // Re-read after each batch: a coalesced final checkpoint may replace it.
+          while (!expired) {
+            const pending = checkpoints();
+            if (pending.length === 0) break;
+            await Promise.allSettled(pending);
+          }
+          return false;
+        })(),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => {
+            expired = true;
+            resolve(true);
+          }, RECORD_CHECKPOINT_WAIT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async create(chatId: string, opts: CreateSessionOpts): Promise<PtySession> {
@@ -258,7 +298,12 @@ export class PtySessionManager {
         closing: false,
         exitedNaturally: null,
         executionRecord: opts.executionRecord,
-        recordWork: { pending: new Set(), retention: new Set() },
+        recordWork: {
+          sessionId,
+          pending: new Set(),
+          checkpoints: new Set(),
+          retention: new Set(),
+        },
         recordQueue: Promise.resolve(),
         recordWriting: false,
         recordDirty: false,
@@ -519,6 +564,7 @@ export class PtySessionManager {
         session.chatId,
         internal.recordWork,
         internal.recordQueue,
+        true,
       );
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
