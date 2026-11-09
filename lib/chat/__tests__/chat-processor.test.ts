@@ -300,11 +300,11 @@ describe("selectModel", () => {
                 },
               ),
             ).toBe(
-              !maxAllowed
-                ? DEEPSEEK_1017_MODEL_KEY
-                : hasImage
+              maxAllowed
+                ? hasImage
                   ? DEEPSEEK_1017_MODEL_KEY
-                  : "model-glm-5.3",
+                  : "model-glm-5.3"
+                : DEEPSEEK_1017_MODEL_KEY,
             );
           }
           expect(

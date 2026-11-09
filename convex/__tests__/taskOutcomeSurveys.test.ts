@@ -745,6 +745,7 @@ describe("current experiment reservation", () => {
         answer: "not_checked",
       }),
     ).toMatchObject({ answer: "not_checked" });
+    await invoke(record, ctx, { id: row._id, action: "shown" });
     expect(
       await invoke(record, ctx, {
         id: row._id,
@@ -781,5 +782,56 @@ describe("current experiment reservation", () => {
         answer: "solved",
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("Max experiment reservations", () => {
+  const max = {
+    ...args,
+    subscription_tier: "ultra",
+    survey_kind: "current_experiment",
+    experiment_key: "max_grok_46_quality_v1",
+    experiment_variant: "test",
+    experiment_request_id: args.request_id,
+    feedback_phase: "max_grok_46_quality_feedback_v1",
+    selected_model_override: "hackerai-max",
+    assigned_model: "model-grok-4.6",
+    baseline_model: "model-glm-5.3",
+  };
+  it("preserves the first account reservation across concurrent requests and ties feedback to the response", async () => {
+    const { ctx } = setup();
+    const row = await invoke(reserveExperiment, ctx, max);
+    expect(row).toMatchObject({
+      experiment_key: max.experiment_key,
+      assigned_model: "model-grok-4.6",
+    });
+    expect(
+      await invoke(reserveExperiment, ctx, {
+        ...max,
+        request_id: "second",
+        experiment_request_id: "second",
+        message_id: "second",
+      }),
+    ).toBeNull();
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).toMatchObject({ answer: "solved" });
+  });
+  it.each([
+    { selected_model_override: "hackerai-pro" },
+    { mode: "ask" },
+    { assigned_model: "model-glm-5.3" },
+    { feedback_phase: "abliterated_max_moderated_feedback_v1" },
+    { baseline_model: "unknown" },
+  ])("rejects forged cohort context %p", async (patch) => {
+    const { ctx } = setup();
+    expect(
+      await invoke(reserveExperiment, ctx, { ...max, ...patch }),
+    ).toBeNull();
   });
 });
