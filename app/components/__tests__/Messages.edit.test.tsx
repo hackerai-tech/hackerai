@@ -23,15 +23,18 @@ jest.mock("../MessageErrorState", () => ({
   }: {
     onRetry: (
       options: import("../../hooks/useChatHandlers").RetryOptions,
-    ) => void;
+    ) => void | Promise<void>;
   }) => (
     <button
-      onClick={() =>
-        onRetry({
-          selectedModel: "auto",
-          limitRescue: { type: "paid_daily_free_allowance" },
-        })
-      }
+      onClick={() => {
+        // Observe the discarded callback promise without failing the Jest worker.
+        void Promise.resolve(
+          onRetry({
+            selectedModel: "auto",
+            limitRescue: { type: "paid_daily_free_allowance" },
+          }),
+        ).catch(() => undefined);
+      }}
     >
       Use daily allowance
     </button>
@@ -1035,4 +1038,37 @@ test("uses the current Resume handler after the chat transport changes", () => {
   fireEvent.click(screen.getByRole("button", { name: "Resume" }));
   expect(current).toHaveBeenCalledTimes(1);
   expect(previous).not.toHaveBeenCalled();
+});
+
+test("reports a failed local-loss retry without submitting a new request", async () => {
+  const onContinue = jest.fn().mockRejectedValue(new Error("Offline again"));
+  const onRetry = jest.fn();
+  const toastError = jest.spyOn(toast, "error");
+  render(
+    <DataStreamProvider>
+      <Messages
+        chatId="resume-failed-before-start"
+        messages={messages}
+        setMessages={jest.fn()}
+        onRegenerate={jest.fn()}
+        onRetry={onRetry}
+        onContinue={onContinue}
+        onEditMessage={jest.fn()}
+        status="ready"
+        error={new Error("Monthly usage limit reached")}
+        scrollRef={createRef<HTMLElement>()}
+        contentRef={createRef<HTMLElement>()}
+        finishReason="local-connection-lost"
+        mode="agent"
+      />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  await waitFor(() =>
+    expect(toastError).toHaveBeenCalledWith(
+      "Could not resume. Your saved progress is still available.",
+    ),
+  );
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  expect(onRetry).not.toHaveBeenCalled();
 });

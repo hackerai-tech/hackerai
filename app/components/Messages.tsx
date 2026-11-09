@@ -1000,8 +1000,18 @@ export const Messages = ({
             error={error}
             onRetry={
               finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
-                ? (options) =>
-                    onContinue?.(options?.selectedModel, options?.limitRescue)
+                ? async (options) => {
+                    try {
+                      await onContinue?.(
+                        options?.selectedModel,
+                        options?.limitRescue,
+                      );
+                    } catch {
+                      toast.error(
+                        "Could not resume. Your saved progress is still available.",
+                      );
+                    }
+                  }
                 : onRetry
             }
             onReconnect={onReconnect}
