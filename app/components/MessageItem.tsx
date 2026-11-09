@@ -119,6 +119,7 @@ function areMessageItemPropsEqual(
   if (prev.lastUserMessageIndex !== next.lastUserMessageIndex) return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.continueDisabledReason !== next.continueDisabledReason) return false;
+  if (prev.onContinue !== next.onContinue) return false;
   if (prev.mode !== next.mode) return false;
   if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
     return false;
