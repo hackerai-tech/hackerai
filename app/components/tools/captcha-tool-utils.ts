@@ -48,6 +48,7 @@ export function getCaptchaActivity({
   let state: CaptchaActivity["state"];
   if (
     executionPhase === "stopped" ||
+    executionPhase === "interrupted" ||
     (!hasResult && isExecuting && !isRunActive)
   )
     state = "stopped";

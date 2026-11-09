@@ -79,7 +79,7 @@ export const FinishReasonNotice = ({
               have finished.
             </p>
             {disabledReason && (
-              <p id={disabledReasonId} className="mt-1 text-sm">
+              <p id={disabledReasonId} className="mt-1 text-sm text-foreground">
                 {disabledReason}
               </p>
             )}

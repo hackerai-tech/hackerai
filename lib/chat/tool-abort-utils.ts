@@ -9,12 +9,15 @@ export const OUTPUT_LIMIT_TOOL_ERROR_TEXT =
 export const INTERRUPTED_TOOL_ERROR_TEXT =
   "Execution was interrupted before a final tool result was recorded. The action may have taken effect; inspect its result before repeating it.";
 
+export const LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT =
+  "Stopped after the local connection was lost. The command outcome is unknown; inspect its state before retrying.";
+
 export const getIncompleteToolErrorText = (
   finishReason: string | undefined,
   userInitiated = false,
 ): string =>
   finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
-    ? "Stopped after the local connection was lost. The command outcome is unknown; inspect its state before retrying."
+    ? LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT
     : userInitiated
       ? ABORTED_TOOL_ERROR_TEXT
       : finishReason === "length"

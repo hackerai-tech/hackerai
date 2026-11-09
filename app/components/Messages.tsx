@@ -734,8 +734,20 @@ export const Messages = ({
   const showPendingAgentReasoning =
     shouldShowLoadingDots && mode === "agent" && !isAutoResuming;
   const timelineExtraData = useMemo(
-    () => ({ editingMessageId, status, finishReason, continueDisabledReason }),
-    [editingMessageId, status, finishReason, continueDisabledReason],
+    () => ({
+      editingMessageId,
+      status,
+      finishReason,
+      continueDisabledReason,
+      onContinue,
+    }),
+    [
+      editingMessageId,
+      status,
+      finishReason,
+      continueDisabledReason,
+      onContinue,
+    ],
   );
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {

@@ -4,7 +4,10 @@ import {
   getTerminalExecutionPhase,
 } from "../tools/shell-tool-utils";
 import { extractSidebarContentFromMessage } from "@/lib/utils/sidebar-utils";
-import { ABORTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
+import {
+  getIncompleteToolErrorText,
+  ABORTED_TOOL_ERROR_TEXT,
+} from "@/lib/chat/tool-abort-utils";
 
 describe("terminal Computer sidebar labels", () => {
   const terminal = {
@@ -13,6 +16,46 @@ describe("terminal Computer sidebar labels", () => {
     isExecuting: false,
     toolCallId: "call-1",
   };
+
+  it.each(["tool-run_terminal_cmd", "tool-shell"])(
+    "keeps unknown outcomes labeled interrupted in %s live and after reload",
+    (type) => {
+      const errorText = getIncompleteToolErrorText("local-connection-lost");
+      const part = {
+        type,
+        toolCallId: "lost-command",
+        state: "output-error",
+        input:
+          type === "tool-shell"
+            ? { action: "exec", command: "sleep 60" }
+            : { command: "sleep 60" },
+        errorText,
+      };
+      const executionPhase = getTerminalExecutionPhase({
+        toolState: part.state,
+        errorText,
+      });
+      const computed = computeShellTerminalBlock({
+        isShellTool: type === "tool-shell",
+        shellInput: part.input,
+        isExecuting: false,
+        hasResult: false,
+        toolCallId: part.toolCallId,
+        legacyCommand: "sleep 60",
+        errorText,
+        executionPhase,
+      });
+      expect(computed.blockAction(false)).toBe("Command interrupted");
+      expect(getActionText(computed.sidebarContent!)).toBe(
+        "Command interrupted",
+      );
+      const [restored] = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [part],
+      });
+      expect(getActionText(restored!)).toBe("Command interrupted");
+    },
+  );
 
   it.each([
     "tool-run_terminal_cmd",

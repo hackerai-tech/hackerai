@@ -10,7 +10,10 @@ import {
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
 import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
-import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import {
+  isUserStoppedToolError,
+  LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT,
+} from "@/lib/chat/tool-abort-utils";
 import {
   getCaptchaActivity,
   getCaptchaActivityLabel,
@@ -36,6 +39,8 @@ export function getTerminalExecutionPhase({
   errorText?: string;
 }): TerminalExecutionPhase | undefined {
   if (toolState === "output-error") {
+    if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+      return "interrupted";
     return isUserStoppedToolError(errorText) ? "stopped" : "failed";
   }
   if (toolState === "output-available") return "completed";
@@ -185,6 +190,8 @@ export function getTerminalFailureAction(
   errorText?: string,
   action?: string,
 ): string {
+  if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+    return "Command interrupted";
   if (action === "wait") return "Couldn’t check command output";
   return isToolInputValidationError(errorText)
     ? "Invalid command"

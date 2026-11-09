@@ -943,3 +943,34 @@ test("updates a settled virtualized row when stop metadata arrives and the compu
   fireEvent.click(screen.getByRole("button", { name: "Resume" }));
   expect(onContinue).toHaveBeenCalledTimes(1);
 });
+
+test("uses the current Resume handler after the chat transport changes", () => {
+  const previous = jest.fn();
+  const current = jest.fn();
+  const props = {
+    chatId: "resume-current-transport",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onEditMessage: jest.fn(),
+    status: "ready" as const,
+    error: null,
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+    finishReason: "local-connection-lost",
+  };
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} onContinue={previous} />
+    </DataStreamProvider>,
+  );
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} onContinue={current} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(current).toHaveBeenCalledTimes(1);
+  expect(previous).not.toHaveBeenCalled();
+});
