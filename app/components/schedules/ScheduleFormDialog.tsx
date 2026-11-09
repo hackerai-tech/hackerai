@@ -275,7 +275,7 @@ export function ScheduleFormDialog({
             </DialogDescription>
           </div>
           {dirty && (
-            <span className="shrink-0 text-xs text-muted-foreground">
+            <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:self-start">
               Unsaved<span className="max-sm:hidden"> changes</span>
             </span>
           )}
@@ -723,7 +723,7 @@ export function ScheduleFormDialog({
                     <p>
                       {saved?.consumed && !timingChanged
                         ? "This one-time schedule already ran. Choose a new date and time to run it again."
-                        : "This schedule will stay paused after saving. Resume it from the schedule menu to set its next run."}
+                        : "This schedule will stay paused after saving. Resume it from the Schedules page to set its next run."}
                     </p>
                   ) : (
                     <p>
@@ -781,16 +781,26 @@ export function ScheduleFormDialog({
                 />
                 {execution ? (
                   <p className="min-w-0 break-words">
-                    <span className="font-medium text-foreground">
-                      Saving lets HackerAI run these instructions unattended on{" "}
-                      <span className="wrap-anywhere max-sm:hidden">
-                        {execution.name}
-                      </span>
-                      <span className="sm:hidden">the selected computer</span>{" "}
-                      with full tool access.
-                    </span>{" "}
-                    Access isn’t limited to the starting folder. Normal usage
-                    and spending limits apply.
+                    <span className="sm:hidden">
+                      <span className="font-medium text-foreground">
+                        Saving allows unattended runs on the selected computer
+                        with full tool access beyond this folder.
+                      </span>{" "}
+                      Normal usage and spending limits apply.
+                    </span>
+                    <span className="max-sm:hidden">
+                      <span className="font-medium text-foreground">
+                        Saving lets HackerAI run these instructions unattended
+                        on{" "}
+                        <span className="wrap-anywhere max-sm:hidden">
+                          {execution.name}
+                        </span>
+                        <span className="sm:hidden">the selected computer</span>{" "}
+                        with full tool access.
+                      </span>{" "}
+                      Access isn’t limited to the starting folder. Normal usage
+                      and spending limits apply.
+                    </span>
                   </p>
                 ) : (
                   <p className="min-w-0">

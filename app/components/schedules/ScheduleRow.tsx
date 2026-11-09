@@ -256,7 +256,10 @@ export function ScheduleRow({
                 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
                 aria-hidden="true"
               />
-              <span className="min-w-0 font-medium wrap-anywhere">
+              <span
+                className="line-clamp-2 min-w-0 font-medium wrap-anywhere"
+                title={execution?.name}
+              >
                 {execution ? execution.name : "Cloud"}
               </span>
             </span>
@@ -338,7 +341,7 @@ export function ScheduleRow({
           <WifiOff className="mt-1 size-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 wrap-anywhere">
             <span className="font-medium">
-              {execution.name} is unavailable.
+              Selected computer is unavailable.
             </span>{" "}
             Runs, including Run now, are skipped until it reconnects. Skipped
             runs aren’t made up later and never move to the cloud.

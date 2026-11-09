@@ -249,7 +249,7 @@ export function SchedulesPage() {
           {data?.enabled && data.schedules.length === 0 && (
             <section
               aria-labelledby="empty-schedules"
-              className="max-w-4xl space-y-8 pt-4 @4xl:pt-8"
+              className="space-y-8 pt-4 @4xl:pt-8"
             >
               <div className="max-w-2xl space-y-2">
                 <h2
@@ -259,9 +259,8 @@ export function SchedulesPage() {
                   Let the routine checks run themselves.
                 </h2>
                 <p className="text-sm leading-relaxed text-muted-foreground @lg:text-base">
-                  Each run sends HackerAI the same instructions and saves the
-                  result as a task. Pick a starter to review its instructions
-                  and timing before anything runs.
+                  Pick a starter, then tailor its instructions and timing.
+                  Nothing runs until you save.
                 </p>
               </div>
               <div>
