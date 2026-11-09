@@ -43,8 +43,9 @@ import {
   reopenRecovery,
 } from "../service";
 
-// Template parsing is unrelated to status reads; keep the SDK's real error types.
-jest.mock("dockerfile-ast", () => ({}));
+// This SDK-only transitive dependency has no root pnpm link. Template parsing
+// is unrelated to status reads; keep the SDK's real error types.
+jest.mock("dockerfile-ast", () => ({}), { virtual: true });
 jest.mock("@e2b/code-interpreter", () => ({
   ...jest.requireActual("@e2b/code-interpreter"),
   Sandbox: { getInfo: jest.fn(), list: jest.fn() },
