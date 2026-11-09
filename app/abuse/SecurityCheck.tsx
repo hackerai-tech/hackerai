@@ -57,7 +57,7 @@ export default function SecurityCheck({
           sitekey: siteKey,
           action: "abuse_report",
           theme: "auto",
-          size: compact ? "compact" : "normal",
+          size: compact ? "compact" : "flexible",
           "response-field": false,
           retry: "never",
           "refresh-expired": "auto",

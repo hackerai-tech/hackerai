@@ -83,7 +83,7 @@ export default function AbusePage() {
       <Header currentPath="/trust" />
       <main
         id="main-content"
-        className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-20"
+        className="mx-auto max-w-6xl px-4 py-10 max-[359px]:px-2.5 sm:px-6 sm:py-20"
       >
         <header className="mb-10 max-w-3xl sm:mb-14">
           <p className="mb-6 text-sm text-muted-foreground">
