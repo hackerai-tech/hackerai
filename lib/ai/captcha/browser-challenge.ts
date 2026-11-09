@@ -54,6 +54,7 @@ export function createBrowserChallengeHandler(
   let active = false;
   let guidanceSent = false;
   let capabilityOffered = false;
+  let captureRecoveryOffered = false;
   let providerAttemptStarted = false;
   let providerTaskCreated = false;
   let knownCostDollars: number | undefined;
@@ -223,6 +224,12 @@ export function createBrowserChallengeHandler(
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
         interstitial: observation.interstitial,
+        ...(environment === "PREVIEW" &&
+          observation.interstitial &&
+          observation.cloudflareCaptureState && {
+            capture_state: observation.cloudflareCaptureState,
+            script_load_observed: observation.cloudflareScriptLoaded === true,
+          }),
       });
       if (!process.env.TWOCAPTCHA_API_KEY && action === "inspect")
         return respond({
@@ -247,6 +254,29 @@ export function createBrowserChallengeHandler(
       const widget = pending[0];
       if (solveStarted)
         return respond({ status: "handoff_required", reason: "attempt_limit" });
+      if (
+        environment === "PREVIEW" &&
+        observation.interstitial &&
+        pending.length === 0 &&
+        observation.cloudflareCaptureState !== "captured"
+      ) {
+        const state = observation.cloudflareCaptureState;
+        const recoverable =
+          state === "api_not_ready" || state === "render_not_captured";
+        const offerRecovery = recoverable && !captureRecoveryOffered;
+        if (offerRecovery) captureRecoveryOffered = true;
+        return respond({
+          status: offerRecovery ? "capture_incomplete" : "handoff_required",
+          reason: "managed_parameters_not_captured",
+          captureState: state ?? "unknown",
+          providerTaskCreated: false,
+          providerCostUSD: 0,
+          recoveryAvailable: offerRecovery,
+          message: offerRecovery
+            ? "Cloudflare verification was detected, but the required solver parameters were not captured. This is not a provider rejection. Only if no form or account action has been submitted and this is still the read-only verification interstitial, reload this same page once in this owned session and take a fresh standalone snapshot. Otherwise stop for manual verification. Do not request a paid solve without solve_available. No further capture reloads are offered in this run."
+            : "Cloudflare verification was detected, but no solver-ready widget was captured. Do not classify this as a 2Captcha failure or invent challenge parameters. Automatic recovery is unavailable or has already been offered; stop for manual verification. No paid task was created.",
+        });
+      }
       if (
         (observation.interstitial && !widget?.managed) ||
         (widget?.managed && environment !== "PREVIEW") ||

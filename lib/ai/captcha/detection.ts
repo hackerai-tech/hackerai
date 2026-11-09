@@ -24,6 +24,17 @@ export const browserChallengeObservation = z.object({
     )
     .max(10),
   interstitial: z.boolean(),
+  cloudflareCaptureState: z
+    .enum([
+      "not_initialized",
+      "url_ineligible",
+      "manual",
+      "api_not_ready",
+      "render_not_captured",
+      "captured",
+    ])
+    .optional(),
+  cloudflareScriptLoaded: z.boolean().optional(),
   hcaptchaChallengeOpen: z.boolean().optional(),
 });
 export type BrowserChallengeObservation = z.infer<
@@ -75,6 +86,7 @@ export function isSupportedCaptchaTarget(
 export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
   const widgets = [];
   const managed = window[Symbol.for('hackerai.cloudflareChallenge')];
+  const init = window[Symbol.for('hackerai.cloudflareInit')];
   if (managed && !managed.delivered) widgets.push({kind:'turnstile', siteKey:managed.siteKey,
     observationId:managed.observationId, tokenPresent:false, invisible:false,
     managed:{action:managed.action, data:managed.data, pagedata:managed.pagedata, userAgent:managed.userAgent}});
@@ -102,6 +114,10 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
     url: managed ? ${CLOUDFLARE_PAGE_URL_SCRIPT} : location.href,
     documentId: String(performance.timeOrigin),
     widgets,
+    cloudflareCaptureState: managed ? 'captured' : !init ? 'not_initialized'
+      : !init.queryAllowed ? 'url_ineligible' : init.manual ? 'manual'
+        : typeof window.turnstile?.render !== 'function' ? 'api_not_ready' : 'render_not_captured',
+    cloudflareScriptLoaded: init?.scriptLoadObserved === true,
     hcaptchaChallengeOpen: [...document.querySelectorAll('iframe')].some(frame => {
       let src;
       try { src = new URL(frame.src); } catch { return false; }
