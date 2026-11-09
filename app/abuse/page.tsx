@@ -4,6 +4,7 @@ import { ArrowUpRight, Check } from "lucide-react";
 import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
 import { abuseIntakeEnabled } from "@/lib/abuse/evidence";
+import { abuseTurnstileConfig } from "@/lib/abuse/turnstile";
 import { ABUSE_EMAIL } from "@/lib/abuse/report";
 import { canonicalMetadata, HELP_CENTER_URL } from "@/lib/seo/site";
 import ReportForm from "./ReportForm";
@@ -76,6 +77,7 @@ function ReportingRoutes() {
 }
 
 export default function AbusePage() {
+  const turnstile = abuseTurnstileConfig();
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <Header currentPath="/trust" />
@@ -106,7 +108,10 @@ export default function AbusePage() {
           <div className="lg:hidden">
             <ReportingRoutes />
           </div>
-          <ReportForm available={abuseIntakeEnabled()} />
+          <ReportForm
+            available={abuseIntakeEnabled() && Boolean(turnstile)}
+            siteKey={turnstile?.siteKey}
+          />
           <aside className="space-y-10">
             <div className="hidden lg:block">
               <ReportingRoutes />

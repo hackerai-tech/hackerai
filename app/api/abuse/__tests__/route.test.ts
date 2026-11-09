@@ -18,6 +18,8 @@ import { POST } from "../route";
 import { decryptAbuseEvidence } from "@/lib/abuse/evidence";
 import { ABUSE_REQUEST_MAX_BYTES } from "@/lib/abuse/report";
 const originalEnv = { ...process.env };
+const originalFetch = global.fetch;
+const mockVerify = jest.fn();
 const report = {
   submissionId: "123e4567-e89b-42d3-a456-426614174000",
   kind: "abuse",
@@ -29,10 +31,15 @@ const report = {
 function request(
   body = JSON.stringify(report),
   origin = "https://hackerai.co",
+  token = "synthetic-challenge",
 ) {
   return {
     nextUrl: new URL("https://hackerai.co/api/abuse"),
-    headers: new Headers({ origin, "content-type": "application/json" }),
+    headers: new Headers({
+      origin,
+      "content-type": "application/json",
+      "x-turnstile-token": token,
+    }),
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(body));
@@ -44,32 +51,55 @@ function request(
 beforeEach(() => {
   process.env.ABUSE_INTAKE_ENABLED = "true";
   process.env.ABUSE_OPERATOR_USER_IDS = "operator";
+  process.env.ABUSE_TURNSTILE_SITE_KEY = "synthetic-site-key-for-testing";
+  process.env.ABUSE_TURNSTILE_SECRET_KEY = "synthetic-secret-key-for-testing";
+  process.env.ABUSE_TURNSTILE_HOSTNAMES = "hackerai.co";
   process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
     active: "test",
     keys: { test: "11".repeat(32) },
   });
   mockMutation.mockReset();
+  global.fetch = mockVerify;
+  mockVerify.mockReset().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      success: true,
+      hostname: "hackerai.co",
+      action: "abuse_report",
+    }),
+  });
 });
 afterEach(() => {
   process.env = { ...originalEnv };
+  global.fetch = originalFetch;
 });
 test("anonymous intake returns a receipt only after encrypted storage confirms it", async () => {
   let release: (value: unknown) => void = () => {};
-  mockMutation.mockReturnValue(
-    new Promise((resolve) => {
+  let reachedStorage: () => void = () => {};
+  const storageStarted = new Promise<void>((resolve) => {
+    reachedStorage = resolve;
+  });
+  mockMutation.mockImplementation(() => {
+    reachedStorage();
+    return new Promise((resolve) => {
       release = resolve;
-    }),
-  );
+    });
+  });
   let completed = false;
   const pending = POST(request()).then((result) => {
     completed = true;
     return result;
   });
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await storageStarted;
   expect(completed).toBe(false);
   const args = mockMutation.mock.calls[0][1];
   expect(JSON.stringify(args)).not.toContain(report.email);
   expect(JSON.stringify(args)).not.toContain(report.evidence);
+  expect(JSON.stringify(args)).not.toContain("synthetic-challenge");
+  expect(JSON.parse(mockVerify.mock.calls[0][1].body)).toEqual({
+    secret: process.env.ABUSE_TURNSTILE_SECRET_KEY,
+    response: "synthetic-challenge",
+  });
   expect(decryptAbuseEvidence(args.reference, args.ciphertext)).toMatchObject(
     report,
   );
@@ -81,6 +111,109 @@ test("anonymous intake returns a receipt only after encrypted storage confirms i
     reference: args.reference,
   });
   expect(response.headers.get("cache-control")).toContain("no-store");
+});
+
+test.each(["", "x".repeat(2049)])(
+  "rejects absent or oversized challenge before provider and storage",
+  async (token) => {
+    expect((await POST(request(undefined, undefined, token))).status).toBe(403);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+test.each([
+  { success: false, "error-codes": ["invalid-input-response"] },
+  { success: false, "error-codes": ["timeout-or-duplicate"] },
+  { success: true, hostname: "other.test", action: "abuse_report" },
+  { success: true, hostname: "hackerai.co", action: "login" },
+  { success: true, hostname: "hackerai.co" },
+])(
+  "requires a fresh verification bound to the report hostname and action: %j",
+  async (result) => {
+    mockVerify.mockResolvedValue({ ok: true, json: async () => result });
+    const response = await POST(request());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      code: "verification_failed",
+    });
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["missing", "dummy", "foreign-host"])(
+  "fails closed for %s configuration",
+  async (configuration) => {
+    if (configuration === "missing")
+      delete process.env.ABUSE_TURNSTILE_SECRET_KEY;
+    if (configuration === "dummy")
+      process.env.ABUSE_TURNSTILE_SECRET_KEY =
+        "1x0000000000000000000000000000000AA";
+    if (configuration === "foreign-host")
+      process.env.ABUSE_TURNSTILE_HOSTNAMES = "other.test";
+    const response = await POST(request());
+    expect(response.status).toBe(configuration === "foreign-host" ? 403 : 503);
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["network", "http", "json", "provider"])(
+  "sanitizes %s verification failure and never persists",
+  async (failure) => {
+    const privateError = new Error(report.description);
+    if (failure === "network") mockVerify.mockRejectedValue(privateError);
+    if (failure === "http") mockVerify.mockResolvedValue({ ok: false });
+    if (failure === "json")
+      mockVerify.mockResolvedValue({
+        ok: true,
+        json: async () => {
+          throw privateError;
+        },
+      });
+    if (failure === "provider")
+      mockVerify.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          success: false,
+          "error-codes": ["internal-error"],
+        }),
+      });
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    const response = await POST(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      code: "verification_unavailable",
+    });
+    expect(JSON.stringify(await response.json())).not.toContain(
+      report.description,
+    );
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
+  },
+);
+
+test("renewing a consumed challenge preserves the durable submission fingerprint after storage response loss", async () => {
+  mockMutation.mockRejectedValueOnce(new Error("response lost"));
+  mockMutation.mockImplementationOnce(async (_ref, args) => ({
+    outcome: "received",
+    reference: args.reference,
+  }));
+  expect((await POST(request())).status).toBe(503);
+  expect(
+    (await POST(request(undefined, undefined, "new-challenge"))).status,
+  ).toBe(201);
+  const first = mockMutation.mock.calls[0][1],
+    retry = mockMutation.mock.calls[1][1];
+  expect(retry.reference).toBe(first.reference);
+  expect(retry.digests).toEqual(first.digests);
+  expect(decryptAbuseEvidence(retry.reference, retry.ciphertext)).toEqual(
+    decryptAbuseEvidence(first.reference, first.ciphertext),
+  );
+  expect(
+    mockVerify.mock.calls.map(([, init]) => JSON.parse(init.body).response),
+  ).toEqual(["synthetic-challenge", "new-challenge"]);
 });
 test("provider failures emit neither a success receipt nor private error/log details", async () => {
   mockMutation.mockRejectedValue(new Error(report.description));

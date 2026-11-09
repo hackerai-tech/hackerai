@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, Copy, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { abuseReportSchema, type AbuseReportField } from "@/lib/abuse/report";
 import { HELP_CENTER_URL } from "@/lib/seo/site";
+import SecurityCheck from "./SecurityCheck";
 
 type Errors = Partial<Record<AbuseReportField, string>>;
 function Field({
@@ -53,7 +54,13 @@ function Field({
   );
 }
 
-export default function ReportForm({ available }: { available: boolean }) {
+export default function ReportForm({
+  available,
+  siteKey,
+}: {
+  available: boolean;
+  siteKey?: string;
+}) {
   const [kind, setKind] = useState<"abuse" | "appeal">("abuse");
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
@@ -66,11 +73,18 @@ export default function ReportForm({ available }: { available: boolean }) {
   const resultHeading = useRef<HTMLHeadingElement>(null);
   const failureBox = useRef<HTMLDivElement>(null);
   const attempt = useRef<{ body: string; id: string } | null>(null);
+  const challenge = useRef<{ token: string; issuedAt: number } | null>(null);
+  const [resetChallenge, setResetChallenge] = useState(0);
+  const onToken = useCallback((token: string | null) => {
+    challenge.current = token ? { token, issuedAt: Date.now() } : null;
+  }, []);
   useEffect(() => {
     if (receipt) resultHeading.current?.focus();
   }, [receipt]);
   useEffect(() => {
-    if (failure) failureBox.current?.focus();
+    if (failure.startsWith("Complete the security check"))
+      document.getElementById("security-check")?.focus();
+    else if (failure) failureBox.current?.focus();
   }, [failure]);
 
   const inputProps = (name: AbuseReportField) => ({
@@ -132,11 +146,22 @@ export default function ReportForm({ available }: { available: boolean }) {
       }
       return;
     }
+    const token = challenge.current;
+    if (!token || Date.now() - token.issuedAt > 240_000) {
+      if (token) setResetChallenge((value) => value + 1);
+      setFailure(
+        "Complete the security check, then submit. Your details are still here.",
+      );
+      return;
+    }
     setPending(true);
     try {
       const response = await fetch("/api/abuse", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Turnstile-Token": token.token,
+        },
         body: JSON.stringify(parsed.data),
         signal: AbortSignal.timeout(30_000),
       });
@@ -151,7 +176,14 @@ export default function ReportForm({ available }: { available: boolean }) {
         return;
       }
       // Only display our finite messages; never reflect arbitrary upstream bodies.
-      if (response.status === 429)
+      if (
+        result.code === "verification_failed" ||
+        result.code === "verification_unavailable"
+      )
+        setFailure(
+          "The security check did not go through or expired. Your details are still here; complete the new check, then try again.",
+        );
+      else if (response.status === 429)
         setFailure(
           "Too many reports were submitted recently. Please try again in an hour.",
         );
@@ -172,6 +204,8 @@ export default function ReportForm({ available }: { available: boolean }) {
         "We could not confirm that your report was saved. Your details are still here; please retry.",
       );
     } finally {
+      challenge.current = null;
+      setResetChallenge((value) => value + 1);
       setPending(false);
     }
   }
@@ -542,10 +576,23 @@ export default function ReportForm({ available }: { available: boolean }) {
           {failure}
         </div>
       )}
+      {available && siteKey && (
+        <>
+          <p className="text-[13px] leading-5 text-muted-foreground">
+            Cloudflare Turnstile helps prevent automated submissions.
+          </p>
+          <SecurityCheck
+            siteKey={siteKey}
+            resetKey={resetChallenge}
+            onToken={onToken}
+          />
+        </>
+      )}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <Button
           type="submit"
           disabled={pending || !available}
+          aria-describedby={available ? "security-check-status" : undefined}
           className="min-h-11 sm:w-auto"
         >
           {pending && (

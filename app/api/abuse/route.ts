@@ -12,6 +12,10 @@ import {
   abuseReportSchema,
   readAbuseJson,
 } from "@/lib/abuse/report";
+import {
+  abuseTurnstileConfig,
+  verifyAbuseTurnstile,
+} from "@/lib/abuse/turnstile";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -20,7 +24,7 @@ const reply = (body: unknown, status: number) =>
   NextResponse.json(body, { status, headers });
 
 export async function POST(request: NextRequest) {
-  if (!abuseIntakeEnabled())
+  if (!abuseIntakeEnabled() || !abuseTurnstileConfig())
     return reply(
       {
         error:
@@ -77,6 +81,23 @@ export async function POST(request: NextRequest) {
             "Reporting is temporarily unavailable. Please try again later.",
         },
         503,
+      );
+    // A renewed challenge must not change the report's durable retry identity.
+    const verification = await verifyAbuseTurnstile(
+      request.headers.get("x-turnstile-token") ?? "",
+      request.nextUrl.hostname,
+    );
+    if (verification !== "verified")
+      return reply(
+        {
+          code:
+            verification === "rejected"
+              ? "verification_failed"
+              : "verification_unavailable",
+          error:
+            "Security verification could not be completed. Your details are still here; please try again.",
+        },
+        verification === "rejected" ? 403 : 503,
       );
     const receipt = await getConvexClient().mutation(api.abuseCases.receive, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

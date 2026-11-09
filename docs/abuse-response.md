@@ -16,6 +16,13 @@ Before enabling intake for real reports, the owner must approve and record the r
 - Web and Convex: `ABUSE_OPERATOR_USER_IDS`, an explicit comma-separated allowlist
   of immutable WorkOS user IDs. Ordinary support membership grants no access.
 - Web and Convex: `ABUSE_INTAKE_ENABLED=true`. Missing configuration fails closed.
+- Web: `ABUSE_TURNSTILE_SITE_KEY`, `ABUSE_TURNSTILE_SECRET_KEY`, and
+  `ABUSE_TURNSTILE_HOSTNAMES` (comma-separated exact hostnames, without schemes or
+  paths). Use a dedicated Cloudflare **Managed** widget with matching hostnames
+  and no pre-clearance. Keep Preview and Production widgets and secrets separate;
+  a Preview hostname must not enable the Production form. Published dummy keys
+  are rejected. These web settings require a new deployment; they are not needed
+  by Convex or Trigger workers.
 - Web: set `ABUSE_EMAIL_VERIFIED=true` only after separately verifying mailbox
   delivery and monitoring. Otherwise the page does not display the email address.
 
@@ -25,6 +32,29 @@ operator allowlist. Every evidence read and action creates an audit event.
 Do not share session cookies, service credentials, or evidence keys with reviewers.
 Case evidence is encrypted before RPC so validation errors cannot echo report text.
 The reporting and operator routes suppress PostHog events and Intercom startup.
+
+### Security check and submission retries
+
+The public form loads Cloudflare Turnstile. The API validates every challenge with
+Siteverify before writing a case, requiring both the configured request hostname
+and the `abuse_report` action. Missing, expired, previously redeemed, or mismatched
+tokens cannot save a report. Verification has a seven-second timeout and fails
+closed on provider/network errors. Tokens are bounded to 2,048 characters and are
+sent separately from the bounded report body; they never enter stored evidence,
+idempotency fingerprints, logs, or analytics. No report fields are sent to Siteverify.
+
+Cloudflare tokens expire after five minutes and can be redeemed only once. The
+widget refreshes expired challenges; the form also renews an old challenge before
+submission and creates a fresh check after every request attempt. Script failures
+offer an in-place retry. All these paths preserve report fields. A lost response
+can be retried with the same report submission ID and a new challenge; the durable
+intake returns the original receipt instead of creating a duplicate. Only a saved
+case reference confirms receipt. See Cloudflare's
+[server-side validation contract](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+
+Do not disable verification to work around a provider outage. Keep the form's
+unavailable/retry messaging and existing Help Center route available. Activating a
+verified mailbox remains a separate operational decision.
 
 ## Review and attribution
 
@@ -164,6 +194,9 @@ outcome before deleting the case notes. Releasing a hold by itself deletes nothi
 Use synthetic reports and disposable, explicitly owned runtimes. Verify anonymous
 and expired-session intake, invalid fields, storage failure without a false receipt,
 retry idempotency including retained-key rotation, and desktop/narrow layouts.
+For Turnstile, check a real Managed widget on the exact Preview hostname, script
+failure and retry with fields retained, slow composition/expiry, rejected tokens,
+and a lost-response retry using a renewed challenge and the same case reference.
 Verify unauthorized operator rejection and audited evidence access. For containment,
 exercise a root with a child and a detached process; prove selected-process stop,
 independent-user continuity, blocked restart/reconnect/Goal continuation, partial
