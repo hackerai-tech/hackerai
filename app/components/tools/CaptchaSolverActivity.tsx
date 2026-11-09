@@ -87,10 +87,7 @@ export function CaptchaSolverActivity({
           {label}
         </span>
         {elapsed !== undefined && (
-          <span
-            aria-label="Elapsed time"
-            className="shrink-0 text-xs tabular-nums text-muted-foreground"
-          >
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             · {formatCaptchaElapsed(elapsed)}
             <span className="sr-only"> elapsed</span>
           </span>

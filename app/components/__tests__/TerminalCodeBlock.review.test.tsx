@@ -19,7 +19,7 @@ describe("TerminalCodeBlock automatic review preview", () => {
       />,
     );
     expect(screen.getByRole("status")).toHaveTextContent("Response delivered");
-    expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:53");
+    expect(screen.getByText("· 0:53")).toBeVisible();
     expect(screen.queryByText(/hackerai-captcha/)).not.toBeInTheDocument();
     expect(screen.queryByText("Command details")).not.toBeInTheDocument();
   });

@@ -16,9 +16,9 @@ it("shows real elapsed time while solving and freezes the recorded duration on d
     />,
   );
   act(() => jest.advanceTimersByTime(1000));
-  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:26");
+  expect(screen.getByText("· 0:26")).toBeVisible();
   act(() => jest.advanceTimersByTime(1000));
-  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:27");
+  expect(screen.getByText("· 0:27")).toBeVisible();
   view.rerender(
     <CaptchaSolverActivity
       activity={{
@@ -33,7 +33,7 @@ it("shows real elapsed time while solving and freezes the recorded duration on d
     screen.getByText(/Website acceptance is checked separately/),
   ).toBeVisible();
   act(() => jest.advanceTimersByTime(10_000));
-  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:27");
+  expect(screen.getByText("· 0:27")).toBeVisible();
 });
 
 it("uses only this tool's start event and never presents a verification failure as success", () => {
