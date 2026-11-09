@@ -65,6 +65,7 @@ import {
   detectAgentBrowserUsage,
 } from "./utils/agent-browser-usage";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
+import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -1652,6 +1653,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };
+            captureAgentBrowserOpenFailure({
+              context,
+              command: input.command,
+              interactive: input.interactive,
+              isBackground: input.is_background,
+              aborted: options.abortSignal?.aborted === true,
+              result: output.result,
+            });
             // A completed direct snapshot discovers the on-demand capability.
             // Only an explicit runtime request above can initiate a paid solve.
             // The page is inspected through the owned browser, never from stdout.
