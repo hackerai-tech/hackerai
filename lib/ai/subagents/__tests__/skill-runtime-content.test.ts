@@ -38,6 +38,14 @@ describe("worker skill runtime compatibility", () => {
         );
         expect(rendered).not.toContain("## Anti-patterns");
       }
+      if (id === "custom/npx_confusion")
+        expect(rendered).not.toContain("## High-Signal Patterns");
+      if (id === "technologies/llm_applications")
+        expect(rendered).not.toContain("## Reproducibility and Reporting");
+      if (id === "custom/source_aware_sast")
+        expect(rendered).toContain(
+          "Do not treat scanner output as final truth.",
+        );
     },
   );
   it("rejects an adaptation that would leave a dangling scanner code block", () => {

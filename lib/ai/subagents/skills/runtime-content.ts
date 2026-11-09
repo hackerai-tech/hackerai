@@ -86,13 +86,12 @@ export function compileSubagentSkillContent(
       .split(/\n\s*\n/)
       .filter((paragraph) => !hasUnsupportedWorkerToolReference(paragraph))
       .join("\n\n");
-    if (skill.id === "custom/dependency_cve_scanning") {
-      // These reviewed sections lose their entire body with the foreign APIs.
-      content = content.replace(
-        /^#{2,3} (?:Why this skill exists|Reachability is a confidence modifier, not a gate|Anti-patterns)(?:\n\s*)?(?=^#{1,3} |$(?![\s\S]))/gm,
-        "",
-      );
-    }
+    // These sections can lose their entire body with the foreign APIs at the
+    // reviewed revisions. Keep sections that still have content.
+    content = content.replace(
+      /^#{2,3} (?:Why this skill exists|Reachability is a confidence modifier, not a gate|Anti-patterns|High-Signal Patterns|Reproducibility and Reporting)(?:\n\s*)?(?=^#{1,3} |$(?![\s\S]))/gm,
+      "",
+    );
     if (!hasBalancedCodeFences(content))
       return {
         success: false,
