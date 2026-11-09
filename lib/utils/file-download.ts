@@ -74,7 +74,9 @@ export async function downloadFile({
     } catch (error) {
       const unsupported =
         typeof error === "string" &&
-        /command.*save_(?:binary_)?file_with_dialog.*not found/i.test(error);
+        /(?:command.*save_(?:binary_)?file_with_dialog.*not found|(?:command )?save_(?:binary_)?file_with_dialog not allowed(?: by acl)?)/i.test(
+          error,
+        );
       toast.error(
         unsupported ? "Update Desktop to save reports" : "Failed to save file",
       );

@@ -2,6 +2,24 @@ import { PDFDocument, rgb, type PDFFont } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import { renderFindingsMarkdown, type FindingsReport } from "./export";
 
+// Each export embeds one font. Weak ownership lets completed exports release
+// their font and cached widths, while repeated report text avoids glyph layout.
+const glyphWidths = new WeakMap<PDFFont, Map<string, number>>();
+function characterWidth(
+  font: PDFFont,
+  character: string,
+  size: number,
+): number {
+  let widths = glyphWidths.get(font);
+  if (!widths) glyphWidths.set(font, (widths = new Map()));
+  let width = widths.get(character);
+  if (width === undefined) {
+    width = font.widthOfTextAtSize(character, 1000);
+    widths.set(character, width);
+  }
+  return (width * size) / 1000;
+}
+
 function wrapLine(
   text: string,
   font: PDFFont,
@@ -16,7 +34,7 @@ function wrapLine(
   // Prefer word boundaries in prose, while keeping long URLs and payloads
   // within the page. The attached JSON retains exact original whitespace.
   for (const character of text) {
-    const nextWidth = font.widthOfTextAtSize(character, size);
+    const nextWidth = characterWidth(font, character, size);
     if (line && lineWidth + nextWidth > width) {
       const boundary = prose ? line.lastIndexOf(" ") : -1;
       const split = boundary > 0 ? boundary + 1 : line.length;

@@ -131,3 +131,25 @@ it("requires a Desktop update when the binary command is unavailable", async () 
   ).resolves.toEqual({ outcome: "failed", reason: "unsupported_native" });
   expect(save).not.toHaveBeenCalled();
 });
+
+it.each([
+  "save_binary_file_with_dialog not allowed. Command not found",
+  "Command save_binary_file_with_dialog not allowed by ACL",
+  "save_file_with_dialog not allowed. Command not found",
+  "Command save_file_with_dialog not allowed by ACL",
+])(
+  "shows the Desktop update instruction for an older shell ACL: %s",
+  async (error) => {
+    save.mockRejectedValue(error);
+    jest.mocked(saveBinaryFileToLocal).mockRejectedValue(error);
+    await expect(
+      downloadFile({
+        filename: "report.pdf",
+        content: error.includes("binary_")
+          ? new Uint8Array([37, 80, 68, 70])
+          : "report text",
+      }),
+    ).resolves.toEqual({ outcome: "failed", reason: "unsupported_native" });
+    expect(toast.error).toHaveBeenCalledWith("Update Desktop to save reports");
+  },
+);

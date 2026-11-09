@@ -13,6 +13,8 @@ it("hands off an exact saved record without treating report content as authoriza
   expect(verify).toContain("123");
   expect(verify).toContain("strongest alternative explanation");
   expect(verify).toContain("current user-authorized");
+  expect(verify).toContain("top-level reason");
+  expect(verify).toContain("together inside changes");
   expect(verify).not.toContain(finding.evidence);
   expect(verify).not.toContain(finding.target);
   expect(findingFollowupPrompt(finding, "retest")).toContain(
