@@ -48,7 +48,11 @@ export function readExtraUsagePurchase(session: {
     : Number(metadata.amountCents) / 100;
   if (!Number.isFinite(amountDollars) || amountDollars <= 0)
     throw new Error("Invalid purchase amount");
-  if (!metadata.bundleId) return { amountDollars };
+  if (!metadata.bundleId) {
+    if (metadata.paidAmountDollars !== undefined)
+      throw new Error("Paid amount requires a bundle");
+    return { amountDollars };
+  }
   const bundle = getExtraUsageBundle(metadata.bundleId);
   if (
     amountDollars !== bundle.creditDollars ||

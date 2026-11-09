@@ -217,7 +217,7 @@ const BuyExtraUsageDialogContent = ({
                     variant={
                       selectedBundle?.id === bundle.id ? "default" : "outline"
                     }
-                    className="h-auto min-h-16 flex-col gap-1 whitespace-normal py-3"
+                    className="h-auto min-h-14 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 whitespace-normal py-2 text-left sm:flex sm:min-h-16 sm:flex-col sm:py-3 sm:text-center"
                     aria-pressed={selectedBundle?.id === bundle.id}
                     onClick={() => setSelectedBundleId(bundle.id)}
                     disabled={isLoading}
@@ -226,17 +226,21 @@ const BuyExtraUsageDialogContent = ({
                       ${bundle.creditDollars.toLocaleString("en-US")} credit
                     </span>
                     <span>Pay ${bundle.paidDollars}</span>
-                    <span className="text-xs font-normal">
+                    <span className="text-xs font-normal col-span-2">
                       Save {bundle.discountPercent}%
                     </span>
                   </Button>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                One-time purchases. Auto-reload and custom top-ups use standard
-                pricing. Your monthly spending cap counts credit used.
+                One-time purchases. Auto-reload uses standard pricing.
               </p>
             </div>
+          )}
+          {bundlesEnabled && (
+            <p className="text-sm font-medium mb-2">
+              Or top up at standard price
+            </p>
           )}
           <div className="grid grid-cols-3 gap-2 mb-3">
             {PRESET_AMOUNTS.map((amount) => {
@@ -250,6 +254,7 @@ const BuyExtraUsageDialogContent = ({
                   variant={isSelected ? "default" : "outline"}
                   className="h-auto min-h-11 flex-col gap-0.5 py-2"
                   aria-pressed={isSelected}
+                  disabled={isLoading}
                   onClick={() => {
                     setSelectedBundleId(null);
                     setPurchaseAmountOverride(String(amount));
@@ -282,7 +287,9 @@ const BuyExtraUsageDialogContent = ({
             placeholder="$15"
             className="w-full"
             type="text"
-            value={`$${formatWithCommas(purchaseAmount)}`}
+            inputMode="numeric"
+            disabled={isLoading}
+            value={selectedBundle ? "" : `$${formatWithCommas(purchaseAmount)}`}
             onChange={(e) => {
               // Remove $ and commas, keep only digits (whole dollars only)
               const val = e.target.value.replace(/[^0-9]/g, "");
@@ -303,7 +310,7 @@ const BuyExtraUsageDialogContent = ({
         <div className="space-y-2">
           <hr className="mb-5 border-border" />
           <div className="flex justify-between text-sm">
-            <span>{lineItemLabel}</span>
+            <span>{selectedBundle ? "Credit added" : lineItemLabel}</span>
             <span>
               $
               {formatWithCommas(

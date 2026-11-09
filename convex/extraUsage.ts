@@ -545,6 +545,26 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate amount
+    if (!Number.isFinite(args.amountDollars) || args.amountDollars <= 0) {
+      throw new Error("Invalid amount: must be a positive number");
+    }
+
+    if (args.bundleId !== undefined) {
+      const bundle = getExtraUsageBundle(args.bundleId);
+      if (
+        !args.stripeCheckoutSessionId ||
+        args.amountDollars !== bundle.creditDollars ||
+        args.paidAmountDollars !== bundle.paidDollars
+      )
+        throw new Error("Invalid bundle credit");
+    } else if (
+      args.paidAmountDollars !== undefined &&
+      args.paidAmountDollars !== args.amountDollars
+    ) {
+      throw new Error("Discount requires a bundle");
+    }
+
     const markPurchaseCredited = async (creditedAt?: number) => {
       if (!args.stripeCheckoutSessionId) return;
 
@@ -617,25 +637,6 @@ export const addCredits = mutation({
       }
     }
 
-    // Validate amount
-    if (isNaN(args.amountDollars) || args.amountDollars <= 0) {
-      throw new Error("Invalid amount: must be a positive number");
-    }
-
-    if (args.bundleId !== undefined) {
-      const bundle = getExtraUsageBundle(args.bundleId);
-      if (
-        !args.stripeCheckoutSessionId ||
-        args.amountDollars !== bundle.creditDollars ||
-        args.paidAmountDollars !== bundle.paidDollars
-      )
-        throw new Error("Invalid bundle credit");
-    } else if (
-      args.paidAmountDollars !== undefined &&
-      args.paidAmountDollars !== args.amountDollars
-    ) {
-      throw new Error("Discount requires a bundle");
-    }
     const amountPoints = dollarsToPoints(args.amountDollars);
 
     // Get current settings

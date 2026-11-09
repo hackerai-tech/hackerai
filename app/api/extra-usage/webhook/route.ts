@@ -105,7 +105,27 @@ export async function POST(req: NextRequest) {
 
       const userId = session.metadata.userId;
       // Support both new (amountDollars) and old (amountCents) metadata formats
-      const purchase = readExtraUsagePurchase(session);
+      let purchase: ReturnType<typeof readExtraUsagePurchase>;
+      try {
+        purchase = readExtraUsagePurchase(session);
+      } catch (error) {
+        logExtraUsagePurchase(
+          "error",
+          "extra_usage_purchase_invalid_metadata",
+          {
+            route: WEBHOOK_LOG_CONTEXT.route,
+            requestHeaders: req.headers,
+            stripeCheckoutSessionId: session.id,
+            paymentStatus: session.payment_status,
+            reason: "invalid_purchase_metadata",
+            error,
+          },
+        );
+        return NextResponse.json(
+          { error: "Invalid purchase metadata" },
+          { status: 500 },
+        );
+      }
       const { amountDollars } = purchase;
       const stripeCustomerId = stripeObjectId(session.customer);
       const stripePaymentIntentId = stripeObjectId(session.payment_intent);

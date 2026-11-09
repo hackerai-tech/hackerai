@@ -50,6 +50,13 @@ describe("bundle checkout fulfillment", () => {
       readExtraUsagePurchase({ metadata: { amountDollars: "Infinity" } }),
     ).toThrow();
   });
+  it("rejects cash metadata without an offer", () => {
+    expect(() =>
+      readExtraUsagePurchase({
+        metadata: { amountDollars: "250", paidAmountDollars: "200" },
+      }),
+    ).toThrow("Paid amount requires a bundle");
+  });
   it("defaults sales off without disabling paid fulfillment", () => {
     const before = process.env.EXTRA_USAGE_BUNDLES_ENABLED;
     delete process.env.EXTRA_USAGE_BUNDLES_ENABLED;
