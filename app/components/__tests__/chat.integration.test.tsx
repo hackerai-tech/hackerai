@@ -1301,6 +1301,71 @@ describe("Chat Component Integration", () => {
     });
   });
 
+  it.each([true, false])(
+    "reconciles a completed answer past an omitted Resume prompt only when hidden=%s",
+    async (hidden) => {
+      const convexReact = require("convex/react");
+      mockRouteParams = { id: "resume-sync" };
+      mockDesktopState = { chatMode: "agent", sandboxPreference: "desktop" };
+      mockRestoredChat = {
+        id: "resume-sync",
+        default_model_slug: "agent",
+        sandbox_type: "desktop",
+      };
+      const user = {
+        id: "original",
+        role: "user",
+        parts: [{ type: "text", text: "Create my file" }],
+      };
+      const stopped = {
+        id: "stopped",
+        role: "assistant",
+        parts: [{ type: "text", text: "Saved checkpoint" }],
+      };
+      const completed = {
+        id: "completed",
+        role: "assistant",
+        parts: [{ type: "text", text: "DONE with the saved file" }],
+      };
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        status: "ready",
+        messages: [
+          user,
+          stopped,
+          {
+            id: "resume-prompt",
+            role: "user",
+            parts: [{ type: "text", text: "Continue" }],
+            metadata: hidden ? { isAutoContinue: true } : undefined,
+          },
+        ],
+      });
+      convexReact.setMockPaginatedQueryResult({
+        results: [completed, stopped, user].map((m, i) => ({
+          ...m,
+          chat_id: "resume-sync",
+          created_at: 3000 - i * 1000,
+        })),
+        status: "Exhausted",
+        loadMore: jest.fn(),
+        isLoading: false,
+      });
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      await act(async () => {});
+      const completedApplied = mockSetMessages.mock.calls.some(
+        ([value]) =>
+          Array.isArray(value) &&
+          value.some((m: { id: string }) => m.id === "completed"),
+      );
+      expect(completedApplied).toBe(hidden);
+    },
+  );
+
   it("preserves streamed question restrictions without resurrecting cleared waits", async () => {
     mockRouteParams = { id: "wait-chat" };
     mockLocalConnections = [];

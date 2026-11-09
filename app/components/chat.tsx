@@ -2522,7 +2522,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Content comparison is required because a partial and completed text part can
     // share the same message ID and part count.
-    const current = messagesRef.current;
+    // Resume prompts are local control messages omitted from saved history.
+    // They must not block a completed answer or file receipt from reconciling.
+    const current = messagesRef.current.filter(
+      (message) => message.role !== "user" || !message.metadata?.isAutoContinue,
+    );
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
