@@ -25,6 +25,7 @@ type BrowserSession = {
   directory: string;
   ready: Promise<string | undefined>;
   registered: boolean;
+  managedCaptureEnabled: boolean;
   registration?: Promise<void>;
 };
 
@@ -485,6 +486,9 @@ export class BrowserSessions {
           throw new Error("Could not prepare private browser sessions.");
         if (gate && !result.stdout?.trim())
           throw new Error("Browser command gate is unavailable.");
+        const owner = this.sessions.get(sandboxId);
+        if (owner?.directory === directory)
+          owner.managedCaptureEnabled = captureManaged === true;
         return gate ? result.stdout.trim() : undefined;
       })();
       session = {
@@ -493,6 +497,7 @@ export class BrowserSessions {
         directory,
         ready,
         registered: false,
+        managedCaptureEnabled: false,
       };
       this.sessions.set(sandboxId, session);
       const created = session;
@@ -683,22 +688,47 @@ export class BrowserSessions {
       throw new Error(
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
-    if (current.state.state === "agent" && this.cloudflare) {
+    if (
+      current.state.state === "agent" &&
+      current.session.managedCaptureEnabled
+    ) {
+      // Bound optional preparation, but never admit takeover after its outcome
+      // becomes unknown: killing a CLI client may not cancel daemon-side JS.
+      const releaseStop = new AbortController();
+      const releaseSignal = signal
+        ? AbortSignal.any([signal, releaseStop.signal])
+        : releaseStop.signal;
+      const releaseTimer = setTimeout(
+        () => releaseStop.abort(new Error("Browser restoration timed out.")),
+        5_000,
+      );
       try {
-        const target = await this.captureChallengeTarget(
-          current.session.sandbox,
+        await withCancellation(
+          (async () => {
+            const target = await this.captureChallengeTarget(
+              current.session.sandbox,
+            );
+            if (!target)
+              throw new Error("Browser session ownership has ended.");
+            const browser = await this.getChallengeBrowser(
+              releaseSignal,
+              target,
+            );
+            await browser.evaluate(cloudflareReleaseScript());
+          })(),
+          releaseSignal,
         );
-        if (!target) throw new Error("Browser session ownership has ended.");
-        const browser = await this.getChallengeBrowser(
-          signal ?? new AbortController().signal,
-          target,
-        );
-        await browser.evaluate(cloudflareReleaseScript());
       } catch {
         // Optional widget recovery must not prevent control of the browser.
         // Admission below still checks ownership; this does not promise that
         // the current CAPTCHA is usable or that manual verification can pass.
         signal?.throwIfAborted();
+        if (releaseStop.signal.aborted)
+          throw new Error(
+            "Browser restoration did not finish. No handoff was requested. Inspect the browser state before requesting takeover again.",
+          );
+      } finally {
+        clearTimeout(releaseTimer);
       }
       signal?.throwIfAborted();
     }

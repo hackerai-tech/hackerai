@@ -223,7 +223,10 @@ export function recoverBrowserHandoffCompletion(
                     type: "tool-call",
                     toolCallId: `handoff_recovery_${randomUUID()}`,
                     toolName: "browser_handoff",
-                    input: "{}",
+                    input: JSON.stringify({
+                      reason:
+                        "The user explicitly requested control of this browser.",
+                    }),
                   });
                   controller.enqueue({
                     ...part,
