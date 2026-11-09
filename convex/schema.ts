@@ -1056,6 +1056,8 @@ export default defineSchema({
   // complements processed_checkout_sessions: the processed table is only a
   // dedupe guard, while this row explains the observed purchase lifecycle.
   extra_usage_purchases: defineTable({
+    paid_amount_dollars: v.optional(v.number()),
+    bundle_id: v.optional(v.string()),
     user_id: v.string(),
     amount_dollars: v.number(),
     stripe_checkout_session_id: v.string(),

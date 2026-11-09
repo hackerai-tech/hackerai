@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { getExtraUsageBundle } from "@/lib/billing/extra-usage-bundles";
 import { toast } from "sonner";
 import {
   TurnOffExtraUsageDialog,
@@ -29,6 +30,18 @@ import {
 } from "@/lib/analytics/paid-funnel";
 
 const ExtraUsageSection = () => {
+  const bundleSavingsId = useId();
+  const bundlesEnabled = useQuery(api.extraUsage.areBundlesAvailable) === true;
+  const bundleExposure = useRef(false);
+  useEffect(() => {
+    if (bundlesEnabled && !bundleExposure.current) {
+      bundleExposure.current = true;
+      captureAuthenticatedEvent("extra_usage_bundles_viewed", {
+        surface: "extra_usage_settings",
+        offer_version: "v1",
+      });
+    }
+  }, [bundlesEnabled]);
   // User customization for extra usage enabled flag
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -110,12 +123,19 @@ const ExtraUsageSection = () => {
   };
 
   // Purchase credits (redirects to Stripe Checkout with saved cards shown)
-  const handlePurchaseCredits = async (amountDollars: number) => {
+  const handlePurchaseCredits = async (
+    amountDollars: number,
+    bundleId?: string,
+  ) => {
     setIsPurchasing(true);
     try {
+      const paidDollars = bundleId
+        ? getExtraUsageBundle(bundleId).paidDollars
+        : amountDollars;
       const checkoutAttemptId = newCheckoutAttemptId();
       const result = await createPurchaseSession({
         amountDollars,
+        ...(bundleId && { bundleId }),
         baseUrl: window.location.origin,
         checkoutAttemptId,
         // Return to the stopped chat so its live balance can offer Continue.
@@ -134,7 +154,9 @@ const ExtraUsageSection = () => {
             checkout_type: "extra_usage_purchase",
             surface: "extra_usage_settings",
             source: "buy_extra_usage_dialog",
-            amount_dollars: amountDollars,
+            amount_dollars: paidDollars,
+            credit_amount_dollars: amountDollars,
+            bundle_id: bundleId,
             stripe_checkout_session_id: result.checkoutSessionId,
           }),
         );
@@ -222,10 +244,7 @@ const ExtraUsageSection = () => {
   const effectiveCapDollars = monthlyCapDollars;
 
   useEffect(() => {
-    if (
-      !userCustomization?.extra_usage_enabled ||
-      capturedBuyCtaImpressionRef.current
-    ) {
+    if (capturedBuyCtaImpressionRef.current) {
       return;
     }
 
@@ -233,9 +252,9 @@ const ExtraUsageSection = () => {
     captureAddCreditCtaImpression({
       surface: "extra_usage_settings",
       source: "current_balance_row",
-      cta_text: "Buy extra usage",
+      cta_text: "Buy credit",
     });
-  }, [userCustomization?.extra_usage_enabled]);
+  }, []);
 
   // Get color class based on usage percentage (matches UsageTab)
   const getUsageColorClass = (percentage: number): string => {
@@ -274,6 +293,40 @@ const ExtraUsageSection = () => {
             disabled={isTogglingExtraUsage}
             aria-label="Toggle extra usage"
           />
+        </div>
+
+        <div className="space-y-2">
+          {/* Current Balance Row */}
+          <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center flex-wrap">
+            <div className="flex flex-col gap-1.5 min-w-0">
+              <p className="text-sm">
+                {extraUsageSettings ? `$${balanceDollars.toFixed(2)}` : "—"}
+              </p>
+              <p className="text-sm text-muted-foreground">Current balance</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                captureAddCreditCtaClick({
+                  surface: "extra_usage_settings",
+                  source: "current_balance_row",
+                  cta_text: "Buy credit",
+                });
+                setShowBuyDialog(true);
+              }}
+              disabled={isPurchasing}
+              className="min-w-[5rem]"
+              aria-describedby={bundlesEnabled ? bundleSavingsId : undefined}
+            >
+              Buy credit
+            </Button>
+          </div>
+          {bundlesEnabled && (
+            <p id={bundleSavingsId} className="text-sm text-muted-foreground">
+              Buy more credit, save up to 30%.
+            </p>
+          )}
         </div>
 
         {/* Enabled State - Show additional controls */}
@@ -349,26 +402,11 @@ const ExtraUsageSection = () => {
               </Button>
             </div>
 
-            {/* Current Balance Row */}
-            <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center flex-wrap">
-              <div className="flex flex-col gap-1.5 min-w-0">
-                <p className="text-sm">${balanceDollars.toFixed(2)}</p>
-                <p className="text-sm text-muted-foreground whitespace-nowrap">
-                  Current balance
-                  <span className="mx-1">·</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowAutoReloadDialog(true)}
-                    className={
-                      autoReloadEnabled
-                        ? "text-green-500 underline hover:text-green-400"
-                        : "text-red-500 underline hover:text-red-400"
-                    }
-                    aria-label="Configure auto-reload"
-                    tabIndex={0}
-                  >
-                    Auto-reload {autoReloadEnabled ? "on" : "off"}
-                  </button>
+            <div className="w-full flex items-center justify-between gap-4">
+              <div className="space-y-1.5 min-w-0">
+                <p className="text-sm">Auto-reload</p>
+                <p className="text-sm text-muted-foreground">
+                  {autoReloadEnabled ? "On" : "Off"}
                 </p>
                 {!autoReloadEnabled && autoReloadDisabledReason && (
                   <AutoReloadDisabledAlert reason={autoReloadDisabledReason} />
@@ -377,20 +415,11 @@ const ExtraUsageSection = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  captureAddCreditCtaClick({
-                    surface: "extra_usage_settings",
-                    source: "current_balance_row",
-                    cta_text: "Buy extra usage",
-                  });
-                  setShowBuyDialog(true);
-                }}
-                disabled={isPurchasing}
-                className="min-w-[5rem]"
-                aria-label="Buy extra usage"
-                tabIndex={0}
+                onClick={() => setShowAutoReloadDialog(true)}
+                disabled={isSavingSettings}
+                aria-label="Configure auto-reload"
               >
-                Buy extra usage
+                Configure
               </Button>
             </div>
           </>
@@ -406,6 +435,7 @@ const ExtraUsageSection = () => {
       />
 
       <BuyExtraUsageDialog
+        bundlesEnabled={bundlesEnabled}
         open={showBuyDialog}
         onOpenChange={setShowBuyDialog}
         onPurchase={handlePurchaseCredits}
