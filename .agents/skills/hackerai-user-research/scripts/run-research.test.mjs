@@ -496,3 +496,42 @@ test("concurrent starts publish one complete retry identity and converge on the 
     "run_shared",
   );
 });
+
+test("cohort validation explains the exact selection failure without reflecting private fields", async (t) => {
+  const f = await requestFixture(t);
+  const cohortPath = join(f.root, "cohort.json");
+  await writeFile(
+    f.payloadPath,
+    JSON.stringify({ question: "bounded cohort question" }),
+  );
+  await writeFile(
+    cohortPath,
+    JSON.stringify({
+      posthogProjectId: 144137,
+      cohortSelectedAt: Date.now(),
+      selectionQuery: "private query text",
+      candidates: [
+        { userId: "user_test", internal: true, test: false, fraud: false },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  let calls = 0;
+  await assert.rejects(
+    runResearch(
+      parseArgs(["--payload", f.payloadPath, "--cohort", cohortPath]),
+      {
+        ...quiet,
+        request: async () => {
+          calls++;
+        },
+      },
+    ),
+    (error) => {
+      assert.match(error.message, /No eligible research users remain/);
+      assert.doesNotMatch(error.message, /private query text|user_test/);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
+});

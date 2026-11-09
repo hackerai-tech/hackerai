@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
+export class CohortValidationError extends Error {}
+
 function check(ok, message) {
-  if (!ok) throw new Error(message);
+  if (!ok) throw new CohortValidationError(message);
 }
 const id = (value) =>
   typeof value === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(value);

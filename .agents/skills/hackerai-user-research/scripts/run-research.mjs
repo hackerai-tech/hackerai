@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 
-import { buildResearchCohort } from "./build-cohort.mjs";
+import { buildResearchCohort, CohortValidationError } from "./build-cohort.mjs";
 
 const ENDPOINT = "https://hackerai.co/api/internal/user-research";
 const POLL_INTERVAL_MS = 5_000;
@@ -363,14 +363,15 @@ export async function runResearch(
         throw new ResearchRunnerError(
           "Use either explicit membership or --cohort, not both",
         );
+      const spec = await readProtectedJson(args.cohortPath, 1024 * 1024);
       let cohort;
       try {
-        cohort = buildResearchCohort(
-          await readProtectedJson(args.cohortPath, 1024 * 1024),
-        );
-      } catch {
+        cohort = buildResearchCohort(spec);
+      } catch (error) {
         throw new ResearchRunnerError(
-          "Cohort selection failed; validate candidate classifications, payer mapping, groups and anchors locally",
+          error instanceof CohortValidationError
+            ? `Cohort selection failed: ${error.message}`
+            : "Cohort selection failed; check the documented export schema",
         );
       }
       const originalLimitations = payload.selectionLimitations ?? [];
