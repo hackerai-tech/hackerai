@@ -78,7 +78,6 @@ test.each([
   { aborted: true },
   { command: "agent-browser snapshot -i" },
   { command: "echo 'agent-browser open private'" },
-  { command: "agent-browser --session private open private" },
 ])(
   "does not turn unqualified terminal results into browser failures (%j)",
   (override) => {
@@ -120,4 +119,25 @@ test("marks unknown owners and compound intent honestly and isolates diagnostic 
   });
   expect(() => captureAgentBrowserOpenFailure(args)).not.toThrow();
   expect(args.result).toEqual(base.result);
+});
+
+// Actual21 OPENexit1 source usage was option-prefixed; do not infer its action.
+test("retains public hints for option-prefixed browser intent without asserting OPEN", () => {
+  captureAgentBrowserOpenFailure({
+    ...base,
+    command: "agent-browser --session PRIVATE_SESSION open PRIVATE_URL",
+    result: {
+      ...base.result,
+      output: "Daemon failed to start (PRIVATE_SOCKET)",
+    },
+  });
+  expect(event).toHaveBeenCalledWith(
+    "agent_browser_terminal_open_failure",
+    expect.objectContaining({
+      browser_open_failure_version: 2,
+      observation_scope: "terminal_result_option_intent",
+      public_output_hint: "daemon_start",
+    }),
+  );
+  expect(JSON.stringify(event.mock.calls)).not.toContain("PRIVATE");
 });
