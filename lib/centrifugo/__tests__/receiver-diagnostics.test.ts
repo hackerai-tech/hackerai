@@ -3,6 +3,33 @@ import { createReceiverDiagnostics } from "../receiver-diagnostics";
 describe("receiver diagnostics", () => {
   afterEach(() => jest.restoreAllMocks());
 
+  it("does not leave a wait snapshot after command cleanup", () => {
+    jest.useFakeTimers();
+    try {
+      const log = jest.spyOn(console, "info").mockImplementation(() => {});
+      const diagnostics = createReceiverDiagnostics(
+        { enabled: true, commandId: "id" },
+        () => ({
+          sequence: -1,
+          terminalReceived: false,
+          cancelRequested: false,
+          dispatched: false,
+        }),
+      );
+      diagnostics.start();
+      jest.advanceTimersByTime(5000);
+      diagnostics.finish("canceled");
+      jest.advanceTimersByTime(10_000);
+      expect(log.mock.calls.map(([value]) => JSON.parse(value).phase)).toEqual([
+        "started",
+        "cleanup",
+      ]);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("bounds a retry storm but preserves its final failure state without content", () => {
     const log = jest.spyOn(console, "info").mockImplementation(() => {});
     const state = {

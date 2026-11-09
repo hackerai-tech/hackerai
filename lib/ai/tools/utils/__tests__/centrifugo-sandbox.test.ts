@@ -216,6 +216,80 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  it.each(["presence", "ready_received"] as const)(
+    "identifies a long Desktop command waiting at %s without replaying it",
+    async (phase) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const result = sandbox.commands.run("PRIVATE_COMMAND", {
+        timeoutMs: 60_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      let releasePresence!: (
+        value: Awaited<ReturnType<MockSubscription["presence"]>>,
+      ) => void;
+      if (phase === "presence") {
+        control.presence.mockReturnValueOnce(
+          new Promise((resolve) => {
+            releasePresence = resolve;
+          }),
+        );
+      }
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      if (phase === "ready_received") {
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+      }
+      await jest.advanceTimersByTimeAsync(10_000);
+      const waits = () =>
+        receiverRecords().filter((record) => record.phase === "command_wait");
+      expect(waits()).toEqual([
+        expect.objectContaining({
+          command_id: FIXED_UUID,
+          dispatch_phase: phase,
+          terminal_received: false,
+          command_dispatched: phase === "ready_received",
+          elapsed_ms: 10_000,
+        }),
+      ]);
+      expect(JSON.stringify(waits())).not.toContain("PRIVATE_COMMAND");
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(waits()).toHaveLength(1);
+      if (phase === "presence") {
+        expect(control.publish).not.toHaveBeenCalled();
+        releasePresence({
+          clients: {
+            "sandbox-client": { connInfo: { connectionId: "conn-1" } },
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+      }
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(result).resolves.toMatchObject({ exitCode: 0 });
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it.each([
     [true, "readiness reply lost"],
     [true, "publish reply lost"],
