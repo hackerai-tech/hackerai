@@ -3048,6 +3048,50 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
+    ["agent", "pro", "auto", true],
+    ["agent", "pro-plus", undefined, true],
+    ["agent", "ultra", "auto", true],
+    ["agent", "free", "auto", false],
+    ["ask", "pro", "auto", false],
+    ["agent", "pro", "hackerai-standard", false],
+    ["agent", "pro", "hackerai-pro", false],
+    ["agent", "ultra", "hackerai-max", false],
+  ])(
+    "scopes max DeepSeek reasoning to paid Auto Agent: %s/%s/%s",
+    async (mode, subscription, selectedModelOverride, expected) => {
+      const stream = (await createAgentStream(
+        "model-deepseek-v4-flash-vision-pro",
+        createTestStreamContext({
+          mode,
+          subscription,
+          selectedModelOverride,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Say hello")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      )) as any;
+      await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "Say hello" }],
+      });
+      expect(mockBuildProviderOptions).toHaveBeenCalled();
+      for (const call of mockBuildProviderOptions.mock.calls) {
+        expect(call).toEqual([
+          expect.anything(),
+          "user",
+          expect.any(String),
+          mode,
+          expect.objectContaining({ isPaidAutoAgentRequest: expected }),
+        ]);
+      }
+    },
+  );
+
+  it.each([
     ["ask", "free", true],
     ["ask", "pro", false],
     ["agent", "free", false],
