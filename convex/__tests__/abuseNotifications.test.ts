@@ -116,3 +116,43 @@ test("paused work survives disabling and resumes once after re-enabling", async 
     await run("claim", ctx, { notificationId: "notification" }),
   ).toMatchObject({ attempt: 1 });
 });
+test("an admin can retry a confirmed failure after repair, but cannot duplicate or resend uncertain work", async () => {
+  const { row, ctx } = fixture();
+  row.status = "failed";
+  row.attempts = 1;
+  await run("retryFailed", ctx, {
+    notificationId: "notification",
+    expectedAttempts: 1,
+  });
+  expect(row.status).toBe("pending");
+  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+  await expect(
+    run("retryFailed", ctx, {
+      notificationId: "notification",
+      expectedAttempts: 1,
+    }),
+  ).rejects.toThrow();
+  expect(
+    await run("claim", ctx, { notificationId: "notification" }),
+  ).toMatchObject({ attempt: 2 });
+  await run("finish", ctx, {
+    notificationId: "notification",
+    attempt: 2,
+    outcome: "sent",
+  });
+  expect(row.status).toBe("sent");
+  row.status = "uncertain";
+  await expect(
+    run("retryFailed", ctx, {
+      notificationId: "notification",
+      expectedAttempts: 2,
+    }),
+  ).rejects.toThrow();
+  row.status = "failed";
+  await expect(
+    run("retryFailed", ctx, {
+      notificationId: "notification",
+      expectedAttempts: 1,
+    }),
+  ).rejects.toThrow();
+});

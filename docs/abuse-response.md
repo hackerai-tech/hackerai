@@ -236,6 +236,14 @@ exactly-once delivery guarantee. A stable Message-ID assists reconciliation.
 Before any manually authorized resend, check the recipient inbox and Proton Sent
 folder for the case reference and record the decision in the internal case record.
 Do not mutate an unfamiliar outbox entry to work around delivery uncertainty.
+After correcting configuration, an authorized backend administrator can run the
+internal `abuseNotifications:retryFailed` mutation with the exact `notificationId`
+and its current `expectedAttempts`. It accepts only confirmed `failed` entries
+with retained case evidence and enabled notifications; pending, sent, changed, or
+uncertain entries are rejected. It preserves the attempt count and stable message
+identity. The existing automatic-attempt budget is not reset; after exhaustion
+this permits one explicit send attempt. Verify the result and record recovery
+in the internal case workflow.
 
 Before enabling real notifications, submit a synthetic report through the actual
 web form and independently confirm the matching reference in the intended inbox.

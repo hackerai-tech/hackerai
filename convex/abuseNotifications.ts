@@ -63,6 +63,34 @@ export const resumePaused = internalMutation({
   },
 });
 
+/** Admin-only recovery after configuration is corrected; ambiguous sends require reconciliation. */
+export const retryFailed = internalMutation({
+  args: {
+    notificationId: v.id("abuse_notifications"),
+    expectedAttempts: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { notificationId, expectedAttempts }) => {
+    const row = await ctx.db.get(notificationId);
+    if (!row || row.status !== "failed" || row.attempts !== expectedAttempts)
+      throw new Error("Notification changed or is not a confirmed failure");
+    const report = await ctx.db.get(row.caseId);
+    if (
+      !report?.ciphertext ||
+      process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true"
+    )
+      throw new Error("Notification unavailable");
+    await ctx.db.patch(notificationId, {
+      status: "pending",
+      updatedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(0, internal.abuseNotificationActions.deliver, {
+      notificationId,
+    });
+    return null;
+  },
+});
+
 export const expireClaim = internalMutation({
   args: { notificationId: v.id("abuse_notifications"), attempt: v.number() },
   returns: v.null(),
