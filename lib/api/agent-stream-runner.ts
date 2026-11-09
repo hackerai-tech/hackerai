@@ -1,3 +1,4 @@
+import type { MaxModelTelemetry } from "@/lib/experiments/max-grok-46";
 import {
   INFERENCE_CYBER_MODEL_KEY,
   INFERENCE_MAX_IMAGES_PER_REQUEST,
@@ -343,7 +344,8 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Promote only the Max text route; preserve explicit recovery models.
+  // Grok Max handles images natively. Preserve the legacy GLM promotion for
+  // restored runs and keep explicitly selected recovery models unchanged.
   if (selectedModelOverride === "hackerai-max") {
     return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
   }
@@ -869,6 +871,7 @@ export type AgentStreamContext = {
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
   /** Called after step preparation, immediately before the actual provider call. */
+  maxModelTelemetry?: MaxModelTelemetry;
   onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
@@ -1140,13 +1143,27 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel => {
     const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
-      const historyModel = ctx.chatLogger
-        ? withProviderModelHistory(attemptModel, {
-            configured: activeStepModelName,
-            generationStep: stepIndex + 1,
-            onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
-          })
-        : attemptModel;
+      const historyModel =
+        ctx.chatLogger || ctx.maxModelTelemetry
+          ? withProviderModelHistory(attemptModel, {
+              configured: activeStepModelName,
+              generationStep: stepIndex + 1,
+              onStart: (entry) => {
+                ctx.chatLogger?.recordProviderModelCall(entry);
+                if (ctx.maxModelTelemetry && !abortSignal.aborted) {
+                  // Below recovery middleware: each real adapter call counts,
+                  // including rejected requests and compacted same-step retries.
+                  ctx.usageTracker.recordModelCall?.();
+                  ctx.maxModelTelemetry.providerStarted(
+                    entry.requested,
+                    streamHasImageViewResults ||
+                      uiMessagesContainImageAttachment(state.finalMessages),
+                  );
+                  ctx.onProviderRequestStart?.(entry.requested);
+                }
+              },
+            })
+          : attemptModel;
       const telemetryModel =
         ctx.abliteratedTelemetry?.wrap(
           historyModel,
@@ -1514,6 +1531,10 @@ export async function createAgentStream(
         requestedModelSlug,
         selectedModelOverride: ctx.selectedModelOverride,
         cacheSessionId,
+        isPaidAutoAgentRequest:
+          ctx.mode === "agent" &&
+          ctx.subscription !== "free" &&
+          (!ctx.selectedModelOverride || ctx.selectedModelOverride === "auto"),
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
@@ -2207,11 +2228,13 @@ export async function createAgentStream(
           $process_person_profile: false,
         });
       }
-      if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
+      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
+        ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
-      if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
+      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
+        ctx.onProviderRequestStart?.(model.modelId);
     },
     experimental_onToolCallStart: () => {
       reportMemoryActivity({ operation: "tool_execution" });
@@ -3084,6 +3107,14 @@ export async function createAgentStream(
       text,
       finishReason,
     }) => {
+      ctx.maxModelTelemetry?.providerCompleted({
+        responseModel: response?.modelId,
+        finishReason,
+        toolCalls: toolCalls?.length ?? 0,
+        hasImageToolResults: toolResultsContainImageViewResult(
+          toolResults ?? [],
+        ),
+      });
       reportMemoryActivity({ operation: "step_finalize" });
       lastCompletedResponseMessages = response?.messages ?? [];
       if (ctx.subscription === "free") {

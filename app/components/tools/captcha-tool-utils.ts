@@ -49,6 +49,7 @@ export function getCaptchaActivity({
   if (
     executionPhase === "stopped" ||
     executionPhase === "interrupted" ||
+    output?.result?.exitCode === 130 ||
     (!hasResult && isExecuting && !isRunActive)
   )
     state = "stopped";
@@ -87,7 +88,7 @@ export function getCaptchaActivityLabel(state: CaptchaActivity["state"]) {
     response_delivered: "Response delivered",
     needs_verification: "Needs verification",
     failed: "CAPTCHA solve failed",
-    stopped: "Stopped CAPTCHA solve",
+    stopped: "Canceled while solving",
     unavailable: "Solver unavailable",
     preparation_required: "Preparation needed",
     capture_incomplete: "Challenge not ready",
