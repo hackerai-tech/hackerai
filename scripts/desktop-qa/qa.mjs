@@ -19,6 +19,8 @@ import { hostname, loadavg, platform } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { verifyTargets, TargetVerificationError } from "./verify-targets.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 class QaError extends Error {}
@@ -371,16 +373,25 @@ export async function main(args, root = ROOT) {
   const [action, session, configFile, ...rest] = args;
   if (action === "help" || !action) {
     console.log(
-      "desktop:qa doctor <config.json>\ndesktop:qa start <session> <config.json>\ndesktop:qa serve <session> <config.json>\ndesktop:qa status <session>\ndesktop:qa stop <session>\ndesktop:qa record <session> <run_id> <starting|running|completed|canceled|failed|unknown> <desktop|local|cloud|unknown>",
+      "desktop:qa verify <config.json>\ndesktop:qa doctor <config.json>\ndesktop:qa start <session> <config.json>\ndesktop:qa serve <session> <config.json>\ndesktop:qa status <session>\ndesktop:qa stop <session>\ndesktop:qa record <session> <run_id> <starting|running|completed|canceled|failed|unknown> <desktop|local|cloud|unknown>",
     );
     return;
   }
-  if (["doctor", "start", "serve"].includes(action)) {
+  if (["verify", "doctor", "start", "serve"].includes(action)) {
     const config = validateConfig(
       JSON.parse(
-        await readFile(action === "doctor" ? session : configFile, "utf8"),
+        await readFile(
+          ["verify", "doctor"].includes(action) ? session : configFile,
+          "utf8",
+        ),
       ),
     );
+    if (action === "verify") {
+      console.log(
+        JSON.stringify(await verifyTargets(config, { root }), null, 2),
+      );
+      return;
+    }
     if (action === "serve")
       check(
         loopback(config.frontend) &&
@@ -388,6 +399,7 @@ export async function main(args, root = ROOT) {
         "serve requires an HTTP loopback frontend",
       );
     const executable = await verifyApp(root, config.app);
+    const verifiedTargets = await verifyTargets(config, { root });
     const report = {
       capturedAt: new Date().toISOString(),
       host: hostname(),
@@ -400,6 +412,7 @@ export async function main(args, root = ROOT) {
       }).trim(),
       nativeExecutableSha256: config.app.sha256,
       declaredIdentity: config,
+      verifiedTargets,
       identityCaveat:
         "Configured identities are operator supplied; verify the loaded native frontend and actual backend/worker/transport through Computer Use.",
       health: await health(config),
@@ -450,11 +463,15 @@ export async function main(args, root = ROOT) {
     console.log(
       `QA session: ${session}. Diagnostics: .artifacts/desktop-qa/${session}`,
     );
+    const childEnv = { ...process.env };
+    delete childEnv.CONVEX_ACCESS_TOKEN;
+    delete childEnv.TRIGGER_ACCESS_TOKEN;
     const state = await supervise({
       command,
       args: commandArgs,
       cwd: root,
       dir,
+      env: childEnv,
     });
     check(
       state !== "failed",
@@ -514,7 +531,7 @@ if (
   main(process.argv.slice(2)).catch((error) => {
     // Do not echo filesystem/network/JSON parse errors: they can contain input values.
     console.error(
-      error instanceof QaError
+      error instanceof QaError || error instanceof TargetVerificationError
         ? error.message
         : "Desktop QA command failed. Check the documented schema, build hash, dependency guard, frontend readiness and session status. No credentials or raw child logs were collected.",
     );
