@@ -12,6 +12,23 @@ web-only work to avoid competing local builds. For a local frontend, build once
 before acceptance, using the existing documented build workflow. This runner
 never builds or launches development watchers automatically.
 
+## Pull request builds
+
+Relevant PRs compile and package the actual release-mode Desktop app on Windows
+x64, macOS arm64/x64, and Linux arm64/x64. Download the `desktop-pr-*` artifacts
+from **Desktop PR Builds** for inspection within seven days. They are unsigned
+validation builds; Apple notarization, release signing, and updater publication
+are verified by the release pipeline.
+
+These artifacts retain the production frontend, app identifier, and updater
+configuration. Launching them can connect to Production or interact with an
+installed HackerAI app. Use them for package inspection only; for local or
+Preview acceptance, follow the [isolated-build runbook](desktop-local-acceptance.md).
+
+The required **Desktop PR builds** check reports on every PR targeting `main`. Unrelated PRs skip
+platform builds while still completing the gate; a failed applicable package
+blocks the gate. **Run workflow** can build any branch manually as well.
+
 ## Prepare a launch record
 
 Create `.artifacts/desktop-qa/config.json` in the task's worktree. It contains

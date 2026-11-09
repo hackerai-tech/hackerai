@@ -1094,7 +1094,8 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     await jest.advanceTimersByTimeAsync(2_100);
     await Promise.all([checkpoint, stopping]);
     expect(kill).toHaveBeenCalledTimes(1);
-    expect(session.recordPersistenceFailed).toBe(true);
+    expect(session.recordPersistenceFailed).not.toBe(true);
+    expect(session).toMatchObject({ recordPersistenceStatus: "pending" });
     expect(info).toHaveBeenCalledWith(
       "terminal_record_checkpoint_unconfirmed",
       expect.objectContaining({ reason: "wait_deadline" }),
@@ -1103,6 +1104,7 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     release();
     await jest.advanceTimersByTimeAsync(0);
     expect(session.recordPersistenceFailed).toBe(false);
+    expect(session).toMatchObject({ recordPersistenceStatus: "saved" });
     expect(records.map((record) => record.status)).toEqual([
       "running",
       "stopped",
@@ -1121,11 +1123,15 @@ describe("unconfirmed terminal checkpoint diagnostics", () => {
     try {
       await jest.advanceTimersByTimeAsync(2_100);
       await writing;
+      expect(session.recordPersistenceFailed).not.toBe(true);
+      expect(session).toMatchObject({ recordPersistenceStatus: "pending" });
       expect(info.mock.calls.map(([, fields]) => fields?.reason)).toEqual([
         "wait_deadline",
       ]);
       release(null);
       await jest.advanceTimersByTimeAsync(0);
+      expect(session.recordPersistenceFailed).toBe(true);
+      expect(session).toMatchObject({ recordPersistenceStatus: "failed" });
       expect(info.mock.calls.map(([, fields]) => fields?.reason)).toEqual([
         "wait_deadline",
         "save_unacknowledged",

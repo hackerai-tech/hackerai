@@ -1,7 +1,8 @@
-import { streamText, stepCountIs, tool, type LanguageModel } from "ai";
+import { streamText, stepCountIs, type LanguageModel } from "ai";
 import { WritableStream } from "node:stream/web";
-import { z } from "zod";
 import { recoverBrowserHandoffCompletion } from "../completion-recovery";
+import { createBrowserHandoff } from "@/lib/ai/tools/browser-handoff";
+import type { BrowserSessions } from "@/lib/ai/tools/utils/browser-sessions";
 
 const originalWritableStream = globalThis.WritableStream;
 beforeAll(() => {
@@ -114,7 +115,11 @@ it.each([
         goalObjective,
       }),
       prompt: request,
-      tools: { browser_handoff: tool({ inputSchema: z.object({}), execute }) },
+      tools: {
+        browser_handoff: createBrowserHandoff({
+          waitForHumanHandoff: execute,
+        } as unknown as BrowserSessions),
+      },
       stopWhen: stepCountIs(3),
     });
     let completed = false;
@@ -154,6 +159,70 @@ it.each([
     expect(canRecover).not.toHaveBeenCalled();
   },
 );
+
+it("returns an invalid empty handoff to the model and allows one corrected human request", async () => {
+  const execute = jest.fn(async () => {});
+  const calls = jest
+    .fn()
+    .mockResolvedValueOnce(
+      response(
+        "",
+        [
+          {
+            type: "tool-call",
+            toolCallId: "empty",
+            toolName: "browser_handoff",
+            input: "{}",
+          },
+        ],
+        "tool-calls",
+      ),
+    )
+    .mockResolvedValueOnce(
+      response(
+        promise,
+        [
+          {
+            type: "tool-call",
+            toolCallId: "corrected",
+            toolName: "browser_handoff",
+            input: JSON.stringify({
+              reason: "The user requested browser control.",
+            }),
+          },
+        ],
+        "tool-calls",
+      ),
+    )
+    .mockResolvedValueOnce(response("The requested takeover is finished."));
+  const result = streamText({
+    model: recoverBrowserHandoffCompletion(model(calls), {
+      state: {},
+      canRecover: async () => true,
+    }),
+    prompt: request,
+    tools: {
+      browser_handoff: createBrowserHandoff({
+        waitForHumanHandoff: execute,
+      } as unknown as BrowserSessions),
+    },
+    stopWhen: stepCountIs(4),
+  });
+  await result.consumeStream();
+  expect(execute).toHaveBeenCalledTimes(1);
+  const errorResult = calls.mock.calls[1][0].prompt
+    .filter((m: { role: string }) => m.role === "tool")
+    .flatMap((m: { content: unknown[] }) => m.content);
+  expect(errorResult).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        toolCallId: "empty",
+        output: expect.objectContaining({ type: "error-text" }),
+      }),
+    ]),
+  );
+  expect(calls).toHaveBeenCalledTimes(3);
+});
 
 it.each([false, true])(
   "does not replay a previous Goal handoff after another reply (reminder=%s)",
@@ -224,7 +293,9 @@ it.each([
       expect.objectContaining({
         type: "tool-call",
         toolName: "browser_handoff",
-        input: "{}",
+        input: JSON.stringify({
+          reason: "The user explicitly requested control of this browser.",
+        }),
       }),
     );
     expect(state.attempted).toBe(true);

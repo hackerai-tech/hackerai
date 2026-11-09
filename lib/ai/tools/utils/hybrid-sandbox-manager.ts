@@ -137,6 +137,39 @@ export function isSameLocalMachine(
   );
 }
 
+/** Compare the original rejection with the abort reason without exposing it. */
+function localLookupAbortContext(
+  error: unknown,
+  context?: CloudSandboxAcquisitionContext,
+) {
+  let state: "unavailable" | "active" | "aborted" | "unreadable" =
+    "unavailable";
+  let matches: "unavailable" | "yes" | "no" | "unreadable" = "unavailable";
+  try {
+    const signal = context?.signal;
+    if (signal) {
+      const aborted = signal.aborted;
+      if (aborted === true) {
+        state = "aborted";
+        matches = signal.reason === error ? "yes" : "no";
+      } else if (aborted === false) {
+        state = "active";
+      } else {
+        state = "unreadable";
+        matches = "unreadable";
+      }
+    }
+  } catch {
+    state = "unreadable";
+    matches = "unreadable";
+  }
+  return {
+    local_lookup_abort_context_version: 1,
+    local_lookup_signal_state: state,
+    local_lookup_matches_abort_reason: matches,
+  };
+}
+
 const logStructured = (
   level: "warn" | "error",
   event: string,
@@ -783,6 +816,7 @@ export class HybridSandboxManager implements SandboxManager {
     } catch (error) {
       logStructured("error", "local_sandbox_connections_list_failed", {
         user_id: this.userID,
+        ...localLookupAbortContext(error, this.cloudSandboxContext),
         error: error instanceof Error ? error.message : String(error),
       });
       if (this.sandboxPreference !== "e2b") {

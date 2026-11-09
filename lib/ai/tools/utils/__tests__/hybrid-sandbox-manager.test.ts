@@ -444,6 +444,149 @@ describe("stable environment acquisition", () => {
   });
 });
 
+describe("lookup failure abort evidence", () => {
+  it.each(["matched", "concurrent", "active", "absent"] as const)(
+    "retains the local lookup wrapper and bounds %s original-abort evidence",
+    async (scenario) => {
+      const error = new Error("Lookup unavailable");
+      const controller = new AbortController();
+      const reason = { private: "PRIVATE_REASON", toJSON: jest.fn() };
+      if (scenario === "matched") controller.abort(error);
+      if (scenario === "concurrent") controller.abort(reason);
+      const signal = scenario === "absent" ? undefined : controller.signal;
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "environment:machine-a",
+        "service-key",
+        null,
+        "pro",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { signal },
+      );
+      mockConvexMutation.mockReset();
+      mockConvexQuery.mockReset().mockRejectedValue(error);
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(manager.listConnections()).rejects.toMatchObject({
+          type: "bad_request",
+          surface: "sandbox",
+          metadata: { localConnectionLookupFailed: true },
+        });
+        expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+        expect(mockConvexMutation).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledTimes(1);
+        const fields = JSON.parse(log.mock.calls[0][0]);
+        expect(fields).toMatchObject({
+          event: "local_sandbox_connections_list_failed",
+          local_lookup_abort_context_version: 1,
+          local_lookup_signal_state:
+            scenario === "absent"
+              ? "unavailable"
+              : scenario === "active"
+                ? "active"
+                : "aborted",
+          local_lookup_matches_abort_reason:
+            scenario === "matched"
+              ? "yes"
+              : scenario === "concurrent"
+                ? "no"
+                : "unavailable",
+        });
+        expect(
+          Object.keys(fields)
+            .filter((key) => key.startsWith("local_lookup_"))
+            .sort(),
+        ).toEqual([
+          "local_lookup_abort_context_version",
+          "local_lookup_matches_abort_reason",
+          "local_lookup_signal_state",
+        ]);
+        expect(JSON.stringify(fields)).not.toContain("PRIVATE_REASON");
+        expect(reason.toJSON).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+        mockConvexQuery.mockReset();
+      }
+    },
+  );
+
+  it("retains cloud fallback after a lookup fails with an aborted acquisition signal", async () => {
+    const error = new Error("Lookup unavailable");
+    const controller = new AbortController();
+    controller.abort(error);
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { signal: controller.signal },
+    );
+    mockConvexMutation.mockReset();
+    mockConvexQuery.mockReset().mockRejectedValue(error);
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(manager.listConnections()).resolves.toEqual([]);
+      expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
+        local_lookup_signal_state: "aborted",
+        local_lookup_matches_abort_reason: "yes",
+      });
+    } finally {
+      log.mockRestore();
+      mockConvexQuery.mockReset();
+    }
+  });
+
+  it("keeps a local lookup failure unchanged when signal inspection throws", async () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_SIGNAL");
+    });
+    const signal = Object.defineProperty({}, "aborted", {
+      get: getter,
+    }) as AbortSignal;
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "environment:machine-a",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { signal },
+    );
+    mockConvexQuery
+      .mockReset()
+      .mockRejectedValue(new Error("Lookup unavailable"));
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(manager.listConnections()).rejects.toMatchObject({
+        metadata: { localConnectionLookupFailed: true },
+      });
+      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
+        local_lookup_signal_state: "unreadable",
+        local_lookup_matches_abort_reason: "unreadable",
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_SIGNAL");
+    } finally {
+      log.mockRestore();
+      mockConvexQuery.mockReset();
+    }
+  });
+});
+
 describe("isSameLocalMachine", () => {
   it("uses stable identity across host renames and refuses a different identity with matching metadata", () => {
     const first = makeConnection({ environmentId: "machine-a" });
