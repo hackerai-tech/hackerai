@@ -12,6 +12,7 @@ import { PtySessionManager } from "../utils/pty-session-manager";
 import { createTerminalRecordStore } from "../utils/terminal-execution-record";
 
 async function fixture() {
+  let failSave = false;
   let release!: () => void;
   const receipt = new Promise<void>((resolve) => {
     release = resolve;
@@ -23,6 +24,7 @@ async function fixture() {
     files: {
       write: async (path: string, value: string) => {
         await receipt;
+        if (failSave) throw new Error("synthetic write failure");
         files.set(path, value);
       },
       read: async (path: string) => {
@@ -86,7 +88,18 @@ async function fixture() {
       { toolCallId: "fixture-view", messages: [] },
     );
   };
-  return { manager, session, release, interact, createHandle, kill };
+  return {
+    manager,
+    session,
+    release,
+    interact,
+    createHandle,
+    kill,
+    failSave: () => {
+      failSave = true;
+      release();
+    },
+  };
 }
 
 describe("completed terminal record recovery during a pending save", () => {
@@ -140,6 +153,24 @@ describe("completed terminal record recovery during a pending save", () => {
       expect(await view).toMatchObject({
         result: { recovered: true, exitCode: 7 },
       });
+    } finally {
+      f.release();
+      await f.manager.closeAll("fixture-chat");
+    }
+  });
+
+  test("settles a failed save without claiming it is still pending or advising a replay", async () => {
+    const f = await fixture();
+    try {
+      const view = f.interact("view");
+      await jest.advanceTimersByTimeAsync(1);
+      f.failSave();
+      const result = await view;
+      expect(result.result.recordPersistencePending).not.toBe(true);
+      expect(result.result.error).toContain(
+        "do not repeat it solely because this lookup failed",
+      );
+      expect(f.createHandle).toHaveBeenCalledTimes(1);
     } finally {
       f.release();
       await f.manager.closeAll("fixture-chat");

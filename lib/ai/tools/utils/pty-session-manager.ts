@@ -129,6 +129,7 @@ type RecordWork = {
   sessionId: string;
   pending: Set<Promise<void>>;
   checkpoints: Set<Promise<void>>;
+  checkpointWaiters: Set<() => void>;
   retention: Set<AbortController>;
 };
 
@@ -205,6 +206,7 @@ export class PtySessionManager {
           groups?.delete(work);
           if (groups?.size === 0) this.recordWork.delete(chatId);
         }
+        for (const notify of work.checkpointWaiters) notify();
       });
     work.pending.add(pending);
     if (checkpoint) work.checkpoints.add(pending);
@@ -215,34 +217,26 @@ export class PtySessionManager {
     chatId: string,
     sessionId: string,
   ): Promise<boolean> {
-    const checkpoints = () =>
-      [...(this.recordWork.get(chatId) ?? [])]
-        .filter((work) => work.sessionId === sessionId)
-        .flatMap((work) => [...work.checkpoints]);
-    if (checkpoints().length === 0) return false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let expired = false;
-    try {
-      return await Promise.race([
-        (async () => {
-          // Re-read after each batch: a coalesced final checkpoint may replace it.
-          while (!expired) {
-            const pending = checkpoints();
-            if (pending.length === 0) break;
-            await Promise.allSettled(pending);
-          }
-          return false;
-        })(),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => {
-            expired = true;
-            resolve(true);
-          }, RECORD_CHECKPOINT_WAIT_MS);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    const groups = [...(this.recordWork.get(chatId) ?? [])].filter(
+      (work) => work.sessionId === sessionId,
+    );
+    const pending = () => groups.some((work) => work.checkpoints.size > 0);
+    if (!pending()) return false;
+    return new Promise<boolean>((resolve) => {
+      const finish = (stillPending: boolean) => {
+        clearTimeout(timer);
+        for (const work of groups) work.checkpointWaiters.delete(notify);
+        resolve(stillPending);
+      };
+      const notify = () => {
+        // Coalesced writes stay owned by the same group until its final save.
+        if (!pending()) finish(false);
+      };
+      const timer = setTimeout(() => finish(true), RECORD_CHECKPOINT_WAIT_MS);
+      for (const work of groups) work.checkpointWaiters.add(notify);
+      // Timeout removes observers even if the underlying transport never settles.
+      notify();
+    });
   }
 
   async create(chatId: string, opts: CreateSessionOpts): Promise<PtySession> {
@@ -302,6 +296,7 @@ export class PtySessionManager {
           sessionId,
           pending: new Set(),
           checkpoints: new Set(),
+          checkpointWaiters: new Set(),
           retention: new Set(),
         },
         recordQueue: Promise.resolve(),
