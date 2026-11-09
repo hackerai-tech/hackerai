@@ -34,6 +34,23 @@ const contracts: Record<string, string> = {
 export const hasUnsupportedWorkerToolReference = (content: string): boolean =>
   unsupported.test(content);
 
+/** Check the output structure after removing foreign reporting paragraphs. */
+export function hasBalancedCodeFences(content: string): boolean {
+  let fence: { marker: string; length: number } | undefined;
+  for (const line of content.split("\n")) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    if (!fence) fence = { marker: match[1][0], length: match[1].length };
+    else if (
+      match[1][0] === fence.marker &&
+      match[1].length >= fence.length &&
+      match[2].trim() === ""
+    )
+      fence = undefined;
+  }
+  return fence === undefined;
+}
+
 type RuntimeContentResult =
   | { success: true; content: string; adapted: boolean }
   | { success: false; error: string };
@@ -58,6 +75,10 @@ export function compileSubagentSkillContent(
       if (start < 0 || end < 0)
         return { success: false, error: "Skill reporting section changed" };
       content = content.slice(0, start) + content.slice(end);
+      content = content.replace(
+        "contains it, then pass to `create_dependency_report`:",
+        "contains it, then return the introducer and resolution path as evidence to the parent:",
+      );
     }
     // At these pinned revisions the remaining references are prose paragraphs,
     // not scanner commands. Their reporting intent is retained in the contract.
@@ -65,6 +86,11 @@ export function compileSubagentSkillContent(
       .split(/\n\s*\n/)
       .filter((paragraph) => !hasUnsupportedWorkerToolReference(paragraph))
       .join("\n\n");
+    if (!hasBalancedCodeFences(content))
+      return {
+        success: false,
+        error: "Skill adaptation left an incomplete code block",
+      };
     content += `\n\n## HackerAI worker result contract\n\n${contracts[skill.id]}\nUse the active profile's provided tools and final-result schema. Return evidence to the parent; do not create reports, delegate workers, or expand the assigned scope.`;
   }
   if (hasUnsupportedWorkerToolReference(content))

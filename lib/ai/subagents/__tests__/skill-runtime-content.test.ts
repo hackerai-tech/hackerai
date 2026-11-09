@@ -4,6 +4,7 @@ import raw from "../skills/strix-skill-content.generated.json";
 import {
   compileSubagentSkillContent,
   hasUnsupportedWorkerToolReference,
+  hasBalancedCodeFences,
 } from "../skills/runtime-content";
 import { renderSubagentSkillKnowledge } from "../skills/knowledge";
 
@@ -20,16 +21,32 @@ describe("worker skill runtime compatibility", () => {
     (id) => {
       const rendered = renderSubagentSkillKnowledge([id]);
       expect(hasUnsupportedWorkerToolReference(rendered)).toBe(false);
+      expect(hasBalancedCodeFences(rendered)).toBe(true);
       expect(rendered).toContain("HackerAI worker result contract");
       expect(rendered).toContain("active profile's provided tools");
       if (id === "custom/dependency_cve_scanning") {
         expect(rendered).toContain("trivy fs");
         expect(rendered).toContain("--list-all-pkgs");
+        expect(rendered).toContain(".Results[].Packages[]");
+        expect(rendered).toContain("DependsOn");
+        expect(rendered).toContain("Relationship");
         expect(rendered).toContain("source-to-sink");
         expect(rendered).not.toContain("the tool rejects a report");
       }
     },
   );
+  it("rejects an adaptation that would leave a dangling scanner code block", () => {
+    const skill = registry.skills.find((s) => s.id === adapted[0])!;
+    const source = (raw.contents as Record<string, string>)[skill.id];
+    const result = compileSubagentSkillContent(
+      skill,
+      source + "\n\n```bash\ncreate_agent\n\nstill code\n```\n",
+    );
+    expect(result).toEqual({
+      success: false,
+      error: "Skill adaptation left an incomplete code block",
+    });
+  });
   it("rejects unreviewed adapter revisions and unknown tool incompatibilities", () => {
     const skill = registry.skills.find((s) => s.id === adapted[0])!;
     const source = (raw.contents as Record<string, string>)[skill.id];
