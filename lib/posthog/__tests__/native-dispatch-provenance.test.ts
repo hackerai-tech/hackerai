@@ -444,6 +444,112 @@ const syntaxEntry = () => ({
   stacktrace: { frames: [] as unknown[] },
 });
 
+const anonymousReferenceEntry = () => ({
+  type: "ReferenceError",
+  value: "PRIVATE_identifier is not defined",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: [
+      { filename: "<anonymous>", in_app: false },
+      { filename: "<anonymous>", in_app: false },
+    ],
+  },
+});
+
+it.each(["same_origin", "absent"])(
+  "retains anonymous ReferenceErrors with finite nearby source %s",
+  (source) => {
+    const dispatched = new ErrorEvent("error", {
+      message: "PRIVATE native message",
+      filename:
+        source === "same_origin"
+          ? `${location.origin}/PRIVATE-source?token=canary`
+          : "",
+      error: new ReferenceError("PRIVATE error"),
+      lineno: 5,
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const exception = anonymousReferenceEntry();
+    const context = snapshot(exception);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_group:
+        "anonymous_missing_identifier_referenceerror",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: source,
+      hackerai_nearby_dispatch_error_latest_object: true,
+    });
+    expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|token=/);
+    expect(dispatched.defaultPrevented).toBe(false);
+    const event = {
+      event: "$exception",
+      properties: { $exception_list: [exception] },
+    };
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(enriched.properties.$exception_list).toBe(
+      event.properties.$exception_list,
+    );
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(snapshot(exception)).toEqual({});
+  },
+);
+
+it("does not extend anonymous ReferenceError attribution to first-party or different error shapes", () => {
+  const exception = anonymousReferenceEntry();
+  for (const candidate of [
+    { ...exception, type: "Error" },
+    { ...exception, type: "TypeError" },
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    { ...exception, mechanism: { ...exception.mechanism, type: "onerror" } },
+    { ...exception, value: "PRIVATE property is unavailable" },
+    { ...exception, value: "ReferenceError: PRIVATE is not defined" },
+    { ...exception, value: "PRIVATE is not defined." },
+    { ...exception, value: "\u00e9 is not defined" },
+    { ...exception, value: `${"x".repeat(65)} is not defined` },
+    { ...exception, value: `${"x".repeat(256)} is not defined` },
+    { ...exception, stacktrace: { frames: [] } },
+    { ...exception, stacktrace: { frames: [exception.stacktrace.frames[0]] } },
+    {
+      ...exception,
+      stacktrace: {
+        frames: [
+          ...exception.stacktrace.frames,
+          exception.stacktrace.frames[0],
+        ],
+      },
+    },
+    { ...exception, stacktrace: { frames: Array(2) } },
+    {
+      ...exception,
+      stacktrace: {
+        frames: [
+          exception.stacktrace.frames[0],
+          { filename: "/_next/static/chunks/app.js", in_app: true },
+        ],
+      },
+    },
+    {
+      ...exception,
+      stacktrace: {
+        frames: [{ filename: "<anonymous>" }, exception.stacktrace.frames[1]],
+      },
+    },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+});
+
 it.each([false, true])(
   "adds only nearby finite context for the exact retained SyntaxError (frames absent: %s)",
   (absent) => {

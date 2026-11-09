@@ -364,6 +364,7 @@ export type NearbyDispatchGroup =
   | "get_head_body_typeerror"
   | "wallet_property_typeerror"
   | "synthetic_stackless_error"
+  | "anonymous_missing_identifier_referenceerror"
   | "stackless_end_of_script_syntaxerror"
   | "stackless_unexpected_token_syntaxerror";
 
@@ -413,6 +414,7 @@ export function getNearbyDispatchDiagnostics(
         "get_head_body_typeerror",
         "wallet_property_typeerror",
         "synthetic_stackless_error",
+        "anonymous_missing_identifier_referenceerror",
         "stackless_end_of_script_syntaxerror",
         "stackless_unexpected_token_syntaxerror",
       ].includes(group) ||
