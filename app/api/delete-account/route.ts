@@ -249,6 +249,7 @@ async function markAccountIdentityDeleted(
   });
 }
 
+/** Run bounded cleanup batches while retaining client ACK progress for failure audits. */
 async function deleteConvexUserData(
   userId: string,
   serviceKey: string,
