@@ -1,3 +1,4 @@
+import { getAttachmentDownloadFailureContext } from "../attachment-download-diagnostics";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { phLogger } from "@/lib/posthog/server";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
@@ -5763,6 +5764,20 @@ describe("CentrifugoSandbox", () => {
       const error = await failure;
 
       expect(error).toBeInstanceOf(Error);
+      expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+        attachment_download_diagnostic_version: 1,
+        attachment_download_platform: "windows",
+        attachment_download_shell: "bash",
+        attachment_download_http_client: "curl",
+        attachment_download_exit_code: 23,
+        attachment_download_stderr_signal: "other",
+      });
+      const diagnostic = JSON.stringify(
+        getAttachmentDownloadFailureContext(error),
+      );
+      expect(diagnostic).not.toMatch(
+        /storage\.example|private-image|X-Amz|sandbox/,
+      );
       expect((error as Error).message).toContain("source: [redacted-url]");
       expect((error as Error).message).toContain(
         "destination: [redacted-destination-path]",

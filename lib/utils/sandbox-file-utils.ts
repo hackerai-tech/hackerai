@@ -1,6 +1,12 @@
 import "server-only";
 
 import {
+  copyAttachmentDownloadFailureContext,
+  getAttachmentDownloadFailureContext,
+  type AttachmentDownloadFailureContext,
+} from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+
+import {
   CloudAcquisitionBudgetExhaustedError,
   CloudAcquisitionTimeoutError,
   isCloudAcquisitionBudgetSpent,
@@ -137,6 +143,7 @@ type SandboxUploadFailureDetail = {
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
   commandFailureContext?: AttachmentCommandFailureContext;
+  downloadFailureContext?: AttachmentDownloadFailureContext;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -821,6 +828,7 @@ export const recoverProviderVisibleImagesAfterSandboxUploadFailure = (
       user_id: options.userId,
       chat_id: options.chatId,
       failed_image_count: failedImageFiles.length,
+      ...failure?.downloadFailureContext,
       failure_reason: failure?.reason ?? "unknown",
       sandbox_readiness_reason: failure?.sandboxReadinessReason ?? "unknown",
       retried_after_reconnect: uploadResult.retriedAfterReconnect ?? false,
@@ -1236,6 +1244,7 @@ const stageSandboxFile = async (
         { exitCode: extractCommandExitCode(fallbackError) },
       );
       copyAttachmentCommandFailureContext(fallbackError, combinedError);
+      copyAttachmentDownloadFailureContext(fallbackError, combinedError);
       if (file.kind === "localPath") {
         finalLocalCopyReasons.set(
           combinedError,
@@ -1325,6 +1334,7 @@ const summarizeSandboxUploadFailure = (
       ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
       : undefined;
   const commandFailureContext = getAttachmentCommandFailureContext(error);
+  const downloadFailureContext = getAttachmentDownloadFailureContext(error);
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1353,6 +1363,7 @@ const summarizeSandboxUploadFailure = (
       readinessProbeReason: classifySandboxUploadReadinessProbeFailure(error),
     }),
     ...(commandFailureContext && { commandFailureContext }),
+    ...(downloadFailureContext && { downloadFailureContext }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1524,6 +1535,7 @@ const uploadSandboxFilesOnce = async (
           primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1566,6 +1578,7 @@ const uploadSandboxFilesOnce = async (
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1607,6 +1620,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1653,6 +1667,7 @@ export const getSandboxUploadFailureMetadata = (
 
   return {
     ...failure?.commandFailureContext,
+    ...failure?.downloadFailureContext,
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(acquisitionStage
