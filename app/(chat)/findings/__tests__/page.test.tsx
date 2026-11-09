@@ -185,6 +185,50 @@ describe("FindingsPage", () => {
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
   });
 
+  it("only shows selection controls after opting in and discards cancelled or filtered selections", async () => {
+    render(<Page />);
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    const rowCheckbox = screen.getByRole("checkbox", {
+      name: "Select finding: Confirmed IDOR",
+    });
+    fireEvent.click(rowCheckbox);
+    expect(
+      screen.getByRole("region", { name: "Selected findings" }),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel selection" }));
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Select finding: Confirmed IDOR" }),
+    ).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select loaded" }));
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "different" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Select findings" }),
+      ).toBeVisible(),
+    );
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Select findings" }),
+      ).toBeVisible(),
+    );
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+  });
+
   it("scopes the query to an owned project and clears selection when filters change", async () => {
     const projectId = "ps74erapv3qema2sc8ea8h0dph8hxjdw";
     mockUseProjects.mockReturnValue({
@@ -202,6 +246,7 @@ describe("FindingsPage", () => {
         { initialNumItems: 25 },
       ),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select loaded" }));
     expect(
       screen.getByRole("region", { name: "Selected findings" }),

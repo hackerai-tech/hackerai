@@ -201,12 +201,19 @@ function FindingsPageContent() {
   ]);
   const [selection, setSelection] = useState<{
     scope: string;
+    active: boolean;
     ids: string[];
-  }>({ scope: selectionScope, ids: NO_SELECTION });
-  const selectedIds =
-    selection.scope === selectionScope ? selection.ids : NO_SELECTION;
+  }>({ scope: selectionScope, active: false, ids: NO_SELECTION });
+  // Discard the old scope, so returning to a previous filter cannot revive it.
+  if (selection.scope !== selectionScope) {
+    setSelection({ scope: selectionScope, active: false, ids: NO_SELECTION });
+  }
+  const isSelecting = selection.scope === selectionScope && selection.active;
+  const selectedIds = isSelecting ? selection.ids : NO_SELECTION;
   const setSelectedIds = (ids: string[]) =>
-    setSelection({ scope: selectionScope, ids });
+    setSelection({ scope: selectionScope, active: true, ids });
+  const setSelecting = (active: boolean) =>
+    setSelection({ scope: selectionScope, active, ids: NO_SELECTION });
 
   const applyUrlState = useCallback((state: FindingsUrlState) => {
     setSearch(state.search);
@@ -918,22 +925,38 @@ function FindingsPageContent() {
                         : "Newest findings first"}
                     </p>
                   </div>
-                  {findings.length > 0 ? (
-                    <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:min-h-9">
-                      <input
-                        type="checkbox"
-                        ref={(element) => {
-                          if (element) {
-                            element.indeterminate =
-                              selectedLoadedCount > 0 && !allLoadedSelected;
-                          }
-                        }}
-                        checked={allLoadedSelected}
-                        onChange={toggleLoadedSelection}
-                        className="size-4 cursor-pointer accent-foreground"
-                      />
-                      Select loaded
-                    </label>
+                  {findings.length > 0 || isSelecting ? (
+                    <div className="flex items-center gap-2">
+                      {isSelecting && findings.length > 0 ? (
+                        <label className="inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+                          <input
+                            type="checkbox"
+                            ref={(element) => {
+                              if (element) {
+                                element.indeterminate =
+                                  selectedLoadedCount > 0 && !allLoadedSelected;
+                              }
+                            }}
+                            checked={allLoadedSelected}
+                            onChange={toggleLoadedSelection}
+                            className="size-4 cursor-pointer accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                          />
+                          Select loaded
+                        </label>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-pressed={isSelecting}
+                        aria-label={
+                          isSelecting ? "Cancel selection" : "Select findings"
+                        }
+                        onClick={() => setSelecting(!isSelecting)}
+                      >
+                        {isSelecting ? "Cancel" : "Select findings"}
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
 
@@ -999,7 +1022,7 @@ function FindingsPageContent() {
                       className="hidden items-center gap-1 pb-2 @min-[58rem]:flex"
                       aria-hidden="true"
                     >
-                      <div className="w-11 shrink-0" />
+                      {isSelecting ? <div className="w-11 shrink-0" /> : null}
                       <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] items-center gap-4 px-4 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                         <div>Finding</div>
                         <div>Category</div>
@@ -1017,17 +1040,19 @@ function FindingsPageContent() {
                             key={finding.finding_id}
                             className="flex items-stretch gap-1"
                           >
-                            <label className="flex w-11 shrink-0 cursor-pointer items-start justify-center rounded-xl pt-[18px] transition-colors hover:bg-muted/30 has-[input:focus-visible]:ring-2 has-[input:focus-visible]:ring-ring @min-[58rem]:items-center @min-[58rem]:pt-0">
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={() =>
-                                  toggleFindingSelection(finding.finding_id)
-                                }
-                                aria-label={`Select finding: ${finding.title}`}
-                                className="size-4 cursor-pointer accent-foreground focus-visible:outline-none"
-                              />
-                            </label>
+                            {isSelecting ? (
+                              <label className="mt-1 flex size-11 shrink-0 self-start cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-muted/30 @min-[58rem]:mt-0 @min-[58rem]:self-center">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() =>
+                                    toggleFindingSelection(finding.finding_id)
+                                  }
+                                  aria-label={`Select finding: ${finding.title}`}
+                                  className="size-4 cursor-pointer accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                                />
+                              </label>
+                            ) : null}
                             <Link
                               href={getHref({ findingId: finding.finding_id })}
                               prefetch={false}
