@@ -99,8 +99,62 @@ describe("root request error correlation", () => {
     },
   );
 
+  it.each(["GET", "HEAD"])(
+    "correlates shared-chat %s failures with a normalized path",
+    (method) => {
+      const error = Object.assign(new Error("shared render failed"), {
+        digest: "2147368089",
+        cause: Object.assign(new TypeError("private transport detail"), {
+          code: "ETIMEDOUT",
+          status: 504,
+        }),
+      });
+      onRequestError(
+        error,
+        {
+          path: "/share/private-share-id/?token=private-token#private-fragment",
+          method,
+          headers: {
+            "x-vercel-id": "iad1::fixture-1794075870712-0123456789ab",
+            cookie: "private-cookie",
+          },
+        },
+        {
+          routePath: "/share/[shareId]/page",
+          routeType: "render",
+          routerKind: "App Router",
+          renderSource: "react-server-components",
+          revalidateReason: undefined,
+        },
+      );
+      expect(console.warn).toHaveBeenCalledTimes(1);
+      const receipt = JSON.parse(jest.mocked(console.warn).mock.calls[0][0]);
+      expect(receipt).toMatchObject({
+        event: "root_request_error_context",
+        path: "/share/[shareId]",
+        method,
+        root_request_error_diagnostic_version: 1,
+        root_error_kind: "Error",
+        root_cause_kind: "TypeError",
+        root_cause_status: 504,
+        root_cause_code: "ETIMEDOUT",
+        root_render_source: "react-server-components",
+        error_digest: "2147368089",
+        vercel_request_id: "iad1::fixture-1794075870712-0123456789ab",
+      });
+      expect(JSON.stringify(receipt)).not.toContain("private");
+      expect(phLogger.error).toHaveBeenCalledTimes(1);
+      expect(phLogger.error).toHaveBeenCalledWith(
+        "Next.js request error",
+        expect.objectContaining({ error, path: "/share/[shareId]" }),
+      );
+    },
+  );
+
   it.each([
     ["/api/chat", "GET", false],
+    ["/share/item/nested", "GET", false],
+    ["/share/item", "POST", false],
     ["/", "POST", false],
     ["/login", "GET", true],
   ] as const)(
