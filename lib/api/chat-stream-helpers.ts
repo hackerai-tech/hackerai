@@ -589,7 +589,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
+ * V4.1 Flash in Agent. Max uses Grok 4.6 for text and images. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -791,7 +791,7 @@ export function getRetryFallbackModel(
   selectedModelOverride?: SelectedModel,
 ): ModelName {
   if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    // Grok is admitted only by the context-aware final recovery decision.
+    // Recovery starts with DeepSeek; a final Grok attempt is context-checked.
     return DEEPSEEK_1017_MODEL_KEY;
   }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
@@ -1135,6 +1135,10 @@ export function buildProviderOptions(
         ],
       }
     : baseProviderRouting;
+  // Max uses the same high effort for native Grok text and vision, including
+  // continuation steps whose caller still carries an older reasoning override.
+  const usesFixedMaxGrokReasoning =
+    isGrok46 && options.selectedModelOverride === "hackerai-max";
   // GLM titles need mandatory reasoning, kept low for the small output budget.
   const reasoning = isExplicitPaidFlashTier
     ? {
@@ -1163,7 +1167,8 @@ export function buildProviderOptions(
                 effort: "medium",
               }
             : routesThroughHighReasoningModel
-              ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+              ? !usesFixedMaxGrokReasoning &&
+                isHighOrGreaterReasoningOverride(options.reasoningOverride)
                 ? options.reasoningOverride
                 : {
                     enabled: true,

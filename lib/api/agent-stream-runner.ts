@@ -339,7 +339,8 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Promote only the Max text route; preserve explicit recovery models.
+  // Grok Max handles images natively. Preserve the legacy GLM promotion for
+  // restored runs and keep explicitly selected recovery models unchanged.
   if (selectedModelOverride === "hackerai-max") {
     return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
   }

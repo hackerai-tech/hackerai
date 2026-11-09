@@ -227,6 +227,30 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each([false, true])(
+    "keeps Max Grok and recovery models with direct vision=%s",
+    (directGlmVisionEnabled) => {
+      for (const modelName of [
+        "model-grok-4.6",
+        "model-deepseek-v4.1-flash-1017-pro",
+        "model-kimi-k3",
+        "model-abliterated",
+      ]) {
+        expect(
+          resolveAgentModelForImageToolResults(
+            modelName,
+            "agent",
+            true,
+            "hackerai-max",
+            false,
+            directGlmVisionEnabled,
+            "ultra",
+          ),
+        ).toBe(modelName);
+      }
+    },
+  );
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "keeps paid %s Standard on native GLM through image tool results",
     (subscription) => {
@@ -1345,13 +1369,13 @@ describe("createAgentStream repeated compaction", () => {
       const baseline =
         selection === "hackerai-pro"
           ? "model-deepseek-v4.1-flash-1017-pro"
-          : "model-glm-5.3";
+          : "model-grok-4.6";
       const ids: Record<string, string> = {
         "model-deepseek-v4.1-flash-1017-pro":
           "deepseek/deepseek-v4.1-flash-1017",
         "model-abliterated": "abliterated-model-large-flash",
         "model-abliterated-large-v2": "abliterated-model-large-flash",
-        "model-glm-5.3": "z-ai/glm-5.3",
+        "model-grok-4.6": "x-ai/grok-4.6",
       };
       const stream = (await createAgentStream(
         "model-abliterated",
@@ -3623,6 +3647,82 @@ describe("createAgentStream repeated compaction", () => {
         '"type":"image-data"',
       );
       expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+    },
+  );
+
+  it.each(["upload", "tool-result"])(
+    "preserves native Max Grok %s images through a continuation",
+    async (source) => {
+      mockGetProviderPromptPressure.mockReturnValue(null);
+      const image = "data:image/png;base64,aW1hZ2U=";
+      const message: UIMessage =
+        source === "upload"
+          ? {
+              id: "max-image",
+              role: "user",
+              parts: [{ type: "file", mediaType: "image/png", url: image }],
+            }
+          : {
+              id: "max-image",
+              role: "assistant",
+              parts: [
+                {
+                  type: "tool-file",
+                  toolCallId: "max-image-view",
+                  state: "output-available",
+                  input: { action: "view" },
+                  output: {
+                    action: "view",
+                    kind: "image",
+                    mediaType: "image/png",
+                    data: "aW1hZ2U=",
+                  },
+                },
+              ],
+            };
+      const modelMessages: ModelMessage[] = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect this fixture" },
+            { type: "image", image },
+          ],
+        },
+      ];
+      jest
+        .requireMock("ai")
+        .convertToModelMessages.mockResolvedValueOnce(modelMessages);
+      const state = initAgentStreamState([message], {
+        usedTokens: 100,
+        maxTokens: 200_000,
+      });
+      const stream = (await createAgentStream(
+        "model-grok-4.6",
+        createTestStreamContext({
+          subscription: "ultra",
+          selectedModelOverride: "hackerai-max",
+          directGlmVisionEnabled: true,
+          agentModelContextEnabled: true,
+          trackedProvider: {
+            languageModel: (name: string) => ({
+              modelId: name === "model-grok-4.6" ? "x-ai/grok-4.6" : name,
+            }),
+          },
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        steps: [],
+        stepNumber: 0,
+        messages: stream.messages,
+      });
+      expect(stream.model.modelId).toBe("x-ai/grok-4.6");
+      expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
+      expect(JSON.stringify(prepared.messages)).toContain(image);
+      expect(mockDescribeImage).not.toHaveBeenCalled();
+      expect(state.finalMessages).toEqual([message]);
     },
   );
 
