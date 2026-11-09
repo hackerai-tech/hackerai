@@ -73,8 +73,6 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
 import { createWaitForUserTool } from "@/lib/ai/tools/wait-for-user";
-import { AGENT_WAIT_FOR_USER_FLAG } from "@/lib/experiments/agent-wait-for-user";
-import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
 
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -3079,10 +3077,6 @@ export const agentLongTask = task({
                 stopSignal.abort("post_wait_authorization_denied"),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
-            const waitForUserEnabled = await getPostHogFeatureFlagForUser(
-              AGENT_WAIT_FOR_USER_FLAG,
-              userId,
-            );
             const {
               cloudNetworkPrompt,
               getCaptchaReceiptPrompt,
@@ -3141,22 +3135,20 @@ export const agentLongTask = task({
                 onBrowserOwnershipLost: () =>
                   stopSignal.abort("browser_ownership_lost"),
                 additionalTools: (toolContext) => ({
-                  ...(waitForUserEnabled && {
-                    wait_for_user: createWaitForUserTool(toolContext, {
-                      beforeSuspend:
-                        subscription === "free"
-                          ? releaseFreeRunLockOnce
-                          : undefined,
-                      pauseActiveTime: runtimeBudget.pause,
-                      resumeActiveTime: runtimeBudget.resume,
-                      abortRun: (outcome) =>
-                        stopSignal.abort(
-                          outcome === "timed_out"
-                            ? "wait_for_user_timeout"
-                            : "wait_for_user",
-                        ),
-                      revalidateAfterSuspend: revalidateAfterUserWait,
-                    }),
+                  wait_for_user: createWaitForUserTool(toolContext, {
+                    beforeSuspend:
+                      subscription === "free"
+                        ? releaseFreeRunLockOnce
+                        : undefined,
+                    pauseActiveTime: runtimeBudget.pause,
+                    resumeActiveTime: runtimeBudget.resume,
+                    abortRun: (outcome) =>
+                      stopSignal.abort(
+                        outcome === "timed_out"
+                          ? "wait_for_user_timeout"
+                          : "wait_for_user",
+                      ),
+                    revalidateAfterSuspend: revalidateAfterUserWait,
                   }),
                   ...(subagentsEnabled
                     ? {
