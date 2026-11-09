@@ -118,7 +118,11 @@ it("delivers an hCaptcha response to its own field without exposing it in result
       "private-h-response",
     ),
   );
-  expect(result).toEqual({ status: "token_delivered", websiteAccepted: false });
+  expect(result).toEqual({
+    status: "token_delivered",
+    websiteAccepted: false,
+    responseRetained: true,
+  });
   expect(
     (document.querySelector("textarea") as HTMLTextAreaElement).value,
   ).toBe("private-h-response");

@@ -19,6 +19,10 @@ import {
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
 import { parseAgentAutoReviewLifecycle } from "@/types";
+import {
+  getCaptchaActivity,
+  getCaptchaStartedAt,
+} from "@/app/components/tools/captcha-tool-utils";
 
 interface MessagePart {
   type: string;
@@ -62,6 +66,7 @@ const getWebSearchQuery = (input: unknown): string => {
  */
 export function extractSidebarContentFromMessage(
   message: Message,
+  isRunActive = false,
 ): SidebarContent[] {
   const contentList: SidebarContent[] = [];
   if (message.role !== "assistant" || !message.parts) return contentList;
@@ -256,6 +261,19 @@ export function extractSidebarContentFromMessage(
           ? rawSnapshot
           : streamingOutput || rawSnapshot || undefined
         : undefined;
+      const captcha = getCaptchaActivity({
+        command,
+        output: part.output,
+        executionPhase,
+        hasResult: part.output !== undefined,
+        isExecuting: executionPhase === "executing",
+        isRunActive,
+        startedAt: getCaptchaStartedAt(
+          message.parts!,
+          part.toolCallId || "",
+          command,
+        ),
+      });
 
       contentList.push({
         command,
@@ -266,6 +284,7 @@ export function extractSidebarContentFromMessage(
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
+        ...(captcha ? { captcha } : {}),
         ...(isInteractive
           ? {
               shellAction: action,
@@ -987,8 +1006,14 @@ export function extractSidebarContentFromMessage(
 
 export function extractAllSidebarContent(
   messages: Message[],
+  isRunActive = false,
 ): SidebarContent[] {
-  return messages.flatMap(extractSidebarContentFromMessage);
+  return messages.flatMap((message, index) =>
+    extractSidebarContentFromMessage(
+      message,
+      isRunActive && index === messages.length - 1,
+    ),
+  );
 }
 
 const getToolCallId = (content: SidebarContent): string | undefined =>

@@ -1,4 +1,5 @@
 import {
+  extractAllSidebarContent,
   extractSidebarContentFromMessage,
   isSameSidebarContent,
   reconcileSidebarContentAfterRegeneration,
@@ -6,6 +7,63 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
+  it("keeps CAPTCHA progress when resolving the live sidebar and freezes recorded timing after reload", () => {
+    const tool = {
+      type: "tool-run_terminal_cmd",
+      toolCallId: "captcha-1",
+      state: "input-available",
+      input: { command: "hackerai-captcha solve --session owned" },
+    };
+    const startedAt = Date.parse("2026-11-08T12:00:00Z");
+    const message = {
+      role: "assistant",
+      parts: [
+        tool,
+        {
+          type: "data-terminal",
+          data: {
+            toolCallId: tool.toolCallId,
+            terminal: "",
+            captchaStartedAt: startedAt,
+          },
+        },
+      ],
+    };
+    const [live] = extractSidebarContentFromMessage(message, true);
+    expect(live).toMatchObject({ captcha: { state: "solving", startedAt } });
+    const [stopped] = extractSidebarContentFromMessage(message, false);
+    expect(stopped).toMatchObject({ captcha: { state: "stopped" } });
+    const [historical] = extractAllSidebarContent(
+      [message, { role: "assistant", parts: [] }],
+      true,
+    );
+    expect(historical).toMatchObject({ captcha: { state: "stopped" } });
+    const [saved] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          ...tool,
+          state: "output-available",
+          output: {
+            result: {
+              browserChallenge: { status: "token_delivered" },
+              callTiming: {
+                startedAt: "2026-11-08T12:00:00Z",
+                elapsedMs: 27000,
+              },
+            },
+          },
+        },
+      ],
+    });
+    expect(saved).toMatchObject({
+      captcha: {
+        state: "response_delivered",
+        startedAt,
+        elapsedMs: 27000,
+      },
+    });
+  });
   it.each([
     [
       "tool-run_terminal_cmd",

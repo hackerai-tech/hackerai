@@ -1,5 +1,6 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
+import { parseCaptchaRuntimeCommand } from "../captcha/runtime-command";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
@@ -1610,10 +1611,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         const execute = async () => {
           try {
             if (/^\s*hackerai-captcha\b/.test(input.command)) {
-              const request =
-                /^hackerai-captcha (solve|release) --session ([A-Za-z0-9_-]{1,80})$/.exec(
-                  input.command.trim(),
-                );
+              const request = parseCaptchaRuntimeCommand(input.command);
               if (
                 !request ||
                 input.is_background ||
@@ -1627,12 +1625,25 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
                   },
                 };
+              if (request.action === "solve") {
+                // UI-only metadata: elapsed time, no target, challenge data or
+                // provider response. Historical results use callTiming below.
+                writer.write({
+                  type: "data-terminal",
+                  id: `captcha-start-${options.toolCallId}`,
+                  data: {
+                    terminal: "",
+                    toolCallId: options.toolCallId,
+                    captchaStartedAt: Date.now(),
+                  },
+                });
+              }
               return {
                 result: {
                   exitCode: 0,
                   browserChallenge: await context.requestBrowserChallenge(
-                    request[1] as "solve" | "release",
-                    request[2],
+                    request.action,
+                    request.sessionName,
                     options.abortSignal,
                   ),
                 },

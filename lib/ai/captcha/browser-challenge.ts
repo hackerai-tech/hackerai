@@ -54,6 +54,7 @@ export function createBrowserChallengeHandler(
   let active = false;
   let guidanceSent = false;
   let capabilityOffered = false;
+  let captureRecoveryOffered = false;
   let providerAttemptStarted = false;
   let providerTaskCreated = false;
   let knownCostDollars: number | undefined;
@@ -223,6 +224,12 @@ export function createBrowserChallengeHandler(
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
         interstitial: observation.interstitial,
+        ...(environment === "PREVIEW" &&
+          observation.interstitial &&
+          observation.cloudflareCaptureState && {
+            capture_state: observation.cloudflareCaptureState,
+            script_load_observed: observation.cloudflareScriptLoaded === true,
+          }),
       });
       if (!process.env.TWOCAPTCHA_API_KEY && action === "inspect")
         return respond({
@@ -248,6 +255,29 @@ export function createBrowserChallengeHandler(
       if (solveStarted)
         return respond({ status: "handoff_required", reason: "attempt_limit" });
       if (
+        environment === "PREVIEW" &&
+        observation.interstitial &&
+        pending.length === 0 &&
+        observation.cloudflareCaptureState !== "captured"
+      ) {
+        const state = observation.cloudflareCaptureState;
+        const recoverable =
+          state === "api_not_ready" || state === "render_not_captured";
+        const offerRecovery = recoverable && !captureRecoveryOffered;
+        if (offerRecovery) captureRecoveryOffered = true;
+        return respond({
+          status: offerRecovery ? "capture_incomplete" : "handoff_required",
+          reason: "managed_parameters_not_captured",
+          captureState: state ?? "unknown",
+          providerTaskCreated: false,
+          providerCostUSD: 0,
+          recoveryAvailable: offerRecovery,
+          message: offerRecovery
+            ? "Cloudflare verification was detected, but the required solver parameters were not captured. This is not a provider rejection. Only if no form or account action has been submitted and this is still the read-only verification interstitial, reload this same page once in this owned session and take a fresh standalone snapshot. Otherwise stop for manual verification. Do not request a paid solve without solve_available. No further capture reloads are offered in this run."
+            : "Cloudflare verification was detected, but no solver-ready widget was captured. Do not classify this as a 2Captcha failure or invent challenge parameters. Automatic recovery is unavailable or has already been offered; stop for manual verification. No paid task was created.",
+        });
+      }
+      if (
         (observation.interstitial && !widget?.managed) ||
         (widget?.managed && environment !== "PREVIEW") ||
         pending.length !== 1 ||
@@ -263,6 +293,16 @@ export function createBrowserChallengeHandler(
         return respond({
           status: "handoff_required",
           reason: "unsupported_transport",
+        });
+      // Canceling hCaptcha's visual challenge can clear response fields. Do it
+      // before spending/applying a response, including when the overlay opened
+      // after the earlier offer. A fresh snapshot must revalidate the widget.
+      if (widget.kind === "hcaptcha" && observation.hcaptchaChallengeOpen)
+        return respond({
+          status: "preparation_required",
+          providerTaskCreated: false,
+          providerCostUSD: 0,
+          message: `Close the open hCaptcha visual challenge BEFORE requesting a solve: press Escape once in this same browser session${target ? ` with agent-browser --session ${target.sessionName} press Escape` : ""}, then take a fresh standalone snapshot. No paid task has been created. Do not press Escape, reset, or reopen the widget after a response is delivered.`,
         });
       const key = process.env.TWOCAPTCHA_API_KEY;
       if (!key)
@@ -335,7 +375,10 @@ export function createBrowserChallengeHandler(
       if (widget.managed && !solution.userAgent)
         throw new Error("Missing managed challenge user agent.");
       const delivered = z
-        .object({ status: z.enum(["page_changed", "token_delivered"]) })
+        .object({
+          status: z.enum(["page_changed", "token_delivered"]),
+          responseRetained: z.boolean().optional(),
+        })
         .parse(
           widget.managed
             ? await browser.deliverCloudflare!(
@@ -356,6 +399,15 @@ export function createBrowserChallengeHandler(
       });
       managedDelivered = delivered.status === "token_delivered";
       if (managedDelivered) deliveryOutcome = "delivered";
+      if (delivered.responseRetained === false)
+        return respond({
+          status: "handoff_required",
+          reason: "response_not_retained",
+          responseDelivered: true,
+          websiteAccepted: false,
+          message:
+            "The response was delivered, but the page no longer retains it. A callback may have submitted or reset the form. Check the current website result without another paid solve, widget reset, or repeated submission. If acceptance is uncertain, stop for manual verification.",
+        });
       if (widget.managed && managedDelivered) {
         managedGateOutcome = "unknown";
         // Navigation can destroy the first evaluation. Retry only this owned,
@@ -407,6 +459,9 @@ export function createBrowserChallengeHandler(
           ? {
               status: "token_delivered",
               websiteAccepted: false,
+              ...(delivered.responseRetained !== undefined && {
+                responseRetained: delivered.responseRetained,
+              }),
               ...(widget.managed && {
                 managedGateCleared:
                   managedGateOutcome === "unknown"
