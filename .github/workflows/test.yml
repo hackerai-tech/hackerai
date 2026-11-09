@@ -39,6 +39,9 @@ jobs:
       - name: Test pip bootstrap integrity
         run: python3 -B -m unittest discover -s docker -p 'test_pip_bootstrap.py' -v
 
+      - name: Test benchmark controller lifecycle fences
+        run: python3 -B -m unittest discover -s scripts/benchmarks/controller -p 'test_*.py' -v
+
       - name: Test sandbox decoder package integrity
         run: python3 -B -m unittest discover -s docker -p 'test_brotli.py' -v
 
