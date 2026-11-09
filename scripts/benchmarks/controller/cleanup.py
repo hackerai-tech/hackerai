@@ -149,9 +149,12 @@ def finalize_job(root, state, cleanup=None):
     """Always retain a terminal cleanup outcome, including observation failures."""
     from .diagnostics import exception_record
     root = Path(root)
+    interrupt = None
     try:
         state.update((cleanup or cleanup_job)(root))
     except BaseException as error:
+        if not isinstance(error, Exception):
+            interrupt = error
         state.update(status='native_cleanup_unconfirmed', cleanupVerified=False,
                      cleanupFailure=exception_record(error))
         if isinstance(error, DockerObservationError):
@@ -165,6 +168,8 @@ def finalize_job(root, state, cleanup=None):
         state['productRequestIntentAbsent'] = not (
             root / 'control/mailbox/request-intent.json').exists()
         persist_state(root / 'native-state.json', state)
+    if interrupt is not None:
+        raise interrupt
     return state
 
 
@@ -212,21 +217,21 @@ def claim_for_state(root, state, payload):
 
 
 def exact_process_alive(pid, start_ticks, proc=Path('/proc')):
-    if type(pid) is not int or pid <= 1 or not str(start_ticks).isdecimal() or int(start_ticks) <= 0:
+    if type(pid) is not int or pid <= 1 or not re.fullmatch('[0-9]+', str(start_ticks)) or int(start_ticks) <= 0:
         raise DockerObservationError('process_identity_invalid')
     # ENOENT for a target PID is meaningful only inside a readable procfs.
     # Never interpret an unavailable mount as proof that every owner exited.
     try:
         probe = (proc / 'self/stat').read_text().rsplit(')', 1)[1].split()
-        if len(probe) < 20 or not probe[19].isdecimal():
+        if len(probe) < 20 or not re.fullmatch('[0-9]+', probe[19]):
             raise ValueError('Invalid procfs')
     except (OSError, ValueError, IndexError):
         raise DockerObservationError('process_observation_unavailable')
     try:
         fields = (proc / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
-        if len(fields) < 20 or not fields[19].isdecimal():
+        if len(fields) < 20 or not re.fullmatch('[0-9]+', fields[19]):
             raise DockerObservationError('process_stat_invalid')
-        return fields[19] == str(start_ticks) and fields[0] != 'Z'
+        return int(fields[19]) == int(start_ticks) and fields[0] not in {'Z', 'X'}
     except (FileNotFoundError, ProcessLookupError):
         return False
 

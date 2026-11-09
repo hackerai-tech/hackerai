@@ -377,6 +377,25 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse((self.root/'independent-cleanup-intent.json').exists())
         self.assertEqual(json.loads((self.root/'native-state.json').read_text())['status'], 'native_cleanup_unconfirmed')
 
+    def test_operator_interrupts_are_reraised_after_saving_unconfirmed_cleanup(self):
+        for interrupt in [KeyboardInterrupt(), SystemExit(3)]:
+            with self.subTest(interrupt=type(interrupt).__name__):
+                def stop(root):
+                    raise interrupt
+                with self.assertRaises(type(interrupt)):
+                    finalize_job(self.root, {'status':'harbor_terminal'}, cleanup=stop)
+                saved=json.loads((self.root/'native-state.json').read_text())
+                self.assertFalse(saved['cleanupVerified'])
+                self.assertEqual(saved['cleanupFailure']['errorClass'],type(interrupt).__name__)
+
+    def test_start_tick_formatting_cannot_prove_a_live_process_exited(self):
+        _,proc=self.receipt_fixture()
+        (proc/'101').mkdir()
+        (proc/'101/stat').write_text('101 (owner) '+' '.join(['S',*(['0']*18),'111']))
+        self.assertTrue(exact_process_alive(101,'000111',proc=proc))
+        with self.assertRaises(DockerObservationError):
+            exact_process_alive(101,'\u0661\u0661\u0661',proc=proc)
+
 
 if __name__ == '__main__':
     unittest.main()
