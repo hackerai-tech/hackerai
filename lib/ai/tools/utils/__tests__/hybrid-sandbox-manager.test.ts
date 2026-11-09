@@ -10,6 +10,7 @@ jest.mock("../cloud-workspace-guard", () => ({
   readCloudWorkspaceState: jest.fn(async () => null),
 }));
 import { readCloudWorkspaceState } from "../cloud-workspace-guard";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {
@@ -782,6 +783,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
         "Git Bash when available, otherwise cmd.exe /C",
       );
       expect(context).toContain("echo $BASH_VERSION");
+      expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     },
   );
 
@@ -810,6 +812,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
     expect(context).toContain("`npm install -g agent-browser`");
     expect(context).not.toContain("command -v agent-browser");
     expect(context).not.toContain("where agent-browser");
+    expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     await expect(cloud.getSandboxContextForPrompt()).resolves.toBeNull();
   });
 });

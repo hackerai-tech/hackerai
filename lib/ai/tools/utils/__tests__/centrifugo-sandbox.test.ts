@@ -1,5 +1,6 @@
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { phLogger } from "@/lib/posthog/server";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
  *
@@ -6551,6 +6552,7 @@ describe("CentrifugoSandbox", () => {
         "command -v agent-browser && agent-browser --version",
       );
       expect(context).toContain("`npm install -g agent-browser`");
+      expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     });
 
     it("uses a cmd-compatible browser probe on Windows", () => {
@@ -6572,6 +6574,7 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain(
         "Git Bash when available, otherwise cmd.exe /C",
       );
+      expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
       expect(context).not.toContain("Commands are invoked via cmd.exe /C");
     });
 
