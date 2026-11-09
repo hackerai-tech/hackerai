@@ -32,6 +32,7 @@ import {
   SandboxError,
   TimeoutError,
   classifyE2BError,
+  getE2BErrorKind,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
@@ -81,6 +82,11 @@ export class E2BAcquisitionError extends Error {
       e2b_error_category: ReturnType<typeof classifyE2BError>;
       e2b_error_code?: string;
       e2b_http_status?: number;
+      e2b_workspace_identity_diagnostic_version?: 1;
+      e2b_workspace_identity_operation?: "get_info" | "validate";
+      e2b_workspace_identity_error_kind?: ReturnType<typeof getE2BErrorKind>;
+      e2b_workspace_identity_requested_target_fingerprint?: string | null;
+      e2b_workspace_identity_requested_cluster?: E2BCluster | null;
     },
   ) {
     super(message);
@@ -90,6 +96,30 @@ export class E2BAcquisitionError extends Error {
 
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
+
+/** Preserve the existing cluster/target hash domain for cross-phase correlation.
+ * Invalid inputs or hashing failures yield null; matching hashes do not validate identity.
+ */
+function fingerprintE2BTarget(
+  cluster: E2BCluster | null,
+  sandboxId: string | null | undefined,
+): string | null {
+  if (
+    !cluster ||
+    typeof sandboxId !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,127}$/i.test(sandboxId)
+  )
+    return null;
+  try {
+    // Preserve the existing connect namespace so requested and validated
+    // observations can be correlated; equality alone does not validate identity.
+    return createHash("sha256")
+      .update(`e2b-connect:v1:${cluster}:${sandboxId}`)
+      .digest("hex");
+  } catch {
+    return null;
+  }
+}
 
 // Used to prefer a compatible workspace; version changes never authorize deletion.
 const SANDBOX_VERSION = CURRENT_E2B_SANDBOX_VERSION;
@@ -143,6 +173,8 @@ export const ensureSandboxConnection = async (
   let connectRequestTimeoutMs: number | null = null;
   let connectSandboxId: string | null = null;
   let connectCluster: E2BCluster | null = null;
+  let identityOperation: "get_info" | "validate" | undefined;
+  let identityRequestedCluster: E2BCluster | null = null;
   const createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -175,11 +207,14 @@ export const ensureSandboxConnection = async (
       // discovery choose an older copy or create an empty replacement.
       phase = "connect";
       options.reportStage?.("workspace_identity");
+      identityOperation = "get_info";
+      identityRequestedCluster = createCluster.cluster;
       const info = await Sandbox.getInfo(options.destinationId, {
         ...createCluster.connectionOptions,
         ...requestOptions,
         requestTimeoutMs: 10_000,
       });
+      identityOperation = "validate";
       if (
         info.sandboxId !== options.destinationId ||
         !["running", "paused"].includes(info.state) ||
@@ -194,6 +229,7 @@ export const ensureSandboxConnection = async (
           ))
       )
         throw new Error("Pinned E2B workspace identity mismatch");
+      identityOperation = undefined;
       if (
         info.state === "paused" &&
         info.metadata?.template &&
@@ -497,6 +533,16 @@ export const ensureSandboxConnection = async (
     const diagnostics = {
       e2b_phase: phase,
       e2b_error_category: classifyE2BError(error),
+      ...(identityOperation && {
+        e2b_workspace_identity_diagnostic_version: 1 as const,
+        e2b_workspace_identity_operation: identityOperation,
+        e2b_workspace_identity_error_kind: getE2BErrorKind(error),
+        // This is the requested target before identity validation, never a
+        // verified connection. Keep the existing connect fields unchanged.
+        e2b_workspace_identity_requested_target_fingerprint:
+          fingerprintE2BTarget(identityRequestedCluster, options.destinationId),
+        e2b_workspace_identity_requested_cluster: identityRequestedCluster,
+      }),
       ...(typeof candidate.code === "string" &&
       SAFE_E2B_CODES.has(candidate.code)
         ? { e2b_error_code: candidate.code }
@@ -508,22 +554,10 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
-    let connectTargetFingerprint: string | null = null;
-    if (
-      phase === "connect" &&
-      connectCluster &&
-      typeof connectSandboxId === "string" &&
-      /^[a-z0-9][a-z0-9-]{0,127}$/i.test(connectSandboxId)
-    ) {
-      try {
-        // Correlate provider-selected identities without logging their raw IDs.
-        connectTargetFingerprint = createHash("sha256")
-          .update(`e2b-connect:v1:${connectCluster}:${connectSandboxId}`)
-          .digest("hex");
-      } catch {
-        // Diagnostic enrichment must not replace the acquisition failure.
-      }
-    }
+    const connectTargetFingerprint =
+      phase === "connect"
+        ? fingerprintE2BTarget(connectCluster, connectSandboxId)
+        : null;
     console.error(
       JSON.stringify({
         timestamp: new Date().toISOString(),
