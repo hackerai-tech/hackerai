@@ -1,0 +1,198 @@
+name: Desktop PR Builds
+
+# Always report the gate, including for PRs that do not affect Desktop.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-pr-builds-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.paths.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect Desktop build changes
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo 'desktop=true' >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            packages/desktop ':(glob)packages/*/package.json' \
+            package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc \
+            '.github/workflows/desktop-*.yml' \
+            .github/scripts/prepare-desktop-release.sh \
+            '.github/scripts/*universal-dmg.sh' \
+            .github/scripts/redact-notary-output.py \
+            .github/scripts/prefer-ubuntu-apt-mirror.sh > changed-desktop-paths.txt
+            if [[ -s changed-desktop-paths.txt ]]; then
+              echo 'desktop=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'desktop=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS-arm64
+            bundles: app,dmg
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS-x64
+            bundles: app,dmg
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows-x64
+            bundles: nsis,msi
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: Linux-x64
+            bundles: deb,appimage
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux-arm64
+            bundles: deb,appimage
+    runs-on: ${{ matrix.platform }}
+    name: Package (${{ matrix.name }})
+    env:
+      APP_URL: https://hackerai.co
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+      - name: Install Rust stable (Linux, Windows)
+        if: matrix.platform != 'macos-latest'
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          cache: false
+      - name: Install Rust stable (macOS - pinned rustup-init)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          RUSTUP_VERSION: 1.29.0
+          RUSTUP_INIT_SHA256_AARCH64_APPLE_DARWIN: aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1
+          RUSTUP_INIT_SHA256_X86_64_APPLE_DARWIN: 33cf85df9142bc6d29cbc62fa5ca1d4c29622cddb55213a4c1a43c457fb9b2d7
+        run: |
+          set -euo pipefail
+
+          # The standard rust-toolchain actions short-circuit on
+          # `command -v rustup`, but the GitHub-hosted macOS runner ships a
+          # `rustup-init` shim aliased as `rustup`/`cargo`, fooling that
+          # heuristic. The action then skips installing the real toolchain
+          # and `cargo metadata` invokes the shim, which doesn't know
+          # `metadata` and dies with rustup-init's usage screen. Download an
+          # archived rustup-init binary and verify its pinned checksum instead
+          # of executing a live shell installer.
+          case "$(uname -m)" in
+            arm64)
+              rustup_host="aarch64-apple-darwin"
+              rustup_sha256="$RUSTUP_INIT_SHA256_AARCH64_APPLE_DARWIN"
+              ;;
+            x86_64)
+              rustup_host="x86_64-apple-darwin"
+              rustup_sha256="$RUSTUP_INIT_SHA256_X86_64_APPLE_DARWIN"
+              ;;
+            *)
+              echo "::error::Unsupported macOS runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          rustup_init="$RUNNER_TEMP/rustup-init"
+          rustup_url="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rustup_host}/rustup-init"
+
+          curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -fsSLo "$rustup_init" "$rustup_url"
+          printf '%s  %s\n' "$rustup_sha256" "$rustup_init" | shasum -a 256 -c -
+          chmod +x "$rustup_init"
+          "$rustup_init" -y --default-host "$rustup_host" --default-toolchain stable --profile minimal --no-modify-path
+
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" target add "${{ matrix.target }}"
+          "$HOME/.cargo/bin/cargo" --version
+          "$HOME/.cargo/bin/rustc" --version
+
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+          key: desktop-pr-${{ matrix.target }}
+      - name: Install Linux packaging dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          bash .github/scripts/prefer-ubuntu-apt-mirror.sh
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev xdg-utils patchelf
+      - name: Install Desktop dependencies
+        working-directory: packages/desktop
+        run: pnpm install --frozen-lockfile
+      # Build the production binary and installers without release credentials.
+      # These artifacts are for build validation, never updater publication.
+      - name: Compile and package HackerAI Desktop
+        working-directory: packages/desktop
+        shell: bash
+        run: >-
+          pnpm tauri build --ci --target '${{ matrix.target }}'
+          --bundles '${{ matrix.bundles }}'
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          -- --locked
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-pr-${{ matrix.name }}
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 7
+
+  gate:
+    name: Desktop PR builds
+    if: always()
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all applicable Desktop packages
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DESKTOP_CHANGED: ${{ needs.changes.outputs.desktop }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo 'Desktop change detection failed.' >&2
+            exit 1
+          fi
+          if [ "$DESKTOP_CHANGED" = true ] && [ "$BUILD_RESULT" != success ]; then
+            echo "Desktop packaging failed: $BUILD_RESULT" >&2
+            exit 1
+          fi
+          echo 'Desktop build requirements satisfied.'
