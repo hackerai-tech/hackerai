@@ -33,10 +33,12 @@ export function getTerminalExecutionPhase({
   toolState,
   autoReviewStatus,
   errorText,
+  isRunActive,
 }: {
   toolState?: string;
   autoReviewStatus?: AgentAutoReviewLifecycleStatus;
   errorText?: string;
+  isRunActive?: boolean;
 }): TerminalExecutionPhase | undefined {
   if (toolState === "output-error") {
     if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
@@ -44,6 +46,8 @@ export function getTerminalExecutionPhase({
     return isUserStoppedToolError(errorText) ? "stopped" : "failed";
   }
   if (toolState === "output-available") return "completed";
+  if (toolState === "input-available" && isRunActive === false)
+    return "interrupted";
   if (
     toolState === "approval-requested" ||
     autoReviewStatus === "needs_approval"
@@ -516,18 +520,20 @@ export function computeShellTerminalBlock(
   const blockAction = (isActive: boolean) =>
     captcha
       ? getCaptchaActivityLabel(captcha.state)
-      : !isActive && errorText
-        ? getTerminalFailureAction(errorText, shellAction)
-        : useBriefOnly
-          ? briefText
-          : getShellActionLabel({
-              isShellTool,
-              action: shellAction,
-              isActive,
-              interactive: !isShellTool ? legacyInteractive : undefined,
-              isBackground: !isShellTool ? legacyIsBackground : undefined,
-              exitCode: hasResult ? exitCode : undefined,
-            });
+      : executionPhase === "interrupted"
+        ? "Command interrupted"
+        : !isActive && errorText
+          ? getTerminalFailureAction(errorText, shellAction)
+          : useBriefOnly
+            ? briefText
+            : getShellActionLabel({
+                isShellTool,
+                action: shellAction,
+                isActive,
+                interactive: !isShellTool ? legacyInteractive : undefined,
+                isBackground: !isShellTool ? legacyIsBackground : undefined,
+                exitCode: hasResult ? exitCode : undefined,
+              });
   const blockTarget = captcha || useBriefOnly ? undefined : displayTarget;
 
   // sessionSnapshot is xterm-headless-cleaned — prefer it when present; fall

@@ -114,10 +114,12 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     autoReviewLifecycleDisplay,
   );
 
+  const isRunActive = status === "streaming" || status === "submitted";
   const executionPhase = getTerminalExecutionPhase({
     toolState: state,
     autoReviewStatus: streamedAutoReviewLifecycle?.status,
     errorText,
+    isRunActive,
   });
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
@@ -226,10 +228,15 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           key={toolCallId}
           icon={<Terminal />}
           action={
-            autoReviewDisplay?.action ?? blockAction(status === "streaming")
+            executionPhase === "interrupted"
+              ? "Command interrupted"
+              : (autoReviewDisplay?.action ?? blockAction(isRunActive))
           }
           target={blockTarget}
-          isShimmer={autoReviewDisplay?.isShimmer ?? status === "streaming"}
+          isShimmer={
+            executionPhase !== "interrupted" &&
+            (autoReviewDisplay?.isShimmer ?? isRunActive)
+          }
           isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}

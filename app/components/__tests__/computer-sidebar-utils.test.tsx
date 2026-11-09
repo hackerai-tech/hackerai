@@ -17,6 +17,23 @@ describe("terminal Computer sidebar labels", () => {
     toolCallId: "call-1",
   };
 
+  it("keeps a live command without a final result interrupted when its run ends", () => {
+    const executionPhase = getTerminalExecutionPhase({
+      toolState: "input-available",
+      isRunActive: false,
+    });
+    const computed = computeShellTerminalBlock({
+      isShellTool: false,
+      legacyCommand: "sleep 60",
+      isExecuting: false,
+      hasResult: false,
+      toolCallId: "lost-live",
+      executionPhase,
+    });
+    expect(computed.blockAction(false)).toBe("Command interrupted");
+    expect(getActionText(computed.sidebarContent!)).toBe("Command interrupted");
+  });
+
   it.each(["tool-run_terminal_cmd", "tool-shell"])(
     "keeps unknown outcomes labeled interrupted in %s live and after reload",
     (type) => {
