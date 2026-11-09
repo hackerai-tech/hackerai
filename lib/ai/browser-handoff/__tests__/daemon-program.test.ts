@@ -448,7 +448,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
   expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
   expect(JSON.parse(text)).toMatchObject({
     deadline: [1, "awaiting_response"],
-    history: [1, true, false],
+    h1: 1,
     open_idle: [1, "unparsed"],
     close_receipt: [
       1,
@@ -726,36 +726,51 @@ it.each([
   },
 );
 
-it("keeps the combined close/open diagnostic within512 bytes and censors cross-session order", () => {
-  const longest = {
-    ...receipt,
-    at: Date.now() + 60000,
-    exit: 999,
-    session_key: "a".repeat(64),
-  };
-  const d = daemon({
-    missingPath: directory + "/sockets/default.sock",
-    receipt: {
-      ...longest,
-      action: "version",
-      open_receipt_support: 1,
-      close_receipt_support: 1,
-    },
-    openReceipt: { ...longest, action: "open" },
-    closeReceipt: { ...longest, action: "close" },
-  });
-  const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
-  expect(JSON.parse(text).close_receipt).toEqual([
-    1,
-    "recorded",
-    "completed",
-    "other",
-    "other_session",
-    "unknown",
-    "unavailable",
-  ]);
-});
+it.each([false, true])(
+  "keeps maximal history/close/open context within512 bytes and censors cross-session order (%s)",
+  (selectedClose) => {
+    const longest = {
+      ...receipt,
+      at: Date.now() + 60000,
+      exit: 999,
+      session_key: "a".repeat(64),
+    };
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      missingCode: "ENOTDIR",
+      receipt: {
+        ...longest,
+        action: "version",
+        open_receipt_support: 1,
+        close_receipt_support: 1,
+        history: [1, true, false],
+      },
+      openReceipt: {
+        ...longest,
+        action: "open",
+        session_key: receipt.session_key,
+        idle_env_version: 1,
+        idle_env: "unparsed",
+      },
+      closeReceipt: {
+        ...longest,
+        action: "close",
+        session_key: selectedClose ? receipt.session_key : longest.session_key,
+      },
+    });
+    const text = d.output.mock.calls[0][0];
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+    expect(JSON.parse(text).close_receipt).toEqual([
+      1,
+      "recorded",
+      "completed",
+      "other",
+      selectedClose ? "selected_session" : "other_session",
+      "unknown",
+      selectedClose ? "same_time" : "unavailable",
+    ]);
+  },
+);
 
 it("attributes a completed close-all to the selected session without requiring its name to match", () => {
   const d = daemon({

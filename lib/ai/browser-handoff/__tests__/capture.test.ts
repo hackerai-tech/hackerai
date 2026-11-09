@@ -39,14 +39,14 @@ const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
 it.each([
   [undefined, false],
-  [[1, true, false], true],
-  [[1, false, false], true],
-  [[1, true, true], true],
-  [[2, true, false], false],
-  [[1, false, true], false],
-  [[1, "PRIVATE", false], false],
-  [[1, true, "PRIVATE"], false],
-  [[1, true, false, "PRIVATE"], false],
+  [1, true],
+  [0, true],
+  [3, true],
+  [4, false],
+  [2, false],
+  ["PRIVATE", false],
+  [true, false],
+  [[1, 1, "PRIVATE"], false],
 ])(
   "projects only bounded root-scoped wrapper completion history (%#)",
   async (history, valid) => {
@@ -55,7 +55,10 @@ it.each([
       new CommandExitError({
         exitCode: 2,
         stderr: "PRIVATE",
-        stdout: JSON.stringify({ diagnostic_reason: "socket_stat", history }),
+        stdout: JSON.stringify({
+          diagnostic_reason: "socket_stat",
+          h1: history,
+        }),
       }),
     );
     const observe = jest.fn();
@@ -74,8 +77,9 @@ it.each([
       expect(context).toMatchObject({
         capture_wrapper_history_version: 1,
         capture_wrapper_history_scope: "handoff_root",
-        capture_wrapper_other_cli_completed: (history as unknown[])[1],
-        capture_wrapper_option_prefix_completed: (history as unknown[])[2],
+        capture_wrapper_other_cli_completed: ((history as number) & 1) !== 0,
+        capture_wrapper_option_prefix_completed:
+          ((history as number) & 2) !== 0,
       });
     else expect(context).not.toHaveProperty("capture_wrapper_history_version");
     expect(JSON.stringify(context)).not.toContain("PRIVATE");

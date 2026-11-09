@@ -581,20 +581,14 @@ export async function captureBrowserFrame(
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
               }
-              const history = parsed?.history;
-              if (
-                Array.isArray(history) &&
-                history.length === 3 &&
-                history[0] === 1 &&
-                typeof history[1] === "boolean" &&
-                typeof history[2] === "boolean" &&
-                (!history[2] || history[1])
-              ) {
+              const history = parsed?.h1;
+              if (history === 0 || history === 1 || history === 3) {
                 precondition.capture_wrapper_history_version = 1;
                 precondition.capture_wrapper_history_scope = "handoff_root";
-                precondition.capture_wrapper_other_cli_completed = history[1];
+                precondition.capture_wrapper_other_cli_completed =
+                  (history & 1) !== 0;
                 precondition.capture_wrapper_option_prefix_completed =
-                  history[2];
+                  (history & 2) !== 0;
               }
               const openStatus = parsed?.open_receipt_status;
               const openPhase = parsed?.open_phase;
