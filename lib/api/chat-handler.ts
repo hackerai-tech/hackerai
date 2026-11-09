@@ -1298,7 +1298,7 @@ export const createChatHandler = () => {
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(
-                    selectedModel,
+                    maxGrokAssignment?.modelKey ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     {
@@ -1763,7 +1763,7 @@ export const createChatHandler = () => {
                   taskOutcomeSurvey?.expose?.();
                 if (maxModelTelemetry?.hasImageInputs) {
                   fallbackModel = getRetryFallbackModel(
-                    selectedModel,
+                    maxGrokAssignment?.modelKey ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     { hasImageInputs: true },

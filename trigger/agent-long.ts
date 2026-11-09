@@ -3536,7 +3536,7 @@ export const agentLongTask = task({
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(
-                    selectedModel,
+                    maxGrokAssignment?.modelKey ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     {
@@ -4180,7 +4180,7 @@ export const agentLongTask = task({
                   taskOutcomeSurvey?.expose?.();
                 if (maxModelTelemetry?.hasImageInputs) {
                   fallbackModel = getRetryFallbackModel(
-                    selectedModel,
+                    maxGrokAssignment?.modelKey ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     { hasImageInputs: true },
@@ -5540,7 +5540,9 @@ export const agentLongTask = task({
                                   }
                                   const finalRetryModel = nextContinuation
                                     ? getNextProviderDisconnectRetryModel({
-                                        originalModel: selectedModel,
+                                        originalModel:
+                                          maxGrokAssignment?.modelKey ??
+                                          selectedModel,
                                         failedModel: retryModel,
                                         completedRetryCount:
                                           providerRecoveryAttempts,
