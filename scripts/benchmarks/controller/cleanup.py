@@ -28,6 +28,7 @@ class DockerObservationError(RuntimeError):
 
 class Docker:
     def __init__(self, run=None):
+        """Use bounded daemon calls, or inject the same result contract in tests."""
         self.run = run or (lambda args: subprocess.run(
             ['docker', *args], capture_output=True, timeout=30))
 

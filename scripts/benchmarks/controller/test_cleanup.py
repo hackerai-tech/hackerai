@@ -66,6 +66,7 @@ class FakeDocker:
 
 class CleanupTests(unittest.TestCase):
     def setUp(self):
+        """Give each test an isolated job root, credentials, and shared inventory."""
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name) / ('a' * 32)
@@ -85,6 +86,7 @@ class CleanupTests(unittest.TestCase):
         (self.root / name).write_text(json.dumps(value))
 
     def test_other_job_disappearing_during_inspection_does_not_strand_cleanup(self):
+        """A concurrent foreign deletion must not prevent exact-owned cleanup."""
         def disappear(kind, identity, values):
             if identity == FOREIGN:
                 values.pop(identity, None)
@@ -121,6 +123,7 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue((self.root / 'control/signing-key').exists())
 
     def test_network_disappearance_uses_fresh_read_without_replaying_delete(self):
+        """Confirm a disappeared network with a new read, never a second delete."""
         def disappear(kind, identity, values):
             if kind == 'network':
                 values.pop(identity, None)
@@ -260,6 +263,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.fake.removals, [])
 
     def test_remove_failure_requires_fresh_absence_not_just_a_failed_mutation(self):
+        """Accept failed removal only when a new inventory independently proves absence."""
         original = self.fake.run
         def failed_delete(args):
             if args[:2] == ['rm', '-f']:
@@ -352,6 +356,7 @@ class CleanupTests(unittest.TestCase):
                 self.assertNotIn('NaN',path.read_text())
 
     def test_claim_fsync_failure_is_durable_unconfirmed_and_never_mutates_resources(self):
+        """A failed durable claim preserves evidence and consumes no cleanup authority."""
         receipt, proc = self.receipt_fixture()
         original=os.fsync
         count=0
