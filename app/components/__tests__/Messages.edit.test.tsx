@@ -1072,3 +1072,42 @@ test("reports a failed local-loss retry without submitting a new request", async
   expect(onContinue).toHaveBeenCalledTimes(1);
   expect(onRetry).not.toHaveBeenCalled();
 });
+
+test("explains a blocked retry and forwards the allowance after reconnecting", async () => {
+  const onContinue = jest.fn();
+  const toastError = jest.spyOn(toast, "error");
+  const props = {
+    chatId: "retry-after-reconnect",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onContinue,
+    onEditMessage: jest.fn(),
+    status: "ready" as const,
+    error: new Error("Monthly usage limit reached"),
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+    finishReason: "local-connection-lost",
+  };
+  const reason = "Reconnect your computer to resume.";
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} continueDisabledReason={reason} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  expect(onContinue).not.toHaveBeenCalled();
+  expect(props.onRetry).not.toHaveBeenCalled();
+  expect(toastError).toHaveBeenCalledWith(reason);
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  expect(onContinue).toHaveBeenCalledWith("auto", {
+    type: "paid_daily_free_allowance",
+  });
+});

@@ -1001,6 +1001,10 @@ export const Messages = ({
             onRetry={
               finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
                 ? async (options) => {
+                    if (continueDisabledReason) {
+                      toast.error(continueDisabledReason);
+                      return;
+                    }
                     try {
                       await onContinue?.(
                         options?.selectedModel,
