@@ -18,6 +18,8 @@ jest.mock("isbinaryfile", () => ({ isBinaryFile: jest.fn() }));
 import { createServer, request, type Server } from "node:http";
 import {
   mkdtemp,
+  mkdir,
+  chmod,
   readFile,
   writeFile,
   rm,
@@ -31,7 +33,11 @@ import { promisify } from "node:util";
 import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { phLogger } from "@/lib/posthog/server";
-import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
+import { SandboxFileNotFoundError } from "../utils/sandbox-file-errors";
+import {
+  uploadSandboxFileToConvex,
+  getSandboxUploadedFileUrl,
+} from "../utils/sandbox-file-uploader";
 import {
   LocalCommandRelayUnsubscribedError,
   LocalFileRequestError,
@@ -229,6 +235,60 @@ describe("generated artifact delivery over HTTP", () => {
     expect(runMutation).not.toHaveBeenCalled();
     expect(context.fileAccumulator.getAll()).toEqual([]);
   });
+
+  const permissionTest =
+    process.platform === "win32" || process.getuid?.() === 0 ? it.skip : it;
+  permissionTest(
+    "does not classify an inaccessible source as absent",
+    async () => {
+      const protectedDirectory = join(directory, "protected-source");
+      const source = join(protectedDirectory, "report.txt");
+      await mkdir(protectedDirectory);
+      await writeFile(source, "REQUESTED_PRIVATE_REPORT\n");
+      const sandbox = {
+        sandboxKind: "e2b",
+        commands: {
+          run: async (command: string) => {
+            try {
+              return {
+                ...(await exec("/bin/sh", ["-c", command])),
+                exitCode: 0,
+              };
+            } catch (error) {
+              const failure = error as {
+                stdout?: string;
+                stderr?: string;
+                code?: number;
+              };
+              return {
+                stdout: failure.stdout ?? "",
+                stderr: failure.stderr ?? "",
+                exitCode: failure.code ?? 1,
+              };
+            }
+          },
+        },
+      };
+      await chmod(protectedDirectory, 0);
+      try {
+        const error = await uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "test-user",
+          fullPath: source,
+        }).then(
+          () => undefined,
+          (error) => error,
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(SandboxFileNotFoundError);
+        expect(error.message).toMatch(/Permission denied/);
+        expect(uploadAttempts).toEqual([]);
+        expect(runMutation).not.toHaveBeenCalled();
+      } finally {
+        await chmod(protectedDirectory, 0o700);
+      }
+    },
+  );
 
   async function deliverAfterReconnect(
     useSymlink = false,

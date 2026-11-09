@@ -229,7 +229,7 @@ async function getSandboxFileSize(
   let statResult: SandboxCommandResult;
   try {
     statResult = await sandbox.commands.run(
-      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then printf 'File not found: %s\\n' ${quotedPath} >&2; exit 66; fi; stat -Lc%s ${quotedPath} 2>/dev/null || stat -Lf%z ${quotedPath}`,
+      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then stat_error=$(LC_ALL=C stat -L ${quotedPath} 2>&1); stat_code=$?; if [ "$stat_code" -ne 0 ]; then printf '%s\\n' "$stat_error" >&2; case "$stat_error" in *': No such file or directory') exit 66;; esac; exit "$stat_code"; fi; fi; stat -Lc%s ${quotedPath} 2>/dev/null || stat -Lf%z ${quotedPath}`,
       { ...commandOptions, displayName: "" } as typeof commandOptions & {
         displayName?: string;
       },
@@ -269,8 +269,8 @@ async function getSandboxFileSize(
     stat_stderr: statResult.stderr?.slice(0, 500),
     stat_stdout: statResult.stdout?.slice(0, 500),
   });
-  // The metadata command reserves 66 for its explicit missing-file check.
-  // Other stat failures do not prove that a different path is safe to use.
+  // The metadata command reserves 66 for stat's explicit ENOENT diagnostic.
+  // A false shell existence check alone can also mean an inaccessible parent.
   if (statResult.exitCode === 66) throw new SandboxFileNotFoundError(fullPath);
   throw formatFileSizeFailure(fullPath, statResult);
 }
