@@ -1137,6 +1137,84 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
   });
 
+  test("both terminal tools expose slow checkpoints as pending and observe a later saved receipt", async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const saving = new Promise<void>((resolve) => (release = resolve));
+    const fakeHandle = makeFakeHandle();
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "checkpoint-fixture",
+      files: {
+        write: jest.fn(async () => {
+          await saving;
+        }),
+        read: jest.fn(async () => {
+          throw new Error("missing");
+        }),
+        list: jest.fn(async () => []),
+        remove: jest.fn(),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    jest.mocked(fakeHandle.sendInput).mockImplementation(async () => {
+      fakeHandle.emit(new TextEncoder().encode("checkpoint fixture\n"));
+    });
+    try {
+      const running = runTool(createRunTerminalCmd(context), {
+        command: "bounded fixture",
+        interactive: true,
+        is_background: false,
+        timeout: 0.1,
+      });
+      await jest.advanceTimersByTimeAsync(3_000);
+      const first = (await running) as { result: Record<string, any> };
+      expect(first.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(first.result).not.toHaveProperty("recordPersistenceFailed");
+      const interact = createInteractTerminalSession(context).execute as any;
+      const viewing = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-view",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(2_100);
+      const pending = await viewing;
+      expect(pending.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(pending.result).not.toHaveProperty("recordPersistenceFailed");
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      const observingSaved = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-saved",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(100);
+      const saved = await observingSaved;
+      expect(saved.result).toMatchObject({
+        recordPersistenceStatus: "saved",
+        recordPath: expect.stringContaining(".json"),
+      });
+      expect(saved.result).not.toHaveProperty("recordPersistenceFailed");
+      // Already-returned tool messages are snapshots, not mutable session state.
+      expect(first.result.recordPersistenceStatus).toBe("pending");
+      expect(pending.result.recordPersistenceStatus).toBe("pending");
+    } finally {
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      await context.ptySessionManager.closeAll(context.chatId);
+      jest.useRealTimers();
+    }
+  });
+
   test("carries the real tool owner's run into a best-effort cloud no-space checkpoint", async () => {
     const fakeHandle = makeFakeHandle();
     const e2b = {
@@ -1163,12 +1241,18 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       fakeHandle.resolveExit(0);
     });
     try {
-      await runTool(createRunTerminalCmd(context), {
+      const failed = await runTool(createRunTerminalCmd(context), {
         command: "printf done",
         brief: "bounded fixture",
         interactive: true,
         is_background: false,
         timeout: 1,
+      });
+      expect(failed).toMatchObject({
+        result: {
+          recordPersistenceStatus: "failed",
+          recordPersistenceFailed: true,
+        },
       });
       const receipt = jest
         .mocked(phLogger.info)

@@ -1,5 +1,9 @@
 import { recordWalletDebit } from "./lib/settlementReceipts";
 import {
+  extraUsageBundlesEnabled,
+  getExtraUsageBundle,
+} from "../lib/billing/extra-usage-bundles";
+import {
   internalMutation,
   mutation,
   query,
@@ -135,6 +139,8 @@ async function upsertExtraUsagePurchase(
   args: {
     userId: string;
     amountDollars: number;
+    paidAmountDollars?: number;
+    bundleId?: string;
     stripeCheckoutSessionId: string;
     stripePaymentIntentId?: string;
     stripeInvoiceId?: string;
@@ -158,6 +164,9 @@ async function upsertExtraUsagePurchase(
   const next: Record<string, unknown> = {
     user_id: args.userId,
     amount_dollars: args.amountDollars,
+    paid_amount_dollars:
+      args.paidAmountDollars ?? existing?.paid_amount_dollars,
+    bundle_id: args.bundleId ?? existing?.bundle_id,
     stripe_checkout_session_id: args.stripeCheckoutSessionId,
     stripe_payment_intent_id:
       args.stripePaymentIntentId ?? existing?.stripe_payment_intent_id,
@@ -397,6 +406,8 @@ export const recordPurchaseCreated = internalMutation({
   args: {
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
   },
   returns: v.null(),
@@ -404,6 +415,8 @@ export const recordPurchaseCreated = internalMutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       status: "created",
       route: "checkout_action",
@@ -423,6 +436,8 @@ export const recordPurchasePaidSeen = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
@@ -439,6 +454,8 @@ export const recordPurchasePaidSeen = mutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -460,6 +477,8 @@ export const recordPurchaseFailed = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
@@ -477,6 +496,8 @@ export const recordPurchaseFailed = mutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -498,6 +519,8 @@ export const addCredits = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
     legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
     revenueSource: v.optional(
@@ -522,12 +545,34 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate amount
+    if (!Number.isFinite(args.amountDollars) || args.amountDollars <= 0) {
+      throw new Error("Invalid amount: must be a positive number");
+    }
+
+    if (args.bundleId !== undefined) {
+      const bundle = getExtraUsageBundle(args.bundleId);
+      if (
+        !args.stripeCheckoutSessionId ||
+        args.amountDollars !== bundle.creditDollars ||
+        args.paidAmountDollars !== bundle.paidDollars
+      )
+        throw new Error("Invalid bundle credit");
+    } else if (
+      args.paidAmountDollars !== undefined &&
+      args.paidAmountDollars !== args.amountDollars
+    ) {
+      throw new Error("Discount requires a bundle");
+    }
+
     const markPurchaseCredited = async (creditedAt?: number) => {
       if (!args.stripeCheckoutSessionId) return;
 
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -545,6 +590,8 @@ export const addCredits = mutation({
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -588,11 +635,6 @@ export const addCredits = mutation({
         }
         return { newBalance: 0, alreadyProcessed: true };
       }
-    }
-
-    // Validate amount
-    if (isNaN(args.amountDollars) || args.amountDollars <= 0) {
-      throw new Error("Invalid amount: must be a positive number");
     }
 
     const amountPoints = dollarsToPoints(args.amountDollars);
@@ -668,7 +710,7 @@ export const addCredits = mutation({
         args.idempotencyKey ??
         args.stripePaymentIntentId ??
         args.stripeCheckoutSessionId,
-      grossRevenueDollars: args.amountDollars,
+      grossRevenueDollars: args.paidAmountDollars ?? args.amountDollars,
       currency: "usd",
       attributionStrategy: "direct",
       stripeCustomerId: args.stripeCustomerId,
@@ -1557,5 +1599,15 @@ export const recordAutoReloadOutcome = internalMutation({
     });
 
     return { autoReloadDisabled: shouldDisable, consecutiveFailures: next };
+  },
+});
+
+/** Same server gate used for displaying offers and creating checkout sessions. */
+export const areBundlesAvailable = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    return !!identity && extraUsageBundlesEnabled(identity.subject);
   },
 });

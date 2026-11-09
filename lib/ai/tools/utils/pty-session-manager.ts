@@ -80,8 +80,23 @@ export interface PtySession {
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
   recordPath?: string;
-  recordPersistenceFailed?: boolean;
+  /** Latest checkpoint write; pending does not invalidate an earlier recordPath. */
+  recordPersistenceStatus?: "pending" | "saved" | "failed";
+  /** Compatibility flag: a bounded wait deadline is not a failed write. */
+  readonly recordPersistenceFailed?: boolean;
   outputPath?: string;
+}
+
+/** Share checkpoint state across both terminal tools without treating delay as loss. */
+export function terminalRecordPersistenceFields(session: PtySession) {
+  return {
+    ...(session.recordPersistenceStatus
+      ? { recordPersistenceStatus: session.recordPersistenceStatus }
+      : {}),
+    ...(session.recordPersistenceFailed
+      ? { recordPersistenceFailed: true }
+      : {}),
+  };
 }
 
 export interface CreateSessionOpts {
@@ -231,6 +246,9 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
+        get recordPersistenceFailed() {
+          return this.recordPersistenceStatus === "failed";
+        },
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,
@@ -476,8 +494,9 @@ export class PtySessionManager {
           )
             continue;
           record.updatedAt = Date.now();
+          session.recordPersistenceStatus = "pending";
           const path = await internal.executionRecord!.save(record);
-          session.recordPersistenceFailed = !path;
+          session.recordPersistenceStatus = path ? "saved" : "failed";
           if (!path)
             this.reportRecordCheckpointIssue(internal, "save_unacknowledged");
           if (path) {
@@ -489,7 +508,7 @@ export class PtySessionManager {
         }
       })()
         .catch(() => {
-          session.recordPersistenceFailed = true;
+          session.recordPersistenceStatus = "failed";
           this.reportRecordCheckpointIssue(internal, "checkpoint_threw");
         })
         .finally(async () => {
@@ -507,7 +526,6 @@ export class PtySessionManager {
       internal.recordQueue,
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          session.recordPersistenceFailed = true;
           this.reportRecordCheckpointIssue(internal, "wait_deadline");
           resolve();
         }, RECORD_CHECKPOINT_WAIT_MS);

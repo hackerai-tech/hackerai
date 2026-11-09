@@ -185,6 +185,8 @@ const buildPlaceholderFromParts = (
           `record ${String(result.recordPath).slice(0, 4096)}`,
         result.outputPath &&
           `output ${String(result.outputPath).slice(0, 4096)}`,
+        result.recordPersistenceStatus === "pending" &&
+          "record persistence pending",
         result.recordPersistenceFailed && "record persistence failed",
         result.resumable === false && "not resumable",
       ].filter(Boolean);

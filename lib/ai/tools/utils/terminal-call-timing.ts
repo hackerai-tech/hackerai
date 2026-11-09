@@ -49,6 +49,7 @@ export function withTerminalCallTiming<
           result?.timedOut === true ||
           result?.recovered === true ||
           result?.recordPersistenceFailed === true ||
+          result?.recordPersistenceStatus === "pending" ||
           result?.status === "unknown" ||
           !(
             exitCode === 0 ||
@@ -100,6 +101,12 @@ export function withTerminalCallTiming<
           result_error: Boolean(result?.error),
           recovered: result?.recovered === true,
           record_persistence_failed: result?.recordPersistenceFailed === true,
+          record_persistence_status:
+            result?.recordPersistenceStatus === "pending" ||
+            result?.recordPersistenceStatus === "saved" ||
+            result?.recordPersistenceStatus === "failed"
+              ? result.recordPersistenceStatus
+              : "unknown",
           timed_out: result?.timedOut === true,
           signal_aborted: options.abortSignal?.aborted ?? false,
           wait_expired: result?.waitExpired === true,

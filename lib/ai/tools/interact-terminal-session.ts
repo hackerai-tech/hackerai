@@ -1,7 +1,10 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { tool } from "ai";
 import type { AnySandbox, ToolContext } from "@/types";
-import type { PtySession } from "./utils/pty-session-manager";
+import {
+  terminalRecordPersistenceFields,
+  type PtySession,
+} from "./utils/pty-session-manager";
 import {
   cleanPtyForUI,
   getSessionSnapshots,
@@ -606,8 +609,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           );
           result.result.session = sessionId;
           if (session.recordPath) result.result.recordPath = session.recordPath;
-          if (session.recordPersistenceFailed)
-            result.result.recordPersistenceFailed = true;
+          Object.assign(
+            result.result,
+            terminalRecordPersistenceFields(session),
+          );
         }
         return result;
       }
