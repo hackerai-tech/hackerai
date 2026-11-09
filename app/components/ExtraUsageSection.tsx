@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import {
 } from "@/lib/analytics/paid-funnel";
 
 const ExtraUsageSection = () => {
+  const bundleSavingsId = useId();
   const bundlesEnabled = useQuery(api.extraUsage.areBundlesAvailable) === true;
   const bundleExposure = useRef(false);
   useEffect(() => {
@@ -316,14 +317,13 @@ const ExtraUsageSection = () => {
               }}
               disabled={isPurchasing}
               className="min-w-[5rem]"
-              aria-label="Buy credit"
-              tabIndex={0}
+              aria-describedby={bundlesEnabled ? bundleSavingsId : undefined}
             >
               Buy credit
             </Button>
           </div>
           {bundlesEnabled && (
-            <p className="text-sm text-muted-foreground">
+            <p id={bundleSavingsId} className="text-sm text-muted-foreground">
               Buy more credit, save up to 30%.
             </p>
           )}
