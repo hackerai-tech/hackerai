@@ -123,3 +123,53 @@ it("records unreadable rejection identity without reading private properties and
     JSON.stringify(getAttachmentDownloadFailureContext(wrapped)),
   ).not.toContain("private");
 });
+
+it("classifies the public PowerShell secure-channel failure without exporting private suffixes", () => {
+  const error = Object.freeze(new Error("private original"));
+  expect(
+    recordAttachmentDownloadFailure(error, {
+      ...input,
+      shell: "cmd",
+      httpClient: "powershell",
+      stderr:
+        "Invoke-WebRequest : The request was aborted: Could not create SSL/TLS secure channel. https://private.example/object?signature=secret",
+    }),
+  ).toBe(error);
+  expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+    attachment_download_stderr_signal: "tls",
+    attachment_download_reported_http_status: null,
+    attachment_download_stderr_truncated: false,
+  });
+  expect(
+    JSON.stringify(getAttachmentDownloadFailureContext(error)),
+  ).not.toMatch(/private|signature|secret|Invoke-WebRequest|secure channel/);
+});
+
+it("does not treat a generic PowerShell abort as TLS or scan past the existing budget", () => {
+  const classify = (stderr: string) =>
+    getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure(new Error(), {
+        ...input,
+        shell: "cmd",
+        httpClient: "powershell",
+        stderr,
+      }),
+    );
+  expect(classify("The request was aborted")).toMatchObject({
+    attachment_download_stderr_signal: "other",
+  });
+  expect(
+    classify("x".repeat(8192) + "Could not create SSL/TLS secure channel"),
+  ).toMatchObject({
+    attachment_download_stderr_signal: "other",
+    attachment_download_stderr_truncated: true,
+  });
+  expect(
+    classify(
+      "The remote server returned an error: (403) Forbidden. Could not create SSL/TLS secure channel",
+    ),
+  ).toMatchObject({
+    attachment_download_stderr_signal: "http_status",
+    attachment_download_reported_http_status: 403,
+  });
+});
