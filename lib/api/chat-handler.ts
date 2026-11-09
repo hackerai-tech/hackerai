@@ -1,3 +1,4 @@
+import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -137,7 +138,6 @@ import {
   handleInitialChatAndUserMessage,
   prepareForNewStream,
   saveMessage,
-  startStream,
   updateChat,
   updateChatTitle,
 } from "@/lib/db/actions";
@@ -3448,23 +3448,11 @@ export const createChatHandler = () => {
           "Transfer-Encoding": "chunked",
         },
         async consumeSseStream({ stream: sseStream }) {
-          try {
-            const streamContext = getStreamContext();
-            if (streamContext) {
-              const streamId = generateId();
-              await startStream({ chatId, streamId });
-              await streamContext.createNewResumableStream(
-                streamId,
-                () => sseStream,
-              );
-            }
-          } catch (error) {
-            // Non-fatal: stream still works without resumability
-            phLogger.warn("Stream resumption setup failed", {
-              chatId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          await setupChatStreamResumption({
+            chatId,
+            stream: sseStream,
+            getStreamContext,
+          });
         },
       });
     } catch (error) {
