@@ -276,7 +276,7 @@ export function ScheduleFormDialog({
           </div>
           {dirty && (
             <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:gap-1 sm:self-start">
-              Unsaved<span className="max-sm:hidden">changes</span>
+              Unsaved <span className="max-sm:hidden">changes</span>
             </span>
           )}
         </DialogHeader>
@@ -632,7 +632,7 @@ export function ScheduleFormDialog({
                           ))}
                         </div>
                       </div>
-                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
+                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] lg:grid-cols-1">
                         <div className="min-w-0 space-y-2">
                           <Label htmlFor={`${id}-time`}>Time</Label>
                           <Input
