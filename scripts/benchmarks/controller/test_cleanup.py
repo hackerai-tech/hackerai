@@ -222,8 +222,10 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(result['cleanupVerified'])
         self.assertTrue((proc / '101/stat').exists())
         self.assertEqual(result['errorClass'], 'DockerObservationError')
+        retained=(self.root/'native-state.json').read_bytes()
         with self.assertRaises(FileExistsError):
             reconcile_dead_job(self.root, receipt, self.key, proc=proc)
+        self.assertEqual(retained,(self.root/'native-state.json').read_bytes())
 
     def test_alive_exact_owner_blocks_independent_cleanup(self):
         receipt, proc = self.receipt_fixture()

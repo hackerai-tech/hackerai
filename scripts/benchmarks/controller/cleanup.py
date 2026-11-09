@@ -203,6 +203,9 @@ def claim_for_state(root, state, payload):
         if not isinstance(state.get('status'), str):
             raise DockerObservationError('native_state_status_missing')
         claim_cleanup_intent(root / 'independent-cleanup-intent.json', payload)
+    except FileExistsError:
+        # Rejected replays cannot overwrite an earlier cleanup outcome.
+        raise
     except BaseException as error:
         record_claim_failure(root, state, error)
         raise
