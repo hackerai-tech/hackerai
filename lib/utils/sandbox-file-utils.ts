@@ -2,6 +2,8 @@ import "server-only";
 
 import {
   copyAttachmentDownloadFailureContext,
+  recordAttachmentDownloadRoute,
+  type AttachmentDownloadRoute,
   getAttachmentDownloadFailureContext,
   type AttachmentDownloadFailureContext,
 } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
@@ -925,86 +927,99 @@ const downloadFileToSandbox = async (
   localPath: string,
   signal?: AbortSignal,
 ): Promise<void> => {
-  signal?.throwIfAborted();
-  validateDownloadUrl(url);
-
-  // CentrifugoSandbox has downloadFromUrl method
-  if (sandbox.files?.downloadFromUrl) {
-    await sandbox.files.downloadFromUrl(
-      url,
-      localPath,
-      ...(signal ? [{ signal }] : []),
-    );
-    signal?.throwIfAborted();
-    return;
-  }
-
-  // E2B sandbox - use curl with --create-dirs to avoid a separate mkdir race
-  const escapedUrl = url.replace(/'/g, "'\\''");
-  const escapedLocalPath = localPath.replace(/'/g, "'\\''");
-
-  // Transient curl exit codes worth retrying at the JS layer as a safety net
-  // on top of curl's own --retry. Covers post-resume filesystem hiccups and
-  // flaky network recv:
-  //   6  = could not resolve host (DNS lag after sandbox resume)
-  //   7  = couldn't connect
-  //   18 = partial transfer
-  //   56 = failure receiving network data
-  // Write failures go straight to the writable-path fallback. Repeating the
-  // same destination cannot repair permissions or a full filesystem.
-  const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
-  const MAX_ATTEMPTS = 3;
-
-  const curlCmd =
-    `curl -fsSL --connect-timeout 10 --max-time 120 ` +
-    `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
-    `-o '${escapedLocalPath}' '${escapedUrl}'`;
-
-  // --retry-max-time bounds when another attempt may start, not its duration.
-  // The last attempt can consume another --max-time. Keep the SDK stream open
-  // beyond both budgets so curl reports its exit instead of replaying a healthy
-  // slow transfer after the SDK's default 60-second timeout. Stop still kills
-  // only the owned command through runAttachmentCommand.
-  const commandOptions = { timeoutMs: 250_000 };
-  let result = await runSandboxCommand(
-    sandbox,
-    curlCmd,
-    signal,
-    commandOptions,
-  );
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (result.exitCode === 0) return;
-    if (
-      attempt === MAX_ATTEMPTS ||
-      !TRANSIENT_CURL_EXIT_CODES.has(result.exitCode)
-    ) {
-      break;
-    }
-    console.warn(
-      `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
-    );
-    await delay(500 * attempt, signal);
-    result = await runSandboxCommand(sandbox, curlCmd, signal, commandOptions);
-  }
-
-  // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
-  let safeUrl = url;
+  let route: AttachmentDownloadRoute = "selection";
   try {
-    const parsed = new URL(url);
-    safeUrl = `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    safeUrl = url.split("?")[0];
-  }
+    signal?.throwIfAborted();
+    validateDownloadUrl(url);
 
-  throw copyAttachmentCommandFailureContext(
-    result,
-    new Error(
-      `Failed to download file: ${result.stderr}\n` +
-        `  url: ${safeUrl}\n` +
-        `  path: ${localPath}\n` +
-        `  exitCode: ${result.exitCode}`,
-    ),
-  );
+    // CentrifugoSandbox has downloadFromUrl method
+    if (sandbox.files?.downloadFromUrl) {
+      route = "native_method";
+      await sandbox.files.downloadFromUrl(
+        url,
+        localPath,
+        ...(signal ? [{ signal }] : []),
+      );
+      signal?.throwIfAborted();
+      return;
+    }
+
+    route = "generic_command";
+    // E2B sandbox - use curl with --create-dirs to avoid a separate mkdir race
+    const escapedUrl = url.replace(/'/g, "'\\''");
+    const escapedLocalPath = localPath.replace(/'/g, "'\\''");
+
+    // Transient curl exit codes worth retrying at the JS layer as a safety net
+    // on top of curl's own --retry. Covers post-resume filesystem hiccups and
+    // flaky network recv:
+    //   6  = could not resolve host (DNS lag after sandbox resume)
+    //   7  = couldn't connect
+    //   18 = partial transfer
+    //   56 = failure receiving network data
+    // Write failures go straight to the writable-path fallback. Repeating the
+    // same destination cannot repair permissions or a full filesystem.
+    const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
+    const MAX_ATTEMPTS = 3;
+
+    const curlCmd =
+      `curl -fsSL --connect-timeout 10 --max-time 120 ` +
+      `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
+      `-o '${escapedLocalPath}' '${escapedUrl}'`;
+
+    // --retry-max-time bounds when another attempt may start, not its duration.
+    // The last attempt can consume another --max-time. Keep the SDK stream open
+    // beyond both budgets so curl reports its exit instead of replaying a healthy
+    // slow transfer after the SDK's default 60-second timeout. Stop still kills
+    // only the owned command through runAttachmentCommand.
+    const commandOptions = { timeoutMs: 250_000 };
+    let result = await runSandboxCommand(
+      sandbox,
+      curlCmd,
+      signal,
+      commandOptions,
+    );
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (result.exitCode === 0) return;
+      if (
+        attempt === MAX_ATTEMPTS ||
+        !TRANSIENT_CURL_EXIT_CODES.has(result.exitCode)
+      ) {
+        break;
+      }
+      console.warn(
+        `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
+      );
+      await delay(500 * attempt, signal);
+      result = await runSandboxCommand(
+        sandbox,
+        curlCmd,
+        signal,
+        commandOptions,
+      );
+    }
+
+    // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
+    let safeUrl = url;
+    try {
+      const parsed = new URL(url);
+      safeUrl = `${parsed.origin}${parsed.pathname}`;
+    } catch {
+      safeUrl = url.split("?")[0];
+    }
+
+    throw copyAttachmentCommandFailureContext(
+      result,
+      new Error(
+        `Failed to download file: ${result.stderr}\n` +
+          `  url: ${safeUrl}\n` +
+          `  path: ${localPath}\n` +
+          `  exitCode: ${result.exitCode}`,
+      ),
+    );
+  } catch (error) {
+    recordAttachmentDownloadRoute(error, route);
+    throw error;
+  }
 };
 
 const copyLocalFileToSandbox = async (
