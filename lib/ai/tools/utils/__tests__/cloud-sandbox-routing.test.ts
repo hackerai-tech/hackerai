@@ -12,7 +12,7 @@ import { ensureCloudNetwork } from "@/lib/cloud-network/service";
 import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
-import { ensureSandboxConnection } from "../sandbox";
+import { ensureSandboxConnection, E2BAcquisitionError } from "../sandbox";
 import { phLogger } from "@/lib/posthog/server";
 import {
   assertCloudWorkspaceAvailable,
@@ -49,6 +49,46 @@ const recovered = {
 
 describe("E2B cloud acquisition", () => {
   const originalEnv = process.env;
+
+  it("forwards bounded identity-read diagnostics without changing the original failure", async () => {
+    read.mockResolvedValue(recovered);
+    const diagnostics = {
+      e2b_phase: "connect" as const,
+      e2b_error_category: "permanent" as const,
+      e2b_workspace_identity_diagnostic_version: 1 as const,
+      e2b_workspace_identity_operation: "get_info" as const,
+      e2b_workspace_identity_error_kind: "not_found" as const,
+      e2b_workspace_identity_requested_target_fingerprint: "a".repeat(64),
+      e2b_workspace_identity_requested_cluster: "us" as const,
+    };
+    const error = Object.assign(
+      new E2BAcquisitionError("safe public message", diagnostics),
+      { diagnostics },
+    );
+    ensure.mockRejectedValueOnce(error);
+    const setSandbox = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: {
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+          triggerRegion: "us-east-1",
+        },
+      }),
+    ).rejects.toBe(error);
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.objectContaining({
+        ...diagnostics,
+        trigger_run_id: "run-1",
+        cloud_sandbox_acquisition_failed_event_version: 6,
+      }),
+    );
+    expect(setSandbox).not.toHaveBeenCalled();
+    expect(ensureCloudNetwork).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     jest.resetAllMocks();
     jest
