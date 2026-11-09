@@ -32,12 +32,14 @@ class Docker:
             ['docker', *args], capture_output=True, timeout=30))
 
     def checked(self, args, operation):
+        """Keep failed daemon reads distinct from empty successful inventories."""
         result = self.run(args)
         if result.returncode:
             raise DockerObservationError(operation, result)
         return result.stdout
 
     def ids(self, kind):
+        """Reject partial IDs so later inspection cannot select another owner."""
         args = ['ps', '-aq', '--no-trunc'] if kind == 'container' else [
             'network', 'ls', '-q', '--no-trunc']
         identities = self.checked(args, kind + '_inventory').decode().split()
@@ -46,6 +48,7 @@ class Docker:
         return identities
 
     def inspect(self, kind, identity):
+        """Reconcile disappearance only through a fresh successful inventory."""
         args = ['inspect', identity] if kind == 'container' else [
             'network', 'inspect', identity]
         result = self.run(args)
@@ -62,6 +65,7 @@ class Docker:
             raise DockerObservationError(kind + '_inspect_schema', result)
 
     def remove(self, kind, identity):
+        """Retain mutation uncertainty unless exact absence is independently read."""
         args = ['rm', '-f', identity] if kind == 'container' else [
             'network', 'rm', identity]
         result = self.run(args)
@@ -70,6 +74,7 @@ class Docker:
 
 
 def owned_container(record, root):
+    """Bind the job label to its trusted override, allowing stock base configs."""
     labels = record['Config'].get('Labels') or {}
     paths = labels.get('com.docker.compose.project.config_files', '').split(',')
     scoped_path = any(Path(p).is_absolute() and Path(p).resolve().is_relative_to(root.resolve())
@@ -81,10 +86,12 @@ def owned_container(record, root):
 
 
 def canonical(value):
+    """Use sorted compact UTF-8 bytes shared by request and receipt signers."""
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
 
 
 def cleanup_job(root, docker=None):
+    """Remove exact-owned resources before deleting the two task credentials."""
     root = Path(root)
     if not root.is_absolute() or root.is_symlink() or not re.fullmatch('[0-9a-f]{32}', root.name):
         raise DockerObservationError('invalid_job_scope')
@@ -127,6 +134,7 @@ def cleanup_job(root, docker=None):
 
 
 def persist_state(path, state):
+    """Publish complete private state and retain the previous file on failure."""
     path = Path(path)
     fd, name = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
     temporary = Path(name)
@@ -204,6 +212,7 @@ def record_claim_failure(root, state, error):
 
 
 def claim_for_state(root, state, payload):
+    """Persist claim failures without overwriting a prior replay outcome."""
     try:
         if not isinstance(state.get('status'), str):
             raise DockerObservationError('native_state_status_missing')
@@ -217,6 +226,7 @@ def claim_for_state(root, state, payload):
 
 
 def exact_process_alive(pid, start_ticks, proc=Path('/proc')):
+    """Require readable procfs before PID absence can attest owner termination."""
     if type(pid) is not int or pid <= 1 or not re.fullmatch('[0-9]+', str(start_ticks)) or int(start_ticks) <= 0:
         raise DockerObservationError('process_identity_invalid')
     # ENOENT for a target PID is meaningful only inside a readable procfs.

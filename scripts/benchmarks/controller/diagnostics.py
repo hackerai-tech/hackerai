@@ -41,6 +41,7 @@ def persist_first(path, record):
 
 
 def check_health(metrics, evidence):
+    """Fail closed on missing samples while retaining only numeric guard fields."""
     clean = {k: v for k, v in metrics.items() if k in LIMITS
              and type(v) in (int, float) and math.isfinite(v)}
     failed = [k for k, limit in LIMITS.items()
@@ -56,6 +57,7 @@ def check_health(metrics, evidence):
 
 
 def check_deadline(elapsed, limit, evidence):
+    """Save the failed deadline sample; invalid limits never admit work."""
     valid_elapsed = type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0
     valid_limit = type(limit) in (int, float) and math.isfinite(limit) and limit > 0
     if not valid_elapsed or not valid_limit or elapsed >= limit:
@@ -67,6 +69,7 @@ def check_deadline(elapsed, limit, evidence):
 
 def exception_record(error):
     # Traceback locations only: no exception text, source lines, locals or paths.
+    """Discard exception messages, source lines, locals, and arbitrary records."""
     frames = []
     tb = error.__traceback__
     while tb:

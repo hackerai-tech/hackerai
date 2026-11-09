@@ -42,6 +42,7 @@ class FakeDocker:
             'com.docker.compose.project': 'deliberately-shared-project-name'}}}
 
     def run(self, args):
+        """Model shared snapshots and removals without a Docker daemon."""
         def reply(code=0, value=b''):
             return subprocess.CompletedProcess(args, code, value, b'PRIVATE_DAEMON_DETAIL' if code else b'')
         if args[:2] == ['ps', '-aq']:
@@ -157,6 +158,7 @@ class CleanupTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(saved))
 
     def test_resource_guard_records_the_exact_boundary_sample_before_cleanup(self):
+        """Each threshold fails at its boundary without replacing the first sample."""
         healthy = {'freeBytes': 40 * 2**30, 'memoryPercent': 35, 'processes': 1999, 'zombies': 9}
         path = self.root / 'first-guard-failure.json'
         check_health(healthy, path)
@@ -171,6 +173,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(first['metrics']['freeBytes'], 40 * 2**30 - 1)
 
     def receipt_fixture(self):
+        """Build matching synthetic signatures and a readable isolated procfs."""
         request = {**self.scope, 'requestId': 'b' * 32}
         seal = lambda payload: {'payload': payload, 'signature': hmac.new(
             self.key, canonical(payload), hashlib.sha256).hexdigest()}
@@ -316,6 +319,7 @@ class CleanupTests(unittest.TestCase):
         self.assertFalse(list(self.root.glob('*.tmp')))
 
     def test_invalid_process_identity_does_not_become_absence(self):
+        """Malformed metadata must never attest process termination."""
         for pid, ticks in [(0, '1'), (1, '1'), (-1, '1'), (101, '0'), (101, 'unknown')]:
             with self.subTest(pid=pid, ticks=ticks), self.assertRaises(DockerObservationError):
                 exact_process_alive(pid, ticks, proc=self.root / 'missing-proc')
@@ -336,6 +340,7 @@ class CleanupTests(unittest.TestCase):
             reconcile_dead_job(self.root, receipt, self.key, proc=proc)
 
     def test_deadline_retains_exact_boundary_and_invalid_limit_fails_closed(self):
+        """Unknown deadline inputs remain JSON evidence, never an admission."""
         for elapsed, limit in [(600, 600), (1, float('nan')), (float('inf'), 600), (1, 0)]:
             with self.subTest(elapsed=elapsed, limit=limit), tempfile.TemporaryDirectory() as tmp:
                 path=Path(tmp)/'failure.json'
@@ -378,6 +383,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'native-state.json').read_text())['status'], 'native_cleanup_unconfirmed')
 
     def test_operator_interrupts_are_reraised_after_saving_unconfirmed_cleanup(self):
+        """An operator stop persists uncertainty and still exits the caller."""
         for interrupt in [KeyboardInterrupt(), SystemExit(3)]:
             with self.subTest(interrupt=type(interrupt).__name__):
                 def stop(root):
