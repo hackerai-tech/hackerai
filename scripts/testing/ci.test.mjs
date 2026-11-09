@@ -140,6 +140,7 @@ test("shared runtime and desktop changes retain their safety integrations and se
     "trigger/agent.ts",
     "lib/api/agent-stream-runner.ts",
     "app/api/chat/route.ts",
+    "app/services/agent-run-cancellation.ts",
     "types/chat.ts",
   ]) {
     const plan = selectPlan([path]);

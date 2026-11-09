@@ -12,7 +12,7 @@ export const languages = [
 ];
 const allTooling = suites.map((suite) => suite.name);
 const critical =
-  /^(convex\/|trigger\/|types\/|__mocks__\/|lib\/|app\/api\/|packages\/)/;
+  /^(convex\/|trigger\/|types\/|__mocks__\/|lib\/|app\/(?:api|services)\/|packages\/)/;
 
 /** Compare committed PR content, including deletions and both sides of renames. */
 export function changedSince(base, root = process.cwd()) {
