@@ -39,6 +39,9 @@ import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 // fixed action lane keeps headers aligned with rows of varying content.
 export const SCHEDULE_COLUMNS =
   "@4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_11rem] @4xl:gap-x-6";
+// Bordered 44px targets on phones; quiet text actions in the desktop table.
+const ROW_ACTION =
+  "h-11 flex-1 border @4xl:h-8 @4xl:flex-none @4xl:border-transparent";
 
 const LABELS: Record<string, string> = {
   queued: "Queued",
@@ -97,6 +100,28 @@ function formatRunTime(at: number) {
   return new Date(at).toLocaleString([], {
     dateStyle: "medium",
     timeStyle: "short",
+  });
+}
+const sameYear = (at: number) =>
+  new Date(at).getFullYear() === new Date().getFullYear();
+// Rows show a short date; the exact time stays in the title.
+function formatRunDate(at: number) {
+  return new Date(at).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(sameYear(at) ? {} : { year: "numeric" }),
+  });
+}
+// One line with the zone abbreviation, e.g. "Nov 9, 9:00 AM CST".
+function formatNextRun(at: number, timeZone?: string) {
+  return new Date(at).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    ...(sameYear(at) ? {} : { year: "numeric" }),
+    ...(timeZone ? { timeZone } : {}),
   });
 }
 function RunStatus({ run }: { run: ScheduleRun }) {
@@ -179,7 +204,7 @@ export function ScheduleRow({
   return (
     <li
       className={cn(
-        "grid grid-cols-1 gap-y-4 py-5 @4xl:items-start @4xl:gap-y-3",
+        "grid grid-cols-1 gap-y-3 py-4 @4xl:items-start",
         SCHEDULE_COLUMNS,
       )}
     >
@@ -212,22 +237,19 @@ export function ScheduleRow({
           <dt className={term}>Next run</dt>
           <dd className="min-w-0 tabular-nums">
             {schedule.enabled && schedule.nextRunAt ? (
-              <>
-                <span className="font-medium text-foreground">
-                  {new Date(schedule.nextRunAt).toLocaleString([], {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                    ...(timing.type === "weekly"
-                      ? { timeZone: timing.timezone }
-                      : {}),
-                  })}
-                </span>
-                {timing.type === "weekly" && (
-                  <span className="block break-words text-muted-foreground @4xl:mt-0.5">
-                    {timing.timezone.replaceAll("_", " ")}
-                  </span>
+              <span
+                className="font-medium text-foreground"
+                title={
+                  timing.type === "weekly"
+                    ? timing.timezone.replaceAll("_", " ")
+                    : undefined
+                }
+              >
+                {formatNextRun(
+                  schedule.nextRunAt,
+                  timing.type === "weekly" ? timing.timezone : undefined,
                 )}
-              </>
+              </span>
             ) : (
               <span className="text-muted-foreground">
                 {completed ? "No further runs" : "None while paused"}
@@ -245,23 +267,24 @@ export function ScheduleRow({
               />
               <span
                 className="line-clamp-2 min-w-0 font-medium wrap-anywhere"
-                title={execution?.name}
+                title={
+                  execution
+                    ? `${execution.name}\n${execution.workingDirectory}`
+                    : undefined
+                }
               >
                 {execution ? execution.name : "Cloud"}
+                {execution && (
+                  <span className="sr-only">
+                    , starting folder {execution.workingDirectory}
+                  </span>
+                )}
               </span>
             </span>
-            {computerUnavailable && execution ? (
+            {computerUnavailable && execution && (
               <span className="mt-0.5 flex items-center gap-1.5 text-amber-700 dark:text-amber-500">
                 <WifiOff className="size-3.5 shrink-0" aria-hidden="true" />
                 Unavailable
-              </span>
-            ) : execution ? (
-              <span className="mt-0.5 hidden font-mono text-xs break-all text-muted-foreground @4xl:block">
-                {execution.workingDirectory}
-              </span>
-            ) : (
-              <span className="mt-0.5 hidden text-muted-foreground @4xl:block">
-                Runs while you’re away
               </span>
             )}
           </dd>
@@ -273,9 +296,13 @@ export function ScheduleRow({
               <>
                 <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   <RunStatus run={latest} />
-                  <span className="tabular-nums text-muted-foreground">
-                    {formatRunTime(latest.createdAt)}
-                  </span>
+                  <time
+                    dateTime={new Date(latest.createdAt).toISOString()}
+                    title={formatRunTime(latest.createdAt)}
+                    className="tabular-nums text-muted-foreground"
+                  >
+                    {formatRunDate(latest.createdAt)}
+                  </time>
                 </span>
                 {latest.detail && (
                   <span className="mt-0.5 block break-words text-muted-foreground">
@@ -363,10 +390,11 @@ export function ScheduleRow({
         )}
       >
         <Button
-          variant="outline"
+          variant="ghost"
           size="sm"
           className={cn(
-            "h-11 flex-1 @4xl:h-8 @4xl:w-14 @4xl:flex-none",
+            ROW_ACTION,
+            "@4xl:w-14",
             !enabled && "hidden @4xl:inline-flex",
           )}
           disabled={pending || !enabled}
@@ -377,9 +405,9 @@ export function ScheduleRow({
         </Button>
         {(schedule.enabled || (!completed && enabled)) && (
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="h-11 flex-1 @4xl:h-8 @4xl:w-[4.75rem] @4xl:flex-none"
+            className={cn(ROW_ACTION, "@4xl:w-[4.75rem]")}
             disabled={pending}
             onClick={() => onAction(schedule.enabled ? "pause" : "resume")}
             aria-label={`${schedule.enabled ? "Pause" : "Resume"} ${name}`}

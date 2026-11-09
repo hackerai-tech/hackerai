@@ -4,6 +4,7 @@ import {
   ArrowRight,
   GraduationCap,
   Check,
+  ChevronRight,
   X,
   Loader2,
   Newspaper,
@@ -140,15 +141,9 @@ export function SchedulesPage() {
               <PanelLeft className="size-5" />
             </Button>
           )}
-          <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-semibold tracking-tight @lg:text-2xl @4xl:text-[2rem] @4xl:leading-tight">
-              Schedules
-            </h1>
-            <p className="mt-1 hidden text-sm text-muted-foreground @xl:block">
-              Each run starts a new task with your instructions. Results land in
-              your task history.
-            </p>
-          </div>
+          <h1 className="min-w-0 flex-1 text-xl font-semibold tracking-tight @lg:text-2xl @4xl:text-[2rem] @4xl:leading-tight">
+            Schedules
+          </h1>
           <Button
             className="h-11 shrink-0 @lg:h-9"
             disabled={!canCreate}
@@ -170,7 +165,7 @@ export function SchedulesPage() {
                 {[0, 1, 2].map((row) => (
                   <div
                     key={row}
-                    className={cn("grid gap-3 py-5", SCHEDULE_COLUMNS)}
+                    className={cn("grid gap-3 py-4", SCHEDULE_COLUMNS)}
                   >
                     <div className="space-y-2">
                       <Skeleton className="h-4 w-48 max-w-full" />
@@ -249,24 +244,12 @@ export function SchedulesPage() {
           {data?.enabled && data.schedules.length === 0 && (
             <section
               aria-labelledby="empty-schedules"
-              className="space-y-8 pt-4 @4xl:pt-8"
+              className="space-y-6 pt-4 @4xl:pt-6"
             >
-              <div className="max-w-2xl space-y-2">
-                <h2
-                  id="empty-schedules"
-                  className="text-lg font-semibold tracking-tight @lg:text-xl @4xl:text-2xl"
-                >
-                  Let the routine checks run themselves.
-                </h2>
-                <p className="text-sm leading-relaxed text-muted-foreground @lg:text-base">
-                  Pick a starter, then tailor its instructions and timing.
-                  Nothing runs until you save.
-                </p>
-              </div>
               <div>
-                <h3 className="pb-2 text-xs font-medium text-muted-foreground">
-                  Starters
-                </h3>
+                <h2 id="empty-schedules" className="pb-3 text-base font-medium">
+                  Start from a template
+                </h2>
                 <ul
                   className="divide-y border-y"
                   aria-label="Schedule templates"
@@ -325,20 +308,14 @@ export function SchedulesPage() {
                   ))}
                 </ul>
               </div>
-              <div className="flex flex-col items-start gap-3 @xl:flex-row @xl:items-center @xl:gap-4">
-                <Button
-                  variant="outline"
-                  className="h-11 shrink-0 @lg:h-9"
-                  onClick={() => setForm({ definition: defaultSchedule() })}
-                >
-                  <Plus className="size-4" />
-                  Start from scratch
-                </Button>
-                <p className="text-sm text-muted-foreground">
-                  Write your own instructions. Runs in the cloud unless you pick
-                  a connected computer.
-                </p>
-              </div>
+              <Button
+                variant="outline"
+                className="h-11 @lg:h-9"
+                onClick={() => setForm({ definition: defaultSchedule() })}
+              >
+                <Plus className="size-4" />
+                Start from scratch
+              </Button>
             </section>
           )}
           {data && data.schedules.length > 0 && (
@@ -387,15 +364,25 @@ export function SchedulesPage() {
             </section>
           )}
           {data && (
-            <div className="flex flex-col gap-3 pt-2 text-sm leading-relaxed text-muted-foreground @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-8">
-              <p className="max-w-2xl">
-                Cloud schedules run while you’re away. Schedules on a computer
-                need it connected; runs are skipped while it’s unavailable. Each
-                run starts a new task and uses your account’s normal usage and
-                spending limits.
-              </p>
+            <div className="flex items-start justify-between gap-4 text-sm text-muted-foreground">
+              <details className="group min-w-0 max-w-2xl">
+                <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring @4xl:min-h-8 [&::-webkit-details-marker]:hidden">
+                  <ChevronRight
+                    className="size-3.5 shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none"
+                    aria-hidden="true"
+                  />
+                  How schedules work
+                </summary>
+                <p className="pt-1 pb-2 pl-5 leading-relaxed">
+                  Each run starts a new task with your instructions, and results
+                  land in your task history. Cloud schedules run while you’re
+                  away. Schedules on a computer need it connected; runs are
+                  skipped while it’s unavailable. Every run uses your account’s
+                  normal usage and spending limits.
+                </p>
+              </details>
               {data.schedules.length > 0 && (
-                <p className="shrink-0 tabular-nums">
+                <p className="flex min-h-11 shrink-0 items-center tabular-nums @4xl:min-h-8">
                   {data.schedules.length} of {MAX_SCHEDULES} schedules
                 </p>
               )}
