@@ -209,7 +209,10 @@ native Desktop paths; never infer one from another.
 The case receipt confirms durable storage, independently of email delivery. On the
 Convex deployment, configure `ABUSE_NOTIFICATIONS_ENABLED=true`, a dedicated
 `ABUSE_SMTP_PASSWORD` token paired with `abuse@hackerai.co`, and
-`ABUSE_NOTIFICATION_REVIEW_URL` as the exact web origin for that environment.
+`ABUSE_NOTIFICATION_REVIEW_URL` as the exact web origin for that environment,
+plus `ABUSE_NOTIFICATION_ENVIRONMENT=preview` or `production`. Production
+requires `https://hackerai.co`; Preview requires the HackerAI branch-host format.
+Verify the exact origin against the Vercel deployment before saving configuration.
 Use separate SMTP tokens for Preview and Production. Do not use a mailbox login
 password. SMTP submission uses Proton's fixed host and port with mandatory
 STARTTLS and certificate verification. No sender, recipient, or SMTP endpoint is
@@ -223,9 +226,11 @@ contact email, or submitted targets. Email recipients still need operator access
 Inspect `abuse_notifications` in the authorized Convex dashboard, using its status
 index. `sent` means Proton accepted the message, not that inbox delivery was
 independently verified. Reconcile `failed` and `uncertain` entries during intake
-review. Explicit transient SMTP rejection and pre-DATA connection errors retry
+review. Explicit transient SMTP rejection and preflight connection errors retry
 up to five attempts with increasing delays. Permanent rejection/configuration
-failure remains `failed`. Lost acknowledgements after DATA and expired send
+failure remains `failed`. Disabling notifications pauses existing queued work;
+a five-minute sweep resumes it after re-enablement. New reports received while
+disabled do not queue notifications. Lost acknowledgements after DATA and expired send
 leases become `uncertain`; these are not blindly retried because SMTP has no
 exactly-once delivery guarantee. A stable Message-ID assists reconciliation.
 Before any manually authorized resend, check the recipient inbox and Proton Sent

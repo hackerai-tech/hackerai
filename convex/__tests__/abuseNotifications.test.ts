@@ -18,6 +18,11 @@ function fixture() {
   };
   const ctx: any = {
     db: {
+      query: () => ({
+        withIndex: () => ({
+          take: async () => (row.status === "paused" ? [row] : []),
+        }),
+      }),
       get: async (id: string) => (id === "notification" ? row : report),
       patch: async (_id: string, patch: any) => Object.assign(row, patch),
     },
@@ -91,6 +96,23 @@ test.each(["disabled", "erased"])("does not transmit %s work", async (mode) => {
   expect(
     await run("claim", ctx, { notificationId: "notification" }),
   ).toBeNull();
-  expect(row.status).toBe("failed");
+  expect(row.status).toBe(mode === "disabled" ? "paused" : "failed");
   expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+});
+test("paused work survives disabling and resumes once after re-enabling", async () => {
+  const { row, ctx } = fixture();
+  delete process.env.ABUSE_NOTIFICATIONS_ENABLED;
+  await run("claim", ctx, { notificationId: "notification" });
+  expect(row.status).toBe("paused");
+  expect(row.attempts).toBe(0);
+  await run("resumePaused", ctx, {});
+  expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  process.env.ABUSE_NOTIFICATIONS_ENABLED = "true";
+  await run("resumePaused", ctx, {});
+  await run("resumePaused", ctx, {});
+  expect(row.status).toBe("pending");
+  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+  expect(
+    await run("claim", ctx, { notificationId: "notification" }),
+  ).toMatchObject({ attempt: 1 });
 });

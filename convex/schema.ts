@@ -204,6 +204,7 @@ export default defineSchema({
     caseId: v.id("abuse_cases"),
     status: v.union(
       v.literal("pending"),
+      v.literal("paused"),
       v.literal("sending"),
       v.literal("sent"),
       v.literal("failed"),

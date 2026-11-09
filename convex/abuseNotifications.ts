@@ -12,13 +12,16 @@ export const claim = internalMutation({
     const row = await ctx.db.get(notificationId);
     if (!row || row.status !== "pending") return null;
     const report = await ctx.db.get(row.caseId);
-    if (
-      !report ||
-      !report.ciphertext ||
-      process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true"
-    ) {
+    if (!report || !report.ciphertext) {
       await ctx.db.patch(notificationId, {
         status: "failed",
+        updatedAt: Date.now(),
+      });
+      return null;
+    }
+    if (process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true") {
+      await ctx.db.patch(notificationId, {
+        status: "paused",
         updatedAt: Date.now(),
       });
       return null;
@@ -36,6 +39,27 @@ export const claim = internalMutation({
       { notificationId, attempt },
     );
     return { reference: report.reference, attempt };
+  },
+});
+
+export const resumePaused = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    if (process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true") return null;
+    const rows = await ctx.db
+      .query("abuse_notifications")
+      .withIndex("by_status", (q) => q.eq("status", "paused"))
+      .take(25);
+    for (const row of rows) {
+      await ctx.db.patch(row._id, { status: "pending", updatedAt: Date.now() });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.abuseNotificationActions.deliver,
+        { notificationId: row._id },
+      );
+    }
+    return null;
   },
 });
 

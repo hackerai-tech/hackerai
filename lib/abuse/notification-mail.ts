@@ -17,10 +17,10 @@ export async function sendAbuseNotification(
       url.search ||
       url.hash ||
       url.pathname !== "/" ||
-      !(
-        url.hostname === "hackerai.co" ||
-        url.hostname.endsWith("-hackerai.vercel.app")
-      )
+      !(process.env.ABUSE_NOTIFICATION_ENVIRONMENT === "production"
+        ? url.hostname === "hackerai.co"
+        : process.env.ABUSE_NOTIFICATION_ENVIRONMENT === "preview" &&
+          /^hackerai-git-[a-z0-9-]+-hackerai\.vercel\.app$/.test(url.hostname))
     )
       return "failed";
     origin = url.origin;
@@ -49,6 +49,14 @@ export async function sendAbuseNotification(
     disableFileAccess: true,
     disableUrlAccess: true,
   });
+  // This connection cannot transmit a message, so failures are safe to retry.
+  try {
+    await transport.verify();
+  } catch (error) {
+    transport.close();
+    const { responseCode } = error as { responseCode?: number };
+    return responseCode && responseCode >= 500 ? "failed" : "retry";
+  }
   try {
     const result = await transport.sendMail({
       from: { name: "HackerAI Abuse Reports", address: "abuse@hackerai.co" },
@@ -61,23 +69,13 @@ export async function sendAbuseNotification(
   } catch (error) {
     // SMTP acknowledgement loss is ambiguous. Fixed Message-ID aids reconciliation,
     // but SMTP does not provide an exactly-once delivery contract.
-    const { responseCode, command } = error as {
+    const { responseCode } = error as {
       responseCode?: number;
-      command?: string;
     };
     if (responseCode && responseCode >= 400)
       return responseCode < 500 ? "retry" : "failed";
-    return [
-      "CONN",
-      "EHLO",
-      "HELO",
-      "STARTTLS",
-      "AUTH",
-      "MAIL FROM",
-      "RCPT TO",
-    ].includes(command ?? "")
-      ? "retry"
-      : "uncertain";
+    // Nodemailer also reports post-DATA socket loss as command=CONN.
+    return "uncertain";
   } finally {
     transport.close();
   }

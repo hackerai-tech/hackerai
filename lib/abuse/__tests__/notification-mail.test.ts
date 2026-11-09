@@ -1,6 +1,7 @@
 const sendMail = jest.fn(),
+  verify = jest.fn(),
   close = jest.fn(),
-  createTransport = jest.fn(() => ({ sendMail, close }));
+  createTransport = jest.fn(() => ({ sendMail, verify, close }));
 jest.mock("nodemailer", () => ({
   __esModule: true,
   default: {
@@ -11,6 +12,8 @@ import { sendAbuseNotification } from "../notification-mail";
 const original = { ...process.env };
 const reference = "AB-123e4567-e89b-42d3-a456-426614174000";
 beforeEach(() => {
+  process.env.ABUSE_NOTIFICATION_ENVIRONMENT = "preview";
+  verify.mockReset().mockResolvedValue(true);
   process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
   process.env.ABUSE_NOTIFICATION_REVIEW_URL =
     "https://hackerai-git-test-hackerai.vercel.app";
@@ -45,6 +48,7 @@ test("sends only fixed headers and a case reference through mandatory STARTTLS",
 test.each([
   "http://hackerai.co",
   "https://other.test",
+  "https://other-hackerai.vercel.app",
   "https://hackerai.co/?secret=x",
 ])("rejects invalid review origins before SMTP: %s", async (url) => {
   process.env.ABUSE_NOTIFICATION_REVIEW_URL = url;
@@ -61,7 +65,7 @@ test("rejects missing credentials and malformed references without transmission"
   expect(sendMail).not.toHaveBeenCalled();
 });
 test.each([
-  [{ command: "CONN", code: "ETIMEDOUT" }, "retry"],
+  [{ command: "CONN", code: "ETIMEDOUT" }, "uncertain"],
   [{ command: "RCPT TO", responseCode: 450 }, "retry"],
   [{ command: "AUTH", responseCode: 535 }, "failed"],
   [{ command: "DATA", responseCode: 451 }, "retry"],
@@ -75,3 +79,15 @@ test.each([
     expect(close).toHaveBeenCalled();
   },
 );
+test("a preflight network failure is safely retried without sending a message", async () => {
+  verify.mockRejectedValue({ command: "CONN", code: "ETIMEDOUT" });
+  expect(await sendAbuseNotification(reference)).toBe("retry");
+  expect(sendMail).not.toHaveBeenCalled();
+});
+test("Production cannot send a notification linked to a Preview origin", async () => {
+  process.env.ABUSE_NOTIFICATION_ENVIRONMENT = "production";
+  expect(await sendAbuseNotification(reference)).toBe("failed");
+  expect(sendMail).not.toHaveBeenCalled();
+  process.env.ABUSE_NOTIFICATION_REVIEW_URL = "https://hackerai.co";
+  expect(await sendAbuseNotification(reference)).toBe("sent");
+});
