@@ -1,4 +1,4 @@
-import { findingEvidenceStatusSchema } from "@/lib/findings/evidence-status";
+import { findingEvidenceStatusSchema } from "../../findings/evidence-status";
 import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";

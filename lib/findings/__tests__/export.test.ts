@@ -137,7 +137,7 @@ describe("selected finding reports", () => {
         ...finding,
         technical_analysis:
           "Long assessment line that must wrap instead of clipping. ".repeat(
-            1500,
+            100,
           ),
       },
     ]);

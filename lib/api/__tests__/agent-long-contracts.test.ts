@@ -311,7 +311,19 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
     ).map((match) => match[1]);
 
-    expect(importSources).toEqual(["../../findings/quality", "ai", "zod"]);
+    expect(importSources).toEqual([
+      "../../findings/evidence-status",
+      "../../findings/quality",
+      "ai",
+      "zod",
+    ]);
+    const evidenceStatusSource = fs.readFileSync(
+      path.resolve(__dirname, "../../findings/evidence-status.ts"),
+      "utf8",
+    );
+    expect(evidenceStatusSource.match(/^import.*$/gm)).toEqual([
+      'import { z } from "zod";',
+    ]);
     expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
     const qualitySource = fs.readFileSync(
       path.resolve(__dirname, "../../findings/quality.ts"),
