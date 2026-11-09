@@ -146,7 +146,9 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         });
 
         if (!response.ok) {
-          const errorBody = await response.text();
+          // Provider error pages can be arbitrarily large and may reflect request
+          // details. Only the status belongs in the model's error result.
+          await response.body?.cancel().catch(() => {});
           reportToolFailure(context?.onToolFailure, {
             event: "open_url_provider_failed",
             tool_name: "open_url",
@@ -157,7 +159,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
             url_hostname: getUrlHostname(url),
             error_message: `HTTP ${response.status}`,
           });
-          return `Error: HTTP ${response.status} - ${errorBody}`;
+          return `Error opening URL: The URL reader request failed (HTTP ${response.status}).`;
         }
 
         const content = await response.text();

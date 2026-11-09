@@ -71,6 +71,9 @@ export const formatUrlContentPage = (
     return "Error opening URL: Page content changed since the previous result. Read the URL again without a cursor; do not combine different page versions.";
   }
   const tokens = safeEncode(content);
+  if (decode(tokens) !== content) {
+    return "Error opening URL: The page text could not be decoded losslessly; no partial content was returned.";
+  }
   const start = position?.offset ?? 0;
   if (
     position &&
@@ -88,6 +91,9 @@ export const formatUrlContentPage = (
     // source prefix so adjacent windows reconstruct the original text losslessly.
     while (end > start && !content.startsWith(decode(tokens.slice(0, end))))
       end--;
+    if (end <= start) {
+      return "Error opening URL: The page could not be split safely; no continuation cursor was returned.";
+    }
     const nextCursor = Buffer.from(
       JSON.stringify({ offset: end, digest }),
     ).toString("base64url");

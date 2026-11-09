@@ -16,6 +16,17 @@ const getBody = (result: string) =>
     );
 
 describe("URL content windows", () => {
+  it("rejects text that cannot round-trip and preserves special token text", () => {
+    expect(
+      formatUrlContentPage(
+        "\ud800" + "details ".repeat(15000),
+        "https://example.com",
+      ),
+    ).toContain("could not be decoded losslessly");
+    const special =
+      "Documentation about <|endoftext|> and <|im_start|> markers.";
+    expect(formatUrlContentPage(special, "https://example.com")).toBe(special);
+  });
   it("returns short code and table content verbatim", () => {
     const content =
       "# Advisory\n\n| Version | Status |\n| --- | --- |\n| 1.2 | fixed |\n\n```http\nGET / HTTP/1.1\n```";

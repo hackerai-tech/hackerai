@@ -241,7 +241,9 @@ describe("open_url", () => {
       },
     );
 
-    expect(result).toBe("Error: HTTP 502 - upstream down");
+    expect(result).toBe(
+      "Error opening URL: The URL reader request failed (HTTP 502).",
+    );
     expect(onToolFailure).toHaveBeenCalledWith(
       expect.objectContaining({
         duration_ms: expect.any(Number),
@@ -254,6 +256,24 @@ describe("open_url", () => {
         url_hostname: "example.com",
       }),
     );
+  });
+
+  it("bounds provider failures without returning the raw error page", async () => {
+    const body = { cancel: jest.fn(async () => {}) };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      body,
+      text: async () => "PRIVATE_ERROR_PAGE".repeat(50000),
+    });
+    const result = (await runTool(createOpenUrlTool(), {
+      url: "https://example.com",
+      brief: "Read",
+    })) as string;
+    expect(result).toContain("HTTP 502");
+    expect(result).not.toContain("PRIVATE_ERROR_PAGE");
+    expect(safeCountTokens(result)).toBeLessThanOrEqual(12000);
+    expect(body.cancel).toHaveBeenCalled();
   });
 
   it("keeps unexpected tool exceptions as errors", async () => {
