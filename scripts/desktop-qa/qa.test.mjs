@@ -421,6 +421,10 @@ test("start verifies targets but never passes control-plane tokens to its child"
       "user.name=QA Fixture",
       "-c",
       "user.email=qa@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
       "commit",
       "--allow-empty",
       "-qm",
@@ -430,8 +434,14 @@ test("start verifies targets but never passes control-plane tokens to its child"
   );
   await writeFile(join(root, "config.json"), JSON.stringify(c));
   const originalFetch = globalThis.fetch;
+  const verifiedPaths = [];
   t.mock.method(globalThis, "fetch", (url, init) => {
-    if (String(url).startsWith("https://api.trigger.dev/"))
+    if (String(url).startsWith("https://api.trigger.dev/")) {
+      verifiedPaths.push(new URL(url).pathname);
+      assert.equal(
+        init.headers.authorization,
+        "Bearer synthetic-control-token",
+      );
       return Promise.resolve(
         Response.json(
           String(url).endsWith("workers/current")
@@ -439,6 +449,7 @@ test("start verifies targets but never passes control-plane tokens to its child"
             : { externalRef: "proj_example" },
         ),
       );
+    }
     return originalFetch(url, init);
   });
   const oldConvex = process.env.CONVEX_ACCESS_TOKEN;
@@ -455,6 +466,10 @@ test("start verifies targets but never passes control-plane tokens to its child"
     }
   });
   await main(["start", "token-isolation", join(root, "config.json")], root);
+  assert.deepEqual(verifiedPaths, [
+    "/api/v1/projects/proj_example",
+    "/api/v1/projects/proj_example/dev/workers/current",
+  ]);
   assert.deepEqual(JSON.parse(await readFile(output, "utf8")), {
     convex: false,
     trigger: false,
