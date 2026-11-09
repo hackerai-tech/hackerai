@@ -105,11 +105,15 @@ function isAllowedApplicationOrigin(url: URL): boolean {
   return allowedOrigins.has(url.origin);
 }
 
-async function getStripeCustomerId(userId: string): Promise<string | null> {
+async function getStripeCustomerId(
+  userId: string,
+  organizationId?: string,
+): Promise<string | null> {
   const workos = getWorkOS();
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    ...(organizationId && { organizationId }),
     statuses: ["active"],
   });
 
@@ -117,7 +121,11 @@ async function getStripeCustomerId(userId: string): Promise<string | null> {
     return null;
   }
 
-  const billingMembership = memberships.data.find(canManageOrganizationBilling);
+  const billingMembership = memberships.data.find(
+    (membership) =>
+      (!organizationId || membership.organizationId === organizationId) &&
+      canManageOrganizationBilling(membership),
+  );
   if (!billingMembership) {
     return null;
   }
@@ -607,7 +615,21 @@ export const createPurchaseSession = action({
     }
 
     try {
-      const stripeCustomerId = await getStripeCustomerId(identity.subject);
+      // WorkOS access tokens bind the active organization in the signed org_id claim.
+      const activeOrganizationId =
+        typeof identity.org_id === "string" && identity.org_id
+          ? identity.org_id
+          : undefined;
+      if (bundle && !activeOrganizationId) {
+        return {
+          url: null,
+          error: "Select your personal organization before buying a bundle",
+        };
+      }
+      const stripeCustomerId = await getStripeCustomerId(
+        identity.subject,
+        bundle ? activeOrganizationId : undefined,
+      );
       if (!stripeCustomerId) {
         return {
           url: null,
