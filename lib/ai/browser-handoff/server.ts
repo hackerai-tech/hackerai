@@ -316,6 +316,11 @@ export type BrowserCaptureFailureContext = {
   capture_wrapper_exit_code?: number | "none" | "other";
   capture_wrapper_session_matches?: boolean;
   capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_wrapper_history_version?: 1;
+  capture_wrapper_history_scope?: "handoff_root";
+  // Other than a recognized version-only invocation; leading options stay ambiguous.
+  capture_wrapper_other_cli_completed?: boolean;
+  capture_wrapper_option_prefix_completed?: boolean;
   capture_open_receipt_version?: 1;
   capture_open_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -473,6 +478,10 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_wrapper_history_version"
+        | "capture_wrapper_history_scope"
+        | "capture_wrapper_other_cli_completed"
+        | "capture_wrapper_option_prefix_completed"
         | "capture_deadline_diagnostic_version"
         | "capture_deadline_phase"
         | "capture_open_receipt_version"
@@ -571,6 +580,21 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_session_matches =
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
+              }
+              const history = parsed?.history;
+              if (
+                Array.isArray(history) &&
+                history.length === 3 &&
+                history[0] === 1 &&
+                typeof history[1] === "boolean" &&
+                typeof history[2] === "boolean" &&
+                (!history[2] || history[1])
+              ) {
+                precondition.capture_wrapper_history_version = 1;
+                precondition.capture_wrapper_history_scope = "handoff_root";
+                precondition.capture_wrapper_other_cli_completed = history[1];
+                precondition.capture_wrapper_option_prefix_completed =
+                  history[2];
               }
               const openStatus = parsed?.open_receipt_status;
               const openPhase = parsed?.open_phase;

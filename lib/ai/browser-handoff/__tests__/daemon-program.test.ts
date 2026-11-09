@@ -432,6 +432,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
       action: "version",
       open_receipt_support: 1,
       close_receipt_support: 1,
+      history: [1, true, false],
     },
     openReceipt: {
       ...longest,
@@ -447,6 +448,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
   expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
   expect(JSON.parse(text)).toMatchObject({
     deadline: [1, "awaiting_response"],
+    history: [1, true, false],
     open_idle: [1, "unparsed"],
     close_receipt: [
       1,

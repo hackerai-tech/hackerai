@@ -38,6 +38,51 @@ const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
 it.each([
+  [undefined, false],
+  [[1, true, false], true],
+  [[1, false, false], true],
+  [[1, true, true], true],
+  [[2, true, false], false],
+  [[1, false, true], false],
+  [[1, "PRIVATE", false], false],
+  [[1, true, "PRIVATE"], false],
+  [[1, true, false, "PRIVATE"], false],
+])(
+  "projects only bounded root-scoped wrapper completion history (%#)",
+  async (history, valid) => {
+    const sandbox = fixture();
+    sandbox.commands.run.mockRejectedValue(
+      new CommandExitError({
+        exitCode: 2,
+        stderr: "PRIVATE",
+        stdout: JSON.stringify({ diagnostic_reason: "socket_stat", history }),
+      }),
+    );
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toThrow();
+    const context = observe.mock.calls[0][0];
+    if (valid)
+      expect(context).toMatchObject({
+        capture_wrapper_history_version: 1,
+        capture_wrapper_history_scope: "handoff_root",
+        capture_wrapper_other_cli_completed: (history as unknown[])[1],
+        capture_wrapper_option_prefix_completed: (history as unknown[])[2],
+      });
+    else expect(context).not.toHaveProperty("capture_wrapper_history_version");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
   [[1, "15m"], true, "15m"],
   [[1, "unset"], true, "unset"],
   [[1, "PRIVATE_ENV"], true, undefined],
