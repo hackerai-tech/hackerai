@@ -11,19 +11,30 @@ import { createCommandSessionHandle } from "../utils/command-session-handle";
 import { PtySessionManager } from "../utils/pty-session-manager";
 import { createTerminalRecordStore } from "../utils/terminal-execution-record";
 
-async function fixture() {
+async function fixture(coalesced = false) {
   let failSave = false;
-  let release!: () => void;
+  let releaseFirst!: () => void;
   const receipt = new Promise<void>((resolve) => {
-    release = resolve;
+    releaseFirst = resolve;
   });
+  let releaseFinal = releaseFirst;
+  const finalReceipt = coalesced
+    ? new Promise<void>((resolve) => {
+        releaseFinal = resolve;
+      })
+    : receipt;
+  const release = () => {
+    releaseFirst();
+    releaseFinal();
+  };
+  let writes = 0;
   const files = new Map<string, string>();
   const sandbox: any = {
     sandboxId: "recovery-fixture",
     jupyterUrl: "http://fixture.invalid",
     files: {
       write: async (path: string, value: string) => {
-        await receipt;
+        await (writes++ === 0 ? receipt : finalReceipt);
         if (failSave) throw new Error("synthetic write failure");
         files.set(path, value);
       },
@@ -62,6 +73,12 @@ async function fixture() {
       pruneOnStart: false,
     },
   });
+  if (coalesced) {
+    handle.emitText("earlier running output; ");
+    const checkpoint = manager.checkpoint(session);
+    await jest.advanceTimersByTimeAsync(2001);
+    await checkpoint;
+  }
   handle.emitText("retained failed-command output");
   handle.resolveExit(7);
   const forgotten = manager.forget("fixture-chat", session.sessionId);
@@ -92,6 +109,8 @@ async function fixture() {
     manager,
     session,
     release,
+    releaseFirst,
+    releaseFinal,
     interact,
     createHandle,
     kill,
@@ -153,6 +172,33 @@ describe("completed terminal record recovery during a pending save", () => {
       expect(await view).toMatchObject({
         result: { recovered: true, exitCode: 7 },
       });
+    } finally {
+      f.release();
+      await f.manager.closeAll("fixture-chat");
+    }
+  });
+
+  test("waits for the final coalesced record instead of recovering an earlier running snapshot", async () => {
+    const f = await fixture(true);
+    try {
+      const view = f.interact("view");
+      await jest.advanceTimersByTimeAsync(1);
+      f.releaseFirst();
+      await jest.advanceTimersByTimeAsync(2001);
+      expect(await view).toMatchObject({
+        result: { recordPersistencePending: true },
+      });
+      f.releaseFinal();
+      await f.manager.closeAll("fixture-chat");
+      expect(await f.interact("view")).toMatchObject({
+        result: {
+          recovered: true,
+          status: "failed",
+          exitCode: 7,
+          output: "earlier running output; retained failed-command output",
+        },
+      });
+      expect(f.createHandle).toHaveBeenCalledTimes(1);
     } finally {
       f.release();
       await f.manager.closeAll("fixture-chat");
