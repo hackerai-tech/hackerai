@@ -143,6 +143,71 @@ test("saves requested preservation before killing only the selected sandbox; can
     },
   });
 });
+test.each([
+  ["us-west-2", "us-east-1", true],
+  ["us-east-1", "us-west-2", true],
+  ["eu-central-1", "us-east-1", false],
+  ["unknown", "us-east-1", false],
+])(
+  "checks provider cluster for run %s and pinned workspace %s",
+  async (runRegion, workspaceRegion, allowed) => {
+    const originalEuKey = process.env.E2B_EU_API_KEY;
+    process.env.E2B_EU_API_KEY = "synthetic-eu-key";
+    mockRetrieve.mockResolvedValue({
+      taskIdentifier: "agent-long",
+      payload: {
+        userId: "subject",
+        chatId: "chat",
+        convexUrl: "https://preview.convex.cloud",
+        sandboxPreference: "e2b",
+        triggerRegion: runRegion,
+      },
+    });
+    mockState.mockResolvedValue({
+      phase: "e2b",
+      destinationId: "sandbox",
+      region: workspaceRegion,
+    });
+    const result = verifyContainmentTarget({
+      userId: "subject",
+      chatId: "chat",
+      runId: "run_root",
+      sandboxId: "sandbox",
+      region: workspaceRegion,
+    });
+    try {
+      if (allowed) await expect(result).resolves.toBe("cloud");
+      else {
+        await expect(result).rejects.toThrow("Workspace identity required");
+        expect(mockInfo).not.toHaveBeenCalled();
+      }
+    } finally {
+      if (originalEuKey === undefined) delete process.env.E2B_EU_API_KEY;
+      else process.env.E2B_EU_API_KEY = originalEuKey;
+    }
+  },
+);
+test("compatible regions still require the exact selected workspace region", async () => {
+  mockRetrieve.mockResolvedValue({
+    taskIdentifier: "agent-long",
+    payload: {
+      userId: "subject",
+      chatId: "chat",
+      convexUrl: "https://preview.convex.cloud",
+      triggerRegion: "us-west-2",
+    },
+  });
+  await expect(
+    verifyContainmentTarget({
+      userId: "subject",
+      chatId: "chat",
+      runId: "run_root",
+      sandboxId: "sandbox",
+      region: "us-west-2",
+    }),
+  ).rejects.toThrow("Workspace selection changed");
+  expect(mockInfo).not.toHaveBeenCalled();
+});
 test("does not collect a full workspace snapshot unless explicitly requested", async () => {
   await executeAbuseContainment(row(false), "operator");
   expect(mockSnapshot).not.toHaveBeenCalled();

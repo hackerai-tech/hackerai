@@ -68,9 +68,17 @@ export async function verifyContainmentTarget(input: {
         ? "desktop"
         : "local";
   if (transport === "cloud") {
+    const runRegion = payload.triggerRegion ?? "us-east-1";
     if (
       !input.sandboxId ||
-      input.region !== (payload.triggerRegion ?? "us-east-1")
+      !["us-east-1", "us-west-2", "eu-central-1"].includes(runRegion) ||
+      !["us-east-1", "us-west-2", "eu-central-1"].includes(
+        input.region ?? "",
+      ) ||
+      getE2BClusterRouting(runRegion as TriggerRunRegion).createCluster
+        .cluster !==
+        getE2BClusterRouting(input.region as TriggerRunRegion).createCluster
+          .cluster
     )
       throw new Error("Workspace identity required");
     const state = await readCloudWorkspaceState(input.userId);
