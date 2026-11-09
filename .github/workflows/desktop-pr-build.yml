@@ -36,7 +36,8 @@ jobs:
             echo 'desktop=true' >> "$GITHUB_OUTPUT"
           else
             git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
-            packages/desktop package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc \
+            packages/desktop ':(glob)packages/*/package.json' \
+            package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc \
             '.github/workflows/desktop-*.yml' \
             .github/scripts/prepare-desktop-release.sh \
             '.github/scripts/*universal-dmg.sh' \

@@ -20,7 +20,12 @@ from **Desktop PR Builds** for inspection within seven days. They are unsigned
 validation builds; Apple notarization, release signing, and updater publication
 are verified by the release pipeline.
 
-The required **Desktop PR builds** check reports on every PR. Unrelated PRs skip
+These artifacts retain the production frontend, app identifier, and updater
+configuration. Launching them can connect to Production or interact with an
+installed HackerAI app. Use them for package inspection only; for local or
+Preview acceptance, follow the [isolated-build runbook](desktop-local-acceptance.md).
+
+The required **Desktop PR builds** check reports on every PR targeting `main`. Unrelated PRs skip
 platform builds while still completing the gate; a failed applicable package
 blocks the gate. **Run workflow** can build any branch manually as well.
 
