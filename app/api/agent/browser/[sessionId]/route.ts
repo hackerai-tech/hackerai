@@ -15,6 +15,7 @@ import {
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserRelayRenewFailureContext,
   browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
@@ -211,6 +212,9 @@ const unavailablePost = (
           ? action
           : "unknown",
       failure_stage: stage,
+      ...(action === "heartbeat" && stage === "renew_relay"
+        ? browserRelayRenewFailureContext(error)
+        : {}),
       preview_state: recoveryResponse
         ? "recovery"
         : state === "loading"

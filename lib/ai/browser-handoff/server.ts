@@ -44,6 +44,44 @@ const sessionReadFailures = new WeakMap<
   ReturnType<typeof checkpointCloudErrorContext>
 >();
 
+/** Read closed SDK classes and own numeric exit data, never command output. */
+export function browserRelayRenewFailureContext(error: unknown) {
+  let kind:
+    "command_exit" | "timeout" | "other_error" | "thrown_value" | "unreadable" =
+    "thrown_value";
+  let exitCode: number | "none" | "other" = "none";
+  try {
+    if (error instanceof CommandExitError) {
+      kind = "command_exit";
+      exitCode = "other";
+      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const value =
+        result && typeof result === "object"
+          ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
+          : undefined;
+      if (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 255
+      )
+        exitCode = value;
+    } else if (error instanceof TimeoutError) {
+      kind = "timeout";
+    } else if (error instanceof Error) {
+      kind = "other_error";
+    }
+  } catch {
+    kind = "unreadable";
+    exitCode = "other";
+  }
+  return {
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: kind,
+    relay_renew_command_exit_code: exitCode,
+  };
+}
+
 /** Read optional diagnostics without adding error properties to HTTP responses. */
 export function browserSessionReadFailureContext(error: unknown) {
   const context =
