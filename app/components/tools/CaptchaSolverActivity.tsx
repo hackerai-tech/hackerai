@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { LoaderCircle, Puzzle } from "lucide-react";
+import { CircleAlert, LoaderCircle, Puzzle } from "lucide-react";
 import ToolBlock from "@/components/ui/tool-block";
 import {
   formatCaptchaElapsed,
@@ -10,13 +10,11 @@ import {
 
 export function CaptchaSolverActivity({
   activity,
-  command,
   compact = false,
   onClick,
   onKeyDown,
 }: {
   activity: CaptchaActivity;
-  command: string;
   compact?: boolean;
   onClick?: () => void;
   onKeyDown?: (event: React.KeyboardEvent) => void;
@@ -56,54 +54,53 @@ export function CaptchaSolverActivity({
       />
     );
   const detail = {
-    solving: "Waiting for the solver response. Time varies by challenge.",
-    response_delivered:
-      "The response reached the page. Website acceptance is checked separately.",
+    solving: undefined,
+    response_delivered: "Website acceptance is checked separately.",
     needs_verification:
-      "Automatic solving could not finish verification. Check the Agent’s result before continuing.",
-    failed:
-      "The solve could not finish. Check the Agent’s result for the next step.",
-    stopped:
-      "Solve stopped. A provider charge may still apply; check the Agent’s recap.",
+      "Automatic solving could not finish. Manual verification may be needed.",
+    failed: "The solve could not finish. See the Agent’s reply.",
+    stopped: "A provider charge may still apply. Check the Agent’s recap.",
     unavailable: "Automatic solving is unavailable for this request.",
-    preparation_required:
-      "The browser needs preparation before a paid solve can start.",
-    not_needed: "The page no longer reports a pending challenge.",
+    preparation_required: "Close the open challenge before solving.",
+    not_needed: undefined,
   }[activity.state];
   return (
     <section
       aria-label="CAPTCHA solver"
-      className="whitespace-normal p-4 font-sans text-sm text-foreground"
+      className="whitespace-normal px-3 py-3 font-sans text-sm text-foreground"
     >
-      <div className="rounded-[15px] border border-border bg-muted/20 p-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className="flex h-4 w-4 shrink-0 items-center justify-center [&>svg]:h-4 [&>svg]:w-4"
-            aria-hidden="true"
-          >
-            {icon}
-          </span>
-          <span role="status" className="min-w-0 flex-1 font-medium">
-            {label}
-          </span>
-          {elapsed !== undefined && (
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-              {formatCaptchaElapsed(elapsed)} elapsed
-            </span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground [&>svg]:h-4 [&>svg]:w-4"
+          aria-hidden="true"
+        >
+          {active ? (
+            icon
+          ) : activity.state === "failed" ||
+            activity.state === "needs_verification" ? (
+            <CircleAlert />
+          ) : (
+            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
           )}
-        </div>
-        <p className="mt-3 text-[13px] leading-5 text-muted-foreground">
+        </span>
+        <span role="status" className="min-w-0 truncate font-medium">
+          {label}
+        </span>
+        {elapsed !== undefined && (
+          <span
+            aria-label="Elapsed time"
+            className="shrink-0 text-xs tabular-nums text-muted-foreground"
+          >
+            · {formatCaptchaElapsed(elapsed)}
+            <span className="sr-only"> elapsed</span>
+          </span>
+        )}
+      </div>
+      {detail && (
+        <p className="mt-1 pl-6 text-[13px] leading-5 text-muted-foreground">
           {detail}
         </p>
-        <details className="mt-4 border-t border-border pt-3">
-          <summary className="cursor-pointer text-xs text-muted-foreground">
-            Command details
-          </summary>
-          <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-xs text-muted-foreground">
-            {command}
-          </pre>
-        </details>
-      </div>
+      )}
     </section>
   );
 }

@@ -252,8 +252,7 @@ export const TerminalCodeBlock = ({
     setIsWrapped(wrap);
   }, [wrap]);
 
-  if (captcha)
-    return <CaptchaSolverActivity activity={captcha} command={command} />;
+  if (captcha) return <CaptchaSolverActivity activity={captcha} />;
 
   const isInteractiveAction = isInteractiveShellAction(shellAction);
   const commandPrefix = shellAction === "send" ? ">" : "$";

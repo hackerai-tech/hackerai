@@ -802,10 +802,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       Proxy
                     </div>
                   ) : isTerminal && resolvedTerminal?.captcha ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Puzzle size={14} aria-hidden="true" />
-                      CAPTCHA solver
-                    </div>
+                    <Puzzle
+                      size={14}
+                      aria-hidden="true"
+                      className="text-muted-foreground"
+                    />
                   ) : isTerminal ? (
                     <Terminal
                       size={14}
@@ -846,13 +847,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 <div
                   className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
                 >
-                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
-                    <ExpandedTerminalButton
-                      key={resolvedTerminal.toolCallId}
-                      terminal={resolvedTerminal}
-                      onExpand={() => setIsFollowingLive(false)}
-                    />
-                  )}
+                  {isTerminal &&
+                    resolvedTerminal &&
+                    !resolvedTerminal.captcha &&
+                    browserPreviewVisible && (
+                      <ExpandedTerminalButton
+                        key={resolvedTerminal.toolCallId}
+                        terminal={resolvedTerminal}
+                        onExpand={() => setIsFollowingLive(false)}
+                      />
+                    )}
                   {!isWebSearch &&
                     !(isTerminal && resolvedTerminal?.captcha) &&
                     !isNotes &&

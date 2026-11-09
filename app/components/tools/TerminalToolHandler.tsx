@@ -189,7 +189,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       <CaptchaSolverActivity
         key={toolCallId}
         activity={sidebarContent.captcha}
-        command={sidebarContent.command}
         compact
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { CaptchaSolverActivity } from "../CaptchaSolverActivity";
 import { computeShellTerminalBlock } from "../shell-tool-utils";
 import { getCaptchaStartedAt } from "../captcha-tool-utils";
@@ -12,17 +12,15 @@ it("shows real elapsed time while solving and freezes the recorded duration on d
   jest.setSystemTime(100_000);
   const view = render(
     <CaptchaSolverActivity
-      command={command}
       activity={{ state: "solving", startedAt: 75_000 }}
     />,
   );
   act(() => jest.advanceTimersByTime(1000));
-  expect(screen.getByText("0:26 elapsed")).toBeVisible();
+  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:26");
   act(() => jest.advanceTimersByTime(1000));
-  expect(screen.getByText("0:27 elapsed")).toBeVisible();
+  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:27");
   view.rerender(
     <CaptchaSolverActivity
-      command={command}
       activity={{
         state: "response_delivered",
         startedAt: 75_000,
@@ -35,10 +33,7 @@ it("shows real elapsed time while solving and freezes the recorded duration on d
     screen.getByText(/Website acceptance is checked separately/),
   ).toBeVisible();
   act(() => jest.advanceTimersByTime(10_000));
-  expect(screen.getByText("0:27 elapsed")).toBeVisible();
-  expect(screen.getByText(command)).not.toBeVisible();
-  fireEvent.click(screen.getByText("Command details"));
-  expect(screen.getByText(command)).toBeVisible();
+  expect(screen.getByLabelText("Elapsed time")).toHaveTextContent("0:27");
 });
 
 it("uses only this tool's start event and never presents a verification failure as success", () => {
@@ -77,11 +72,7 @@ it("uses only this tool's start event and never presents a verification failure 
   });
   expect(block.sidebarContent?.captcha?.state).toBe("needs_verification");
   render(
-    <CaptchaSolverActivity
-      command={command}
-      activity={block.sidebarContent!.captcha!}
-      compact
-    />,
+    <CaptchaSolverActivity activity={block.sidebarContent!.captcha!} compact />,
   );
   expect(screen.getByText("Needs verification")).toBeVisible();
   expect(screen.queryByText(/solved|success/i)).not.toBeInTheDocument();
