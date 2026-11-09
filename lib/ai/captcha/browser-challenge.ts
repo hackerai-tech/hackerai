@@ -483,9 +483,11 @@ export function createBrowserChallengeHandler(
         record("browser_captcha_solver_result", {
           outcome: deliveryStarted
             ? "delivery_outcome_unknown"
-            : solverTimedOut
-              ? "solver_timeout"
-              : "provider_outcome_unknown",
+            : signal.aborted
+              ? "canceled_while_solving"
+              : solverTimedOut
+                ? "solver_timeout"
+                : "provider_outcome_unknown",
           charge_status: costRecorded ? "recorded" : "unreconciled",
         });
       signal.throwIfAborted();
