@@ -11,6 +11,7 @@ import { createCommandSessionHandle } from "../utils/command-session-handle";
 import { PtySessionManager } from "../utils/pty-session-manager";
 import { createTerminalRecordStore } from "../utils/terminal-execution-record";
 
+/** Hold record writes independently so recovery cannot mistake a running snapshot for the final record. */
 async function fixture(coalesced = false) {
   let failSave = false;
   let releaseFirst!: () => void;
