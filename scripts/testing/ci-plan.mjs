@@ -71,6 +71,9 @@ export function selectPlan(
         "docs/safe-local-diagnostics.md",
       ].includes(path)
     ) {
+      // These isolated suites currently execute JavaScript and JSON fixtures.
+      // A new source/runtime type needs the broad checks until classified.
+      if (!/\.(?:[cm]?js|json|md)$/.test(path)) return complete();
       for (const suite of selectSuites([path])) tooling.add(suite.name);
       if (/\.[cm]?js$/.test(path)) security.add("javascript-typescript");
       continue;
