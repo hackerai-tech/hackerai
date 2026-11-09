@@ -53,7 +53,7 @@ jest.mock("../utils/sandbox-file-uploader", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
-import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createGetTerminalFiles } from "../get-terminal-files";
@@ -2660,6 +2660,53 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
   });
+
+  test.each([false, true])(
+    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s)",
+    async (rejected) => {
+      const privateOutput =
+        "Navigation failed: net::ERR_NAME_NOT_RESOLVED https://private.example/token";
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStderr?: (s: string) => void }) => {
+              opts?.onStderr?.(privateOutput);
+              if (rejected) throw new CommandExitError("exit" as never);
+              return { stdout: "", stderr: privateOutput, exitCode: 1 };
+            },
+          ),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const output = await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://private.example/token",
+        is_background: false,
+        timeout: 5,
+      });
+      expect(output.result).toMatchObject({
+        exitCode: 1,
+        output: privateOutput,
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_open_failure",
+        expect.objectContaining({
+          browser_open_failure_version: 2,
+          observation_scope: "terminal_result_open_intent",
+          public_output_hint: "navigation",
+          exit_code: 1,
+          owner_trigger_run_id: context.triggerRunId,
+        }),
+      );
+      const diagnostic = mockPhEvent.mock.calls.find(
+        ([event]) => event === "agent_browser_terminal_open_failure",
+      );
+      expect(JSON.stringify(diagnostic)).not.toContain("private.example");
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test.each([
     ["recorded", "run_aaaaaaaaaaaaaaaaaaaaaaaaaa"],

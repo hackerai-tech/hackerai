@@ -998,6 +998,39 @@ describe("buildProviderOptions fallback chain", () => {
     },
   );
 
+  it.each([
+    undefined,
+    { enabled: true, effort: "low" },
+    { enabled: true, effort: "max" },
+    { enabled: false },
+    { enabled: true, effort: "high", exclude: true },
+  ])(
+    "pins Max Grok text and vision to high reasoning with override %p",
+    (reasoningOverride) => {
+      const opts = buildProviderOptions(
+        true,
+        "user-1",
+        "model-grok-4.6",
+        "agent",
+        {
+          selectedModelOverride: "hackerai-max",
+          reasoningOverride,
+          hasMultimodalToolResults: true,
+        },
+      );
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+      expect(opts.openrouter).not.toHaveProperty("models");
+      expect(
+        getRetryFallbackModel("model-grok-4.6", "agent", "hackerai-max", {
+          hasImageInputs: true,
+        }),
+      ).toBe(DEEPSEEK_1017_MODEL_KEY);
+    },
+  );
+
   it("enables high reasoning for the DeepSeek Pro route with a GLM fallback", () => {
     const opts = buildProviderOptions(
       false,

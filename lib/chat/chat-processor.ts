@@ -42,8 +42,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
  *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
  *   reasoning; explicit Pro uses max reasoning, including images.
- *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
- *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
+ *   Max defaults to GLM text and DeepSeek images. The server-side Max
+ *   experiment selects Grok after entitlement and media processing.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
@@ -116,11 +116,9 @@ export function selectModel(
     return autoModel;
   }
 
-  // The exact snapshot key applies Max reasoning in buildProviderOptions.
   if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
     return DEEPSEEK_1017_MODEL_KEY;
   }
-
   const providerKey = resolveAgentTierToProviderKey(allowedSelectedModel);
   return providerKey ?? autoModel;
 }
