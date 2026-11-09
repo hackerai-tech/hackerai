@@ -12,6 +12,7 @@ const exercise = (
   args = ["--session", "PRIVATE_SESSION", "open", "PRIVATE_TARGET"],
   verify = false,
   idleEnv?: string,
+  initializeHistory = true,
 ) =>
   JSON.parse(
     execFileSync(
@@ -23,6 +24,9 @@ x=json.load(sys.stdin)
 os.environ.pop('AGENT_BROWSER_IDLE_TIMEOUT_MS',None)
 if x.get('idleEnv') is not None: os.environ['AGENT_BROWSER_IDLE_TIMEOUT_MS']=x['idleEnv']
 root=pathlib.Path(x['root'])
+if x['initializeHistory'] and not x['blocked'] and not (root/'wrapper-receipt.json').exists():
+    (root/'wrapper-receipt.json').write_text(json.dumps({'history':[1,False,False]}))
+    (root/'wrapper-receipt.json').chmod(0o600)
 real=root/'fake-browser'
 real.write_text('#!/usr/bin/env python3\\nimport json,pathlib,sys\\nr=pathlib.Path('+repr(str(root))+')\\np=r/"wrapper-receipt.json"\\n(r/"observed.json").write_text(p.read_text() if p.is_file() else "null")\\nsys.exit('+str(x['exit'])+')\\n')
 real.chmod(0o700)
@@ -51,6 +55,7 @@ print(json.dumps({'status':result.returncode,'started':json.loads(observed.read_
           args,
           verify,
           idleEnv,
+          initializeHistory,
           program: BROWSER_SESSION_PROGRAM,
         }),
         encoding: "utf8",
@@ -223,4 +228,58 @@ it("does not replace the retained close with a help-only invocation", () => {
   expect(help.status).toBe(0);
   expect(help.finished.action).toBe("other");
   expect(help.close).toEqual(closed.close);
+});
+
+it("retains completed non-version and ambiguous-option observations across version checks and session changes", () => {
+  expect(exercise(root, 0, false, ["--version"]).finished.history).toEqual([
+    1,
+    false,
+    false,
+  ]);
+  const other = exercise(root, 37, false, [
+    "--headed",
+    "open",
+    "PRIVATE_TARGET",
+  ]);
+  expect(other.status).toBe(37);
+  expect(other.finished.action).toBe("other");
+  expect(other.finished.history).toEqual([1, true, true]);
+  const later = exercise(root, 0, false, [
+    "--session",
+    "OTHER_PRIVATE_SESSION",
+    "--version",
+  ]);
+  expect(later.finished.history).toEqual([1, true, true]);
+  expect(JSON.stringify(later)).not.toMatch(/PRIVATE_TARGET|PRIVATE_SESSION/);
+});
+
+it("does not count an option-prefixed CLI request blocked by resume verification as completed", () => {
+  const blocked = exercise(
+    root,
+    0,
+    false,
+    ["--headed", "open", "PRIVATE_TARGET"],
+    true,
+  );
+  expect(blocked.status).toBe(75);
+  expect(blocked.started).toBeNull();
+  // The fixture's successful snapshot ran, but the option-prefixed command did not.
+  expect(blocked.finished.history).toEqual([1, true, false]);
+  expect(blocked.verify_required).toBe(true);
+});
+
+it("keeps uninitialized legacy history unmeasured instead of inventing a negative observation", () => {
+  const legacy = exercise(
+    root,
+    0,
+    false,
+    ["--version"],
+    false,
+    undefined,
+    false,
+  );
+  expect(legacy.finished).not.toHaveProperty("history");
+  const later = exercise(root, 37, false, ["snapshot", "-i"]);
+  expect(later.status).toBe(37);
+  expect(later.finished).not.toHaveProperty("history");
 });

@@ -148,7 +148,7 @@ def invocation_idle_env():
     if timeout > 18446744073709551615: return 'unparsed'
     return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
 
-def record_wrapper(phase, status=None):
+def record_wrapper(phase, status=None, executed=False):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
     # targets or output; the reader exports session equality, not its name.
@@ -157,6 +157,7 @@ def record_wrapper(phase, status=None):
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             return
         action = 'other'
+        option_prefix = False
         args = iter(sys.argv[1:])
         for arg in args:
             if arg == '--session':
@@ -164,6 +165,7 @@ def record_wrapper(phase, status=None):
             elif arg.startswith('--session='):
                 continue
             elif arg.startswith('-'):
+                option_prefix = True
                 break  # Unknown option values must not be mistaken for actions.
             else:
                 action = arg if arg in ('open', 'close') else 'other'
@@ -179,10 +181,26 @@ def record_wrapper(phase, status=None):
                     action = 'other'
         if sys.argv[3:] in (['--version'], ['-V']):
             action = 'version'
+            option_prefix = False
         value = dict(v=1, open_receipt_support=1, close_receipt_support=1, close_all=close_all, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
         if action == 'open':
             value.update(idle_env_version=1, idle_env=invocation_idle_env())
+        # Root-scoped retained observations, not proof of browser startup or of
+        # no execution. A later version check must not erase a returned CLI call.
+        previous_fd = None
+        try:
+            previous_fd = os.open(str(root / 'wrapper-receipt.json'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            previous_info = os.fstat(previous_fd)
+            if not __import__('stat').S_ISREG(previous_info.st_mode) or previous_info.st_uid != os.getuid() or previous_info.st_mode & 0o077 or not 0 < previous_info.st_size <= 512:
+                raise ValueError('Unavailable receipt')
+            history = json.loads(os.read(previous_fd, 513)).get('history')
+            if isinstance(history, list) and len(history) == 3 and type(history[0]) is int and history[0] == 1 and type(history[1]) is bool and type(history[2]) is bool and (not history[2] or history[1]):
+                value['history'] = [1, history[1] or (executed and action != 'version'), history[2] or (executed and option_prefix)]
+        except Exception:
+            pass  # Legacy, missing and unreadable history remains unmeasured.
+        finally:
+            if previous_fd is not None: os.close(previous_fd)
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', value)
@@ -221,13 +239,13 @@ if verify.exists():
     result = __import__('subprocess').run([%r, *args], close_fds=True)
     if result.returncode == 0:
         verify.unlink(missing_ok=True)
-    record_wrapper('completed', result.returncode)
+    record_wrapper('completed', result.returncode, True)
     sys.exit(result.returncode)
 result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
 if result.returncode == 0 and os.environ.get('HACKERAI_BROWSER_INSPECTION') != '1':
     environment_path.write_text(environment_digest)
     environment_path.chmod(0o600)
-record_wrapper('completed', result.returncode)
+record_wrapper('completed', result.returncode, True)
 sys.exit(result.returncode)
 ''' % (str(root), real, real)
         path = gate_bin / 'agent-browser'
@@ -252,6 +270,12 @@ trap '_hackerai_browser_guard "$BASH_COMMAND"' DEBUG
         guard_path = shim_root / 'guard.sh'
         guard_path.write_text(guard)
         guard_path.chmod(0o700)
+        try:
+            # Initialize only this newly prepared private root, before bootstrap.
+            with os.fdopen(os.open(str(root / 'wrapper-receipt.json'), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), 'w') as output:
+                json.dump({'history':[1,False,False]}, output)
+        except Exception:
+            pass  # Optional diagnostics cannot prevent browser preparation.
         subprocess.run([str(path), '--version'], env=os.environ,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10, check=True)

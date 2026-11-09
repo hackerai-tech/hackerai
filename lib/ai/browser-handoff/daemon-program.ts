@@ -107,6 +107,14 @@ function wrapperReceipt() {
       // Older workers do not write the sticky receipt; absence is not no-open evidence.
       open_receipt_status: receipt.open_receipt_support === 1 ? 'not_observed' : 'unavailable',
     };
+    const history = receipt.history;
+    if (Array.isArray(history) && history.length === 3 && history[0] === 1 &&
+        typeof history[1] === 'boolean' && typeof history[2] === 'boolean' &&
+        (!history[2] || history[1])) {
+      // Compact version1 history keeps maximal combined context <=512 bytes.
+      // Bit1: other CLI returned; bit2: an option-prefixed CLI returned (implies bit1).
+      result.h1 = (history[1] ? 1 : 0) + (history[2] ? 2 : 0);
+    }
     let open;
     if (receipt.open_receipt_support === 1) {
       try {
