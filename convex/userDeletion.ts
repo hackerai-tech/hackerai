@@ -214,10 +214,12 @@ async function collectByIndexBatch<T extends AnyDoc>(
   build: (q: any) => any,
   requestedLimit = MAX_CLEANUP_DOCS_PER_MUTATION,
 ): Promise<IndexedBatch<T>> {
-  // Keep one worst-case document available for dependent lookups. Chats need
-  // an indexed summary plus a possible legacy latest-summary lookup.
+  // Reserve worst-case dependent lookups: chats need up to two summaries;
+  // messages need their feedback and search text before either can be deleted.
   const reservedBytes =
-    table === "chats" ? 2 * MAX_DOCUMENT_BYTES : MAX_DOCUMENT_BYTES;
+    table === "chats" || table === "messages"
+      ? 2 * MAX_DOCUMENT_BYTES
+      : MAX_DOCUMENT_BYTES;
   const limit = Math.min(requestedLimit, budget.remaining - 1);
   if (
     limit <= 0 ||
@@ -389,9 +391,9 @@ async function cleanupUserDataForUser(
     remainingBytes: MAX_CLEANUP_READ_BYTES,
   };
 
-  // A message may point to one feedback document that must be deleted first,
-  // so reserve enough of the shared budget for those direct lookups.
-  const messageLimit = Math.floor((budget.remaining - 1) / 2);
+  // A message can require both feedback and search reads. Reserve their
+  // document budget as well as the byte budget before selecting bodies.
+  const messageLimit = Math.floor((budget.remaining - 1) / 3);
   const messagesBatch = await collectByIndexBatch<Doc<"messages">>(
     ctx,
     budget,
@@ -400,28 +402,50 @@ async function cleanupUserDataForUser(
     (q) => q.eq("user_id", userId),
     messageLimit,
   );
-  const messageSearchBatch = await collectByIndexBatch<Doc<"message_search">>(
-    ctx,
-    budget,
-    "message_search",
-    "by_user_id",
-    (q) => q.eq("user_id", userId),
-  );
   const messages: Doc<"messages">[] = [];
   const feedback: Array<Doc<"feedback"> | null> = [];
+  const pairedSearch: Array<Doc<"message_search"> | null> = [];
   for (const message of messagesBatch.docs) {
+    let messageFeedback: Doc<"feedback"> | null = null;
     if (message.feedback_id) {
       if (!canReadDocument(budget)) {
-        // Keep the message's pointer until its feedback can be deleted too.
         messagesBatch.hasMore = true;
         continue;
       }
-      const doc = await ctx.db.get(message.feedback_id);
-      chargeRead(budget, doc);
-      feedback.push(doc);
+      messageFeedback = await ctx.db.get(message.feedback_id);
+      chargeRead(budget, messageFeedback);
     }
+    if (!canReadDocument(budget)) {
+      // Keep both the body and its feedback until search can be read too.
+      messagesBatch.hasMore = true;
+      continue;
+    }
+    const search = await firstByIndex<Doc<"message_search">>(
+      ctx,
+      "message_search",
+      "by_message_id",
+      (q) => q.eq("message_id", message._id),
+    );
+    chargeRead(budget, search);
     messages.push(message);
+    feedback.push(messageFeedback);
+    pairedSearch.push(search);
   }
+
+  // Only clear orphan search rows once this transaction deletes every body.
+  // Otherwise a deferred message still needs its exact text for restoration.
+  const allMessagesDeleted =
+    !messagesBatch.hasMore && messages.length === messagesBatch.docs.length;
+  const messageSearchBatch = allMessagesDeleted
+    ? await collectByIndexBatch<Doc<"message_search">>(
+        ctx,
+        budget,
+        "message_search",
+        "by_user_id",
+        (q) => q.eq("user_id", userId),
+      )
+    : { docs: [], hasMore: false };
+  const messageSearchRows = [...pairedSearch, ...messageSearchBatch.docs];
 
   // Limit candidates to leave room for dependent lookups; every read also
   // checks the shared budget.
@@ -682,7 +706,7 @@ async function cleanupUserDataForUser(
   );
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
-  await deleteDocs(ctx, stats, "message_search", messageSearchBatch.docs, mode);
+  await deleteDocs(ctx, stats, "message_search", messageSearchRows, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
   await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);

@@ -573,6 +573,7 @@ export default defineSchema({
     name: v.literal("search_text"),
     phase: v.union(
       v.literal("copying"),
+      v.literal("pruning"),
       v.literal("stripping"),
       v.literal("ready"),
       v.literal("restoring"),

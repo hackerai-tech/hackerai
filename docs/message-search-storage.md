@@ -18,8 +18,12 @@ use an explicitly selected deployment to invoke these **internal** mutations:
 Each call is bounded by document count and bytes. The cursor is stored on the
 backend; retrying a failed call or restarting the client resumes safely. During
 `copying`, writes maintain both representations and searches still use the legacy
-index. Only a completed copy enables separate search reads. `stripping` then
+index. After copying, `pruning` removes orphan search rows left by old-code deletes
+after a previous restore. Search remains on the legacy index until this bounded
+pass also completes. `stripping` then
 removes the duplicate text from message bodies; `ready` is the final phase.
+Stripping repairs a missing search row from its remaining legacy text before
+removing that last copy; a missing row without legacy text fails closed.
 New search records use their own creation timestamp from the same transaction;
 backfilled records preserve the original message creation timestamp explicitly.
 
@@ -32,7 +36,7 @@ Invoke `start` with `{ "direction": "restore" }`, then call `advance` until it
 returns `phase: "legacy"` and `done: true`. Searches keep using the separate table
 while the exact indexed text is restored. Concurrent writes maintain both copies.
 Only after restoration completes is code using the old index safe to deploy.
-A restore requested during `copying` can return to legacy immediately because no
+A restore requested during `copying` or `pruning` can return to legacy immediately because no
 legacy text has been removed yet. Separating again runs a fresh bounded copy.
 
 Missing search records after cutover are consistency errors. Migration fails

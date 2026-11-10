@@ -1413,48 +1413,78 @@ describe("userDeletion", () => {
     }));
     const { ctx, readCounter } = createMockCtx(tables);
 
-    const firstBatch = await deleteAllUserDataByService.handler(ctx as any, {
-      serviceKey: "service_key",
-      userId: "user_123",
-    });
-    const firstBatchReads = readCounter.value;
-
-    expect(firstBatch.hasMore).toBe(true);
-    expect(
-      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
-    ).toHaveLength(52);
-    expect(tables.feedback).toHaveLength(52);
-    expect(firstBatchReads).toBeLessThanOrEqual(100);
-    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
-
-    const secondBatch = await deleteAllUserDataByService.handler(ctx as any, {
-      serviceKey: "service_key",
-      userId: "user_123",
-    });
-    const secondBatchReads = readCounter.value - firstBatchReads;
-
-    expect(secondBatch.hasMore).toBe(true);
-    expect(
-      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
-    ).toHaveLength(3);
-    expect(tables.feedback).toHaveLength(3);
-    expect(secondBatchReads).toBeLessThanOrEqual(100);
-    expect(row(tables, "chats", "chat-doc")).toBeTruthy();
-
-    const thirdBatch = await deleteAllUserDataByService.handler(ctx as any, {
-      serviceKey: "service_key",
-      userId: "user_123",
-    });
-    const thirdBatchReads =
-      readCounter.value - firstBatchReads - secondBatchReads;
-
-    expect(thirdBatch.hasMore).toBe(false);
-    expect(
-      tables.messages.filter((candidate) => candidate.user_id === "user_123"),
-    ).toHaveLength(0);
+    let done = false;
+    let passes = 0;
+    while (!done && passes++ < 10) {
+      readCounter.value = 0;
+      readCounter.bytes = 0;
+      const before = tables.messages.length;
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      expect(readCounter.value).toBeLessThanOrEqual(100);
+      expect(tables.messages.length).toBeLessThanOrEqual(before);
+      expect(tables.feedback.length).toBe(tables.messages.length);
+      if (tables.messages.length)
+        expect(row(tables, "chats", "chat-doc")).toBeTruthy();
+      done = !result.hasMore;
+    }
+    expect(done).toBe(true);
+    expect(passes).toBeGreaterThan(1);
+    expect(tables.messages).toHaveLength(0);
     expect(tables.feedback).toHaveLength(0);
-    expect(thirdBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it("retains search text for every body deferred by cleanup budgets", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const tables: Tables = {
+      messages: Array.from({ length: 101 }, (_, i) => ({
+        _id: `m${i}`,
+        id: `m${i}`,
+        user_id: "user_123",
+        chat_id: "chat",
+        parts: [{ type: "text", text: "full body" }],
+        feedback_id: `f${i}`,
+      })),
+      feedback: Array.from({ length: 101 }, (_, i) => ({
+        _id: `f${i}`,
+        feedback_type: "positive",
+      })),
+      message_search: Array.from({ length: 101 }, (_, i) => ({
+        _id: `s${i}`,
+        message_id: `m${i}`,
+        user_id: "user_123",
+        content: `exact prefix ${i}`,
+      })),
+    };
+    const { ctx, readCounter } = createMockCtx(tables);
+    let done = false;
+    for (let pass = 0; pass < 10 && !done; pass++) {
+      readCounter.value = 0;
+      readCounter.bytes = 0;
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      expect(readCounter.value).toBeLessThanOrEqual(100);
+      for (const message of tables.messages) {
+        expect(
+          tables.message_search.find(
+            (search) => search.message_id === message._id,
+          )?.content,
+        ).toBe(`exact prefix ${message._id.slice(1)}`);
+      }
+      expect(
+        new Set(tables.message_search.map((search) => search.message_id)),
+      ).toEqual(new Set(tables.messages.map((message) => message._id)));
+      done = !result.hasMore;
+    }
+    expect(done).toBe(true);
+    expect(tables.messages).toHaveLength(0);
+    expect(tables.message_search).toHaveLength(0);
+    expect(tables.feedback).toHaveLength(0);
   });
 
   it("makes progress deleting near-limit chats with stable ownership records", async () => {
@@ -1510,6 +1540,12 @@ describe("userDeletion", () => {
           parts: [{ text: payload }],
           feedback_id: `f${i}`,
         })),
+        message_search: Array.from({ length: 24 }, (_, i) => ({
+          _id: `ms${i}`,
+          message_id: `m${i}`,
+          user_id: "user_123",
+          content: "x".repeat(30 * 1024),
+        })),
         feedback: Array.from({ length: 24 }, (_, i) => ({
           _id: `f${i}`,
           feedback_details: payload,
@@ -1564,6 +1600,9 @@ describe("userDeletion", () => {
                 dryRun: false,
               });
         expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+        expect(
+          new Set(tables.message_search.map((search) => search.message_id)),
+        ).toEqual(new Set(tables.messages.map((message) => message._id)));
         for (const feedback of tables.feedback) {
           expect(
             tables.messages.some(
@@ -1589,6 +1628,7 @@ describe("userDeletion", () => {
       expect(passes).toBeGreaterThan(1);
       for (const table of [
         "messages",
+        "message_search",
         "feedback",
         "chats",
         "chat_summaries",

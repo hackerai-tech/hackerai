@@ -285,6 +285,54 @@ describe("message search separation", () => {
     );
   });
 
+  it("removes search rows left by old-code deletes before re-cutover", async () => {
+    const { ctx, tables } = database();
+    const deleted = await insertMessageWithSearch(
+      ctx,
+      message("deleted", "must disappear"),
+    );
+    const retained = await insertMessageWithSearch(
+      ctx,
+      message("retained", "must remain"),
+    );
+    await start.handler(ctx, { direction: "separate" });
+    await finish(ctx);
+    await start.handler(ctx, { direction: "restore" });
+    await finish(ctx);
+    // Simulate the documented old-code rollback: its delete knows only bodies.
+    await ctx.db.delete(deleted);
+    await start.handler(ctx, { direction: "separate" });
+    await advance.handler(ctx, {});
+    expect((await getMessageSearchMigration(ctx)).phase).toBe("pruning");
+    expect(
+      usesSeparateMessageSearch(await getMessageSearchMigration(ctx)),
+    ).toBe(false);
+    await finish(ctx);
+    expect(tables.message_search.map((row) => row.message_id)).toEqual([
+      retained,
+    ]);
+    expect(tables.message_search[0].content).toBe("must remain");
+  });
+
+  it("repairs a missing search row before removing its last legacy text", async () => {
+    const { ctx, tables } = database();
+    const id = await insertMessageWithSearch(
+      ctx,
+      message("repair", "exact retained prefix"),
+    );
+    await start.handler(ctx, { direction: "separate" });
+    await advance.handler(ctx, {});
+    await advance.handler(ctx, {});
+    expect((await getMessageSearchMigration(ctx)).phase).toBe("stripping");
+    await ctx.db.delete(tables.message_search[0]._id);
+    await finish(ctx);
+    expect((await ctx.db.get(id)).content).toBeUndefined();
+    expect(tables.message_search[0].content).toBe("exact retained prefix");
+    await start.handler(ctx, { direction: "restore" });
+    await finish(ctx);
+    expect((await ctx.db.get(id)).content).toBe("exact retained prefix");
+  });
+
   it("rejects edits that would make legacy restoration exceed the document limit", async () => {
     const { ctx } = database();
     await start.handler(ctx, { direction: "separate" });
