@@ -154,7 +154,7 @@ const SharedLinksTab = () => {
                 size="sm"
                 onClick={() => handleCopyLink(chat.share_id!, chat.title)}
                 aria-label="Copy share link"
-                title="Copy link"
+                title="Copiar link"
               >
                 <Copy className="h-4 w-4" />
               </Button>
@@ -198,7 +198,9 @@ const SharedLinksTab = () => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isUnsharing}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isUnsharing}>
+              Cancelar
+            </AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {
                 event.preventDefault();
@@ -237,7 +239,7 @@ const SharedLinksTab = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isUnsharingAll}>
-              Cancel
+              Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {

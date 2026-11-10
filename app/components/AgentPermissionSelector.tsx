@@ -44,23 +44,23 @@ type PermissionOption = {
 const baseOptions: PermissionOption[] = [
   {
     id: "ask_approval",
-    label: "Ask for approval",
+    label: "Pedir aprovação",
     description: "Always ask before commands and file changes.",
-    shortLabel: "Ask for approval",
+    shortLabel: "Pedir aprovação",
     icon: Hand,
   },
   {
     id: "auto_review",
-    label: "Approve for me",
+    label: "Aprovar por mim",
     description: "Only ask for actions detected as potentially unsafe.",
-    shortLabel: "Approve for me",
+    shortLabel: "Aprovar por mim",
     icon: ShieldCheck,
   },
   {
     id: "full_access",
-    label: "Full access",
+    label: "Acesso completo",
     description: "Run commands and edit files without asking.",
-    shortLabel: "Full access",
+    shortLabel: "Acesso completo",
     icon: ShieldAlert,
   },
 ];
@@ -82,7 +82,8 @@ export function AgentPermissionSelector({
   const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
     useAgentAutoReviewAvailability();
   useEffect(() => {
-    resolveAgentAutoReviewAvailability();
+    if (process.env.NEXT_PUBLIC_SELF_HOSTED !== "true")
+      resolveAgentAutoReviewAvailability();
   }, [resolveAgentAutoReviewAvailability]);
 
   useEffect(() => {
@@ -224,6 +225,16 @@ export function AgentPermissionSelector({
       })}
     </div>
   );
+
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return (
+      <span
+        className="px-2 text-xs text-muted-foreground"
+        title="O agente pode executar comandos e alterar arquivos no sandbox isolado."
+      >
+        Acesso ao sandbox
+      </span>
+    );
 
   if (isMobile) {
     return (

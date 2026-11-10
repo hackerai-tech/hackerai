@@ -245,7 +245,7 @@ export const AttachmentButton = ({
             variant="ghost"
             size="sm"
             className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"
-            aria-label="Attach files"
+            aria-label="Anexar arquivos"
             data-testid="attach-files-button"
             disabled={disabled || isCheckingProPlan}
           >
@@ -253,7 +253,7 @@ export const AttachmentButton = ({
           </Button>
         </TooltipTrigger>
         <TooltipContent>
-          <p>Add files</p>
+          <p>Adicionar arquivos</p>
         </TooltipContent>
       </TooltipPrimitive.Root>
     );
@@ -269,7 +269,7 @@ export const AttachmentButton = ({
           variant="ghost"
           size="sm"
           className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"
-          aria-label="Attach files"
+          aria-label="Anexar arquivos"
           data-testid="attach-files-button"
           disabled={disabled}
         >

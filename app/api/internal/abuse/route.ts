@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authkit } from "@workos-inc/authkit-nextjs";
+import { authkit } from "@/lib/auth/provider";
 import { randomUUID } from "node:crypto";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";

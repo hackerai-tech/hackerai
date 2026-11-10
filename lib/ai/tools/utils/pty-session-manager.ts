@@ -31,8 +31,8 @@ export const MAX_BUFFER_BYTES = 256 * 1024;
  * render the PTY elsewhere (xterm.js in the sidebar, a real TTY on the
  * Tauri side) can still call `PtyHandle.resize()` directly.
  */
-export const DEFAULT_PTY_COLS = 120;
-export const DEFAULT_PTY_ROWS = 30;
+import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "./pty-geometry";
+export { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "./pty-geometry";
 
 const CLOSE_EXIT_FALLBACK_MS = 2_000;
 const FAILED_COMMAND_CLEANUP_RETRY_BASE_MS = 5_000;

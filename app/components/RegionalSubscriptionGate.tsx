@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "@/app/hooks/useUpgrade";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";

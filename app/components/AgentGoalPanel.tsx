@@ -595,7 +595,7 @@ export function AgentGoalPanel({
                 onClick={() => setExpanded(!expanded)}
                 className="flex min-h-11 items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                Details{" "}
+                Detalhes{" "}
                 <ChevronDown
                   className={`size-3 transition-transform ${expanded ? "rotate-180" : ""}`}
                   aria-hidden="true"

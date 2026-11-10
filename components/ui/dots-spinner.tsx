@@ -65,7 +65,7 @@ const DotsSpinner = ({
         )}
         style={{ animationDelay: "300ms" }}
       />
-      <span className="sr-only">Loading...</span>
+      <span className="sr-only">Carregando...</span>
     </div>
   );
 };

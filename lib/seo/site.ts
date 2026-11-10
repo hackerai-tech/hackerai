@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { PRICING } from "@/lib/pricing/config";
 
 export const SITE_NAME = "HackerAI";
-export const SITE_URL = "https://hackerai.co";
+export const SITE_URL =
+  process.env.NEXT_PUBLIC_BASE_URL ?? "https://hackerai.co";
 export const SITE_DESCRIPTION =
   "HackerAI is an AI agent for penetration testing that helps security practitioners investigate targets, use terminal and browser tools, analyze findings, and prepare reports.";
 export const SITE_LOGO_URL = `${SITE_URL}/icon-512x512.png`;

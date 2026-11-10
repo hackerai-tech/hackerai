@@ -185,7 +185,7 @@ export function SubmitStopButton({
                       ? replyActionLabel
                       : pausesGoal
                         ? "Send message and pause goal"
-                        : "Send message"
+                        : "Enviar mensagem"
                   }
                   data-testid="send-button"
                 >

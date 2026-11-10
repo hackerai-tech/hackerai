@@ -45,7 +45,7 @@ const TurnOffExtraUsageDialog = ({
             onClick={() => onOpenChange(false)}
             disabled={isLoading}
           >
-            Cancel
+            Cancelar
           </Button>
           <Button
             variant="destructive"

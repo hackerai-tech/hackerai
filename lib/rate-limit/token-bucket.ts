@@ -940,6 +940,13 @@ export const checkTokenBucketLimit = async (
   modelName?: string,
   organizationId?: string,
 ): Promise<RateLimitInfo> => {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return {
+      remaining: Number.MAX_SAFE_INTEGER,
+      limit: Number.MAX_SAFE_INTEGER,
+      resetTime: new Date(Date.now() + 86400000),
+      rateLimitSkipped: true,
+    };
   const redis = createRedisClient();
 
   if (!redis) {
@@ -1313,6 +1320,8 @@ export const deductUsageDelta = async (
   usageSettlementId?: string,
   settlementSequence?: number,
 ): Promise<UsageDeductionResult> => {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return emptyUsageDeductionResult();
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {
@@ -1382,6 +1391,8 @@ export const deductUsage = async (
   actualModelName?: string,
   usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return emptyUsageDeductionResult();
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {

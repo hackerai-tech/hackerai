@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 
 type AgentAutoReviewAvailabilityContextType = {
   agentAutoReviewAvailable: boolean | null;

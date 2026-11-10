@@ -12,7 +12,7 @@ import { useNextActions } from "@/app/hooks/useNextActions";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
@@ -1542,7 +1542,7 @@ const ChatInputContent = ({
           type="file"
           multiple
           className="hidden"
-          aria-label="Upload files"
+          aria-label="Enviar arquivos"
           onChange={handleFileUploadEvent}
         />
 
@@ -1634,14 +1634,14 @@ const ChatInputContent = ({
               placeholder={
                 hasQuestionPanel
                   ? questionAnswers.question?.allowCustomAnswer === false
-                    ? "Choose an option above"
+                    ? "Escolha uma opção acima"
                     : questionAnswers.question?.options.length
-                      ? "Choose an option or type your answer…"
-                      : "Type your answer…"
+                      ? "Escolha uma opção ou digite sua resposta…"
+                      : "Digite sua resposta…"
                   : isWaitingForReply
-                    ? "Type your answer…"
+                    ? "Digite sua resposta…"
                     : goalMode
-                      ? "Describe your goal, define measurable outcomes for best results"
+                      ? "Descreva seu objetivo e defina resultados mensuráveis"
                       : placeholder
               }
               describedBy={

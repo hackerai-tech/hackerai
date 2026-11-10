@@ -378,7 +378,7 @@ export const ImageViewer = ({
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
               <div className="flex items-center space-x-2">
                 <div className="animate-spin rounded-full h-6 w-6 border-2 border-white border-t-transparent" />
-                <span className="text-sm text-white">Loading...</span>
+                <span className="text-sm text-white">Carregando...</span>
               </div>
             </div>
           )}

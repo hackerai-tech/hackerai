@@ -69,7 +69,7 @@ export function ProjectDeleteDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
           <AlertDialogAction
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             disabled={isDeleting}
@@ -78,7 +78,7 @@ export function ProjectDeleteDialog({
               void handleDelete();
             }}
           >
-            {isDeleting ? "Deleting…" : "Delete"}
+            {isDeleting ? "Deleting…" : "Excluir"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

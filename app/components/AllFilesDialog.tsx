@@ -117,7 +117,7 @@ const FileItem = ({
           size="icon"
           className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
           type="button"
-          aria-label="Download file"
+          aria-label="Baixar arquivo"
         >
           <Download className="w-4 h-4 text-muted-foreground" />
         </Button>
@@ -443,7 +443,7 @@ const AllFilesDialog = ({
               ) : (
                 <Circle className="w-5 h-5 text-muted-foreground" />
               )}
-              Select all
+              Selecionar tudo
             </Button>
             <Button
               onClick={handleCancelSelection}
@@ -452,7 +452,7 @@ const AllFilesDialog = ({
               className="text-muted-foreground hover:opacity-85 text-sm h-auto p-0"
               type="button"
             >
-              Cancel
+              Cancelar
             </Button>
           </header>
         ) : (

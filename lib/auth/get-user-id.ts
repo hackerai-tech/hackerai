@@ -30,7 +30,7 @@ const getSessionUserEmail = (session: unknown): string | undefined => {
  */
 export const getUserID = async (req: NextRequest): Promise<string> => {
   try {
-    const { authkit } = await import("@workos-inc/authkit-nextjs");
+    const { authkit } = await import("@/lib/auth/provider");
     const { session } = await authkit(req);
 
     if (!session?.user?.id) {
@@ -83,7 +83,7 @@ export const getUserIDAndPro = async (
   };
   try {
     reportPhase("load_sdk");
-    const { authkit } = await import("@workos-inc/authkit-nextjs");
+    const { authkit } = await import("@/lib/auth/provider");
     reportPhase("session");
     const { session } = await authkit(req);
 
@@ -123,7 +123,7 @@ export const getUserIDWithFreshLoginContext = async (
   windowMs: number = 10 * 60 * 1000,
 ): Promise<{ userId: string; freeQuotaSubject?: string }> => {
   try {
-    const { authkit } = await import("@workos-inc/authkit-nextjs");
+    const { authkit } = await import("@/lib/auth/provider");
     const { session } = await authkit(req);
 
     if (!session?.user?.id) {

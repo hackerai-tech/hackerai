@@ -513,7 +513,7 @@ export function CloudWorkspaceRegionChoice({
             disabled={busy}
             onClick={onRetry}
           >
-            Retry
+            Tentar novamente
           </Button>
         )}
         {view.status === "selected" && (

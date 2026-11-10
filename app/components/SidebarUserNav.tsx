@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useEffect } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -165,7 +165,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const [usageFetchFailed, setUsageFetchFailed] = useState(false);
   const isMobile = useIsMobile();
   const isStandalone = useIsStandalone();
-  const isPaidUser = subscription !== "free";
+  const isPaidUser =
+    process.env.NEXT_PUBLIC_SELF_HOSTED !== "true" && subscription !== "free";
 
   const getAgentRateLimitStatus = useAction(
     api.rateLimitStatus.getAgentRateLimitStatus,
@@ -434,7 +435,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               className="py-1.5"
             >
               <Gift className="mr-2 h-4 w-4 text-foreground" />
-              <span>Refer a friend</span>
+              <span>Indicar um amigo</span>
             </DropdownMenuItem>
           )}
 
@@ -448,7 +449,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 className="py-1.5"
               >
                 <Gauge className="mr-2 h-4 w-4 text-foreground" />
-                <span className="flex-1">Usage</span>
+                <span className="flex-1">Uso</span>
                 {rateLimitsExpanded ? (
                   <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
                 ) : (
@@ -460,7 +461,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {isLoadingUsage ? (
                     <div className="flex items-center gap-2 py-1.5 text-sm text-muted-foreground">
                       <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                      <span>Loading...</span>
+                      <span>Carregando...</span>
                     </div>
                   ) : tokenUsage ? (
                     <>
@@ -519,7 +520,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                     aria-label="Open extra usage settings"
                     tabIndex={0}
                   >
-                    <span className="flex-1">Extra usage</span>
+                    <span className="flex-1">Uso adicional</span>
                     <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   </button>
                 </div>
@@ -533,7 +534,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             className="py-1.5"
           >
             <Settings className="mr-2 h-4 w-4 text-foreground" />
-            <span>Settings</span>
+            <span>Configurações</span>
           </DropdownMenuItem>
 
           {!isStandalone && (
@@ -550,7 +551,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuSub>
             <DropdownMenuSubTrigger className="gap-4 cursor-pointer py-1.5">
               <LifeBuoy className="h-4 w-4 text-foreground" />
-              <span>Help</span>
+              <span>Ajuda</span>
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent
               sideOffset={4}
@@ -562,7 +563,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 className="gap-3 py-1.5"
               >
                 <Keyboard className="h-4 w-4 text-foreground" />
-                <span>Keyboard shortcuts</span>
+                <span>Atalhos de teclado</span>
                 <DropdownMenuShortcut>
                   {formatShortcut("shortcuts", isMac)}
                 </DropdownMenuShortcut>
@@ -570,23 +571,23 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleHelpCenter} className="py-1.5">
                 <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
-                <span>Help Center</span>
+                <span>Central de ajuda</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleStatusPage} className="py-1.5">
                 <Activity className="mr-2 h-4 w-4 text-foreground" />
-                <span>Status Page</span>
+                <span>Status dos serviços</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleTrustPage} className="py-1.5">
                 <ShieldCheck className="mr-2 h-4 w-4 text-foreground" />
-                <span>Security &amp; Trust</span>
+                <span>Segurança e confiança</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleGitHub} className="py-1.5">
                 <GithubIcon className="mr-2 h-4 w-4 text-foreground" />
-                <span>Source Code</span>
+                <span>Código-fonte</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleXCom} className="py-1.5">
                 <XIcon className="mr-2 h-4 w-4 text-foreground" />
-                <span>Social</span>
+                <span>Redes sociais</span>
               </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
@@ -597,7 +598,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             className="py-1.5"
           >
             <LogOut className="mr-2 h-4 w-4 text-foreground" />
-            <span>Log out</span>
+            <span>Sair</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

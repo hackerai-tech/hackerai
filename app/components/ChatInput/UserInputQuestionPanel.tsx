@@ -139,7 +139,7 @@ export function UserInputQuestionPanel({
             disabled={stopping}
             aria-label="Stop agent"
           >
-            Stop
+            Parar
           </Button>
         )}
       </div>
@@ -186,7 +186,7 @@ export function UserInputQuestionPanel({
                       variant="ghost"
                       size="icon"
                       className="absolute right-2 top-2 size-11"
-                      aria-label="Close"
+                      aria-label="Fechar"
                     >
                       <X className="size-4" aria-hidden="true" />
                     </Button>

@@ -439,9 +439,9 @@ const MessageErrorContent = ({
               : " some"}{" "}
             of free usage today. Continue this request in{" "}
             {mode === "agent"
-              ? "Agent"
+              ? "Agente"
               : mode === "ask"
-                ? "Ask"
+                ? "Perguntar"
                 : "the current"}{" "}
             mode with our low-cost model. The daily allowance resets at midnight
             UTC.
@@ -607,7 +607,7 @@ const MessageErrorContent = ({
                   size="sm"
                   onClick={() => onRetry()}
                 >
-                  Retry
+                  Tentar novamente
                 </Button>
               </>
             )}

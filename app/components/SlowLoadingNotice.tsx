@@ -20,16 +20,16 @@ export function SlowLoadingNotice({
       className="space-y-2 p-3 text-center text-sm text-muted-foreground"
       role="status"
     >
-      <p>{isSlow ? "This is taking longer than expected." : label}</p>
+      <p>{isSlow ? "Isso está demorando mais que o esperado." : label}</p>
       {isSlow && (
         <>
-          <p>Check your connection, then reload to reconnect.</p>
+          <p>Confira sua conexão e recarregue a página.</p>
           <button
             type="button"
             className="rounded-md border px-3 py-2 text-foreground hover:bg-accent"
             onClick={() => window.location.reload()}
           >
-            Reload
+            Recarregar
           </button>
         </>
       )}

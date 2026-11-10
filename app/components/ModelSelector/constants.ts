@@ -10,25 +10,35 @@ export interface ModelOption {
   thinking?: boolean;
 }
 
-export const AGENT_MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: "hackerai-standard",
-    label: "HackerAI Standard",
-    description: "Reliable agent for everyday automation",
-    poweredBy: "DeepSeek V4.1 Flash 1017 · High reasoning",
-    thinking: true,
-  },
-  {
-    id: "hackerai-pro",
-    label: "HackerAI Pro",
-    description: "Superior performance for most assignments",
-    poweredBy: "DeepSeek V4.1 Flash 1017 · Max reasoning",
-    thinking: true,
-  },
-  {
-    id: "hackerai-max",
-    label: "HackerAI Max",
-    description: "Maximum intelligence for complex work",
-    thinking: true,
-  },
-];
+export const AGENT_MODEL_OPTIONS: ModelOption[] =
+  process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
+    ? [
+        {
+          id: "hackerai-standard",
+          label: "Modelo local",
+          description: "IA na sua VPS, sem cobrança por mensagem",
+          poweredBy: "Ollama",
+        },
+      ]
+    : [
+        {
+          id: "hackerai-standard",
+          label: "HackerAI Standard",
+          description: "Reliable agent for everyday automation",
+          poweredBy: "DeepSeek V4.1 Flash 1017 · High reasoning",
+          thinking: true,
+        },
+        {
+          id: "hackerai-pro",
+          label: "HackerAI Pro",
+          description: "Superior performance for most assignments",
+          poweredBy: "DeepSeek V4.1 Flash 1017 · Max reasoning",
+          thinking: true,
+        },
+        {
+          id: "hackerai-max",
+          label: "HackerAI Max",
+          description: "Maximum intelligence for complex work",
+          thinking: true,
+        },
+      ];

@@ -1,4 +1,4 @@
-import { handleAuth } from "@workos-inc/authkit-nextjs";
+import { handleAuth } from "@/lib/auth/provider";
 import {
   getRecoverableAuthkitCallbackErrorBucket,
   type RecoverableAuthkitCallbackErrorBucket,

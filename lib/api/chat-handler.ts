@@ -349,6 +349,20 @@ export const createChatHandler = () => {
         projectId?: unknown;
       };
       const mode = requireVercelChatMode(rawMode);
+      if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true" && mode === "agent") {
+        if (!sandboxPreference || sandboxPreference === "e2b")
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Aguarde a conexão do sandbox da VPS e selecione esse ambiente para usar o agente.",
+          );
+        const permissionMode = (rawRequestBody as Record<string, unknown>)
+          .agentPermissionMode;
+        if (permissionMode !== undefined && permissionMode !== "full_access")
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Esta instalação executa o agente com acesso ao sandbox. Aprovações por ação exigem o runtime durável.",
+          );
+      }
       const chatId = requireChatId(rawChatId);
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(

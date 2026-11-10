@@ -3,7 +3,7 @@
 import "./security-widget.css";
 
 import React, { useCallback } from "react";
-import { useAccessToken } from "@workos-inc/authkit-nextjs/components";
+import { useAccessToken } from "@/lib/auth/client-provider";
 import { UserSecurity } from "@workos-inc/widgets/user-security";
 import { WorkOsWidgets } from "@workos-inc/widgets/workos-widgets";
 import { LogOut, Monitor } from "lucide-react";
@@ -91,7 +91,7 @@ const SecurityTab = () => {
             size="sm"
             onClick={handleLogout}
           >
-            Log out
+            Sair
           </Button>
         </div>
 

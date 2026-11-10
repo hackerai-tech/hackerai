@@ -18,14 +18,14 @@ export function ModeSelectorContent({
     <DropdownMenuContent align="start" className="w-54">
       <ModeOptionItem
         icon={MessageSquare}
-        title="Ask"
+        title="Perguntar"
         description="Ask your hacking questions"
         onClick={() => setChatMode("ask")}
         data-testid="mode-ask"
       />
       <ModeOptionItem
         icon={Infinity}
-        title="Agent"
+        title="Agente"
         description="Hack, test, secure anything"
         onClick={onAgentModeClick}
         data-testid="mode-agent"

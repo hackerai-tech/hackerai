@@ -184,7 +184,7 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
       ) : isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-3">
           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-          <span>Loading...</span>
+          <span>Carregando...</span>
         </div>
       ) : (
         <p className="text-sm text-muted-foreground py-3">

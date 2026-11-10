@@ -39,7 +39,7 @@ import {
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
-} from "@/lib/ai/tools/utils/pty-session-manager";
+} from "@/lib/ai/tools/utils/pty-geometry";
 import {
   CentrifugoMessageReassembler,
   CentrifugoPublishQueue,

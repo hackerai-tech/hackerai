@@ -197,11 +197,11 @@ export function SidebarProjectItem({
               ) : (
                 <Pin className="mr-2 size-4" />
               )}
-              {project.pinned_at !== undefined ? "Unpin" : "Pin"}
+              {project.pinned_at !== undefined ? "Desafixar" : "Fixar"}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => setIsEditOpen(true)}>
               <Pencil className="mr-2 size-4" />
-              Edit
+              Editar
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link
@@ -218,7 +218,7 @@ export function SidebarProjectItem({
               onSelect={() => setIsDeleteOpen(true)}
             >
               <Trash2 className="mr-2 size-4" />
-              Delete
+              Excluir
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
@@ -810,7 +810,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                 rel="noreferrer"
                 className="text-foreground underline underline-offset-2"
               >
-                Security &amp; Trust
+                Segurança e confiança
               </a>{" "}
               page.
             </p>

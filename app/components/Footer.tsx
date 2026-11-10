@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import {
   AnalyticsConsentPreferences,
   useAnalyticsConsentPreferencesAvailable,
@@ -44,7 +44,7 @@ const Footer: React.FC = () => {
           className="text-foreground underline decoration-foreground"
           rel="noreferrer"
         >
-          Security &amp; Trust
+          Segurança e confiança
         </a>
         {analyticsPreferencesAvailable ? (
           <>

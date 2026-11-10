@@ -33,7 +33,7 @@ export const ManageSharedChatsDialog = ({
                 type="button"
                 className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted"
                 onClick={() => onOpenChange(false)}
-                aria-label="Close"
+                aria-label="Fechar"
               >
                 <X className="size-5" />
               </button>

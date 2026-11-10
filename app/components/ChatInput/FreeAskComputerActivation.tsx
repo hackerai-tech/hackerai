@@ -157,7 +157,7 @@ export function FreeAskComputerActivation() {
                 onClick={handleDesktopDownload}
                 data-testid="free-ask-computer-download"
               >
-                Download <span translate="no">HackerAI Desktop</span>
+                Baixar <span translate="no">HackerAI Desktop</span>
               </a>
             </Button>
           )}

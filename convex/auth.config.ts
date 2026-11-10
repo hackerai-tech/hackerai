@@ -1,6 +1,7 @@
 import type { AuthConfig } from "convex/server";
 
-const clientId = process.env.WORKOS_CLIENT_ID ?? "";
+const localIssuer = process.env.SELF_HOSTED_AUTH_ISSUER;
+const clientId = localIssuer ? "" : (process.env.WORKOS_CLIENT_ID ?? "");
 
 function resolveAuthOrigin(authDomain: string | undefined): string {
   const configuredDomain = authDomain?.trim();
@@ -52,9 +53,19 @@ function createWorkOSProvider(
 }
 
 const authConfig = {
-  providers: clientId
-    ? [createWorkOSProvider(clientId, process.env.WORKOS_AUTH_DOMAIN)]
-    : [],
+  providers: localIssuer
+    ? [
+        {
+          type: "customJwt",
+          issuer: localIssuer,
+          applicationID: "hackerai-vps",
+          algorithm: "RS256",
+          jwks: `${localIssuer}/.well-known/jwks.json`,
+        },
+      ]
+    : clientId
+      ? [createWorkOSProvider(clientId, process.env.WORKOS_AUTH_DOMAIN)]
+      : [],
 } satisfies AuthConfig;
 
 export default authConfig;

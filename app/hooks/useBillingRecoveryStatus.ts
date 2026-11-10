@@ -1,5 +1,5 @@
 import useSWR from "swr";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 
 /** Only checks billing on an open billing surface, scoped to the current account. */

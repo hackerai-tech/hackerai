@@ -58,7 +58,7 @@ export function BillingRecoveryReturnNotice() {
             {
               id: NOTICE_ID,
               action: {
-                label: "Refresh",
+                label: "Atualizar",
                 onClick: reloadWithEntitlementRefresh,
               },
             },

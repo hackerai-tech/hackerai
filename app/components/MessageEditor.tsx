@@ -172,10 +172,10 @@ export const MessageEditor = ({
       />
       <div className="flex justify-end space-x-2">
         <Button variant="outline" size="sm" onClick={onCancel}>
-          Cancel
+          Cancelar
         </Button>
         <Button size="sm" onClick={handleSave} disabled={!hasContent}>
-          Save
+          Salvar
         </Button>
       </div>
     </div>

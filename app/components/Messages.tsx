@@ -95,7 +95,7 @@ const PendingAgentReasoning = () => (
   >
     <BrainIcon className="size-4 shrink-0" />
     <Shimmer as="span" className="min-w-0 truncate text-left text-sm leading-5">
-      Thinking...
+      Pensando...
     </Shimmer>
   </div>
 );

@@ -129,7 +129,7 @@ export const ShareDialog = ({
             size="icon"
             className="h-9 w-9 rounded-lg"
             onClick={handleClose}
-            aria-label="Close"
+            aria-label="Fechar"
           >
             <XIcon className="h-5 w-5" />
           </Button>
@@ -184,7 +184,7 @@ export const ShareDialog = ({
                 size="sm"
                 className="w-full"
               >
-                Try again
+                Tentar novamente
               </Button>
             </div>
           </div>
@@ -352,7 +352,7 @@ export const ShareDialog = ({
                     </div>
                   </div>
                   <span className="text-xs text-center max-w-16">
-                    {copied ? "Copied!" : "Copy link"}
+                    {copied ? "Copiado!" : "Copiar link"}
                   </span>
                 </button>
 

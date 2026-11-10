@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { PanelLeft, Sparkle, SquarePen, Split, Share } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
@@ -145,7 +145,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       size="default"
                       className="min-w-[74px] rounded-[10px]"
                     >
-                      Sign in
+                      Entrar
                     </Button>
                     <Button
                       onClick={() => navigateToAuth("/signup")}
@@ -153,7 +153,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       size="default"
                       className="min-w-16 rounded-[10px]"
                     >
-                      Sign up
+                      Criar conta
                     </Button>
                   </>
                 )}
@@ -197,7 +197,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     size="sm"
                     className="rounded-[10px]"
                   >
-                    Sign in
+                    Entrar
                   </Button>
                   <Button
                     onClick={() => navigateToAuth("/signup")}
@@ -205,7 +205,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     size="sm"
                     className="rounded-[10px]"
                   >
-                    Sign up
+                    Criar conta
                   </Button>
                 </>
               )}
@@ -235,7 +235,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label="Open sidebar"
+                  aria-label="Abrir barra lateral"
                   onClick={toggleChatSidebar}
                   className="h-7 w-7 flex-shrink-0 md:hidden"
                 >
@@ -271,7 +271,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="flex items-center gap-2 flex-shrink-0">
               {/* Share button stays in the desktop layout so title loading does not shift it. */}
               <button
-                aria-label="Share"
+                aria-label="Compartilhar"
                 data-testid="share-chat-button"
                 onClick={() => setShowShareDialog(true)}
                 className={`relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden ${
@@ -282,7 +282,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               >
                 <div className="flex w-full items-center justify-center gap-1.5">
                   <Share className="h-4 w-4 -ms-0.5" />
-                  Share
+                  Compartilhar
                 </div>
               </button>
               {isMobile && isInChat && showSidebarToggle && (

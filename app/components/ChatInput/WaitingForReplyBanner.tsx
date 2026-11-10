@@ -56,7 +56,7 @@ export function WaitingForReplyBanner({
           aria-label="Stop agent instead of replying"
           className="-mr-1 min-h-8 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground sm:h-6 sm:min-h-6"
         >
-          {stopping ? "Stopping…" : "Stop"}
+          {stopping ? "Stopping…" : "Parar"}
         </Button>
       )}
     </div>

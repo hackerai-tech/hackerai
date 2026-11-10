@@ -15,6 +15,8 @@ export const getMaxTokensForSubscription = (
   subscription?: SubscriptionTier,
   _opts?: { mode?: ChatMode },
 ): number => {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return Number(process.env.LOCAL_CONTEXT_BUDGET ?? 8192);
   if (subscription === "free") return MAX_TOKENS_FREE;
   return MAX_TOKENS_PAID;
 };

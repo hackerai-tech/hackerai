@@ -616,14 +616,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
                 onClick={handleShare}
               >
                 <Share className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
-                Share
+                Compartilhar
               </DropdownMenuItem>
               <DropdownMenuItem
                 className={CHAT_OPTION_ITEM_CLASS}
                 onClick={handleRename}
               >
                 <Edit2 className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
-                Rename
+                Renomear
               </DropdownMenuItem>
               <DropdownMenuSeparator className={CHAT_OPTIONS_SEPARATOR_CLASS} />
               {isPinned ? (
@@ -635,7 +635,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                     className={CHAT_OPTION_ICON_CLASS}
                     aria-hidden="true"
                   />
-                  Unpin
+                  Desafixar
                 </DropdownMenuItem>
               ) : (
                 <DropdownMenuItem
@@ -643,7 +643,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   onClick={handlePin}
                 >
                   <Pin className={CHAT_OPTION_ICON_CLASS} aria-hidden="true" />
-                  Pin
+                  Fixar
                 </DropdownMenuItem>
               )}
               {projects && projects.length > 0 ? (
@@ -668,7 +668,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                         className={CHAT_OPTION_ICON_CLASS}
                         aria-hidden="true"
                       />
-                      New project
+                      Novo projeto
                     </DropdownMenuItem>
                     <DropdownMenuSeparator
                       className={CHAT_OPTIONS_SEPARATOR_CLASS}
@@ -761,7 +761,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   className="size-4 shrink-0 text-destructive"
                   aria-hidden="true"
                 />
-                Delete
+                Excluir
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -801,14 +801,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
               onClick={handleCancelRename}
               disabled={isRenaming}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               type="button"
               onClick={handleSaveRename}
               disabled={isRenaming || !editTitle.trim()}
             >
-              {isRenaming ? "Saving…" : "Save"}
+              {isRenaming ? "Saving…" : "Salvar"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -878,7 +878,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>
+              Cancelar
+            </AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {
                 event.preventDefault();
@@ -887,7 +889,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {isDeleting ? "Deleting…" : "Delete"}
+              {isDeleting ? "Deleting…" : "Excluir"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -115,7 +115,7 @@ export function MarkdownTable({
         <button
           className="cursor-pointer p-1 text-muted-foreground transition-all hover:text-foreground"
           onClick={handleCopy}
-          title={copied ? "Copied!" : "Copy table"}
+          title={copied ? "Copiado!" : "Copy table"}
           type="button"
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}

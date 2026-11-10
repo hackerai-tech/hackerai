@@ -108,7 +108,7 @@ export const CustomizeHackerAIDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Personalization</DialogTitle>
+          <DialogTitle>Personalização</DialogTitle>
           <DialogDescription>
             Introduce yourself to get better, more personalized responses
           </DialogDescription>
@@ -177,7 +177,7 @@ export const CustomizeHackerAIDialog = ({
 
         <DialogFooter className="flex-row justify-end gap-2 border-t pt-4">
           <Button variant="outline" onClick={handleCancel} disabled={isSaving}>
-            Cancel
+            Cancelar
           </Button>
           <Button
             onClick={handleSave}
@@ -188,7 +188,7 @@ export const CustomizeHackerAIDialog = ({
               isAdditionalInfoOverLimit
             }
           >
-            {isSaving ? "Saving..." : "Save"}
+            {isSaving ? "Saving..." : "Salvar"}
           </Button>
         </DialogFooter>
       </DialogContent>

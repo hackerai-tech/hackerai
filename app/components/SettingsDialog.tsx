@@ -84,49 +84,56 @@ const SettingsDialog = ({
 
   // Base tabs visible to all users
   const baseTabs = [
-    { id: "Personalization", label: "Personalization", icon: Settings },
-    { id: "Security", label: "Security", icon: Shield },
-    { id: "Data controls", label: "Data controls", icon: Database },
+    { id: "Personalization", label: "Personalização", icon: Settings },
+    { id: "Security", label: "Segurança", icon: Shield },
+    { id: "Data controls", label: "Controles de dados", icon: Database },
   ];
 
   // Shared tabs for all users with agent mode access
-  const agentsTab = { id: "Agents", label: "Agents", icon: Infinity };
+  const agentsTab = { id: "Agents", label: "Agentes", icon: Infinity };
   const localSandboxTab = {
     id: "Remote Control",
-    label: "Remote Control",
+    label: "Controle remoto",
     icon: Server,
   };
   // Tabs only for paid users
-  const usageTab = { id: "Usage", label: "Usage", icon: ChartNoAxesCombined };
+  const usageTab = { id: "Usage", label: "Uso", icon: ChartNoAxesCombined };
   const extraUsageTab = {
     id: "Extra Usage",
-    label: "Extra Usage",
+    label: "Uso adicional",
     icon: Gauge,
   };
   const membersTab = { id: "Members", label: "Members", icon: Users };
-  const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
+  const accountTab = { id: "Account", label: "Conta", icon: CircleUserRound };
 
   const tabs =
-    subscription === "team"
+    process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
       ? [
-          ...baseTabs,
+          ...baseTabs.filter((tab) => tab.id !== "Security"),
           agentsTab,
           localSandboxTab,
-          usageTab,
-          ...(isTeamAdmin ? [extraUsageTab] : []),
-          membersTab,
           accountTab,
         ]
-      : subscription !== "free"
+      : subscription === "team"
         ? [
             ...baseTabs,
             agentsTab,
             localSandboxTab,
             usageTab,
-            extraUsageTab,
+            ...(isTeamAdmin ? [extraUsageTab] : []),
+            membersTab,
             accountTab,
           ]
-        : [...baseTabs, agentsTab, localSandboxTab, accountTab];
+        : subscription !== "free"
+          ? [
+              ...baseTabs,
+              agentsTab,
+              localSandboxTab,
+              usageTab,
+              extraUsageTab,
+              accountTab,
+            ]
+          : [...baseTabs, agentsTab, localSandboxTab, accountTab];
 
   const canShowInitialTab = initialTab
     ? tabs.some((t) => t.id === initialTab)
@@ -174,12 +181,12 @@ const SettingsDialog = ({
           showCloseButton={!isMobile}
         >
           {/* Accessibility: Always include DialogTitle */}
-          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <DialogTitle className="sr-only">Configurações</DialogTitle>
 
           {isMobile && (
             <div className="relative z-10 p-0">
               <div className="flex items-center justify-between px-4 py-3 border-b">
-                <h3 className="text-lg font-semibold">Settings</h3>
+                <h3 className="text-lg font-semibold">Configurações</h3>
                 <div
                   className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted"
                   onClick={() => onOpenChange(false)}
@@ -279,7 +286,22 @@ const SettingsDialog = ({
 
                 {activeTab === "Members" && <TeamTab />}
 
-                {activeTab === "Account" && <AccountTab />}
+                {activeTab === "Account" &&
+                  (process.env.NEXT_PUBLIC_SELF_HOSTED === "true" ? (
+                    <div className="space-y-3">
+                      <h2 className="font-semibold">Conta local</h2>
+                      <p>
+                        A autenticação e os dados ficam nesta VPS. A senha pode
+                        ser alterada pelo administrador via SSH.
+                      </p>
+                      <p>
+                        Ollama não cobra por mensagem. O uso depende dos
+                        recursos disponíveis no servidor.
+                      </p>
+                    </div>
+                  ) : (
+                    <AccountTab />
+                  ))}
               </div>
             </div>
           </div>

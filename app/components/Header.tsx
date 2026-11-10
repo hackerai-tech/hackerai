@@ -11,7 +11,7 @@ import Link from "next/link";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import {
   CreditCard,
@@ -25,7 +25,7 @@ import {
 const publicNavigation = [
   { href: "/product", label: "Product", icon: LayoutGrid },
   { href: "/pricing", label: "Pricing", icon: CreditCard },
-  { href: "/download", label: "Download", icon: Download },
+  { href: "/download", label: "Baixar", icon: Download },
   { href: "/trust", label: "Trust", icon: ShieldCheck },
 ] as const;
 
@@ -145,7 +145,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
                   }
                 >
                   <Download className="h-4 w-4 mr-1.5" />
-                  Download
+                  Baixar
                 </Link>
               </Button>
               <Button
@@ -155,7 +155,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
                 size="default"
                 className="min-w-[74px] rounded-[10px]"
               >
-                Sign in
+                Entrar
               </Button>
               <Button
                 data-testid="sign-up-button"
@@ -196,7 +196,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
               size="sm"
               className="rounded-[10px]"
             >
-              Sign in
+              Entrar
             </Button>
             <Button
               data-testid="sign-up-button-mobile"

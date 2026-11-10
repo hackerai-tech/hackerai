@@ -59,7 +59,7 @@ export const TeamMembersList = ({
           <div
             className={`grid ${isAdmin ? "grid-cols-[2fr_2fr_1fr_auto]" : "grid-cols-[2fr_2fr_1fr]"} gap-4 px-4 py-3 border-b bg-muted/50 text-sm font-medium text-muted-foreground`}
           >
-            <div>Name</div>
+            <div>Nome</div>
             <div>Email</div>
             <div>Role</div>
             {isAdmin && <div className="w-8"></div>}

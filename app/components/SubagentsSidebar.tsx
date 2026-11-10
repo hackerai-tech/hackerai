@@ -1082,7 +1082,7 @@ export const SubagentsSidebar = ({
                         aria-label={`Done · ${done.length}`}
                         className="text-sm font-medium text-muted-foreground"
                       >
-                        Done <span aria-hidden>·</span>{" "}
+                        Concluído <span aria-hidden>·</span>{" "}
                         <span className="tabular-nums">{done.length}</span>
                       </h3>
                       <div className="mt-4 space-y-1">
@@ -1137,7 +1137,7 @@ export const SubagentsSidebar = ({
                         className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         <Ban className="h-3.5 w-3.5" aria-hidden />
-                        {canceling ? "Canceling…" : "Cancel"}
+                        {canceling ? "Canceling…" : "Cancelar"}
                       </button>
                     )}
                   </div>

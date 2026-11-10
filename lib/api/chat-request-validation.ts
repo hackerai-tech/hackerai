@@ -28,7 +28,9 @@ export const requireRetiredTemporaryFieldAbsent = (
   }
 };
 
-export const requireVercelChatMode = (mode: unknown): "ask" => {
+export const requireVercelChatMode = (mode: unknown): "ask" | "agent" => {
+  if (mode === "agent" && process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return "agent";
   if (mode === "agent") {
     throw new ChatSDKError(
       "bad_request:api",

@@ -600,7 +600,7 @@ export const FileUploadPreview = ({
                         }
                         onClick={() => onRetryFile(index)}
                       >
-                        Retry
+                        Tentar novamente
                       </Button>
                     )}
                   <div className="absolute end-1.5 top-1.5 inline-flex gap-1">

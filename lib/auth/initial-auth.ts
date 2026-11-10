@@ -1,4 +1,4 @@
-import type { NoUserInfo, UserInfo } from "@workos-inc/authkit-nextjs";
+import type { NoUserInfo, UserInfo } from "@/lib/auth/provider";
 import {
   isEndedSessionRefreshError,
   isInvalidRefreshTokenError,

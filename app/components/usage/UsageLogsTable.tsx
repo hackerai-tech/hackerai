@@ -205,7 +205,7 @@ const UsageLogsTable = () => {
                   className="h-7 text-xs"
                   onClick={() => setCalendarOpen(false)}
                 >
-                  Cancel
+                  Cancelar
                 </Button>
                 <Button
                   size="sm"

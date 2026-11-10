@@ -168,7 +168,7 @@ const AutoOptionButton = ({
           isSelected ? "text-accent-foreground" : "text-popover-foreground"
         }`}
       >
-        Auto
+        Automático
       </span>
       <p className="text-xs text-muted-foreground leading-snug mt-0.5">
         {AUTO_MODEL_DESCRIPTION}

@@ -1,0 +1,29 @@
+{$DOMAIN:tandi.tech} {
+  encode zstd gzip
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    X-Frame-Options DENY
+  }
+  handle_path /convex/* {
+    reverse_proxy backend:3210
+  }
+  handle_path /convex-site/* {
+    reverse_proxy backend:3211
+  }
+  handle /connection/websocket {
+    reverse_proxy centrifugo:8000
+  }
+  handle /hackerai/* {
+    reverse_proxy storage:9000
+  }
+  handle {
+    request_body {
+      max_size 100MB
+    }
+    reverse_proxy web:3000 {
+      header_up X-Real-IP {remote_host}
+      flush_interval -1
+    }
+  }
+}

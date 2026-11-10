@@ -155,7 +155,10 @@ export function BillingRecoveryPanel({
         toast.success(
           "Your renewal invoice is paid. Refresh to update your access.",
           {
-            action: { label: "Refresh", onClick: reloadWithEntitlementRefresh },
+            action: {
+              label: "Atualizar",
+              onClick: reloadWithEntitlementRefresh,
+            },
           },
         );
       } else if (next.checkoutRequiresReview) {

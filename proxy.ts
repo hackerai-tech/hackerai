@@ -1,3 +1,5 @@
+import { isSelfHosted } from "@/lib/selfhost/config";
+import { selfHostProxy } from "@/lib/selfhost/http";
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
@@ -405,6 +407,7 @@ function buildEndedSessionResponse(
 
 /** Keep Desktop cookie admission distinct from AuthKit refresh recovery and its response contract. */
 export default async function proxy(request: NextRequest) {
+  if (isSelfHosted()) return selfHostProxy(request);
   const pathname = request.nextUrl.pathname;
 
   if (isUnsupportedRootPageRequest(request, pathname)) {

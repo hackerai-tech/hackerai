@@ -103,7 +103,7 @@ const DataControlsTab = () => {
             onClick={() => setShowManageSharedChats(true)}
             aria-label="Manage shared tasks"
           >
-            Manage
+            Gerenciar
           </Button>
         </div>
       </div>
@@ -115,15 +115,15 @@ const DataControlsTab = () => {
       <div>
         <div className="flex items-center justify-between py-3">
           <div>
-            <div className="font-medium">Delete all tasks</div>
+            <div className="font-medium">Excluir todas as tarefas</div>
           </div>
           <Button
             variant="destructive"
             size="sm"
             onClick={() => setShowDeleteChats(true)}
-            aria-label="Delete all tasks"
+            aria-label="Excluir todas as tarefas"
           >
-            Delete all
+            Excluir tudo
           </Button>
         </div>
       </div>
@@ -144,7 +144,7 @@ const DataControlsTab = () => {
               onClick={() => setShowDeleteSandboxes(true)}
               aria-label="Delete terminal sandbox"
             >
-              Delete
+              Excluir
             </Button>
           </div>
         </div>
@@ -166,7 +166,7 @@ const DataControlsTab = () => {
               </div>
               <AnalyticsConsentPreferences>
                 <Button variant="outline" size="sm">
-                  Manage
+                  Gerenciar
                 </Button>
               </AnalyticsConsentPreferences>
             </div>
@@ -187,7 +187,7 @@ const DataControlsTab = () => {
             rel="noreferrer"
             className="text-foreground underline underline-offset-2"
           >
-            Security &amp; Trust
+            Segurança e confiança
           </a>{" "}
           page.
         </div>
@@ -212,7 +212,7 @@ const DataControlsTab = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeletingChats}>
-              Cancel
+              Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {
@@ -247,7 +247,7 @@ const DataControlsTab = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeletingSandboxes}>
-              Cancel
+              Cancelar
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(event) => {
@@ -257,7 +257,7 @@ const DataControlsTab = () => {
               disabled={isDeletingSandboxes}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {isDeletingSandboxes ? "Deleting..." : "Delete"}
+              {isDeletingSandboxes ? "Deleting..." : "Excluir"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -347,7 +347,7 @@ export function AgentApprovalPrompt({
               className="rounded-full bg-transparent shadow-none"
               onClick={() => void denyApproval()}
             >
-              Deny
+              Negar
             </Button>
 
             <div className="flex items-center">
@@ -472,7 +472,7 @@ export function AgentApprovalPrompt({
           <DialogFooter>
             <DialogClose asChild>
               <Button type="button" variant="outline">
-                Cancel
+                Cancelar
               </Button>
             </DialogClose>
             <Button

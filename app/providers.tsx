@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import type { PostHogConfig } from "posthog-js";
 import { isAbuseTelemetry, isAbuseReportingPath } from "@/lib/abuse/privacy";
 import { usePathname } from "next/navigation";

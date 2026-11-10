@@ -8,7 +8,7 @@ import {
 } from "@/lib/influencers/cookie";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
-import { withAuth } from "@workos-inc/authkit-nextjs";
+import { withAuth } from "@/lib/auth/provider";
 import { cookies } from "next/headers";
 import {
   ANALYTICS_CONSENT_COOKIE_NAME,

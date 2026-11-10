@@ -3089,7 +3089,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       role="status"
                       data-testid="chat-timeline-loading"
                     >
-                      <SlowLoadingNotice key={chatId} label="Loading task…" />
+                      <SlowLoadingNotice
+                        key={chatId}
+                        label="Carregando tarefa…"
+                      />
                     </div>
                   ) : (
                     <Messages

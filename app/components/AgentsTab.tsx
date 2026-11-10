@@ -29,11 +29,11 @@ const AgentsTab = () => {
   }> = [
     {
       value: "queue",
-      label: "Queue after current message",
+      label: "Adicionar à fila após a mensagem atual",
     },
     {
       value: "stop-and-send",
-      label: "Stop & send right away",
+      label: "Parar e enviar agora",
     },
   ];
 
@@ -43,9 +43,9 @@ const AgentsTab = () => {
       <div className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
           <div className="flex-1">
-            <div className="font-medium">Default execution environment</div>
+            <div className="font-medium">Ambiente de execução padrão</div>
             <div className="text-sm text-muted-foreground">
-              Choose the default sandbox environment for Agent mode
+              Escolha o ambiente sandbox padrão para o modo Agente
             </div>
           </div>
           <div className="w-full sm:w-auto">
@@ -62,9 +62,9 @@ const AgentsTab = () => {
       <div className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
           <div className="flex-1">
-            <div className="font-medium">Default agent permissions</div>
+            <div className="font-medium">Permissões padrão do agente</div>
             <div className="text-sm text-muted-foreground">
-              Commands and file edits
+              Comandos e alterações de arquivos dentro do sandbox
             </div>
           </div>
           <div className="w-full sm:w-auto">
@@ -73,14 +73,15 @@ const AgentsTab = () => {
         </div>
       </div>
 
-      {subscription !== "free" && <CloudNetworkSettings />}
+      {process.env.NEXT_PUBLIC_SELF_HOSTED !== "true" &&
+        subscription !== "free" && <CloudNetworkSettings />}
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
             <div className="flex-1">
-              <div className="font-medium">Queue Messages</div>
+              <div className="font-medium">Fila de mensagens</div>
               <div className="text-sm text-muted-foreground">
                 Adjust the default behavior of sending a message while Agent is
                 streaming

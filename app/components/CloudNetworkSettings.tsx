@@ -239,8 +239,8 @@ export function CloudNetworkSettings() {
               {operation === "save"
                 ? "Saving…"
                 : hasChanges
-                  ? "Save changes"
-                  : "Retry"}
+                  ? "Salvar alterações"
+                  : "Tentar novamente"}
             </Button>
           )}
           {showReload && (

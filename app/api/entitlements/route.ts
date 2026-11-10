@@ -11,6 +11,15 @@ import {
 import { workos } from "@/app/api/workos";
 
 export async function GET(req: NextRequest) {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true") {
+    const { getUserID } = await import("@/lib/auth/get-user-id");
+    try {
+      await getUserID(req);
+    } catch {
+      return json({ error: "Não autorizado" }, { status: 401 });
+    }
+    return json({ entitlements: ["ultra-plan"], subscription: "ultra" });
+  }
   try {
     // Get the session cookie
     const sessionCookie = req.cookies.get("wos-session")?.value;

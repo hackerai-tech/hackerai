@@ -112,7 +112,7 @@ export function ProjectEditDialog({
           <div className="space-y-5 py-5">
             <div className="space-y-2">
               <Label htmlFor={`project-name-${project._id}`}>
-                Project name
+                Nome do projeto
               </Label>
               <Input
                 id={`project-name-${project._id}`}
@@ -209,13 +209,13 @@ export function ProjectEditDialog({
               onClick={() => setOpen(false)}
               disabled={isSaving || isPickingFolder}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               type="submit"
               disabled={!name.trim() || isSaving || isPickingFolder}
             >
-              {isSaving ? "Saving…" : "Save"}
+              {isSaving ? "Saving…" : "Salvar"}
             </Button>
           </DialogFooter>
         </form>

@@ -32,6 +32,9 @@ if (
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  ...(process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
+    ? { output: "standalone" as const }
+    : {}),
   env: {
     NEXT_PUBLIC_HACKERAI_BUILD_COMMIT: publicBuildCommit,
   },

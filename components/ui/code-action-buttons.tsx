@@ -88,12 +88,12 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
               type="button"
               onClick={handleDownload}
               className={getButtonClasses()}
-              aria-label="Download"
+              aria-label="Baixar"
             >
               <Download size={14} />
             </button>
           </TooltipTrigger>
-          <TooltipContent>Download</TooltipContent>
+          <TooltipContent>Baixar</TooltipContent>
         </Tooltip>
       )}
 
@@ -124,12 +124,12 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
               type="button"
               onClick={handleCopy}
               className={getButtonClasses()}
-              aria-label={copied ? "Copied!" : "Copy"}
+              aria-label={copied ? "Copiado!" : "Copiar"}
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </TooltipTrigger>
-          <TooltipContent>{copied ? "Copied!" : "Copy"}</TooltipContent>
+          <TooltipContent>{copied ? "Copiado!" : "Copiar"}</TooltipContent>
         </Tooltip>
       )}
     </div>

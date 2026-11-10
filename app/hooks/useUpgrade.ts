@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createCheckoutNavigationDiagnostics } from "@/lib/billing/checkout-navigation-diagnostics";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {

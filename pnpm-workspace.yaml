@@ -8,3 +8,9 @@ minimumReleaseAgeExclude:
   - "@trigger.dev/schema-to-json@4.5.0"
   - "@trigger.dev/sdk@4.5.0"
   - trigger.dev@4.5.0
+
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - node-pty
+  - unrs-resolver

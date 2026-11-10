@@ -1,7 +1,7 @@
 "use server";
 
 import { workos } from "@/app/api/workos";
-import { withAuth } from "@workos-inc/authkit-nextjs";
+import { withAuth } from "@/lib/auth/provider";
 import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
 
 export type BillingActionContext = {

@@ -74,10 +74,10 @@ const PersonalizationTab = ({
             onClick={onCustomInstructions}
           >
             <div>
-              <div className="font-medium">Custom instructions</div>
+              <div className="font-medium">Instruções personalizadas</div>
             </div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              Configure
+              Configurar
               <ChevronRight className="h-4 w-4" />
             </div>
           </div>
@@ -87,7 +87,7 @@ const PersonalizationTab = ({
       {/* Notes Section */}
       {subscription && (
         <div>
-          <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
+          <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notas</h3>
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3 border-b">
               <div>
@@ -122,10 +122,10 @@ const PersonalizationTab = ({
 
             <div className="flex items-center justify-between py-3">
               <div>
-                <div className="font-medium">Manage notes</div>
+                <div className="font-medium">Gerenciar notas</div>
               </div>
               <Button variant="outline" size="sm" onClick={onManageNotes}>
-                Manage
+                Gerenciar
               </Button>
             </div>
           </div>

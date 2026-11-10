@@ -91,7 +91,7 @@ export function FindingFollowupActions({
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPending(null)}>
-              Cancel
+              Cancelar
             </Button>
             <Button
               onClick={() => {

@@ -391,7 +391,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
               disabled={confirming || loadingDetails}
               className="px-8"
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               variant="default"

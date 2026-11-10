@@ -71,7 +71,8 @@
     "sandbox:deploy": "pnpm docker:build:push && pnpm e2b:build:dev && pnpm e2b:build:prod",
     "diagnostics:process": "node scripts/diagnostics/process-status.mjs",
     "test:diagnostics": "node --test scripts/diagnostics/*.test.mjs",
-    "test:tooling": "node scripts/testing/run-tooling.mjs"
+    "test:tooling": "node scripts/testing/run-tooling.mjs",
+    "test:selfhost": "node --import tsx --test lib/selfhost/selfhost.test.mts"
   },
   "dependencies": {
     "@ai-sdk/openai": "3.0.135",

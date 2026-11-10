@@ -256,7 +256,7 @@ export const FileContentViewer = ({
               <button
                 type="button"
                 onClick={handleDownload}
-                aria-label="Download file"
+                aria-label="Baixar arquivo"
                 className="flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors hover:bg-accent"
               >
                 <Download
@@ -298,7 +298,7 @@ export const FileContentViewer = ({
                   className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-accent"
                 >
                   <Download className="size-4" aria-hidden="true" />
-                  Download
+                  Baixar
                 </button>
               )}
             </div>

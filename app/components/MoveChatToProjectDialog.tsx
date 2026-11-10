@@ -149,7 +149,7 @@ export function MoveChatToProjectDialog({
             onClick={() => onOpenChange(false)}
             disabled={movingDestination !== null}
           >
-            Cancel
+            Cancelar
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -284,7 +284,7 @@ export function SidebarChatSections({
       >
         {hasPinnedItems || activeTask ? (
           <CollapsibleChatSection
-            title="Pinned"
+            title="Fixados"
             dropId={SIDEBAR_PINNED_DROP_ID}
             onDrop={handlePinnedDrop}
             open={isPinnedOpen}
@@ -342,7 +342,7 @@ export function SidebarChatSections({
                 sideOffset={8}
                 className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
               >
-                New task
+                Nova tarefa
               </TooltipContent>
             </Tooltip>
           }

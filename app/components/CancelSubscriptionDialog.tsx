@@ -646,7 +646,7 @@ export const CancelSubscriptionDialog = ({
           </div>
           <button
             type="button"
-            aria-label="Close"
+            aria-label="Fechar"
             onClick={() => handleOpenChange(false)}
             disabled={isProcessing}
             className="flex size-8 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text transition-colors hover:bg-premium-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50"
@@ -699,7 +699,7 @@ export const CancelSubscriptionDialog = ({
                 className="h-11 w-full sm:w-44"
                 onClick={handleOfferResultDone}
               >
-                Done
+                Concluído
               </Button>
             </DialogFooter>
           </>
@@ -726,7 +726,7 @@ export const CancelSubscriptionDialog = ({
                 className="h-11 w-full sm:w-44"
                 onClick={() => handleOpenChange(false)}
               >
-                Done
+                Concluído
               </Button>
             </DialogFooter>
           </>
@@ -889,7 +889,7 @@ export const CancelSubscriptionDialog = ({
                   disabled={isProcessing}
                   className="h-9 px-2"
                 >
-                  Back
+                  Voltar
                 </Button>
                 <Button
                   variant="ghost"
@@ -959,7 +959,7 @@ export const CancelSubscriptionDialog = ({
                 disabled={isProcessing}
                 className="h-11 w-full sm:w-36"
               >
-                Back
+                Voltar
               </Button>
             </div>
           </>
@@ -1073,7 +1073,7 @@ export const CancelSubscriptionDialog = ({
                 {isLoadingOffers ? (
                   <Loader2 className="size-4 animate-spin" />
                 ) : (
-                  "Next"
+                  "Próximo"
                 )}
               </Button>
               <Button
@@ -1082,7 +1082,7 @@ export const CancelSubscriptionDialog = ({
                 disabled={isProcessing || isLoadingOffers}
                 className="h-11 w-full sm:w-36"
               >
-                Back
+                Voltar
               </Button>
             </div>
           </>
@@ -1153,7 +1153,7 @@ export const CancelSubscriptionDialog = ({
                   !hasRequiredReason && "opacity-60",
                 )}
               >
-                Next
+                Próximo
               </Button>
               <Button
                 variant="outline"
@@ -1161,7 +1161,7 @@ export const CancelSubscriptionDialog = ({
                 disabled={isProcessing}
                 className="h-11 w-full sm:w-36"
               >
-                Back
+                Voltar
               </Button>
             </div>
           </>

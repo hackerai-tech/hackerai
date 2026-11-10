@@ -241,7 +241,7 @@ export const MessageActions = ({
                 <button
                   onClick={handleCopy}
                   className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                  aria-label={copied ? "Copied!" : "Copy message"}
+                  aria-label={copied ? "Copiado!" : "Copiar mensagem"}
                 >
                   {copied ? <Check size={16} /> : <Copy size={16} />}
                 </button>
@@ -258,7 +258,7 @@ export const MessageActions = ({
                   <button
                     onClick={onEdit}
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                    aria-label="Edit message"
+                    aria-label="Editar mensagem"
                   >
                     <Pencil size={16} />
                   </button>

@@ -150,7 +150,7 @@ export function SidebarProjects({
             onClick={() => setIsCreateOpen(true)}
           >
             <FolderPlus className="size-[18px] shrink-0" aria-hidden="true" />
-            <span>New project</span>
+            <span>Novo projeto</span>
           </button>
         )
       ) : (
@@ -213,7 +213,7 @@ export function SidebarProjects({
             id="sidebar-projects-heading"
             className="min-w-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.091px] text-sidebar-foreground/50"
           >
-            Projects
+            Projetos
           </span>
           <ChevronRight
             className={`size-3.5 shrink-0 text-sidebar-foreground/45 transition-[transform,opacity] ${
@@ -259,7 +259,7 @@ export function SidebarProjects({
                 size="icon"
                 className="size-8 rounded-lg text-sidebar-foreground/45 hover:bg-sidebar-accent hover:text-sidebar-foreground"
                 onClick={() => setIsCreateOpen(true)}
-                aria-label="Create project"
+                aria-label="Criar projeto"
               >
                 <Plus className="size-[18px]" />
               </Button>
@@ -269,7 +269,7 @@ export function SidebarProjects({
               sideOffset={8}
               className="border-0 bg-black px-3 py-1.5 text-sm text-white shadow-md [&_svg]:bg-black [&_svg]:fill-black"
             >
-              Create project
+              Criar projeto
             </TooltipContent>
           </Tooltip>
         </div>

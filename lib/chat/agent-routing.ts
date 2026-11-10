@@ -33,6 +33,7 @@ export function shouldUseAgentLongForAgent({
   isTauri: boolean;
   userAgent?: string | null;
 }): boolean {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true") return false;
   if (mode !== "agent") return false;
 
   return !isLegacyDesktopAgentClient({ mode, isTauri, userAgent });

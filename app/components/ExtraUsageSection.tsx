@@ -282,7 +282,7 @@ const ExtraUsageSection = () => {
                   className="inline underline underline-offset-[3px] text-muted-foreground hover:text-foreground"
                   aria-label="Learn more about extra usage"
                 >
-                  Learn more
+                  Saiba mais
                 </a>
               </p>
             </div>
@@ -419,7 +419,7 @@ const ExtraUsageSection = () => {
                 disabled={isSavingSettings}
                 aria-label="Configure auto-reload"
               >
-                Configure
+                Configurar
               </Button>
             </div>
           </>

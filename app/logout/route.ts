@@ -1,4 +1,4 @@
-import { signOut } from "@workos-inc/authkit-nextjs";
+import { signOut } from "@/lib/auth/provider";
 
 export const GET = async (request: Request) => {
   if (process.env.VERCEL_ENV === "preview") {

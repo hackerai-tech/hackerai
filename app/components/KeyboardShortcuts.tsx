@@ -124,7 +124,7 @@ export function KeyboardShortcuts({
           }}
         >
           <DialogHeader className="border-b px-6 py-5 text-left">
-            <DialogTitle>Keyboard shortcuts</DialogTitle>
+            <DialogTitle>Atalhos de teclado</DialogTitle>
             <DialogDescription>
               Move faster in HackerAI with your keyboard.
             </DialogDescription>

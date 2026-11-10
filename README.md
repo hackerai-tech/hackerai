@@ -1,3 +1,5 @@
+> **VPS tandi.tech / português do Brasil:** veja [o guia de hospedagem própria](deploy/vps/README.pt-BR.md). A validação local é parcial; a instalação na VPS permanece pendente.
+
 <p align="center">
   <a href="https://hackerai.co/">
     <img src="public/icon-512x512.png" width="150" alt="HackerAI Logo">

@@ -210,7 +210,7 @@ const ManageNotesDialogContent = ({
               variant="outline"
               className="border-destructive text-destructive hover:bg-destructive/10"
             >
-              {deleting === "all" ? "Deleting…" : "Delete all"}
+              {deleting === "all" ? "Deleting…" : "Excluir tudo"}
             </Button>
           </div>
         )}

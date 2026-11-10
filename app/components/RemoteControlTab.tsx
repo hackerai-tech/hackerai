@@ -141,7 +141,7 @@ const RemoteControlTab = () => {
       <div className="flex items-center justify-between border-b pb-3">
         <div className="flex items-center gap-2">
           <Server className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Remote Control</h3>
+          <h3 className="text-sm font-semibold">Controle remoto</h3>
         </div>
         <a
           href="https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
@@ -149,7 +149,7 @@ const RemoteControlTab = () => {
           rel="noopener noreferrer"
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          <span>Learn more</span>
+          <span>Saiba mais</span>
           <ExternalLink className="h-3 w-3" />
         </a>
       </div>
@@ -200,7 +200,7 @@ const RemoteControlTab = () => {
             <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center mb-2">
               <Server className="h-4 w-4 text-muted-foreground" />
             </div>
-            <p className="text-sm font-medium">No active connections</p>
+            <p className="text-sm font-medium">Nenhuma conexão ativa</p>
             <p className="text-xs text-muted-foreground">
               Connect using the commands below
             </p>
@@ -246,7 +246,7 @@ const RemoteControlTab = () => {
                   {isPreparingCommand
                     ? "Preparing..."
                     : isCommandCopied
-                      ? "Copied"
+                      ? "Copiado"
                       : "Copy command"}
                 </span>
               </Button>
@@ -283,7 +283,7 @@ const RemoteControlTab = () => {
       <div className="flex items-start gap-2 p-3 bg-yellow-500/10 rounded-lg text-xs">
         <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
         <div className="text-yellow-800 dark:text-yellow-200 space-y-1">
-          <span className="font-medium">Security:</span>{" "}
+          <span className="font-medium">Segurança:</span>{" "}
           <span className="text-yellow-700 dark:text-yellow-300">
             Commands run directly on your OS. Stop anytime with Ctrl+C.
           </span>

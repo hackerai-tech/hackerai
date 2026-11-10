@@ -111,7 +111,7 @@ export function ProjectCreateDialog({
       >
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Create project</DialogTitle>
+            <DialogTitle>Criar projeto</DialogTitle>
             <DialogDescription>
               {isDesktopApp
                 ? "Group related tasks and optionally link a local folder for Agent."
@@ -121,14 +121,14 @@ export function ProjectCreateDialog({
 
           <div className="space-y-5 py-5">
             <div className="space-y-2">
-              <Label htmlFor="project-name">Project name</Label>
+              <Label htmlFor="project-name">Nome do projeto</Label>
               <Input
                 id="project-name"
                 name="projectName"
                 autoComplete="off"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="New project"
+                placeholder="Novo projeto"
                 maxLength={80}
                 autoFocus={isMobile === false}
                 disabled={isSaving}
@@ -200,13 +200,13 @@ export function ProjectCreateDialog({
               onClick={() => setOpen(false)}
               disabled={isSaving || isPickingFolder}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               type="submit"
               disabled={!name.trim() || isSaving || isPickingFolder}
             >
-              {isSaving ? "Creating…" : "Create project"}
+              {isSaving ? "Creating…" : "Criar projeto"}
             </Button>
           </DialogFooter>
         </form>

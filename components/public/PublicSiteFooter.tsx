@@ -13,13 +13,13 @@ const columns: ReadonlyArray<{ title: string; links: readonly FooterLink[] }> =
       links: [
         { href: "/product", label: "Product" },
         { href: "/pricing", label: "Pricing" },
-        { href: "/download", label: "Download" },
+        { href: "/download", label: "Baixar" },
       ],
     },
     {
       title: "Company",
       links: [
-        { href: "/trust", label: "Security & Trust" },
+        { href: "/trust", label: "Segurança e confiança" },
         { href: "/abuse", label: "Report abuse" },
         { href: "/privacy-policy", label: "Privacy Policy" },
         { href: "/terms-of-service", label: "Terms of Service" },
@@ -29,7 +29,7 @@ const columns: ReadonlyArray<{ title: string; links: readonly FooterLink[] }> =
       title: "Resources",
       links: [
         { href: GITHUB_URL, label: "GitHub", external: true },
-        { href: HELP_CENTER_URL, label: "Help Center", external: true },
+        { href: HELP_CENTER_URL, label: "Central de ajuda", external: true },
         { href: STATUS_PAGE_URL, label: "Status", external: true },
       ],
     },

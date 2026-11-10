@@ -91,6 +91,9 @@ export function getS3Client(
 
   return new S3Client({
     region,
+    ...(process.env.S3_ENDPOINT_URL
+      ? { endpoint: process.env.S3_ENDPOINT_URL, forcePathStyle: true }
+      : {}),
     ...(options.forcePathStyle ? { forcePathStyle: true } : {}),
     // Presigned browser uploads do not provide the body while signing. The
     // SDK's default WHEN_SUPPORTED behavior otherwise signs the CRC32 of an

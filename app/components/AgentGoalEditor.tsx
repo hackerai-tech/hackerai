@@ -326,11 +326,11 @@ export function AgentGoalEditor({
             )
           ) : willContinue ? (
             <>
-              <span className="desktop:hidden">Update</span>
+              <span className="desktop:hidden">Atualizar</span>
               <span className="hidden desktop:inline">Update and continue</span>
             </>
           ) : (
-            "Save"
+            "Salvar"
           )}
         </Button>
         <Button

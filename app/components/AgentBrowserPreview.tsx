@@ -1735,7 +1735,7 @@ export function AgentBrowserPreview({
             <DialogClose asChild>
               <button
                 type="button"
-                aria-label="Close"
+                aria-label="Fechar"
                 disabled={busy}
                 className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               >

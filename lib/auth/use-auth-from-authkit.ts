@@ -8,7 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
+import { useAuth, useAccessToken } from "@/lib/auth/client-provider";
 import { CrossTabMutex } from "@/lib/auth/cross-tab-mutex";
 import {
   clearExpiredSharedToken,

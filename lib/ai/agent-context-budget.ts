@@ -46,6 +46,7 @@ export function getAgentContextBudget({
   fallbackModelIds?: readonly string[];
 }): number {
   const baseline = getMaxTokensForSubscription(subscription, { mode });
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true") return baseline;
   if (!enabled || mode !== "agent") return baseline;
   const capacities = [modelId, ...fallbackModelIds].map((id) =>
     Object.hasOwn(MODEL_CONTEXT_WINDOWS, id)

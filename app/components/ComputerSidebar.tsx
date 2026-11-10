@@ -709,7 +709,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {usesCloseAction ? "Close" : "Minimize"}
+                  {usesCloseAction ? "Fechar" : "Minimize"}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -814,11 +814,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     />
                   ) : isWebSearch ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
-                      Search
+                      Buscar
                     </div>
                   ) : isNotes ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      Notes
+                      Notas
                     </div>
                   ) : isFinding ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
@@ -1001,7 +1001,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                             ) : sidebarContent.results.length === 0 ? (
                               <div className="flex items-center justify-center py-8">
                                 <div className="text-muted-foreground text-sm">
-                                  No results found
+                                  Nenhum resultado encontrado
                                 </div>
                               </div>
                             ) : (

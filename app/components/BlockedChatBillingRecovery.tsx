@@ -2,7 +2,7 @@
 
 import { type ReactNode } from "react";
 import useSWR from "swr";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { Button } from "@/components/ui/button";
 import {
@@ -84,7 +84,7 @@ export function BlockedChatBillingRecovery({
           </Button>
           {onRetry && (
             <Button size="sm" variant="outline" onClick={onRetry}>
-              Try again
+              Tentar novamente
             </Button>
           )}
           {!forbidden && (

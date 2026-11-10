@@ -14,7 +14,7 @@ import {
   type SubmitStopButtonProps,
 } from "./SubmitStopButton";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
@@ -76,7 +76,7 @@ export function ChatInputToolbar({
               className="h-11 rounded-full px-3 text-sm sm:h-8"
               {...replyBack}
             >
-              Back
+              Voltar
             </Button>
           )
         ) : (

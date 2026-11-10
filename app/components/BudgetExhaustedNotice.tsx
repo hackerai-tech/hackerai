@@ -3,7 +3,7 @@ import type { PaidDailyFreeAllowanceMetadata } from "@/lib/rate-limit/paid-daily
 import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useAction, useQuery } from "convex/react";
 import useSWR from "swr";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -206,7 +206,11 @@ const UsageBudgetExhaustedNotice = ({
               disabled={isLoading || pending}
               onClick={() => void onContinue()}
             >
-              {pending ? "Resuming…" : canContinue ? "Continue" : "Try again"}
+              {pending
+                ? "Resuming…"
+                : canContinue
+                  ? "Continuar"
+                  : "Tentar novamente"}
             </Button>
           )}
         </div>

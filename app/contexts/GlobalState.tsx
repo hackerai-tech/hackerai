@@ -11,7 +11,7 @@ import React, {
   ReactNode,
 } from "react";
 import { usePathname } from "next/navigation";
-import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAccessToken, useAuth } from "@/lib/auth/client-provider";
 import {
   type ChatMode,
   type AgentPermissionMode,
@@ -543,7 +543,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   } = useSandboxPreference(!!user);
 
   const [agentPermissionMode, setAgentPermissionMode] =
-    useState<AgentPermissionMode>(() => readAgentPermissionMode());
+    useState<AgentPermissionMode>(() =>
+      process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
+        ? "full_access"
+        : readAgentPermissionMode(),
+    );
 
   useEffect(() => {
     writeAgentPermissionMode(agentPermissionMode);
@@ -554,6 +558,21 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     api.localSandbox.listConnectionDetails,
     user ? undefined : "skip",
   );
+  useEffect(() => {
+    if (
+      process.env.NEXT_PUBLIC_SELF_HOSTED !== "true" ||
+      sandboxPreference !== "e2b"
+    )
+      return;
+    const connection = localConnections?.[0];
+    if (connection)
+      setSandboxPreference(
+        connection.environmentId
+          ? `environment:${connection.environmentId}`
+          : connection.connectionId,
+        { remember: false },
+      );
+  }, [localConnections, sandboxPreference, setSandboxPreference]);
   const hasLocalSandbox = useMemo(
     () => desktopBridgeActive || (localConnections?.length ?? 0) > 0,
     [desktopBridgeActive, localConnections],

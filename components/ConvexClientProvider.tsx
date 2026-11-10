@@ -3,8 +3,8 @@
 import { ReactNode, useState } from "react";
 import { ConvexReactClient } from "convex/react";
 import { ConvexProviderWithAuth } from "convex/react";
-import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
-import type { NoUserInfo, UserInfo } from "@workos-inc/authkit-nextjs";
+import { AuthKitProvider } from "@/lib/auth/client-provider";
+import type { NoUserInfo, UserInfo } from "@/lib/auth/provider";
 import { useAuthFromAuthKit } from "@/lib/auth/use-auth-from-authkit";
 
 const PRERENDER_CONVEX_URL = "https://placeholder.convex.cloud";

@@ -227,7 +227,7 @@ const BuyExtraUsageDialogContent = ({
                     </span>
                     <span>Pay ${bundle.paidDollars}</span>
                     <span className="text-xs font-normal col-span-2">
-                      Save {bundle.discountPercent}%
+                      Salvar {bundle.discountPercent}%
                     </span>
                   </Button>
                 ))}
@@ -345,7 +345,7 @@ const BuyExtraUsageDialogContent = ({
                   Team billing account
                 </p>
               ) : loadingPaymentMethod ? (
-                <p className="text-sm text-muted-foreground">Loading...</p>
+                <p className="text-sm text-muted-foreground">Carregando...</p>
               ) : paymentMethod?.hasPaymentMethod && paymentMethod.last4 ? (
                 <p className="text-sm flex items-center gap-2">
                   <CreditCard className="h-5 w-5" />

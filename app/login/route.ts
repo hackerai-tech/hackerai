@@ -1,4 +1,4 @@
-import { getSignInUrl } from "@workos-inc/authkit-nextjs";
+import { getSignInUrl } from "@/lib/auth/provider";
 import { redirectToAuthorizationUrl } from "@/lib/auth/auth-redirect-intents";
 
 export async function GET(request: Request) {

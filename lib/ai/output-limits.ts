@@ -1,1 +1,2 @@
-export const MAX_OUTPUT_TOKENS = 32_000;
+export const MAX_OUTPUT_TOKENS =
+  process.env.NEXT_PUBLIC_SELF_HOSTED === "true" ? 2048 : 32_000;

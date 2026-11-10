@@ -127,7 +127,7 @@ export const TeamDialogs = ({
                 }}
                 disabled={inviting}
               >
-                Cancel
+                Cancelar
               </Button>
               <Button type="submit" disabled={inviting}>
                 {inviting ? (
@@ -166,7 +166,7 @@ export const TeamDialogs = ({
               onClick={() => setMemberToRemove(null)}
               disabled={removing === memberToRemove?.id}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               variant="destructive"
@@ -211,7 +211,7 @@ export const TeamDialogs = ({
               onClick={() => setInviteToRevoke(null)}
               disabled={revokingInvite === inviteToRevoke?.id}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               variant="destructive"
@@ -253,7 +253,7 @@ export const TeamDialogs = ({
               onClick={() => setShowLeaveDialog(false)}
               disabled={leaving}
             >
-              Cancel
+              Cancelar
             </Button>
             <Button
               variant="destructive"
@@ -573,7 +573,7 @@ export const ManageSeatsDialog = ({
             onClick={() => onOpenChange(false)}
             disabled={confirming}
           >
-            Cancel
+            Cancelar
           </Button>
           <Button
             onClick={handleConfirm}

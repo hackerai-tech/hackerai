@@ -84,7 +84,7 @@ const QueuedMessageMenu = ({
           onSelect={onEdit}
         >
           <Pencil />
-          Edit message
+          Editar mensagem
         </DropdownMenuItem>
         <DropdownMenuItem
           className="cursor-pointer"
@@ -166,7 +166,7 @@ const QueuedMessageRow = ({
                 className="h-7"
                 onClick={cancelEditing}
               >
-                Cancel
+                Cancelar
               </Button>
               <Button
                 type="button"
@@ -175,7 +175,7 @@ const QueuedMessageRow = ({
                 onClick={saveEditing}
                 disabled={!editText.trim() && !message.files?.length}
               >
-                Save
+                Salvar
               </Button>
             </div>
           </div>
@@ -249,7 +249,7 @@ const QueuedMessageRow = ({
             {message.deliveryStatus === "active"
               ? "Check delivery"
               : message.deliveryStatus === "failed"
-                ? "Retry"
+                ? "Tentar novamente"
                 : "Steer"}
           </Button>
           <Button

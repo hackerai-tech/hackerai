@@ -68,12 +68,12 @@ export const ComputerCodeBlock = ({
                 <button
                   onClick={handleDownload}
                   className="inline-flex items-center justify-center rounded-md px-3 py-1 text-xs transition-colors text-muted-foreground hover:bg-background hover:text-foreground"
-                  aria-label="Download"
+                  aria-label="Baixar"
                 >
                   <Download size={12} />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Download</TooltipContent>
+              <TooltipContent>Baixar</TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -102,12 +102,12 @@ export const ComputerCodeBlock = ({
                 <button
                   onClick={handleCopy}
                   className="inline-flex items-center justify-center rounded-md px-3 py-1 text-xs transition-colors text-muted-foreground hover:bg-background hover:text-foreground"
-                  aria-label={copied ? "Copied!" : "Copy"}
+                  aria-label={copied ? "Copiado!" : "Copiar"}
                 >
                   {copied ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </TooltipTrigger>
-              <TooltipContent>{copied ? "Copied!" : "Copy"}</TooltipContent>
+              <TooltipContent>{copied ? "Copiado!" : "Copiar"}</TooltipContent>
             </Tooltip>
           </div>
         </div>

@@ -1136,7 +1136,7 @@ export function FindingDetail({
                   disabled={isClosing}
                   onClick={() => setIsCloseDialogOpen(false)}
                 >
-                  Cancel
+                  Cancelar
                 </Button>
                 <Button
                   type="submit"

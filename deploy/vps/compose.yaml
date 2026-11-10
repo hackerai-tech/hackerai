@@ -1,0 +1,129 @@
+name: hackerai-vps
+services:
+  web:
+    image: hackerai-vps-web:local
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile
+      target: web
+      args:
+        DOMAIN: ${DOMAIN:-tandi.tech}
+    env_file: .env
+    environment:
+      LOCAL_AUTH_KEY_DIR: /run/local-auth
+      OLLAMA_BASE_URL: http://ollama:11434/v1
+      REDIS_URL: redis://redis:6379
+    volumes: [./private/auth:/run/local-auth:ro]
+    depends_on: [backend, redis]
+    restart: unless-stopped
+    networks: [app, relay]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  backend:
+    image: ghcr.io/convex/convex-backend@sha256:e9c084e8bd6c1f249012c672193f0988c748824f55a24cdad45f6185a8462f9a
+    environment:
+      CONVEX_CLOUD_ORIGIN: https://${DOMAIN:-tandi.tech}/convex
+      CONVEX_SITE_ORIGIN: https://${DOMAIN:-tandi.tech}/convex-site
+      DISABLE_BEACON: "true"
+      DISABLE_METRICS_ENDPOINT: "true"
+      APPLICATION_MAX_CONCURRENT_NODE_ACTIONS: "4"
+    volumes: [convex:/convex/data]
+    restart: unless-stopped
+    networks: [app, relay]
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:3210/version]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4.7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [redis:/data]
+    restart: unless-stopped
+    networks: [app]
+  ollama:
+    image: ollama/ollama:0.13.0
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "16384"
+      OLLAMA_KEEP_ALIVE: 10m
+    volumes: [ollama:/root/.ollama]
+    restart: unless-stopped
+    networks: [app]
+  storage:
+    image: rustfs/rustfs@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+    environment:
+      RUSTFS_ACCESS_KEY: ${AWS_S3_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${AWS_S3_SECRET_ACCESS_KEY}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes: [storage:/data]
+    restart: unless-stopped
+    networks: [app]
+  centrifugo:
+    image: centrifugo/centrifugo:v5.4.9
+    command: [centrifugo, -c, /centrifugo/config.json]
+    environment:
+      CENTRIFUGO_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_SECRET}
+    volumes: [./centrifugo.json:/centrifugo/config.json:ro]
+    restart: unless-stopped
+    networks: [app, relay]
+  sandbox:
+    image: hackerai-vps-sandbox:local
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile
+      target: sandbox
+    volumes:
+      - ./private/sandbox-token:/run/sandbox-token:ro
+      - sandbox:/home/node
+    restart: unless-stopped
+    networks: [relay]
+    mem_limit: 2g
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    depends_on: [backend, centrifugo]
+  caddy:
+    image: caddy:2.10.2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:-tandi.tech}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks:
+      app:
+        aliases: ["${DOMAIN:-tandi.tech}"]
+      relay:
+        aliases: ["${DOMAIN:-tandi.tech}"]
+  tools:
+    image: hackerai-vps-tools:local
+    profiles: [tools]
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile
+      target: tools
+    env_file: .env
+    environment:
+      CONVEX_SELF_HOSTED_URL: http://backend:3210
+      LOCAL_AUTH_KEY_DIR: /run/local-auth
+    volumes:
+      - ./private:/run/private
+      - ./private/auth:/run/local-auth:ro
+    networks: [app, relay]
+networks:
+  app:
+  relay:
+volumes:
+  convex:
+  redis:
+  ollama:
+  storage:
+  sandbox:
+  caddy_data:
+  caddy_config:

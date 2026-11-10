@@ -10,7 +10,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useUpgrade } from "../hooks/useUpgrade";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { useGlobalState } from "../contexts/GlobalState";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { PRICING } from "@/lib/pricing/features";
@@ -362,7 +362,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                       className="w-full rounded-xl"
                       size="lg"
                     >
-                      Cancel
+                      Cancelar
                     </Button>
                   </div>
                 </div>
@@ -402,7 +402,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                     {/* Yearly Plan */}
                     <div className="relative">
                       <Badge className="absolute start-3 top-0 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded-xl bg-[#10A37F] text-white border-none z-10">
-                        Save {discountPercentage}%
+                        Salvar {discountPercentage}%
                       </Badge>
                       <label
                         htmlFor="yearly"
@@ -599,7 +599,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                     className="mt-4 w-full rounded-xl"
                     size="lg"
                   >
-                    Cancel
+                    Cancelar
                   </Button>
                 </div>
               </div>

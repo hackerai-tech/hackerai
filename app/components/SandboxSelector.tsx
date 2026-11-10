@@ -205,7 +205,11 @@ export function SandboxSelector({
       shortLabel: conn.osInfo?.hostname || conn.name,
       icon: Laptop,
     }));
-  const options = [cloudOption, ...desktopOptions, ...remoteOptions];
+  const options = [
+    ...(process.env.NEXT_PUBLIC_SELF_HOSTED === "true" ? [] : [cloudOption]),
+    ...desktopOptions,
+    ...remoteOptions,
+  ];
 
   // A connected Convex row can briefly exist before the command relay has
   // subscribed. Confirm live Centrifugo presence before automatically choosing
@@ -372,41 +376,45 @@ export function SandboxSelector({
         align={menuAlign}
       >
         <div className="space-y-0.5">
-          <button
-            key={cloudOption.id}
-            onClick={() => {
-              if (isFreeUser) {
-                toast.info("Cloud sandbox requires a Pro plan", {
-                  description:
-                    "Use this computer or connect another computer for free, or upgrade to Pro for cloud access.",
-                });
-                return;
-              }
-              onChange?.(cloudOption.id);
-              setOpen(false);
-            }}
-            className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-              isFreeUser
-                ? "opacity-60 cursor-not-allowed"
-                : value === cloudOption.id
-                  ? "bg-accent text-accent-foreground"
-                  : "hover:bg-muted"
-            }`}
-          >
-            <Cloud className="h-4 w-4 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate">
-                {cloudOption.label}
+          {process.env.NEXT_PUBLIC_SELF_HOSTED !== "true" && (
+            <button
+              key={cloudOption.id}
+              onClick={() => {
+                if (isFreeUser) {
+                  toast.info("Cloud sandbox requires a Pro plan", {
+                    description:
+                      "Use this computer or connect another computer for free, or upgrade to Pro for cloud access.",
+                  });
+                  return;
+                }
+                onChange?.(cloudOption.id);
+                setOpen(false);
+              }}
+              className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
+                isFreeUser
+                  ? "opacity-60 cursor-not-allowed"
+                  : value === cloudOption.id
+                    ? "bg-accent text-accent-foreground"
+                    : "hover:bg-muted"
+              }`}
+            >
+              <Cloud className="h-4 w-4 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">
+                  {cloudOption.label}
+                </div>
               </div>
-            </div>
-            {isFreeUser ? (
-              <span className="text-[10px] font-semibold bg-primary/10 text-primary px-1.5 py-0.5 rounded">
-                Pro
-              </span>
-            ) : (
-              value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />
-            )}
-          </button>
+              {isFreeUser ? (
+                <span className="text-[10px] font-semibold bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                  Pro
+                </span>
+              ) : (
+                value === cloudOption.id && (
+                  <Check className="h-4 w-4 shrink-0" />
+                )
+              )}
+            </button>
+          )}
 
           {desktopOptions.map((option) => {
             const OptionIcon = option.icon;

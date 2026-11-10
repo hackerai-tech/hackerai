@@ -44,12 +44,12 @@ export function ModeSelectorTrigger({
         {chatMode === "agent" ? (
           <>
             <Infinity className="w-3 h-3 md:mr-1" />
-            <span className="hidden md:inline">Agent</span>
+            <span className="hidden md:inline">Agente</span>
           </>
         ) : (
           <>
             <MessageSquare className="w-3 h-3 md:mr-1" />
-            <span className="hidden md:inline">Ask</span>
+            <span className="hidden md:inline">Perguntar</span>
           </>
         )}
         <ChevronDown className="hidden w-3 h-3 ml-1 md:block" />

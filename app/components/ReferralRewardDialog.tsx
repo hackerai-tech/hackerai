@@ -141,7 +141,7 @@ export function ReferralRewardDialog({
                 onClick={() => setView("main")}
               >
                 <ArrowLeft className="size-4" />
-                Back
+                Voltar
               </Button>
               <DialogTitle className="text-lg leading-none font-medium">
                 General referral guidelines
@@ -372,12 +372,12 @@ export function ReferralRewardDialog({
                         {copied ? (
                           <>
                             <Check className="size-5" />
-                            Copied
+                            Copiado
                           </>
                         ) : (
                           <>
                             <Copy className="size-5" />
-                            Copy link
+                            Copiar link
                           </>
                         )}
                       </Button>

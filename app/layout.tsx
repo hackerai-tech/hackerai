@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import { cookies, headers } from "next/headers";
-import { withAuth } from "@workos-inc/authkit-nextjs";
+import { withAuth } from "@/lib/auth/provider";
 import "./globals.css";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -34,18 +33,11 @@ import {
 import { IntercomMessenger } from "./components/IntercomMessenger";
 import { createIntercomMessengerIdentity } from "@/lib/intercom/messenger";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const geistSans = { variable: "" };
+const geistMono = { variable: "" };
 
 const APP_NAME = SITE_NAME;
-const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
+const APP_DEFAULT_TITLE = "HackerAI Brasil — Assistente de segurança";
 const APP_TITLE_TEMPLATE = "%s | HackerAI";
 const APP_DESCRIPTION = SITE_DESCRIPTION;
 
@@ -116,7 +108,10 @@ async function getInitialAuth() {
   const requestHeaders = await headers();
 
   // Static public pages are prerendered without proxy-injected AuthKit headers.
-  if (!requestHeaders.has("x-workos-middleware")) {
+  if (
+    process.env.NEXT_PUBLIC_SELF_HOSTED !== "true" &&
+    !requestHeaders.has("x-workos-middleware")
+  ) {
     return { user: null } as const;
   }
 
@@ -146,13 +141,20 @@ export default async function RootLayout({
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
   const countryCode = countryCodeFromHeaders(requestHeaders);
-  const analyticsConsent = getAnalyticsConsentDecision({
-    cookieValue: cookieStore.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
-    countryCode,
-    // If a production proxy ever stops providing country data, ask rather
-    // than silently placing optional analytics storage on a covered visitor.
-    failClosed: process.env.NODE_ENV === "production",
-  });
+  const analyticsConsent =
+    process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
+      ? {
+          consent: "declined" as const,
+          consentRequired: false,
+          analyticsAllowed: false,
+        }
+      : getAnalyticsConsentDecision({
+          cookieValue: cookieStore.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+          countryCode,
+          // If a production proxy ever stops providing country data, ask rather
+          // than silently placing optional analytics storage on a covered visitor.
+          failClosed: process.env.NODE_ENV === "production",
+        });
 
   const content = (
     <GlobalStateProvider>
@@ -160,7 +162,9 @@ export default async function RootLayout({
         consentRequired={analyticsConsent.consentRequired}
         firstTouchAttribution={firstTouchAttribution}
         initialConsent={analyticsConsent.consent}
-        initialDecisionResolved={countryCode !== null}
+        initialDecisionResolved={
+          process.env.NEXT_PUBLIC_SELF_HOSTED === "true" || countryCode !== null
+        }
       >
         <AgentAutoReviewAvailabilityProvider>
           <ChunkLoadRecovery />
@@ -182,7 +186,7 @@ export default async function RootLayout({
 
   return (
     <html
-      lang="en"
+      lang="pt-BR"
       className={`${geistSans.variable} ${geistMono.variable} dark h-full`}
       suppressHydrationWarning
     >

@@ -161,7 +161,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 size="sm"
                 className="mb-2 size-9 p-0 hover:bg-sidebar-accent/50"
                 onClick={toggleSidebar}
-                aria-label="Open sidebar"
+                aria-label="Abrir barra lateral"
               >
                 <SidebarIcon className="size-[18px]" />
               </Button>
@@ -189,7 +189,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                     <SquarePen className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
-                <SidebarActionTooltip label="New task" side="right" />
+                <SidebarActionTooltip label="Nova tarefa" side="right" />
               </Tooltip>
             </div>
 
@@ -202,13 +202,13 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                     size="sm"
                     className="size-9 p-0 hover:bg-sidebar-accent/50"
                     onClick={handleSearchOpen}
-                    aria-label="Search"
+                    aria-label="Buscar"
                   >
                     <Search className="size-[18px]" />
                   </Button>
                 </TooltipTrigger>
                 <SidebarActionTooltip
-                  label="Search"
+                  label="Buscar"
                   shortcut={searchShortcutLabel}
                   side="right"
                 />
@@ -280,13 +280,13 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 size="icon-sm"
                 className="size-9 text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                 onClick={handleSearchOpen}
-                aria-label="Search"
+                aria-label="Buscar"
               >
                 <Search className="size-[18px]" />
               </Button>
             </TooltipTrigger>
             <SidebarActionTooltip
-              label="Search"
+              label="Buscar"
               shortcut={searchShortcutLabel}
             />
           </Tooltip>
@@ -299,7 +299,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 size="icon-sm"
                 className="size-9 text-sidebar-foreground/65 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                 onClick={handleCloseSidebar}
-                aria-label="Close sidebar"
+                aria-label="Fechar barra lateral"
               >
                 <PanelLeft className="size-[18px]" />
               </Button>
@@ -324,7 +324,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
           >
             <SquarePen className="size-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
-              New task
+              Nova tarefa
             </div>
           </Button>
         </div>
@@ -341,7 +341,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
           >
             <ShieldAlert className="w-4 h-4" />
             <div className="mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium text-left">
-              Findings
+              Achados
             </div>
           </Button>
         </div>

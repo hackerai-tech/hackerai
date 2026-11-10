@@ -65,7 +65,7 @@ export const FeedbackInput = ({ onSend, onCancel }: FeedbackInputProps) => {
             disabled={isSubmitting}
             className="shrink-0"
           >
-            Cancel
+            Cancelar
           </Button>
           <Button
             size="sm"
@@ -73,7 +73,7 @@ export const FeedbackInput = ({ onSend, onCancel }: FeedbackInputProps) => {
             disabled={!details.trim() || isSubmitting}
             className="shrink-0"
           >
-            Send
+            Enviar
           </Button>
         </div>
       </div>

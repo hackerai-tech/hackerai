@@ -255,7 +255,7 @@ export const TeamExtraUsageSection = () => {
           onClick={() => void load()}
           disabled={loading}
         >
-          Retry
+          Tentar novamente
         </Button>
       </section>
     );
@@ -432,7 +432,7 @@ export const TeamExtraUsageSection = () => {
                           {m.disabled && (
                             <>
                               <span className="mx-1">·</span>
-                              <span className="text-red-500">Disabled</span>
+                              <span className="text-red-500">Desativado</span>
                             </>
                           )}
                         </p>
@@ -444,7 +444,7 @@ export const TeamExtraUsageSection = () => {
                         disabled={busy}
                         aria-label={`Edit limits for ${displayName}`}
                       >
-                        Edit
+                        Editar
                       </Button>
                     </div>
                   );
@@ -606,10 +606,10 @@ const MemberSpendLimitDialog = ({
             onClick={onClose}
             disabled={isLoading}
           >
-            Cancel
+            Cancelar
           </Button>
           <Button type="submit" disabled={isLoading}>
-            Save
+            Salvar
           </Button>
         </div>
       </form>

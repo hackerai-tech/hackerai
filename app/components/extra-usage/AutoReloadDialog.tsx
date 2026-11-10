@@ -167,13 +167,13 @@ const AutoReloadDialogContent = ({
               onClick={handleSubmit}
               disabled={isLoading || !isThresholdValid || !isAmountValid}
             >
-              {isLoading ? "Saving..." : "Save"}
+              {isLoading ? "Saving..." : "Salvar"}
             </Button>
           </>
         ) : (
           <>
             <Button variant="outline" onClick={onCancel} disabled={isLoading}>
-              Cancel
+              Cancelar
             </Button>
             <Button
               onClick={handleSubmit}

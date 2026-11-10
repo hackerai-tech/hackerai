@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAuth } from "@/lib/auth/client-provider";
 import { Button } from "@/components/ui/button";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -411,7 +411,7 @@ const AccountTab = () => {
                       </>
                     ) : (
                       <>
-                        <span>Manage</span>
+                        <span>Gerenciar</span>
                         <ChevronDown className="h-4 w-4" />
                       </>
                     )}
@@ -753,7 +753,7 @@ const AccountTab = () => {
                   {pastDueStatus &&
                   currentCancellationStatus?.renewalPaymentRequired
                     ? "Update card"
-                    : "Manage"}
+                    : "Gerenciar"}
                 </Button>
               </div>
             </div>
@@ -774,7 +774,7 @@ const AccountTab = () => {
             onClick={() => setShowDeleteAccount(true)}
             aria-label="Delete account"
           >
-            Delete
+            Excluir
           </Button>
         </div>
       </div>

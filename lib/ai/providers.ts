@@ -1,3 +1,4 @@
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   inference,
   INFERENCE_CYBER_MODEL_KEY,
@@ -1439,6 +1440,8 @@ export const modelDisplayNames: Record<ModelName, string> &
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
+  if (process.env.NEXT_PUBLIC_SELF_HOSTED === "true")
+    return "Modelo local · Ollama";
   return modelDisplayNames[modelName];
 };
 
@@ -1552,8 +1555,19 @@ export function resolveAgentTierToProviderKey(
   }
 }
 
+const localProvider = createOpenAICompatible({
+  name: "ollama",
+  baseURL: process.env.OLLAMA_BASE_URL ?? "http://ollama:11434/v1",
+});
+const localModel = localProvider(process.env.OLLAMA_MODEL ?? "qwen2.5:3b");
+
 export const myProvider = customProvider({
-  languageModels: baseProviders,
+  languageModels:
+    process.env.NEXT_PUBLIC_SELF_HOSTED === "true"
+      ? Object.fromEntries(
+          Object.keys(baseProviders).map((key) => [key, localModel]),
+        )
+      : baseProviders,
 });
 
 export const createTrackedProvider = () => myProvider;
