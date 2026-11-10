@@ -24,12 +24,19 @@ const stripSavedOutputPath = (text: string): string =>
     "[$1 saved privately]",
   );
 
+// Compaction references are unescaped. Only the no-reference form is safe to
+// retain verbatim; any ambiguous placeholder may contain generated host paths.
+const SAFE_TERMINAL_PLACEHOLDER =
+  /^\[Terminal: ran '[^';\r\n]{1,80}', exit code (?:\d+|\?)\]$/;
+
 const sanitizeTerminalText = (text: string): string =>
-  text.startsWith("[Terminal: ran '") &&
-  text.endsWith("]") &&
-  text.includes("', exit code ")
-    ? "[Terminal: prior output compacted for storage]"
-    : stripSavedOutputPath(text);
+  SAFE_TERMINAL_PLACEHOLDER.test(text)
+    ? text
+    : text.startsWith("[Terminal: ran '") &&
+        text.endsWith("]") &&
+        text.includes("', exit code ")
+      ? "[Terminal: prior output compacted for storage]"
+      : stripSavedOutputPath(text);
 
 const sanitizeTerminalResult = (value: unknown): unknown => {
   if (typeof value === "string") return sanitizeTerminalText(value);

@@ -72,6 +72,15 @@ describe("sanitizeTerminalPartForShare", () => {
     });
   });
 
+  it("preserves a path-free compacted placeholder and its exit status", () => {
+    const part = {
+      type: "tool-run_terminal_cmd",
+      input: { command: "pwd" },
+      output: "[Terminal: ran 'pwd', exit code 0]",
+    };
+    expect(sanitizeTerminalPartForShare(part)).toBe(part);
+  });
+
   it("hides saved-output notices retained in partial stdout", () => {
     expect(
       sanitizeTerminalPartForShare({
