@@ -14,6 +14,11 @@ import {
   cloudflareInitScript,
   cloudflareReleaseScript,
 } from "../../captcha/cloudflare";
+import {
+  visionCaptureResult,
+  type VisionCaptureRequest,
+  type VisionCaptureResult,
+} from "../../captcha/vision-capture";
 import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -202,6 +207,9 @@ export class BrowserSessions {
   ): Promise<{
     identity: string;
     evaluate: (script: string) => Promise<unknown>;
+    captureVision?: (
+      request: VisionCaptureRequest,
+    ) => Promise<VisionCaptureResult>;
     deliverCloudflare?: (
       userAgent: string,
       page: { url: string; documentId: string; originalUserAgent: string },
@@ -315,6 +323,37 @@ export class BrowserSessions {
           await handle.kill().catch(() => false);
           signal.throwIfAborted();
           throw new Error("Managed browser challenge delivery failed.");
+        }
+      },
+      captureVision: async (request) => {
+        await assertOwned();
+        const handle = await sandbox.commands.run(
+          browserSessionCommand("vision", session.directory, this.expiresAt),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            stdin: true,
+            background: true,
+            timeoutMs: 10_000,
+          },
+        );
+        try {
+          await assertOwned();
+          await withCancellation(
+            handle.sendStdin(JSON.stringify({ ...request, sessionName: name })),
+            signal,
+          );
+          await withCancellation(handle.closeStdin(), signal);
+          const result = await withCancellation(handle.wait(), signal);
+          await assertOwned();
+          if (result.exitCode !== 0 || result.stdout.length > 4096)
+            throw new Error();
+          const capture = visionCaptureResult.parse(JSON.parse(result.stdout));
+          if (capture.path !== request.path) throw new Error();
+          return capture;
+        } catch {
+          await handle.kill().catch(() => false);
+          signal.throwIfAborted();
+          throw new Error("Challenge capture could not be qualified.");
         }
       },
       evaluate: async (script) => {
