@@ -1,1 +1,1 @@
-export const lintProbe = ;
+export const lintProbe = "clean";
