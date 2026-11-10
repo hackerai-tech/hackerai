@@ -14,7 +14,10 @@ below are not a claim about legally required retention.
 
 - Web and Convex: `ABUSE_EVIDENCE_KEYS`, the same environment-specific JSON keyring
   with `active` key ID and `keys` mapping IDs to 32-byte hexadecimal keys. Retain
-  old keys while queued payloads and receipt retries depend on them. Update both
+  old keys while queued payloads, receipt retries, or retained historical case
+  evidence and notes depend on them. Before retirement, an authorized backend
+  review must check all those dependencies; queue expiry alone does not prove a
+  historical key is unused. Keep the key if that check is incomplete. Update both
   consumers together, without copying keys between environments.
 - Web and Convex: `ABUSE_INTAKE_ENABLED=true`. Missing configuration fails closed.
 - Convex only: `ABUSE_SMTP_PASSWORD`, a dedicated Proton SMTP token paired with
@@ -104,6 +107,19 @@ These are internal admin mutations, not public APIs. Expired payloads cannot be
 retried. The automatic attempt budget is not reset by an explicit recovery.
 Monitor failed, uncertain and expired entries before their recovery window ends.
 
+## Pausing and rollback
+
+Disable `ABUSE_INTAKE_ENABLED` in both web and Convex and deploy the web change.
+Removing `ABUSE_SMTP_PASSWORD` pauses sends. Keep the compatible queue schema,
+handlers and five-minute maintenance cron running while intake/delivery is paused,
+so encrypted payloads and receipts can still expire. New notification rows have no
+`caseId`, including receipts retained after a successful send. Before restoring an
+older required-`caseId` schema, an authorized backend inspection must confirm all
+such rows have expired and been removed or have been handled through a separately
+approved migration. Waiting 30 days alone is insufficient evidence of cleanup.
+Until validation can succeed, retain the compatible schema and maintenance; do not
+revert the entire backend or delete unfamiliar rows to force a rollback.
+
 ## Verification
 
 Use synthetic data and the designated Preview environment. Verify real mailbox
@@ -117,10 +133,22 @@ code merge and requires the operational ownership and policy decisions above.
 
 ## Historical cases and containment
 
-1. Use the authorized service client to list historical cases or read a full
-   `AB-…` reference through `abuseCases.list` / `abuseCases.read`. Evidence reads
-   require the operator allowlist and create an audit event. Treat submitted
-   fields as allegations.
+Historical operations require `ABUSE_OPERATOR_USER_IDS` in both web and Convex,
+with the appropriate historical `ABUSE_EVIDENCE_KEYS` retained in their secret
+stores. Ordinary support membership grants no access.
+
+1. Use the retained `POST /api/internal/abuse` endpoint through an approved
+   same-origin operator client with an allowlisted WorkOS session. Its `read`
+   action accepts the full `AB-…` reference and an optional pagination cursor;
+   it checks both operator allowlists and creates an audit event. The server
+   invokes `decryptAbuseEvidence(reference, ciphertext)` for case evidence and
+   each encrypted event, using the environment's keyring from its secret store,
+   then returns readable `case.report` and event `detail` fields. Keep results
+   inside the approved restricted review workspace; never copy keys or evidence
+   into command arguments, logs, analytics, public tickets or unapproved exports.
+   Direct signed `abuseCases.read` calls return ciphertext; `abuseCases.list`
+   returns metadata. Neither should be mistaken for a decrypted evidence view.
+   Treat submitted fields as allegations.
 2. Record verified attribution separately from allegations and decisions. Check the
    source address **and source port**, timezone, protocol, provider records, and the
    exact account, chat, root run, region, and selected sandbox. An IP alone is not
@@ -169,7 +197,7 @@ or record why the scoped case evidence is sufficient and explicitly choose
 Never leave this state described as contained or assume the process stopped.
 
 Each operation has a ten-minute case lock, longer than the API's five-minute hard
-runtime limit. Reload after an interrupted request and inspect the saved state.
+runtime limit. Read the current case state after an interrupted request.
 After the lock expires, retry uses the saved scope and snapshot. Emergency stop also checks the deterministic snapshot name for a capture completed before an interrupted storage response. An unavailable lookup leaves a durable snapshot-review flag; reconcile provider inventory before releasing the evidence hold. A cleanup fence
 can be reclaimed only with the same case token, sandbox ID, and region. Never
 manually clear an unfamiliar Redis fence. A provider error, changed scope, or

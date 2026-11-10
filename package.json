@@ -177,7 +177,7 @@
     "@playwright/test": "^1.63.0",
     "@posthog/cli": "0.18.2",
     "@tailwindcss/postcss": "^4.3.3",
-    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-opener": "^2.5.5",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
