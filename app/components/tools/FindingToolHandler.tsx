@@ -105,6 +105,7 @@ export const SavedFindingCard = ({
         target={content.endpoint || content.target}
         severity={content.severity}
         cvssScore={content.cvssScore}
+        evidenceStatus={finding ? (finding.evidence_status ?? null) : undefined}
         onClick={handleOpen}
       />
       {queryFailed && (
