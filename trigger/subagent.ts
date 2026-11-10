@@ -120,7 +120,7 @@ import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   deductUsage,
   isHandledUserRateLimitError,
-  recordFreeMonthlyCost,
+  recordFreeMonthlySubagentCost,
 } from "@/lib/rate-limit";
 import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
 import {
@@ -576,6 +576,8 @@ export const subagentTask = task({
     const activeAbort = new AbortController();
     let activeTimedOut = false;
     let spendCapExceeded = false;
+    let freeMonthlyCostLimitExceeded = false;
+    let freeMonthlyAccountingFailed = false;
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
@@ -666,9 +668,11 @@ export const subagentTask = task({
         return { costDollars, billingFailure: false };
       }
       if (row.subscription === "free") {
-        await recordFreeMonthlyCost(
+        await recordFreeMonthlySubagentCost(
           row.free_quota_subject ?? row.user_id,
+          ctx.run.id,
           costDollars,
+          payload.regionalFreeLimits,
         );
         usageSettled = true;
         return { costDollars, billingFailure: false };
@@ -1404,6 +1408,28 @@ export const subagentTask = task({
                   await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
+                  if (row.subscription === "free") {
+                    try {
+                      await checkSubagentBillingCapacity({
+                        userId: row.user_id,
+                        subscription: "free",
+                        freeQuotaSubject: row.free_quota_subject,
+                        freeLimits: payload.regionalFreeLimits,
+                        modelName: selectedModel,
+                      });
+                    } catch (error) {
+                      if (
+                        isHandledUserRateLimitError(error) &&
+                        error.metadata?.capReason === "free_monthly_exhausted"
+                      ) {
+                        freeMonthlyCostLimitExceeded = true;
+                      } else {
+                        freeMonthlyAccountingFailed = true;
+                      }
+                      activeAbort.abort();
+                      throw error;
+                    }
+                  }
                   runtimeStage = "generation";
                   let deadlineMessage: ModelMessage | undefined;
                   if (
@@ -1579,15 +1605,35 @@ export const subagentTask = task({
                     index,
                     openRouter.openrouter_upstream_inference_cost,
                   );
-                  if (
+                  const currentCostDollars =
                     usageTracker.computeCostDollars(
                       selectedModel,
                       responseModel,
                     ) +
-                      resolveTriggerRunCost(triggerUsage.getCurrent())
-                        .totalCostDollars >=
-                    costLimitDollars
-                  ) {
+                    resolveTriggerRunCost(triggerUsage.getCurrent())
+                      .totalCostDollars;
+                  if (row.subscription === "free") {
+                    let monthly: Awaited<
+                      ReturnType<typeof recordFreeMonthlySubagentCost>
+                    >;
+                    try {
+                      monthly = await recordFreeMonthlySubagentCost(
+                        row.free_quota_subject ?? row.user_id,
+                        ctx.run.id,
+                        currentCostDollars,
+                        payload.regionalFreeLimits,
+                      );
+                    } catch (error) {
+                      freeMonthlyAccountingFailed = true;
+                      activeAbort.abort();
+                      throw error;
+                    }
+                    if (monthly.usedPoints >= monthly.limitPoints) {
+                      freeMonthlyCostLimitExceeded = true;
+                      activeAbort.abort();
+                    }
+                  }
+                  if (currentCostDollars >= costLimitDollars) {
                     spendCapExceeded = true;
                     activeAbort.abort();
                   }
@@ -1846,37 +1892,52 @@ export const subagentTask = task({
                 code: "spend_cap",
                 summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
-            : billingFailure
+            : freeMonthlyCostLimitExceeded
               ? {
                   status: "failed" as const,
-                  code: "billing_limit",
+                  code: "free_monthly_cost_cap",
                   summary:
-                    "Subagent could not settle within the available usage budget.",
+                    "Subagent reached the shared free monthly usage limit.",
                 }
-              : runtimeFailure
+              : freeMonthlyAccountingFailed
                 ? {
                     status: "failed" as const,
-                    code: runtimeFailureCode ?? "runtime_error",
+                    code: "billing_unavailable",
                     summary:
-                      runtimeFailureCode === "provider_retry_exhausted"
-                        ? "Subagent could not recover from a temporary model provider error."
-                        : runtimeFailureCode ===
-                            "structured_result_recovery_exhausted"
-                          ? "Subagent could not produce a structured result after retrying result recovery."
-                          : runtimeFailureCode ===
-                              "content_filter_retry_exhausted"
-                            ? "Subagent could not complete because the available model providers blocked the validation content."
-                            : runtimeFailureCode === "provider_error"
-                              ? "Subagent stopped because the model provider rejected the request."
-                              : "Subagent failed before returning a result.",
+                      "Subagent stopped because usage accounting is unavailable.",
                   }
-                : !resultValue
+                : billingFailure
                   ? {
                       status: "failed" as const,
-                      code: "structured_result_missing",
-                      summary: "Subagent ended without a structured result.",
+                      code: "billing_limit",
+                      summary:
+                        "Subagent could not settle within the available usage budget.",
                     }
-                  : null;
+                  : runtimeFailure
+                    ? {
+                        status: "failed" as const,
+                        code: runtimeFailureCode ?? "runtime_error",
+                        summary:
+                          runtimeFailureCode === "provider_retry_exhausted"
+                            ? "Subagent could not recover from a temporary model provider error."
+                            : runtimeFailureCode ===
+                                "structured_result_recovery_exhausted"
+                              ? "Subagent could not produce a structured result after retrying result recovery."
+                              : runtimeFailureCode ===
+                                  "content_filter_retry_exhausted"
+                                ? "Subagent could not complete because the available model providers blocked the validation content."
+                                : runtimeFailureCode === "provider_error"
+                                  ? "Subagent stopped because the model provider rejected the request."
+                                  : "Subagent failed before returning a result.",
+                      }
+                    : !resultValue
+                      ? {
+                          status: "failed" as const,
+                          code: "structured_result_missing",
+                          summary:
+                            "Subagent ended without a structured result.",
+                        }
+                      : null;
       const runtimeDiagnostics = runtimeFailure
         ? (lastRecoveryErrorDiagnostics ??
           getSubagentRecoveryErrorDiagnostics(runtimeFailure))
@@ -2058,19 +2119,33 @@ export const subagentTask = task({
                 code: "spend_cap",
                 summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
-            : handledRateLimitError
+            : freeMonthlyCostLimitExceeded
               ? {
                   status: "failed" as const,
-                  code: "rate_limit",
+                  code: "free_monthly_cost_cap",
                   summary:
-                    "Subagent could not start because the current usage limit was reached.",
+                    "Subagent reached the shared free monthly usage limit.",
                 }
-              : {
-                  status: "failed" as const,
-                  code: "runtime_error",
-                  summary:
-                    "Subagent failed before producing a structured result.",
-                };
+              : freeMonthlyAccountingFailed
+                ? {
+                    status: "failed" as const,
+                    code: "billing_unavailable",
+                    summary:
+                      "Subagent stopped because usage accounting is unavailable.",
+                  }
+                : handledRateLimitError
+                  ? {
+                      status: "failed" as const,
+                      code: "rate_limit",
+                      summary:
+                        "Subagent could not start because the current usage limit was reached.",
+                    }
+                  : {
+                      status: "failed" as const,
+                      code: "runtime_error",
+                      summary:
+                        "Subagent failed before producing a structured result.",
+                    };
       const fallbackCostDollars =
         usageTracker.computeCostDollars(selectedModel, responseModel) +
         (triggerRunCostRecorded
