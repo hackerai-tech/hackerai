@@ -11,6 +11,7 @@ import {
   getMessageSearchMigration,
   insertMessageWithSearch,
   messageCopyText,
+  messageCopyTexts,
   patchMessageWithSearch,
   usesSeparateMessageSearch,
 } from "../lib/messageSearch";
@@ -253,6 +254,34 @@ describe("message search separation", () => {
     ]);
     expect(tables.messages.every((m) => getDocumentSize(m) < 1024 * 1024)).toBe(
       true,
+    );
+  });
+
+  it("copies requested messages in order when a bounded search page contains different rows", async () => {
+    const { ctx, tables } = database();
+    await start.handler(ctx, { direction: "separate" });
+    await finish(ctx);
+    await insertMessageWithSearch(ctx, message("outside", "not requested"));
+    const first = await insertMessageWithSearch(
+      ctx,
+      message("first", "exact prefix"),
+    );
+    const second = await insertMessageWithSearch(ctx, {
+      ...message("second"),
+      content: undefined,
+    });
+    const requested = [await ctx.db.get(second), await ctx.db.get(first)];
+    const state = await getMessageSearchMigration(ctx);
+    expect(await messageCopyTexts(ctx, requested, state)).toEqual([
+      undefined,
+      "exact prefix",
+    ]);
+    tables.message_search.splice(
+      tables.message_search.findIndex((row) => row.message_id === second),
+      1,
+    );
+    await expect(messageCopyTexts(ctx, requested, state)).rejects.toThrow(
+      "Message search document missing",
     );
   });
 

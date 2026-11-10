@@ -1,4 +1,8 @@
-import { insertMessageWithSearch, messageCopyText } from "./lib/messageSearch";
+import {
+  insertMessageWithSearch,
+  messageCopyTexts,
+  getMessageSearchMigration,
+} from "./lib/messageSearch";
 import { createChatHistoryAccess } from "./lib/chatHistoryAccess";
 import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import { query, mutation } from "./lib/serviceFunctions";
@@ -387,32 +391,40 @@ export const forkSharedChat = mutation({
 
     await createChatHistoryAccess(ctx, newChatId, identity.subject);
 
+    const migration = await getMessageSearchMigration(ctx);
     // Copy messages to new chat
-    for (const msg of frozenMessages) {
-      const newMessageId = crypto.randomUUID();
-      // Remove file/image parts entirely — the forking user doesn't own the
-      // original files, signed URLs will expire, and placeholder parts render
-      // as broken "Unknown file" cards in the regular chat view.
-      const sanitizedParts = sanitizeFindingPartsForShare(
-        stripOpenRouterReasoningMetadataFromParts(msg.parts),
-      ).filter((part: any) => part.type !== "file");
-      await insertMessageWithSearch(ctx, {
-        id: newMessageId,
-        chat_id: newChatId,
-        user_id: identity.subject,
-        role: msg.role,
-        parts: sanitizedParts,
-        content: await messageCopyText(ctx, msg),
-        source_message_id: msg.id,
-        update_time: Date.now(),
-        model: msg.model,
-        mode: msg.mode,
-        generation_started_at: msg.generation_started_at,
-        generation_time_ms: msg.generation_time_ms,
-        finish_reason: msg.finish_reason,
-        usage: msg.usage,
-      });
-    }
+    const contents = await messageCopyTexts(ctx, frozenMessages, migration);
+    await Promise.all(
+      frozenMessages.map(async (msg, index) => {
+        const newMessageId = crypto.randomUUID();
+        // Remove file/image parts entirely — the forking user doesn't own the
+        // original files, signed URLs will expire, and placeholder parts render
+        // as broken "Unknown file" cards in the regular chat view.
+        const sanitizedParts = sanitizeFindingPartsForShare(
+          stripOpenRouterReasoningMetadataFromParts(msg.parts),
+        ).filter((part: any) => part.type !== "file");
+        await insertMessageWithSearch(
+          ctx,
+          {
+            id: newMessageId,
+            chat_id: newChatId,
+            user_id: identity.subject,
+            role: msg.role,
+            parts: sanitizedParts,
+            content: contents[index],
+            source_message_id: msg.id,
+            update_time: Date.now(),
+            model: msg.model,
+            mode: msg.mode,
+            generation_started_at: msg.generation_started_at,
+            generation_time_ms: msg.generation_time_ms,
+            finish_reason: msg.finish_reason,
+            usage: msg.usage,
+          },
+          migration,
+        );
+      }),
+    );
 
     return newChatId;
   },

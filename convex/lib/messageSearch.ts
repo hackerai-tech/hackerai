@@ -31,15 +31,48 @@ export const usesSeparateMessageSearch = (
 export async function messageCopyText(
   ctx: Pick<QueryCtx, "db">,
   message: Message,
+  migration?: Doc<"message_search_migration"> | null,
 ) {
-  if (!usesSeparateMessageSearch(await getMessageSearchMigration(ctx)))
-    return message.content;
+  const state =
+    migration === undefined ? await getMessageSearchMigration(ctx) : migration;
+  if (!usesSeparateMessageSearch(state)) return message.content;
   const search = await ctx.db
     .query("message_search")
     .withIndex("by_message_id", (q) => q.eq("message_id", message._id))
     .unique();
   if (!search) throw new Error("Message search document missing");
   return search.content;
+}
+
+// Bulk copies normally need a whole chat. Read its small search rows together,
+// then fall back to exact IDs if a bounded page misses rows (for example when
+// migration insertion order differs from message order).
+export async function messageCopyTexts(
+  ctx: Pick<QueryCtx, "db">,
+  messages: Message[],
+  state: Doc<"message_search_migration"> | null,
+) {
+  if (!usesSeparateMessageSearch(state) || messages.length === 0)
+    return messages.map((message) => message.content);
+  const chatId = messages[0].chat_id;
+  if (messages.some((message) => message.chat_id !== chatId))
+    throw new Error("Bulk message copy must use one chat");
+  const page = await ctx.db
+    .query("message_search")
+    .withIndex("by_chat_id", (q) => q.eq("chat_id", chatId))
+    .paginate({
+      cursor: null,
+      numItems: Math.min(messages.length, 1000),
+      maximumRowsRead: 1000,
+      maximumBytesRead: 4 * 1024 * 1024,
+    });
+  const rows = new Map(page.page.map((row) => [row.message_id, row]));
+  return Promise.all(
+    messages.map((message) => {
+      const row = rows.get(message._id);
+      return row ? row.content : messageCopyText(ctx, message, state);
+    }),
+  );
 }
 
 export async function syncMessageSearch(
@@ -78,8 +111,10 @@ export async function syncMessageSearch(
 export async function insertMessageWithSearch(
   ctx: MutationCtx,
   document: WithoutSystemFields<Message>,
+  migration?: Doc<"message_search_migration"> | null,
 ) {
-  const state = await getMessageSearchMigration(ctx);
+  const state =
+    migration === undefined ? await getMessageSearchMigration(ctx) : migration;
   const strip =
     usesSeparateMessageSearch(state) && state?.phase !== "restoring";
   const id = await ctx.db.insert("messages", {

@@ -5,7 +5,7 @@ import {
   getMessageSearchMigration,
   usesSeparateMessageSearch,
   messageDisplayText,
-  messageCopyText,
+  messageCopyTexts,
 } from "./lib/messageSearch";
 import {
   assertChatHistoryOwner,
@@ -2184,15 +2184,17 @@ export const branchChat = mutation({
         (bytes, msg) => bytes + getMessageDocumentSize(msg),
         0,
       );
+      const migration = await getMessageSearchMigration(ctx);
       const copyText = new Map<string, string | undefined>();
       if (branchPage.isDone && historyBytes <= MESSAGE_PAGE_MAX_BYTES) {
-        for (const msg of messagesToCopy) {
-          const content = await messageCopyText(ctx, msg);
+        const contents = await messageCopyTexts(ctx, messagesToCopy, migration);
+        for (const [index, msg] of messagesToCopy.entries()) {
+          const content = contents[index];
           copyText.set(msg.id, content);
           // Account for both records in the existing atomic-copy budget.
           historyBytes +=
-            getMessageDocumentSize({ ...msg, content }) -
-            getMessageDocumentSize(msg);
+            getMessageDocumentSize({ content }) -
+            getMessageDocumentSize({ content: msg.content });
           if (historyBytes > MESSAGE_PAGE_MAX_BYTES) break;
         }
       }
@@ -2230,30 +2232,36 @@ export const branchChat = mutation({
 
       // Copy messages to new chat, tracking old→new ID mapping for summary remapping
       const messageIdMap = new Map<string, string>();
-      for (const msg of messagesToCopy) {
-        const newMessageId = crypto.randomUUID();
-        messageIdMap.set(msg.id, newMessageId);
-        await insertMessageWithSearch(ctx, {
-          id: newMessageId,
-          chat_id: newChatId,
-          user_id: user.subject,
-          role: msg.role,
-          parts: msg.parts,
-          content: copyText.get(msg.id),
-          file_ids: msg.file_ids,
-          source_message_id: msg.id,
-          is_hidden: msg.is_hidden,
-          is_browser_handoff: msg.is_browser_handoff,
-          update_time: Date.now(),
-          model: msg.model,
-          mode: msg.mode,
-          generation_started_at: msg.generation_started_at,
-          generation_time_ms: msg.generation_time_ms,
-          finish_reason: msg.finish_reason,
-          trigger_run_id: msg.trigger_run_id,
-          usage: msg.usage,
-        });
-      }
+      await Promise.all(
+        messagesToCopy.map(async (msg) => {
+          const newMessageId = crypto.randomUUID();
+          messageIdMap.set(msg.id, newMessageId);
+          await insertMessageWithSearch(
+            ctx,
+            {
+              id: newMessageId,
+              chat_id: newChatId,
+              user_id: user.subject,
+              role: msg.role,
+              parts: msg.parts,
+              content: copyText.get(msg.id),
+              file_ids: msg.file_ids,
+              source_message_id: msg.id,
+              is_hidden: msg.is_hidden,
+              is_browser_handoff: msg.is_browser_handoff,
+              update_time: Date.now(),
+              model: msg.model,
+              mode: msg.mode,
+              generation_started_at: msg.generation_started_at,
+              generation_time_ms: msg.generation_time_ms,
+              finish_reason: msg.finish_reason,
+              trigger_run_id: msg.trigger_run_id,
+              usage: msg.usage,
+            },
+            migration,
+          );
+        }),
+      );
 
       // Copy summary from original chat if it covers the copied messages
       if (originalChat.latest_summary_id) {

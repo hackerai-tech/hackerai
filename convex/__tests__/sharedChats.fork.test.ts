@@ -274,13 +274,15 @@ describe("forkSharedChat", () => {
       db: {
         query: jest.fn<any>((table: string) => ({
           withIndex: jest.fn<any>().mockReturnValue(
-            table === "chats"
-              ? { first: sourceFirst }
-              : {
-                  order: jest.fn<any>().mockReturnValue({
-                    collect: messagesCollect,
-                  }),
-                },
+            table === "message_search_migration"
+              ? { unique: jest.fn<any>().mockResolvedValue(null) }
+              : table === "chats"
+                ? { first: sourceFirst }
+                : {
+                    order: jest.fn<any>().mockReturnValue({
+                      collect: messagesCollect,
+                    }),
+                  },
           ),
         })),
         insert,
