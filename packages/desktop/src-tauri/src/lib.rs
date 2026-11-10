@@ -24,9 +24,9 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 #[cfg(any(debug_assertions, test))]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -1020,9 +1020,18 @@ fn authorized_message_digest(message: &serde_json::Value) -> Result<String, Stri
     Ok(format!("{:x}", Sha256::digest(&canonical)))
 }
 
+fn desktop_authorization_endpoint(loaded_url: &url::Url) -> Result<String, String> {
+    let origin = loaded_url.origin().ascii_serialization();
+    if !validate_origin(&origin) {
+        return Err("Desktop origin is not allowed for native authorization".to_string());
+    }
+    Ok(format!("{origin}/api/desktop/authorized-operation"))
+}
+
 async fn redeem_authorized_message(
     authorization_id: &str,
     mut message: serde_json::Value,
+    window: &tauri::WebviewWindow,
 ) -> Result<serde_json::Value, String> {
     if authorization_id.len() != 64
         || !authorization_id
@@ -1038,10 +1047,10 @@ async fn redeem_authorized_message(
     fields.remove("operationChannel");
     let digest = authorized_message_digest(&message)?;
 
-    #[cfg(debug_assertions)]
-    let url = "http://localhost:3000/api/desktop/authorized-operation";
-    #[cfg(not(debug_assertions))]
-    let url = "https://hackerai.co/api/desktop/authorized-operation";
+    let loaded_url = window
+        .url()
+        .map_err(|_| "Desktop origin is unavailable".to_string())?;
+    let endpoint = desktop_authorization_endpoint(&loaded_url)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
@@ -1049,7 +1058,7 @@ async fn redeem_authorized_message(
         .build()
         .map_err(|_| "Desktop authorization client unavailable".to_string())?;
     let response = client
-        .post(url)
+        .post(endpoint)
         .json(&serde_json::json!({ "id": authorization_id, "digest": digest }))
         .send()
         .await
@@ -1083,10 +1092,11 @@ fn authorized_operation_type<'a>(
 
 #[tauri::command]
 async fn authorized_desktop_file_request(
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     let kind = authorized_operation_type(
         &message,
         &[
@@ -1369,11 +1379,12 @@ struct AuthorizedCommandMessage {
 #[tauri::command]
 async fn execute_authorized_stream_command(
     state: tauri::State<'_, StreamCommandState>,
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     authorized_operation_type(&message, &["command"])?;
     let command: AuthorizedCommandMessage =
         serde_json::from_value(message).map_err(|_| "Invalid authorized command".to_string())?;
@@ -1975,11 +1986,12 @@ struct AuthorizedPtyKill {
 #[tauri::command]
 async fn execute_authorized_pty_create(
     state: tauri::State<'_, PtyState>,
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
     on_data: tauri::ipc::Channel<String>,
 ) -> Result<pty::PtyCreateResult, String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     authorized_operation_type(&message, &["pty_create"])?;
     let request: AuthorizedPtyCreate =
         serde_json::from_value(message).map_err(|_| "Invalid authorized PTY".to_string())?;
@@ -1999,10 +2011,11 @@ async fn execute_authorized_pty_create(
 #[tauri::command]
 async fn execute_authorized_pty_input(
     state: tauri::State<'_, PtyState>,
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
 ) -> Result<(), String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     authorized_operation_type(&message, &["pty_input"])?;
     let request: AuthorizedPtyInput =
         serde_json::from_value(message).map_err(|_| "Invalid authorized PTY input".to_string())?;
@@ -2012,10 +2025,11 @@ async fn execute_authorized_pty_input(
 #[tauri::command]
 async fn execute_authorized_pty_resize(
     state: tauri::State<'_, PtyState>,
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
 ) -> Result<(), String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     authorized_operation_type(&message, &["pty_resize"])?;
     let request: AuthorizedPtyResize =
         serde_json::from_value(message).map_err(|_| "Invalid authorized PTY resize".to_string())?;
@@ -2025,10 +2039,11 @@ async fn execute_authorized_pty_resize(
 #[tauri::command]
 async fn execute_authorized_pty_kill(
     state: tauri::State<'_, PtyState>,
+    window: tauri::WebviewWindow,
     authorization_id: String,
     message: serde_json::Value,
 ) -> Result<(), String> {
-    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
     authorized_operation_type(&message, &["pty_kill"])?;
     let request: AuthorizedPtyKill =
         serde_json::from_value(message).map_err(|_| "Invalid authorized PTY kill".to_string())?;
@@ -2061,6 +2076,22 @@ mod tests {
             authorized_message_digest(&unicode).unwrap(),
             "7ac733d7b148971df6b6f1c0b540f44d1bfb5c2517b2dc5c8008eb334426e080"
         );
+    }
+
+    #[test]
+    fn authorization_uses_the_loaded_trusted_origin() {
+        let production = url::Url::parse("https://hackerai.co/chat/task").unwrap();
+        assert_eq!(
+            desktop_authorization_endpoint(&production).unwrap(),
+            "https://hackerai.co/api/desktop/authorized-operation"
+        );
+        let local = url::Url::parse("http://localhost:3000/chat/task").unwrap();
+        assert_eq!(
+            desktop_authorization_endpoint(&local).unwrap(),
+            "http://localhost:3000/api/desktop/authorized-operation"
+        );
+        let untrusted = url::Url::parse("https://hackerai.co.evil.invalid/").unwrap();
+        assert!(desktop_authorization_endpoint(&untrusted).is_err());
     }
 
     #[tokio::test]

@@ -343,6 +343,7 @@ export class DesktopSandboxBridge {
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
   private operationRouter: OperationChannelRouter<Subscription> | null = null;
+  private ptyControlQueues = new Map<string, Promise<void>>();
   private nativeFileIpcAvailable: boolean | null = null;
   private nativeFileIpcFailure: DesktopFileFailure | undefined;
   private nativeAppVersion = "unknown";
@@ -890,13 +891,15 @@ export class DesktopSandboxBridge {
           break;
 
         case "pty_input":
-          this.handlePtyInput(message as PtyInputMessage).catch((err) => {
-            console.error("[DesktopSandboxBridge] PTY input failed:", err);
-          });
+          this.enqueuePtyControl((message as PtyInputMessage).sessionId, () =>
+            this.handlePtyInput(message as PtyInputMessage),
+          );
           break;
 
         case "pty_resize":
-          this.handlePtyResize(message as PtyResizeMessage).catch(() => {});
+          this.enqueuePtyControl((message as PtyResizeMessage).sessionId, () =>
+            this.handlePtyResize(message as PtyResizeMessage),
+          );
           break;
 
         case "pty_kill":
@@ -2612,6 +2615,29 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private enqueuePtyControl(
+    sessionId: string,
+    operation: () => Promise<void>,
+  ): void {
+    const generation = this.startupGeneration;
+    const prior = this.ptyControlQueues.get(sessionId) ?? Promise.resolve();
+    const current = prior
+      .catch(() => {})
+      .then(async () => {
+        if (this.isStoppingOrStopped || generation !== this.startupGeneration)
+          return;
+        await operation();
+      })
+      .catch(() => {
+        console.error("[DesktopSandboxBridge] PTY control operation failed");
+      });
+    this.ptyControlQueues.set(sessionId, current);
+    void current.then(() => {
+      if (this.ptyControlQueues.get(sessionId) === current)
+        this.ptyControlQueues.delete(sessionId);
+    });
+  }
+
   private async handlePtyResize(msg: PtyResizeMessage): Promise<void> {
     const { sessionId, cols, rows } = msg;
     try {
@@ -2680,6 +2706,7 @@ export class DesktopSandboxBridge {
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;
+    this.ptyControlQueues.clear();
     const connectionId = this.connectionId;
     this.connectionId = null;
 

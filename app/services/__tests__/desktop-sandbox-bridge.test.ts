@@ -1229,6 +1229,41 @@ describe("targetConnectionId filtering", () => {
     await bridge.stop();
   });
 
+  it("preserves PTY input order across authorization round trips", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockUseAuthorizedNative = true;
+    let releaseFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const observed: string[] = [];
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd !== "execute_authorized_pty_input")
+        throw new Error(`Unexpected native command: ${cmd}`);
+      const data = (args?.message as { data: string }).data;
+      observed.push(data);
+      if (data === "first") await firstPending;
+    };
+
+    const handler = getPublicationHandler();
+    for (const data of ["first", "second"]) {
+      handler({
+        data: {
+          type: "pty_input",
+          sessionId: "ordered-pty",
+          data,
+          authorizationId: data === "first" ? "a".repeat(64) : "b".repeat(64),
+          targetConnectionId: "conn-123",
+        },
+      });
+    }
+    await waitFor(() => expect(observed).toEqual(["first"]));
+    releaseFirst();
+    await waitFor(() => expect(observed).toEqual(["first", "second"]));
+    await bridge.stop();
+  });
+
   it("passes stdin as native IPC data without adding it to the command", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const bridge = new DesktopSandboxBridge(buildConfig());
