@@ -298,7 +298,7 @@ export async function createCentrifugoPtyHandle(
         exited,
         new Promise<void>((resolve) => setTimeout(resolve, 1500)),
       ]);
-      resolveExitedOnce({ exitCode: null });
+      resolveExitedOnce({ exitCode: null, observationFailed: true });
       cleanup();
     },
 
@@ -328,7 +328,7 @@ export async function createCentrifugoPtyHandle(
     }, TIMEOUT_MS);
 
     // Transport failure handler: pre-ready we reject the create promise;
-    // post-ready we resolve `exited` with a null exitCode so awaiters of
+    // post-ready we resolve `exited` as a failed observation so awaiters of
     // handle.exited don't hang forever on a dropped subscription.
     const failTransport = (message: string) => {
       if (!settled) {
@@ -338,7 +338,7 @@ export async function createCentrifugoPtyHandle(
         reject(new Error(`${LOG_PREFIX} ${message}`));
       } else {
         console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
-        resolveExitedOnce({ exitCode: null });
+        resolveExitedOnce({ exitCode: null, observationFailed: true });
         cleanup();
       }
     };
@@ -400,7 +400,7 @@ export async function createCentrifugoPtyHandle(
               console.error(
                 `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
               );
-              resolveExitedOnce({ exitCode: null });
+              resolveExitedOnce({ exitCode: null, observationFailed: true });
               cleanup();
             }
             break;

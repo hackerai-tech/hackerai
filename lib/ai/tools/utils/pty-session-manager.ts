@@ -352,7 +352,9 @@ export class PtySessionManager {
         .then(
           (info) => {
             session.exitedNaturally = { exitCode: info.exitCode };
-            session.processExitConfirmed = true;
+            session.processExitConfirmed = info.observationFailed !== true;
+            if (info.observationFailed)
+              session.exitReason ??= "transport_error";
             void this.checkpoint(session).finally(() =>
               this.pruneCompleted(chatId),
             );

@@ -15,7 +15,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 function handle() {
-  const exit = deferred<{ exitCode: number | null }>();
+  const exit = deferred<{
+    exitCode: number | null;
+    observationFailed?: true;
+  }>();
   const child: PtyHandle = {
     pid: 42,
     exited: exit.promise,
@@ -143,5 +146,26 @@ describe("terminal capacity ownership", () => {
       "MAX_CONCURRENT",
     );
     expect(factory).not.toHaveBeenCalled();
+  });
+  it("retains failed observations for cleanup while confirmed null exits release capacity", async () => {
+    const uncertain = handle();
+    const owned = await manager.create(
+      "chat",
+      options(async () => uncertain.child),
+    );
+    uncertain.exit.resolve({ exitCode: null, observationFailed: true });
+    for (let i = 0; i < 24; i++) {
+      const current = handle();
+      const session = await manager.create(
+        "chat",
+        options(async () => current.child),
+      );
+      current.exit.resolve({ exitCode: null });
+      await current.child.exited;
+      await manager.checkpoint(session);
+    }
+    expect(manager.get("chat", owned.sessionId)).toBe(owned);
+    await manager.closeAll("chat");
+    expect(uncertain.child.kill).toHaveBeenCalledTimes(1);
   });
 });
