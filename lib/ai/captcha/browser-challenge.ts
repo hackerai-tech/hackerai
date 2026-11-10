@@ -270,8 +270,13 @@ export function createBrowserChallengeHandler(
           visionFallback &&
           browser.identity === visionFallback.identity &&
           target?.sessionName === visionFallback.sessionName
-        )
+        ) {
           visionFallback.completed = true;
+          // Human verification may resolve a challenge after recovery stopped.
+          // Permit the authorized form action; completed stays latched so any
+          // returning challenge stops again instead of receiving a new budget.
+          visionFallback.stopped = false;
+        }
         return respond({ status: "no_pending_challenge" });
       }
       if (action === "release") {

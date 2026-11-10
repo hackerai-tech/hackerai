@@ -988,6 +988,19 @@ it("blocks expired recovery commands but permits observation, cleanup and verifi
     expect(
       tool.guardVisionCommand("agent-browser --session owned click @e1"),
     ).toMatchObject({ reason: "vision_budget_exhausted" });
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      widgets: [{ ...observation.widgets[0], tokenPresent: true }],
+    } as never);
+    await tool.inspect(undefined, target);
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @submit"),
+    ).toBeUndefined();
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      reason: "vision_challenge_returned",
+      visionFallbackAvailable: false,
+    });
     tool.finishVisionCommand("agent-browser --session owned close", false);
     expect(tool.guardVisionCommand("ls")).toMatchObject({
       reason: "vision_budget_exhausted",
