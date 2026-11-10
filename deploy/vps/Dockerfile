@@ -11,7 +11,15 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     corepack prepare pnpm@10.33.2 --activate && pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm --dir packages/local build && pnpm --filter @hackerai/local deploy --prod --legacy /out/local
+RUN pnpm --dir packages/local build
+
+FROM tools AS local-runtime
+WORKDIR /out/local
+COPY deploy/vps/local-runtime/package.json deploy/vps/local-runtime/package-lock.json ./
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --omit=dev --no-audit --no-fund
+COPY --from=tools /app/packages/local/dist ./dist
 
 FROM tools AS builder
 ARG DOMAIN=tandi.tech
@@ -30,7 +38,7 @@ CMD ["node", "server.js"]
 
 FROM node:22.23.4-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS sandbox
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl wget git python3 python3-venv python3-pip nmap dnsutils iputils-ping jq ripgrep unzip openssh-client procps && rm -rf /var/lib/apt/lists/*
-COPY --from=tools --chown=node:node /out/local /opt/hackerai-local
+COPY --from=local-runtime --chown=node:node /out/local /opt/hackerai-local
 USER node
 WORKDIR /home/node
 CMD ["node", "/opt/hackerai-local/dist/index.js", "--token-file", "/run/sandbox-token", "--name", "Sandbox VPS", "--convex-url", "http://backend:3210"]

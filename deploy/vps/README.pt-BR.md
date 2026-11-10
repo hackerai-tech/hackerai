@@ -4,7 +4,7 @@ Este pacote modifica o código do ZIP enviado. Ele acrescenta um perfil de hospe
 
 ## Estado da entrega
 
-Preparação e testes locais; instalação na VPS ainda não executada por falta de acesso SSH. O instalador completo, a emissão real do certificado, a inferência do Ollama e uma tarefa completa do agente no servidor ainda precisam de validação. Não trate os testes parciais como comprovação de que todo o sistema está pronto em produção.
+Preparação e testes locais; o usuário iniciou a instalação pelo terminal da Hostinger. A aceitação completa na VPS permanece pendente. O instalador completo, a emissão real do certificado, a inferência do Ollama e uma tarefa completa do agente no servidor ainda precisam de validação. Não trate os testes parciais como comprovação de que todo o sistema está pronto em produção.
 
 A interface principal recebeu traduções para português do Brasil e o modelo recebe instruções para responder nesse idioma. A revisão de todos os textos e telas do projeto original permanece pendente.
 
@@ -52,9 +52,29 @@ sudo bash deploy/vps/install.sh
 
 Informe o e-mail e a senha no terminal da VPS. A configuração guarda um hash scrypt da senha e gera as chaves RSA e as credenciais dos serviços. Não envie senha ou chave privada pelo chat. Os arquivos privados ficam em `deploy/vps/private/` e `deploy/vps/.env`.
 
-O instalador não formata o servidor nem apaga volumes existentes. Ele recusa uma primeira instalação se as portas 80/443 estiverem ocupadas. Instala Docker pelo APT do Ubuntu, compila as imagens, publica as funções do Convex, prepara o armazenamento privado e baixa o modelo. O primeiro build e o download do modelo podem demorar.
+O instalador não formata o servidor nem apaga volumes existentes. Ele recusa uma primeira instalação se as portas 80/443 estiverem ocupadas. Instala Docker pelo APT do Ubuntu, compila as imagens, publica as funções do Convex, prepara o armazenamento privado e baixa o modelo. O primeiro build e o download do modelo podem demorar. Depois de configurar o e-mail e a senha, o instalador inicia a compilação em segundo plano e informa onde acompanhar o log. A configuração privada existente é reaproveitada nas tentativas seguintes.
 
 Depois, acesse `https://tandi.tech/local-login`. O certificado depende da resolução DNS e do acesso externo às portas 80/443; apenas iniciar os contêineres não comprova HTTPS funcionando.
+
+## Retomar após desconexão do terminal
+
+Na instalação clonada em `/opt/hackeraiBR`, execute como root:
+
+```bash
+cd /opt/hackeraiBR && git pull --ff-only && bash deploy/vps/resume.sh
+```
+
+Acompanhe sem depender da sessão original:
+
+```bash
+tail -n 60 /opt/hackeraiBR/deploy/vps/private/install.log
+```
+
+A senha já definida fica no arquivo privado `.env`; a retomada não a solicita novamente. Se esse arquivo ainda não existir, execute `bash deploy/vps/install.sh` no terminal para configurá-lo primeiro. Não compartilhe o conteúdo de `.env`.
+
+O processo ignora o encerramento normal da sessão SSH e grava saída em `deploy/vps/private/install.log`. Isso não garante continuidade após reinício da própria VPS. O instalador usa um bloqueio para evitar execuções simultâneas. Se uma instalação anterior continuar ativa, a retomada avisa e preserva essa execução.
+
+O sandbox agora recebe um pacote independente com dependências de produção e lockfile próprio, em vez de empacotar novamente o workspace inteiro com `pnpm deploy`. No teste Linux/Node 22, essa instalação adicionou 23 pacotes e executou uma PTY real com usuário sem privilégios. A preparação, o build web e o build do sandbox são executados em sequência para reduzir a carga simultânea.
 
 ## Operação
 
@@ -120,6 +140,6 @@ sudo docker compose up -d
 
 - **O que mudou:** perfil local com autenticação própria, Ollama, infraestrutura e adaptações de interface; as diferenças de agentes estão descritas acima.
 - **Prévia/testes:** build de produção e checagem de tipos; testes locais de autenticação e encaminhamento; publicação das funções e do esquema em Convex local; envio e leitura privados em RustFS; HTTP de login com Redis e recuperação após reinício. VPS/HTTPS/Ollama/agente completo: pendentes.
-- **Recuperação testada:** rejeição de senha incorreta, token adulterado/expirado e sessão anterior à troca de senha. Redis indisponível devolveu 503 e voltou a aceitar verificações após reinício. Reinício e retomada completos na VPS: pendentes.
+- **Recuperação testada:** rejeição de senha incorreta, token adulterado/expirado e sessão anterior à troca de senha. Redis indisponível devolveu 503 e voltou a aceitar verificações após reinício. O lançador foi testado em Linux para ausência de configuração, execução em segundo plano, SIGHUP, bloqueio de duplicidade, log e nova tentativa após conclusão; APT/Docker e a identificação Ubuntu foram fronteiras simuladas nesse teste. Reinício e retomada completos na VPS: pendentes.
 - **Custo/impacto esperado:** elimina dependência de API de LLM no perfil local; recursos e tráfego da VPS continuam limitados e cobrados pelo provedor.
-- **Reversão:** parar com `docker compose down`, preservar os volumes e restaurar o snapshot anterior. Nenhuma alteração foi aplicada à VPS nesta entrega.
+- **Reversão:** parar com `docker compose down`, preservar os volumes e restaurar o snapshot anterior. A preparação na VPS foi iniciada pelo usuário; o estado dos serviços ainda precisa ser confirmado.

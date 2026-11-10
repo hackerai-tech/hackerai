@@ -5,6 +5,11 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 if [[ $EUID -ne 0 ]]; then
   echo 'Execute na VPS: sudo bash deploy/vps/install.sh' >&2; exit 1
 fi
+mkdir -p private
+exec 9>private/install.lock
+if ! flock -n 9; then
+  echo 'Outra instalação está em execução. Aguarde a conclusão antes de tentar novamente.' >&2; exit 1
+fi
 if ! grep -q 'VERSION_ID="24.04"' /etc/os-release; then
   echo 'Este instalador foi preparado para Ubuntu 24.04.' >&2; exit 1
 fi
@@ -25,9 +30,15 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
 fi
 systemctl enable --now docker
 if [[ ! -f .env ]]; then python3 configure.py; fi
+if [[ ${1:-} != --foreground ]]; then
+  flock -u 9
+  exec bash ./resume.sh
+fi
 compose=(docker compose --env-file .env -f compose.yaml)
 "${compose[@]}" config --quiet
-"${compose[@]}" build tools web sandbox
+"${compose[@]}" build tools
+"${compose[@]}" build web
+"${compose[@]}" build sandbox
 "${compose[@]}" up -d --wait backend redis storage centrifugo ollama
 if [[ ! -s private/convex-admin-key ]]; then
   "${compose[@]}" exec -T backend ./generate_admin_key.sh > private/convex-admin-key
