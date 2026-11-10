@@ -355,6 +355,21 @@ login or graphical access needs human action, explain the exact blocker and
 preserve partial evidence. Keep researcher-feedback and human release gates;
 testing does not authorize merging or releasing.
 
+## Release Receipts
+
+For every meaningful change, include a short release receipt in the PR
+description and final handoff using the five fields in the
+[pull request template](pull_request_template.md). Keep each field to one or two
+lines so the founder can approve the result without reading the diff.
+
+Link the working Preview/demo and identify the tested commit and environment.
+For docs, CI, or tooling changes without an app demo, link the relevant
+verification instead. Give the observed recovery-test result and concrete
+rollback steps. Separate expected customer/cost impact from measured outcomes;
+state unknowns. Use N/A with a reason only for unaffected behavior; mark required
+but unverified acceptance BLOCKED. Keep private customer, cost, and rollout
+evidence in the owning Linear issue and keep public PR receipts sanitized.
+
 ## Manual Verification Notes
 
 After checks and CodeRabbit are complete, include short manual verification
