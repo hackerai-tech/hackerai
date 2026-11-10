@@ -6,7 +6,7 @@ import {
 
 /** Exercise the actual helper while withholding private transport event contents. */
 function transportFailure(
-  event: "error" | "close",
+  event: "error" | "close" | "deadline",
   phase: "connecting" | "awaiting_frame" | "message_received",
   code: unknown = 1006,
   mode = "frame",
@@ -55,9 +55,15 @@ function transportFailure(
     listeners.get("message")!({
       data: JSON.stringify({ type: "PRIVATE_NON_FRAME", data: "PRIVATE" }),
     });
-  listeners.get(event)!({ code, reason: "PRIVATE reason", error });
-  // Both events can arrive for one failure; only the first may produce a receipt.
-  listeners.get(event === "error" ? "close" : "error")!({ code: 1000 });
+  if (event === "deadline") {
+    timers.values().next().value!();
+    listeners.get("error")!({ error });
+    listeners.get("close")!({ code: 1000, reason: "PRIVATE" });
+  } else {
+    listeners.get(event)!({ code, reason: "PRIVATE reason", error });
+    // Both events can arrive for one failure; only the first may produce a receipt.
+    listeners.get(event === "error" ? "close" : "error")!({ code: 1000 });
+  }
   for (const callback of timers.values()) callback();
   return { exitCode, output, receipt: output ? JSON.parse(output) : null };
 }
@@ -287,3 +293,56 @@ it("does not invoke error message accessors or export unknown error text", () =>
   }
   expect(getter).not.toHaveBeenCalled();
 });
+
+it.each(["connecting", "awaiting_frame", "message_received"] as const)(
+  "attributes the existing frame watchdog at %s without changing exit3 or allowing a late event to replace it",
+  (phase) => {
+    const result = transportFailure("deadline", phase);
+    expect(result.exitCode).toBe(3);
+    expect(result.receipt).toEqual({
+      bridge_failure: [3, "deadline", phase, "none"],
+    });
+    expect(
+      browserBridgeFailureContext({ exitCode: 3, stdout: result.output }),
+    ).toEqual({
+      capture_bridge_diagnostic_version: 3,
+      capture_bridge_failure: "deadline",
+      capture_bridge_phase: phase,
+      capture_bridge_close_code: "none",
+    });
+    expect(result.output.length).toBeLessThanOrEqual(128);
+    expect(result.output).not.toContain("PRIVATE");
+  },
+);
+
+it("keeps input watchdog output empty and contains failure-packet write errors", () => {
+  expect(transportFailure("deadline", "connecting", 1006, "input")).toEqual({
+    exitCode: 3,
+    output: "",
+    receipt: null,
+  });
+  expect(
+    transportFailure("deadline", "message_received", 1006, "frame", true),
+  ).toEqual({ exitCode: 3, output: "", receipt: null });
+});
+
+it.each([
+  [6, [3, "deadline", "connecting", "none"]],
+  [3, [1, "error", "connecting", "none"]],
+  [3, [2, "error", "connecting", "none", "other", 22]],
+  [3, [3, "error", "connecting", "none"]],
+  [3, [3, "early_close", "connecting", 1006]],
+  [3, [3, "deadline", "PRIVATE", "none"]],
+  [3, [3, "deadline", "connecting", 1006]],
+  [3, [3, "deadline", "connecting", "none", "PRIVATE"]],
+])(
+  "keeps watchdog metadata tied to its exact exit and finite packet (%#)",
+  (exitCode, tuple) => {
+    expect(
+      browserBridgeFailureContext({
+        exitCode,
+        stdout: JSON.stringify({ bridge_failure: tuple }),
+      }),
+    ).toEqual({});
+  },
+);
