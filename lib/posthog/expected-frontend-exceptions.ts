@@ -498,6 +498,42 @@ function nearbyDispatchGroup(
       )
         return "same_document_short_error";
     }
+    // Reuse native context only for the observed retained five-to-seven-frame shape.
+    if (
+      exception.type === "RangeError" &&
+      exception.value === "Maximum call stack size exceeded." &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length >= 5 &&
+      frames.length <= 7
+    ) {
+      const current = new URL(properties.$current_url);
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        Array.from(frames).every((frame) => {
+          // Only compare bounded SDK filenames transiently; never export paths
+          // or infer script authorship from a document URL or resolved source.
+          if (
+            typeof frame?.filename !== "string" ||
+            frame.filename.length > 4096
+          )
+            return false;
+          const source = new URL(frame.filename);
+          return (
+            source.origin === current.origin &&
+            !source.username &&
+            !source.password &&
+            source.pathname === current.pathname
+          );
+        })
+      )
+        return "same_document_stack_overflow";
+    }
     if (
       exception.type === "DOMException" &&
       exception.mechanism.synthetic === false &&
