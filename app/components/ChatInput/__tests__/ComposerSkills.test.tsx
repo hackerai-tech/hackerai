@@ -114,6 +114,7 @@ function Input({ plusMenu = false }: { plusMenu?: boolean }) {
       {skills &&
         (plusMenu ? (
           <AttachmentButton
+            onMenuOpen={skills.closeSelector}
             onAttachClick={jest.fn()}
             skillsMenu={{
               layout: "desktop",
@@ -421,4 +422,31 @@ it("switches an open menu search to inline completion even with an empty query",
     screen.queryByRole("combobox", { name: "Search skills" }),
   ).not.toBeInTheDocument();
   expect(screen.getByText("Select a skill")).toBeInTheDocument();
+});
+
+it("closes the skill selector before reopening the plus menu", async () => {
+  render(<Harness plusMenu />);
+  const plus = screen.getByRole("button", {
+    name: "Add files, skills, or pursue a goal",
+  });
+  fireEvent.keyDown(plus, { key: "Enter" });
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Skills", exact: true }),
+  );
+  await screen.findByRole("combobox", { name: "Search skills" });
+  // Native accessibility activation can open the menu without moving DOM focus.
+  const focus = jest
+    .spyOn(HTMLElement.prototype, "focus")
+    .mockImplementation(() => {});
+  try {
+    fireEvent.keyDown(plus, { key: "Enter" });
+    await screen.findByRole("menu");
+    await waitFor(() =>
+      expect(
+        document.querySelector('[aria-label="Search skills"]'),
+      ).not.toBeInTheDocument(),
+    );
+  } finally {
+    focus.mockRestore();
+  }
 });

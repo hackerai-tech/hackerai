@@ -37,6 +37,7 @@ type SkillInput = {
   activeId?: string;
   toggle: () => void;
   openSelector: () => void;
+  closeSelector: () => void;
   remove: (id: Skill["id"]) => void;
   inspect: (element: HTMLTextAreaElement) => void;
   keyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
@@ -265,6 +266,7 @@ export function ComposerSkillsProvider({
     remove: (id) => {
       void change(ids.filter((value) => value !== id));
     },
+    closeSelector: close,
     openSelector: () => {
       token.current = null;
       setInline(false);

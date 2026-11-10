@@ -25,6 +25,7 @@ import {
 } from "@/lib/analytics/client";
 
 export interface AttachmentButtonProps {
+  onMenuOpen?: () => void;
   skillsMenu?: {
     layout: "desktop" | "mobile";
     disabled: boolean;
@@ -44,6 +45,7 @@ export interface AttachmentButtonProps {
 
 export const AttachmentButton = ({
   onAttachClick,
+  onMenuOpen,
   goalMenu,
   skillsMenu,
   disabled = false,
@@ -145,6 +147,7 @@ export const AttachmentButton = ({
         <DropdownMenu
           onOpenChange={(open) => {
             if (open) {
+              onMenuOpen?.();
               selectedMenuItemRef.current = null;
               captureAuthenticatedEvent("composer_plus_menu_action", {
                 ...analytics,

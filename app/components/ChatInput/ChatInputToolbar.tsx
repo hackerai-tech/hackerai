@@ -87,6 +87,7 @@ export function ChatInputToolbar({
           <>
             <div className="shrink-0">
               <AttachmentButton
+                onMenuOpen={skills?.closeSelector}
                 goalMenu={goalMenu}
                 skillsMenu={
                   user && skills && isMobile !== undefined
