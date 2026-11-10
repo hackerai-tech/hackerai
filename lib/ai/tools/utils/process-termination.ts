@@ -1,3 +1,4 @@
+import { CommandExitError } from "@e2b/code-interpreter";
 import type { AnySandbox } from "@/types";
 import { isE2BSandbox } from "./sandbox-types";
 
@@ -27,21 +28,27 @@ export async function verifyProcessTerminated(
       if (!isRunning) {
         return true; // Process successfully terminated
       }
-
-      // Wait before next attempt (skip delay on last attempt)
-      if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
     } catch (error) {
-      // Command error usually means process doesn't exist (successful kill)
-      return true;
+      // ps exits with 1 when the requested PID is absent. Transport failures
+      // and command diagnostics do not prove exit; retain recovery and retry.
+      if (
+        error instanceof CommandExitError &&
+        error.exitCode === 1 &&
+        error.stderr.trim() === "" &&
+        !error.stdout.includes(pid.toString())
+      ) {
+        return true;
+      }
+    }
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
 
   console.warn(
-    `[Process Termination] PID ${pid}: Still running after ${maxAttempts} verification attempts`,
+    `[Process Termination] PID ${pid}: Could not confirm exit after ${maxAttempts} verification attempts`,
   );
-  return false; // Process still running
+  return false; // Exit remains unconfirmed
 }
 
 /**
