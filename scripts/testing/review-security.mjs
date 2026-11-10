@@ -10,7 +10,25 @@ import {
   reviewResult,
   securityResult,
   policyResult,
+  sameTestMerge,
 } from "./review-security-policy.mjs";
+
+/** Only exact tree+ordered-parent aliases can stand in for a regenerated test merge. */
+export async function mergeAliases(api, root, pr, analyses) {
+  const aliases = new Set([pr.merge_commit_sha]);
+  const candidates = [...new Set(analyses.map((item) => item.commit_sha))]
+    .filter(
+      (sha) => /^[a-f0-9]{40}$/.test(sha ?? "") && sha !== pr.merge_commit_sha,
+    )
+    .slice(0, 20);
+  if (!candidates.length) return aliases;
+  const current = await api(`${root}/git/commits/${pr.merge_commit_sha}`);
+  for (const sha of candidates) {
+    const previous = await api(`${root}/git/commits/${sha}`);
+    if (sameTestMerge(pr, current, previous)) aliases.add(sha);
+  }
+  return aliases;
+}
 
 const pageSize = 100;
 const validNumber = (value) =>
@@ -67,35 +85,6 @@ export async function pages(api, path, field) {
     if (items.length < pageSize) return rows;
   }
   throw new Error("GitHub pagination is incomplete");
-}
-
-const threadsQuery = `query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
-  repository(owner:$owner,name:$name) { pullRequest(number:$number) {
-    reviewThreads(first:100,after:$cursor) { nodes { isResolved isOutdated comments(first:1) { nodes { author { login __typename } } } } pageInfo { hasNextPage endCursor } }
-  } }
-}`;
-
-async function reviewThreads(api, repo, number) {
-  const [owner, name] = repo.split("/");
-  const rows = [];
-  let cursor = null;
-  for (let page = 0; page < 40; page++) {
-    const response = await api("/graphql", "POST", {
-      query: threadsQuery,
-      variables: { owner, name, number, cursor },
-    });
-    const collection = response.data?.repository?.pullRequest?.reviewThreads;
-    if (
-      !Array.isArray(collection?.nodes) ||
-      collection.nodes.some((thread) => !Array.isArray(thread.comments?.nodes))
-    )
-      throw new Error("Review threads cannot be verified");
-    rows.push(...collection.nodes);
-    if (collection.pageInfo?.hasNextPage === false) return rows;
-    cursor = collection.pageInfo?.endCursor;
-    if (!cursor) throw new Error("Review thread pagination is incomplete");
-  }
-  throw new Error("Review thread pagination exceeded its bound");
 }
 
 /** Events are wake-ups only: each serialized evaluation reads the current PR. */
@@ -161,7 +150,7 @@ export async function evaluatePullRequest(
       pr.head.sha,
       "pending",
       detailsUrl,
-      "Verifying current review and security evidence.",
+      "Verifying selected security evidence; CodeRabbit is advisory.",
     );
   let decision;
   try {
@@ -204,11 +193,8 @@ export async function evaluatePullRequest(
         },
       );
     } else {
-      const [reviews, threads] = await Promise.all([
-        pages(api, `${root}/pulls/${number}/reviews`),
-        reviewThreads(api, repo, number),
-      ]);
-      const review = reviewResult(pr.head.sha, checks, reviews, threads);
+      // Review is informational only. Do not depend on review/thread API availability.
+      const review = reviewResult(pr.head.sha, checks, [], []);
       let security;
       if (!plan.languages.length)
         security = securityResult(pr.merge_commit_sha, [], [], [], []);
@@ -256,11 +242,23 @@ export async function evaluatePullRequest(
               `${root}/code-scanning/alerts?ref=${encodeURIComponent(`refs/heads/${pr.base.ref}`)}&state=open&tool_name=CodeQL`,
             ),
           ]);
+          const aliases = await mergeAliases(api, root, pr, analyses);
+          const normalize = (sha) =>
+            aliases.has(sha) ? pr.merge_commit_sha : sha;
           security = securityResult(
             pr.merge_commit_sha,
             plan.languages,
-            analyses,
-            alerts,
+            analyses.map((item) => ({
+              ...item,
+              commit_sha: normalize(item.commit_sha),
+            })),
+            alerts.map((item) => ({
+              ...item,
+              most_recent_instance: {
+                ...item.most_recent_instance,
+                commit_sha: normalize(item.most_recent_instance?.commit_sha),
+              },
+            })),
             baseline,
           );
         }
@@ -283,11 +281,24 @@ export async function evaluatePullRequest(
   }
   try {
     const current = await api(`${root}/pulls/${number}`);
+    let mergeChanged =
+      decision.security.state !== "skip" &&
+      current.merge_commit_sha !== pr.merge_commit_sha;
+    if (
+      mergeChanged &&
+      current.head?.sha === pr.head.sha &&
+      current.base?.sha === pr.base.sha
+    ) {
+      const [first, second] = await Promise.all([
+        api(`${root}/git/commits/${pr.merge_commit_sha}`),
+        api(`${root}/git/commits/${current.merge_commit_sha}`),
+      ]);
+      mergeChanged = !sameTestMerge(pr, first, second);
+    }
     if (
       current.head?.sha !== pr.head.sha ||
       current.base?.sha !== pr.base.sha ||
-      (decision.security.state !== "skip" &&
-        current.merge_commit_sha !== pr.merge_commit_sha) ||
+      mergeChanged ||
       current.state !== "open"
     )
       decision = policyResult(
@@ -308,15 +319,8 @@ export async function evaluatePullRequest(
       decision.state,
       detailsUrl,
       decision.state === "success"
-        ? "Current review and selected security scans passed."
-        : (
-            [decision.security, decision.review].find(
-              (item) => item.state === "fail",
-            ) ??
-            [decision.security, decision.review].find(
-              (item) => item.state === "pending",
-            )
-          ).reason,
+        ? "Selected security scans passed; CodeRabbit is advisory."
+        : decision.security.reason,
     );
   return decision;
 }

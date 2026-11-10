@@ -201,7 +201,15 @@ const agentAutoReviewConversationContextValidator = v.object({
 
 export default defineSchema({
   abuse_notifications: defineTable({
-    caseId: v.id("abuse_cases"),
+    // Optional caseId keeps historical case-owned deliveries readable. New
+    // intake writes only a temporary encrypted queue entry and receipt metadata.
+    caseId: v.optional(v.id("abuse_cases")),
+    reference: v.optional(v.string()),
+    digest: v.optional(v.string()),
+    ciphertext: v.optional(v.string()),
+    receivedAt: v.optional(v.number()),
+    payloadExpiresAt: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
     status: v.union(
       v.literal("pending"),
       v.literal("paused"),
@@ -209,11 +217,15 @@ export default defineSchema({
       v.literal("sent"),
       v.literal("failed"),
       v.literal("uncertain"),
+      v.literal("expired"),
     ),
     attempts: v.number(),
     updatedAt: v.number(),
   })
     .index("by_caseId", ["caseId"])
+    .index("by_reference", ["reference"])
+    .index("by_payloadExpiresAt", ["payloadExpiresAt"])
+    .index("by_expiresAt", ["expiresAt"])
     .index("by_status", ["status"])
     .index("by_status_and_updatedAt", ["status", "updatedAt"]),
   // Evidence is encrypted before transport; ordinary users have no read path.

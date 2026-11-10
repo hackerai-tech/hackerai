@@ -187,7 +187,12 @@ export default function ReportForm({
         setFailure(
           "The security check did not go through or expired. Your details are still here; complete the new check, then try again.",
         );
-      else if (response.status === 429)
+      else if (response.status === 410) {
+        attempt.current = null;
+        setFailure(
+          "This report's delivery window expired. Your details are still here; submit again with a new reference.",
+        );
+      } else if (response.status === 429)
         setFailure(
           "Too many reports were submitted recently. Please try again in an hour.",
         );
@@ -201,11 +206,11 @@ export default function ReportForm({
         );
       else
         setFailure(
-          "We could not confirm that your report was saved. Your details are still here; please retry.",
+          "We could not confirm that your report was queued. Your details are still here; please retry.",
         );
     } catch {
       setFailure(
-        "We could not confirm that your report was saved. Your details are still here; please retry.",
+        "We could not confirm that your report was queued. Your details are still here; please retry.",
       );
     } finally {
       challenge.current = null;
@@ -227,14 +232,14 @@ export default function ReportForm({
           tabIndex={-1}
           className="text-2xl font-medium outline-none"
         >
-          Your {kind === "appeal" ? "appeal" : "report"} is saved
+          Your {kind === "appeal" ? "appeal" : "report"} was received
         </h2>
         <p className="leading-7 text-muted-foreground">
-          Keep this reference if you need to follow up. This confirms receipt;
-          it does not mean a decision has been made or an email has been sent.
+          Keep this reference for follow-up. Your submission is queued for email
+          review; this receipt does not confirm delivery or a decision.
         </p>
         <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">Case reference</p>
+          <p className="text-sm text-muted-foreground">Report reference</p>
           <p className="break-all rounded-md border border-border bg-background p-4 font-mono text-sm sm:text-base">
             {receipt}
           </p>
@@ -254,7 +259,7 @@ export default function ReportForm({
             {copied ? "Copied" : "Copy reference"}
           </Button>
           <span role="status" className="sr-only">
-            {copied ? "Case reference copied" : ""}
+            {copied ? "Report reference copied" : ""}
           </span>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">
@@ -560,8 +565,9 @@ export default function ReportForm({
         <input id="website" name="website" tabIndex={-1} autoComplete="off" />
       </div>
       <p className="text-[13px] leading-6 text-muted-foreground">
-        We process the information you provide to review and respond to your
-        report, as described in our{" "}
+        Your report is emailed to our abuse inbox for review. We keep an
+        encrypted copy temporarily for delivery. Email copies are handled under
+        our{" "}
         <Link
           href="/privacy-policy"
           className="text-foreground underline underline-offset-4"
@@ -611,7 +617,7 @@ export default function ReportForm({
         >
           {pending
             ? "Saving your report…"
-            : "You will get a case reference on this page once your report is saved."}
+            : "You will get a report reference on this page once your report is queued."}
         </p>
       </div>
     </form>

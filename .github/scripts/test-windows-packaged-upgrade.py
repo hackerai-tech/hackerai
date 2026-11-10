@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable CI: actual NSIS N-to-N+1 handoff, auto-relaunch and receipt readback."""
+"""Disposable CI: signed ZIP rejection/retry and actual NSIS N-to-N+1 handoff."""
 import functools
 import ctypes
 import http.server
@@ -38,6 +38,9 @@ def main():
             cwd=DESKTOP, stdout=subprocess.DEVNULL)
         env = {**os.environ, "TAURI_SIGNING_PRIVATE_KEY_PATH": str(key),
                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": ""}
+        # Bundling v1-compatible updater ZIPs needs the key's contents; the
+        # signer command below accepts the path. Keep the value in child env.
+        bundle_env = {**env, "TAURI_SIGNING_PRIVATE_KEY": key.read_text().strip()}
         config = work / "tauri.json"
         assets = {}
         for version in ["1.0.0", "1.0.1"]:
@@ -45,7 +48,7 @@ def main():
                 "productName": NAME, "mainBinaryName": NAME, "version": version,
                 "identifier": "co.hackerai.windowsupdaterfixture",
                 "build": {"beforeBuildCommand": "", "beforeBundleCommand": ""},
-                "bundle": {"createUpdaterArtifacts": False, "targets": ["nsis"],
+                "bundle": {"createUpdaterArtifacts": "v1Compatible", "targets": ["nsis"],
                            "windows": {"nsis": {"installMode": "currentUser"}}},
             }))
             run(["cargo", "build", "--locked", "--example", "windows_update_probe"],
@@ -53,15 +56,26 @@ def main():
                 env={**env, "HACKERAI_UPGRADE_FIXTURE_VERSION": version})
             shutil.copy2(TARGET / "examples/windows_update_probe.exe", TARGET / (NAME + ".exe"))
             run([pnpm, "tauri", "bundle", "--debug", "--config", str(config),
-                 "--bundles", "nsis"], cwd=DESKTOP, env=env)
+                 "--bundles", "nsis"], cwd=DESKTOP, env=bundle_env)
             matches = list((TARGET / "bundle/nsis").glob(f"*_{version}_*-setup.exe"))
             if len(matches) != 1:
                 raise RuntimeError(f"Expected one {version} NSIS bundle, got {len(matches)}")
             destination = feed / matches[0].name
             shutil.copy2(matches[0], destination)
             assets[version] = destination
-            run([pnpm, "tauri", "signer", "sign", str(destination)], cwd=DESKTOP,
-                env=env, stdout=subprocess.DEVNULL)
+            archives = list((TARGET / "bundle/nsis").glob(f"*_{version}_*-setup.nsis.zip"))
+            if len(archives) != 1:
+                raise RuntimeError(f"Expected one {version} updater ZIP, got {len(archives)}")
+            archive = feed / archives[0].name
+            shutil.copy2(archives[0], archive)
+            shutil.copy2(Path(str(archives[0]) + ".sig"), Path(str(archive) + ".sig"))
+            assets[version + "-zip"] = archive
+        # Correctly signed, bounded input that reaches the ZIP parser but has no
+        # central directory. Signature rejection alone would miss this boundary.
+        malformed = feed / "malformed.nsis.zip"
+        malformed.write_bytes(b"PK\x03\x04" + b"\x00" * 26)
+        run([pnpm, "tauri", "signer", "sign", str(malformed)], cwd=DESKTOP,
+            env=env, stdout=subprocess.DEVNULL)
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
@@ -70,9 +84,10 @@ def main():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         origin = f"http://127.0.0.1:{server.server_port}"
-        asset = assets["1.0.1"]
-        (feed / "latest.json").write_text(json.dumps({"version": "1.0.1", "url": origin + "/" + asset.name,
-            "signature": Path(str(asset) + ".sig").read_text().strip()}))
+        def select_asset(asset):
+            (feed / "latest.json").write_text(json.dumps({"version": "1.0.1", "url": origin + "/" + asset.name,
+                "signature": Path(str(asset) + ".sig").read_text().strip()}))
+        select_asset(malformed)
         sentinel = state / "user-file.txt"
         sentinel.write_bytes(b"preserve user bytes\x00\n")
         executable = installed / (NAME + ".exe")
@@ -89,6 +104,18 @@ def main():
             run([str(assets["1.0.0"]), "/S", "/D=" + str(installed)])
             assert run([str(executable)], capture_output=True).stdout.strip() == "1.0.0"
             arguments = [origin + "/latest.json", str(key) + ".pub", str(state)]
+            run([str(executable), "reject", *arguments])
+            assert json.loads(report.read_text()) == {"version": "1.0.0", "outcome": "Rejected"}
+            report.unlink()
+            # A fresh process consumes the failed-install receipt without
+            # reporting an upgrade or preventing a subsequent valid attempt.
+            run([str(executable), "decline", *arguments])
+            assert json.loads(report.read_text()) == {"version": "1.0.0", "outcome": "NotApplied"}
+            assert run([str(executable)], capture_output=True).stdout.strip() == "1.0.0"
+            assert sentinel.read_bytes() == b"preserve user bytes\x00\n"
+            assert not (state / "pending-desktop-update.json").exists()
+            report.unlink()
+            select_asset(assets["1.0.1-zip"])
             run([str(executable), "decline", *arguments])
             assert json.loads(report.read_text()) == {"version": "1.0.0", "outcome": "Declined"}
             report.unlink()
@@ -115,7 +142,7 @@ def main():
             assert len(after) > len(at_restart), "Detached job must keep writing after restart"
             complete_lines = after.split(b"\n")[:-1]
             assert [int(line) for line in complete_lines] == list(range(len(complete_lines)))
-            print("PASS: declined install preserves N; approved NSIS install relaunches N+1; receipt consumed; sentinel unchanged; detached job keeps writing intact output")
+            print("PASS: signed malformed ZIP rejected; restart reports NotApplied; valid signed ZIP retry succeeds; declined install preserves N; approved NSIS install relaunches N+1; receipt consumed; sentinel unchanged; detached job keeps writing intact output")
         finally:
             (state / "stop-job").touch()
             if not job_handle and (state / "job-pid").exists():

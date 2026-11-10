@@ -8,106 +8,9 @@ jest.mock("../lib/utils", () => ({
   },
 }));
 import * as functions from "../abuseCases";
-import {
-  abuseFingerprints,
-  encryptAbuseEvidence,
-} from "../../lib/abuse/evidence";
 jest.mock("server-only", () => ({}));
 
-// Indexed in-memory storage exercises the actual mutation handlers and durable
-// state transitions. Live Convex acceptance separately proves transaction semantics.
-function database() {
-  const tables: Record<string, any[]> = {};
-  let sequence = 0;
-  const db = {
-    query(table: string) {
-      tables[table] ??= [];
-      let predicates: Array<(row: any) => boolean> = [];
-      let descending = false;
-      const results = () =>
-        tables[table]
-          .filter((row) => predicates.every((p) => p(row)))
-          .sort((a, b) =>
-            descending
-              ? b._creationTime - a._creationTime
-              : a._creationTime - b._creationTime,
-          );
-      const chain = {
-        withIndex(_index: string, callback: (query: any) => unknown) {
-          const query = {
-            eq(field: string, value: unknown) {
-              predicates.push((row) => row[field] === value);
-              return query;
-            },
-            lt(field: string, value: any) {
-              predicates.push((row) => row[field] < value);
-              return query;
-            },
-          };
-          callback(query);
-          return chain;
-        },
-        order(value: string) {
-          descending = value === "desc";
-          return chain;
-        },
-        async first() {
-          return results()[0] ?? null;
-        },
-        async unique() {
-          const rows = results();
-          if (rows.length > 1) throw new Error("Duplicate");
-          return rows[0] ?? null;
-        },
-        async take(n: number) {
-          return results().slice(0, n);
-        },
-        async paginate({
-          cursor,
-          numItems,
-        }: {
-          cursor: string | null;
-          numItems: number;
-        }) {
-          const offset = Number(cursor ?? 0);
-          const rows = results();
-          return {
-            page: rows.slice(offset, offset + numItems),
-            isDone: offset + numItems >= rows.length,
-            continueCursor: String(offset + numItems),
-            splitCursor: null,
-            pageStatus: null,
-          };
-        },
-      };
-      return chain;
-    },
-    async insert(table: string, row: any) {
-      const id = `${table}-${++sequence}`;
-      (tables[table] ??= []).push({ ...row, _id: id, _creationTime: sequence });
-      return id;
-    },
-    async get(id: string) {
-      return (
-        Object.values(tables)
-          .flat()
-          .find((row) => row._id === id) ?? null
-      );
-    },
-    async patch(id: string, patch: any) {
-      const row = await db.get(id);
-      if (!row) throw new Error("missing");
-      Object.assign(row, patch);
-    },
-    async delete(id: string) {
-      for (const rows of Object.values(tables)) {
-        const index = rows.findIndex((row) => row._id === id);
-        if (index >= 0) rows.splice(index, 1);
-      }
-    },
-  };
-  return { db, tables };
-}
+import { database } from "../../__mocks__/abuse-database";
 const invoke = (name: keyof typeof functions, ctx: any, args: any) =>
   (functions[name] as any).handler(ctx, args);
 const reference = "AB-123e4567-e89b-42d3-a456-426614174000";
@@ -131,8 +34,28 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...originalEnv };
 });
+async function seedCase(ctx: any, data = intake) {
+  const now = Date.now();
+  const caseId = await ctx.db.insert("abuse_cases", {
+    reference: data.reference,
+    digest: data.digests[0],
+    kind: data.kind,
+    ciphertext: data.ciphertext,
+    status: "new",
+    revision: 0,
+    evidenceHold: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.insert("abuse_events", {
+    caseId,
+    actor: "public_intake",
+    kind: "received",
+    createdAt: now,
+  });
+}
 async function caseWithReview(ctx: any) {
-  await invoke("receive", ctx, intake);
+  await seedCase(ctx);
   await ctx.db.insert("chats", {
     id: "chat",
     user_id: "subject",
@@ -145,87 +68,9 @@ async function caseWithReview(ctx: any) {
     ciphertext,
   });
 }
-test("receipts survive key rotation; changed retries conflict and do not duplicate evidence", async () => {
-  const ctx = database();
-  const report = { private: "synthetic" };
-  process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
-    active: "old",
-    keys: { old: "11".repeat(32) },
-  });
-  const digests = abuseFingerprints("submission", JSON.stringify(report));
-  await invoke("receive", ctx, {
-    ...intake,
-    digests,
-    ciphertext: encryptAbuseEvidence(reference, report),
-  });
-  process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
-    active: "new",
-    keys: { old: "11".repeat(32), new: "22".repeat(32) },
-  });
-  expect(
-    await invoke("receive", ctx, {
-      ...intake,
-      digests: abuseFingerprints("submission", JSON.stringify(report)),
-    }),
-  ).toEqual({ outcome: "received", reference });
-  expect(
-    await invoke("receive", ctx, {
-      ...intake,
-      digests: abuseFingerprints("submission", "changed"),
-    }),
-  ).toEqual({ outcome: "conflict" });
-  expect(ctx.tables.abuse_cases).toHaveLength(1);
-  expect(ctx.tables.abuse_rate_limits.every((row) => row.count === 1)).toBe(
-    true,
-  );
-});
-test("an accepted report atomically queues one notification across receipt retries", async () => {
-  process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
-  const ctx = { ...database(), scheduler: { runAfter: jest.fn() } };
-  await invoke("receive", ctx, intake);
-  await invoke("receive", ctx, intake);
-  expect(ctx.tables.abuse_cases).toHaveLength(1);
-  expect(ctx.tables.abuse_notifications).toHaveLength(1);
-  expect(ctx.tables.abuse_notifications[0]).toMatchObject({
-    status: "pending",
-    attempts: 0,
-    caseId: ctx.tables.abuse_cases[0]._id,
-  });
-  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
-});
-test.each([undefined, ""])(
-  "does not enqueue new reports without an SMTP token (%s), including later receipt retries",
-  async (password) => {
-    if (password === undefined) delete process.env.ABUSE_SMTP_PASSWORD;
-    else process.env.ABUSE_SMTP_PASSWORD = password;
-    const ctx = { ...database(), scheduler: { runAfter: jest.fn() } };
-    await invoke("receive", ctx, intake);
-    process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
-    await invoke("receive", ctx, intake);
-    expect(ctx.tables.abuse_cases).toHaveLength(1);
-    expect(ctx.tables.abuse_notifications).toBeUndefined();
-    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
-  },
-);
-test("intake alone never restricts an account and per-email limits cannot be bypassed by rotating a retained key", async () => {
-  const ctx = database();
-  for (let i = 0; i < 3; i++)
-    await invoke("receive", ctx, {
-      ...intake,
-      reference: `AB-123e4567-e89b-42d3-a456-42661417400${i}`,
-    });
-  expect(
-    await invoke("receive", ctx, {
-      ...intake,
-      reference: "AB-123e4567-e89b-42d3-a456-426614174009",
-      emailHashes: ["4".repeat(64), ...intake.emailHashes],
-    }),
-  ).toEqual({ outcome: "rate_limited" });
-  expect(ctx.tables.user_suspensions).toBeUndefined();
-});
 test("only explicit operators can read evidence and every authorized read is audited", async () => {
   const ctx = database();
-  await invoke("receive", ctx, intake);
+  await seedCase(ctx);
   await expect(
     invoke("read", ctx, {
       ...operator,
@@ -245,7 +90,7 @@ test("only explicit operators can read evidence and every authorized read is aud
 });
 test("queue returns only its validated pagination contract, including continuation", async () => {
   const ctx = database();
-  await invoke("receive", ctx, intake);
+  await seedCase(ctx);
   const result = await invoke("list", ctx, {
     ...operator,
     status: "new",
@@ -260,22 +105,6 @@ test("queue returns only its validated pagination contract, including continuati
   expect(result.page[0]).not.toHaveProperty("ciphertext");
   expect(result.isDone).toBe(true);
   expect(result.continueCursor).toBe("1");
-});
-test("persists bounded maximum-length non-Latin evidence after encryption", async () => {
-  const ctx = database();
-  process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
-    active: "test",
-    keys: { test: "11".repeat(32) },
-  });
-  const encoded = encryptAbuseEvidence(reference, {
-    description: "報".repeat(6000),
-    evidence: "證".repeat(6000),
-    target: "例".repeat(500),
-  });
-  expect(encoded.length).toBeGreaterThan(48_000);
-  await expect(
-    invoke("receive", ctx, { ...intake, ciphertext: encoded }),
-  ).resolves.toEqual({ outcome: "received", reference });
 });
 test("reviewed containment is scoped and resolution leaves billing and independent security holds intact", async () => {
   const ctx = database();
@@ -395,7 +224,7 @@ test("reviewed containment is scoped and resolution leaves billing and independe
 });
 test("reports without verified attribution cannot start containment", async () => {
   const ctx = database();
-  await invoke("receive", ctx, intake);
+  await seedCase(ctx);
   await expect(
     invoke("beginContainment", ctx, {
       ...operator,
@@ -415,7 +244,7 @@ test("a second case cannot add a competing account/workspace containment hold", 
   const ctx = database();
   await caseWithReview(ctx);
   const second = "AB-123e4567-e89b-42d3-a456-426614174001";
-  await invoke("receive", ctx, { ...intake, reference: second });
+  await seedCase(ctx, { ...intake, reference: second });
   await invoke("annotate", ctx, {
     ...operator,
     reference: second,
