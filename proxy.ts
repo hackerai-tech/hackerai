@@ -25,6 +25,8 @@ import {
 } from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/abuse",
+  "/api/abuse",
   "/api/analytics-consent",
   "/api/health/connectivity",
   "/api/health/core",
@@ -64,6 +66,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/privacy-policy",
   "/terms-of-service",
   "/trust",
+  "/abuse",
   "/download",
   "/product",
   "/pricing",
@@ -286,6 +289,65 @@ function recordDesktopAuthRedirect(
   }
 }
 
+/** Observe only unexpected AuthKit throws, without retaining request or error contents. */
+function recordProxyAuthkitFailure(
+  request: NextRequest,
+  error: unknown,
+  phase: "unexpected_initial_authkit" | "anonymous_context_retry",
+): void {
+  try {
+    const pathname = request.nextUrl.pathname;
+    const requestId = request.headers.get("x-vercel-id");
+    const build = process.env.VERCEL_GIT_COMMIT_SHA;
+    const environment = process.env.VERCEL_ENV;
+    console.warn(
+      JSON.stringify({
+        event: "proxy_authkit_failure_context",
+        diagnostic_version: 1,
+        boundary: "proxy",
+        phase,
+        request_method: [
+          "GET",
+          "HEAD",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "OPTIONS",
+        ].includes(request.method)
+          ? request.method
+          : "OTHER",
+        route_kind: ROOT_PAGE_PATHS.has(pathname)
+          ? "root"
+          : pathname === "/login"
+            ? "login"
+            : pathname.startsWith("/c/")
+              ? "chat_page"
+              : pathname.startsWith("/api/")
+                ? "api"
+                : "other_page",
+        ...(requestId &&
+        /^(?:[a-z]{3}\d::){0,3}[a-z0-9]{3,16}-\d{13}-[a-f0-9]{8,64}$/.test(
+          requestId,
+        )
+          ? { vercel_request_id: requestId }
+          : {}),
+        ...(build && /^[a-f0-9]{40}$/i.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+        environment: ["production", "preview", "development"].includes(
+          environment ?? "",
+        )
+          ? environment
+          : "unknown",
+        ...getRefreshFailureDiagnostics(error),
+      }),
+    );
+  } catch {
+    // Telemetry must never replace the original error or participate in auth decisions.
+  }
+}
+
 /** Retain the logged-out response contract and clear only the ended session cookie. */
 function buildEndedSessionResponse(
   request: NextRequest,
@@ -501,10 +563,21 @@ export default async function proxy(request: NextRequest) {
       // Public routes still need real anonymous AuthKit context. A response
       // cookie deletion alone leaves the invalid cookie on this request.
       // An error from this second call propagates, so recovery cannot loop.
-      const { headers } = await authkit(request, {
-        redirectUri: getRedirectUri(request),
-        eagerAuth: true,
-      });
+      let anonymousResult: Awaited<ReturnType<typeof authkit>>;
+      try {
+        anonymousResult = await authkit(request, {
+          redirectUri: getRedirectUri(request),
+          eagerAuth: true,
+        });
+      } catch (recoveryError) {
+        recordProxyAuthkitFailure(
+          request,
+          recoveryError,
+          "anonymous_context_retry",
+        );
+        throw recoveryError;
+      }
+      const { headers } = anonymousResult;
       return withSessionCookieCleared(
         withAttributionCookies(
           request,
@@ -527,6 +600,7 @@ export default async function proxy(request: NextRequest) {
     if (isEndedSessionRefreshError(error)) {
       return buildEndedSessionResponse(request, pathname);
     }
+    recordProxyAuthkitFailure(request, error, "unexpected_initial_authkit");
     throw error;
   }
 

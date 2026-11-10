@@ -1,5 +1,9 @@
 import { z } from "zod";
 import {
+  RENDERED_HCAPTCHA_WIDGETS,
+  buildDeliverRenderedHcaptchaScript,
+} from "./hcaptcha";
+import {
   cloudflareParameters,
   cloudflarePageUrl,
   CLOUDFLARE_PAGE_URL_SCRIPT,
@@ -19,6 +23,10 @@ export const browserChallengeObservation = z.object({
         observationId: z.string().regex(/^[a-f0-9]{32}$/),
         tokenPresent: z.boolean(),
         invisible: z.boolean(),
+        hcaptchaWidgetId: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{1,128}$/)
+          .optional(),
         managed: cloudflareParameters.optional(),
       }),
     )
@@ -110,6 +118,16 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
     widgets.push({kind, siteKey, observationId, tokenPresent: !!field?.value,
       invisible: element.getAttribute("data-size") === "invisible"});
   }
+  for (const rendered of ${RENDERED_HCAPTCHA_WIDGETS}) {
+    if (widgets.length === 10) break;
+    // A normal data-sitekey widget already owns this frame and its callback.
+    if (rendered.frame.closest('.h-captcha[data-sitekey]')) continue;
+    const {element, frame, field, compatibilityField, source, container} = rendered;
+    const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+    element[Symbol.for('hackerai.captchaObservation')] = {observationId, frame, field, compatibilityField, source, container};
+    widgets.push({kind:'hcaptcha', siteKey:rendered.siteKey, observationId,
+      hcaptchaWidgetId:rendered.widgetId, tokenPresent:rendered.tokenPresent, invisible:rendered.invisible});
+  }
   return {
     url: managed ? ${CLOUDFLARE_PAGE_URL_SCRIPT} : location.href,
     documentId: String(performance.timeOrigin),
@@ -145,6 +163,8 @@ export function buildDeliverCaptchaScript(
   widget: CaptchaWidget,
   token: string,
 ): string {
+  if (widget.kind === "hcaptcha" && widget.hcaptchaWidgetId)
+    return buildDeliverRenderedHcaptchaScript(observation, widget, token);
   if (widget.managed)
     return `((expected, widget, token) => {
       if (${CLOUDFLARE_PAGE_URL_SCRIPT} !== expected.url || String(performance.timeOrigin) !== expected.documentId) return {status:'page_changed'};

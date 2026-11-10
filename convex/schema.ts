@@ -22,6 +22,7 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
+import { abuseCaseFields, abuseEventFields } from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -199,6 +200,49 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  abuse_notifications: defineTable({
+    // Optional caseId keeps historical case-owned deliveries readable. New
+    // intake writes only a temporary encrypted queue entry and receipt metadata.
+    caseId: v.optional(v.id("abuse_cases")),
+    reference: v.optional(v.string()),
+    digest: v.optional(v.string()),
+    ciphertext: v.optional(v.string()),
+    receivedAt: v.optional(v.number()),
+    payloadExpiresAt: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("paused"),
+      v.literal("sending"),
+      v.literal("sent"),
+      v.literal("failed"),
+      v.literal("uncertain"),
+      v.literal("expired"),
+    ),
+    attempts: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_caseId", ["caseId"])
+    .index("by_reference", ["reference"])
+    .index("by_payloadExpiresAt", ["payloadExpiresAt"])
+    .index("by_expiresAt", ["expiresAt"])
+    .index("by_status", ["status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"]),
+  // Evidence is encrypted before transport; ordinary users have no read path.
+  abuse_cases: defineTable(abuseCaseFields)
+    .index("by_active_containment_user", ["activeContainmentUserId"])
+    .index("by_reference", ["reference"])
+    .index("by_status", ["status"]),
+  abuse_events: defineTable(abuseEventFields)
+    .index("by_caseId", ["caseId"])
+    .index("by_caseId_and_kind", ["caseId", "kind"]),
+  abuse_rate_limits: defineTable({
+    bucket: v.string(),
+    count: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_bucket", ["bucket"])
+    .index("by_expiresAt", ["expiresAt"]),
   cloud_network_settings: defineTable({
     user_id: v.string(),
     policy: networkPolicy,
@@ -286,6 +330,11 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  chat_history_access: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
@@ -515,6 +564,15 @@ export default defineSchema({
     }),
 
   findings: defineTable({
+    project_id: v.optional(v.id("projects")),
+    evidence_status: v.optional(
+      v.union(
+        v.literal("source_review_only"),
+        v.literal("runtime_reproduced"),
+        v.literal("inconclusive"),
+      ),
+    ),
+    evidence_status_reason: v.optional(v.string()),
     finding_id: v.string(),
     user_id: v.string(),
     chat_id: v.string(),
@@ -672,9 +730,64 @@ export default defineSchema({
       "created_at",
     ])
     .index("by_user_chat_dedupe", ["user_id", "chat_id", "dedupe_key"])
+    .index("by_user_project_created", ["user_id", "project_id", "created_at"])
+    .index("by_user_project_status_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "created_at",
+    ])
+    .index("by_user_project_category_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_severity_created", [
+      "user_id",
+      "project_id",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_status_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_category_severity_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "severity",
+      "created_at",
+    ])
     .searchIndex("search_findings", {
       searchField: "search_text",
-      filterFields: ["user_id", "status", "category", "severity", "chat_id"],
+      filterFields: [
+        "user_id",
+        "project_id",
+        "status",
+        "category",
+        "severity",
+        "chat_id",
+      ],
     }),
 
   // Compact source-chat metadata keeps the Findings filter bounded without
@@ -1347,6 +1460,14 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_token", ["token"]),
 
+  local_sandbox_heartbeats: defineTable({
+    connection_id: v.string(),
+    user_id: v.string(),
+    last_heartbeat: v.number(),
+  })
+    .index("by_connection_id", ["connection_id"])
+    .index("by_user_id", ["user_id"]),
+
   local_sandbox_connections: defineTable({
     user_id: v.string(),
     connection_id: v.string(),
@@ -1381,6 +1502,7 @@ export default defineSchema({
         operationChannels: v.optional(v.boolean()),
       }),
     ),
+    // Initial timestamp and fallback for sessions created before heartbeat separation.
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),

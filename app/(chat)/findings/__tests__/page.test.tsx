@@ -1,7 +1,20 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
+const mockUseProjects = jest.fn();
+jest.mock("@/app/hooks/useProjects", () => ({
+  useProjects: () => mockUseProjects(),
+}));
+jest.mock("@/app/components/findings/FindingFollowupActions", () => ({
+  FindingFollowupActions: () => null,
+}));
 const mockUsePaginatedQuery = jest.fn();
 const mockUseQuery = jest.fn((_ref: unknown, args: any) =>
   args?.findingId ? mockFinding : undefined,
@@ -96,6 +109,11 @@ const Page = require("../page").default as typeof import("../page").default;
 describe("FindingsPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseProjects.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
     for (const key of [...mockSearchParams.keys()]) {
       mockSearchParams.delete(key);
     }
@@ -128,12 +146,11 @@ describe("FindingsPage", () => {
     expect(screen.getByTestId("finding-severity-dot-finding-1")).toHaveClass(
       "bg-orange-500",
     );
-    expect(screen.getByText("Current Results")).toBeVisible();
+    expect(screen.getByText("In loaded results")).toBeVisible();
     expect(screen.queryByText("Validation Standard")).toBeNull();
     expect(screen.queryByText("Evidence + working PoC")).toBeNull();
     expect(screen.queryByText("Endpoint")).toBeNull();
     expect(screen.queryByText("Source Chat")).toBeNull();
-    expect(screen.getAllByText("Category").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
     expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
@@ -143,7 +160,9 @@ describe("FindingsPage", () => {
     expect(screen.getByLabelText("Filter by severity")).toBeVisible();
     expect(screen.queryByLabelText("Filter by source chat")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Start new scan" }),
@@ -169,6 +188,159 @@ describe("FindingsPage", () => {
       expect(window.location.search).toBe("");
     });
     expect(mockCapture).toHaveBeenCalledWith("findings_page_viewed");
+  });
+
+  it("only shows selection controls after opting in and discards cancelled or filtered selections", async () => {
+    render(<Page />);
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    const emptySelection = screen.getByRole("region", {
+      name: "Selected findings",
+    });
+    expect(
+      within(emptySelection).getByRole("button", { name: /Export/ }),
+    ).toBeDisabled();
+    const rowCheckbox = screen.getByRole("checkbox", {
+      name: "Select finding: Confirmed IDOR",
+    });
+    fireEvent.click(rowCheckbox);
+    expect(
+      screen.getByRole("region", { name: "Selected findings" }),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel selection" }));
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    expect(
+      screen.getByRole("checkbox", { name: "Select finding: Confirmed IDOR" }),
+    ).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select loaded" }));
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "different" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Select findings" }),
+      ).toBeVisible(),
+    );
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Select findings" }),
+      ).toBeVisible(),
+    );
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+  });
+
+  it("applies compact-panel filters immediately, retains them on close, and clears all filters", async () => {
+    mockSearchParams.set("q", "invoice");
+    window.history.replaceState({}, "", "/findings?q=invoice");
+    render(<Page />);
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select finding: Confirmed IDOR" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    let panel = screen.getByRole("dialog", { name: "Filters" });
+    fireEvent.click(within(panel).getByLabelText("Filter by severity"));
+    fireEvent.click(screen.getByRole("option", { name: "High", exact: true }));
+    await waitFor(() => {
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ search: "invoice", severity: "high" }),
+        { initialNumItems: 25 },
+      );
+      expect(window.location.search).toContain("severity=high");
+    });
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "Done" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull(),
+    );
+    expect(window.location.search).toContain("severity=high");
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Select findings" }),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    panel = screen.getByRole("dialog", { name: "Filters" });
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Clear all filters" }),
+    );
+    await waitFor(() => {
+      expect(window.location.search).toBe("");
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        {},
+        { initialNumItems: 25 },
+      );
+    });
+    expect(
+      within(panel).getByLabelText("Filter by severity"),
+    ).toHaveTextContent("All severities");
+    fireEvent.click(within(panel).getByRole("button", { name: "Done" }));
+  });
+
+  it("scopes the query to an owned project and clears selection when filters change", async () => {
+    const projectId = "ps74erapv3qema2sc8ea8h0dph8hxjdw";
+    mockUseProjects.mockReturnValue({
+      results: [{ _id: projectId, name: "Lab" }],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+    render(<Page />);
+    fireEvent.click(screen.getByLabelText("Filter by project"));
+    fireEvent.click(screen.getByRole("option", { name: "Lab" }));
+    await waitFor(() =>
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { projectId },
+        { initialNumItems: 25 },
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select loaded" }));
+    expect(
+      screen.getByRole("region", { name: "Selected findings" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Search findings"), {
+      target: { value: "changed" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Selected findings" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("never sends an unverified project URL to the findings query", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/findings?project=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    mockSearchParams.set("project", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    render(<Page />);
+    await waitFor(() =>
+      expect(screen.getByText("Project filter unavailable")).toBeVisible(),
+    );
+    expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "skip",
+      { initialNumItems: 25 },
+    );
   });
 
   it("filters by category and lifecycle status", async () => {
@@ -204,7 +376,9 @@ describe("FindingsPage", () => {
     render(<Page />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     );
 
     await waitFor(() => {
@@ -238,7 +412,9 @@ describe("FindingsPage", () => {
     render(<Page />);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Export findings as CSV" }),
+      screen.getByRole("button", {
+        name: "Export all matching findings as CSV",
+      }),
     );
 
     await waitFor(() => {

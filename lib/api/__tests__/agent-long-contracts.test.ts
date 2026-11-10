@@ -311,7 +311,19 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
     ).map((match) => match[1]);
 
-    expect(importSources).toEqual(["../../findings/quality", "ai", "zod"]);
+    expect(importSources).toEqual([
+      "../../findings/evidence-status",
+      "../../findings/quality",
+      "ai",
+      "zod",
+    ]);
+    const evidenceStatusSource = fs.readFileSync(
+      path.resolve(__dirname, "../../findings/evidence-status.ts"),
+      "utf8",
+    );
+    expect(evidenceStatusSource.match(/^import.*$/gm)).toEqual([
+      'import { z } from "zod";',
+    ]);
     expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
     const qualitySource = fs.readFileSync(
       path.resolve(__dirname, "../../findings/quality.ts"),
@@ -1669,7 +1681,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
+      "getTerminalProviderStreamError(",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1725,9 +1737,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
-    const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
-    );
+    const terminalCheckIdx = taskSrc.indexOf("getTerminalProviderStreamError(");
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
     expect(terminalCheckIdx).toBeGreaterThan(-1);

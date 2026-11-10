@@ -1,3 +1,4 @@
+import { waitForCaptchaCapture } from "../utils/captcha-capture-files";
 /**
  * Tests for `run_terminal_cmd` — focusing on exec and interactive session creation.
  *
@@ -53,7 +54,7 @@ jest.mock("../utils/sandbox-file-uploader", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
-import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createGetTerminalFiles } from "../get-terminal-files";
@@ -267,6 +268,70 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("does not dispatch a terminal command after the CAPTCHA recovery deadline", async () => {
+    const { context, sandboxManager } = makeContext({});
+    context.guardCaptchaVisionCommand = jest.fn(() => ({
+      status: "handoff_required",
+      reason: "vision_budget_exhausted",
+    }));
+    expect(
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned click @e1",
+      }),
+    ).toMatchObject({
+      result: {
+        exitCode: 1,
+        browserChallenge: { reason: "vision_budget_exhausted" },
+      },
+    });
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    "qualifies recovery screenshots and coordinates file reads (background=%s)",
+    async (is_background) => {
+      const { context, sandboxManager } = makeContext({});
+      let finish!: (value: { result: Record<string, unknown> }) => void;
+      context.captureCaptchaVisionCommand = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const capturing = runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned screenshot /tmp/image.png",
+        is_background,
+      });
+      let readReady = false;
+      const reading = waitForCaptchaCapture(context, "/tmp/image.png").then(
+        () => {
+          readReady = true;
+        },
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(readReady).toBe(false);
+      } finally {
+        finish({
+          result: {
+            exitCode: 0,
+            browserChallenge: { status: "vision_capture_ready" },
+          },
+        });
+      }
+      expect(await capturing).toMatchObject({
+        result: {
+          exitCode: 0,
+          browserChallenge: { status: "vision_capture_ready" },
+        },
+      });
+      await reading;
+      expect(readReady).toBe(true);
+      expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+      expect(context.captureCaptchaVisionCommand).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
     const { context, writerWrites } = makeContext({});
     let finish!: (value: { status: string }) => void;
@@ -1442,6 +1507,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       ([command]) => command === "echo ok",
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
+    expect(prepareBrowser).toHaveBeenCalledWith(
+      e2b,
+      "recognized_browser_command",
+    );
     expect(browserCall?.[0]).toContain(
       'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
@@ -1467,6 +1536,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: false,
     });
     expect(gated).toMatchObject({ result: { exitCode: 0 } });
+    expect(prepareBrowser).toHaveBeenLastCalledWith(e2b, "gate_only");
     expect(
       e2b.commands.run.mock.calls.find(([command]) =>
         command.includes("echo gated"),
@@ -1564,7 +1634,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         timeout: 5,
       });
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(sandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          sandbox,
+          "recognized_browser_command",
+        );
         expect(sandbox.commands.run).toHaveBeenCalledWith(
           expect.any(String),
           expect.objectContaining({
@@ -1605,7 +1678,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: true,
     });
 
-    expect(prepareBrowser).toHaveBeenCalledWith(e2b);
+    expect(prepareBrowser).toHaveBeenCalledWith(e2b, "interactive_shell");
     expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
       e2b,
       expect.objectContaining({
@@ -2662,6 +2735,60 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s,json=%s)",
+    async (rejected, json) => {
+      const privateError =
+        "Navigation failed: net::ERR_NAME_NOT_RESOLVED https://private.example/token";
+      const privateOutput = json
+        ? JSON.stringify({ success: false, error: privateError })
+        : privateError;
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStderr?: (s: string) => void }) => {
+              opts?.onStderr?.(privateOutput);
+              if (rejected) throw new CommandExitError("exit" as never);
+              return { stdout: "", stderr: privateOutput, exitCode: 1 };
+            },
+          ),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const output = await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://private.example/token",
+        is_background: false,
+        timeout: 5,
+      });
+      expect(output.result).toMatchObject({
+        exitCode: 1,
+        output: privateOutput,
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_open_failure",
+        expect.objectContaining({
+          browser_open_failure_version: 3,
+          observation_scope: "terminal_result_open_intent",
+          public_output_hint: "navigation",
+          exit_code: 1,
+          owner_trigger_run_id: context.triggerRunId,
+        }),
+      );
+      const diagnostic = mockPhEvent.mock.calls.find(
+        ([event]) => event === "agent_browser_terminal_open_failure",
+      );
+      expect(JSON.stringify(diagnostic)).not.toContain("private.example");
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
     ["recorded", "run_aaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ["unavailable", undefined],
     ["unavailable", "PRIVATE_OWNER https://secret.example/owner"],
@@ -2874,7 +3001,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         expect.objectContaining({ cwd: "/tmp/project" }),
       );
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(centrifugoSandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          centrifugoSandbox,
+          "interactive_shell",
+        );
         expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
           centrifugoSandbox,
           expect.objectContaining({

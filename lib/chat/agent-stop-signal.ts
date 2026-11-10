@@ -1,4 +1,5 @@
 type DirectStopSource =
+  | "local_connection_lost"
   | "browser_ownership_lost"
   | "wait_for_user"
   | "wait_for_user_timeout"

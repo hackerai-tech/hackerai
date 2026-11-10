@@ -207,6 +207,10 @@ function createMockCtx(tables: Tables, subject = "user_123") {
 
 function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
   return {
+    chat_history_access: [
+      { _id: "access-user", chat_id: "chat-1", user_id: userId },
+      { _id: "access-other", chat_id: "chat-other-id", user_id: otherUserId },
+    ],
     chats: [
       {
         _id: "chat-doc",
@@ -398,6 +402,20 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     local_sandbox_tokens: [
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },
+    ],
+    local_sandbox_heartbeats: [
+      {
+        _id: "heartbeat-user",
+        user_id: userId,
+        connection_id: "conn-1",
+        last_heartbeat: 1,
+      },
+      {
+        _id: "heartbeat-other",
+        user_id: otherUserId,
+        connection_id: "conn-2",
+        last_heartbeat: 2,
+      },
     ],
     local_sandbox_connections: [
       { _id: "connection-user", user_id: userId, connection_id: "conn-1" },
@@ -861,6 +879,13 @@ describe("userDeletion", () => {
       row(tables, "captcha_daily_limits", "captcha-limit-global"),
     ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
+    expect(
+      row(tables, "local_sandbox_heartbeats", "heartbeat-other"),
+    ).toMatchObject({
+      user_id: "user_other",
+      connection_id: "conn-2",
+      last_heartbeat: 2,
+    });
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();
@@ -1430,6 +1455,45 @@ describe("userDeletion", () => {
     expect(tables.feedback).toHaveLength(0);
     expect(thirdBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it("makes progress deleting near-limit chats with stable ownership records", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const { getDocumentSize } = await import("convex/values");
+    const chats = [0, 1].map((i) => {
+      const chat = {
+        _id: `chat${i}`,
+        id: `chat${i}`,
+        user_id: "user_123",
+        title: "",
+      };
+      chat.title = "x".repeat(1024 * 1024 - 16 - getDocumentSize(chat));
+      return chat;
+    });
+    const tables: Tables = {
+      chats,
+      chat_history_access: chats.map((chat) => ({
+        _id: `access-${chat.id}`,
+        chat_id: chat.id,
+        user_id: chat.user_id,
+      })),
+    };
+    const { ctx, readCounter } = createMockCtx(tables);
+    let done = false;
+    for (let pass = 0; pass < 5 && !done; pass++) {
+      const previous = tables.chats.length;
+      readCounter.bytes = 0;
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+      expect(tables.chats.length < previous || !result.hasMore).toBe(true);
+      done = !result.hasMore;
+    }
+    expect(done).toBe(true);
+    expect(tables.chats).toHaveLength(0);
+    expect(tables.chat_history_access).toHaveLength(0);
   });
 
   it.each(["service", "residue"])(

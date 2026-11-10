@@ -1,3 +1,7 @@
+import {
+  createChatHistoryAccess,
+  deleteChatHistoryAccess,
+} from "./lib/chatHistoryAccess";
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { syncGoalInputTiming } from "./lib/goalInputTiming";
@@ -472,6 +476,7 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     return;
   }
   // Delete the chat itself
+  await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
 }
 
@@ -536,6 +541,7 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }
+  await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
   await scheduleDeleteAllChatsBatch(ctx, userId);
   return true;
@@ -846,6 +852,8 @@ export const saveChat = mutation({
         ...(args.sandboxType ? { sandbox_type: args.sandboxType } : {}),
         update_time: Date.now(),
       });
+
+      await createChatHistoryAccess(ctx, args.id, args.userId);
 
       if (projectId) {
         await ctx.db.patch(projectId, { updated_at: Date.now() });
@@ -1557,6 +1565,11 @@ export const moveChatToProject = mutation({
 
     if (args.projectId === null) {
       if (chat.project_id === undefined) return false;
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.syncChatFindingProject,
+        { chatId: args.chatId, userId: user.subject, cursor: null },
+      );
       await ctx.db.patch(chat._id, {
         project_id: undefined,
         agent_approval_grants: undefined,
@@ -1577,6 +1590,11 @@ export const moveChatToProject = mutation({
       });
     }
     if (chat.project_id === args.projectId) return false;
+    await ctx.scheduler.runAfter(0, internal.findings.syncChatFindingProject, {
+      chatId: args.chatId,
+      userId: user.subject,
+      cursor: null,
+    });
 
     const now = Date.now();
     await Promise.all([
@@ -1810,6 +1828,7 @@ export const replaceActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return "not_found" as const;
+    await assertUserCanAccessChatHistory(ctx, chat.user_id);
     if (
       chat.deletion_started_at !== undefined ||
       (await isUserDeletionFenced(ctx.db, chat.user_id))
@@ -1875,6 +1894,9 @@ export const setActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return "not_found" as const;
+    // Cleanup may detach a stopped run, but suspended users cannot attach or retry work.
+    if (args.triggerRunId !== null)
+      await assertUserCanAccessChatHistory(ctx, chat.user_id);
     if (
       args.triggerRunId !== null &&
       (await isUserDeletionFenced(ctx.db, chat.user_id))

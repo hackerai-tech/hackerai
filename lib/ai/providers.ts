@@ -9,6 +9,7 @@ import {
   DEEPSEEK_1017_CANONICAL_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
+import { withOpenRouterStreamErrorContext } from "./openrouter-stream-error-context";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
   abliteration,
@@ -1320,13 +1321,15 @@ export const getOpenRouterProviderRoutingForModel = (
 };
 
 const buildProviderMap = (
-  or: OpenRouterInstance,
+  provider: OpenRouterInstance,
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
-) =>
-  ({
+) => {
+  const or = (id: Parameters<OpenRouterInstance>[0]) =>
+    withOpenRouterStreamErrorContext(provider(id));
+  return {
     [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
@@ -1362,7 +1365,8 @@ const buildProviderMap = (
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
-  }) as Record<string, any>;
+  } as Record<string, any>;
+};
 
 const baseProviders: ReturnType<typeof buildProviderMap> &
   Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {
@@ -1544,7 +1548,7 @@ export function resolveAgentTierToProviderKey(
     case "hackerai-pro":
       return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
-      return "model-glm-5.3";
+      return "model-grok-4.6";
   }
 }
 

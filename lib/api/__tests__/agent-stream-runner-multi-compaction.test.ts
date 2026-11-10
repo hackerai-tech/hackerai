@@ -1,3 +1,4 @@
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
@@ -227,6 +228,30 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each([false, true])(
+    "keeps Max Grok and recovery models with direct vision=%s",
+    (directGlmVisionEnabled) => {
+      for (const modelName of [
+        "model-grok-4.6",
+        "model-deepseek-v4.1-flash-1017-pro",
+        "model-kimi-k3",
+        "model-abliterated",
+      ]) {
+        expect(
+          resolveAgentModelForImageToolResults(
+            modelName,
+            "agent",
+            true,
+            "hackerai-max",
+            false,
+            directGlmVisionEnabled,
+            "ultra",
+          ),
+        ).toBe(modelName);
+      }
+    },
+  );
+
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "keeps paid %s Standard on native GLM through image tool results",
     (subscription) => {
@@ -1229,11 +1254,13 @@ describe("createAgentStream repeated compaction", () => {
           doGenerate: jest.fn(),
           doStream,
         };
+        const recordModelCall = jest.fn();
         let handoffReadCount = 0;
         const stream = (await createAgentStream(
           modelName,
           createTestStreamContext({
             mode,
+            selectedModelOverride: mode === "agent" ? "hackerai-max" : "auto",
             platformAuthorized: authorized,
             getBrowserHandoffNotes: async () => [
               {
@@ -1250,7 +1277,7 @@ describe("createAgentStream repeated compaction", () => {
                 : []),
             ],
             trackedProvider: { languageModel: () => model },
-            usageTracker: {},
+            usageTracker: { recordModelCall },
             summarizationTracker: tracker,
           }) as any,
           state,
@@ -1259,6 +1286,10 @@ describe("createAgentStream repeated compaction", () => {
           { role: "user", content: "old evidence ".repeat(1000) },
         ];
         const prepared = await stream.prepareStep({ steps: [], messages: raw });
+        stream.experimental_onStepStart({
+          model: prepared.model ?? stream.model,
+        });
+        if (mode === "agent") expect(recordModelCall).not.toHaveBeenCalled();
         const request = (prepared.model ?? stream.model).doStream({
           prompt: [
             { role: "system", content: "system" },
@@ -1271,6 +1302,8 @@ describe("createAgentStream repeated compaction", () => {
         } else {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
+          expect(recordModelCall).toHaveBeenCalledTimes(2);
+
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
           expect(retryText).toContain("HANDOFF: keep my selected account.");
           expect(
@@ -1345,13 +1378,13 @@ describe("createAgentStream repeated compaction", () => {
       const baseline =
         selection === "hackerai-pro"
           ? "model-deepseek-v4.1-flash-1017-pro"
-          : "model-glm-5.3";
+          : "model-grok-4.6";
       const ids: Record<string, string> = {
         "model-deepseek-v4.1-flash-1017-pro":
           "deepseek/deepseek-v4.1-flash-1017",
         "model-abliterated": "abliterated-model-large-flash",
         "model-abliterated-large-v2": "abliterated-model-large-flash",
-        "model-glm-5.3": "z-ai/glm-5.3",
+        "model-grok-4.6": "x-ai/grok-4.6",
       };
       const stream = (await createAgentStream(
         "model-abliterated",
@@ -3048,6 +3081,50 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
+    ["agent", "pro", "auto", true],
+    ["agent", "pro-plus", undefined, true],
+    ["agent", "ultra", "auto", true],
+    ["agent", "free", "auto", false],
+    ["ask", "pro", "auto", false],
+    ["agent", "pro", "hackerai-standard", false],
+    ["agent", "pro", "hackerai-pro", false],
+    ["agent", "ultra", "hackerai-max", false],
+  ])(
+    "scopes max DeepSeek reasoning to paid Auto Agent: %s/%s/%s",
+    async (mode, subscription, selectedModelOverride, expected) => {
+      const stream = (await createAgentStream(
+        "model-deepseek-v4-flash-vision-pro",
+        createTestStreamContext({
+          mode,
+          subscription,
+          selectedModelOverride,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Say hello")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      )) as any;
+      await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "Say hello" }],
+      });
+      expect(mockBuildProviderOptions).toHaveBeenCalled();
+      for (const call of mockBuildProviderOptions.mock.calls) {
+        expect(call).toEqual([
+          expect.anything(),
+          "user",
+          expect.any(String),
+          mode,
+          expect.objectContaining({ isPaidAutoAgentRequest: expected }),
+        ]);
+      }
+    },
+  );
+
+  it.each([
     ["ask", "free", true],
     ["ask", "pro", false],
     ["agent", "free", false],
@@ -3623,6 +3700,119 @@ describe("createAgentStream repeated compaction", () => {
         '"type":"image-data"',
       );
       expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+    },
+  );
+
+  it.each(["upload", "tool-result"])(
+    "preserves native Max Grok %s images through a continuation",
+    async (source) => {
+      const sdk = jest.requireActual("ai");
+      const wrap = jest.mocked(require("ai").wrapLanguageModel);
+      wrap.mockImplementation(sdk.wrapLanguageModel);
+      try {
+        jest
+          .requireMock("@/lib/chat/multimodal-tool-result-recovery")
+          .uiMessagesContainImageViewResult.mockImplementationOnce(
+            jest.requireActual("@/lib/chat/multimodal-tool-result-recovery")
+              .uiMessagesContainImageViewResult,
+          );
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const image = "data:image/png;base64,aW1hZ2U=";
+        const message: UIMessage =
+          source === "upload"
+            ? {
+                id: "max-image",
+                role: "user",
+                parts: [{ type: "file", mediaType: "image/png", url: image }],
+              }
+            : {
+                id: "max-image",
+                role: "assistant",
+                parts: [
+                  {
+                    type: "tool-file",
+                    toolCallId: "max-image-view",
+                    state: "output-available",
+                    input: { action: "view" },
+                    output: {
+                      action: "view",
+                      kind: "image",
+                      mediaType: "image/png",
+                      data: "aW1hZ2U=",
+                    },
+                  },
+                ],
+              };
+        const modelMessages: ModelMessage[] = [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Inspect this fixture" },
+              { type: "image", image },
+            ],
+          },
+        ];
+        jest
+          .requireMock("ai")
+          .convertToModelMessages.mockResolvedValueOnce(modelMessages);
+        const state = initAgentStreamState([message], {
+          usedTokens: 100,
+          maxTokens: 200_000,
+        });
+        const onProviderRequestStart = jest.fn();
+        const stream = (await createAgentStream(
+          "model-grok-4.6",
+          createTestStreamContext({
+            onProviderRequestStart,
+            subscription: "ultra",
+            selectedModelOverride: "hackerai-max",
+            directGlmVisionEnabled: true,
+            agentModelContextEnabled: true,
+            trackedProvider: {
+              languageModel: (name: string) => ({
+                specificationVersion: "v3",
+                provider: "test",
+                supportedUrls: {},
+                doGenerate: jest.fn(),
+                doStream: jest.fn(async () => ({
+                  stream: new ReadableStream({
+                    start(controller) {
+                      controller.close();
+                    },
+                  }),
+                })),
+                modelId: name === "model-grok-4.6" ? "x-ai/grok-4.6" : name,
+              }),
+            },
+            usageTracker: {},
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        const prepared = await stream.prepareStep({
+          steps: [],
+          stepNumber: 0,
+          messages: stream.messages,
+        });
+        expect(onProviderRequestStart).not.toHaveBeenCalled();
+        stream.experimental_onStepStart({ model: prepared.model });
+        expect(onProviderRequestStart).not.toHaveBeenCalled();
+        await prepared.model.doStream({ prompt: prepared.messages });
+        expect(onProviderRequestStart).toHaveBeenCalledWith(
+          "x-ai/grok-4.6",
+          true,
+        );
+        expect(stream.model.modelId).toBe("x-ai/grok-4.6");
+        expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
+        expect(JSON.stringify(prepared.messages)).toContain(image);
+        expect(mockDescribeImage).not.toHaveBeenCalled();
+        expect(state.finalMessages).toEqual([message]);
+      } finally {
+        wrap.mockImplementation(({ model }: any) => model);
+      }
     },
   );
 
@@ -6418,4 +6608,29 @@ describe("createAgentStream repeated compaction", () => {
       ).toBeUndefined();
     },
   );
+});
+
+test("local loss preserves a manual stop reason through model abort and finish", async () => {
+  const controller = new AbortController();
+  const state = initAgentStreamState([], { usedTokens: 0, maxTokens: 128_000 });
+  const stream = (await createAgentStream(
+    "model-deepseek-v4-flash-0731",
+    createTestStreamContext({
+      abortController: controller,
+      modelName: "model-deepseek-v4-flash-0731",
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
+    }) as any,
+    state,
+  )) as any;
+  controller.abort(new LocalConnectionLostError());
+  await stream.onAbort({ steps: [] });
+  expect(state.streamFinishReason).toBe("local-connection-lost");
+  state.stoppedDueToElapsedTimeout = true;
+  await stream.onFinish({
+    finishReason: "stop",
+    usage: {},
+    response: { modelId: "test-model" },
+  });
+  expect(state.streamFinishReason).toBe("local-connection-lost");
 });

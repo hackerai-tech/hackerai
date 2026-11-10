@@ -31,6 +31,8 @@ export interface SandboxInfo {
 }
 
 export interface SandboxManager {
+  /** End this run when its local connection is lost; a successor requires a new run. */
+  stopOnLocalDisconnect?(onLost: () => void): () => void;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
@@ -700,6 +702,14 @@ export interface ToolContext {
     sessionName: string,
     signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
+  captureCaptchaVisionCommand?: (
+    command: string,
+    signal?: AbortSignal,
+  ) => Promise<{ result: Record<string, unknown> } | undefined>;
+  guardCaptchaVisionCommand?: (
+    command: string,
+  ) => Record<string, unknown> | undefined;
+  finishCaptchaVisionCommand?: (command: string, succeeded: boolean) => void;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

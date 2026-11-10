@@ -119,7 +119,12 @@ jest.mock("convex/react", () => {
       if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
       if (getFunctionName(query) === "browserHandoffs:getForUser")
         return mockBrowserHandoffSession;
-      if (getFunctionName(query) === "localSandbox:listConnections")
+      if (
+        [
+          "localSandbox:listConnectionDetails",
+          "localSandbox:getConnectionHeartbeats",
+        ].includes(getFunctionName(query))
+      )
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
         mockRestoredChat
@@ -1300,6 +1305,71 @@ describe("Chat Component Integration", () => {
       ).toBeUndefined();
     });
   });
+
+  it.each([true, false])(
+    "reconciles a completed answer past an omitted Resume prompt only when hidden=%s",
+    async (hidden) => {
+      const convexReact = require("convex/react");
+      mockRouteParams = { id: "resume-sync" };
+      mockDesktopState = { chatMode: "agent", sandboxPreference: "desktop" };
+      mockRestoredChat = {
+        id: "resume-sync",
+        default_model_slug: "agent",
+        sandbox_type: "desktop",
+      };
+      const user = {
+        id: "original",
+        role: "user",
+        parts: [{ type: "text", text: "Create my file" }],
+      };
+      const stopped = {
+        id: "stopped",
+        role: "assistant",
+        parts: [{ type: "text", text: "Saved checkpoint" }],
+      };
+      const completed = {
+        id: "completed",
+        role: "assistant",
+        parts: [{ type: "text", text: "DONE with the saved file" }],
+      };
+      mockUseChat.mockReturnValue({
+        ...mockUseChat(),
+        status: "ready",
+        messages: [
+          user,
+          stopped,
+          {
+            id: "resume-prompt",
+            role: "user",
+            parts: [{ type: "text", text: "Continue" }],
+            metadata: hidden ? { isAutoContinue: true } : undefined,
+          },
+        ],
+      });
+      convexReact.setMockPaginatedQueryResult({
+        results: [completed, stopped, user].map((m, i) => ({
+          ...m,
+          chat_id: "resume-sync",
+          created_at: 3000 - i * 1000,
+        })),
+        status: "Exhausted",
+        loadMore: jest.fn(),
+        isLoading: false,
+      });
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      await act(async () => {});
+      const completedApplied = mockSetMessages.mock.calls.some(
+        ([value]) =>
+          Array.isArray(value) &&
+          value.some((m: { id: string }) => m.id === "completed"),
+      );
+      expect(completedApplied).toBe(hidden);
+    },
+  );
 
   it("preserves streamed question restrictions without resurrecting cleared waits", async () => {
     mockRouteParams = { id: "wait-chat" };
@@ -2626,6 +2696,33 @@ describe("Chat Component Integration", () => {
       );
       expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 0");
       expect(mockChatHandlerArgs.sendQueuedMessage).toBeUndefined();
+    });
+
+    it("does not flush queued work when an interrupted local run reconnects", async () => {
+      mockRouteParams = { id: "stopped-local" };
+      mockRestoredChat = {
+        id: "stopped-local",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        finish_reason: "local-connection-lost",
+      };
+      mockLocalConnections = [];
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
     it("keeps an edited queued message pending, then resumes with updated text", async () => {

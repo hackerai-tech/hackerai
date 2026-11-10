@@ -437,6 +437,112 @@ function nearbyDispatchGroup(
     )
       return "synthetic_stackless_error";
     if (
+      exception.type === "Error" &&
+      exception.value.length === 2 &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length === 3
+    ) {
+      const current = new URL(properties.$current_url);
+      const chatDocumentPath = /^\/c\/[A-Za-z0-9_-]{1,128}\/?$/;
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        chatDocumentPath.test(current.pathname) &&
+        frames.every(
+          /** Interpret filenames transiently; stored source and in_app do not prove authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              chatDocumentPath.test(source.pathname) &&
+              source.pathname.replace(/\/$/, "") !==
+                current.pathname.replace(/\/$/, "")
+            );
+          },
+        )
+      )
+        return "chat_document_short_error";
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        frames.every(
+          /** Compare transient URLs exactly; never export their paths or infer authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              source.pathname === current.pathname
+            );
+          },
+        )
+      )
+        return "same_document_short_error";
+    }
+    // Reuse native context only for the observed retained five-to-seven-frame shape.
+    if (
+      exception.type === "RangeError" &&
+      exception.value === "Maximum call stack size exceeded." &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length >= 5 &&
+      frames.length <= 7
+    ) {
+      const current = new URL(properties.$current_url);
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        Array.from(frames).every((frame) => {
+          // Only compare bounded SDK filenames transiently; never export paths
+          // or infer script authorship from a document URL or resolved source.
+          if (
+            typeof frame?.filename !== "string" ||
+            frame.filename.length > 4096
+          )
+            return false;
+          const source = new URL(frame.filename);
+          return (
+            source.origin === current.origin &&
+            !source.username &&
+            !source.password &&
+            source.pathname === current.pathname
+          );
+        })
+      )
+        return "same_document_stack_overflow";
+    }
+    if (
+      exception.type === "DOMException" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 256 &&
+      (frames === undefined || (Array.isArray(frames) && frames.length === 0))
+    )
+      return "stackless_dom_exception";
+    if (
       exception.type === "SyntaxError" &&
       exception.mechanism.synthetic === false &&
       exception.mechanism.type === "generic" &&
@@ -450,6 +556,15 @@ function nearbyDispatchGroup(
       )
         return "stackless_unexpected_token_syntaxerror";
     }
+    if (
+      exception.type === "Error" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      // Coarse UTF-16 units, never an exact stored-byte or frame-source match.
+      exception.value.length > 256 &&
+      exception.value.length <= 4096
+    )
+      return "long_generic_error";
   } catch {
     /* Optional attribution cannot change the retained exception. */
   }

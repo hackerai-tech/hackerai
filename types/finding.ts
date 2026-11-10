@@ -27,6 +27,8 @@ export interface FindingSummary {
   chat_id: string;
   chat_title: string;
   created_at: number;
+  project_id?: string;
+  evidence_status?: import("@/lib/findings/evidence-status").FindingEvidenceStatus;
 }
 
 export interface FindingDetailRecord extends FindingSummary {
@@ -40,6 +42,7 @@ export interface FindingDetailRecord extends FindingSummary {
   evidence_refs?: string[];
   evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
   assumptions: string;
+  evidence_status_reason?: string;
   confidence?: "low" | "medium" | "high";
   confidence_rationale?: string;
   correction_history?: Array<{

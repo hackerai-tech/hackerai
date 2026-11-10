@@ -4740,6 +4740,151 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("download rejection boundary diagnostics", () => {
+    function downloadSandbox() {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x86_64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      sandbox.commands.run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }));
+      return sandbox;
+    }
+
+    it.each([
+      ["shellContext", "shell_context"],
+      ["detectHttpClient", "http_client"],
+      ["detectCurlCaps", "curl_capabilities"],
+      ["preparePowerShellCommand", "powershell_prepare"],
+    ])(
+      "retains the exact %s setup rejection without inventing a command result",
+      async (method, phase) => {
+        const sandbox = downloadSandbox();
+        if (method === "preparePowerShellCommand")
+          (sandbox as any).httpClient = "powershell";
+        const original = Object.freeze(new Error("private setup detail"));
+        jest.spyOn(sandbox as any, method).mockRejectedValueOnce(original);
+        const failure = await sandbox.files
+          .downloadFromUrl(
+            "https://private.example/secret?token=hidden",
+            "/tmp/private-file",
+          )
+          .catch((error) => error);
+        expect(failure).toBe(original);
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: phase,
+          attachment_download_attempt: 0,
+          attachment_download_result_state: "not_observed",
+          attachment_download_error_kind: "error",
+          attachment_download_result_context_present: false,
+        });
+        expect(context).not.toHaveProperty("attachment_download_exit_code");
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|secret|hidden|token/,
+        );
+      },
+    );
+
+    it("distinguishes a rejected command from a nonzero returned result", async () => {
+      const sandbox = downloadSandbox();
+      const original = Object.freeze(
+        new TypeError("private command rejection"),
+      );
+      (sandbox.commands.run as jest.Mock).mockRejectedValueOnce(original);
+      const failure = await sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      expect(failure).toBe(original);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(getAttachmentDownloadFailureContext(failure)).toMatchObject({
+        attachment_download_phase: "download_command",
+        attachment_download_attempt: 1,
+        attachment_download_result_state: "not_observed",
+        attachment_download_error_kind: "type_error",
+        attachment_download_result_context_present: false,
+      });
+      expect(getAttachmentDownloadFailureContext(failure)).not.toHaveProperty(
+        "attachment_download_exit_code",
+      );
+    });
+
+    it("does not reuse a prior attempt result when the next command rejects", async () => {
+      const sandbox = downloadSandbox();
+      const original = Object.freeze(new Error("private terminal rejection"));
+      (sandbox.commands.run as jest.Mock)
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "curl: (6) Could not resolve host",
+          exitCode: 6,
+        })
+        .mockRejectedValueOnce(original);
+      const failure = sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await failure).toBe(original);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      expect(getAttachmentDownloadFailureContext(original)).toMatchObject({
+        attachment_download_attempt: 2,
+        attachment_download_result_state: "not_observed",
+        attachment_download_phase: "download_command",
+        attachment_download_result_context_present: false,
+      });
+      expect(getAttachmentDownloadFailureContext(original)).not.toHaveProperty(
+        "attachment_download_exit_code",
+      );
+    });
+
+    it("preserves the original pre-aborted reason without dispatch", async () => {
+      const sandbox = downloadSandbox();
+      const signal = new AbortController();
+      const original = Object.freeze(new Error("private stop reason"));
+      signal.abort(original);
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file", {
+          signal: signal.signal,
+        }),
+      ).rejects.toBe(original);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(getAttachmentDownloadFailureContext(original)).toMatchObject({
+        attachment_download_phase: "entry",
+        attachment_download_attempt: 0,
+        attachment_download_result_state: "not_observed",
+      });
+    });
+
+    it("preserves primitive rejections without fabricating an error object", async () => {
+      const sandbox = downloadSandbox();
+      (sandbox.commands.run as jest.Mock).mockRejectedValueOnce(
+        "private rejection",
+      );
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file"),
+      ).rejects.toBe("private rejection");
+      expect(
+        getAttachmentDownloadFailureContext("private rejection"),
+      ).toBeUndefined();
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("git-bash on Windows", () => {
     // When the Windows remote runs git-bash (default since PR #346),
     // every file op must emit POSIX syntax with MSYS-form paths
@@ -5735,60 +5880,80 @@ describe("CentrifugoSandbox", () => {
       );
     });
 
-    it("redacts source and destination paths from direct download failures", async () => {
-      const { sandbox } = createWindowsBashSandbox();
-      const signedUrl =
-        "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
-        "a".repeat(160) +
-        "&X-Amz-Signature=secret";
-      const localPath = "C:/temp/hackerai-upload/private-image.png";
-      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
-        if (cmd.includes("target_dir_exists")) {
+    it.each([23, 28])(
+      "redacts source and destination paths from direct download failures (exit%s)",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const signedUrl =
+          "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
+          "a".repeat(160) +
+          "&X-Amz-Signature=secret";
+        const localPath = "C:/temp/hackerai-upload/private-image.png";
+        (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+          if (cmd.includes("target_dir_exists")) {
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          }
           return {
-            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
-            stderr: "",
-            exitCode: 0,
+            stdout: "",
+            stderr:
+              exitCode === 28
+                ? `curl: (28) Resolving timed out after 10000 milliseconds /opaque-object/private-image.png C:\\sandbox\\private-image.png`
+                : `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
+            exitCode,
           };
-        }
-        return {
-          stdout: "",
-          stderr: `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
-          exitCode: 23,
-        };
-      });
+        });
 
-      const failure = sandbox.files
-        .downloadFromUrl(signedUrl, localPath)
-        .catch((error: unknown) => error);
-      await jest.advanceTimersByTimeAsync(5_000);
-      const error = await failure;
+        const failure = sandbox.files
+          .downloadFromUrl(signedUrl, localPath)
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(5_000);
+        const error = await failure;
 
-      expect(error).toBeInstanceOf(Error);
-      expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
-        attachment_download_diagnostic_version: 1,
-        attachment_download_platform: "windows",
-        attachment_download_shell: "bash",
-        attachment_download_http_client: "curl",
-        attachment_download_exit_code: 23,
-        attachment_download_stderr_signal: "other",
-      });
-      const diagnostic = JSON.stringify(
-        getAttachmentDownloadFailureContext(error),
-      );
-      expect(diagnostic).not.toMatch(
-        /storage\.example|private-image|X-Amz|sandbox/,
-      );
-      expect((error as Error).message).toContain("source: [redacted-url]");
-      expect((error as Error).message).toContain(
-        "destination: [redacted-destination-path]",
-      );
-      expect((error as Error).message).not.toContain("storage.example.com");
-      expect((error as Error).message).not.toContain("opaque-object");
-      expect((error as Error).message).not.toContain("private-image.png");
-      expect((error as Error).message).not.toContain(localPath);
-      expect((error as Error).message).not.toContain("X-Amz-Credential");
-      expect((error as Error).message).not.toContain("X-Amz-Signature");
-    });
+        expect(error).toBeInstanceOf(Error);
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_diagnostic_version: 1,
+          attachment_download_platform: "windows",
+          attachment_download_shell: "bash",
+          attachment_download_http_client: "curl",
+          attachment_download_exit_code: exitCode,
+          attachment_download_stderr_signal: "other",
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_attempt: 3,
+          attachment_download_result_state: "nonzero",
+          attachment_download_result_context_present: true,
+        });
+        if (exitCode === 28)
+          expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+            attachment_download_timeout_version: 1,
+            attachment_download_timeout_hint: "resolving",
+          });
+        else
+          expect(getAttachmentDownloadFailureContext(error)).not.toHaveProperty(
+            "attachment_download_timeout_version",
+          );
+        const diagnostic = JSON.stringify(
+          getAttachmentDownloadFailureContext(error),
+        );
+        expect(diagnostic).not.toMatch(
+          /storage\.example|private-image|X-Amz|sandbox/,
+        );
+        expect((error as Error).message).toContain("source: [redacted-url]");
+        expect((error as Error).message).toContain(
+          "destination: [redacted-destination-path]",
+        );
+        expect((error as Error).message).not.toContain("storage.example.com");
+        expect((error as Error).message).not.toContain("opaque-object");
+        expect((error as Error).message).not.toContain("private-image.png");
+        expect((error as Error).message).not.toContain(localPath);
+        expect((error as Error).message).not.toContain("X-Amz-Credential");
+        expect((error as Error).message).not.toContain("X-Amz-Signature");
+      },
+    );
 
     it.each([
       { client: "curl", exitCode: 26, desktop: true, platform: "windows" },

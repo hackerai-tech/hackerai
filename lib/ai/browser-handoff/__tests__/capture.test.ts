@@ -37,6 +37,43 @@ const location = {
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
+it.each([true, false])(
+  "adds only the controlled bridge-failure tuple while preserving rejection (SDK throws: %s)",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 6,
+      stdout: JSON.stringify({
+        bridge_failure: [1, "early_close", "awaiting_frame", 1006],
+        private: "PRIVATE",
+      }),
+      stderr: "PRIVATE",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValue(original);
+    else sandbox.commands.run.mockResolvedValue(result);
+    const observe = jest.fn();
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else await expect(capture).rejects.toThrow();
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "frame_bridge",
+      capture_bridge_diagnostic_version: 1,
+      capture_bridge_failure: "early_close",
+      capture_bridge_phase: "awaiting_frame",
+      capture_bridge_close_code: 1006,
+    });
+    expect(JSON.stringify(observe.mock.calls[0][0])).not.toContain("PRIVATE");
+  },
+);
+
 it.each([
   [undefined, false],
   [1, true],
@@ -1242,3 +1279,104 @@ it.each([
     ).toBeUndefined();
   },
 );
+
+it("retains closed frame-decode context without exposing stdout or retrying", async () => {
+  const sandbox = fixture();
+  sandbox.commands.run.mockResolvedValueOnce({
+    exitCode: 0,
+    stdout: "{PRIVATE_INCOMPLETE",
+  });
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observed,
+    ),
+  ).rejects.toThrow();
+  expect(observed).toHaveBeenCalledWith(
+    expect.objectContaining({
+      capture_stage: "frame_decode",
+      capture_frame_decode_version: 1,
+      capture_frame_stdout_size: "lt1k",
+      capture_frame_stdout_shape: "object_prefix",
+      capture_frame_parse_error_kind: "syntax_error",
+    }),
+  );
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["", "empty", "empty"],
+  [" \n\t", "lt1k", "edge_whitespace"],
+  ["PRIVATE_TEXT", "lt1k", "other"],
+  ['{ "PRIVATE": }', "lt1k", "object_edges"],
+  ["{" + "x".repeat(1024), "1k_lt64k", "object_prefix"],
+  ["{" + "x".repeat(65536), "64k_lt1m", "object_prefix"],
+  ["{" + "x".repeat(1048576), "gte1m", "object_prefix"],
+  [undefined, "nonstring", "nonstring"],
+])(
+  "classifies malformed frame stdout by bounded size and edges (%#)",
+  async (stdout, size, shape) => {
+    const sandbox = fixture();
+    sandbox.commands.run.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: stdout as string,
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        1234,
+        observed,
+      ),
+    ).rejects.toThrow();
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_frame_decode_version: 1,
+      capture_frame_stdout_size: size,
+      capture_frame_stdout_shape: shape,
+      capture_frame_parse_error_kind: "syntax_error",
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("isolates a frame-decode observer failure and leaves valid frames free of diagnostics", async () => {
+  const sandbox = fixture();
+  sandbox.commands.run.mockResolvedValueOnce({
+    exitCode: 0,
+    stdout: "PRIVATE_TEXT",
+  });
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      () => {
+        throw new Error("PRIVATE_OBSERVER");
+      },
+    ),
+  ).rejects.toThrow("Browser preview disconnected");
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observed,
+    ),
+  ).resolves.toMatchObject({ width: 800, height: 600 });
+  expect(observed).not.toHaveBeenCalled();
+});

@@ -1,4 +1,5 @@
 import { getIdentifiedAnalyticsUserId } from "@/lib/analytics/client";
+import { buildErrorPropertiesBuilder } from "posthog-js/lib/src/posthog-exceptions";
 import {
   startUnhandledRejectionDiagnostics,
   getUnhandledRejectionDiagnostics,
@@ -6,6 +7,7 @@ import {
 import {
   enrichFrontendExceptionEvent,
   shouldDropExpectedFrontendException,
+  sanitizeFrontendExceptionUrlProperties,
 } from "../expected-frontend-exceptions";
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -31,6 +33,96 @@ function snapshot(exception: unknown = entry()) {
     ),
   );
 }
+const longErrorEntry = (value = "x".repeat(1108)) => ({
+  type: "Error",
+  value,
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  // Owned fixture only; stored resolved frames do not reconstruct client frames.
+  stacktrace: {
+    frames: [{ filename: "PRIVATE-fixture-source?token=canary", in_app: true }],
+  },
+});
+
+it("retains long generic Errors with private-safe nearby dispatch context and owner fencing", () => {
+  const dispatched = new ErrorEvent("error", {
+    message: "PRIVATE native message",
+    filename: `${location.origin}/PRIVATE-source?token=canary`,
+    error: new Error("PRIVATE error object"),
+    cancelable: true,
+  });
+  window.dispatchEvent(dispatched);
+  const exception = longErrorEntry("PRIVATE-".repeat(140));
+  const list = [exception];
+  const event = { event: "$exception", properties: { $exception_list: list } };
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(event);
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  const context = snapshot(exception);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_group: "long_generic_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+    hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    hackerai_nearby_dispatch_error_latest_object: true,
+  });
+  expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|token=/);
+  expect(dispatched.defaultPrevented).toBe(false);
+  identity.mockReturnValue("another-owner");
+  expect(snapshot(exception)).toEqual({});
+});
+
+it.each([
+  ["lower included bound", "x".repeat(257)],
+  ["upper included bound", "x".repeat(4096)],
+  ["1108 UTF8 bytes of BMP text", "界".repeat(369) + "x"],
+  ["1108 UTF8 bytes of astral text", "🚀".repeat(277)],
+])(
+  "observes long Error %s without requiring a particular client stack",
+  (_, value) => {
+    const exception = longErrorEntry(value);
+    Reflect.deleteProperty(exception, "stacktrace");
+    expect(snapshot(exception).hackerai_nearby_dispatch_group).toBe(
+      "long_generic_error",
+    );
+  },
+);
+
+it.each([256, 4097])(
+  "does not widen long Error context to %i code units",
+  (length) => {
+    expect(snapshot(longErrorEntry("x".repeat(length)))).toEqual({});
+  },
+);
+
+it("keeps the long Error selector scoped to one retained generic nonsynthetic error", () => {
+  const exception = longErrorEntry();
+  for (const candidate of [
+    { ...exception, type: "TypeError" },
+    { ...exception, type: "DOMException" },
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    { ...exception, mechanism: { ...exception.mechanism, type: "onerror" } },
+    { ...exception, value: undefined },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+  expect(
+    snapshot({
+      ...exception,
+      mechanism: { ...exception.mechanism, synthetic: true },
+      stacktrace: { frames: [] },
+    }).hackerai_nearby_dispatch_group,
+  ).toBe("synthetic_stackless_error");
+});
 beforeEach(() => {
   identity.mockReturnValue("fixture-owner");
   now = 10000;
@@ -444,6 +536,81 @@ const syntaxEntry = () => ({
   stacktrace: { frames: [] as unknown[] },
 });
 
+it.each([false, true])(
+  "retains a stackless DOMException with private-safe nearby context (frames absent: %s)",
+  (absent) => {
+    const exception = {
+      type: "DOMException",
+      value: "PRIVATE retained reason",
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+      stacktrace: { frames: [] as unknown[] },
+    };
+    if (absent) Reflect.deleteProperty(exception, "stacktrace");
+    const dispatched = new ErrorEvent("error", {
+      message: "PRIVATE native reason",
+      filename: `${location.origin}/PRIVATE-path?token=canary`,
+      error: new DOMException("PRIVATE object reason"),
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const list = [exception];
+    const event = {
+      event: "$exception",
+      properties: { $exception_list: list },
+    };
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    const context = snapshot(exception);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_version: 1,
+      hackerai_nearby_dispatch_group: "stackless_dom_exception",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+      hackerai_nearby_dispatch_error_latest_object: true,
+    });
+    expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|token=/);
+    expect(dispatched.defaultPrevented).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(snapshot(exception)).toEqual({});
+  },
+);
+
+it("limits stackless DOMException context to the retained bounded mechanism", () => {
+  const exception = {
+    type: "DOMException",
+    value: "x".repeat(256),
+    mechanism: { handled: false, synthetic: false, type: "generic" },
+    stacktrace: { frames: [] as unknown[] },
+  };
+  expect(snapshot(exception).hackerai_nearby_dispatch_group).toBe(
+    "stackless_dom_exception",
+  );
+  for (const candidate of [
+    { ...exception, type: "Error" },
+    { ...exception, type: "AbortError" },
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    { ...exception, mechanism: { ...exception.mechanism, type: "onerror" } },
+    { ...exception, value: "x".repeat(257) },
+    { ...exception, value: undefined },
+    { ...exception, stacktrace: { frames: [{}] } },
+    { ...exception, stacktrace: { frames: null } },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+});
+
 const anonymousReferenceEntry = () => ({
   type: "ReferenceError",
   value: "PRIVATE_identifier is not defined",
@@ -688,3 +855,478 @@ it("keeps unexpected-token attribution within the retained shape and active owne
     ),
   ).toBe(false);
 });
+
+const chatDocumentEntry = () => ({
+  type: "Error",
+  value: "xy",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: ["private-a", "private-b", "private-a"].map((id) => ({
+      filename: `https://hackerai.co/c/${id}?private-query#private-fragment`,
+      in_app: true,
+      lineno: 199,
+      colno: 338,
+    })),
+  },
+});
+
+function chatDocumentEvent(exception: unknown = chatDocumentEntry()) {
+  return {
+    event: "$exception",
+    properties: {
+      $current_url:
+        "https://hackerai.co/c/current?private-query#private-fragment",
+      $exception_list: [exception],
+    },
+  };
+}
+
+/** Privacy assertions inspect added metadata without recapturing the retained exception. */
+function nearbyProperties(event: { properties: Record<string, unknown> }) {
+  return Object.fromEntries(
+    Object.entries(event.properties).filter(([key]) =>
+      key.startsWith("hackerai_nearby_dispatch_"),
+    ),
+  );
+}
+
+const sameDocumentEntry = (path = "/document") => ({
+  type: "Error",
+  value: "xy",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: Array.from({ length: 3 }, () => ({
+      filename: `https://qa.invalid${path}?PRIVATE-frame#PRIVATE-fragment`,
+      in_app: true,
+    })),
+  },
+});
+
+function sameDocumentEvent(exception: unknown = sameDocumentEntry()) {
+  return {
+    event: "$exception",
+    properties: {
+      $current_url:
+        "https://qa.invalid/document?PRIVATE-query#PRIVATE-fragment",
+      $exception_list: [exception],
+    },
+  };
+}
+
+const documentOverflowEntry = (frameCount = 5) => ({
+  ...sameDocumentEntry(),
+  type: "RangeError",
+  value: "Maximum call stack size exceeded.",
+  stacktrace: {
+    frames: Array.from({ length: frameCount }, () => ({
+      filename: "https://qa.invalid/document?PRIVATE-frame#PRIVATE-fragment",
+      in_app: true,
+    })),
+  },
+});
+
+it("enriches the actual SDK's parsed same-document RangeError without recapturing it", () => {
+  const error = new RangeError("Maximum call stack size exceeded.");
+  error.stack = Array.from(
+    { length: 7 },
+    (_, index) =>
+      `ownedFixture@https://qa.invalid/document?PRIVATE-frame:${index + 1}:1`,
+  ).join("\n");
+  const properties = buildErrorPropertiesBuilder().buildFromUnknown(error, {
+    mechanism: { handled: false, type: "generic" },
+  });
+  const list = properties.$exception_list;
+  const event = {
+    event: "$exception",
+    properties: {
+      ...properties,
+      $current_url: "https://qa.invalid/document?PRIVATE-query",
+    },
+  };
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(
+    sanitizeFrontendExceptionUrlProperties(event),
+  );
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(nearbyProperties(enriched)).toMatchObject({
+    hackerai_nearby_dispatch_group: "same_document_stack_overflow",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 0,
+  });
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  expect(JSON.stringify(nearbyProperties(enriched))).not.toMatch(
+    /PRIVATE|qa\.invalid|Maximum/,
+  );
+});
+
+it.each([5, 6, 7])(
+  "observes retained same-document stack overflows with %i frames without changing errors",
+  (count) => {
+    const dispatched = new ErrorEvent("error", {
+      filename: `${location.origin}/PRIVATE-source?token=canary`,
+      message: "PRIVATE native message",
+      error: new RangeError("PRIVATE error object"),
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const event = sameDocumentEvent(documentOverflowEntry(count));
+    const list = event.properties.$exception_list;
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(
+      sanitizeFrontendExceptionUrlProperties(event),
+    );
+    const context = nearbyProperties(enriched);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_group: "same_document_stack_overflow",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    });
+    expect(JSON.stringify(context)).not.toMatch(
+      /PRIVATE|canary|qa\.invalid|\/document|Maximum|token=/,
+    );
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    expect(dispatched.defaultPrevented).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual(
+      {},
+    );
+  },
+);
+
+it("keeps stack-overflow context within the evidenced singleton mechanism and frame bounds", () => {
+  const entry = documentOverflowEntry();
+  for (const candidate of [
+    documentOverflowEntry(4),
+    documentOverflowEntry(8),
+    { ...entry, stacktrace: { frames: new Array(5) } },
+    { ...entry, type: "Error" },
+    { ...entry, type: "InternalError" },
+    { ...entry, value: "Maximum call stack size exceeded" },
+    { ...entry, value: "Maximum call stack size exceeded. " },
+    { ...entry, value: "PRIVATE Maximum call stack size exceeded." },
+    { ...entry, mechanism: { ...entry.mechanism, handled: true } },
+    { ...entry, mechanism: { ...entry.mechanism, synthetic: true } },
+    { ...entry, mechanism: { handled: false, type: "generic" } },
+    { ...entry, mechanism: { ...entry.mechanism, type: "other" } },
+    {
+      ...entry,
+      stacktrace: {
+        frames: entry.stacktrace.frames.map(({ filename }) => ({
+          source: filename,
+        })),
+      },
+    },
+  ])
+    expect(
+      nearbyProperties(
+        enrichFrontendExceptionEvent(sameDocumentEvent(candidate)),
+      ),
+    ).toEqual({});
+  const event = sameDocumentEvent(entry);
+  event.properties.$exception_list.push(entry);
+  expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+});
+
+it.each([
+  "https://other.invalid/document",
+  "https://qa.invalid:444/document",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  "https://qa.invalid/document/",
+  "https://qa.invalid/other-document",
+  "https://qa.invalid/_next/static/chunks/PRIVATE.js",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+  "<anonymous>",
+])(
+  "checks every stack-overflow frame before associating nearby context: %s",
+  (filename) => {
+    const entry = documentOverflowEntry(7);
+    entry.stacktrace.frames[6].filename = filename;
+    expect(
+      nearbyProperties(enrichFrontendExceptionEvent(sameDocumentEvent(entry))),
+    ).toEqual({});
+  },
+);
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+])("rejects an unsafe stack-overflow document %s", (current) => {
+  const event = sameDocumentEvent(documentOverflowEntry());
+  expect(
+    nearbyProperties(
+      enrichFrontendExceptionEvent({
+        ...event,
+        properties: { ...event.properties, $current_url: current },
+      }),
+    ),
+  ).toEqual({});
+});
+
+it.each(["/document", "/c/current"])(
+  "retains same-document short Errors on %s with bounded private-safe native context",
+  (path) => {
+    const dispatched = new ErrorEvent("error", {
+      filename: `${location.origin}/PRIVATE-source?token=canary`,
+      message: "PRIVATE native message",
+      error: new Error("PRIVATE error object"),
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const event = sameDocumentEvent(sameDocumentEntry(path));
+    event.properties.$current_url = `https://qa.invalid${path}?PRIVATE-query`;
+    const list = event.properties.$exception_list;
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(
+      sanitizeFrontendExceptionUrlProperties(event),
+    );
+    const context = nearbyProperties(enriched);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_group: "same_document_short_error",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+      hackerai_nearby_dispatch_error_latest_object: true,
+    });
+    expect(JSON.stringify(context)).not.toMatch(
+      /PRIVATE|canary|qa\.invalid|\/document|token=|xy/,
+    );
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    expect(dispatched.defaultPrevented).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual(
+      {},
+    );
+  },
+);
+
+it("limits same-document context to the retained short singleton mechanism", () => {
+  const entry = sameDocumentEntry();
+  for (const candidate of [
+    { ...entry, value: "x" },
+    { ...entry, value: "xyz" },
+    { ...entry, type: "TypeError" },
+    { ...entry, mechanism: { ...entry.mechanism, handled: true } },
+    { ...entry, mechanism: { ...entry.mechanism, synthetic: true } },
+    { ...entry, mechanism: { handled: false, type: "generic" } },
+    { ...entry, mechanism: { ...entry.mechanism, type: "other" } },
+    { ...entry, stacktrace: { frames: entry.stacktrace.frames.slice(0, 2) } },
+    {
+      ...entry,
+      stacktrace: {
+        frames: [...entry.stacktrace.frames, entry.stacktrace.frames[0]],
+      },
+    },
+    {
+      ...entry,
+      stacktrace: {
+        frames: entry.stacktrace.frames.map(({ filename }) => ({
+          source: filename,
+        })),
+      },
+    },
+  ])
+    expect(
+      nearbyProperties(
+        enrichFrontendExceptionEvent(sameDocumentEvent(candidate)),
+      ),
+    ).toEqual({});
+  const event = sameDocumentEvent();
+  event.properties.$exception_list.push(entry);
+  expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+});
+
+it.each([
+  "https://other.invalid/document",
+  "https://qa.invalid.other.example/document",
+  "https://qa.invalid:444/document",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  "https://qa.invalid/document/",
+  "https://qa.invalid/other-document",
+  "https://qa.invalid/_next/static/chunks/PRIVATE.js",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+  "<anonymous>",
+])("rejects a mismatched or unsafe same-document filename %s", (filename) => {
+  const entry = sameDocumentEntry();
+  entry.stacktrace.frames[0].filename = filename;
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(sameDocumentEvent(entry))),
+  ).toEqual({});
+});
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+])("rejects an unsafe current document %s", (current) => {
+  const event = sameDocumentEvent();
+  expect(
+    nearbyProperties(
+      enrichFrontendExceptionEvent({
+        ...event,
+        properties: { ...event.properties, $current_url: current },
+      }),
+    ),
+  ).toEqual({});
+});
+
+it("reuses nearby native context for short errors with other chat-document frames", () => {
+  window.dispatchEvent(
+    new ErrorEvent("error", {
+      filename: `${location.origin}/private-error-source?private-token`,
+      error: new Error("private-error-message"),
+      lineno: 12,
+      colno: 4,
+    }),
+  );
+  const event = chatDocumentEvent();
+  const exceptions = event.properties.$exception_list;
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(
+    sanitizeFrontendExceptionUrlProperties(event),
+  );
+  const context = nearbyProperties(enriched);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_version: 1,
+    hackerai_nearby_dispatch_group: "chat_document_short_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 1,
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+  });
+  expect(JSON.stringify(context)).not.toMatch(/private|hackerai\.co|\/c\/|xy/);
+  expect(enriched.properties.$exception_list).toBe(exceptions);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  identity.mockReturnValue("another-owner");
+  expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual({});
+});
+
+type ChatDocumentFixture = ReturnType<typeof chatDocumentEntry>;
+const otherChatErrorShapes: Array<
+  [string, (entry: ChatDocumentFixture) => unknown]
+> = [
+  ["a longer error", (entry) => ({ ...entry, value: "xyz" })],
+  ["a one-unit error", (entry) => ({ ...entry, value: "x" })],
+  ["a different error class", (entry) => ({ ...entry, type: "TypeError" })],
+  [
+    "a handled error",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, handled: true } }),
+  ],
+  [
+    "a synthetic error",
+    (entry) => ({
+      ...entry,
+      mechanism: { ...entry.mechanism, synthetic: true },
+    }),
+  ],
+  [
+    "a different mechanism",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, type: "other" } }),
+  ],
+  [
+    "two frames",
+    (entry) => ({
+      ...entry,
+      stacktrace: { frames: entry.stacktrace.frames.slice(0, 2) },
+    }),
+  ],
+  [
+    "four frames",
+    (entry) => ({
+      ...entry,
+      stacktrace: {
+        frames: [...entry.stacktrace.frames, entry.stacktrace.frames[0]],
+      },
+    }),
+  ],
+  ...[
+    [
+      "the current document with another query",
+      "https://hackerai.co/c/current?other#fragment",
+    ],
+    [
+      "the current document with a trailing slash",
+      "https://hackerai.co/c/current/",
+    ],
+    ["a different origin", "https://other.example/c/private-a"],
+    ["an origin-prefix spoof", "https://hackerai.co.other.example/c/private-a"],
+    [
+      "a credential-bearing source",
+      "https://private-user@hackerai.co/c/private-a",
+    ],
+    [
+      "a generated script",
+      "https://hackerai.co/_next/static/chunks/private.js",
+    ],
+    ["an empty chat path", "https://hackerai.co/c/"],
+    ["a nested chat path", "https://hackerai.co/c/private-a/extra"],
+    ["an oversized filename", `https://hackerai.co/c/${"a".repeat(4096)}`],
+    ["an anonymous filename", "<anonymous>"],
+  ].map(
+    ([label, filename]): [string, (entry: ChatDocumentFixture) => unknown] => [
+      label,
+      (entry) => ({
+        ...entry,
+        stacktrace: {
+          frames: [
+            { ...entry.stacktrace.frames[0], filename },
+            ...entry.stacktrace.frames.slice(1),
+          ],
+        },
+      }),
+    ],
+  ),
+  [
+    "server-normalized source instead of browser filename",
+    (entry) => ({
+      ...entry,
+      stacktrace: {
+        frames: entry.stacktrace.frames.map(({ filename, ...frame }) => ({
+          ...frame,
+          source: filename,
+        })),
+      },
+    }),
+  ],
+];
+
+it.each(otherChatErrorShapes)(
+  "does not expand nearby context to %s",
+  (_label, change) => {
+    const event = chatDocumentEvent(change(chatDocumentEntry()));
+    expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+  },
+);
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://hackerai.co/c/current",
+  "https://hackerai.co/share/current",
+  "https://private-user@hackerai.co/c/current",
+  `https://hackerai.co/c/${"a".repeat(4096)}`,
+])(
+  "omits the group when the current document is not eligible (%s)",
+  (current) => {
+    const event = chatDocumentEvent();
+    const enriched = enrichFrontendExceptionEvent({
+      ...event,
+      properties: { ...event.properties, $current_url: current },
+    });
+    expect(nearbyProperties(enriched)).toEqual({});
+  },
+);

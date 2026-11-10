@@ -18,6 +18,10 @@ import {
 } from "@/lib/experiments/agent-model-context";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
+import {
+  LocalConnectionLostError,
+  LOCAL_CONNECTION_LOST_FINISH_REASON,
+} from "@/lib/chat/local-connection-stop";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
@@ -339,7 +343,8 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Promote only the Max text route; preserve explicit recovery models.
+  // Grok Max handles images natively. Preserve the legacy GLM promotion for
+  // restored runs and keep explicitly selected recovery models unchanged.
   if (selectedModelOverride === "hackerai-max") {
     return modelName === "model-glm-5.3" ? DEEPSEEK_1017_MODEL_KEY : modelName;
   }
@@ -864,8 +869,11 @@ export type AgentStreamContext = {
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
-  /** Called after step preparation, immediately before the actual provider call. */
-  onProviderRequestStart?: (configuredModel: string) => void;
+  /** Called at the provider adapter for Max, or before the prepared step otherwise. */
+  onProviderRequestStart?: (
+    configuredModel: string,
+    hasImageInputs?: boolean,
+  ) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
   /** Content-free lifecycle and delta widths for the worker's sampled memory log. */
@@ -1131,18 +1139,33 @@ export async function createAgentStream(
     if (recovered) unproductiveCompactionCount = 0;
   };
   let toolHistoryRepairReported = false;
+  // Max counts retries beneath recovery middleware, including rejected adapter calls.
+  const countMaxAdapterCalls = ctx.selectedModelOverride === "hackerai-max";
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
     const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
-      const historyModel = ctx.chatLogger
-        ? withProviderModelHistory(attemptModel, {
-            configured: activeStepModelName,
-            generationStep: stepIndex + 1,
-            onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
-          })
-        : attemptModel;
+      const historyModel =
+        ctx.chatLogger || countMaxAdapterCalls
+          ? withProviderModelHistory(attemptModel, {
+              configured: activeStepModelName,
+              generationStep: stepIndex + 1,
+              onStart: (entry) => {
+                ctx.chatLogger?.recordProviderModelCall(entry);
+                if (countMaxAdapterCalls && !abortSignal.aborted) {
+                  // Below recovery middleware: each real adapter call counts,
+                  // including rejected requests and compacted same-step retries.
+                  ctx.usageTracker.recordModelCall?.();
+                  ctx.onProviderRequestStart?.(
+                    entry.requested,
+                    streamHasImageViewResults ||
+                      uiMessagesContainImageAttachment(state.finalMessages),
+                  );
+                }
+              },
+            })
+          : attemptModel;
       const telemetryModel =
         ctx.abliteratedTelemetry?.wrap(
           historyModel,
@@ -1510,6 +1533,10 @@ export async function createAgentStream(
         requestedModelSlug,
         selectedModelOverride: ctx.selectedModelOverride,
         cacheSessionId,
+        isPaidAutoAgentRequest:
+          ctx.mode === "agent" &&
+          ctx.subscription !== "free" &&
+          (!ctx.selectedModelOverride || ctx.selectedModelOverride === "auto"),
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
@@ -2203,11 +2230,13 @@ export async function createAgentStream(
           $process_person_profile: false,
         });
       }
-      if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
+      if (!abortSignal.aborted && !countMaxAdapterCalls)
+        ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
-      if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
+      if (!abortSignal.aborted && !countMaxAdapterCalls)
+        ctx.onProviderRequestStart?.(model.modelId);
     },
     experimental_onToolCallStart: () => {
       reportMemoryActivity({ operation: "tool_execution" });
@@ -3327,7 +3356,11 @@ export async function createAgentStream(
           toolCallCount: state.postSummarizationToolCallCount,
         });
       }
-      if (hardReason !== null) {
+      if (
+        ctx.abortController.signal.reason instanceof LocalConnectionLostError
+      ) {
+        state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      } else if (hardReason !== null) {
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
@@ -3573,6 +3606,11 @@ export async function createAgentStream(
     },
 
     onAbort: async ({ steps }) => {
+      if (
+        ctx.abortController.signal.reason instanceof LocalConnectionLostError
+      ) {
+        state.streamFinishReason = LOCAL_CONNECTION_LOST_FINISH_REASON;
+      }
       recordAssistantContentLoopAbortState(steps);
       await refundProviderContentBlockedIfSettled({
         error: state.providerError,

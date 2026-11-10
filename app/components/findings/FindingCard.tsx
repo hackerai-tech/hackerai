@@ -2,7 +2,9 @@
 
 import { ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { FindingEvidenceStatus } from "@/lib/findings/evidence-status";
 import type { FindingSeverity } from "@/types/finding";
+import { FindingEvidenceBadge } from "./FindingEvidenceBadge";
 
 const severityClasses: Record<FindingSeverity, string> = {
   critical: "border-red-500/30 bg-red-500/10 text-red-500",
@@ -31,6 +33,7 @@ export function FindingCard({
   target,
   severity,
   cvssScore,
+  evidenceStatus,
   onClick,
   className,
 }: {
@@ -38,6 +41,11 @@ export function FindingCard({
   target: string;
   severity: FindingSeverity;
   cvssScore: number;
+  /**
+   * `undefined` hides the badge (persisted record unknown); `null` means the
+   * persisted record has no evidence basis and renders "Not recorded".
+   */
+  evidenceStatus?: FindingEvidenceStatus | null;
   onClick?: () => void;
   className?: string;
 }) {
@@ -58,6 +66,11 @@ export function FindingCard({
         <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
           {target}
         </div>
+        {evidenceStatus !== undefined ? (
+          <div className="mt-1.5 flex min-w-0 flex-wrap">
+            <FindingEvidenceBadge status={evidenceStatus ?? undefined} />
+          </div>
+        ) : null}
       </div>
       <div
         className={cn(

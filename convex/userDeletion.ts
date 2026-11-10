@@ -14,6 +14,7 @@ export const USER_DELETION_TABLE_POLICY = {
   delete: [
     "projects",
     "chats",
+    "chat_history_access",
     "chat_summaries",
     "messages",
     "files",
@@ -31,6 +32,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
+    "local_sandbox_heartbeats",
     "cancellation_reason_details",
     "current_cancellation_reasons",
     "research_run_members",
@@ -413,9 +415,9 @@ async function cleanupUserDataForUser(
     messages.push(message);
   }
 
-  // Chat cleanup can require both an indexed summary read and a legacy latest
-  // summary lookup for each chat, so leave room for both.
-  const chatLimit = Math.floor((budget.remaining - 1) / 3);
+  // Limit candidates to leave room for dependent lookups; every read also
+  // checks the shared budget.
+  const chatLimit = Math.floor((budget.remaining - 1) / 4);
   const chatsBatch = await collectByIndexBatch<Doc<"chats">>(
     ctx,
     budget,
@@ -486,6 +488,11 @@ async function cleanupUserDataForUser(
   const localSandboxConnectionsBatch = await collectByIndexBatch<
     Doc<"local_sandbox_connections">
   >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const localSandboxHeartbeatsBatch = await collectByIndexBatch<
+    Doc<"local_sandbox_heartbeats">
+  >(ctx, budget, "local_sandbox_heartbeats", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
@@ -571,6 +578,7 @@ async function cleanupUserDataForUser(
     messagesBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
+    localSandboxHeartbeatsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     subscriptionPausesBatch,
@@ -603,6 +611,22 @@ async function cleanupUserDataForUser(
   const subagentEvents = subagentEventsBatch.docs;
   const subagentWorkItems = subagentWorkItemsBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
+
+  // Check dependent tables before access reads can consume their scan reserve.
+  // Otherwise near-limit chats can repeatedly block all cleanup progress.
+  const chatAccess = new Map<string, Doc<"chat_history_access">>();
+  for (const chat of chats) {
+    if (!canReadDocument(budget)) {
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+    const access = await ctx.db
+      .query("chat_history_access")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+      .unique();
+    chargeRead(budget, access);
+    if (access) chatAccess.set(chat.id, access);
+  }
 
   const chatsReadyToDelete =
     messagesBatch.hasMore ||
@@ -661,6 +685,13 @@ async function cleanupUserDataForUser(
     captchaLimitsBatch.docs,
     mode,
   );
+  await deleteDocs(
+    ctx,
+    stats,
+    "chat_history_access",
+    chatsReadyToDelete.map((chat) => chatAccess.get(chat.id)),
+    mode,
+  );
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
@@ -687,6 +718,13 @@ async function cleanupUserDataForUser(
     stats,
     "local_sandbox_connections",
     localSandboxConnections,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "local_sandbox_heartbeats",
+    localSandboxHeartbeatsBatch.docs,
     mode,
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);

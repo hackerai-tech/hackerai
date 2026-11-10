@@ -7,7 +7,11 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
-import { browserBridgeCommand } from "./bridge-program";
+import {
+  browserBridgeCommand,
+  browserBridgeFailureContext,
+  type BrowserBridgeFailureContext,
+} from "./bridge-program";
 import {
   browserDaemonCommand,
   BROWSER_DAEMON_PRECONDITION_REASONS,
@@ -287,7 +291,68 @@ export async function stopBrowserRelays(
     throw new BrowserPreviewUnavailable("disconnected");
 }
 
-export type BrowserCaptureFailureContext = {
+type FrameDecodeDiagnostic = {
+  capture_frame_decode_version?: 1;
+  capture_frame_stdout_size?:
+    "empty" | "lt1k" | "1k_lt64k" | "64k_lt1m" | "gte1m" | "nonstring";
+  capture_frame_stdout_shape?:
+    | "empty"
+    | "edge_whitespace"
+    | "object_edges"
+    | "object_prefix"
+    | "other"
+    | "nonstring";
+  capture_frame_parse_error_kind?: "syntax_error" | "other";
+};
+
+/** Inspect only length and two 64-unit edges; never retain frame contents. */
+function frameDecodeDiagnostic(
+  stdout: unknown,
+  error: unknown,
+): FrameDecodeDiagnostic {
+  const result: FrameDecodeDiagnostic = {
+    capture_frame_decode_version: 1,
+    capture_frame_parse_error_kind:
+      error instanceof SyntaxError ? "syntax_error" : "other",
+  };
+  if (typeof stdout !== "string")
+    return {
+      ...result,
+      capture_frame_stdout_size: "nonstring",
+      capture_frame_stdout_shape: "nonstring",
+    };
+  const length = stdout.length;
+  const first = stdout.slice(0, 64).trimStart();
+  const last = stdout.slice(-64).trimEnd();
+  return {
+    ...result,
+    capture_frame_stdout_size:
+      length === 0
+        ? "empty"
+        : length < 1024
+          ? "lt1k"
+          : length < 65536
+            ? "1k_lt64k"
+            : length < 1048576
+              ? "64k_lt1m"
+              : "gte1m",
+    capture_frame_stdout_shape:
+      length === 0
+        ? "empty"
+        : !first && !last
+          ? "edge_whitespace"
+          : first.startsWith("{")
+            ? last.endsWith("}")
+              ? "object_edges"
+              : "object_prefix"
+            : "other",
+  };
+}
+
+type FrameCaptureDiagnostic = FrameDecodeDiagnostic &
+  BrowserBridgeFailureContext;
+
+export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_stage:
     | "stream_status"
     | "frame_bridge"
@@ -349,7 +414,6 @@ export type BrowserCaptureFailureContext = {
   capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
 };
-
 /**
  * Capture a validated frame, requesting a separate screenshot when freshness is required.
  * The optional failure observer receives only bounded context; observer failures
@@ -364,6 +428,8 @@ export async function captureBrowserFrame(
   onFailure?: (context: BrowserCaptureFailureContext) => void,
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
+  let decodeDiagnostic: FrameDecodeDiagnostic = {};
+  let returnedBridgeFailure: unknown;
   try {
     const port =
       streamPort ??
@@ -376,8 +442,10 @@ export async function captureBrowserFrame(
         timeoutMs: 8_000,
       },
     );
-    if (result.exitCode !== 0)
+    if (result.exitCode !== 0) {
+      returnedBridgeFailure = result;
       throw new BrowserPreviewUnavailable("disconnected");
+    }
     let frame: {
       data: string;
       width: number;
@@ -385,9 +453,16 @@ export async function captureBrowserFrame(
       capturedAt: number;
     };
     stage = "frame_decode";
+    let stdout: unknown;
     try {
-      frame = JSON.parse(result.stdout) as typeof frame;
-    } catch {
+      stdout = result.stdout;
+      frame = JSON.parse(stdout as string) as typeof frame;
+    } catch (error) {
+      try {
+        decodeDiagnostic = frameDecodeDiagnostic(stdout, error);
+      } catch {
+        /* Optional diagnostics cannot replace the existing capture failure. */
+      }
       throw new BrowserPreviewUnavailable("disconnected");
     }
     stage = "frame_validation";
@@ -537,8 +612,8 @@ export async function captureBrowserFrame(
             code >= 2 &&
             code <= 6
           ) {
-            // Only this controlled helper's bounded failure JSON is eligible;
-            // never inspect successful image responses or bridge command output.
+            // This daemon parser never sees successful images or bridge output;
+            // bridge exit-6 packets have a separate strict parser below.
             // Existing <=512-byte context plus the fixed compact process tuple.
             const stdout =
               result &&
@@ -737,12 +812,25 @@ export async function captureBrowserFrame(
       } catch {
         /* Preserve the original failure if optional context is unreadable. */
       }
+      let bridgeDiagnostic: BrowserBridgeFailureContext = {};
+      try {
+        if (stage === "frame_bridge")
+          bridgeDiagnostic = browserBridgeFailureContext(
+            error instanceof CommandExitError
+              ? Object.getOwnPropertyDescriptor(error, "result")?.value
+              : returnedBridgeFailure,
+          );
+      } catch {
+        /* Optional transport metadata cannot replace the original rejection. */
+      }
       try {
         onFailure({
           capture_stage: stage,
           capture_error_kind: kind,
           capture_command_exit_code: code,
           ...precondition,
+          ...decodeDiagnostic,
+          ...bridgeDiagnostic,
         });
       } catch {
         /* Observers cannot change capture behavior. */

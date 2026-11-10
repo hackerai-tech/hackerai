@@ -18,6 +18,8 @@ jest.mock("isbinaryfile", () => ({ isBinaryFile: jest.fn() }));
 import { createServer, request, type Server } from "node:http";
 import {
   mkdtemp,
+  mkdir,
+  chmod,
   readFile,
   writeFile,
   rm,
@@ -31,7 +33,11 @@ import { promisify } from "node:util";
 import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { phLogger } from "@/lib/posthog/server";
-import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
+import { SandboxFileNotFoundError } from "../utils/sandbox-file-errors";
+import {
+  uploadSandboxFileToConvex,
+  getSandboxUploadedFileUrl,
+} from "../utils/sandbox-file-uploader";
 import {
   LocalCommandRelayUnsubscribedError,
   LocalFileRequestError,
@@ -71,6 +77,8 @@ describe("generated artifact delivery over HTTP", () => {
   let file: { s3Key: string } | undefined;
   let generation: number;
   let dropUpload: boolean;
+  let rejectNextUpload: boolean;
+  let uploadAttempts: Buffer[];
   const key = "users/test-user/report.txt";
   const location = { region: "us-west-2", bucket: "fixture-bucket" };
   const contents = "File delivery acceptance: café, evidence retained.\n";
@@ -84,7 +92,14 @@ describe("generated artifact delivery over HTTP", () => {
         const chunks: Buffer[] = [];
         req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
         req.on("end", () => {
-          if (!dropUpload) object = Buffer.concat(chunks);
+          const uploaded = Buffer.concat(chunks);
+          uploadAttempts.push(uploaded);
+          if (rejectNextUpload) {
+            rejectNextUpload = false;
+            res.writeHead(403).end("AccessDenied");
+            return;
+          }
+          if (!dropUpload) object = uploaded;
           res.writeHead(200).end();
         });
         return;
@@ -117,6 +132,8 @@ describe("generated artifact delivery over HTTP", () => {
     file = undefined;
     generation = 0;
     dropUpload = false;
+    rejectNextUpload = false;
+    uploadAttempts = [];
     process.env.NEXT_PUBLIC_CONVEX_URL = "https://test.convex.cloud";
     process.env.CONVEX_SERVICE_ROLE_KEY = "test-service-key";
     delete process.env.UPSTASH_REDIS_REST_URL;
@@ -165,6 +182,113 @@ describe("generated artifact delivery over HTTP", () => {
     );
     await rm(directory, { recursive: true, force: true });
   });
+
+  it("does not send a different same-named source after a real HTTP rejection", async () => {
+    // The command adapter maps the conventional Cloud home into the isolated
+    // fixture filesystem; both candidates exist with deliberately different bytes.
+    const preferred = join(directory, "preferred-report.txt");
+    await writeFile(preferred, "REQUESTED_REPORT\n");
+    await writeFile(join(directory, "report.txt"), "UNRELATED_REPORT\n");
+    rejectNextUpload = true;
+    const sandbox = {
+      sandboxKind: "e2b",
+      commands: {
+        run: async (command: string) => ({
+          ...(await exec(
+            "/bin/sh",
+            ["-c", command.replaceAll("/home/user/report.txt", preferred)],
+            { cwd: directory },
+          )),
+          exitCode: 0,
+        }),
+      },
+    };
+    const context = {
+      userID: "test-user",
+      chatId: "chat-fixture",
+      sandboxManager: {
+        getSandbox: async () => ({ sandbox }),
+        getSandboxInfo: () => ({ type: "cloud" }),
+      },
+      backgroundProcessTracker: {
+        hasActiveProcessesForFiles: async () => ({
+          active: false,
+          processes: [],
+        }),
+      },
+      fileAccumulator: new FileAccumulator(),
+      writer: { write: jest.fn() },
+    } as unknown as ToolContext;
+
+    const result = await (createGetTerminalFiles(context).execute as any)(
+      { files: ["report.txt"] },
+      { toolCallId: "rejected-report" },
+    );
+    expect(result).toMatchObject({
+      files: [],
+      deliveryReceipts: [],
+      failedFiles: [{ path: "report.txt" }],
+    });
+    expect(uploadAttempts.map((body) => body.toString())).toEqual([
+      "REQUESTED_REPORT\n",
+    ]);
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(context.fileAccumulator.getAll()).toEqual([]);
+  });
+
+  const permissionTest =
+    process.platform === "win32" || process.getuid?.() === 0 ? it.skip : it;
+  permissionTest(
+    "does not classify an inaccessible source as absent",
+    async () => {
+      const protectedDirectory = join(directory, "protected-source");
+      const source = join(protectedDirectory, "report.txt");
+      await mkdir(protectedDirectory);
+      await writeFile(source, "REQUESTED_PRIVATE_REPORT\n");
+      const sandbox = {
+        sandboxKind: "e2b",
+        commands: {
+          run: async (command: string) => {
+            try {
+              return {
+                ...(await exec("/bin/sh", ["-c", command])),
+                exitCode: 0,
+              };
+            } catch (error) {
+              const failure = error as {
+                stdout?: string;
+                stderr?: string;
+                code?: number;
+              };
+              return {
+                stdout: failure.stdout ?? "",
+                stderr: failure.stderr ?? "",
+                exitCode: failure.code ?? 1,
+              };
+            }
+          },
+        },
+      };
+      await chmod(protectedDirectory, 0);
+      try {
+        const error = await uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "test-user",
+          fullPath: source,
+        }).then(
+          () => undefined,
+          (error) => error,
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect(error).not.toBeInstanceOf(SandboxFileNotFoundError);
+        expect(error.message).toMatch(/Permission denied/);
+        expect(uploadAttempts).toEqual([]);
+        expect(runMutation).not.toHaveBeenCalled();
+      } finally {
+        await chmod(protectedDirectory, 0o700);
+      }
+    },
+  );
 
   async function deliverAfterReconnect(
     useSymlink = false,

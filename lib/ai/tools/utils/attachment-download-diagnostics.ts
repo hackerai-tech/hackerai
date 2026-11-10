@@ -6,7 +6,35 @@ type DownloadInput = {
   stderr: string;
 };
 
-const contexts = new WeakMap<object, ReturnType<typeof summarize>>();
+const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
+
+/** Public curl error-buffer wording only, not a proven network phase or the
+ * final inner retry. Conflicting observed families stay explicit. */
+function curlTimeoutHint(stderr: string) {
+  const hints = new Set<
+    "resolving" | "connect" | "tls_handshake" | "operation"
+  >();
+  for (const line of stderr.split(/\r?\n/)) {
+    const detail = /^\s*curl:\s*\(28\)\s*(.*)$/i.exec(line)?.[1];
+    if (!detail) continue;
+    if (/^Resolving timed out\b/i.test(detail)) hints.add("resolving");
+    else if (
+      /^Connection timed out\b/i.test(detail) ||
+      /^Failed to connect\b.*\b(?:timed out|timeout)\b/i.test(detail)
+    )
+      hints.add("connect");
+    else if (
+      /^SSL(?:\/TLS)? (?:connection timeout|connect timeout|handshake (?:timed out|timeout))\b/i.test(
+        detail,
+      )
+    )
+      hints.add("tls_handshake");
+    else if (/^Operation timed out\b/i.test(detail)) hints.add("operation");
+  }
+  return hints.size > 1
+    ? "multiple"
+    : (hints.values().next().value ?? "unclassified");
+}
 
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
@@ -36,7 +64,7 @@ function summarize(input: DownloadInput) {
                 stderr,
               )
             ? "dns"
-            : /certificate|TLS handshake|SSL connect error|schannel:/i.test(
+            : /certificate|TLS handshake|SSL connect error|schannel:|Could not create SSL\/TLS secure channel/i.test(
                   stderr,
                 )
               ? "tls"
@@ -59,10 +87,117 @@ function summarize(input: DownloadInput) {
     attachment_download_stderr_signal: signal,
     attachment_download_reported_http_status: status ? Number(status[1]) : null,
     attachment_download_stderr_truncated: input.stderr.length > 8192,
+    ...(input.httpClient === "curl" && input.exitCode === 28
+      ? {
+          attachment_download_timeout_version: 1 as const,
+          attachment_download_timeout_hint: curlTimeoutHint(stderr),
+        }
+      : {}),
   };
 }
 
-export type AttachmentDownloadFailureContext = ReturnType<typeof summarize>;
+export type AttachmentDownloadBoundary = {
+  phase:
+    | "entry"
+    | "validate_url"
+    | "shell_context"
+    | "http_client"
+    | "prepare_command"
+    | "curl_capabilities"
+    | "powershell_prepare"
+    | "download_command"
+    | "check_result"
+    | "retry_delay"
+    | "failure_diagnostics";
+  attempt: number;
+  resultState: "not_observed" | "success" | "nonzero";
+};
+
+type BoundaryContext = {
+  attachment_download_boundary_version: 1;
+  attachment_download_phase: AttachmentDownloadBoundary["phase"];
+  attachment_download_attempt: number;
+  attachment_download_result_state: AttachmentDownloadBoundary["resultState"];
+  attachment_download_error_kind:
+    "type_error" | "error" | "non_error" | "unreadable";
+  attachment_download_result_context_present: boolean;
+};
+type ResultContext = ReturnType<typeof summarize>;
+export type AttachmentDownloadRoute =
+  "selection" | "native_method" | "generic_command";
+type RouteContext = {
+  attachment_download_route_version: 1;
+  attachment_download_route: AttachmentDownloadRoute;
+  attachment_download_boundary_present: boolean;
+};
+export type AttachmentDownloadFailureContext = Partial<
+  ResultContext & BoundaryContext & RouteContext
+> &
+  (ResultContext | BoundaryContext | RouteContext);
+
+/** Bind failure evidence to the route actually selected by attachment staging,
+ * including native rejection without an adapter boundary receipt. */
+export function recordAttachmentDownloadRoute(
+  error: unknown,
+  route: AttachmentDownloadRoute,
+): void {
+  if (
+    (typeof error !== "object" || error === null) &&
+    typeof error !== "function"
+  )
+    return;
+  try {
+    const previous = contexts.get(error);
+    contexts.set(error, {
+      ...previous,
+      attachment_download_route_version: 1,
+      attachment_download_route: route,
+      attachment_download_boundary_present:
+        previous?.attachment_download_boundary_version === 1,
+    });
+  } catch {
+    // Preserve the original rejection if optional diagnostics fail.
+  }
+}
+
+/** Record only this call's finite rejection boundary, preserving any actual
+ * nonzero-result evidence. Never inspect private error properties or replace it. */
+export function recordAttachmentDownloadBoundary(
+  error: unknown,
+  input: AttachmentDownloadBoundary,
+): void {
+  if (
+    (typeof error !== "object" || error === null) &&
+    typeof error !== "function"
+  )
+    return;
+  try {
+    let kind: BoundaryContext["attachment_download_error_kind"];
+    try {
+      kind =
+        error instanceof TypeError
+          ? "type_error"
+          : error instanceof Error
+            ? "error"
+            : "non_error";
+    } catch {
+      kind = "unreadable";
+    }
+    const previous = contexts.get(error);
+    contexts.set(error, {
+      ...previous,
+      attachment_download_boundary_version: 1,
+      attachment_download_phase: input.phase,
+      attachment_download_attempt: input.attempt,
+      attachment_download_result_state: input.resultState,
+      attachment_download_error_kind: kind,
+      attachment_download_result_context_present:
+        previous?.attachment_download_diagnostic_version === 1,
+    });
+  } catch {
+    // Optional diagnostics must preserve the original rejection.
+  }
+}
 
 /** Preserve finite result-bound evidence even when image staging is bypassed. */
 export function recordAttachmentDownloadFailure<T extends object>(

@@ -1,3 +1,4 @@
+import { CaptchaUnsolvableError } from "../../captcha/provider-error";
 import type { ToolContext } from "@/types";
 import { createBrowserChallengeHandler } from "../../captcha/browser-challenge";
 import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
@@ -508,6 +509,73 @@ it("does not deliver a late response after Stop", async () => {
     "stopped",
   );
   expect(evaluate).toHaveBeenCalledTimes(1);
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
+});
+
+it("classifies Stop while waiting for the provider without retrying or delivering", async () => {
+  const { tool, solve, evaluate, journal } = setup();
+  const controller = new AbortController();
+  const reason = new Error("private-stop-detail");
+  let started!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  solve.mockImplementation(
+    () =>
+      new Promise((_resolve, reject) => {
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(controller.signal.reason),
+          { once: true },
+        );
+        started();
+      }),
+  );
+  const pending = run(tool, "solve", controller.signal);
+  const rejected = expect(pending).rejects.toBe(reason);
+  await waiting;
+  controller.abort(reason);
+  await rejected;
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
+  expect(phLogger.event).not.toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "provider_outcome_unknown" }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toContain(
+    "private-stop-detail",
+  );
+  expect(evaluate).toHaveBeenCalledTimes(1);
+  expect(journal.reserve).toHaveBeenCalledTimes(1);
+  await expect(run(tool, "solve")).resolves.toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it("preserves delivery uncertainty when Stop races with response application", async () => {
+  const { tool, evaluate } = setup();
+  const controller = new AbortController();
+  const reason = new Error("stopped during delivery");
+  evaluate.mockImplementation(async (script) => {
+    if (script === DETECT_CHALLENGES_SCRIPT) return cloneObservation();
+    controller.abort(reason);
+    throw reason;
+  });
+  await expect(run(tool, "solve", controller.signal)).rejects.toBe(reason);
+  expect(phLogger.event).toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "delivery_outcome_unknown" }),
+  );
+  expect(phLogger.event).not.toHaveBeenCalledWith(
+    "browser_captcha_solver_result",
+    expect.objectContaining({ outcome: "canceled_while_solving" }),
+  );
 });
 
 it("does not load guidance or the provider when inspection fails before detecting a challenge", async () => {
@@ -675,3 +743,421 @@ it.each(["PREVIEW", "PRODUCTION"])(
     expect(solve).not.toHaveBeenCalled();
   },
 );
+
+it.each(["same", "navigated", "other-owner", "invisible", "managed"])(
+  "offers vision only after confirmed unsolvable in the same visible widget: %s",
+  async (variant) => {
+    const { tool, solve, evaluate, getChallengeBrowser, journal, onToolCost } =
+      setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      const register = args[3] as (id: number) => Promise<void>;
+      await register!(123);
+      if (variant === "navigated")
+        evaluate.mockResolvedValue({
+          ...cloneObservation(),
+          documentId: "new-document",
+        });
+      if (variant === "invisible")
+        evaluate.mockResolvedValue({
+          ...cloneObservation(),
+          widgets: [{ ...observation.widgets[0], invisible: true }],
+        });
+      if (variant === "managed")
+        evaluate.mockResolvedValue({
+          ...cloneObservation(),
+          interstitial: true,
+        });
+      if (variant === "other-owner")
+        getChallengeBrowser.mockResolvedValue({
+          identity: "other-owner",
+          evaluate,
+        });
+      throw new CaptchaUnsolvableError();
+    });
+    const result = await tool.request("solve", "owned");
+    expect(result).toMatchObject({
+      reason: "provider_unsolvable",
+      visionFallbackAvailable: variant === "same",
+      visionCaptureSupported: false,
+      providerTaskCreated: true,
+      providerCostUSD: 0,
+    });
+    expect(JSON.stringify(result)).not.toMatch(
+      /private-provider-key|private-response/,
+    );
+    expect(onToolCost).toHaveBeenCalledWith(0);
+    if (variant === "same") {
+      expect(result.visionGuidance).toContain("no automatic frame fitting");
+      expect(result.visionGuidance).not.toContain("capture.devicePixelRatio");
+      expect(await tool.inspect(undefined, target)).toMatchObject({
+        visionFallbackAvailable: true,
+      });
+      expect(await tool.request("solve", "owned")).toMatchObject({
+        visionFallbackAvailable: false,
+      });
+    }
+    await tool.inspect(undefined, target);
+    await tool.request("solve", "owned");
+    expect(solve).toHaveBeenCalledTimes(1);
+    expect(journal.reserve).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("does not restart the vision deadline on another snapshot", async () => {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  try {
+    const { tool, solve } = setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      const register = args[3] as (id: number) => Promise<void>;
+      await register!(123);
+      throw new CaptchaUnsolvableError();
+    });
+    expect(await tool.request("solve", "owned")).toMatchObject({
+      visionDeadlineAt: 61000,
+      visionFallbackAvailable: true,
+    });
+    now.mockReturnValue(61000);
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      reason: "vision_budget_exhausted",
+      visionFallbackAvailable: false,
+    });
+    expect(solve).toHaveBeenCalledTimes(1);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it("carries a real solver error-12 result into same-page vision without injecting a response", async () => {
+  jest.useFakeTimers();
+  try {
+    const { context, journal, evaluate } = setup();
+    const data = {
+      ...cloneObservation(),
+      url: "https://store.steampowered.com/join/",
+      widgets: [
+        {
+          ...observation.widgets[0],
+          kind: "hcaptcha",
+          hcaptchaWidgetId: "steam-widget",
+        },
+      ],
+    };
+    evaluate.mockResolvedValue(data as never);
+    const fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ errorId: 0, taskId: 123 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          errorId: 12,
+          errorDescription: "private-provider-detail",
+        }),
+      });
+    global.fetch = fetch;
+    const tool = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      undefined,
+      journal,
+    );
+    const target = { sandbox: {} as never, sessionName: "steam" };
+    await tool.inspect(undefined, target);
+    const pending = tool.request("solve", "steam");
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(await pending).toMatchObject({
+      visionFallbackAvailable: true,
+      providerCostUSD: 0,
+      reason: "provider_unsolvable",
+    });
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      visionFallbackAvailable: true,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(
+      evaluate.mock.calls.every(
+        ([script]) => script === DETECT_CHALLENGES_SCRIPT,
+      ),
+    ).toBe(true);
+    expect(journal.registerTask).toHaveBeenCalledWith(123);
+    expect(journal.recordCost).not.toHaveBeenCalled(); // existing watchdog reconciles unsolvable, not "ready".
+    expect(tool.getReceiptPrompt()).toContain("confirmed unsolvable");
+  } finally {
+    jest.useRealTimers();
+    global.fetch = originalFetch;
+  }
+});
+
+it("can release a vision recovery and never revive its paid offer", async () => {
+  const { tool, solve, journal, evaluate } = setup();
+  const target = { sandbox: {} as never, sessionName: "owned" };
+  await tool.inspect(undefined, target);
+  solve.mockImplementation(async (...args: unknown[]) => {
+    await (args[3] as (id: number) => Promise<void>)(123);
+    throw new CaptchaUnsolvableError();
+  });
+  await tool.request("solve", "owned");
+  await tool.inspect(undefined, target);
+  expect(await tool.request("release", "owned")).toMatchObject({
+    status: "released",
+  });
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    reason: "attempt_limit",
+  });
+  expect(solve).toHaveBeenCalledTimes(1);
+  expect(journal.reserve).toHaveBeenCalledTimes(1);
+});
+
+it("stops vision after another widget appears even if it disappears", async () => {
+  const { tool, solve, evaluate } = setup();
+  const target = { sandbox: {} as never, sessionName: "owned" };
+  await tool.inspect(undefined, target);
+  solve.mockImplementation(async (...args: unknown[]) => {
+    await (args[3] as (id: number) => Promise<void>)(123);
+    throw new CaptchaUnsolvableError();
+  });
+  await tool.request("solve", "owned");
+  evaluate.mockResolvedValue({
+    ...cloneObservation(),
+    widgets: [
+      ...observation.widgets,
+      { ...observation.widgets[0], tokenPresent: true },
+    ],
+  } as never);
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    reason: "vision_page_changed",
+    visionFallbackAvailable: false,
+  });
+  evaluate.mockResolvedValue(cloneObservation());
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    visionFallbackAvailable: false,
+  });
+  expect(
+    tool.guardVisionCommand("agent-browser --session owned click @e1"),
+  ).toMatchObject({ reason: "vision_budget_exhausted" });
+  expect(solve).toHaveBeenCalledTimes(1);
+});
+
+it.each(["url", "documentId"])(
+  "does not treat a different %s as vision completion",
+  async (field) => {
+    const { tool, solve, evaluate } = setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      await (args[3] as (id: number) => Promise<void>)(123);
+      throw new CaptchaUnsolvableError();
+    });
+    await tool.request("solve", "owned");
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      [field]:
+        field === "url" ? "https://example.com/another-page" : "different",
+      widgets: [],
+    } as never);
+    await tool.inspect(undefined, target);
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @e1"),
+    ).toMatchObject({ reason: "vision_budget_exhausted" });
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      visionFallbackAvailable: false,
+    });
+    expect(solve).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("blocks expired recovery commands but permits observation, cleanup and verified completion", async () => {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  try {
+    const { tool, solve, evaluate } = setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      await (args[3] as (id: number) => Promise<void>)(123);
+      throw new CaptchaUnsolvableError();
+    });
+    await tool.request("solve", "owned");
+    expect(
+      tool.guardVisionCommand(
+        "agent-browser --session owned screenshot /tmp/image.png",
+      ),
+    ).toBeUndefined();
+    now.mockReturnValue(61000);
+    for (const command of [
+      "agent-browser --session owned click @e1",
+      "python3 crop.py",
+      "agent-browser --session owned close; echo extra",
+    ])
+      expect(tool.guardVisionCommand(command)).toMatchObject({
+        reason: "vision_budget_exhausted",
+      });
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned snapshot -i"),
+    ).toBeUndefined();
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned close"),
+    ).toBeUndefined();
+    expect(tool.getReceiptPrompt()).toContain(
+      "Native vision seconds remaining: 0",
+    );
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      widgets: [{ ...observation.widgets[0], tokenPresent: true }],
+    } as never);
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      status: "no_pending_challenge",
+    });
+    expect(
+      tool.guardVisionCommand(
+        "agent-browser --session owned eval document.title",
+      ),
+    ).toBeUndefined();
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      reason: "vision_challenge_returned",
+      visionFallbackAvailable: false,
+    });
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @e1"),
+    ).toMatchObject({ reason: "vision_budget_exhausted" });
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      widgets: [{ ...observation.widgets[0], tokenPresent: true }],
+    } as never);
+    await tool.inspect(undefined, target);
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @submit"),
+    ).toBeUndefined();
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      reason: "vision_challenge_returned",
+      visionFallbackAvailable: false,
+    });
+    tool.finishVisionCommand("agent-browser --session owned close", false);
+    expect(tool.guardVisionCommand("ls")).toMatchObject({
+      reason: "vision_budget_exhausted",
+    });
+    tool.finishVisionCommand("agent-browser --session owned close", true);
+    expect(tool.guardVisionCommand("ls")).toBeUndefined();
+    expect(solve).toHaveBeenCalledTimes(1);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it.each(["ready", "failure", "page-change", "expired", "other-session"])(
+  "qualifies a vision screenshot without another provider task: %s",
+  async (variant) => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const { tool, solve, evaluate, getChallengeBrowser, journal } = setup();
+      const captureVision = jest.fn(async () => ({
+        path: "/tmp/image.png",
+        viewport: { width: 1280, height: 1024 },
+        frame: { x: 100, y: 60, width: 400, height: 900 },
+        image: { width: 1280, height: 1024 },
+        devicePixelRatio: 1,
+      }));
+      getChallengeBrowser.mockResolvedValue({
+        identity: "owner",
+        evaluate,
+        captureVision,
+      } as never);
+      const target = { sandbox: {} as never, sessionName: "owned" };
+      await tool.inspect(undefined, target);
+      solve.mockImplementation(async (...args: unknown[]) => {
+        await (args[3] as (id: number) => Promise<void>)(123);
+        throw new CaptchaUnsolvableError();
+      });
+      const offered = await tool.request("solve", "owned");
+      expect(offered).toMatchObject({ visionCaptureSupported: true });
+      expect(offered.visionGuidance).toContain("capture.devicePixelRatio");
+      if (variant === "failure")
+        captureVision.mockRejectedValue(new Error("capture unavailable"));
+      if (variant === "page-change")
+        evaluate.mockResolvedValue({
+          ...cloneObservation(),
+          documentId: "different",
+        });
+      if (variant === "expired") now.mockReturnValue(61000);
+      const session = variant === "other-session" ? "other" : "owned";
+      const result = await tool.captureVisionCommand(
+        `agent-browser --session ${session} screenshot /tmp/image.png`,
+      );
+      expect(result).toMatchObject({
+        result: { exitCode: variant === "ready" ? 0 : 1 },
+      });
+      expect(captureVision).toHaveBeenCalledTimes(
+        ["ready", "failure"].includes(variant) ? 1 : 0,
+      );
+      if (variant === "ready")
+        expect(captureVision).toHaveBeenCalledWith(
+          expect.objectContaining({
+            path: "/tmp/image.png",
+            deadline: 61000,
+            prepareScript: expect.any(String),
+            measureScript: expect.any(String),
+          }),
+        );
+      else {
+        await tool.captureVisionCommand(
+          "agent-browser --session owned screenshot /tmp/image.png",
+        );
+        expect(captureVision).toHaveBeenCalledTimes(
+          variant === "failure" ? 1 : 0,
+        );
+      }
+      await tool.inspect(undefined, target);
+      await tool.request("solve", "owned");
+      expect(solve).toHaveBeenCalledTimes(1);
+      expect(journal.reserve).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  },
+);
+
+it("does not execute a combined action and screenshot during qualified recovery", async () => {
+  const { tool, solve, evaluate, getChallengeBrowser } = setup();
+  const captureVision = jest.fn();
+  getChallengeBrowser.mockResolvedValue({
+    identity: "owner",
+    evaluate,
+    captureVision,
+  } as never);
+  await tool.inspect(undefined, { sandbox: {} as never, sessionName: "owned" });
+  solve.mockImplementation(async (...args: unknown[]) => {
+    await (args[3] as (id: number) => Promise<void>)(123);
+    throw new CaptchaUnsolvableError();
+  });
+  await tool.request("solve", "owned");
+  expect(
+    await tool.captureVisionCommand(
+      "agent-browser --session owned click @e1 && agent-browser --session owned screenshot /tmp/image.png",
+    ),
+  ).toMatchObject({
+    result: {
+      exitCode: 1,
+      browserChallenge: {
+        status: "vision_capture_preparation_required",
+        message: expect.stringContaining(
+          "agent-browser --session owned screenshot /tmp/image.png",
+        ),
+      },
+    },
+  });
+  expect(captureVision).not.toHaveBeenCalled();
+  expect(
+    await tool.captureVisionCommand(
+      'echo "agent-browser --session owned screenshot /tmp/image.png"',
+    ),
+  ).toBeUndefined();
+});
