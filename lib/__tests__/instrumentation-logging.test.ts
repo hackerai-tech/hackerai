@@ -137,48 +137,64 @@ describe("request error diagnostic exports", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).not.toMatch(/SYNTHETIC_|root failed/);
   });
-  it("exports shared-chat correlation without the share identifier through native and buffered logs", async () => {
-    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    onRequestError(
-      Object.assign(new Error("shared page failed"), { digest: "1234567890" }),
-      {
-        path: "/share/SYNTHETIC_SHARE_ID?code=SYNTHETIC_CODE#SYNTHETIC_FRAGMENT",
-        method: "GET",
-        headers: {
-          "x-vercel-id": "iad1::fixture-1794075870712-0123456789ab",
-          cookie: "SYNTHETIC_COOKIE",
-        },
-      },
-      {
-        routePath: "/share/[shareId]/page",
-        routeType: "render",
-        routerKind: "App Router",
-        renderSource: "react-server-components",
-        revalidateReason: undefined,
-      },
-    );
-    await flushPostHogLogs();
-    const body = String(jest.mocked(global.fetch).mock.calls[0][1]?.body);
-    expect(body).not.toContain("SYNTHETIC_");
-    const records = JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords;
-    expect(records).toHaveLength(1);
-    expect(records[0].attributes).toEqual(
-      expect.arrayContaining([
-        { key: "path", value: { stringValue: "/share/[shareId]" } },
+  it.each(["GET", "POST"])(
+    "exports shared-chat %s correlation without the share identifier through native and buffered logs",
+    async (method) => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      onRequestError(
+        Object.assign(new Error("shared page failed"), {
+          digest: "1234567890",
+          name: method === "POST" ? "TokenRefreshError" : "Error",
+        }),
         {
-          key: "root_request_error_diagnostic_version",
-          value: { doubleValue: 1 },
+          path: "/share/SYNTHETIC_SHARE_ID?code=SYNTHETIC_CODE#SYNTHETIC_FRAGMENT",
+          method,
+          headers: {
+            "x-vercel-id": "iad1::fixture-1794075870712-0123456789ab",
+            cookie: "SYNTHETIC_COOKIE",
+          },
         },
-        { key: "error_digest", value: { stringValue: "1234567890" } },
-      ]),
-    );
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
-      path: "/share/[shareId]",
-      root_request_error_diagnostic_version: 1,
-    });
-    expect(String(warn.mock.calls[0][0])).not.toContain("SYNTHETIC_");
-    expect(mockCaptureException).toHaveBeenCalledTimes(1);
-    expect(mockCaptureException.mock.calls[0][2].path).toBe("/share/[shareId]");
-  });
+        {
+          routePath: "/share/[shareId]/page",
+          routeType: method === "POST" ? "action" : "render",
+          routerKind: "App Router",
+          renderSource: "react-server-components",
+          revalidateReason: undefined,
+        },
+      );
+      await flushPostHogLogs();
+      const body = String(jest.mocked(global.fetch).mock.calls[0][1]?.body);
+      expect(body).not.toContain("SYNTHETIC_");
+      const records = JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords;
+      expect(records).toHaveLength(1);
+      expect(records[0].attributes).toEqual(
+        expect.arrayContaining([
+          { key: "path", value: { stringValue: "/share/[shareId]" } },
+          {
+            key: "root_request_error_diagnostic_version",
+            value: { doubleValue: 1 },
+          },
+          { key: "error_digest", value: { stringValue: "1234567890" } },
+          { key: "method", value: { stringValue: method } },
+          {
+            key: "root_error_kind",
+            value: {
+              stringValue: method === "POST" ? "TokenRefreshError" : "Error",
+            },
+          },
+        ]),
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        path: "/share/[shareId]",
+        method,
+        root_request_error_diagnostic_version: 1,
+      });
+      expect(String(warn.mock.calls[0][0])).not.toContain("SYNTHETIC_");
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      expect(mockCaptureException.mock.calls[0][2].path).toBe(
+        "/share/[shareId]",
+      );
+    },
+  );
 });

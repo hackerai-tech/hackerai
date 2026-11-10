@@ -1380,3 +1380,83 @@ it("isolates a frame-decode observer failure and leaves valid frames free of dia
   ).resolves.toMatchObject({ width: 800, height: 600 });
   expect(observed).not.toHaveBeenCalled();
 });
+
+it("delivers v2 bridge categories through the actual capture helper without changing its rejection", async () => {
+  const sandbox = fixture();
+  const original = new CommandExitError({
+    exitCode: 6,
+    stdout: JSON.stringify({
+      bridge_failure: [
+        2,
+        "error",
+        "message_received",
+        "none",
+        "protocol_masked",
+        22,
+      ],
+    }),
+    stderr: "PRIVATE_FRAME",
+  });
+  sandbox.commands.run.mockRejectedValueOnce(original);
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    ),
+  ).rejects.toBe(original);
+  expect(observe).toHaveBeenCalledWith(
+    expect.objectContaining({
+      capture_stage: "frame_bridge",
+      capture_bridge_diagnostic_version: 2,
+      capture_bridge_error_reason: "protocol_masked",
+      capture_bridge_node_major: 22,
+    }),
+  );
+  expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each([true, false])(
+  "forwards a frame watchdog receipt through the actual capture observer (SDK throws: %s)",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 3,
+      stdout: JSON.stringify({
+        bridge_failure: [3, "deadline", "awaiting_frame", "none"],
+      }),
+      stderr: "PRIVATE_FRAME",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn();
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else await expect(capture).rejects.toThrow();
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capture_stage: "frame_bridge",
+        capture_error_kind: throws ? "command_exit" : "preview_unavailable",
+        capture_command_exit_code: throws ? 3 : "none",
+        capture_bridge_diagnostic_version: 3,
+        capture_bridge_failure: "deadline",
+        capture_bridge_phase: "awaiting_frame",
+        capture_bridge_close_code: "none",
+      }),
+    );
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  },
+);

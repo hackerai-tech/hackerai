@@ -73,7 +73,7 @@ const getServerActionErrorMetadata = (
   };
 };
 
-/** Correlate selected page reads without exporting headers or error contents. */
+/** Correlate selected page reads and share POST failures without request contents. */
 function getRootRequestErrorMetadata(
   error: unknown,
   request: Parameters<Instrumentation.onRequestError>[1],
@@ -82,7 +82,9 @@ function getRootRequestErrorMetadata(
 ) {
   if (
     !["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
-    (request.method !== "GET" && request.method !== "HEAD")
+    (request.method !== "GET" &&
+      request.method !== "HEAD" &&
+      !(request.method === "POST" && path === "/share/[shareId]"))
   )
     return undefined;
   try {

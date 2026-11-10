@@ -12,6 +12,7 @@ import {
 import {
   BrowserPreviewUnavailable,
   type BrowserCaptureFailureContext,
+  type BrowserInputFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
@@ -184,9 +185,10 @@ const unavailablePost = (
   action: unknown,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
   recoveryResponse = false,
-  captureDiagnostic?: {
+  failureDiagnostic?: {
     context?: BrowserCaptureFailureContext;
     frameAgeExceeded?: boolean;
+    inputContext?: BrowserInputFailureContext;
   },
 ) => {
   const response = recoveryResponse
@@ -218,12 +220,19 @@ const unavailablePost = (
       failure_stage: stage,
       ...(stage === "capture_frame" && {
         post_capture_diagnostic_version: 1,
-        post_capture_context_status: captureDiagnostic?.context
+        post_capture_context_status: failureDiagnostic?.context
           ? "recorded"
-          : captureDiagnostic?.frameAgeExceeded
+          : failureDiagnostic?.frameAgeExceeded
             ? "frame_age_guard"
             : "not_observed",
-        ...captureDiagnostic?.context,
+        ...failureDiagnostic?.context,
+      }),
+      ...((stage === "release_pointer" || stage === "send_input") && {
+        post_input_diagnostic_version: 1,
+        post_input_context_status: failureDiagnostic?.inputContext
+          ? "recorded"
+          : "not_observed",
+        ...failureDiagnostic?.inputContext,
       }),
       ...(action === "heartbeat" && stage === "renew_relay"
         ? browserRelayRenewFailureContext(error)
@@ -461,6 +470,7 @@ export async function POST(
     if (!claimed) return json({ state: "stale" }, 409);
     let paused = false;
     let captureContext: BrowserCaptureFailureContext | undefined;
+    let inputContext: BrowserInputFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -504,6 +514,9 @@ export async function POST(
           },
         ],
         streamPort,
+        (context) => {
+          inputContext = context;
+        },
       );
       // Both jobs use the same paused browser. Drain both before rollback so
       // a late relay cannot outlive a failed capture and reopen revoked input.
@@ -582,7 +595,7 @@ export async function POST(
         body.action,
         session,
         false,
-        { context: captureContext },
+        { context: captureContext, inputContext },
       );
     }
   }
@@ -631,6 +644,7 @@ export async function POST(
     if (!started) return json({ state: "stale" }, 409);
     let unpaused = false;
     let captureContext: BrowserCaptureFailureContext | undefined;
+    let inputContext: BrowserInputFailureContext | undefined;
     let captureFrameAgeExceeded = false;
     try {
       stage = "connect_sandbox";
@@ -646,15 +660,24 @@ export async function POST(
       // Also cover the HTTP fallback and a vanished relay. The resuming state
       // excludes new input until the pointer is released and a frame is fresh.
       stage = "release_pointer";
-      await sendBrowserInput(sandbox, session, body.browserSessionName, [
-        {
-          type: "input_mouse",
-          eventType: "mouseReleased",
-          x: 0,
-          y: 0,
-          button: "left",
+      await sendBrowserInput(
+        sandbox,
+        session,
+        body.browserSessionName,
+        [
+          {
+            type: "input_mouse",
+            eventType: "mouseReleased",
+            x: 0,
+            y: 0,
+            button: "left",
+          },
+        ],
+        undefined,
+        (context) => {
+          inputContext = context;
         },
-      ]);
+      );
       stage = "capture_frame";
       const frame = await captureBrowserFrame(
         sandbox,
@@ -712,6 +735,7 @@ export async function POST(
         {
           context: captureContext,
           frameAgeExceeded: captureFrameAgeExceeded,
+          inputContext,
         },
       );
     }
@@ -819,6 +843,7 @@ export async function POST(
       },
     );
     if (!valid) return json({ state: "recovery" }, 409);
+    let inputContext: BrowserInputFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -845,6 +870,10 @@ export async function POST(
         session,
         session.controlledSessionName,
         events,
+        undefined,
+        (context) => {
+          inputContext = context;
+        },
       );
       return json({ ok: true });
     } catch (error) {
@@ -855,6 +884,8 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        { inputContext },
       );
     } finally {
       await convex

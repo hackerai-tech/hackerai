@@ -1,4 +1,7 @@
-import { getOpenRouterStreamErrorContext } from "@/lib/utils/openrouter-stream-error-context";
+import {
+  getOpenRouterBodyFailureContext,
+  getOpenRouterStreamErrorContext,
+} from "@/lib/utils/openrouter-stream-error-context";
 import { isBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
@@ -413,6 +416,36 @@ export const extractErrorDetails = (
       // Diagnostic-only names must not enable generation lookups or recovery.
       openrouterStreamErrorGenerationId: streamContext.generationId,
       openrouterStreamErrorRequestId: streamContext.requestId,
+    });
+  }
+
+  const bodyContexts = new Set(
+    sources
+      .map(getOpenRouterBodyFailureContext)
+      .filter((value) => value !== undefined),
+  );
+  if (bodyContexts.size) {
+    const bodyContext = bodyContexts.values().next().value!;
+    const ambiguous =
+      bodyContexts.size !== 1 ||
+      bodyContext.association === "ambiguous" ||
+      sources.some(
+        (source) =>
+          getOpenRouterStreamErrorContext(source)?.association === "ambiguous",
+      );
+    Object.assign(details, {
+      openrouterBodyFailureContextVersion: 1,
+      openrouterBodyFailureSource: "response_body",
+      openrouterBodyFailureAssociation: ambiguous
+        ? "ambiguous"
+        : "same_response",
+      // These are observations, never operational status/retry/lookup inputs.
+      ...(!ambiguous
+        ? {
+            openrouterBodyFailureStatus: bodyContext.status,
+            openrouterBodyFailurePhase: bodyContext.phase,
+          }
+        : {}),
     });
   }
 

@@ -44,6 +44,7 @@ import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -908,7 +909,12 @@ export const generateSummaryText = async (
     ],
   });
 
-  const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
+  const routerMetadata = extractOpenRouterMetadata(result);
+  const providerCost =
+    getProviderUsageRawModelCost(
+      result.usage?.raw,
+      routerMetadata.openrouter_is_byok,
+    ) ?? (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (
     result.usage as {
       inputTokenDetails?: {
@@ -917,7 +923,6 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
-  const routerMetadata = extractOpenRouterMetadata(result);
   const usage: SummarizationUsage = {
     inputTokens: result.usage?.inputTokens ?? 0,
     inputTokensReported:

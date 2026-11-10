@@ -616,9 +616,9 @@ export class WideEventBuilder {
   /**
    * Set token usage from model response
    */
-  setUsage(usage: Record<string, unknown> | undefined): this {
+  setUsage(usage: Record<string, unknown> | undefined, isByok?: boolean): this {
     if (usage) {
-      const providerCost = getProviderUsageRawModelCost(usage.raw);
+      const providerCost = getProviderUsageRawModelCost(usage.raw, isByok);
 
       this.event.usage = {
         input_tokens: usage.inputTokens as number | undefined,
