@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, ChevronDown, Copy, LoaderCircle } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -66,7 +66,6 @@ export default function ReportForm({
   const [errors, setErrors] = useState<Errors>({});
   const [failure, setFailure] = useState("");
   const [receipt, setReceipt] = useState("");
-  const [copied, setCopied] = useState(false);
   const [description, setDescription] = useState("");
   const [evidence, setEvidence] = useState("");
   const form = useRef<HTMLFormElement>(null);
@@ -190,7 +189,7 @@ export default function ReportForm({
       else if (response.status === 410) {
         attempt.current = null;
         setFailure(
-          "This report's delivery window expired. Your details are still here; submit again with a new reference.",
+          "This report's delivery window expired. Your details are still here; submit again.",
         );
       } else if (response.status === 429)
         setFailure(
@@ -226,41 +225,18 @@ export default function ReportForm({
         aria-labelledby="report-saved"
       >
         <Check className="size-8" aria-hidden="true" />
-        <h2
-          ref={resultHeading}
-          id="report-saved"
-          tabIndex={-1}
-          className="text-2xl font-medium outline-none"
-        >
-          Your {kind === "appeal" ? "appeal" : "report"} was received
-        </h2>
-        <p className="leading-7 text-muted-foreground">
-          Keep this reference for follow-up. Your submission is queued for email
-          review; this receipt does not confirm delivery or a decision.
-        </p>
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">Report reference</p>
-          <p className="break-all rounded-md border border-border bg-background p-4 font-mono text-sm sm:text-base">
-            {receipt}
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(receipt);
-                setCopied(true);
-              } catch {
-                setCopied(false);
-              }
-            }}
+        <div className="space-y-2">
+          <h2
+            ref={resultHeading}
+            id="report-saved"
+            tabIndex={-1}
+            className="text-2xl font-medium outline-none"
           >
-            <Copy className="size-4" aria-hidden="true" />
-            {copied ? "Copied" : "Copy reference"}
-          </Button>
-          <span role="status" className="sr-only">
-            {copied ? "Report reference copied" : ""}
-          </span>
+            Thanks. Your {kind === "appeal" ? "appeal" : "report"} was received.
+          </h2>
+          <p className="leading-7 text-muted-foreground">
+            We may contact you if we need more information.
+          </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button
@@ -270,7 +246,6 @@ export default function ReportForm({
               setReceipt("");
               setDescription("");
               setEvidence("");
-              setCopied(false);
               attempt.current = null;
             }}
           >
@@ -617,7 +592,7 @@ export default function ReportForm({
         >
           {pending
             ? "Saving your report…"
-            : "You will get a report reference on this page once your report is queued."}
+            : "You will see a confirmation here once your report is received."}
         </p>
       </div>
     </form>
