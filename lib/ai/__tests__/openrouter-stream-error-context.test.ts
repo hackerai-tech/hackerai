@@ -213,6 +213,10 @@ it("declines reused error identity across calls instead of assigning a preceding
   expect(extractOpenRouterMetadataFromError(error)).toEqual({});
 });
 
+const unreadableHeaderGetter = jest.fn(() => {
+  throw new Error("getter must not run");
+});
+
 it.each([
   {
     headers: {
@@ -246,9 +250,7 @@ it.each([
   {
     headers: Object.defineProperty({}, "x-request-id", {
       enumerable: true,
-      get() {
-        throw new Error("getter must not run");
-      },
+      get: unreadableHeaderGetter,
     }),
     state: "unreadable",
   },
@@ -266,6 +268,7 @@ it.each([
 ])(
   "bounds header context and safely handles $state input",
   async ({ headers, state, generationId, requestId }) => {
+    unreadableHeaderGetter.mockClear();
     const error = { code: 502 };
     const { result } = await open([{ type: "error", error }], headers);
     await result.stream.getReader().read();
@@ -277,6 +280,7 @@ it.each([
       ...(generationId ? { generationId } : {}),
       ...(requestId ? { requestId } : {}),
     });
+    expect(unreadableHeaderGetter).not.toHaveBeenCalled();
   },
 );
 
