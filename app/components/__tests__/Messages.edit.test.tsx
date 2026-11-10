@@ -17,6 +17,30 @@ import { mockLegendListScrollToIndex } from "../../../__mocks__/@legendapp/list-
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
 
+jest.mock("../MessageErrorState", () => ({
+  MessageErrorState: ({
+    onRetry,
+  }: {
+    onRetry: (
+      options: import("../../hooks/useChatHandlers").RetryOptions,
+    ) => void | Promise<void>;
+  }) => (
+    <button
+      onClick={() => {
+        // Observe the discarded callback promise without failing the Jest worker.
+        void Promise.resolve(
+          onRetry({
+            selectedModel: "auto",
+            limitRescue: { type: "paid_daily_free_allowance" },
+          }),
+        ).catch(() => undefined);
+      }}
+    >
+      Use daily allowance
+    </button>
+  ),
+}));
+
 jest.mock("../MessageItem", () => ({
   MessageItem: ({
     canEdit,
@@ -27,6 +51,9 @@ jest.mock("../MessageItem", () => ({
     onSaveEdit,
     onBranchMessage,
     status,
+    finishReason,
+    continueDisabledReason,
+    onContinue,
   }: {
     canEdit: boolean;
     isEditing: boolean;
@@ -36,37 +63,53 @@ jest.mock("../MessageItem", () => ({
     onSaveEdit: (content: string, files: string[]) => Promise<void>;
     onBranchMessage: (messageId: string) => Promise<void>;
     status: string;
-  }) => (
-    <div
-      data-testid={`message-${message.id}`}
-      data-status={status}
-      data-last-user-message-index={lastUserMessageIndex}
-    >
-      <button
-        type="button"
-        aria-label={`Branch ${message.id}`}
-        onClick={() => onBranchMessage(message.id)}
+    finishReason?: string;
+    continueDisabledReason?: string;
+    onContinue?: () => void;
+  }) => {
+    const { FinishReasonNotice } = jest.requireActual("../FinishReasonNotice");
+    return (
+      <div
+        data-testid={`message-${message.id}`}
+        data-status={status}
+        data-last-user-message-index={lastUserMessageIndex}
       >
-        Branch
-      </button>
-      {isEditing ? (
-        <div data-testid="message-editor">
-          Editing {message.id}
-          <button onClick={() => onSaveEdit("Revised goal", [])}>
-            Save edit
-          </button>
-        </div>
-      ) : canEdit ? (
         <button
           type="button"
-          aria-label="Edit message"
-          onClick={() => onStartEdit(message.id)}
+          aria-label={`Branch ${message.id}`}
+          onClick={() => onBranchMessage(message.id)}
         >
-          Edit
+          Branch
         </button>
-      ) : null}
-    </div>
-  ),
+        {message.role === "assistant" &&
+          finishReason === "local-connection-lost" && (
+            <FinishReasonNotice
+              finishReason={finishReason}
+              continueDisabledReason={continueDisabledReason}
+              onContinue={onContinue}
+              mode="agent"
+              status={status}
+            />
+          )}
+        {isEditing ? (
+          <div data-testid="message-editor">
+            Editing {message.id}
+            <button onClick={() => onSaveEdit("Revised goal", [])}>
+              Save edit
+            </button>
+          </div>
+        ) : canEdit ? (
+          <button
+            type="button"
+            aria-label="Edit message"
+            onClick={() => onStartEdit(message.id)}
+          >
+            Edit
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 jest.mock("../AgentActivityRow", () => ({
@@ -852,5 +895,219 @@ describe("Messages virtualized row invalidation", () => {
       index: 0,
       viewOffset: 24,
     });
+  });
+});
+
+test("offers Resume when the local connection is lost before an assistant message exists", () => {
+  const onContinue = jest.fn();
+  render(
+    <DataStreamProvider>
+      <Messages
+        chatId="stopped-during-setup"
+        messages={[messages[0]]}
+        setMessages={jest.fn()}
+        onRegenerate={jest.fn()}
+        onRetry={jest.fn()}
+        onContinue={onContinue}
+        onEditMessage={jest.fn()}
+        status="ready"
+        error={null}
+        scrollRef={createRef<HTMLElement>()}
+        contentRef={createRef<HTMLElement>()}
+        finishReason="local-connection-lost"
+        mode="agent"
+      />
+    </DataStreamProvider>,
+  );
+  expect(onContinue).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(onContinue).toHaveBeenCalledTimes(1);
+});
+
+test.each(["local-connection-lost", undefined])(
+  "preserves the explicit allowance choice when retrying (%s)",
+  (finishReason) => {
+    const onContinue = jest.fn();
+    const onRetry = jest.fn();
+    render(
+      <DataStreamProvider>
+        <Messages
+          chatId="resume-with-allowance"
+          messages={messages}
+          setMessages={jest.fn()}
+          onRegenerate={jest.fn()}
+          onRetry={onRetry}
+          onContinue={onContinue}
+          onEditMessage={jest.fn()}
+          status="ready"
+          error={new Error("Monthly usage limit reached")}
+          scrollRef={createRef<HTMLElement>()}
+          contentRef={createRef<HTMLElement>()}
+          finishReason={finishReason}
+          mode="agent"
+        />
+      </DataStreamProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use daily allowance" }),
+    );
+    const limitRescue = { type: "paid_daily_free_allowance" };
+    if (finishReason === "local-connection-lost") {
+      expect(onContinue).toHaveBeenCalledWith("auto", limitRescue);
+      expect(onRetry).not.toHaveBeenCalled();
+    } else {
+      expect(onRetry).toHaveBeenCalledWith({
+        selectedModel: "auto",
+        limitRescue,
+      });
+      expect(onContinue).not.toHaveBeenCalled();
+    }
+  },
+);
+
+test("updates a settled virtualized row when stop metadata arrives and the computer reconnects", () => {
+  const onContinue = jest.fn();
+  const props = {
+    chatId: "late-local-stop",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onEditMessage: jest.fn(),
+    onContinue,
+    status: "ready" as const,
+    error: null,
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+  };
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} />
+    </DataStreamProvider>,
+  );
+  expect(
+    screen.queryByRole("button", { name: "Resume" }),
+  ).not.toBeInTheDocument();
+  rerender(
+    <DataStreamProvider>
+      <Messages
+        {...props}
+        finishReason="local-connection-lost"
+        continueDisabledReason="Reconnect your computer."
+      />
+    </DataStreamProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+  expect(onContinue).not.toHaveBeenCalled();
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} finishReason="local-connection-lost" />
+    </DataStreamProvider>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(onContinue).toHaveBeenCalledTimes(1);
+});
+
+test("uses the current Resume handler after the chat transport changes", () => {
+  const previous = jest.fn();
+  const current = jest.fn();
+  const props = {
+    chatId: "resume-current-transport",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onEditMessage: jest.fn(),
+    status: "ready" as const,
+    error: null,
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+    finishReason: "local-connection-lost",
+  };
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} onContinue={previous} />
+    </DataStreamProvider>,
+  );
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} onContinue={current} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(current).toHaveBeenCalledTimes(1);
+  expect(previous).not.toHaveBeenCalled();
+});
+
+test("reports a failed local-loss retry without submitting a new request", async () => {
+  const onContinue = jest.fn().mockRejectedValue(new Error("Offline again"));
+  const onRetry = jest.fn();
+  const toastError = jest.spyOn(toast, "error");
+  render(
+    <DataStreamProvider>
+      <Messages
+        chatId="resume-failed-before-start"
+        messages={messages}
+        setMessages={jest.fn()}
+        onRegenerate={jest.fn()}
+        onRetry={onRetry}
+        onContinue={onContinue}
+        onEditMessage={jest.fn()}
+        status="ready"
+        error={new Error("Monthly usage limit reached")}
+        scrollRef={createRef<HTMLElement>()}
+        contentRef={createRef<HTMLElement>()}
+        finishReason="local-connection-lost"
+        mode="agent"
+      />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  await waitFor(() =>
+    expect(toastError).toHaveBeenCalledWith(
+      "Could not resume. Your saved progress is still available.",
+    ),
+  );
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  expect(onRetry).not.toHaveBeenCalled();
+});
+
+test("explains a blocked retry and forwards the allowance after reconnecting", async () => {
+  const onContinue = jest.fn();
+  const toastError = jest.spyOn(toast, "error");
+  const props = {
+    chatId: "retry-after-reconnect",
+    messages,
+    setMessages: jest.fn(),
+    onRegenerate: jest.fn(),
+    onRetry: jest.fn(),
+    onContinue,
+    onEditMessage: jest.fn(),
+    status: "ready" as const,
+    error: new Error("Monthly usage limit reached"),
+    scrollRef: createRef<HTMLElement>(),
+    contentRef: createRef<HTMLElement>(),
+    finishReason: "local-connection-lost",
+  };
+  const reason = "Reconnect your computer to resume.";
+  const { rerender } = render(
+    <DataStreamProvider>
+      <Messages {...props} continueDisabledReason={reason} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  expect(onContinue).not.toHaveBeenCalled();
+  expect(props.onRetry).not.toHaveBeenCalled();
+  expect(toastError).toHaveBeenCalledWith(reason);
+  rerender(
+    <DataStreamProvider>
+      <Messages {...props} />
+    </DataStreamProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Use daily allowance" }));
+  await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1));
+  expect(onContinue).toHaveBeenCalledWith("auto", {
+    type: "paid_daily_free_allowance",
   });
 });

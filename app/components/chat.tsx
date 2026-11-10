@@ -6,6 +6,7 @@ import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
 } from "@/app/hooks/useCloudRecoveryAdmission";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart } from "ai";
@@ -422,8 +423,10 @@ function StreamEffects({
   resetRef,
   hasActiveStream,
   sendDisabledReason,
+  finishReason,
 }: {
   sendDisabledReason?: string;
+  finishReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -464,6 +467,7 @@ function StreamEffects({
     agentPermissionMode,
     selectedModel,
     sendDisabledReason,
+    finishReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -2519,7 +2523,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Content comparison is required because a partial and completed text part can
     // share the same message ID and part count.
-    const current = messagesRef.current;
+    // Resume prompts are local control messages omitted from saved history.
+    // They must not block a completed answer or file receipt from reconciling.
+    const current = messagesRef.current.filter(
+      (message) => message.role !== "user" || !message.metadata?.isAutoContinue,
+    );
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
@@ -2740,6 +2748,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       persistedGoal?.state !== "running" &&
       !agentLongRunId &&
       !activeTriggerRunId &&
+      chatDataForCurrentChat?.finish_reason !==
+        LOCAL_CONNECTION_LOST_FINISH_REASON &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2790,6 +2800,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     persistedGoal?.state,
     agentLongRunId,
     activeTriggerRunId,
+    chatDataForCurrentChat?.finish_reason,
     shouldUseAgentLong,
     messageQueue,
     queueChatId,
@@ -2982,6 +2993,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
       <SkillsManagerProvider scopeKey={chatId}>
         <StreamEffects
+          finishReason={chatDataForCurrentChat?.finish_reason}
           sendDisabledReason={computerSendDisabledReason}
           key={chatId}
           chatId={chatId}
@@ -3104,6 +3116,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                         isMobile={isMobile}
                         tempChatFileDetails={tempChatFileDetails}
                         finishReason={chatDataForCurrentChat?.finish_reason}
+                        continueDisabledReason={computerSendDisabledReason}
                         agentRunSpendCapWarning={agentRunSpendCapWarning}
                         uploadStatus={uploadStatus}
                         summarizationStatus={summarizationStatus}

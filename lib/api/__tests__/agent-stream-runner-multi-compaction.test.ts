@@ -1,3 +1,4 @@
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
@@ -6660,4 +6661,29 @@ describe("createAgentStream repeated compaction", () => {
       ).toBeUndefined();
     },
   );
+});
+
+test("local loss preserves a manual stop reason through model abort and finish", async () => {
+  const controller = new AbortController();
+  const state = initAgentStreamState([], { usedTokens: 0, maxTokens: 128_000 });
+  const stream = (await createAgentStream(
+    "model-deepseek-v4-flash-0731",
+    createTestStreamContext({
+      abortController: controller,
+      modelName: "model-deepseek-v4-flash-0731",
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
+    }) as any,
+    state,
+  )) as any;
+  controller.abort(new LocalConnectionLostError());
+  await stream.onAbort({ steps: [] });
+  expect(state.streamFinishReason).toBe("local-connection-lost");
+  state.stoppedDueToElapsedTimeout = true;
+  await stream.onFinish({
+    finishReason: "stop",
+    usage: {},
+    response: { modelId: "test-model" },
+  });
+  expect(state.streamFinishReason).toBe("local-connection-lost");
 });

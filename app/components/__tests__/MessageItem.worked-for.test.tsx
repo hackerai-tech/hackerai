@@ -59,7 +59,11 @@ jest.mock("../BranchIndicator", () => ({
 }));
 
 jest.mock("../FinishReasonNotice", () => ({
-  FinishReasonNotice: () => <div data-testid="finish-reason-notice" />,
+  FinishReasonNotice: ({ onContinue }: { onContinue?: () => void }) => (
+    <div data-testid="finish-reason-notice">
+      {onContinue && <button onClick={() => onContinue()}>Resume</button>}
+    </div>
+  ),
 }));
 
 const assistantMessage = {
@@ -145,6 +149,40 @@ describe("MessageItem WorkedFor rendering", () => {
     expect(screen.getByLabelText("Goal message status")).toHaveTextContent(
       "Goal achieved in 52s",
     );
+  });
+
+  it("uses the current Resume callback through the real memoized message component", () => {
+    const previous = jest.fn();
+    const current = jest.fn();
+    const props = {
+      message: assistantMessage,
+      index: 1,
+      messagesLength: 2,
+      lastAssistantMessageIndex: 1,
+      lastUserMessageIndex: 0,
+      finishReason: "local-connection-lost",
+      status: "ready" as const,
+      canEdit: false,
+      isEditing: false,
+      feedbackInputMessageId: null,
+      branchBoundaryIndex: undefined,
+      onStartEdit: jest.fn(),
+      onSaveEdit: jest.fn(async () => {}),
+      onCancelEdit: jest.fn(),
+      onRegenerate: jest.fn(),
+      onFeedback: jest.fn(),
+      onFeedbackSubmit: jest.fn(async () => {}),
+      onFeedbackCancel: jest.fn(),
+      onShowAllFiles: jest.fn(),
+      getCachedUrl: jest.fn(),
+    };
+    const { rerender } = render(
+      <MessageItem {...props} onContinue={previous} />,
+    );
+    rerender(<MessageItem {...props} onContinue={current} />);
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(current).toHaveBeenCalledTimes(1);
+    expect(previous).not.toHaveBeenCalled();
   });
 
   it("hides a stopped run's recovery notice after a newer user message", () => {
