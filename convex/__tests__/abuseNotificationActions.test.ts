@@ -27,7 +27,7 @@ const report = {
 };
 beforeEach(() => {
   process.env.ABUSE_SMTP_PASSWORD = "synthetic-password";
-  process.env.ABUSE_NOTIFICATION_REVIEW_URL = "https://reports.example.test";
+  delete process.env.ABUSE_NOTIFICATION_REVIEW_URL;
   process.env.ABUSE_EVIDENCE_KEYS = JSON.stringify({
     active: "test",
     keys: { test: "11".repeat(32) },

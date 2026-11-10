@@ -259,7 +259,7 @@ export default function ReportForm({
             {copied ? "Copied" : "Copy reference"}
           </Button>
           <span role="status" className="sr-only">
-            {copied ? "Case reference copied" : ""}
+            {copied ? "Report reference copied" : ""}
           </span>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">

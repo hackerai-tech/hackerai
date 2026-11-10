@@ -40,8 +40,7 @@ The web API validates report fields and Cloudflare Siteverify before enqueueing,
 requiring the configured hostname and `abuse_report` action. Missing, expired,
 reused or mismatched tokens fail closed, including a seven-second provider timeout.
 Tokens never enter encrypted payloads, fingerprints or analytics; report contents
-are not sent to Siteverify. The intake and former operator routes suppress product
-analytics and Intercom startup.
+are not sent to Siteverify. The intake route suppresses product analytics and Intercom startup.
 
 The form refreshes expired challenges and preserves fields after errors. A lost
 response can be retried with the same submission ID and a renewed challenge. The
@@ -115,7 +114,10 @@ code merge and requires the operational ownership and policy decisions above.
 
 ## Historical cases and containment
 
-1. Open the queue or a full `AB-…` reference. Treat submitted fields as allegations.
+1. Use the authorized service client to list historical cases or read a full
+   `AB-…` reference through `abuseCases.list` / `abuseCases.read`. Evidence reads
+   require the operator allowlist and create an audit event. Treat submitted
+   fields as allegations.
 2. Record verified attribution separately from allegations and decisions. Check the
    source address **and source port**, timezone, protocol, provider records, and the
    exact account, chat, root run, region, and selected sandbox. An IP alone is not
@@ -207,7 +209,7 @@ separate restriction and runtime checks are recorded.
 5. After appeal or resolution review, use `userSuspensions.resolveBySource` only
    with the exact recorded user and `abuse-late:` source ID. Verify the selected
    restriction is resolved and independent restrictions remain active, then
-   record the result before resolving the case. The case's normal Resolve action
+   record the result before resolving the case. The case's `abuseCases.resolve` mutation
    does not remove this separately recorded late-report restriction.
 
 ## Resolution and evidence lifecycle
@@ -234,13 +236,14 @@ periods.
 Lawful preservation requirements and active case holds override scheduled deletion;
 record the basis, scope, owner and next review date without placing privileged
 advice in public records. A reviewer must check that basis before releasing a hold.
-The metadata row requires a separately authorized backend procedure because the
-case-evidence button intentionally retains audit metadata. Do not describe that
-button as full account erasure. Track every due review and deletion in the internal
-case workflow and record completion or a justified hold extension.
-After resolution and
-hold release, an operator can delete report and note contents by typing the full
-reference. Deletion runs in bounded batches; repeat while the backend reports more remain.
+The metadata row requires a separately authorized backend procedure because
+`abuseCases.eraseEvidence` intentionally retains audit metadata. Do not describe
+it as full account erasure. Track due reviews and deletions in the internal case
+record, including completed work or a justified hold extension. After resolution
+and reviewed hold release, the authorized service client can call
+`abuseCases.eraseEvidence` with the current revision and full reference as
+confirmation. Deletion runs in bounded batches; read the updated revision and
+repeat while the backend reports more remain.
 Audit metadata and containment identifiers remain. Provider snapshots are separate:
 review the exact case/sandbox/region association, obtain the appropriate deletion
 authorization, delete only that snapshot, verify provider absence, and record the
