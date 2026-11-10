@@ -16,7 +16,7 @@ const unsupported = new RegExp(`\\b(?:${UNSUPPORTED_TOOLS.join("|")})\\b`);
 // reporting-section rewrites to an unfamiliar revision of a security playbook.
 const reviewedSources: Record<string, string> = {
   "custom/dependency_cve_scanning":
-    "49a94cda76b22f1882e24d353be3b14bcac6496a40d25123d165b73ec291b613",
+    "6cb4cd828172dda4f8fe89282e53b5f1e52bb4738af74876c7b74fa51f2dfdbe",
   "custom/npx_confusion":
     "a024221c836dda755369d5bc8c51fc6dd5735a2b89044d94e446bd6615cc1b61",
   "custom/source_aware_sast":
@@ -25,7 +25,7 @@ const reviewedSources: Record<string, string> = {
     "84dd66db527ace752b958eb2aa84a51fdcaf5144f8fada72f714388b0cafdb99",
 };
 const contracts: Record<string, string> = {
-  "custom/dependency_cve_scanning": `Return separate evidence for each advisory-matched dependency CVE: lockfile and scanner artifacts, package/ecosystem, installed and fixed versions, all affected manifests, direct introducer and dependency chain, advisory source and published CVSS, reachability/source-to-sink evidence, and limitations. A pinned vulnerable version is static dependency evidence, not proof of a dynamically exploitable application path. Keep dynamically reproduced application chains separate from the dependency candidate. The parent decides what to report and how to rate it.`,
+  "custom/dependency_cve_scanning": `Return separate evidence for each advisory-matched dependency CVE: lockfile and scanner artifacts, package/ecosystem, installed and fixed versions, all affected manifests, direct introducer and dependency chain, advisory source and published CVSS, reachability/source-to-sink evidence, and limitations. A pinned vulnerable version is static dependency evidence, not proof of a dynamically exploitable application path. Keep dynamically reproduced application chains separate from the dependency candidate. Return every advisory-matched candidate, including incomplete or inconclusive analysis, to the parent with the remaining proof gap; do not silently drop it or treat missing evidence as a negative verdict. The parent decides what to report and how to rate it.`,
   "custom/source_aware_sast": `Return static candidates with source-to-sink traces, controls and counterevidence, scanner coverage/failures and artifact references. Advisory-matched dependency candidates can use lockfile, scanner and advisory evidence without a dynamic exploit claim; load custom/dependency_cve_scanning through the available skill tool when that methodology is needed. Keep dynamic reproductions distinct from static-only candidates.`,
   "custom/npx_confusion": `A namespace-resolution candidate without an advisory-matched CVE is not a dependency-CVE finding. Return the actual package/bin resolution, registry ownership evidence, triggering command/environment, applicable core condition, observed impact and counterevidence to the parent. Do not claim a verified execution path when only a spelling or namespace lead was found.`,
   "technologies/llm_applications": `Return advisory-matched dependency evidence separately from application/model/RAG/agent candidates. Preserve application/model/prompt/tool/corpus versions, baseline and adversarial trial counts, and external observations of authorization, data origin, downstream effects, persistence and consumption. Group evidence by technical root cause and distinguish static analysis, model behavior and dynamically reproduced effects.`,
@@ -75,6 +75,26 @@ export function compileSubagentSkillContent(
       if (start < 0 || end < 0)
         return { success: false, error: "Skill reporting section changed" };
       content = content.slice(0, start) + content.slice(end);
+      const usageStart = content.indexOf(
+        "Every CVE you report carries a verdict",
+      );
+      const verdictStart = content.indexOf("- **`reachable`**", usageStart);
+      if (usageStart < 0 || verdictStart < 0)
+        return { success: false, error: "Skill reachability section changed" };
+      content =
+        content.slice(0, usageStart) +
+        `Assess each advisory separately and return the evidence to the parent. Use the following code-path distinctions only when supported. For incomplete or inconclusive analysis, return unknown with the missing evidence and searches attempted; do not force a verdict.
+
+` +
+        content.slice(verdictStart);
+      content = content.replace(
+        "; or the only code that could use it cannot be inspected (a compiled\n  blob, a private bundle with no source) and nothing you can inspect reaches\n  it. Evidence: the search scope and the negative result.",
+        ". Evidence: the search scope and the negative result.\n\nIf code cannot be inspected, dynamic loading is unresolved, or a transitive dependency chain cannot be traced, preserve that as unknown rather than evidence of non-applicability.",
+      );
+      content = content.replace(
+        "### Reachability is a verdict on the code path, not on severity",
+        "",
+      );
       content = content.replace(
         "contains it, then pass to `create_dependency_report`:",
         "contains it, then return the introducer and resolution path as evidence to the parent:",
