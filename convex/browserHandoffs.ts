@@ -47,6 +47,7 @@ const publicSession = v.object({
 });
 const privateSession = v.object({
   runActive: v.boolean(),
+  hasCompletedTakeover: v.optional(v.boolean()),
   sessionId: v.string(),
   userId: v.string(),
   chatId: v.string(),
@@ -265,6 +266,8 @@ export const getForBackend = query({
     if (!row) return null;
     return {
       runActive: await currentOwner(ctx, row),
+      // Match requestWait's fulfilled-duplicate predicate without reading notes.
+      hasCompletedTakeover: !!row.exit_note_ids?.length,
       sessionId: row.session_id,
       userId: row.user_id,
       chatId: row.chat_id,
