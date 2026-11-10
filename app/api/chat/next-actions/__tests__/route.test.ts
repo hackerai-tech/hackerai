@@ -400,7 +400,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 6,
+    validationVersion: 8,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -415,7 +415,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
-test.each([undefined, 3, 4])(
+test.each([undefined, 3, 4, 6, 7])(
   "does not restore legacy prediction version %s or make a model call",
   async (validationVersion) => {
     saved = {
@@ -454,7 +454,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 6 }),
+      batch: expect.objectContaining({ validationVersion: 8 }),
     }),
   );
 });
@@ -480,7 +480,7 @@ test("emits partial known spend and unknown-call coverage on unavailable generat
       event: "contextual_next_actions_generated",
       properties: expect.objectContaining({
         outcome: "unavailable",
-        prompt_version: "ordered-tool-single-reply-v6",
+        prompt_version: "t3-next-message-v8",
         cost_usd: undefined,
         known_cost_usd: 0.0001,
         provider_calls: 2,
@@ -565,7 +565,7 @@ test.each([0, 50000])(
         batchId: "old",
         messageId: "answer",
         mode: "agent",
-        validationVersion: 6,
+        validationVersion: 8,
         suggestions: ["alpha"],
       },
     };

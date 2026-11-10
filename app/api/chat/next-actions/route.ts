@@ -175,7 +175,7 @@ export async function POST(req: NextRequest) {
       return empty(200, "source_expired");
     const properties = {
       definition_version: NEXT_ACTIONS_VERSION,
-      prompt_version: "ordered-tool-single-reply-v6",
+      prompt_version: "t3-next-message-v8",
       draft_validation_version: NEXT_ACTIONS_VALIDATION_VERSION,
       provider_accounting_version: 2,
       flag_key: NEXT_ACTIONS_FLAG,

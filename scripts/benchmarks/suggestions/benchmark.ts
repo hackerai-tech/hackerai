@@ -141,6 +141,8 @@ export function prepare(
     baselineSystem(),
     readFileSync(resolve(directory, "candidate.txt"), "utf8").trim(),
   ];
+  // Match each arm's runtime transport; T3's copied prompt expects plain text.
+  const outputFormats = ["text", "object"] as const;
   const rows = [];
   for (const [i, fixture] of cases.entries()) {
     if (!fixture.messages.length || !fixture.rubric)
@@ -158,6 +160,7 @@ export function prepare(
           split,
           skip: hasExplicitPredictionStop(sources),
           system: systems[arm],
+          outputFormat: outputFormats[arm],
           prompt: JSON.stringify(
             sources.map(({ role, text }) => ({ role, text })),
           ),
@@ -179,6 +182,7 @@ export function prepare(
       plannedProviderCalls: rows.filter((r) => !r.skip).length,
       fixtureHash: digest(JSON.stringify(cases)),
       systemHashes: systems.map(digest),
+      outputFormats,
       contextHash: digest(
         readFileSync(
           resolve(root, "lib/chat/next-actions/contracts.ts"),
@@ -406,11 +410,16 @@ async function main() {
             model: provider(settings.model),
             system: row.system,
             prompt: row.prompt,
-            output: Output.object({ schema: predictedNextActionSchema }),
+            ...(row.outputFormat === "object"
+              ? { output: Output.object({ schema: predictedNextActionSchema }) }
+              : {}),
             abortSignal: AbortSignal.timeout(settings.timeout),
           });
           retainProviderReceipt(receipt, result.usage, result.response);
-          receipt.output = result.output;
+          receipt.output =
+            row.outputFormat === "text"
+              ? { suggestion: result.text.trim() || null }
+              : result.output;
         }
       } catch (error) {
         // Structured-output failure can still carry a billed provider receipt.

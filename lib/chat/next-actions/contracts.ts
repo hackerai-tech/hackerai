@@ -7,7 +7,7 @@ import {
 export const NEXT_ACTIONS_FLAG = "contextual-next-actions";
 export const NEXT_ACTIONS_VERSION = 1;
 // Legacy field name: this versions the saved prediction format/behavior, not truth or authorization.
-export const NEXT_ACTIONS_VALIDATION_VERSION = 6;
+export const NEXT_ACTIONS_VALIDATION_VERSION = 8;
 export const nextActionsRequestSchema = z
   .object({
     chatId: z.string().uuid(),

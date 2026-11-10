@@ -12,7 +12,10 @@ customer conversations, emit analytics, or change flags, preferences, billing or
 deployments. Preparation and tests are offline. `run` is the explicit paid
 Development-provider step. The baseline is the checkout's literal system prompt,
 actual context builder, tool renderer, stop gate and parser. The manifest pins
-source/configuration hashes. This compares prompts on the same model route, not
+source/configuration hashes. The baseline uses the shipped plain-text response
+format; the candidate uses the structured `suggestion` object. Each row and the
+manifest pin that choice so results exercise the intended parsing path. This
+compares prompt/format pairs on the same model route, not
 complete application delivery or real customer outcomes.
 
 `prediction-fixtures.json` contains prediction-fit cases and reviewer-only criteria.
