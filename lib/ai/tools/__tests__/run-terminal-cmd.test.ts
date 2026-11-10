@@ -1,3 +1,4 @@
+import { waitForCaptchaCapture } from "../utils/captcha-capture-files";
 /**
  * Tests for `run_terminal_cmd` — focusing on exec and interactive session creation.
  *
@@ -287,27 +288,45 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test.each([false, true])(
-    "qualifies recovery screenshots without original dispatch (background=%s)",
+    "qualifies recovery screenshots and coordinates file reads (background=%s)",
     async (is_background) => {
       const { context, sandboxManager } = makeContext({});
-      context.captureCaptchaVisionCommand = jest.fn(async () => ({
-        result: {
-          exitCode: 0,
-          output: "Screenshot saved",
-          browserChallenge: { status: "vision_capture_ready" },
+      let finish!: (value: { result: Record<string, unknown> }) => void;
+      context.captureCaptchaVisionCommand = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const capturing = runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned screenshot /tmp/image.png",
+        is_background,
+      });
+      let readReady = false;
+      const reading = waitForCaptchaCapture(context, "/tmp/image.png").then(
+        () => {
+          readReady = true;
         },
-      }));
-      expect(
-        await runTool(createRunTerminalCmd(context), {
-          command: "agent-browser --session owned screenshot /tmp/image.png",
-          is_background,
-        }),
-      ).toMatchObject({
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(readReady).toBe(false);
+      } finally {
+        finish({
+          result: {
+            exitCode: 0,
+            browserChallenge: { status: "vision_capture_ready" },
+          },
+        });
+      }
+      expect(await capturing).toMatchObject({
         result: {
           exitCode: 0,
           browserChallenge: { status: "vision_capture_ready" },
         },
       });
+      await reading;
+      expect(readReady).toBe(true);
       expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
       expect(context.captureCaptchaVisionCommand).toHaveBeenCalledTimes(1);
     },

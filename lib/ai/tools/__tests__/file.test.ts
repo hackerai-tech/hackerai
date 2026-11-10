@@ -1,3 +1,5 @@
+import { trackCaptchaCapture } from "../utils/captcha-capture-files";
+import { setImmediate } from "node:timers";
 jest.mock("../utils/sandbox-file-uploader", () => ({
   getSandboxUploadedFileUrl: jest.fn(),
   uploadSandboxFileToConvex: jest.fn(),
@@ -74,6 +76,7 @@ function makeContext(
 async function runTool(
   tool: ReturnType<typeof createFile>,
   input: Record<string, unknown>,
+  abortSignal?: AbortSignal,
 ) {
   const execute = (
     tool as unknown as {
@@ -82,7 +85,7 @@ async function runTool(
   ).execute;
   return execute(input, {
     toolCallId: "call-1",
-    abortSignal: undefined,
+    abortSignal,
     messages: [],
   });
 }
@@ -719,6 +722,93 @@ describe("file tool large text safety", () => {
 });
 
 describe("file tool image view", () => {
+  test.each([
+    "qualified",
+    "failed",
+    "other-path",
+    "other-context",
+    "canceled",
+    "pre-canceled",
+  ])("coordinates CAPTCHA capture with file reads: %s", async (variant) => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://s3.example/screenshot.png?signature=fresh",
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+      sizeBytes: 68,
+      tokens: 0,
+    });
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        path: "/tmp/screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        data: VALID_PNG_BASE64,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const context = makeContext(sandbox, { modelName: "model-kimi-k3" });
+    let finish!: (value: { result: Record<string, unknown> }) => void;
+    const capturing = trackCaptchaCapture(
+      context,
+      variant === "other-path" ? "/tmp/other.png" : "/tmp/screenshot.png",
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const readContext =
+      variant === "other-context"
+        ? makeContext(sandbox, { modelName: "model-kimi-k3" })
+        : context;
+    const controller = new AbortController();
+    if (variant === "pre-canceled") {
+      finish({
+        result: { browserChallenge: { status: "vision_capture_ready" } },
+      });
+      await capturing;
+      controller.abort();
+    }
+    const viewing = runTool(
+      createFile(readContext),
+      {
+        action: "view",
+        path: "/tmp/./screenshot.png",
+        brief: "Inspect the new challenge",
+      },
+      controller.signal,
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (variant.startsWith("other-")) expect(commandRun).toHaveBeenCalled();
+      else expect(commandRun).not.toHaveBeenCalled();
+      if (variant === "canceled") controller.abort();
+    } finally {
+      finish({
+        result: {
+          browserChallenge: {
+            status:
+              variant === "failed"
+                ? "handoff_required"
+                : "vision_capture_ready",
+          },
+        },
+      });
+    }
+    await capturing;
+    const result = await viewing;
+    if (variant === "failed" || variant.endsWith("canceled")) {
+      expect(result).toMatchObject({
+        error: expect.stringContaining(
+          variant === "failed" ? "not qualified" : "canceled",
+        ),
+      });
+      expect(commandRun).not.toHaveBeenCalled();
+    } else expect(result).not.toHaveProperty("error");
+  });
   beforeEach(() => {
     mockUploadSandboxFileToConvex.mockReset();
     mockGetSandboxUploadedFileUrl.mockReset();
