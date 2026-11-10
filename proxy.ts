@@ -25,6 +25,8 @@ import {
 } from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/abuse",
+  "/api/abuse",
   "/api/analytics-consent",
   "/api/health/connectivity",
   "/api/health/core",
@@ -64,6 +66,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/privacy-policy",
   "/terms-of-service",
   "/trust",
+  "/abuse",
   "/download",
   "/product",
   "/pricing",
