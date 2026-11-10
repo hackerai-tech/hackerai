@@ -1628,12 +1628,15 @@ export const subagentTask = task({
                       activeAbort.abort();
                       throw error;
                     }
-                    if (monthly.usedPoints >= monthly.limitPoints) {
+                    if (
+                      monthly.usedPoints >= monthly.limitPoints &&
+                      !resultValue
+                    ) {
                       freeMonthlyCostLimitExceeded = true;
                       activeAbort.abort();
                     }
                   }
-                  if (currentCostDollars >= costLimitDollars) {
+                  if (currentCostDollars >= costLimitDollars && !resultValue) {
                     spendCapExceeded = true;
                     activeAbort.abort();
                   }
