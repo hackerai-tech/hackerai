@@ -17,6 +17,7 @@ import {
   LocalFileRequestError,
 } from "../utils/local-sandbox-errors";
 import { trackForegroundCommand } from "../utils/foreground-commands";
+import { SandboxFileNotFoundError } from "../utils/sandbox-file-errors";
 
 const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
@@ -82,6 +83,43 @@ describe("get_terminal_files", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each(["upload_url", "transfer", "file_registration"] as const)(
+    "does not substitute a same-named Cloud file after a %s failure",
+    async (phase) => {
+      const context = makeContext();
+      jest
+        .mocked(context.sandboxManager.getSandboxInfo)
+        .mockReturnValue({ type: "cloud" });
+      mockUploadSandboxFileToConvex.mockImplementation(async (args) => {
+        if (args.fullPath === "/home/user/report.txt") {
+          args.onPhase?.(phase);
+          throw new Error("The requested file could not be delivered");
+        }
+        return {
+          fileId: "different-file" as never,
+          url: "https://example.invalid/different-file",
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 5,
+          tokens: 0,
+        };
+      });
+
+      const result = await runTool(createGetTerminalFiles(context), {
+        files: ["report.txt"],
+      });
+      expect(result).toMatchObject({
+        files: [],
+        deliveryReceipts: [],
+        failedFiles: [{ path: "report.txt" }],
+      });
+      expect(context.fileAccumulator.add).not.toHaveBeenCalled();
+      expect(
+        mockUploadSandboxFileToConvex.mock.calls.map(([args]) => args.fullPath),
+      ).toEqual(["/home/user/report.txt"]);
+    },
+  );
 
   it("retains the acquired Desktop type when manager state changes before a failed delivery", async () => {
     const context = makeContext();
@@ -218,12 +256,12 @@ describe("get_terminal_files", () => {
       if (args.fullPath === "/home/user/recovered.txt") {
         args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
-        throw new Error(privateMessage);
+        throw new SandboxFileNotFoundError(privateMessage);
       }
       if (args.fullPath.endsWith("missing.txt")) {
         args.onNativeStatFailure?.("file_missing");
         args.onPhase?.("file_metadata");
-        throw new Error(privateMessage);
+        throw new SandboxFileNotFoundError(privateMessage);
       }
       if (args.fullPath === "/failed-upload.txt") {
         args.onPhase?.("transfer");
@@ -302,8 +340,9 @@ describe("get_terminal_files", () => {
       files: ["recovered.txt", "timeout.txt", "invalid.txt", "metadata.txt"],
     });
     expect(result).toMatchObject({
-      files: [{ path: "recovered.txt" }],
+      files: [],
       failedFiles: [
+        { path: "recovered.txt" },
         { path: "timeout.txt" },
         { path: "invalid.txt" },
         { path: "metadata.txt" },
@@ -311,11 +350,15 @@ describe("get_terminal_files", () => {
     });
     const [, fields] = jest.mocked(phLogger.event).mock.calls.at(-1)!;
     expect(fields).toMatchObject({
-      delivered_file_count: 1,
-      failed_file_count: 3,
-      failure_phase_counts: { transfer: 2, file_metadata: 1 },
+      delivered_file_count: 0,
+      failed_file_count: 4,
+      failure_phase_counts: { transfer: 3, file_metadata: 1 },
       transfer_failure_diagnostic_version: 1,
-      transfer_failure_reason_counts: { readiness_timeout: 1, unknown: 1 },
+      transfer_failure_reason_counts: {
+        timeout: 1,
+        readiness_timeout: 1,
+        unknown: 1,
+      },
     });
     expect(JSON.stringify(fields)).not.toMatch(
       /private-path|signed-url|recovered\.txt|timeout\.txt|invalid\.txt|metadata\.txt/,
@@ -338,6 +381,8 @@ describe("get_terminal_files", () => {
       (args.onNativeStatFailure as ((value: string) => void) | undefined)?.(
         reason,
       );
+      if (reason === "file_missing")
+        throw new SandboxFileNotFoundError("PRIVATE file");
       throw new Error("PRIVATE file error");
     });
     await runTool(createGetTerminalFiles(context), {
@@ -683,7 +728,9 @@ describe("get_terminal_files", () => {
 
   it("keeps Cloud fallback paths and records the path that actually uploaded", async () => {
     mockUploadSandboxFileToConvex
-      .mockRejectedValueOnce(new Error("File not found"))
+      .mockRejectedValueOnce(
+        new SandboxFileNotFoundError("/home/user/report.zip"),
+      )
       .mockResolvedValueOnce({
         url: "https://files.example/report.zip",
         fileId: "file_report" as never,
@@ -933,10 +980,10 @@ describe("get_terminal_files", () => {
     );
   });
   it.each([
-    ["native", true, 7],
-    ["native", false, 6],
-    ["command", true, 7],
-    ["command", false, 6],
+    ["native", true, 4],
+    ["native", false, 3],
+    ["command", true, 4],
+    ["command", false, 3],
   ] as const)(
     "budgets %s recovery across files and candidate paths (reconnect succeeds: %s)",
     async (kind, reconnects, uploads) => {

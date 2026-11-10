@@ -10,6 +10,7 @@ import {
   readCloudWorkspaceState,
   assertCloudWorkspaceAvailable,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -877,6 +878,15 @@ export const createAgentTriggerPost = ({
           organizationId,
         }),
       ]);
+      if (
+        isAutomaticContinuation &&
+        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "The local connection was lost. Resume manually from the chat when your computer is connected.",
+        );
+      }
       const isNewChat = !existingChat && !regenerate && !isAutoContinue;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
         agentPermissionMode === "auto_review"

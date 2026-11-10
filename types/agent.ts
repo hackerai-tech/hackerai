@@ -31,6 +31,8 @@ export interface SandboxInfo {
 }
 
 export interface SandboxManager {
+  /** End this run when its local connection is lost; a successor requires a new run. */
+  stopOnLocalDisconnect?(onLost: () => void): () => void;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;

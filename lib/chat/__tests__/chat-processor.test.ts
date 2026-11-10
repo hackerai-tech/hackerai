@@ -1,3 +1,4 @@
+import { getIncompleteToolErrorText } from "../tool-abort-utils";
 import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
@@ -623,4 +624,10 @@ describe("fixIncompleteMessageParts", () => {
     expect(result[0].type).toBe("step-start");
     expect(result[1].type).toBe("text");
   });
+});
+
+test("local connection interruption does not claim the command was canceled", () => {
+  expect(getIncompleteToolErrorText("local-connection-lost")).toContain(
+    "outcome is unknown",
+  );
 });
