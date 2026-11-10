@@ -1544,7 +1544,7 @@ export function resolveAgentTierToProviderKey(
     case "hackerai-pro":
       return DEEPSEEK_1017_MODEL_KEY;
     case "hackerai-max":
-      return "model-glm-5.3";
+      return "model-grok-4.6";
   }
 }
 

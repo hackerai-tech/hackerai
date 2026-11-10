@@ -25,10 +25,6 @@ import {
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
-import {
-  evaluateMaxGrok46,
-  MaxModelTelemetry,
-} from "@/lib/experiments/max-grok-46";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -590,27 +586,9 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
-      const maxGrokAssignment = await evaluateMaxGrok46({
-        posthog: (posthog ??= PostHogClient()),
-        userId,
-        subscription,
-        mode,
-        selectedModelOverride,
-        hasImages:
-          countFileAttachments(processedMessages).imageCount > 0 ||
-          uiMessagesContainImageViewResult(processedMessages),
-        limitRescue: Boolean(limitRescue),
-      });
-      if (maxGrokAssignment) selectedModel = maxGrokAssignment.modelKey;
-      const maxModelTelemetry = maxGrokAssignment
-        ? new MaxModelTelemetry(posthog, userId, maxGrokAssignment, {
-            requestId: assistantMessageId,
-            chatId,
-            subscription,
-            release: process.env.VERCEL_GIT_COMMIT_SHA,
-            environment: process.env.VERCEL_ENV ?? "development",
-          })
-        : undefined;
+      // Keep the entitled Max baseline stable while shared security steps run.
+      const maxBaselineModel =
+        selectedModelOverride === "hackerai-max" ? selectedModel : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           process.env.VERCEL_ENV === "production" ||
@@ -651,7 +629,6 @@ export const createChatHandler = () => {
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         assignment: abliteratedExperiment,
-        modelExperimentAssignment: maxGrokAssignment,
         selectedModelOverride,
         posthog,
         userId,
@@ -681,7 +658,7 @@ export const createChatHandler = () => {
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
         ),
       });
-      const requestHasImages =
+      let requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
@@ -1298,12 +1275,11 @@ export const createChatHandler = () => {
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(
-                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     {
-                      hasImageInputs:
-                        maxModelTelemetry?.hasImageInputs ?? requestHasImages,
+                      hasImageInputs: requestHasImages,
                     },
                   );
             let activeModelName = selectedModel;
@@ -1756,14 +1732,15 @@ export const createChatHandler = () => {
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
-              maxModelTelemetry,
-              onProviderRequestStart: (configuredModel) => {
+              onProviderRequestStart: (configuredModel, hasImageInputs) => {
                 recordFlashRoutingExposure(configuredModel);
-                if (maxModelTelemetry?.hasAssignedExposure)
-                  taskOutcomeSurvey?.expose?.();
-                if (maxModelTelemetry?.hasImageInputs) {
+                requestHasImages ||= Boolean(hasImageInputs);
+                if (
+                  selectedModelOverride === "hackerai-max" &&
+                  requestHasImages
+                ) {
                   fallbackModel = getRetryFallbackModel(
-                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     { hasImageInputs: true },
@@ -2610,9 +2587,7 @@ export const createChatHandler = () => {
                                   : providerContentBlocked || retryEmptyResponse
                                     ? "error"
                                     : "success";
-                                await taskOutcomeSurvey?.flush?.();
                                 captureAgentCompletionAnalytics({
-                                  maxModelTelemetry,
                                   responseMessageId: retryMessageId,
                                   cacheHistoryTelemetry:
                                     state.cacheHistoryTelemetry,
@@ -3015,9 +2990,7 @@ export const createChatHandler = () => {
                             state.streamFinishReason === "error")
                         ? "error"
                         : "success";
-                    await taskOutcomeSurvey?.flush?.();
                     captureAgentCompletionAnalytics({
-                      maxModelTelemetry,
                       responseMessageId: assistantMessageId,
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
