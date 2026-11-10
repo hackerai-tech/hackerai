@@ -54,6 +54,7 @@ import type * as lib_goalInputTiming from "../lib/goalInputTiming.js";
 import type * as lib_goalValidators from "../lib/goalValidators.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
 import type * as lib_legacyEngagementScope from "../lib/legacyEngagementScope.js";
+import type * as lib_localSandboxHeartbeat from "../lib/localSandboxHeartbeat.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_nextActionsState from "../lib/nextActionsState.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
@@ -154,6 +155,7 @@ declare const fullApi: ApiFromModules<{
   "lib/goalValidators": typeof lib_goalValidators;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
   "lib/legacyEngagementScope": typeof lib_legacyEngagementScope;
+  "lib/localSandboxHeartbeat": typeof lib_localSandboxHeartbeat;
   "lib/logger": typeof lib_logger;
   "lib/nextActionsState": typeof lib_nextActionsState;
   "lib/retainedTail": typeof lib_retainedTail;
