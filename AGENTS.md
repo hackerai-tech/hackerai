@@ -124,7 +124,9 @@ server-side lint. The required `Review and security` status blocks new
 high/critical findings from selected CodeQL scans; inert documentation retains
 intentional skips. CodeRabbit is advisory and is not required by that gate.
 Use the `Update review and security policy` workflow's PR-number input to
-re-evaluate after missing scan evidence becomes available. Run an explicit
+re-evaluate after missing scan evidence becomes available. Automatic events use
+main; a maintainer can manually select a policy revision for a policy update.
+Run an explicit
 affected suite when the dependency graph cannot represent the change. Do not rerun
 the full suite locally for every review correction; use `pnpm test` when a local full run is needed.
 
