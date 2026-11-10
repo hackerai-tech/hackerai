@@ -286,6 +286,8 @@ export async function evaluatePullRequest(
     if (
       current.head?.sha !== pr.head.sha ||
       current.base?.sha !== pr.base.sha ||
+      (decision.security.state !== "skip" &&
+        current.merge_commit_sha !== pr.merge_commit_sha) ||
       current.state !== "open"
     )
       decision = policyResult(
