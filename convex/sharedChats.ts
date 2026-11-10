@@ -1,3 +1,4 @@
+import { createChatHistoryAccess } from "./lib/chatHistoryAccess";
 import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import { query, mutation } from "./lib/serviceFunctions";
 import { v } from "convex/values";
@@ -382,6 +383,8 @@ export const forkSharedChat = mutation({
       branched_from_title: chat.title,
       update_time: Date.now(),
     });
+
+    await createChatHistoryAccess(ctx, newChatId, identity.subject);
 
     // Copy messages to new chat
     for (const msg of frozenMessages) {
