@@ -1021,3 +1021,56 @@ it("bounds an unknown action and preserves POST503 when its diagnostic sink thro
   expect(failedSink.status).toBe(503);
   expect(await failedSink.json()).toEqual({ state: "disconnected" });
 });
+
+it.each(["take", "resume", "input"])(
+  "forwards %s input failure context while preserving rollback and HTTP503",
+  async (action) => {
+    mockFailure = "";
+    mockState = action === "input" ? "human" : "recovery";
+    const context = {
+      input_diagnostic_version: 1,
+      input_stage: "wait_bridge",
+      input_error_kind: "command_exit",
+      input_http_status: "none",
+      input_command_exit_code: 6,
+    };
+    mockSendInput.mockImplementationOnce(async (...args) => {
+      const observe = args[5];
+      if (typeof observe === "function") observe(context);
+      throw new Error("PRIVATE_INPUT_PASSWORD");
+    });
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "g".repeat(43),
+      inputs: [{ kind: "text", text: "PRIVATE_PASSWORD" }],
+      note: "PRIVATE_NOTE",
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action,
+        failure_stage: action === "input" ? "send_input" : "release_pointer",
+        post_input_diagnostic_version: 1,
+        post_input_context_status: "recorded",
+        ...context,
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toMatch(
+      /PRIVATE|default/,
+    );
+    expect(mockMutation).toHaveBeenCalledWith(
+      action === "take"
+        ? "abortTakeoverForBackend"
+        : action === "resume"
+          ? "abortResumeForBackend"
+          : "finishInputForBackend",
+      expect.any(Object),
+    );
+    expect(mockSendInput).toHaveBeenCalledTimes(1);
+  },
+);
