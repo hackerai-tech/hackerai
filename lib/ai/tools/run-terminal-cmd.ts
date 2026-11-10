@@ -1657,9 +1657,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 },
               };
             }
+            const visionLimit = context.guardCaptchaVisionCommand?.(
+              input.command,
+            );
+            if (visionLimit)
+              return {
+                result: {
+                  exitCode: 1,
+                  output: "",
+                  browserChallenge: visionLimit,
+                },
+              };
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };
+            context.finishCaptchaVisionCommand?.(
+              input.command,
+              output.result.exitCode === 0,
+            );
             captureAgentBrowserOpenFailure({
               context,
               command: input.command,

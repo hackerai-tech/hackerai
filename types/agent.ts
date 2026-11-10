@@ -702,6 +702,10 @@ export interface ToolContext {
     sessionName: string,
     signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
+  guardCaptchaVisionCommand?: (
+    command: string,
+  ) => Record<string, unknown> | undefined;
+  finishCaptchaVisionCommand?: (command: string, succeeded: boolean) => void;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

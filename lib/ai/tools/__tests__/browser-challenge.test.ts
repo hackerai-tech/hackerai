@@ -933,3 +933,69 @@ it("does not advertise vision after another solved widget is added", async () =>
     visionFallbackAvailable: false,
   });
 });
+
+it("blocks expired recovery commands but permits observation, cleanup and verified completion", async () => {
+  const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+  try {
+    const { tool, solve, evaluate } = setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      await (args[3] as (id: number) => Promise<void>)(123);
+      throw new CaptchaUnsolvableError();
+    });
+    await tool.request("solve", "owned");
+    expect(
+      tool.guardVisionCommand(
+        "agent-browser --session owned screenshot /tmp/image.png",
+      ),
+    ).toBeUndefined();
+    now.mockReturnValue(61000);
+    for (const command of [
+      "agent-browser --session owned click @e1",
+      "python3 crop.py",
+      "agent-browser --session owned close; echo extra",
+    ])
+      expect(tool.guardVisionCommand(command)).toMatchObject({
+        reason: "vision_budget_exhausted",
+      });
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned snapshot -i"),
+    ).toBeUndefined();
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned close"),
+    ).toBeUndefined();
+    expect(tool.getReceiptPrompt()).toContain(
+      "Native vision seconds remaining: 0",
+    );
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      widgets: [{ ...observation.widgets[0], tokenPresent: true }],
+    } as never);
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      status: "no_pending_challenge",
+    });
+    expect(
+      tool.guardVisionCommand(
+        "agent-browser --session owned eval document.title",
+      ),
+    ).toBeUndefined();
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      reason: "vision_challenge_returned",
+      visionFallbackAvailable: false,
+    });
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @e1"),
+    ).toMatchObject({ reason: "vision_budget_exhausted" });
+    tool.finishVisionCommand("agent-browser --session owned close", false);
+    expect(tool.guardVisionCommand("ls")).toMatchObject({
+      reason: "vision_budget_exhausted",
+    });
+    tool.finishVisionCommand("agent-browser --session owned close", true);
+    expect(tool.guardVisionCommand("ls")).toBeUndefined();
+    expect(solve).toHaveBeenCalledTimes(1);
+  } finally {
+    now.mockRestore();
+  }
+});

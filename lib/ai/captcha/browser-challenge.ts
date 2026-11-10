@@ -19,6 +19,7 @@ import {
   CAPTCHA_UNSOLVABLE_VISION_GUIDANCE,
 } from "./guidance";
 import { CaptchaUnsolvableError } from "./provider-error";
+import { isAgentBrowserSnapshotCommand } from "@/lib/utils/agent-browser-command";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
 import {
@@ -77,7 +78,13 @@ export function createBrowserChallengeHandler(
     siteKey: string;
     widgetId?: string;
   };
-  let visionFallback: (VisionScope & { deadline: number }) | undefined;
+  let visionFallback:
+    | (VisionScope & {
+        deadline: number;
+        completed?: boolean;
+        stopped?: boolean;
+      })
+    | undefined;
   const matchesVisionScope = (
     identity: string,
     observation: BrowserChallengeObservation,
@@ -258,8 +265,15 @@ export function createBrowserChallengeHandler(
         if (current?.observationId !== ${JSON.stringify(managed.observationId)} || current.delivered || typeof current.release !== 'function') return false;
         return current.release() === true;
       })()`);
-      if (!pending.length && !observation.interstitial)
+      if (!pending.length && !observation.interstitial) {
+        if (
+          visionFallback &&
+          browser.identity === visionFallback.identity &&
+          target?.sessionName === visionFallback.sessionName
+        )
+          visionFallback.completed = true;
         return respond({ status: "no_pending_challenge" });
+      }
       if (action === "release") {
         visionFallback = undefined;
         const restored = managed
@@ -276,6 +290,9 @@ export function createBrowserChallengeHandler(
         });
       }
       if (visionFallback) {
+        // A briefly completed widget must not restart recovery when the site
+        // rejects it or issues another challenge. Preserve the original budget.
+        if (visionFallback.completed) visionFallback.stopped = true;
         const samePage = matchesVisionScope(
           browser.identity,
           observation,
@@ -292,12 +309,15 @@ export function createBrowserChallengeHandler(
         return visionReply(
           action === "inspect" &&
             samePage &&
+            !visionFallback.stopped &&
             Date.now() < visionFallback.deadline,
-          !samePage
-            ? "vision_page_changed"
-            : Date.now() >= visionFallback.deadline
-              ? "vision_budget_exhausted"
-              : "provider_unsolvable",
+          visionFallback.stopped
+            ? "vision_challenge_returned"
+            : !samePage
+              ? "vision_page_changed"
+              : Date.now() >= visionFallback.deadline
+                ? "vision_budget_exhausted"
+                : "provider_unsolvable",
         );
       }
       challengeDetected = true;
@@ -660,6 +680,39 @@ export function createBrowserChallengeHandler(
     }
   };
   return Object.assign(check, {
+    guardVisionCommand: (command: string) => {
+      if (
+        !visionFallback ||
+        (!visionFallback.stopped &&
+          (visionFallback.completed || Date.now() < visionFallback.deadline))
+      )
+        return;
+      // After expiry allow only observation, explicit release (routed before
+      // this guard), and exact owned-session cleanup. Never execute another
+      // screenshot/click/crop command merely because the model missed the clock.
+      if (
+        isAgentBrowserSnapshotCommand(command) ||
+        command.trim() ===
+          `agent-browser --session ${visionFallback.sessionName} close`
+      )
+        return;
+      return {
+        status: "handoff_required",
+        reason: "vision_budget_exhausted",
+        visionFallbackAvailable: false,
+        message:
+          "Native vision recovery expired. This command was not executed. Stop solving; only a standalone snapshot to inspect the current result, exact session close, runtime release or human handoff is permitted. Do not create another paid task.",
+      };
+    },
+    finishVisionCommand: (command: string, succeeded: boolean) => {
+      if (
+        succeeded &&
+        visionFallback &&
+        command.trim() ===
+          `agent-browser --session ${visionFallback.sessionName} close`
+      )
+        visionFallback = undefined;
+    },
     inspect: (signal?: AbortSignal, target?: Target) =>
       check(signal, target, "inspect"),
     request: (
@@ -679,7 +732,7 @@ export function createBrowserChallengeHandler(
     },
     getReceiptPrompt: () =>
       providerAttemptStarted
-        ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${providerUnsolvable ? " Provider outcome: confirmed unsolvable. Any subsequent native vision completion is a separate result, not a provider solve." : ""}${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`
+        ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${providerUnsolvable ? " Provider outcome: confirmed unsolvable. Any subsequent native vision completion is a separate result, not a provider solve." : ""}${visionFallback ? (visionFallback.completed && !visionFallback.stopped ? " No pending challenge was observed. Verify website acceptance; do not restart vision if a challenge returns." : ` Native vision seconds remaining: ${visionFallback.stopped ? 0 : Math.max(0, Math.ceil((visionFallback.deadline - Date.now()) / 1000))}. At zero stop solving and request handoff or inspect/close only.`) : providerUnsolvable ? " Native recovery is unavailable or ended; do not restart it in another session." : ""}${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`
         : "",
   });
 }
