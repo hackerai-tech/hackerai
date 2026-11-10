@@ -21,6 +21,7 @@ import { ReasoningHandler } from "./ReasoningHandler";
 import { isToolInputValidationError } from "@/lib/chat/tool-error-display";
 import { SubagentToolHandler } from "./tools/SubagentToolHandler";
 import { SubagentSkillToolHandler } from "./tools/SubagentSkillToolHandler";
+import { WaitForUserToolHandler } from "./tools/WaitForUserToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -299,7 +300,16 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <FileToolsHandler message={message} part={part} status={status} />;
 
     case "tool-file":
-      return <FileHandler message={message} part={part} status={status} />;
+    case "tool-file_edit":
+    case "tool-file_write":
+      return (
+        <FileHandler
+          message={message}
+          part={part}
+          status={status}
+          canRequestApproval={isLastMessage === true && status !== "ready"}
+        />
+      );
 
     case "tool-web_search":
     case "tool-open_url":
@@ -317,6 +327,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         : undefined;
       return (
         <TerminalToolHandler
+          canRequestApproval={isLastMessage === true && status !== "ready"}
           message={message}
           part={part}
           status={status}
@@ -342,6 +353,9 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
+
+    case "tool-wait_for_user":
+      return <WaitForUserToolHandler part={part} status={status} />;
 
     case "tool-delegate_task":
     case "tool-create_agent":

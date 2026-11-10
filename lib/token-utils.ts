@@ -167,6 +167,10 @@ export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
   fileTokens: Record<Id<"files">, number> = {},
   maxTokens: number = MAX_TOKENS_PAID,
+  onEmptyProjection?: (diagnostics: {
+    budgetTokens: number;
+    newestMessageTokens: number;
+  }) => void,
 ): UIMessage[] => {
   if (messages.length === 0) return messages;
 
@@ -180,7 +184,20 @@ export const truncateMessagesToTokenLimit = (
       fileTokens,
     );
 
-    if (totalTokens + messageTokens > maxTokens) break;
+    if (totalTokens + messageTokens > maxTokens) {
+      if (result.length === 0 && onEmptyProjection) {
+        try {
+          // Reuse this traversal's cost; diagnostics must not tokenize again.
+          onEmptyProjection({
+            budgetTokens: maxTokens,
+            newestMessageTokens: messageTokens,
+          });
+        } catch {
+          // Optional diagnostics cannot change which messages fit the budget.
+        }
+      }
+      break;
+    }
 
     totalTokens += messageTokens;
     result.unshift(messages[i]);

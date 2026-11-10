@@ -3,7 +3,9 @@ import {
   getReportToolInputSchema,
   updateVulnerabilityReportToolInputSchema,
   createAgentToolSchemaSet,
+  createFileEditToolSchema,
   createFileToolSchema,
+  createFileWriteToolSchema,
   createGetTerminalFilesToolSchema,
   createInteractTerminalSessionToolSchema,
   createOpenUrlToolSchema,
@@ -363,7 +365,7 @@ describe("agent tool schema descriptions", () => {
 
     expect(getDescription(fullAccessTool)).not.toContain("approval-gated");
     expect(getDescription(approvalGatedTool)).toContain(
-      "Write, append, and edit actions are approval-gated.",
+      "File mutations are approval-gated.",
     );
     expect(getDescription(fullAccessTool)).toContain(
       "automatically routes subsequent Agent steps to a vision-capable model",
@@ -397,9 +399,11 @@ describe("agent tool schema descriptions", () => {
     };
 
     expect(actionSchema.safeParse("view").success).toBe(true);
-    expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
-      "file",
-    );
+    for (const name of ["file", "file_edit", "file_write"]) {
+      expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
+        name,
+      );
+    }
   });
 
   test("passes the active model into every brief-bearing tool schema", () => {
@@ -410,6 +414,8 @@ describe("agent tool schema descriptions", () => {
       }),
       get_terminal_files: createGetTerminalFilesToolSchema({ modelName }),
       file: createFileToolSchema({ supportsView: true, modelName }),
+      file_edit: createFileEditToolSchema({ modelName }),
+      file_write: createFileWriteToolSchema({ modelName }),
       web_search: createWebSearchToolSchema({ modelName }),
       open_url: createOpenUrlToolSchema({ modelName }),
     });
@@ -421,6 +427,8 @@ describe("agent tool schema descriptions", () => {
       "interact_terminal_session",
       "get_terminal_files",
       "file",
+      "file_edit",
+      "file_write",
       "web_search",
       "open_url",
     ] as const) {

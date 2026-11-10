@@ -187,6 +187,18 @@ describe("current Pro/Max experiment feedback", () => {
       "test",
       "abliterated_paid_moderated_default_feedback_v1",
     ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "paid_first_step",
+      "control",
+      "abliterated_pro_three_steps_feedback_v1",
+    ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "paid_first_step",
+      "test",
+      "abliterated_pro_three_steps_feedback_v1",
+    ],
   ] as const)(
     "reserves %s/%s/%s with its own phase",
     async (key, selectionSource, variant, phase) => {
@@ -337,6 +349,7 @@ describe("current Pro/Max experiment feedback", () => {
       },
     },
     { assignment: { ...assignment, selectionSource: "history" as const } },
+    { assignment: { ...assignment, key: "inference_cyber_v1" as const } },
   ])(
     "excludes nonparticipants and historical cohorts without evaluating delivery",
     async (overrides) => {
@@ -390,4 +403,71 @@ describe("current Pro/Max experiment feedback", () => {
     mutation.mockRejectedValueOnce(Error("offline"));
     await expect(selected?.linkMessage("fallback")).resolves.toBeUndefined();
   });
+});
+
+describe("Max routing quality feedback", () => {
+  const key = process.env.CONVEX_SERVICE_ROLE_KEY;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CONVEX_SERVICE_ROLE_KEY = "test-key";
+    mutation.mockImplementation(async (_api, context) => ({
+      _id: "max-survey",
+      ...context,
+    }));
+  });
+  afterAll(() => {
+    if (key === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = key;
+  });
+  it.each(["control", "test"] as const)(
+    "reserves %s once on actual exposure and links the recovered message",
+    async (variant) => {
+      const posthog = { getFeatureFlagResult: jest.fn(), capture: jest.fn() };
+      const survey = await selectTaskOutcomeSurvey({
+        ...base,
+        subscription: "ultra",
+        selectedModelOverride: "hackerai-max",
+        posthog,
+        modelExperimentAssignment: {
+          key: "max_grok_46_quality_v1",
+          variant,
+          modelKey: variant === "test" ? "model-grok-4.6" : "model-glm-5.3",
+          baselineModel: "model-glm-5.3",
+          hasImages: false,
+        },
+      });
+      expect(mutation).not.toHaveBeenCalled();
+      await survey?.linkMessage("recovered-message");
+      survey?.expose?.();
+      survey?.expose?.();
+      await survey?.flush?.();
+      await survey?.linkMessage("second-recovered-message");
+      expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
+      const reservations = mutation.mock.calls.filter(
+        (c) => c[1]?.survey_kind === "current_experiment",
+      );
+      expect(reservations).toHaveLength(1);
+      expect(reservations[0][1]).toMatchObject({
+        experiment_key: "max_grok_46_quality_v1",
+        experiment_variant: variant,
+        feedback_phase: "max_grok_46_quality_feedback_v1",
+      });
+      expect(mutation).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          message_id: "second-recovered-message",
+          request_id: "request",
+        }),
+      );
+      expect(posthog.capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task_outcome_survey_selected",
+          properties: expect.objectContaining({
+            survey_key: "max_grok_46_quality_v1",
+            experiment_variant: variant,
+          }),
+        }),
+      );
+    },
+  );
 });

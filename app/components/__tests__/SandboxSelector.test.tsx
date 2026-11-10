@@ -1,6 +1,15 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+
+let mockIsMobile: boolean | undefined = false;
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 
 const mockGlobalState = {
   subscription: "free",
@@ -41,6 +50,43 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
+  it("keeps routine cloud selection free of workspace management", () => {
+    mockGlobalState.subscription = "pro";
+    const onChange = jest.fn();
+    render(<SandboxSelector value="e2b" onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Manage workspaces" }),
+    ).not.toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/sandbox/workspaces?manage=1",
+      expect.any(Object),
+    );
+
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Cloud" }),
+    );
+    expect(onChange).toHaveBeenCalledWith("e2b");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it.each([true, false])(
+    "closes the menu when the mobile layout changes from %s",
+    async (mobile) => {
+      mockIsMobile = mobile;
+      const { rerender } = render(<SandboxSelector value="e2b" />);
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+      mockIsMobile = !mobile;
+      rerender(<SandboxSelector value="e2b" />);
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cloud" }));
+      expect(screen.getByRole("dialog")).toBeVisible();
+    },
+  );
+
   it("keeps its trigger within constrained mobile toolbars", () => {
     render(<SandboxSelector value="desktop" />);
 
@@ -52,6 +98,7 @@ describe("SandboxSelector", () => {
   });
 
   beforeEach(() => {
+    mockIsMobile = false;
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
@@ -184,7 +231,7 @@ describe("SandboxSelector", () => {
 
     expect(screen.getByRole("button", { name: hostname })).toHaveClass(
       "max-w-full",
-      "sm:max-w-64",
+      "sm:max-w-[min(100%,16rem)]",
       "min-w-0",
     );
     expect(screen.getByTitle(hostname)).toBeInTheDocument();

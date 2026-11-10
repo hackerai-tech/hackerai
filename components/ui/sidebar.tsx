@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  hasOpenShortcutOverlay,
+  isShortcutTargetBlocked,
+  matchesShortcut,
+} from "@/lib/keyboard-shortcuts";
+
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, VariantProps } from "class-variance-authority";
@@ -30,7 +36,6 @@ const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "300px";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3.25rem";
-const SIDEBAR_KEYBOARD_SHORTCUT = "s";
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
@@ -112,13 +117,10 @@ function SidebarProvider({
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
-
       if (
-        key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        event.shiftKey &&
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey
+        matchesShortcut(event, "sidebar") &&
+        !isShortcutTargetBlocked(event) &&
+        !hasOpenShortcutOverlay()
       ) {
         event.preventDefault();
         toggleSidebar();

@@ -1,3 +1,4 @@
+import { CloudWorkspaceRegionChoice } from "./CloudWorkspaceRegionChoice";
 import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
@@ -34,6 +35,7 @@ import {
 import type { ChatMode } from "@/types";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 import {
+  SPENDING_LIMIT_EXPLANATION,
   getPaidDailyFreeAllowanceCtaText,
   getExtraUsageLimitCta,
   getLimitTypeForCapReason,
@@ -74,6 +76,12 @@ const getCurrentReturnPath = (): string => {
 
 export const MessageErrorState = (props: MessageErrorStateProps) => {
   const error = deserializeChatSDKErrorFromStream(props.error) ?? props.error;
+  if (
+    error instanceof ChatSDKError &&
+    error.metadata?.cloud_workspace_region_selection_required === true
+  ) {
+    return <CloudWorkspaceRegionChoice onRetry={() => props.onRetry()} />;
+  }
   const isUsageBlock =
     error instanceof ChatSDKError &&
     error.type === "rate_limit" &&
@@ -161,6 +169,10 @@ const MessageErrorContent = ({
     isNetworkStreamError(displayError);
 
   const isPaidUser = subscription !== "free";
+  // The server message and resetTimestamp describe the subscription cycle,
+  // while the spending limit resets each calendar month.
+  const isSpendingLimitBlock =
+    isRateLimitError && isPaidUser && capReason === "extra_usage_cap";
   const canUpgrade = shouldShowUpgradeCta({ subscription, capReason });
   const extraUsageCta = getExtraUsageLimitCta({ subscription, capReason });
   const limitType = getLimitTypeForCapReason(capReason);
@@ -397,7 +409,12 @@ const MessageErrorContent = ({
             : "text-destructive text-sm mb-2"
         }
       >
-        {isRateLimitError ? (
+        {isSpendingLimitBlock ? (
+          <p>
+            You&apos;ve reached your monthly extra usage spending limit.{" "}
+            {SPENDING_LIMIT_EXPLANATION}
+          </p>
+        ) : isRateLimitError ? (
           <MemoizedMarkdown content={errorMessage} />
         ) : isProviderContentBlocked ? (
           <>
@@ -409,7 +426,7 @@ const MessageErrorContent = ({
         ) : (
           <p>{errorMessage}</p>
         )}
-        {isRateLimitError && timeRemaining > 0 && (
+        {isRateLimitError && !isSpendingLimitBlock && timeRemaining > 0 && (
           <p className="text-xs text-muted-foreground mt-1">
             Resets in {formatCountdown(timeRemaining)}
           </p>

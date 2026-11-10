@@ -7,6 +7,12 @@ import {
   beforeEach,
   afterAll,
 } from "@jest/globals";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../../lib/pricing/pro-yearly";
+import {
+  HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+  PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+} from "../../lib/billing/included-usage";
 import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -120,10 +126,13 @@ afterAll(() => {
   }
 });
 
-function makeCtx(userId = "user_member") {
+function makeCtx(userId = "user_member", organizationId?: string) {
   return {
     auth: {
-      getUserIdentity: jest.fn(async () => ({ subject: userId })),
+      getUserIdentity: jest.fn(async () => ({
+        subject: userId,
+        org_id: organizationId,
+      })),
     },
     runQuery: jest.fn(async () => null),
     runMutation: jest.fn(async () => null),
@@ -152,7 +161,11 @@ async function callCreateBillingPortalSession(ctx: any) {
 
 async function callDeductWithAutoReload(
   ctx: any,
-  args: { userId: string; amountPoints: number },
+  args: {
+    userId: string;
+    amountPoints: number;
+    settlementOperationId?: string;
+  },
 ) {
   const { deductWithAutoReload } = await import("../extraUsageActions");
   return (deductWithAutoReload as any).handler(ctx, {
@@ -160,6 +173,26 @@ async function callDeductWithAutoReload(
     ...args,
   });
 }
+
+it("redacts credentials in balance lookup diagnostics without changing the failure", async () => {
+  const { convexLogger } = await import("../lib/logger");
+  const failure = new Error(
+    "HTTP 503 access_token=FAKE_ACCESS client_secret=FAKE_CLIENT refreshToken=FAKE_REFRESH convex_service_role_key=FAKE_SERVICE stripe_secret_key=FAKE_STRIPE posthog_api_key=FAKE_POSTHOG Authorization: Bearer FAKE_AUTH",
+  );
+  const ctx = makeCtx();
+  ctx.runQuery.mockResolvedValueOnce(null).mockRejectedValueOnce(failure);
+  await expect(
+    callDeductWithAutoReload(ctx, { userId: "user_member", amountPoints: 10 }),
+  ).rejects.toBe(failure);
+  const calls = jest.mocked(convexLogger.error).mock.calls;
+  const entry = calls.find(
+    ([event]) => event === "extra_usage_balance_backend_query_failed",
+  );
+  expect(entry).toBeDefined();
+  expect(JSON.stringify(entry)).not.toContain("FAKE_");
+  expect(JSON.stringify(entry)).toContain("HTTP 503");
+  expect(ctx.runMutation).not.toHaveBeenCalled();
+});
 
 const claimedAutoReload = (amountDollars: number) => ({
   status: "operation",
@@ -215,6 +248,158 @@ describe("extraUsageActions billing authorization", () => {
     mockGetOrganization.mockResolvedValue({
       stripeCustomerId: "cus_team",
     } as never);
+  });
+
+  it("prices a bundle server-side and rejects mismatched credit values", async () => {
+    const previousAllowlist = process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+    process.env.EXTRA_USAGE_BUNDLES_USER_IDS = "user_member";
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "owner" },
+        },
+        {
+          organizationId: "org_personal",
+          status: "active",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockSubscriptionsList.mockResolvedValue({
+      data: [
+        { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        { items: { data: [{ price: { lookup_key: "pro-monthly" } }] } },
+      ],
+    } as never);
+    try {
+      const result = await callCreatePurchaseSession(
+        makeCtx("user_member", "org_personal"),
+        {
+          amountDollars: 250,
+          bundleId: "usage-250-v1",
+        },
+      );
+      expect(result.url).toBeTruthy();
+      expect(mockGetOrganization).toHaveBeenCalledWith("org_personal");
+      expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+        userId: "user_member",
+        organizationId: "org_personal",
+        statuses: ["active"],
+      });
+      expect(mockSubscriptionsList).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 }),
+      );
+      expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [
+            expect.objectContaining({
+              price_data: expect.objectContaining({ unit_amount: 20000 }),
+            }),
+          ],
+          metadata: expect.objectContaining({
+            amountDollars: "250",
+            paidAmountDollars: "200",
+            bundleId: "usage-250-v1",
+          }),
+        }),
+      );
+      for (const priceId of [
+        GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
+        GRANDFATHERED_PRO_YEARLY_PRICE_ID,
+        HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+        PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+      ]) {
+        mockSubscriptionsList.mockResolvedValue({
+          data: [
+            { items: { data: [{ price: { id: priceId, lookup_key: null } }] } },
+          ],
+        } as never);
+        expect(
+          (
+            await callCreatePurchaseSession(
+              makeCtx("user_member", "org_personal"),
+              {
+                amountDollars: 250,
+                bundleId: "usage-250-v1",
+              },
+            )
+          ).url,
+        ).toBeTruthy();
+      }
+      mockCheckoutSessionCreate.mockClear();
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_personal"),
+            {
+              amountDollars: 1000,
+              bundleId: "usage-250-v1",
+            },
+          )
+        ).url,
+      ).toBeNull();
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+      mockSubscriptionsList.mockResolvedValue({
+        data: [
+          { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        ],
+      } as never);
+      expect(
+        await callCreatePurchaseSession(
+          makeCtx("user_member", "org_personal"),
+          {
+            amountDollars: 250,
+            bundleId: "usage-250-v1",
+          },
+        ),
+      ).toEqual({
+        url: null,
+        error: "An active paid subscription is required",
+      });
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+      mockGetOrganization.mockClear();
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_unrelated"),
+            { amountDollars: 250, bundleId: "usage-250-v1" },
+          )
+        ).url,
+      ).toBeNull();
+      expect(
+        (
+          await callCreatePurchaseSession(makeCtx(), {
+            amountDollars: 250,
+            bundleId: "usage-250-v1",
+          })
+        ).url,
+      ).toBeNull();
+      mockListOrganizationMemberships.mockResolvedValue({
+        data: [
+          {
+            organizationId: "org_personal",
+            status: "active",
+            role: { slug: "member" },
+          },
+        ],
+      } as never);
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_personal"),
+            { amountDollars: 250, bundleId: "usage-250-v1" },
+          )
+        ).url,
+      ).toBeNull();
+      expect(mockGetOrganization).not.toHaveBeenCalled();
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+    } finally {
+      if (previousAllowlist === undefined)
+        delete process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+      else process.env.EXTRA_USAGE_BUNDLES_USER_IDS = previousAllowlist;
+    }
   });
 
   it("blocks Checkout creation while the account has an active dispute hold", async () => {
@@ -457,6 +642,59 @@ describe("deductWithAutoReload", () => {
       id: "in_auto",
       deleted: true,
     } as never);
+  });
+
+  it("releases the reload executor if receipt linkage fails before Stripe", async () => {
+    const failure = new Error("deletion fence started");
+    const ctx: any = {
+      runQuery: jest.fn().mockResolvedValueOnce(null).mockResolvedValue({
+        balanceDollars: 0,
+        balancePoints: 0,
+        enabled: true,
+        autoReloadEnabled: true,
+        autoReloadThresholdPoints: 10000,
+        autoReloadAmountDollars: 15,
+        monthlyRemainingDollars: 100,
+      }),
+      runMutation: jest.fn(async (_ref: unknown, args: any) => {
+        if ("auto_reload_operation_id" in args) throw failure;
+        if ("operation_id" in args) return { claimed: true, result: null };
+        if ("candidateOperationId" in args)
+          return {
+            status: "operation",
+            operationId: "reload-op",
+            executorId: "executor",
+            amountDollars: 15,
+            claimed: true,
+            paymentAllowed: true,
+          };
+        if ("outcome" in args) return true;
+        return {
+          success: false,
+          newBalancePoints: 0,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+        };
+      }),
+    };
+    await expect(
+      callDeductWithAutoReload(ctx, {
+        userId: "user_member",
+        amountPoints: 10,
+        settlementOperationId: "settlement-link-failure",
+      }),
+    ).rejects.toBe(failure);
+    expect(ctx.runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operationId: "reload-op",
+        executorId: "executor",
+        outcome: "executor_released",
+      }),
+    );
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
   });
 
   it("does not charge auto-reload while the account is suspended", async () => {

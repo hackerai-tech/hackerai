@@ -164,6 +164,7 @@ export class CloudAcquisitionBudget {
             failed_acquisitions: this.failures,
             failed_acquisition_wait_ms: this.failedWaitMs,
             acquisition_stage: stage,
+            acquisition_deadline_ms: deadlineMs,
             stage_elapsed_ms: Math.max(0, Date.now() - stageStartedAt),
             reason:
               this.failures >= MAX_FAILED_ACQUISITIONS

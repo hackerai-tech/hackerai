@@ -53,6 +53,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    agentGoals: { get: "getGoal" },
     browserHandoffs: { getForUser: "getForUser" },
     subagents: {
       getOwned: "getOwned",
@@ -139,6 +140,207 @@ const otherToolMessage = {
 };
 
 describe("ComputerSidebar reconnect behavior", () => {
+  it("keeps a goal editor open while unrelated tool messages change", async () => {
+    mockSidebarContent = { kind: "goal", chatId: "chat" };
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Keep working",
+      criteria: ["Keep working"],
+      generation: 1,
+      state: "running",
+    });
+    const stop = jest.fn();
+    const { rerender } = render(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="streaming"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "My unsaved edit" },
+    });
+    rerender(
+      <ComputerSidebar
+        chatId="chat"
+        messages={[]}
+        status="ready"
+        stopGoalRunBeforeControl={stop}
+      />,
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(6000);
+    });
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "My unsaved edit",
+    );
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+  });
+  it.each([
+    [false, "deleted"],
+    [true, "deleted"],
+    [false, "achieved"],
+    [true, "achieved"],
+  ] as const)(
+    "closes the viewed goal editor (overlay=%s, outcome=%s)",
+    (overlay, outcome) => {
+      mockComputerSidebarOverlay = overlay;
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      const goal = {
+        _id: "goal",
+        chatId: "chat",
+        startedAt: 100,
+        objective: "Original",
+        criteria: ["Original"],
+        generation: 1,
+        state: "running",
+      };
+      mockUseQuery.mockReturnValue(goal);
+      const view = () =>
+        mockSidebarContent && (
+          <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+        );
+      const { rerender } = render(view());
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+        {
+          target: { value: "Unsaved edit" },
+        },
+      );
+      mockUseQuery.mockReturnValue(undefined);
+      rerender(view());
+      expect(mockCloseSidebar).not.toHaveBeenCalled();
+      for (const state of ["paused", "blocked"]) {
+        mockUseQuery.mockReturnValue({ ...goal, state });
+        rerender(view());
+        expect(mockCloseSidebar).not.toHaveBeenCalled();
+      }
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted" ? null : { ...goal, state: "achieved" },
+      );
+      rerender(view());
+      expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+      mockSidebarContent = null;
+      rerender(view());
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      mockUseQuery.mockReturnValue({
+        ...goal,
+        startedAt: 200,
+        objective: "New goal",
+      });
+      rerender(view());
+      expect(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+      ).toHaveValue("New goal");
+    },
+  );
+  it.each(["deleted", "achieved"])(
+    "keeps an older draft open when a different replacement goal is %s",
+    (outcome) => {
+      mockSidebarContent = { kind: "goal", chatId: "chat" };
+      const goal = {
+        _id: "goal",
+        startedAt: 100,
+        objective: "Original",
+        criteria: ["Original"],
+        generation: 1,
+        state: "running",
+      };
+      mockUseQuery.mockReturnValue(goal);
+      const view = () => (
+        <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+      );
+      const { rerender } = render(view());
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+        {
+          target: { value: "Older draft" },
+        },
+      );
+      mockUseQuery.mockReturnValue({
+        ...goal,
+        startedAt: 200,
+        objective: "Replacement",
+      });
+      rerender(view());
+      mockUseQuery.mockReturnValue(
+        outcome === "deleted"
+          ? null
+          : { ...goal, startedAt: 200, state: "achieved" },
+      );
+      rerender(view());
+      expect(mockCloseSidebar).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("textbox", { name: "Goal objective" }),
+      ).toHaveValue("Older draft");
+    },
+  );
+  it("does not close a terminal panel when the goal is cleared", () => {
+    mockSidebarContent = { kind: "goal", chatId: "chat" };
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      startedAt: 100,
+      objective: "Original",
+      criteria: ["Original"],
+      generation: 1,
+      state: "running",
+    });
+    const view = () => (
+      <ComputerSidebar chatId="chat" messages={[]} status="ready" />
+    );
+    const { rerender } = render(view());
+    mockSidebarContent = activeSidebarContent;
+    mockUseQuery.mockReturnValue(null);
+    rerender(view());
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("textbox", { name: "Goal objective" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores an unsaved goal draft after inspecting a terminal tool", () => {
+    const goalContent: SidebarContent = { kind: "goal", chatId: "chat" };
+    mockSidebarContent = goalContent;
+    mockUseQuery.mockReturnValue({
+      _id: "goal",
+      objective: "Original",
+      criteria: ["Original"],
+      generation: 1,
+      state: "running",
+    });
+    const { rerender } = render(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "Keep this edit" },
+    });
+    mockSidebarContent = activeSidebarContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Goal objective" }),
+    ).not.toBeInTheDocument();
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    mockSidebarContent = goalContent;
+    rerender(
+      <ComputerSidebar chatId="chat" messages={[]} status="streaming" />,
+    );
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Keep this edit",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close goal editor" }));
+    mockSidebarContent = null;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    mockSidebarContent = goalContent;
+    rerender(<ComputerSidebar chatId="chat" messages={[]} status="ready" />);
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Original",
+    );
+  });
   beforeEach(() => {
     mockComputerSidebarOverlay = false;
     jest.useFakeTimers();
@@ -156,6 +358,129 @@ describe("ComputerSidebar reconnect behavior", () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it("carries an explicit waiting-session takeover through the real sidebar viewer", async () => {
+    const originalFetch = global.fetch;
+    const actions: string[] = [];
+    const onNavigate = jest.fn();
+    const frame = {
+      image: "data:image/png;base64,test",
+      width: 800,
+      height: 600,
+      capturedAt: Date.now(),
+      browserSessionName: "default",
+    };
+    mockUseQuery.mockReturnValue({ sessionId: "session-a", state: "waiting" });
+    global.fetch = jest.fn(async (_url, options) => {
+      const action = options?.body
+        ? JSON.parse(String(options.body)).action
+        : undefined;
+      if (action) actions.push(action);
+      return {
+        ok: true,
+        json: async () =>
+          action === "take" ? { grant: "grant-a", frame } : { frame },
+      } as Response;
+    });
+    try {
+      const view = render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          messages={[otherToolMessage]}
+          status="ready"
+          onNavigate={onNavigate}
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: "agent-browser snapshot -i",
+            browserTakeoverRequest: {
+              requestId: "click-1",
+              sessionId: "session-a",
+            },
+          }}
+        />,
+      );
+      await act(async () => {});
+      expect(
+        screen.getByRole("button", { name: "Exit takeover" }),
+      ).toBeEnabled();
+      expect(actions).toEqual(["take"]);
+      expect(onNavigate).not.toHaveBeenCalled();
+      view.unmount();
+      expect(actions).toEqual(["take", "release"]);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("closes the Computer panel when leaving a disconnected takeover", async () => {
+    const originalFetch = global.fetch;
+    const actions: string[] = [];
+    let disconnected = false;
+    const frame = {
+      image: "data:image/png;base64,test",
+      width: 800,
+      height: 600,
+      capturedAt: Date.now(),
+      browserSessionName: "default",
+    };
+    mockUseQuery.mockReturnValue({ sessionId: "session-a", state: "waiting" });
+    global.fetch = jest.fn(async (_url, options) => {
+      const action = options?.body
+        ? JSON.parse(String(options.body)).action
+        : undefined;
+      if (action) actions.push(action);
+      return {
+        ok: !disconnected,
+        status: disconnected ? 503 : 200,
+        json: async () =>
+          disconnected
+            ? { state: "disconnected" }
+            : action === "take"
+              ? { grant: "grant-a", frame }
+              : { frame },
+      } as Response;
+    });
+    try {
+      const view = render(
+        <ComputerSidebarBase
+          sidebarOpen
+          closeSidebar={mockCloseSidebar}
+          browserChatId="chat"
+          sidebarContent={{
+            ...activeSidebarContent,
+            command: "agent-browser snapshot -i",
+          }}
+        />,
+      );
+      await act(async () => {});
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Take control of Agent browser" }),
+        );
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+      disconnected = true;
+      await act(async () => {
+        jest.advanceTimersByTime(1600);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Exit takeover" }));
+      expect(
+        screen.getByRole("button", { name: "Send and continue" }),
+      ).toBeDisabled();
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Return to chat" }));
+      });
+      expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+      expect(actions).not.toContain("resume");
+      view.unmount();
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   it("shows command expansion only alongside a browser section", () => {
@@ -412,6 +737,89 @@ describe("ComputerSidebar reconnect behavior", () => {
 
     expect(closeSidebar).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it.each([{ messages: [] }, { messages: [otherToolMessage] }])(
+    "retains a persisted browser selection while live tools are missing (%#)",
+    ({ messages }) => {
+      const closeSidebar = jest.fn();
+      const onNavigate = jest.fn();
+      render(
+        <ComputerSidebarBase
+          sidebarOpen
+          sidebarContent={{
+            command: "agent-browser snapshot -i",
+            output: "",
+            isExecuting: false,
+            toolCallId: "persisted-browser",
+            browserTakeoverRequest: {
+              requestId: "request",
+              sessionId: "session",
+            },
+          }}
+          closeSidebar={closeSidebar}
+          messages={messages}
+          onNavigate={onNavigate}
+          status="ready"
+        />,
+      );
+      act(() => jest.advanceTimersByTime(6_000));
+      expect(closeSidebar).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("button", { name: "Jump to live" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+        "agent-browser snapshot -i",
+      );
+    },
+  );
+
+  it("allows explicit navigation to the newest tool while a browser selection is missing", () => {
+    const onNavigate = jest.fn();
+    const props = {
+      sidebarOpen: true,
+      sidebarContent: {
+        command: "agent-browser snapshot -i",
+        output: "",
+        isExecuting: false,
+        toolCallId: "saved-browser",
+      },
+      closeSidebar: jest.fn(),
+      onNavigate,
+      status: "ready" as const,
+    };
+    const { rerender } = render(
+      <ComputerSidebarBase {...props} messages={[otherToolMessage]} />,
+    );
+    const first = otherToolMessage.parts[0];
+    rerender(
+      <ComputerSidebarBase
+        {...props}
+        messages={[
+          {
+            ...otherToolMessage,
+            parts: [
+              first,
+              {
+                ...first,
+                toolCallId: "newest-tool",
+                input: { command: "date" },
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Next tool execution|Latest available tool execution/,
+      }),
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "newest-tool" }),
+    );
   });
 
   it("waits before navigating away from genuinely missing content", () => {

@@ -277,12 +277,35 @@ export interface SidebarFile {
 }
 
 export interface SidebarTerminal {
+  captcha?: {
+    state:
+      | "solving"
+      | "response_delivered"
+      | "needs_verification"
+      | "failed"
+      | "stopped"
+      | "unavailable"
+      | "preparation_required"
+      | "capture_incomplete"
+      | "not_needed";
+    startedAt?: number;
+    elapsedMs?: number;
+  };
+  /** One explicit user click; discarded when the sidebar selection closes. */
+  browserTakeoverRequest?: { requestId: string; sessionId: string };
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Structured process exit code, available after command completion. */
+  exitCode?: number | null;
   /** Distinguishes approval review from actual process execution. */
   executionPhase?:
-    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
+    | "reviewing"
+    | "awaiting_approval"
+    | "executing"
+    | "completed"
+    | "failed"
+    | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;
@@ -422,7 +445,14 @@ export interface SidebarSubagentOrigin {
   returnContent: SidebarSubagents;
 }
 
+export interface SidebarGoal {
+  kind: "goal";
+  chatId: string;
+  toolCallId?: string;
+}
+
 type SidebarContentValue =
+  | SidebarGoal
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
@@ -526,12 +556,14 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export type MessageMetadata = {
+  goal?: { sent?: boolean; achievedElapsedMs?: number };
   feedbackType?: "positive" | "negative";
   isAutoContinue?: boolean;
   mode?: "agent" | "ask";
   createdAt?: number;
   generationStartedAt?: number;
   generationTimeMs?: number;
+  recoverySourceMessageId?: string;
 };
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
@@ -541,7 +573,6 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
 };
 
 export type RateLimitInfo = {
-  freeDailyCost?: boolean;
   remaining: number;
   resetTime: Date;
   limit: number;
@@ -551,6 +582,8 @@ export type RateLimitInfo = {
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)
   extraUsagePointsDeducted?: number;
+  /** Durable operation identity of the initial wallet debit, if any. */
+  extraUsageAdmissionOperationId?: string;
   // True when rate limiting was skipped (Redis not configured)
   rateLimitSkipped?: boolean;
 };

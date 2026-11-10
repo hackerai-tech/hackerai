@@ -12,6 +12,23 @@ web-only work to avoid competing local builds. For a local frontend, build once
 before acceptance, using the existing documented build workflow. This runner
 never builds or launches development watchers automatically.
 
+## Pull request builds
+
+Relevant PRs compile and package the actual release-mode Desktop app on Windows
+x64, macOS arm64/x64, and Linux arm64/x64. Download the `desktop-pr-*` artifacts
+from **Desktop PR Builds** for inspection within seven days. They are unsigned
+validation builds; Apple notarization, release signing, and updater publication
+are verified by the release pipeline.
+
+These artifacts retain the production frontend, app identifier, and updater
+configuration. Launching them can connect to Production or interact with an
+installed HackerAI app. Use them for package inspection only; for local or
+Preview acceptance, follow the [isolated-build runbook](desktop-local-acceptance.md).
+
+The required **Desktop PR builds** check reports on every PR targeting `main`. Unrelated PRs skip
+platform builds while still completing the gate; a failed applicable package
+blocks the gate. **Run workflow** can build any branch manually as well.
+
 ## Prepare a launch record
 
 Create `.artifacts/desktop-qa/config.json` in the task's worktree. It contains
@@ -31,7 +48,7 @@ only independently verified, non-secret identity metadata. For example:
     "project": "proj_example",
     "environment": "development",
     "branch": "desktop-qa-task",
-    "version": "unverified"
+    "version": "REPLACE_WITH_CURRENT_WORKER_VERSION"
   },
   "relay": "ws://127.0.0.1:8000",
   "app": {
@@ -47,7 +64,8 @@ Use the actual executable path from your build, not the example filename. Obtain
 its hash with `shasum -a 256 '<executable-path>'`; record the source commit and
 embedded app version from the build, not merely the current checkout. The runner
 checks the hash and resolves symlinks to enforce worktree containment. It does not
-prove that operator-supplied source/version/environment labels are accurate.
+attest the native source/version labels; backend and worker targets are checked
+separately below.
 Never relabel an old native binary as the new commit. If reusing a build artifact,
 copy only the task-owned build, never installed dependencies or runtime secrets.
 
@@ -56,12 +74,18 @@ explicit window URL, distinct QA identifier and disabled updater. Changing this
 JSON does **not** change the binary's frontend or permissions. Verify the actual
 loaded URL with Computer Use after launch.
 
-For native tests against Preview, use `environment: "preview"`, the exact
-HTTPS Vercel deployment origin and `worker.environment: "preview"`. Independently
+For native tests against Preview, use `environment: "preview"`, either a
+locally built loopback frontend or the exact HTTPS Vercel deployment origin,
+and `worker.environment: "preview"`. Prefer the local frontend to avoid a separate
+Vercel login in the native WebView. `serve` also supports this local frontend
+with Preview services; it still binds only to loopback. Independently
 verify the designated HackerAI Developer Convex account/project/deployment and
-matching Trigger Preview before writing the record. The runner cannot infer
-that mapping from hostnames or the word Preview. It deliberately makes no cloud
-health requests and cannot bypass deployment protection. Production is excluded
+matching Trigger Preview before writing the record. Use the Convex team slug for
+`backend.account` and project slug for `backend.project`. The verifier compares
+them with the authenticated control plane, rejects production-labeled deployments,
+checks the registered deployment URL and live instance name, and checks the
+branch-selected Trigger worker version. It cannot infer the authorized account
+boundary from hostnames or the word Preview and cannot bypass deployment protection. Production is excluded
 from the launcher; an explicitly authorized Production UI task uses the installed
 app directly.
 
@@ -72,6 +96,10 @@ Start the backend, worker and relay through the acceptance runbook. Keep their
 ownership records; this runner does not adopt them or read their credentials.
 
 ```bash
+# Provide existing approved control-plane tokens through protected environment
+# provisioning: TRIGGER_ACCESS_TOKEN, plus CONVEX_ACCESS_TOKEN for Preview.
+# Never put token values in shell arguments or this launch record.
+corepack pnpm desktop:qa verify .artifacts/desktop-qa/config.json
 corepack pnpm desktop:qa doctor .artifacts/desktop-qa/config.json
 
 # Optional, only after this worktree has a completed .next/BUILD_ID.
@@ -104,7 +132,8 @@ the supervisor, which would prevent cleanup. Processes that intentionally daemon
 or escape the owned process group require separate ownership and cleanup; the
 runner is designed for the foreground native executable and `next start`.
 
-`serve` binds the configured loopback host and port. A busy port causes failure;
+`serve` requires an HTTP URL and binds the configured loopback host and port.
+A busy port causes failure;
 it never stops the existing server. The recorded Next build-ID hash identifies
 which prebuilt output was launched, but does not attest its source commit or
 build-time public environment. Verify those from the build record before reuse.
@@ -114,7 +143,7 @@ build-time public environment. Verify those from the build record before reuse.
 Files stay under the worktree's ignored `.artifacts/desktop-qa/<session>/`:
 
 - `identity.json`: checkout commit, declared native source/version, verified
-  executable hash, declared backend/worker/relay identities, host and load.
+  executable hash, declared identities, verified backend/worker targets, host and load.
 - `status.json`: supervisor lifecycle and heartbeat. A stale heartbeat means
   unknown, not stopped or healthy.
 - `events.jsonl`: allowlisted process start/exit/stop events. Child stdout/stderr
@@ -128,8 +157,11 @@ Files stay under the worktree's ignored `.artifacts/desktop-qa/<session>/`:
 The local frontend check sends a bounded, unauthenticated HEAD request without
 following redirects or recording response bodies/headers. Backend and relay
 checks only establish a local TCP listener; worker readiness, auth, native bridge
-connectivity and actual run routing still need acceptance evidence. External
-origins are labeled not probed. Diagnose application errors through authorized
+connectivity and actual run routing still need acceptance evidence. The `health` report leaves external origins unprobed; the separate target
+verifier performs bounded read-only requests without redirects. Control-plane tokens are removed from launched child environments. `doctor`, `start` and
+`serve` require target verification and reject mismatches before launching.
+Verification does not prove the native frontend, the worker's runtime backend
+configuration, or the route used by an actual Agent run; retain that acceptance check. Diagnose application errors through authorized
 service tools and record only safe correlation IDs, not raw customer content.
 
 These files have owner-only permissions. They are local developer artifacts;

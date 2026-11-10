@@ -26,6 +26,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   "tool-run_terminal_cmd": "Terminal",
   "tool-interact_terminal_session": "Terminal",
   "tool-file": "File",
+  "tool-file_edit": "File",
+  "tool-file_write": "File",
   "tool-read_file": "File reader",
   "tool-write_file": "File writer",
   "tool-delete_file": "File deletion",

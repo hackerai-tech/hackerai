@@ -1,10 +1,18 @@
-import { wrapLanguageModel, type LanguageModel } from "ai";
+import {
+  wrapLanguageModel,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+} from "ai";
 import {
   classifyProviderOverflowError,
   extractErrorDetails,
   getProviderStatusCode,
   isLocalOpenRouterRequestSizeGuardError,
 } from "@/lib/utils/error-utils";
+
+export type ProviderRequestRetryParams = Parameters<
+  NonNullable<LanguageModelMiddleware["wrapStream"]>
+>[0]["params"];
 
 /** Only pre-stream rejections are replayable; never replay a partially consumed stream. */
 export function withProviderRequestSizeRecovery(
@@ -13,7 +21,7 @@ export function withProviderRequestSizeRecovery(
     state: { attempted: boolean };
     abortSignal: AbortSignal;
     compact: () => Promise<string | undefined>;
-    commit: (summary: string) => void;
+    commit: (summary: string, retryParams: ProviderRequestRetryParams) => void;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -60,10 +68,11 @@ export function withProviderRequestSizeRecovery(
           const bytes = (value: unknown) =>
             new TextEncoder().encode(JSON.stringify(value)).byteLength;
           if (bytes(prompt) >= bytes(params.prompt)) throw error;
-          options.commit(summary);
+          const retryParams = { ...params, prompt };
+          options.commit(summary, retryParams);
           // Same model, system, tools, tool choice and provider options. A second
           // rejection (including a lower upstream limit) propagates normally.
-          return model.doStream({ ...params, prompt });
+          return model.doStream(retryParams);
         }
       },
     },

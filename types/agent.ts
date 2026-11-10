@@ -26,6 +26,8 @@ export interface SandboxInfo {
   name?: string;
   /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
+  /** Image generation from the attached E2B workspace, never the current default. */
+  sandboxVersion?: string;
 }
 
 export interface SandboxManager {
@@ -84,6 +86,8 @@ export interface SandboxResourceMetrics {
   cpuPct: number;
   memPct: number;
   diskPct: number;
+  /** Provider timestamp age (possibly a bucket start) at return; negative means clock skew. */
+  sampleAgeMs?: number;
 }
 
 export type SandboxReadinessFailureReason =
@@ -686,6 +690,16 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
+  /** Read-only detection after a completed snapshot; never starts a paid task. */
+  checkBrowserChallenge?: (
+    signal?: AbortSignal,
+    target?: { sandbox: AnySandbox; sessionName: string },
+  ) => Promise<Record<string, unknown>>;
+  requestBrowserChallenge?: (
+    action: "solve" | "release",
+    sessionName: string,
+    signal?: AbortSignal,
+  ) => Promise<Record<string, unknown>>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

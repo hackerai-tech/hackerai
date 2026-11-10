@@ -8,6 +8,10 @@ const ELIGIBLE_SUBSCRIPTION_STATUSES = new Set([
   "past_due",
 ]);
 
+// Legacy annual Pro prices have no lookup key. Their Stripe product still
+// identifies the tier; never infer paid access from an arbitrary product name.
+const HACKERAI_PRO_PRODUCT_ID = "prod_Swj3ieGCSAzTtj";
+
 const TIER_RANK: Record<SubscriptionTier, number> = {
   free: 0,
   pro: 1,
@@ -45,7 +49,11 @@ export type AgentEntitlementClients = {
           status: string;
           items: {
             data: Array<{
-              price?: { id?: string; lookup_key?: string | null } | null;
+              price?: {
+                id?: string;
+                lookup_key?: string | null;
+                product?: string;
+              } | null;
             }>;
           };
         }>;
@@ -100,7 +108,10 @@ export async function resolveCurrentAgentEntitlementContext(
       for (const item of candidate.items.data) {
         const tier =
           planLookupKeyToTier(item.price?.lookup_key ?? undefined) ??
-          (item.price?.id === HACKERAI_PRO_20_MONTHLY_PRICE_ID ? "pro" : null);
+          (item.price?.id === HACKERAI_PRO_20_MONTHLY_PRICE_ID ||
+          item.price?.product === HACKERAI_PRO_PRODUCT_ID
+            ? "pro"
+            : null);
         if (tier && TIER_RANK[tier] > TIER_RANK[subscription]) {
           subscription = tier;
         }

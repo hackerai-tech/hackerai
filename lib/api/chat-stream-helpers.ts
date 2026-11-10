@@ -1,3 +1,4 @@
+import { isInferenceCyberModel } from "@/lib/ai/inference";
 import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
@@ -23,6 +24,7 @@ import type {
   SystemModelMessage,
 } from "ai";
 import { NoSuchModelError } from "ai";
+import { buildPromptCacheOptions } from "@/lib/ai/prompt-cache";
 import type {
   ChatMode,
   ExtraUsageConfig,
@@ -150,7 +152,6 @@ export function sendRateLimitWarnings(
     subscription: SubscriptionTier;
     mode: ChatMode;
     rateLimitInfo: {
-      freeDailyCost?: boolean;
       remaining: number;
       limit: number;
       resetTime: Date;
@@ -184,21 +185,6 @@ export function sendRateLimitWarnings(
     return;
   }
 
-  if (subscription === "free" && rateLimitInfo.freeDailyCost) {
-    const usedPercent =
-      100 * (1 - rateLimitInfo.remaining / rateLimitInfo.limit);
-    if (!rateLimitInfo.rateLimitSkipped && usedPercent >= 75) {
-      emitTokenBucketThresholdWarning(writer, {
-        bucketType: "daily",
-        usedPercent,
-        projectedUsedPoints: rateLimitInfo.limit - rateLimitInfo.remaining,
-        monthlyLimitPoints: rateLimitInfo.limit,
-        resetTime: rateLimitInfo.resetTime,
-        subscription,
-      });
-    }
-    return;
-  }
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
     const warningThreshold = Math.max(1, Math.ceil(rateLimitInfo.limit * 0.3));
@@ -603,7 +589,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
+ * V4.1 Flash in Agent. Max uses Grok 4.6 for text and images. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -761,6 +747,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 type FallbackOptions = {
   /** Max uses explicit recovery so each model gets its own reasoning policy. */
   selectedModelOverride?: SelectedModel;
+  /** Authenticated paid Agent request using Auto (including the default selector). */
+  isPaidAutoAgentRequest?: boolean;
   /** Preserve the authenticated free Ask policy across model retries. */
   isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
@@ -803,9 +791,12 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
   selectedModelOverride?: SelectedModel,
+  options: { hasImageInputs?: boolean } = {},
 ): ModelName {
   if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    // Grok is admitted only by the context-aware final recovery decision.
+    if (modelName === "model-grok-4.6" && !options.hasImageInputs)
+      return "model-glm-5.3";
+    // Images and the control route retain DeepSeek recovery.
     return DEEPSEEK_1017_MODEL_KEY;
   }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
@@ -1060,7 +1051,31 @@ export function buildProviderOptions(
   options: FallbackOptions = {},
 ) {
   // Direct provider: never send OpenRouter routing, plugins, or user IDs.
-  if (isAbliterationModel(modelName)) return {} as Record<string, never>;
+  if (isInferenceCyberModel(options.requestedModelSlug)) {
+    return {
+      inference: {
+        reasoningEffort:
+          options.selectedModelOverride === "hackerai-max" ||
+          options.selectedModelOverride === "hackerai-pro"
+            ? "max"
+            : "high",
+      },
+    } as Record<"inference", { reasoningEffort: "max" | "high" }>;
+  }
+  // Large Flash maps xhigh to high, so Max must request the literal max mode.
+  if (isAbliterationModel(modelName)) {
+    return {
+      abliteration: {
+        reasoningEffort:
+          options.selectedModelOverride === "hackerai-max" ? "max" : "high",
+        ...buildPromptCacheOptions(modelName ?? "", options.cacheSessionId)
+          .abliteration,
+      },
+    } as Record<
+      "abliteration",
+      { reasoningEffort: "max" | "high"; prompt_cache_key?: string }
+    >;
+  }
   const modelId =
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
@@ -1075,9 +1090,10 @@ export function buildProviderOptions(
       modelName === "ask-model-free-deepseek-v41");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
-  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
-  // mode-scoped for any future route that does not also include Grok.
+  // Agent DeepSeek routes default to high; paid Auto opts into max below.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
+  const usesMaxDeepSeekReasoning =
+    isAgentDeepSeekV4 && options.isPaidAutoAgentRequest === true;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoningFallbackSlugs = options.excludedModelSlugs?.length
     ? getFallbackSlugs(modelName, mode, {
@@ -1125,6 +1141,10 @@ export function buildProviderOptions(
         ],
       }
     : baseProviderRouting;
+  // Max uses the same high effort for native Grok text and vision, including
+  // continuation steps whose caller still carries an older reasoning override.
+  const usesFixedMaxGrokReasoning =
+    isGrok46 && options.selectedModelOverride === "hackerai-max";
   // GLM titles need mandatory reasoning, kept low for the small output budget.
   const reasoning = isExplicitPaidFlashTier
     ? {
@@ -1153,7 +1173,8 @@ export function buildProviderOptions(
                 effort: "medium",
               }
             : routesThroughHighReasoningModel
-              ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+              ? !usesFixedMaxGrokReasoning &&
+                isHighOrGreaterReasoningOverride(options.reasoningOverride)
                 ? options.reasoningOverride
                 : {
                     enabled: true,
@@ -1175,7 +1196,11 @@ export function buildProviderOptions(
   return {
     openrouter: {
       ...(!usesDefaultGlmFlashAgentReasoning && {
-        reasoning: isFreeAsk ? { enabled: true, effort: "low" } : reasoning,
+        reasoning: isFreeAsk
+          ? { enabled: true, effort: "low" }
+          : usesMaxDeepSeekReasoning
+            ? { enabled: true, effort: "max" }
+            : reasoning,
       }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
@@ -1188,12 +1213,16 @@ export function buildProviderOptions(
           }
         : {}),
       ...(userId && { user: userId }),
-      ...(isDeepSeekV4 &&
-        options.cacheSessionId && { session_id: options.cacheSessionId }),
-      ...((providerRouting || isExplicitPaidFlashTier) && {
+      ...buildPromptCacheOptions(modelId ?? "", options.cacheSessionId)
+        .openrouter,
+      ...((providerRouting ||
+        isExplicitPaidFlashTier ||
+        usesMaxDeepSeekReasoning) && {
         provider: {
           ...providerRouting,
-          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+          ...((isExplicitPaidFlashTier || usesMaxDeepSeekReasoning) && {
+            require_parameters: true,
+          }),
         },
       }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
@@ -1225,31 +1254,6 @@ export function buildSystemPrompt(
     providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
   }));
   return messages.length === 1 ? messages[0] : messages;
-}
-
-/**
- * Add an Anthropic cache breakpoint to the last user message.
- * This tells Anthropic to cache everything up to and including that message,
- * maximizing cache hits on subsequent agentic steps.
- */
-export function addCacheBreakpointToLastUserMessage<
-  T extends Array<Record<string, unknown>>,
->(messages: T, modelName: string): T {
-  if (!isAnthropicModel(modelName)) return messages;
-  const result = [...messages] as T;
-  for (let i = result.length - 1; i >= 0; i--) {
-    if (result[i].role === "user") {
-      result[i] = {
-        ...result[i],
-        providerOptions: {
-          ...((result[i].providerOptions as Record<string, unknown>) || {}),
-          ...ANTHROPIC_CACHE_BREAKPOINT,
-        },
-      };
-      break;
-    }
-  }
-  return result;
 }
 
 /**

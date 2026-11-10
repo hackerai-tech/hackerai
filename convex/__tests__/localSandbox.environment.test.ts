@@ -238,3 +238,44 @@ it("invalidates pending as well as ready sessions when the connection token is r
   ).toBe(true);
   expect(await handler(listConnections)(ctx, {})).toEqual([]);
 });
+
+it("round-trips the CLI storage namespace and actual client version", async () => {
+  const { ctx } = fixture();
+  const capabilities = {
+    commands: true,
+    pty: false,
+    commandStdin: true,
+    operationChannels: true,
+    privateArtifactNamespace: "uid-1000",
+  };
+  await handler(connect)(ctx, {
+    token: "test-token",
+    connectionName: "local",
+    clientVersion: "0.8.8",
+    capabilities,
+  });
+  expect(await handler(listConnections)(ctx, {})).toEqual([
+    expect.objectContaining({ capabilities }),
+  ]);
+});
+
+it.each(["../outside", "uid-01", "uid-1000\n"])(
+  "rejects invalid private storage namespace %s before registration",
+  async (namespace) => {
+    const { ctx, rows } = fixture();
+    await expect(
+      handler(connect)(ctx, {
+        token: "test-token",
+        connectionName: "local",
+        clientVersion: "0.8.8",
+        capabilities: {
+          commands: true,
+          pty: false,
+          commandStdin: true,
+          privateArtifactNamespace: namespace,
+        },
+      }),
+    ).rejects.toThrow("Invalid private terminal artifact namespace");
+    expect(rows.local_sandbox_connections).toHaveLength(0);
+  },
+);

@@ -1,3 +1,7 @@
+import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
+import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import { ChatSDKError } from "@/lib/errors";
 import {
   Centrifuge,
@@ -33,7 +37,10 @@ import {
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
-import { getPlatformDisplayName } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  normalizeSandboxPlatform,
+} from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import {
@@ -57,6 +64,11 @@ import {
   isDesktopPreference,
   resolveEnvironmentConnection,
 } from "@/lib/sandbox/environment";
+import {
+  selectedComputerOfflineError,
+  selectedComputerPreferenceKind,
+  type SelectedComputerLookup,
+} from "@/lib/sandbox/selected-computer-diagnostics";
 
 type SandboxInstance = AnySandbox;
 
@@ -117,11 +129,45 @@ export function isSameLocalMachine(
   return (
     current.name === candidate.name &&
     current.isDesktop === candidate.isDesktop &&
-    current.osInfo.platform === candidate.osInfo.platform &&
+    normalizeSandboxPlatform(current.osInfo.platform) ===
+      normalizeSandboxPlatform(candidate.osInfo.platform) &&
     current.osInfo.arch === candidate.osInfo.arch &&
     current.osInfo.release === candidate.osInfo.release &&
     current.osInfo.hostname === candidate.osInfo.hostname
   );
+}
+
+/** Compare the original rejection with the abort reason without exposing it. */
+function localLookupAbortContext(
+  error: unknown,
+  context?: CloudSandboxAcquisitionContext,
+) {
+  let state: "unavailable" | "active" | "aborted" | "unreadable" =
+    "unavailable";
+  let matches: "unavailable" | "yes" | "no" | "unreadable" = "unavailable";
+  try {
+    const signal = context?.signal;
+    if (signal) {
+      const aborted = signal.aborted;
+      if (aborted === true) {
+        state = "aborted";
+        matches = signal.reason === error ? "yes" : "no";
+      } else if (aborted === false) {
+        state = "active";
+      } else {
+        state = "unreadable";
+        matches = "unreadable";
+      }
+    }
+  } catch {
+    state = "unreadable";
+    matches = "unreadable";
+  }
+  return {
+    local_lookup_abort_context_version: 1,
+    local_lookup_signal_state: state,
+    local_lookup_matches_abort_reason: matches,
+  };
 }
 
 const logStructured = (
@@ -304,8 +350,18 @@ export class HybridSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private localSelection: {
+    generation: number;
+    promise: Promise<{ sandbox: SandboxInstance }>;
+  } | null = null;
+  private localAcquisitionGeneration = 0;
+  private localAcquisition: Promise<void> | null = null;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
   private readonly acquisitionBudget = new CloudAcquisitionBudget();
+  private readonly connectionListingDiagnostics = new WeakMap<
+    ConnectionInfo[],
+    { preference: string; lookup: SelectedComputerLookup }
+  >();
 
   constructor(
     private userID: string,
@@ -435,10 +491,16 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     const previousConnection = this.sandbox.getConnectionInfo();
+    const beforeReset = this.localAcquisitionGeneration;
     await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    this.assertLocalAcquisitionCurrent(beforeReset);
     await this.resetSandbox(reason);
-
-    const replacement = (await this.listConnections())
+    // This recovery owns one reset; any additional invalidation supersedes it.
+    const generation = beforeReset + 1;
+    this.assertLocalAcquisitionCurrent(generation);
+    const connections = await this.listConnections();
+    this.assertLocalAcquisitionCurrent(generation);
+    const replacement = connections
       .filter(
         (connection) =>
           connection.connectionId !== connectionId &&
@@ -461,6 +523,7 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     await this.useCentrifugoConnection(replacement);
+    this.assertLocalAcquisitionCurrent(generation);
     this.requiredConnectionIdAfterQuarantine = null;
     if (this.sandboxPreference !== "desktop") {
       this.sandboxPreference = environmentPreference(replacement);
@@ -533,6 +596,8 @@ export class HybridSandboxManager implements SandboxManager {
    * @param preference - Cloud, a logical environment, or a legacy connection ID.
    */
   async setSandboxPreference(preference: SandboxPreference): Promise<void> {
+    if (preference !== this.sandboxPreference)
+      this.localAcquisitionGeneration++;
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
     if (
@@ -590,6 +655,9 @@ export class HybridSandboxManager implements SandboxManager {
       return {
         type: "cloud",
         provider: this.activeCloudProvider,
+        sandboxVersion: isE2BSandbox(this.sandbox)
+          ? getE2BSandboxVersion(this.sandbox)
+          : undefined,
       };
     }
     const type: SandboxType = isDesktopPreference(this.sandboxPreference)
@@ -627,30 +695,51 @@ export class HybridSandboxManager implements SandboxManager {
    * List available connections for this user
    */
   async listConnections(): Promise<ConnectionInfo[]> {
+    const requestedKind = selectedComputerPreferenceKind(
+      this.sandboxPreference,
+    );
     try {
       // Old saved UUIDs can be upgraded only through their authenticated,
       // user-owned session record. Never infer identity from host metadata.
       if (/^[0-9a-f-]{36}$/i.test(this.sandboxPreference)) {
-        this.sandboxPreference = await getConvexClient().query(
-          api.localSandbox.resolveEnvironmentPreferenceForBackend,
-          {
-            serviceKey: this.serviceKey,
-            userId: this.userID,
-            preference: this.sandboxPreference,
-          },
-        );
-      }
-      const storedConnections = await getConvexClient().query(
-        api.localSandbox.listConnectionsForBackend,
-        {
+        this.sandboxPreference = await getConvexClient(
+          this.cloudSandboxContext?.signal,
+        ).query(api.localSandbox.resolveEnvironmentPreferenceForBackend, {
           serviceKey: this.serviceKey,
           userId: this.userID,
-        },
-      );
+          preference: this.sandboxPreference,
+        });
+      }
+      const storedConnections = await getConvexClient(
+        this.cloudSandboxContext?.signal,
+      ).query(api.localSandbox.listConnectionsForBackend, {
+        serviceKey: this.serviceKey,
+        userId: this.userID,
+      });
       const connections = storedConnections.filter(
         (connection) =>
           !this.quarantinedConnectionIds.has(connection.connectionId),
       );
+      const preference = this.sandboxPreference;
+      const matchesSelection = (connection: ConnectionInfo) =>
+        connectionMatchesPreference(connection, preference);
+      const lookup: SelectedComputerLookup = {
+        requestedKind,
+        resolvedKind: selectedComputerPreferenceKind(this.sandboxPreference),
+        registryMatch: storedConnections.some(matchesSelection),
+        quarantinedMatch: storedConnections.some(
+          (connection) =>
+            matchesSelection(connection) &&
+            this.quarantinedConnectionIds.has(connection.connectionId),
+        ),
+        staleMatch: false,
+        otherAvailable: connections.some(
+          (connection) => !matchesSelection(connection),
+        ),
+        presence: "not_checked",
+      };
+      const listing = { preference, lookup };
+      this.connectionListingDiagnostics.set(connections, listing);
       if (connections.length === 0) {
         return connections;
       }
@@ -661,6 +750,7 @@ export class HybridSandboxManager implements SandboxManager {
         this.chatId,
       );
       if (!presence.reliable) {
+        lookup.presence = "unavailable";
         logStructured("warn", "local_sandbox_presence_unavailable", {
           user_id: this.userID,
           connection_count: connections.length,
@@ -675,6 +765,12 @@ export class HybridSandboxManager implements SandboxManager {
 
       const { availableConnections, staleConnections } =
         filterConnectionsByPresence(connections, presence.onlineConnectionIds);
+      lookup.presence = "reliable";
+      lookup.staleMatch = staleConnections.some(matchesSelection);
+      lookup.otherAvailable = availableConnections.some(
+        (connection) => !matchesSelection(connection),
+      );
+      this.connectionListingDiagnostics.set(availableConnections, listing);
 
       if (staleConnections.length > 0) {
         logStructured("warn", "local_sandbox_stale_connections_filtered", {
@@ -720,6 +816,7 @@ export class HybridSandboxManager implements SandboxManager {
     } catch (error) {
       logStructured("error", "local_sandbox_connections_list_failed", {
         user_id: this.userID,
+        ...localLookupAbortContext(error, this.cloudSandboxContext),
         error: error instanceof Error ? error.message : String(error),
       });
       if (this.sandboxPreference !== "e2b") {
@@ -733,7 +830,16 @@ export class HybridSandboxManager implements SandboxManager {
     }
   }
 
+  /** Reject old evidence when a concurrent lookup changes the selected computer. */
+  private selectedComputerLookup(connections: ConnectionInfo[]) {
+    const listing = this.connectionListingDiagnostics.get(connections);
+    return listing?.preference === this.sandboxPreference
+      ? listing.lookup
+      : undefined;
+  }
+
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    const generation = this.localAcquisitionGeneration;
     if (this.requiredConnectionIdAfterQuarantine) {
       throw new Error(
         "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
@@ -756,7 +862,25 @@ export class HybridSandboxManager implements SandboxManager {
       return this.getCloudSandbox();
     }
 
-    // Check if the preferred connection is available
+    if (this.localSelection?.generation === generation)
+      return this.localSelection.promise;
+    const selection = {
+      generation,
+      promise: this.getSelectedLocalSandbox(generation),
+    };
+    this.localSelection = selection;
+    try {
+      return await selection.promise;
+    } finally {
+      if (this.localSelection === selection) this.localSelection = null;
+    }
+  }
+
+  private async getSelectedLocalSandbox(
+    generation: number,
+  ): Promise<{ sandbox: SandboxInstance }> {
+    // Share lookup as well as the probe: concurrent health snapshots can choose
+    // different connections, and must not close the first caller's sandbox.
     const connections = await this.listConnections();
 
     // Find the preferred connection
@@ -766,6 +890,7 @@ export class HybridSandboxManager implements SandboxManager {
       this.currentConnectionId,
     );
 
+    this.assertLocalAcquisitionCurrent(generation);
     if (preferredConnection) {
       // Use the preferred local connection
       if (
@@ -774,16 +899,16 @@ export class HybridSandboxManager implements SandboxManager {
       ) {
         await this.useCentrifugoConnection(preferredConnection);
       }
-
+      this.assertLocalAcquisitionCurrent(generation);
       return { sandbox: this.sandbox! };
     }
 
     // Legacy session IDs and the Desktop alias select a computer just as
     // persistent environment IDs do. Fail before acquiring a different host
     // so all offline selections reach the reconnect-required recovery path.
-    throw new ChatSDKError(
-      "offline:sandbox",
-      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    throw selectedComputerOfflineError(
+      this.selectedComputerLookup(connections),
+      "acquisition",
     );
   }
 
@@ -797,13 +922,44 @@ export class HybridSandboxManager implements SandboxManager {
     );
   }
 
+  private assertLocalAcquisitionCurrent(generation: number): void {
+    if (generation !== this.localAcquisitionGeneration) {
+      throw new Error(
+        "Sandbox selection changed while connecting. Retry with the current selection.",
+      );
+    }
+  }
+
   /**
    * Create and wire up a CentrifugoSandbox for the given connection.
    */
   private async useCentrifugoConnection(
     connection: ConnectionInfo,
   ): Promise<void> {
+    const generation = this.localAcquisitionGeneration;
+    while (this.localAcquisition) {
+      await this.localAcquisition.catch(() => undefined);
+      this.assertLocalAcquisitionCurrent(generation);
+      if (this.currentConnectionId === connection.connectionId && this.sandbox)
+        return;
+    }
+    this.localAcquisition = this.acquireCentrifugoConnection(
+      connection,
+      generation,
+    );
+    try {
+      await this.localAcquisition;
+    } finally {
+      this.localAcquisition = null;
+    }
+  }
+
+  private async acquireCentrifugoConnection(
+    connection: ConnectionInfo,
+    generation: number,
+  ): Promise<void> {
     await this.closeCurrentSandbox();
+    this.assertLocalAcquisitionCurrent(generation);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
     const centrifugoTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     if (!centrifugoWsUrl || !centrifugoTokenSecret) {
@@ -813,7 +969,7 @@ export class HybridSandboxManager implements SandboxManager {
       wsUrl: centrifugoWsUrl,
       tokenSecret: centrifugoTokenSecret,
     };
-    this.sandbox = new CentrifugoSandbox(
+    const sandbox = new CentrifugoSandbox(
       this.userID,
       connection,
       centrifugoConfig,
@@ -821,6 +977,30 @@ export class HybridSandboxManager implements SandboxManager {
       this.requestId,
       this.chatId,
     );
+    try {
+      await sandbox.confirmNativeFileRelay();
+    } catch (error) {
+      // Never expose a Desktop that cannot persist output, or silently select a
+      // different computer. The caller can retry acquisition after reconnecting.
+      await sandbox.close();
+      if (error instanceof DesktopFileBridgeError) {
+        throw new ChatSDKError("bad_request:sandbox", error.message);
+      }
+      throw error;
+    }
+    if (generation !== this.localAcquisitionGeneration) {
+      // Close only this unpublished instance, never a newer selected sandbox.
+      await sandbox.close();
+      this.assertLocalAcquisitionCurrent(generation);
+    }
+    if (connection.isDesktop && !sandbox.supportsNativeFileRelay()) {
+      await sandbox.close();
+      throw new ChatSDKError(
+        "bad_request:sandbox",
+        "Desktop file access is unavailable. Update and restart the HackerAI Desktop app, reconnect this computer, then retry. Agent mode needs the native file bridge to save terminal output safely.",
+      );
+    }
+    this.sandbox = sandbox;
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
     this.currentConnectionName = connection.name;
@@ -903,6 +1083,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: SandboxInstance): void {
+    this.localAcquisitionGeneration++;
     if (isE2BSandbox(sandbox)) registerE2BWorkspaceLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
@@ -919,8 +1100,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
+    const generation = ++this.localAcquisitionGeneration;
     // Settle acquisition before clearing its result; never destroy the VM.
     await this.cloudAcquisition?.catch(() => undefined);
+    await this.localAcquisition?.catch(() => undefined);
+    if (generation !== this.localAcquisitionGeneration) return;
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;
@@ -946,8 +1130,9 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get expected sandbox context for the system prompt based on preference
-   * without initializing the sandbox. Returns null for E2B (uses default prompt).
+   * Get expected sandbox context for the system prompt based on preference.
+   * Confirm missing Desktop file support before model work. Cloud uses the
+   * default prompt and does not initialize a sandbox here.
    */
   async getSandboxContextForPrompt(): Promise<string | null> {
     if (this.sandboxPreference === "e2b") {
@@ -962,14 +1147,25 @@ export class HybridSandboxManager implements SandboxManager {
     );
 
     if (preferredConnection) {
+      if (
+        preferredConnection.isDesktop &&
+        preferredConnection.capabilities?.files !== true
+      ) {
+        // Resolve missing Desktop file support before starting model work, not
+        // after the first terminal command has already lost its checkpoint.
+        const { sandbox } = await this.getSandbox();
+        if (isCentrifugoSandbox(sandbox)) {
+          return this.buildSandboxContext(sandbox.getConnectionInfo());
+        }
+      }
       // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
       this.currentConnectionName = preferredConnection.name;
       return this.buildSandboxContext(preferredConnection);
     }
 
-    throw new ChatSDKError(
-      "offline:sandbox",
-      "The selected computer is disconnected. Reconnect that computer to continue this task.",
+    throw selectedComputerOfflineError(
+      this.selectedComputerLookup(connections),
+      "prompt_context",
     );
   }
 
@@ -977,7 +1173,8 @@ export class HybridSandboxManager implements SandboxManager {
     const { osInfo } = connection;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
       const uploadPath =
@@ -997,7 +1194,7 @@ System Environment:
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
 - User attachments: ${uploadPath}
-- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}
+- Interactive terminal: ${connection.capabilities?.pty === false ? "unavailable" : "available"}${platform === "win32" ? `\n- Shell: ${WINDOWS_COMMAND_SHELL_GUIDANCE}` : ""}
 ${this.workingDirectory ? `- Active project folder: ${serializePromptText(this.workingDirectory)}\n- Run commands from this folder by default and resolve relative file paths from it.` : ""}
 
 Security Warning:
@@ -1011,11 +1208,13 @@ Available tools depend on what's installed on the host system.
 Browser Automation:
 - Chromium and agent-browser are preinstalled only in the Cloud sandbox.
 - On this host, browser automation is host-dependent. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
-- Use agent-browser only if it is already installed. Do not install browser automation packages on the host unless the user explicitly asks.
-- If agent-browser is unavailable, continue with other installed tools when possible or tell the user they can switch to the Cloud sandbox for the preinstalled browser workflow.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}
 </sandbox_environment>`;
     }
 
-    return null;
+    return `<sandbox_environment>
+You are connected to a computer in DANGEROUS MODE. Commands run directly on the host without Docker isolation. OS information is unavailable; inspect the host before choosing shell-specific commands.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}
+</sandbox_environment>`;
   }
 }

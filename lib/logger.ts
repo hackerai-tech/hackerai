@@ -9,6 +9,8 @@ import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history";
+import type { ProviderFailedImageReferenceDiagnostics } from "@/lib/ai/provider-failed-image-reference";
+import type { ProviderRequestMediaCounts } from "@/lib/ai/provider-request-media";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
@@ -20,6 +22,8 @@ export interface ProviderRequestDiagnostics {
   message_count: number;
   role_counts: Record<string, number>;
   content_part_counts: Record<string, number>;
+  media_counts?: ProviderRequestMediaCounts;
+  failed_image_reference?: ProviderFailedImageReferenceDiagnostics;
   last_message_role?: string;
   last_message_content_types?: string[];
   trailing_assistant_has_tool_call?: boolean;

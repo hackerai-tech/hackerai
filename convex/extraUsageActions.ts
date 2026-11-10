@@ -1,5 +1,7 @@
 "use node";
 
+import { runWalletSettlement, linkWalletReload } from "./lib/settlementAction";
+
 import { action } from "./lib/serviceFunctions";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
@@ -7,7 +9,16 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
+import {
+  getExtraUsageBundle,
+  extraUsageBundlesEnabled,
+} from "../lib/billing/extra-usage-bundles";
+import { planLookupKeyToTier } from "../lib/analytics/paid-funnel";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../lib/pricing/pro-yearly";
+import { includedUsagePointsForStripePrice } from "../lib/billing/included-usage";
 import { BILLING_ERRORS } from "../lib/billing/billing-errors";
+import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -94,11 +105,15 @@ function isAllowedApplicationOrigin(url: URL): boolean {
   return allowedOrigins.has(url.origin);
 }
 
-async function getStripeCustomerId(userId: string): Promise<string | null> {
+async function getStripeCustomerId(
+  userId: string,
+  organizationId?: string,
+): Promise<string | null> {
   const workos = getWorkOS();
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    ...(organizationId && { organizationId }),
     statuses: ["active"],
   });
 
@@ -106,7 +121,11 @@ async function getStripeCustomerId(userId: string): Promise<string | null> {
     return null;
   }
 
-  const billingMembership = memberships.data.find(canManageOrganizationBilling);
+  const billingMembership = memberships.data.find(
+    (membership) =>
+      (!organizationId || membership.organizationId === organizationId) &&
+      canManageOrganizationBilling(membership),
+  );
   if (!billingMembership) {
     return null;
   }
@@ -201,21 +220,6 @@ async function getDefaultPaymentMethodId(
   const pm = invoiceSettings?.default_payment_method;
   return typeof pm === "string" ? pm : pm?.id || null;
 }
-
-const REDACTED_VALUE = "[Redacted]";
-const SENSITIVE_FIELD_PATTERN =
-  /(["']?\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
-const ENV_SECRET_PATTERN =
-  /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
-
-const redactSensitiveErrorMessage = (message: string): string =>
-  message
-    .replace(SENSITIVE_FIELD_PATTERN, (_match, key, separator) => {
-      return `${key}${separator}"${REDACTED_VALUE}"`;
-    })
-    .replace(ENV_SECRET_PATTERN, (_match, key, separator) => {
-      return `${key}${separator}"${REDACTED_VALUE}"`;
-    });
 
 const serializeErrorForLog = (error: unknown) => {
   const name = error instanceof Error ? error.name : "UnknownError";
@@ -533,6 +537,7 @@ export const getPaymentStatus = action({
 export const createPurchaseSession = action({
   args: {
     amountDollars: v.number(),
+    bundleId: v.optional(v.string()),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
     returnPath: v.optional(v.string()),
@@ -561,6 +566,18 @@ export const createPurchaseSession = action({
       return { url: null, error: BILLING_ERRORS.accountSuspended };
     }
 
+    let bundle;
+    if (args.bundleId !== undefined) {
+      if (!extraUsageBundlesEnabled(identity.subject))
+        return { url: null, error: "Bundles are not available" };
+      try {
+        bundle = getExtraUsageBundle(args.bundleId);
+      } catch {
+        return { url: null, error: "Unknown bundle" };
+      }
+      if (args.amountDollars !== bundle.creditDollars)
+        return { url: null, error: "Bundle amount mismatch" };
+    }
     // Validate amount
     if (!Number.isInteger(args.amountDollars)) {
       return { url: null, error: "Amount must be a whole dollar value" };
@@ -598,7 +615,21 @@ export const createPurchaseSession = action({
     }
 
     try {
-      const stripeCustomerId = await getStripeCustomerId(identity.subject);
+      // WorkOS access tokens bind the active organization in the signed org_id claim.
+      const activeOrganizationId =
+        typeof identity.org_id === "string" && identity.org_id
+          ? identity.org_id
+          : undefined;
+      if (bundle && !activeOrganizationId) {
+        return {
+          url: null,
+          error: "Select your personal organization before buying a bundle",
+        };
+      }
+      const stripeCustomerId = await getStripeCustomerId(
+        identity.subject,
+        bundle ? activeOrganizationId : undefined,
+      );
       if (!stripeCustomerId) {
         return {
           url: null,
@@ -607,7 +638,35 @@ export const createPurchaseSession = action({
       }
 
       const stripe = getStripe();
-      const amountCents = args.amountDollars * 100;
+      if (bundle) {
+        const subscriptions = await stripe.subscriptions.list({
+          customer: stripeCustomerId,
+          status: "active",
+          limit: 100,
+        });
+        if (
+          !subscriptions.data.some((subscription) =>
+            subscription.items.data.some((item) => {
+              // Lookup keys move to new prices; existing Pro subscribers retain these IDs.
+              if (
+                item.price.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID ||
+                item.price.id === GRANDFATHERED_PRO_YEARLY_PRICE_ID ||
+                includedUsagePointsForStripePrice(item.price.id) !== undefined
+              )
+                return true;
+              const tier = planLookupKeyToTier(
+                item.price.lookup_key ?? undefined,
+              );
+              return tier === "pro" || tier === "pro-plus" || tier === "ultra";
+            }),
+          )
+        )
+          return {
+            url: null,
+            error: "An active paid subscription is required",
+          };
+      }
+      const amountCents = (bundle?.paidDollars ?? args.amountDollars) * 100;
 
       const session = await stripe.checkout.sessions.create({
         customer: stripeCustomerId,
@@ -636,6 +695,10 @@ export const createPurchaseSession = action({
           type: "extra_usage_purchase",
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: String(bundle.paidDollars),
+          }),
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
@@ -653,6 +716,10 @@ export const createPurchaseSession = action({
         await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
           userId: identity.subject,
           amountDollars: args.amountDollars,
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: bundle.paidDollars,
+          }),
           stripeCheckoutSessionId: session.id,
         });
       } catch (error) {
@@ -783,6 +850,7 @@ export const deductWithAutoReload = action({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -798,348 +866,387 @@ export const deductWithAutoReload = action({
       }),
     ),
   }),
-  handler: async (ctx, args) => {
-    // Validate service key
-    if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
-      throw new Error("Invalid service key");
-    }
+  handler: async (ctx, args) =>
+    runWalletSettlement(ctx, args, async () => {
+      let debitSequence = 0;
+      // Validate service key
+      if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+        throw new Error("Invalid service key");
+      }
 
-    const activeSuspension = await ctx.runQuery(
-      api.userSuspensions.getActiveByUser,
-      {
-        serviceKey: args.serviceKey,
-        userId: args.userId,
-      },
-    );
-    if (activeSuspension?.status === "active") {
-      return {
-        success: false,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-        autoReloadTriggered: false,
-        autoReloadResult: {
-          success: false,
-          reason: "account_suspended",
-        },
-      };
-    }
-
-    if (args.amountPoints <= 0) {
-      return {
-        success: true,
-        newBalanceDollars: 0,
-        insufficientFunds: false,
-        monthlyCapExceeded: false,
-        autoReloadTriggered: false,
-      };
-    }
-
-    const actionStartedAt = Date.now();
-
-    // Get current settings (balance in both dollars and points)
-    let settings: {
-      balanceDollars: number;
-      balancePoints: number;
-      enabled: boolean;
-      autoReloadEnabled: boolean;
-      autoReloadThresholdDollars?: number;
-      autoReloadThresholdPoints?: number;
-      autoReloadAmountDollars?: number;
-      autoReloadOperationPending: boolean;
-      monthlyRemainingDollars?: number;
-    };
-    const balanceLookupStartedAt = Date.now();
-    try {
-      settings = await ctx.runQuery(
-        api.extraUsage.getExtraUsageBalanceForBackend,
+      const activeSuspension = await ctx.runQuery(
+        api.userSuspensions.getActiveByUser,
         {
           serviceKey: args.serviceKey,
           userId: args.userId,
         },
       );
-    } catch (error) {
-      convexLogger.error("extra_usage_balance_backend_query_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        operation: "get_extra_usage_balance",
-        convex_function: "extraUsage.getExtraUsageBalanceForBackend",
-        duration_ms: Date.now() - balanceLookupStartedAt,
-        error: serializeErrorForLog(error),
-      });
-      throw error;
-    }
-
-    // Deduct first. The mutation is transactional, so parallel Agent steps
-    // cannot spend the same wallet balance. Auto-reload is only coordinated if
-    // this debit is underfunded or the successful debit crosses the threshold.
-    let autoReloadTriggered = false;
-    let autoReloadResult:
-      | { success: boolean; chargedAmountDollars?: number; reason?: string }
-      | undefined;
-    let deductResult: {
-      success: boolean;
-      newBalancePoints: number;
-      newBalanceDollars: number;
-      insufficientFunds: boolean;
-      monthlyCapExceeded: boolean;
-    };
-    const deductPointsStartedAt = Date.now();
-    try {
-      deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
-        serviceKey: args.serviceKey,
-        userId: args.userId,
-        amountPoints: args.amountPoints,
-        usageSettlementId: args.usageSettlementId,
-      });
-    } catch (error) {
-      convexLogger.error("extra_usage_deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        operation: "deduct_points",
-        convex_function: "extraUsage.deductPoints",
-        duration_ms: Date.now() - deductPointsStartedAt,
-        error: serializeErrorForLog(error),
-      });
-      throw error;
-    }
-
-    const requestNeedsReload =
-      !deductResult.success &&
-      deductResult.insufficientFunds &&
-      !deductResult.monthlyCapExceeded;
-    const thresholdReached =
-      deductResult.success &&
-      deductResult.newBalancePoints <=
-        (settings.autoReloadThresholdPoints ?? 0);
-
-    if (
-      settings.autoReloadOperationPending ||
-      (settings.autoReloadEnabled && (requestNeedsReload || thresholdReached))
-    ) {
-      for (let reloadAttempt = 0; reloadAttempt < 2; reloadAttempt++) {
-        let retryAutoReload = false;
-        const candidateOperationId = crypto.randomUUID();
-        const candidateExecutorId = crypto.randomUUID();
-        let claim = await ctx.runMutation(
-          internal.extraUsage.claimAutoReloadOperation,
-          {
-            userId: args.userId,
-            candidateOperationId,
-            candidateExecutorId,
-            requestedAmountPoints: requestNeedsReload ? args.amountPoints : 0,
+      if (activeSuspension?.status === "active") {
+        return {
+          success: false,
+          newBalanceDollars: 0,
+          insufficientFunds: true,
+          monthlyCapExceeded: false,
+          autoReloadTriggered: false,
+          autoReloadResult: {
+            success: false,
+            reason: "account_suspended",
           },
-        );
+        };
+      }
 
-        // A threshold top-up is best-effort once this step's debit succeeded.
-        // Underfunded followers briefly wait for the one active Stripe executor;
-        // they never drive the same operation concurrently.
-        if (
-          claim.status === "operation" &&
-          !claim.claimed &&
-          requestNeedsReload
-        ) {
-          for (const delayMs of [250, 500, 1_000, 2_000]) {
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            claim = await ctx.runMutation(
-              internal.extraUsage.claimAutoReloadOperation,
-              {
-                userId: args.userId,
-                candidateOperationId,
-                candidateExecutorId,
-                requestedAmountPoints: args.amountPoints,
-              },
-            );
-            if (claim.status !== "operation" || claim.claimed) break;
-          }
-        }
+      if (args.amountPoints <= 0) {
+        return {
+          success: true,
+          newBalanceDollars: 0,
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
+          autoReloadTriggered: false,
+        };
+      }
 
-        if (claim.status === "not_needed" && requestNeedsReload) {
-          // Another parallel operation may have funded the wallet between the
-          // failed debit and the atomic claim. Re-read by retrying the mutation.
-          deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
+      const actionStartedAt = Date.now();
+
+      // Get current settings (balance in both dollars and points)
+      let settings: {
+        balanceDollars: number;
+        balancePoints: number;
+        enabled: boolean;
+        autoReloadEnabled: boolean;
+        autoReloadThresholdDollars?: number;
+        autoReloadThresholdPoints?: number;
+        autoReloadAmountDollars?: number;
+        autoReloadOperationPending: boolean;
+        monthlyRemainingDollars?: number;
+      };
+      const balanceLookupStartedAt = Date.now();
+      try {
+        settings = await ctx.runQuery(
+          api.extraUsage.getExtraUsageBalanceForBackend,
+          {
             serviceKey: args.serviceKey,
             userId: args.userId,
-            amountPoints: args.amountPoints,
-            usageSettlementId: args.usageSettlementId,
-          });
-        } else if (claim.status === "cooldown") {
-          autoReloadTriggered = true;
-          autoReloadResult = {
-            success: false,
-            reason: claim.reason ?? "payment_failed",
-          };
-        } else if (claim.status === "blocked") {
-          if (
-            claim.reason === "monthly_cap_exceeded" &&
-            !deductResult.success
-          ) {
-            deductResult = {
-              ...deductResult,
-              insufficientFunds: true,
-              monthlyCapExceeded: true,
-            };
-          }
-        } else if (claim.status === "operation" && !claim.claimed) {
-          if (requestNeedsReload) {
-            autoReloadTriggered = true;
-          }
-        } else if (
-          claim.status === "operation" &&
-          claim.claimed &&
-          claim.operationId &&
-          claim.executorId &&
-          claim.amountDollars !== undefined
-        ) {
-          autoReloadTriggered = true;
-          const operationId = claim.operationId;
-          const executorId = claim.executorId;
-          const amountDollars = claim.amountDollars;
-          const releaseOperation = async () =>
-            await ctx.runMutation(
-              internal.extraUsage.completeAutoReloadOperation,
-              {
-                userId: args.userId,
-                operationId,
-                executorId,
-                outcome: "released",
-              },
-            );
-          const releaseExecutor = async () =>
-            await ctx.runMutation(
-              internal.extraUsage.completeAutoReloadOperation,
-              {
-                userId: args.userId,
-                operationId,
-                executorId,
-                outcome: "executor_released",
-              },
-            );
-          const releasePreCharge = async () =>
-            operationId === candidateOperationId && !claim.stripeInvoiceId
-              ? await releaseOperation()
-              : await releaseExecutor();
+          },
+        );
+      } catch (error) {
+        convexLogger.error("extra_usage_balance_backend_query_failed", {
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
+          operation: "get_extra_usage_balance",
+          convex_function: "extraUsage.getExtraUsageBalanceForBackend",
+          duration_ms: Date.now() - balanceLookupStartedAt,
+          error: serializeErrorForLog(error),
+        });
+        throw error;
+      }
 
-          const creditOperation = async ({
-            invoiceId,
-            paymentIntentId,
-            stripeCustomerId,
-          }: {
-            invoiceId: string;
-            paymentIntentId?: string;
-            stripeCustomerId?: string;
-          }) => {
-            const creditResult = await ctx.runMutation(
-              api.extraUsage.addCredits,
-              {
-                serviceKey: args.serviceKey,
-                userId: args.userId,
-                amountDollars,
-                idempotencyKey: `personal_auto_reload:${operationId}`,
-                revenueSource: "extra_usage_auto_reload",
-                stripeCustomerId,
-                stripePaymentIntentId: paymentIntentId,
-                stripeInvoiceId: invoiceId,
-              },
-            );
-            const completed = await ctx.runMutation(
-              internal.extraUsage.completeAutoReloadOperation,
-              {
-                userId: args.userId,
-                operationId,
-                executorId,
-                outcome: "success",
-              },
-            );
+      // Deduct first. The mutation is transactional, so parallel Agent steps
+      // cannot spend the same wallet balance. Auto-reload is only coordinated if
+      // this debit is underfunded or the successful debit crosses the threshold.
+      let autoReloadTriggered = false;
+      let autoReloadResult:
+        | { success: boolean; chargedAmountDollars?: number; reason?: string }
+        | undefined;
+      let deductResult: {
+        success: boolean;
+        newBalancePoints: number;
+        newBalanceDollars: number;
+        insufficientFunds: boolean;
+        monthlyCapExceeded: boolean;
+      };
+      const deductPointsStartedAt = Date.now();
+      try {
+        deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
+          serviceKey: args.serviceKey,
+          userId: args.userId,
+          amountPoints: args.amountPoints,
+          usageSettlementId: args.usageSettlementId,
+          ...(args.settlementOperationId && {
+            settlementOperationId: args.settlementOperationId,
+            settlementDebitSequence: debitSequence++,
+          }),
+        });
+      } catch (error) {
+        convexLogger.error("extra_usage_deduct_points_failed", {
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          usage_settlement_id: args.usageSettlementId,
+          operation: "deduct_points",
+          convex_function: "extraUsage.deductPoints",
+          duration_ms: Date.now() - deductPointsStartedAt,
+          error: serializeErrorForLog(error),
+        });
+        throw error;
+      }
+
+      const requestNeedsReload =
+        !deductResult.success &&
+        deductResult.insufficientFunds &&
+        !deductResult.monthlyCapExceeded;
+      const thresholdReached =
+        deductResult.success &&
+        deductResult.newBalancePoints <=
+          (settings.autoReloadThresholdPoints ?? 0);
+
+      if (
+        settings.autoReloadOperationPending ||
+        (settings.autoReloadEnabled && (requestNeedsReload || thresholdReached))
+      ) {
+        for (let reloadAttempt = 0; reloadAttempt < 2; reloadAttempt++) {
+          let retryAutoReload = false;
+          const candidateOperationId = crypto.randomUUID();
+          const candidateExecutorId = crypto.randomUUID();
+          let claim = await ctx.runMutation(
+            internal.extraUsage.claimAutoReloadOperation,
+            {
+              userId: args.userId,
+              candidateOperationId,
+              candidateExecutorId,
+              requestedAmountPoints: requestNeedsReload ? args.amountPoints : 0,
+            },
+          );
+
+          // A threshold top-up is best-effort once this step's debit succeeded.
+          // Underfunded followers briefly wait for the one active Stripe executor;
+          // they never drive the same operation concurrently.
+          if (
+            claim.status === "operation" &&
+            !claim.claimed &&
+            requestNeedsReload
+          ) {
+            for (const delayMs of [250, 500, 1_000, 2_000]) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              claim = await ctx.runMutation(
+                internal.extraUsage.claimAutoReloadOperation,
+                {
+                  userId: args.userId,
+                  candidateOperationId,
+                  candidateExecutorId,
+                  requestedAmountPoints: args.amountPoints,
+                },
+              );
+              if (claim.status !== "operation" || claim.claimed) break;
+            }
+          }
+
+          if (claim.status === "not_needed" && requestNeedsReload) {
+            // Another parallel operation may have funded the wallet between the
+            // failed debit and the atomic claim. Re-read by retrying the mutation.
+            deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
+              serviceKey: args.serviceKey,
+              userId: args.userId,
+              amountPoints: args.amountPoints,
+              usageSettlementId: args.usageSettlementId,
+              ...(args.settlementOperationId && {
+                settlementOperationId: args.settlementOperationId,
+                settlementDebitSequence: debitSequence++,
+              }),
+            });
+          } else if (claim.status === "cooldown") {
+            autoReloadTriggered = true;
             autoReloadResult = {
-              success: true,
-              chargedAmountDollars: amountDollars,
+              success: false,
+              reason: claim.reason ?? "payment_failed",
             };
-            if (deductResult.success && !creditResult.alreadyProcessed) {
+          } else if (claim.status === "blocked") {
+            if (
+              claim.reason === "monthly_cap_exceeded" &&
+              !deductResult.success
+            ) {
               deductResult = {
                 ...deductResult,
-                newBalancePoints: extraUsageDollarsToPoints(
-                  creditResult.newBalance,
-                ),
-                newBalanceDollars: creditResult.newBalance,
+                insufficientFunds: true,
+                monthlyCapExceeded: true,
               };
             }
-            if (completed) {
-              try {
-                await ctx.runMutation(
-                  internal.extraUsage.recordAutoReloadOutcome,
-                  { userId: args.userId, success: true },
-                );
-              } catch (error) {
-                convexLogger.error(
-                  "extra_usage_auto_reload_outcome_record_failed",
-                  {
-                    user_id: args.userId,
-                    operation_id: operationId,
-                    auto_reload_success: true,
-                    error: serializeErrorForLog(error),
-                  },
-                );
-              }
+          } else if (claim.status === "operation" && !claim.claimed) {
+            if (requestNeedsReload) {
+              autoReloadTriggered = true;
             }
-          };
-
-          let shouldPreparePayment = true;
-          if (claim.stripeInvoiceId) {
-            try {
-              const existingInvoice = await getStripe().invoices.retrieve(
-                claim.stripeInvoiceId,
-              );
-              if (existingInvoice.status === "paid") {
-                const paymentIntent = (
-                  existingInvoice as unknown as {
-                    payment_intent?: string | { id: string };
-                  }
-                ).payment_intent;
-                await creditOperation({
-                  invoiceId: existingInvoice.id,
-                  paymentIntentId:
-                    typeof paymentIntent === "string"
-                      ? paymentIntent
-                      : paymentIntent?.id,
-                });
-                shouldPreparePayment = false;
-              } else if (
-                (!requestNeedsReload && !thresholdReached) ||
-                claim.paymentAllowed === false ||
-                existingInvoice.status === "void" ||
-                existingInvoice.status === "uncollectible"
-              ) {
-                const reason =
-                  claim.paymentBlockedReason ??
-                  (existingInvoice.status === "void" ||
-                  existingInvoice.status === "uncollectible"
-                    ? "invoice_not_payable"
-                    : "reload_not_needed");
-                autoReloadResult = {
-                  success: false,
-                  reason,
-                };
-                const retirement = await retireAutoReloadInvoice(
-                  existingInvoice,
+          } else if (
+            claim.status === "operation" &&
+            claim.claimed &&
+            claim.operationId &&
+            claim.executorId &&
+            claim.amountDollars !== undefined
+          ) {
+            autoReloadTriggered = true;
+            const operationId = claim.operationId;
+            const executorId = claim.executorId;
+            const amountDollars = claim.amountDollars;
+            const releaseOperation = async () =>
+              await ctx.runMutation(
+                internal.extraUsage.completeAutoReloadOperation,
+                {
+                  userId: args.userId,
                   operationId,
+                  executorId,
+                  outcome: "released",
+                },
+              );
+            const releaseExecutor = async () =>
+              await ctx.runMutation(
+                internal.extraUsage.completeAutoReloadOperation,
+                {
+                  userId: args.userId,
+                  operationId,
+                  executorId,
+                  outcome: "executor_released",
+                },
+              );
+            const releasePreCharge = async () =>
+              operationId === candidateOperationId && !claim.stripeInvoiceId
+                ? await releaseOperation()
+                : await releaseExecutor();
+
+            try {
+              await linkWalletReload(ctx, args, operationId);
+            } catch (error) {
+              await releasePreCharge();
+              throw error;
+            }
+
+            const creditOperation = async ({
+              invoiceId,
+              paymentIntentId,
+              stripeCustomerId,
+            }: {
+              invoiceId: string;
+              paymentIntentId?: string;
+              stripeCustomerId?: string;
+            }) => {
+              const creditResult = await ctx.runMutation(
+                api.extraUsage.addCredits,
+                {
+                  serviceKey: args.serviceKey,
+                  userId: args.userId,
+                  amountDollars,
+                  idempotencyKey: `personal_auto_reload:${operationId}`,
+                  revenueSource: "extra_usage_auto_reload",
+                  stripeCustomerId,
+                  stripePaymentIntentId: paymentIntentId,
+                  stripeInvoiceId: invoiceId,
+                },
+              );
+              const completed = await ctx.runMutation(
+                internal.extraUsage.completeAutoReloadOperation,
+                {
+                  userId: args.userId,
+                  operationId,
+                  executorId,
+                  outcome: "success",
+                },
+              );
+              autoReloadResult = {
+                success: true,
+                chargedAmountDollars: amountDollars,
+              };
+              if (deductResult.success && !creditResult.alreadyProcessed) {
+                deductResult = {
+                  ...deductResult,
+                  newBalancePoints: extraUsageDollarsToPoints(
+                    creditResult.newBalance,
+                  ),
+                  newBalanceDollars: creditResult.newBalance,
+                };
+              }
+              if (completed) {
+                try {
+                  await ctx.runMutation(
+                    internal.extraUsage.recordAutoReloadOutcome,
+                    { userId: args.userId, success: true },
+                  );
+                } catch (error) {
+                  convexLogger.error(
+                    "extra_usage_auto_reload_outcome_record_failed",
+                    {
+                      user_id: args.userId,
+                      operation_id: operationId,
+                      auto_reload_success: true,
+                      error: serializeErrorForLog(error),
+                    },
+                  );
+                }
+              }
+            };
+
+            let shouldPreparePayment = true;
+            if (claim.stripeInvoiceId) {
+              try {
+                const existingInvoice = await getStripe().invoices.retrieve(
+                  claim.stripeInvoiceId,
                 );
-                if (retirement.status === "paid") {
+                if (existingInvoice.status === "paid") {
                   const paymentIntent = (
-                    retirement.invoice as unknown as {
+                    existingInvoice as unknown as {
                       payment_intent?: string | { id: string };
                     }
                   ).payment_intent;
                   await creditOperation({
-                    invoiceId: retirement.invoice.id,
+                    invoiceId: existingInvoice.id,
                     paymentIntentId:
                       typeof paymentIntent === "string"
                         ? paymentIntent
                         : paymentIntent?.id,
                   });
-                } else if (retirement.status === "released") {
+                  shouldPreparePayment = false;
+                } else if (
+                  (!requestNeedsReload && !thresholdReached) ||
+                  claim.paymentAllowed === false ||
+                  existingInvoice.status === "void" ||
+                  existingInvoice.status === "uncollectible"
+                ) {
+                  const reason =
+                    claim.paymentBlockedReason ??
+                    (existingInvoice.status === "void" ||
+                    existingInvoice.status === "uncollectible"
+                      ? "invoice_not_payable"
+                      : "reload_not_needed");
+                  autoReloadResult = {
+                    success: false,
+                    reason,
+                  };
+                  const retirement = await retireAutoReloadInvoice(
+                    existingInvoice,
+                    operationId,
+                  );
+                  if (retirement.status === "paid") {
+                    const paymentIntent = (
+                      retirement.invoice as unknown as {
+                        payment_intent?: string | { id: string };
+                      }
+                    ).payment_intent;
+                    await creditOperation({
+                      invoiceId: retirement.invoice.id,
+                      paymentIntentId:
+                        typeof paymentIntent === "string"
+                          ? paymentIntent
+                          : paymentIntent?.id,
+                    });
+                  } else if (retirement.status === "released") {
+                    const released = await releaseOperation();
+                    retryAutoReload =
+                      requestNeedsReload && released && reloadAttempt === 0;
+                  } else {
+                    await releaseExecutor();
+                  }
+                  shouldPreparePayment = false;
+                }
+              } catch (error) {
+                convexLogger.error("extra_usage_auto_reload_reconcile_failed", {
+                  user_id: args.userId,
+                  operation_id: operationId,
+                  error: serializeErrorForLog(error),
+                });
+                const invoiceMissing = isMissingStripeResource(error);
+                autoReloadResult = {
+                  success: false,
+                  reason: invoiceMissing
+                    ? "invoice_missing"
+                    : "payment_state_unknown",
+                };
+                if (invoiceMissing) {
                   const released = await releaseOperation();
                   retryAutoReload =
                     requestNeedsReload && released && reloadAttempt === 0;
@@ -1148,247 +1255,237 @@ export const deductWithAutoReload = action({
                 }
                 shouldPreparePayment = false;
               }
-            } catch (error) {
-              convexLogger.error("extra_usage_auto_reload_reconcile_failed", {
-                user_id: args.userId,
-                operation_id: operationId,
-                error: serializeErrorForLog(error),
-              });
-              const invoiceMissing = isMissingStripeResource(error);
+            } else if (
+              (!requestNeedsReload && !thresholdReached) ||
+              claim.paymentAllowed === false
+            ) {
               autoReloadResult = {
                 success: false,
-                reason: invoiceMissing
-                  ? "invoice_missing"
-                  : "payment_state_unknown",
+                reason: claim.paymentBlockedReason ?? "reload_not_needed",
               };
-              if (invoiceMissing) {
-                const released = await releaseOperation();
-                retryAutoReload =
-                  requestNeedsReload && released && reloadAttempt === 0;
-              } else {
-                await releaseExecutor();
-              }
+              // Payment cannot start before the Stripe invoice id is persisted.
+              // Clearing an id-less stale operation can at worst leave an inert
+              // draft invoice (auto_advance=false), never a second card charge.
+              const released = await releaseOperation();
+              retryAutoReload =
+                requestNeedsReload && released && reloadAttempt === 0;
               shouldPreparePayment = false;
             }
-          } else if (
-            (!requestNeedsReload && !thresholdReached) ||
-            claim.paymentAllowed === false
-          ) {
-            autoReloadResult = {
-              success: false,
-              reason: claim.paymentBlockedReason ?? "reload_not_needed",
-            };
-            // Payment cannot start before the Stripe invoice id is persisted.
-            // Clearing an id-less stale operation can at worst leave an inert
-            // draft invoice (auto_advance=false), never a second card charge.
-            const released = await releaseOperation();
-            retryAutoReload =
-              requestNeedsReload && released && reloadAttempt === 0;
-            shouldPreparePayment = false;
-          }
 
-          // Get Stripe customer ID
-          if (shouldPreparePayment) {
-            const stripeLookupStartedAt = Date.now();
-            let stripeCustomerId: string | null = null;
-            try {
-              stripeCustomerId = await getStripeCustomerId(args.userId);
-            } catch (error) {
-              convexLogger.error("extra_usage_stripe_customer_lookup_failed", {
-                user_id: args.userId,
-                amount_points: args.amountPoints,
-                operation: "get_stripe_customer",
-                duration_ms: Date.now() - stripeLookupStartedAt,
-                error: serializeErrorForLog(error),
-              });
-              autoReloadResult = {
-                success: false,
-                reason: "stripe_lookup_failed",
-              };
-            }
-            if (!stripeCustomerId) {
-              autoReloadResult ??= {
-                success: false,
-                reason: "no_stripe_customer",
-              };
-              await releasePreCharge();
-            } else {
-              let paymentStarted = false;
+            // Get Stripe customer ID
+            if (shouldPreparePayment) {
+              const stripeLookupStartedAt = Date.now();
+              let stripeCustomerId: string | null = null;
               try {
-                // Check if customer is blocked (fraud flagged) before attempting charge
-                const customerObj =
-                  await getStripe().customers.retrieve(stripeCustomerId);
-                const isBlocked =
-                  !customerObj.deleted &&
-                  (customerObj as Stripe.Customer).metadata?.blocked === "true";
+                stripeCustomerId = await getStripeCustomerId(args.userId);
+              } catch (error) {
+                convexLogger.error(
+                  "extra_usage_stripe_customer_lookup_failed",
+                  {
+                    user_id: args.userId,
+                    amount_points: args.amountPoints,
+                    operation: "get_stripe_customer",
+                    duration_ms: Date.now() - stripeLookupStartedAt,
+                    error: serializeErrorForLog(error),
+                  },
+                );
+                autoReloadResult = {
+                  success: false,
+                  reason: "stripe_lookup_failed",
+                };
+              }
+              if (!stripeCustomerId) {
+                autoReloadResult ??= {
+                  success: false,
+                  reason: "no_stripe_customer",
+                };
+                await releasePreCharge();
+              } else {
+                let paymentStarted = false;
+                try {
+                  // Check if customer is blocked (fraud flagged) before attempting charge
+                  const customerObj =
+                    await getStripe().customers.retrieve(stripeCustomerId);
+                  const isBlocked =
+                    !customerObj.deleted &&
+                    (customerObj as Stripe.Customer).metadata?.blocked ===
+                      "true";
 
-                if (isBlocked) {
-                  autoReloadResult = {
-                    success: false,
-                    reason: "customer_blocked",
-                  };
-                  await releasePreCharge();
-                } else {
-                  // Get default payment method
-                  const paymentMethodId =
-                    await getDefaultPaymentMethodId(stripeCustomerId);
-                  if (!paymentMethodId) {
+                  if (isBlocked) {
                     autoReloadResult = {
                       success: false,
-                      reason: "no_default_payment_method",
+                      reason: "customer_blocked",
                     };
                     await releasePreCharge();
                   } else {
-                    paymentStarted = true;
-                    const paymentResult = await createAutoReloadPayment(
-                      stripeCustomerId,
-                      paymentMethodId,
-                      Math.round(amountDollars * 100),
-                      args.userId,
-                      operationId,
-                      claim.stripeInvoiceId,
-                      async (stripeInvoiceId) => {
-                        const recorded = await ctx.runMutation(
-                          internal.extraUsage.recordAutoReloadInvoice,
-                          {
-                            userId: args.userId,
-                            operationId,
-                            executorId,
-                            stripeInvoiceId,
-                          },
-                        );
-                        if (!recorded) {
-                          throw new Error(
-                            "Auto-reload operation executor changed",
-                          );
-                        }
-                      },
-                    );
-
-                    if (paymentResult.success && paymentResult.invoiceId) {
-                      await creditOperation({
-                        invoiceId: paymentResult.invoiceId,
-                        paymentIntentId: paymentResult.paymentIntentId,
-                        stripeCustomerId,
-                      });
+                    // Get default payment method
+                    const paymentMethodId =
+                      await getDefaultPaymentMethodId(stripeCustomerId);
+                    if (!paymentMethodId) {
+                      autoReloadResult = {
+                        success: false,
+                        reason: "no_default_payment_method",
+                      };
+                      await releasePreCharge();
                     } else {
-                      const reason =
-                        paymentResult.error ||
-                        (paymentResult.success
-                          ? "missing_payment_intent"
-                          : "payment_failed");
-                      autoReloadResult = { success: false, reason };
-                      if (paymentResult.failureKind === "definitive") {
-                        const completed = await ctx.runMutation(
-                          internal.extraUsage.completeAutoReloadOperation,
-                          {
-                            userId: args.userId,
-                            operationId,
-                            executorId,
-                            outcome: "definitive_failure",
-                            failureReason: reason,
-                          },
-                        );
-                        if (completed) {
-                          try {
-                            await ctx.runMutation(
-                              internal.extraUsage.recordAutoReloadOutcome,
-                              {
-                                userId: args.userId,
-                                success: false,
-                                failureReason: reason,
-                              },
-                            );
-                          } catch (error) {
-                            convexLogger.error(
-                              "extra_usage_auto_reload_outcome_record_failed",
-                              {
-                                user_id: args.userId,
-                                operation_id: operationId,
-                                auto_reload_success: false,
-                                error: serializeErrorForLog(error),
-                              },
+                      paymentStarted = true;
+                      const paymentResult = await createAutoReloadPayment(
+                        stripeCustomerId,
+                        paymentMethodId,
+                        Math.round(amountDollars * 100),
+                        args.userId,
+                        operationId,
+                        claim.stripeInvoiceId,
+                        async (stripeInvoiceId) => {
+                          const recorded = await ctx.runMutation(
+                            internal.extraUsage.recordAutoReloadInvoice,
+                            {
+                              userId: args.userId,
+                              operationId,
+                              executorId,
+                              stripeInvoiceId,
+                            },
+                          );
+                          if (!recorded) {
+                            throw new Error(
+                              "Auto-reload operation executor changed",
                             );
                           }
-                        }
-                      } else if (paymentResult.failureKind === "released") {
-                        await releasePreCharge();
+                        },
+                      );
+
+                      if (paymentResult.success && paymentResult.invoiceId) {
+                        await creditOperation({
+                          invoiceId: paymentResult.invoiceId,
+                          paymentIntentId: paymentResult.paymentIntentId,
+                          stripeCustomerId,
+                        });
                       } else {
-                        await releaseExecutor();
+                        const reason =
+                          paymentResult.error ||
+                          (paymentResult.success
+                            ? "missing_payment_intent"
+                            : "payment_failed");
+                        autoReloadResult = { success: false, reason };
+                        if (paymentResult.failureKind === "definitive") {
+                          const completed = await ctx.runMutation(
+                            internal.extraUsage.completeAutoReloadOperation,
+                            {
+                              userId: args.userId,
+                              operationId,
+                              executorId,
+                              outcome: "definitive_failure",
+                              failureReason: reason,
+                            },
+                          );
+                          if (completed) {
+                            try {
+                              await ctx.runMutation(
+                                internal.extraUsage.recordAutoReloadOutcome,
+                                {
+                                  userId: args.userId,
+                                  success: false,
+                                  failureReason: reason,
+                                },
+                              );
+                            } catch (error) {
+                              convexLogger.error(
+                                "extra_usage_auto_reload_outcome_record_failed",
+                                {
+                                  user_id: args.userId,
+                                  operation_id: operationId,
+                                  auto_reload_success: false,
+                                  error: serializeErrorForLog(error),
+                                },
+                              );
+                            }
+                          }
+                        } else if (paymentResult.failureKind === "released") {
+                          await releasePreCharge();
+                        } else {
+                          await releaseExecutor();
+                        }
                       }
                     }
                   }
-                }
-              } catch (error) {
-                convexLogger.error("extra_usage_auto_reload_lookup_failed", {
-                  user_id: args.userId,
-                  amount_points: args.amountPoints,
-                  operation: "prepare_auto_reload_payment",
-                  duration_ms: Date.now() - stripeLookupStartedAt,
-                  error: serializeErrorForLog(error),
-                });
-                autoReloadResult = {
-                  success: false,
-                  reason: paymentStarted
-                    ? "payment_state_unknown"
-                    : "stripe_lookup_failed",
-                };
-                // Once a Stripe POST may have started, retain the operation and its
-                // idempotency keys. A later call can safely resume it. Releasing here
-                // could mint a new operation and double-charge an indeterminate one.
-                if (paymentStarted) {
-                  await releaseExecutor();
-                } else {
-                  await releasePreCharge();
+                } catch (error) {
+                  convexLogger.error("extra_usage_auto_reload_lookup_failed", {
+                    user_id: args.userId,
+                    amount_points: args.amountPoints,
+                    operation: "prepare_auto_reload_payment",
+                    duration_ms: Date.now() - stripeLookupStartedAt,
+                    error: serializeErrorForLog(error),
+                  });
+                  autoReloadResult = {
+                    success: false,
+                    reason: paymentStarted
+                      ? "payment_state_unknown"
+                      : "stripe_lookup_failed",
+                  };
+                  // Once a Stripe POST may have started, retain the operation and its
+                  // idempotency keys. A later call can safely resume it. Releasing here
+                  // could mint a new operation and double-charge an indeterminate one.
+                  if (paymentStarted) {
+                    await releaseExecutor();
+                  } else {
+                    await releasePreCharge();
+                  }
                 }
               }
             }
-          }
 
-          if (requestNeedsReload && autoReloadResult?.success) {
-            deductResult = await ctx.runMutation(api.extraUsage.deductPoints, {
-              serviceKey: args.serviceKey,
-              userId: args.userId,
-              amountPoints: args.amountPoints,
-              usageSettlementId: args.usageSettlementId,
-            });
-            retryAutoReload =
-              reloadAttempt === 0 &&
-              !deductResult.success &&
-              deductResult.insufficientFunds &&
-              !deductResult.monthlyCapExceeded;
+            if (requestNeedsReload && autoReloadResult?.success) {
+              deductResult = await ctx.runMutation(
+                api.extraUsage.deductPoints,
+                {
+                  serviceKey: args.serviceKey,
+                  userId: args.userId,
+                  amountPoints: args.amountPoints,
+                  usageSettlementId: args.usageSettlementId,
+                  ...(args.settlementOperationId && {
+                    settlementOperationId: args.settlementOperationId,
+                    settlementDebitSequence: debitSequence++,
+                  }),
+                },
+              );
+              retryAutoReload =
+                reloadAttempt === 0 &&
+                !deductResult.success &&
+                deductResult.insufficientFunds &&
+                !deductResult.monthlyCapExceeded;
+            }
           }
+          if (retryAutoReload) {
+            autoReloadResult = undefined;
+            continue;
+          }
+          break;
         }
-        if (retryAutoReload) {
-          autoReloadResult = undefined;
-          continue;
-        }
-        break;
       }
-    }
 
-    convexLogger.info("deduct_with_auto_reload", {
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      success: deductResult.success,
-      new_balance_dollars: deductResult.newBalanceDollars,
-      insufficient_funds: deductResult.insufficientFunds,
-      monthly_cap_exceeded: deductResult.monthlyCapExceeded,
-      auto_reload_triggered: autoReloadTriggered,
-      auto_reload_success: autoReloadResult?.success,
-      auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
-      auto_reload_failure_reason: autoReloadResult?.reason,
-      duration_ms: Date.now() - actionStartedAt,
-    });
+      convexLogger.info("deduct_with_auto_reload", {
+        user_id: args.userId,
+        settlement_operation_id: args.settlementOperationId,
+        amount_points: args.amountPoints,
+        usage_settlement_id: args.usageSettlementId,
+        success: deductResult.success,
+        new_balance_dollars: deductResult.newBalanceDollars,
+        insufficient_funds: deductResult.insufficientFunds,
+        monthly_cap_exceeded: deductResult.monthlyCapExceeded,
+        auto_reload_triggered: autoReloadTriggered,
+        auto_reload_success: autoReloadResult?.success,
+        auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
+        auto_reload_failure_reason: autoReloadResult?.reason,
+        duration_ms: Date.now() - actionStartedAt,
+      });
 
-    return {
-      success: deductResult.success,
-      newBalanceDollars: deductResult.newBalanceDollars,
-      insufficientFunds: deductResult.insufficientFunds,
-      monthlyCapExceeded: deductResult.monthlyCapExceeded,
-      autoReloadTriggered,
-      autoReloadResult,
-    };
-  },
+      return {
+        success: deductResult.success,
+        newBalanceDollars: deductResult.newBalanceDollars,
+        insufficientFunds: deductResult.insufficientFunds,
+        monthlyCapExceeded: deductResult.monthlyCapExceeded,
+        autoReloadTriggered,
+        autoReloadResult,
+      };
+    }),
 });

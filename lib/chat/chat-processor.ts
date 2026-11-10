@@ -42,8 +42,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
  *   DeepSeek V4.1 Flash. Paid Standard uses the same snapshot with high
  *   reasoning; explicit Pro uses max reasoning, including images.
- *   Paid plans only use Agent mode. Max uses GLM 5.3 for text and
- *   DeepSeek V4.1 Flash 1017 with maximum reasoning for images.
+ *   Max defaults to GLM text and DeepSeek images. The server-side Max
+ *   experiment selects Grok after entitlement and media processing.
  *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
@@ -116,11 +116,9 @@ export function selectModel(
     return autoModel;
   }
 
-  // The exact snapshot key applies Max reasoning in buildProviderOptions.
   if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
     return DEEPSEEK_1017_MODEL_KEY;
   }
-
   const providerKey = resolveAgentTierToProviderKey(allowedSelectedModel);
   return providerKey ?? autoModel;
 }
@@ -149,6 +147,8 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-file",
+  "tool-file_edit",
+  "tool-file_write",
   "tool-read_file",
   "tool-write_file",
   "tool-delete_file",
@@ -484,8 +484,11 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
     const cleanedParts = message.parts.map((part: any) => {
       // Process tool-file parts with read, edit, or append action and object output
       if (
-        part.type === "tool-file" &&
-        (part.input?.action === "read" ||
+        (part.type === "tool-file" ||
+          part.type === "tool-file_edit" ||
+          part.type === "tool-file_write") &&
+        (part.type === "tool-file_edit" ||
+          part.input?.action === "read" ||
           part.input?.action === "edit" ||
           part.input?.action === "append") &&
         typeof part.output === "object" &&
@@ -797,7 +800,6 @@ export async function processChatMessages({
     sandboxFiles,
     moderationChecked: true,
     platformAuthorized: moderationResult.shouldUncensorResponse,
-    allowsAbliterationContinuation:
-      moderationResult.allowsAbliterationContinuation,
+    allowsFreeAbliteration: moderationResult.allowsFreeAbliteration,
   };
 }

@@ -34,15 +34,20 @@ export const USER_DELETION_TABLE_POLICY = {
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "current_cancellation_reasons",
     "research_run_members",
     "research_user_profiles",
     "subagent_messages",
     "subagent_events",
     "subagent_work_items",
     "subagent_runs",
+    "captcha_daily_limits",
   ],
   anonymize: [
     "usage_logs",
+    "captcha_attempts",
+    "usage_settlement_operations",
+    "usage_settlement_debits",
     "cancellation_reasons",
     "involuntary_churn_events",
     "referral_codes",
@@ -60,6 +65,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
+    // Unresolved Stripe writes must stay fenced even during account deletion.
+    "billing_operations",
     "processed_webhooks",
     "processed_checkout_sessions",
     // Reports contain only cohort-level patterns from runs with at least three
@@ -512,6 +519,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
     q.eq("user_id", userId),
   );
+  const currentCancellationReasonsBatch = await collectByIndexBatch<
+    Doc<"current_cancellation_reasons">
+  >(ctx, budget, "current_cancellation_reasons", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
     Doc<"cancellation_reason_details">
   >(
@@ -555,6 +567,11 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const captchaLimitsBatch = await collectByIndexBatch<
+    Doc<"captcha_daily_limits">
+  >(ctx, budget, "captcha_daily_limits", "by_bucket_and_day", (q) =>
+    q.eq("bucket", `user:${userId}`),
+  );
   const deletionBatches = [
     userSkillDraftsBatch,
     userSkillsBatch,
@@ -580,6 +597,7 @@ async function cleanupUserDataForUser(
     subagentEventsBatch,
     subagentWorkItemsBatch,
     subagentRunsBatch,
+    captchaLimitsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -652,6 +670,13 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);
   await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "captcha_daily_limits",
+    captchaLimitsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(
     ctx,
@@ -705,6 +730,14 @@ async function cleanupUserDataForUser(
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
     mode,
   );
+  stats.hasMore ||= currentCancellationReasonsBatch.hasMore;
+  await deleteDocs(
+    ctx,
+    stats,
+    "current_cancellation_reasons",
+    currentCancellationReasonsBatch.docs,
+    mode,
+  );
   await deleteDocs(
     ctx,
     stats,
@@ -727,6 +760,25 @@ async function cleanupUserDataForUser(
     mode,
   );
 
+  const captchaAttemptsBatch = await collectByIndexBatch<
+    Doc<"captcha_attempts">
+  >(ctx, budget, "captcha_attempts", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  stats.hasMore ||= captchaAttemptsBatch.hasMore;
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "captcha_attempts",
+    captchaAttemptsBatch.docs,
+    (row) => ({
+      user_id: DELETED_USER_ID,
+      chat_id: "",
+      run_id: `deleted:${row._id}`,
+    }),
+    mode,
+  );
+
   const cancellationReasonsBatch = await collectByIndexBatch<
     Doc<"cancellation_reasons">
   >(ctx, budget, "cancellation_reasons", "by_user_started", (q) =>
@@ -738,6 +790,16 @@ async function cleanupUserDataForUser(
     "usage_logs",
     "by_user",
     (q) => q.eq("user_id", userId),
+  );
+  const settlementOperationsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_operations">
+  >(ctx, budget, "usage_settlement_operations", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const settlementDebitsBatch = await collectByIndexBatch<
+    Doc<"usage_settlement_debits">
+  >(ctx, budget, "usage_settlement_debits", "by_user_id", (q) =>
+    q.eq("user_id", userId),
   );
   const involuntaryChurnEventsBatch = await collectByIndexBatch<
     Doc<"involuntary_churn_events">
@@ -824,6 +886,8 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    settlementOperationsBatch,
+    settlementDebitsBatch,
     involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
@@ -882,6 +946,22 @@ async function cleanupUserDataForUser(
       chat_id: undefined,
       assistant_message_id: undefined,
     }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_operations",
+    settlementOperationsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "usage_settlement_debits",
+    settlementDebitsBatch.docs,
+    () => ({ user_id: DELETED_USER_ID }),
     mode,
   );
   await anonymizeDocs(

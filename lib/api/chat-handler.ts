@@ -1,10 +1,8 @@
+import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
+import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
+import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
-import { isAgentModelContextEnabled } from "@/lib/experiments/agent-model-context";
-import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
-import {
-  evaluateFreeAgentBudget,
-  freeAgentBudgetPolicy,
-} from "@/lib/experiments/free-agent-budget";
+import { isExpandedAgentContextEligible } from "@/lib/experiments/agent-model-context";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
@@ -20,11 +18,17 @@ import {
   hasUncertainProviderToolOutcome,
   isTerminalEmptyAssistantResponse,
   prepareProviderDisconnectContinuation,
+  prepareAgentLoopContinuation,
+  AGENT_LOOP_CONTINUATION_PROMPT,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import {
+  evaluateMaxGrok46,
+  MaxModelTelemetry,
+} from "@/lib/experiments/max-grok-46";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -61,7 +65,7 @@ import {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
-  checkFreeCostBudget,
+  checkFreeMonthlyCostLimit,
   checkRateLimit,
   deductUsage,
   deductUsageDelta,
@@ -138,7 +142,6 @@ import {
   handleInitialChatAndUserMessage,
   prepareForNewStream,
   saveMessage,
-  startStream,
   updateChat,
   updateChatTitle,
 } from "@/lib/db/actions";
@@ -219,6 +222,7 @@ import {
   isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import {
+  requireChatId,
   requireChatMessagesArray,
   requireOptionalIdentifier,
   requireRetiredTemporaryFieldAbsent,
@@ -325,7 +329,7 @@ export const createChatHandler = () => {
         messages,
         mode: rawMode,
         todos,
-        chatId,
+        chatId: rawChatId,
         regenerate,
         sandboxPreference,
         selectedModel: rawSelectedModel,
@@ -337,7 +341,7 @@ export const createChatHandler = () => {
       } = rawRequestBody as {
         messages: unknown;
         mode: unknown;
-        chatId: string;
+        chatId: unknown;
         todos?: Todo[];
         regenerate?: boolean;
         sandboxPreference?: SandboxPreference;
@@ -349,6 +353,7 @@ export const createChatHandler = () => {
         projectId?: unknown;
       };
       const mode = requireVercelChatMode(rawMode);
+      const chatId = requireChatId(rawChatId);
       const analyticsRequestContext = readAnalyticsRequestContext(req.headers);
       const requestedProjectId = requireOptionalIdentifier(
         "projectId",
@@ -439,8 +444,7 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const agentModelContextEnabled = await isAgentModelContextEnabled(
-        userId,
+      const agentModelContextEnabled = isExpandedAgentContextEligible(
         subscription,
         mode,
         selectedModelOverride,
@@ -524,27 +528,10 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
-      const freeAgentBudget = await evaluateFreeAgentBudget({
-        posthog: (posthog ??= PostHogClient()),
-        userId,
-        mode,
-        subscription,
-        requestId,
-      });
-      const freeLimits = freeAgentBudgetPolicy(
-        freeAgentBudget,
-        regionalFreeLimits,
-      );
-      const freeDailySettlement = freeLimits?.agentDailyBudget
-        ? new FreeDailyCostSettlement(
-            freeUsageSubject,
-            freeLimits,
-            crypto.randomUUID(),
-          )
-        : undefined;
+      const freeLimits = regionalFreeLimits;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeCostBudget(freeUsageSubject, freeLimits)
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -573,6 +560,7 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         moderationChecked,
+        allowsFreeAbliteration,
       } = await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -602,19 +590,50 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
+      const maxGrokAssignment = await evaluateMaxGrok46({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+        hasImages:
+          countFileAttachments(processedMessages).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+        limitRescue: Boolean(limitRescue),
+      });
+      if (maxGrokAssignment) selectedModel = maxGrokAssignment.modelKey;
+      const maxModelTelemetry = maxGrokAssignment
+        ? new MaxModelTelemetry(posthog, userId, maxGrokAssignment, {
+            requestId: assistantMessageId,
+            chatId,
+            subscription,
+            release: process.env.VERCEL_GIT_COMMIT_SHA,
+            environment: process.env.VERCEL_ENV ?? "development",
+          })
+        : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
+        inferenceEnvironment:
+          process.env.VERCEL_ENV === "production" ||
+          process.env.VERCEL_ENV === "preview"
+            ? process.env.VERCEL_ENV
+            : undefined,
+        posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
         subscription,
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        allowsFreeAbliteration,
+        newUserTurn: !regenerate && !isAutoContinue,
         moderationChecked,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
-        ...(process.env.VERCEL_ENV === "preview" && {
-          previewDiagnosticContext: { chatId, requestId },
-        }),
+        diagnosticContext: {
+          chatId,
+          requestId,
+          logAll: process.env.VERCEL_ENV === "preview",
+        },
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -626,11 +645,13 @@ export const createChatHandler = () => {
             mode,
             subscription,
             selectedModelOverride,
+            release: process.env.VERCEL_GIT_COMMIT_SHA,
           })
         : undefined;
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         assignment: abliteratedExperiment,
+        modelExperimentAssignment: maxGrokAssignment,
         selectedModelOverride,
         posthog,
         userId,
@@ -849,6 +870,7 @@ export const createChatHandler = () => {
         : ((activeFlashRoutingAssignment && {
             ...activeFlashRoutingAssignment,
             requestId: assistantMessageId,
+            startedAt: Date.now(),
           }) ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
@@ -889,6 +911,12 @@ export const createChatHandler = () => {
         isUserAborted: () => userStopSignal.signal.aborted,
       });
       chatLogger.startStream();
+      const observeFinish = createChatFinishObserver({
+        requestId,
+        userId,
+        chatId,
+        mode,
+      });
 
       const stream = createUIMessageStream({
         onError: (error) => {
@@ -946,6 +974,7 @@ export const createChatHandler = () => {
 
             const {
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -957,6 +986,7 @@ export const createChatHandler = () => {
               getToolsForModel,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
+              canRecoverBrowserHandoff,
             } = createTools(
               userId,
               chatId,
@@ -1263,11 +1293,19 @@ export const createChatHandler = () => {
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
+            let fallbackModel =
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    {
+                      hasImageInputs:
+                        maxModelTelemetry?.hasImageInputs ?? requestHasImages,
+                    },
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1280,251 +1318,263 @@ export const createChatHandler = () => {
                 : createUsageSettlementState(rateLimitInfo);
             let usageSettlementSequence = 0;
 
+            // Observe title cost readiness before settlement, without overlapping timers.
             const deductAccumulatedUsage = async (
               assistantMessageIdForUsage = assistantMessageId,
+              finishPhase: "primary" | "provider_retry" = "primary",
             ) => {
               try {
                 if (hasRecordedUsage) return;
                 // Title generation starts in parallel with the main stream.
                 // Wait for it so its provider cost is included exactly once.
-                await titlePromise;
-                // Add cloud sandbox session cost (duration-based).
-                const sandboxUsage = await getSandboxSessionUsage();
-                const sandboxCost = sandboxUsage.totalCostDollars;
-                if (sandboxCost > 0) {
-                  usageTracker.providerCost += sandboxCost;
-                  usageTracker.nonModelCost += sandboxCost;
-                  chatLogger?.getBuilder().addToolCost(sandboxCost);
-                }
+                await observeFinish(
+                  "wait_title_generation",
+                  () => titlePromise,
+                  finishPhase,
+                );
+                await observeFinish(
+                  "settle_usage",
+                  async () => {
+                    // Add cloud sandbox session cost (duration-based).
+                    const sandboxUsage = await getSandboxSessionUsage();
+                    const sandboxCost = sandboxUsage.totalCostDollars;
+                    if (sandboxCost > 0) {
+                      usageTracker.providerCost += sandboxCost;
+                      usageTracker.nonModelCost += sandboxCost;
+                      chatLogger?.getBuilder().addToolCost(sandboxCost);
+                    }
 
-                if (!usageTracker.hasUsage) {
-                  // Release an unused rescue lease so a failed provider start
-                  // does not block the user's next sequential rescue.
-                  if (paidDailyFreeAllowanceReservation) {
-                    await releasePaidDailyFreeAllowanceReservation();
-                    hasRecordedUsage = paidDailyFreeAllowanceFinalized;
-                  }
-                  return;
-                }
-                hasRecordedUsage = true;
-                const usageRecordArgs = {
-                  selectedModel,
-                  selectedModelOverride,
-                  responseModel: state.responseModel,
-                  configuredModelId,
-                  accountingModel: resolveServedModelForCostAccounting({
-                    modelName: activeModelName,
-                    responseModel: state.responseModel,
-                    mode,
-                  }),
-                  rateLimitInfo,
-                };
-                let usageCostRecord =
-                  usageTracker.createUsageCostRecord(usageRecordArgs);
+                    if (!usageTracker.hasUsage) {
+                      // Release an unused rescue lease so a failed provider start
+                      // does not block the user's next sequential rescue.
+                      if (paidDailyFreeAllowanceReservation) {
+                        await releasePaidDailyFreeAllowanceReservation();
+                        hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                      }
+                      return;
+                    }
+                    hasRecordedUsage = true;
+                    const usageRecordArgs = {
+                      selectedModel,
+                      selectedModelOverride,
+                      responseModel: state.responseModel,
+                      configuredModelId,
+                      accountingModel: resolveServedModelForCostAccounting({
+                        modelName: activeModelName,
+                        responseModel: state.responseModel,
+                        mode,
+                      }),
+                      rateLimitInfo,
+                    };
+                    let usageCostRecord =
+                      usageTracker.createUsageCostRecord(usageRecordArgs);
 
-                // Use the same resolved provider/hybrid total that powers
-                // mid-run settlement. This preserves authoritative step costs
-                // and estimates only the individual steps missing provider cost.
-                const settledCostDollars = usageCostRecord.costDollars;
+                    // Use the same resolved provider/hybrid total that powers
+                    // mid-run settlement. This preserves authoritative step costs
+                    // and estimates only the individual steps missing provider cost.
+                    const settledCostDollars = usageCostRecord.costDollars;
 
-                if (paidDailyFreeAllowanceReservation) {
-                  const allowanceCostRecord =
-                    await recordPaidDailyFreeAllowanceCost(
-                      userId,
-                      usageCostRecord.costDollars,
-                      paidDailyFreeAllowanceReservation,
-                    );
-                  paidDailyFreeAllowanceFinalized =
-                    allowanceCostRecord.recorded;
-                  if (!allowanceCostRecord.recorded) {
-                    phLogger.warn(
-                      "Paid daily free allowance cost recording failed",
-                      {
+                    if (paidDailyFreeAllowanceReservation) {
+                      const allowanceCostRecord =
+                        await recordPaidDailyFreeAllowanceCost(
+                          userId,
+                          usageCostRecord.costDollars,
+                          paidDailyFreeAllowanceReservation,
+                        );
+                      paidDailyFreeAllowanceFinalized =
+                        allowanceCostRecord.recorded;
+                      if (!allowanceCostRecord.recorded) {
+                        phLogger.warn(
+                          "Paid daily free allowance cost recording failed",
+                          {
+                            userId,
+                            chatId,
+                            endpoint,
+                            mode,
+                            subscription,
+                            selected_model: selectedModel,
+                            cost_dollars: usageCostRecord.costDollars,
+                            cost_record_failure_reason:
+                              allowanceCostRecord.unavailableReason,
+                          },
+                        );
+                      }
+                      usageTracker.log({
                         userId,
+                        organizationId,
                         chatId,
+                        assistantMessageId: assistantMessageIdForUsage,
                         endpoint,
                         mode,
                         subscription,
-                        selected_model: selectedModel,
-                        cost_dollars: usageCostRecord.costDollars,
-                        cost_record_failure_reason:
-                          allowanceCostRecord.unavailableReason,
-                      },
-                    );
-                  }
-                  usageTracker.log({
-                    userId,
-                    organizationId,
-                    chatId,
-                    assistantMessageId: assistantMessageIdForUsage,
-                    endpoint,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    accountingModel: usageRecordArgs.accountingModel,
-                    rateLimitInfo,
-                  });
-                  const cutOff = state.stoppedDueToBudgetExhaustion;
-                  capturePaidDailyFreeAllowanceServerEvent({
-                    event: cutOff
-                      ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
-                      : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
-                    userId,
-                    subscription,
-                    mode,
-                    chatId,
-                    endpoint,
-                    reservation: paidDailyFreeAllowanceReservation,
-                    extra: {
-                      cost_dollars: usageCostRecord.costDollars,
-                      model_cost_dollars: usageCostRecord.modelCostDollars,
-                      non_model_cost_dollars:
-                        usageCostRecord.nonModelCostDollars,
-                      selected_model: selectedModel,
-                      response_model: state.responseModel,
-                      cost_source: usageCostRecord.costSource,
-                      paid_daily_free_allowance_cost_recorded:
-                        allowanceCostRecord.recorded,
-                      paid_daily_free_allowance_cost_record_failure_reason:
-                        allowanceCostRecord.recorded
-                          ? undefined
-                          : allowanceCostRecord.unavailableReason,
-                      paid_daily_free_allowance_cost_record_next_dollars:
-                        allowanceCostRecord.recorded
-                          ? allowanceCostRecord.nextCostDollars
-                          : undefined,
-                    },
-                  });
-                } else if (subscription === "free") {
-                  if (freeDailySettlement) {
-                    await freeDailySettlement.settle(
-                      usageCostRecord.costDollars,
-                    );
-                  } else {
-                    await recordFreeMonthlyCost(
-                      freeUsageSubject,
-                      usageCostRecord.costDollars,
-                    );
-                  }
-                } else {
-                  const deductionResult = await deductUsage(
-                    userId,
-                    subscription,
-                    estimatedInputTokens,
-                    usageTracker.inputTokens,
-                    usageTracker.outputTokens,
-                    extraUsageConfig,
-                    settledCostDollars,
-                    selectedModel,
-                    usageTracker.nonModelCost,
-                    organizationId,
-                    usageSettlementState
-                      ? getUsageSettlementInitialDeduction(usageSettlementState)
-                      : rateLimitInfo,
-                    usageRecordArgs.accountingModel,
-                    usageTracker.usageSettlementId,
-                  );
-                  if (usageSettlementState) {
-                    usageRefundTracker.recordDeductions({
-                      ...rateLimitInfo,
-                      pointsDeducted: deductionResult.includedPointsDeducted,
-                      extraUsagePointsDeducted:
-                        deductionResult.extraUsagePointsDeducted,
-                    });
-                    replaceUsageSettlementState(
-                      usageSettlementState,
-                      deductionResult,
-                    );
-                  }
-                  if (deductionResult.uncoveredPoints > 0) {
-                    state.stoppedDueToBudgetExhaustion = true;
-                    if (state.streamFinishReason !== "error") {
-                      state.streamFinishReason =
-                        BUDGET_EXHAUSTION_FINISH_REASON;
+                        selectedModel,
+                        selectedModelOverride,
+                        responseModel: state.responseModel,
+                        configuredModelId,
+                        accountingModel: usageRecordArgs.accountingModel,
+                        rateLimitInfo,
+                      });
+                      const cutOff = state.stoppedDueToBudgetExhaustion;
+                      capturePaidDailyFreeAllowanceServerEvent({
+                        event: cutOff
+                          ? PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff
+                          : PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded,
+                        userId,
+                        subscription,
+                        mode,
+                        chatId,
+                        endpoint,
+                        reservation: paidDailyFreeAllowanceReservation,
+                        extra: {
+                          cost_dollars: usageCostRecord.costDollars,
+                          model_cost_dollars: usageCostRecord.modelCostDollars,
+                          non_model_cost_dollars:
+                            usageCostRecord.nonModelCostDollars,
+                          selected_model: selectedModel,
+                          response_model: state.responseModel,
+                          cost_source: usageCostRecord.costSource,
+                          paid_daily_free_allowance_cost_recorded:
+                            allowanceCostRecord.recorded,
+                          paid_daily_free_allowance_cost_record_failure_reason:
+                            allowanceCostRecord.recorded
+                              ? undefined
+                              : allowanceCostRecord.unavailableReason,
+                          paid_daily_free_allowance_cost_record_next_dollars:
+                            allowanceCostRecord.recorded
+                              ? allowanceCostRecord.nextCostDollars
+                              : undefined,
+                        },
+                      });
+                    } else if (subscription === "free") {
+                      await recordFreeMonthlyCost(
+                        freeUsageSubject,
+                        usageCostRecord.costDollars,
+                      );
+                    } else {
+                      const deductionResult = await deductUsage(
+                        userId,
+                        subscription,
+                        estimatedInputTokens,
+                        usageTracker.inputTokens,
+                        usageTracker.outputTokens,
+                        extraUsageConfig,
+                        settledCostDollars,
+                        selectedModel,
+                        usageTracker.nonModelCost,
+                        organizationId,
+                        usageSettlementState
+                          ? getUsageSettlementInitialDeduction(
+                              usageSettlementState,
+                            )
+                          : rateLimitInfo,
+                        usageRecordArgs.accountingModel,
+                        usageTracker.usageSettlementId,
+                      );
+                      if (usageSettlementState) {
+                        usageRefundTracker.recordDeductions({
+                          ...rateLimitInfo,
+                          pointsDeducted:
+                            deductionResult.includedPointsDeducted,
+                          extraUsagePointsDeducted:
+                            deductionResult.extraUsagePointsDeducted,
+                        });
+                        replaceUsageSettlementState(
+                          usageSettlementState,
+                          deductionResult,
+                        );
+                      }
+                      if (deductionResult.uncoveredPoints > 0) {
+                        state.stoppedDueToBudgetExhaustion = true;
+                        if (state.streamFinishReason !== "error") {
+                          state.streamFinishReason =
+                            BUDGET_EXHAUSTION_FINISH_REASON;
+                        }
+                        phLogger.warn("Usage deduction left uncovered cost", {
+                          chatId,
+                          endpoint,
+                          mode,
+                          userId,
+                          organizationId,
+                          subscription,
+                          selectedModel,
+                          uncoveredPoints: deductionResult.uncoveredPoints,
+                          usageDeductionFailureReason:
+                            deductionResult.usageDeductionFailureReason,
+                        });
+                      }
+                      const billingBreakdown =
+                        deductionResult.includedPointsDeducted > 0 ||
+                        deductionResult.extraUsagePointsDeducted > 0 ||
+                        deductionResult.uncoveredPoints > 0 ||
+                        deductionResult.usageDeductionFailed ||
+                        !!deductionResult.usageDeductionFailureReason
+                          ? deductionResult
+                          : undefined;
+                      usageCostRecord = usageTracker.createUsageCostRecord({
+                        ...usageRecordArgs,
+                        billingBreakdown,
+                      });
+                      usageTracker.log({
+                        userId,
+                        organizationId,
+                        chatId,
+                        assistantMessageId: assistantMessageIdForUsage,
+                        endpoint,
+                        mode,
+                        subscription,
+                        selectedModel,
+                        selectedModelOverride,
+                        responseModel: state.responseModel,
+                        configuredModelId,
+                        accountingModel: usageRecordArgs.accountingModel,
+                        rateLimitInfo,
+                        billingBreakdown,
+                      });
                     }
-                    phLogger.warn("Usage deduction left uncovered cost", {
+                    captureUsageCost({
+                      cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                      usageMeasurement:
+                        usageTracker.measurementProperties(selectedModel),
+                      regionalFreeLimits,
+                      posthog,
+                      userId,
+                      subscription,
+                      organizationId,
                       chatId,
                       endpoint,
                       mode,
-                      userId,
-                      organizationId,
-                      subscription,
-                      selectedModel,
-                      uncoveredPoints: deductionResult.uncoveredPoints,
-                      usageDeductionFailureReason:
-                        deductionResult.usageDeductionFailureReason,
+                      usage: usageCostRecord,
+                      ...(sandboxCost > 0 && { sandboxUsage }),
+                      responseModel: state.responseModel,
+                      analyticsRequestContext,
+                      experiment: routingExperimentContext,
+                      fallbackServed:
+                        state.responseModel && retryUsedFallbackModel
+                          ? true
+                          : state.fallbackServed,
+                      ...(usageSettlementState && {
+                        usageSettlement: {
+                          id: usageTracker.usageSettlementId,
+                          midRunCount: usageSettlementSequence,
+                        },
+                      }),
+                      ...(paidDailyFreeAllowanceReservation && {
+                        paidDailyFreeAllowance:
+                          createPaidDailyFreeAllowanceUsageLogContext(
+                            paidDailyFreeAllowanceReservation,
+                            state.stoppedDueToBudgetExhaustion,
+                          ),
+                      }),
                     });
-                  }
-                  const billingBreakdown =
-                    deductionResult.includedPointsDeducted > 0 ||
-                    deductionResult.extraUsagePointsDeducted > 0 ||
-                    deductionResult.uncoveredPoints > 0 ||
-                    deductionResult.usageDeductionFailed ||
-                    !!deductionResult.usageDeductionFailureReason
-                      ? deductionResult
-                      : undefined;
-                  usageCostRecord = usageTracker.createUsageCostRecord({
-                    ...usageRecordArgs,
-                    billingBreakdown,
-                  });
-                  usageTracker.log({
-                    userId,
-                    organizationId,
-                    chatId,
-                    assistantMessageId: assistantMessageIdForUsage,
-                    endpoint,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    selectedModelOverride,
-                    responseModel: state.responseModel,
-                    configuredModelId,
-                    accountingModel: usageRecordArgs.accountingModel,
-                    rateLimitInfo,
-                    billingBreakdown,
-                  });
-                }
-                captureUsageCost({
-                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
-                  usageMeasurement:
-                    usageTracker.measurementProperties(selectedModel),
-                  regionalFreeLimits,
-                  posthog,
-                  userId,
-                  subscription,
-                  organizationId,
-                  chatId,
-                  endpoint,
-                  mode,
-                  usage: usageCostRecord,
-                  ...(sandboxCost > 0 && { sandboxUsage }),
-                  responseModel: state.responseModel,
-                  analyticsRequestContext,
-                  experiment: routingExperimentContext,
-                  freeAgentBudget,
-                  fallbackServed:
-                    state.responseModel && retryUsedFallbackModel
-                      ? true
-                      : state.fallbackServed,
-                  ...(usageSettlementState && {
-                    usageSettlement: {
-                      id: usageTracker.usageSettlementId,
-                      midRunCount: usageSettlementSequence,
-                    },
-                  }),
-                  ...(paidDailyFreeAllowanceReservation && {
-                    paidDailyFreeAllowance:
-                      createPaidDailyFreeAllowanceUsageLogContext(
-                        paidDailyFreeAllowanceReservation,
-                        state.stoppedDueToBudgetExhaustion,
-                      ),
-                  }),
-                });
+                  },
+                  finishPhase,
+                );
               } finally {
-                await releaseFreeRunLockOnce();
+                await observeFinish(
+                  "release_run_lock",
+                  () => releaseFreeRunLockOnce(),
+                  finishPhase,
+                );
               }
             };
 
@@ -1536,10 +1586,6 @@ export const createChatHandler = () => {
                 model,
               }) => {
                 if (hasRecordedUsage) return;
-                if (freeDailySettlement) {
-                  await freeDailySettlement.settle(currentCostDollars);
-                  return;
-                }
                 if (!usageSettlementState) return;
                 if (
                   !shouldSettleUsageMidRun({
@@ -1569,6 +1615,7 @@ export const createChatHandler = () => {
                     extraUsageConfig,
                     organizationId,
                     usageTracker.usageSettlementId,
+                    usageSettlementSequence,
                   );
                 } catch (error) {
                   phLogger.warn("Mid-run usage settlement failed", {
@@ -1615,7 +1662,6 @@ export const createChatHandler = () => {
                   deduction: deductionResult,
                   forced: force,
                   experiment: routingExperimentContext,
-                  freeAgentBudget,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -1683,6 +1729,7 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              canRecoverBrowserHandoff,
               getBrowserHandoffNotes,
               waitForBrowserHandoff,
               cacheVisionDescription: cacheAuxiliaryVisionDescription,
@@ -1702,17 +1749,31 @@ export const createChatHandler = () => {
               ...(activeAbliteratedExperiment &&
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
+                    inferenceCyberEnabled:
+                      activeAbliteratedExperiment.inferenceCyberEnabled,
                     baselineModel: activeAbliteratedExperiment.baselineModel,
                     generationStepLimit:
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
+              maxModelTelemetry,
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
+                if (maxModelTelemetry?.hasAssignedExposure)
+                  taskOutcomeSurvey?.expose?.();
+                if (maxModelTelemetry?.hasImageInputs) {
+                  fallbackModel = getRetryFallbackModel(
+                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    { hasImageInputs: true },
+                  );
+                }
               },
               trackedProvider,
               currentSystemPrompt,
               cloudNetworkPrompt,
+              getCaptchaReceiptPrompt,
               tools,
               mode,
               endpoint,
@@ -1761,11 +1822,6 @@ export const createChatHandler = () => {
               registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
-              checkBudgetBeforeStep: freeDailySettlement
-                ? async () => {
-                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
-                  }
-                : undefined,
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
@@ -1896,7 +1952,7 @@ export const createChatHandler = () => {
                 // Discard the failed primary leg's model usage so the user is
                 // only billed for the fallback. Non-model spend (sandbox/tools)
                 // is preserved.
-                usageTracker.resetModelLeg();
+                usageTracker.prepareModelRetry();
                 if (
                   shouldRecoverVisionApiError &&
                   !shouldRecoverAbliterationApiError
@@ -2055,27 +2111,48 @@ export const createChatHandler = () => {
                         lastAssistantMessageParts,
                         state.streamFinishReason,
                       );
-                    const emptyResponseContinuation =
-                      terminalEmptyResponse &&
-                      !hasUncertainProviderToolOutcome(
+                    const uncertainToolOutcome =
+                      hasUncertainProviderToolOutcome(
                         lastAssistantMessageParts,
-                      )
-                        ? prepareProviderDisconnectContinuation(messages, {
-                            allowCompletedTail: true,
-                          })
+                      );
+                    const loopTriggeredRetry =
+                      stoppedDueToAssistantContentLoop ||
+                      state.stoppedDueToDoomLoop;
+                    const loopContinuation = loopTriggeredRetry
+                      ? prepareAgentLoopContinuation(messages)
+                      : undefined;
+                    const loopRecoverySourceMessageId =
+                      loopContinuation?.messages.findLast(
+                        (message) => message.role === "assistant",
+                      )?.id;
+                    const emptyResponseContinuation =
+                      terminalEmptyResponse && !uncertainToolOutcome
+                        ? prepareProviderDisconnectContinuation(messages)
                         : undefined;
+                    const loopRecoveryMessages = loopContinuation
+                      ? [...state.finalMessages, ...loopContinuation.messages]
+                      : undefined;
                     const imageRecovery =
                       state.providerRejectedMultimodalToolResults
-                        ? omitImageViewToolResultsForProviderRetry(messages)
-                        : { messages, omittedCount: 0 };
+                        ? omitImageViewToolResultsForProviderRetry(
+                            loopRecoveryMessages ?? messages,
+                          )
+                        : {
+                            messages: loopRecoveryMessages ?? messages,
+                            omittedCount: 0,
+                          };
                     const shouldRetryWithoutImageToolResults =
                       imageRecovery.omittedCount > 0 &&
                       !isAborted &&
                       !shouldRecoverAbliterationStreamError;
                     const hasImageAttachmentForRecovery =
-                      countFileAttachments(state.finalMessages).imageCount > 0;
+                      countFileAttachments(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      ).imageCount > 0;
                     const hasImageToolResultForRecovery =
-                      uiMessagesContainImageViewResult(state.finalMessages);
+                      uiMessagesContainImageViewResult(
+                        loopRecoveryMessages ?? state.finalMessages,
+                      );
                     const shouldRetryWithVisionSummary =
                       directGlmVisionEnabled &&
                       !shouldRecoverAbliterationStreamError &&
@@ -2090,7 +2167,9 @@ export const createChatHandler = () => {
                       state.providerError ??
                       new Error("Direct vision route failed");
 
-                    if (
+                    primaryProviderRecovery: if (
+                      !uncertainToolOutcome &&
+                      (!loopTriggeredRetry || loopContinuation !== undefined) &&
                       (shouldRecoverAbliterationStreamError ||
                         shouldRetryWithFallback ||
                         emptyResponseContinuation ||
@@ -2098,9 +2177,6 @@ export const createChatHandler = () => {
                         shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
                     ) {
-                      const loopTriggeredRetry =
-                        stoppedDueToAssistantContentLoop ||
-                        state.stoppedDueToDoomLoop;
                       const retryReason =
                         terminalEmptyResponse && emptyResponseContinuation
                           ? "empty_answer_continuation"
@@ -2183,7 +2259,7 @@ export const createChatHandler = () => {
                             await describeImageAttachmentsWithAuxiliaryVision({
                               messages:
                                 omitImageViewToolResultsForProviderRetry(
-                                  state.finalMessages,
+                                  loopRecoveryMessages ?? state.finalMessages,
                                 ).messages,
                               requestId,
                               userId,
@@ -2250,7 +2326,11 @@ export const createChatHandler = () => {
                           stoppedDueToDoomLoop: state.stoppedDueToDoomLoop,
                           assistantContentLoop:
                             assistantContentLoopDetection.detected
-                              ? assistantContentLoopDetection
+                              ? {
+                                  reason: assistantContentLoopDetection.reason,
+                                  repeatCount:
+                                    assistantContentLoopDetection.repeatCount,
+                                }
                               : undefined,
                           shouldRetryInterruptedToolInput,
                           shouldRetryNonDurableOutputLimit,
@@ -2304,17 +2384,69 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (
+                        if (loopContinuation) {
+                          state.finalMessages = [
+                            ...(shouldRetryWithVisionSummary
+                              ? recoveredVisionMessages!
+                              : imageRecovery.omittedCount > 0
+                                ? imageRecovery.messages
+                                : loopRecoveryMessages!),
+                            {
+                              id: generateId(),
+                              role: "user",
+                              metadata: { isAutoContinue: true },
+                              parts: [
+                                {
+                                  type: "text",
+                                  text: AGENT_LOOP_CONTINUATION_PROMPT,
+                                },
+                              ],
+                            },
+                          ];
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: true,
+                          });
+                          const preservedFileIds = getFileAccumulator()
+                            .getAll()
+                            .map((file) => file.fileId);
+                          for (const message of loopContinuation.messages) {
+                            if (message.role !== "assistant") continue;
+                            await observeFinish(
+                              "save_message",
+                              () =>
+                                saveMessage({
+                                  chatId,
+                                  userId,
+                                  message:
+                                    summarizationTracker.processMessageForSave(
+                                      message.id === loopRecoverySourceMessageId
+                                        ? markLoopRecoveryCheckpoint(
+                                            message,
+                                            retryMessageId,
+                                          )
+                                        : message,
+                                    ),
+                                  extraFileIds: preservedFileIds,
+                                  model: configuredModelId,
+                                  mode,
+                                  generationStartedAt: streamStartTime,
+                                  generationTimeMs:
+                                    fallbackStartTime - streamStartTime,
+                                }),
+                              "provider_retry",
+                            );
+                          }
+                        } else if (
                           emptyResponseContinuation ||
                           shouldRecoverAbliterationStreamError
                         ) {
                           const continuation =
                             emptyResponseContinuation ??
-                            prepareProviderDisconnectContinuation(messages, {
-                              allowCompletedTail: true,
-                            });
+                            prepareProviderDisconnectContinuation(messages);
                           if (!continuation?.preservedCompletedToolCount) {
-                            usageTracker.resetModelLeg();
+                            usageTracker.prepareModelRetry({
+                              isLoopRecovery: loopTriggeredRetry,
+                            });
                           }
                           if (
                             continuation &&
@@ -2338,20 +2470,27 @@ export const createChatHandler = () => {
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
-                          usageTracker.resetModelLeg();
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         } else if (shouldRetryWithoutImageToolResults) {
                           state.finalMessages =
                             omitTrailingStepStartAssistantMessage(
                               imageRecovery.messages,
                             );
                         } else {
-                          // Discard the failed primary leg's model usage so the
-                          // user is only billed for the fallback. Non-model spend
-                          // (sandbox/tools) is preserved.
-                          usageTracker.resetModelLeg();
+                          // Ordinary failed-provider retries replace model usage;
+                          // loop recovery retains work already delivered.
+                          usageTracker.prepareModelRetry({
+                            isLoopRecovery: loopTriggeredRetry,
+                          });
                         }
 
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -2369,6 +2508,10 @@ export const createChatHandler = () => {
                                   mode,
                                   createdAt: fallbackStartTime,
                                   generationStartedAt: fallbackStartTime,
+                                  ...(loopRecoverySourceMessageId && {
+                                    recoverySourceMessageId:
+                                      loopRecoverySourceMessageId,
+                                  }),
                                 };
                               }
 
@@ -2411,7 +2554,11 @@ export const createChatHandler = () => {
                                 // Cleanup for retry
                                 preemptiveTimeout?.clear();
                                 if (!subscriberStopped) {
-                                  await cancellationSubscriber.stop();
+                                  await observeFinish(
+                                    "stop_cancellation_subscriber",
+                                    () => cancellationSubscriber.stop(),
+                                    "provider_retry",
+                                  );
                                   subscriberStopped = true;
                                 }
 
@@ -2442,11 +2589,18 @@ export const createChatHandler = () => {
                                   userId,
                                   mode,
                                 });
-                                await drainBackgroundStreamWork();
+                                await observeFinish(
+                                  "drain_background_work",
+                                  () => drainBackgroundStreamWork(),
+                                  "provider_retry",
+                                );
                                 // Final reconciliation can change the finish
                                 // reason to budget-exhausted; do it before
                                 // analytics and persistence consume state.
-                                await deductAccumulatedUsage(retryMessageId);
+                                await deductAccumulatedUsage(
+                                  retryMessageId,
+                                  "provider_retry",
+                                );
                                 const providerContentBlocked =
                                   isProviderContentFilterFinishReason(
                                     state.streamFinishReason,
@@ -2456,7 +2610,9 @@ export const createChatHandler = () => {
                                   : providerContentBlocked || retryEmptyResponse
                                     ? "error"
                                     : "success";
+                                await taskOutcomeSurvey?.flush?.();
                                 captureAgentCompletionAnalytics({
+                                  maxModelTelemetry,
                                   responseMessageId: retryMessageId,
                                   cacheHistoryTelemetry:
                                     state.cacheHistoryTelemetry,
@@ -2504,7 +2660,6 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   experiment: routingExperimentContext,
-                                  freeAgentBudget,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -2534,7 +2689,11 @@ export const createChatHandler = () => {
                                   });
                                 }
 
-                                const generatedTitle = await titlePromise;
+                                const generatedTitle = await observeFinish(
+                                  "wait_title_generation",
+                                  () => titlePromise,
+                                  "provider_retry",
+                                );
 
                                 {
                                   const mergedTodos =
@@ -2548,18 +2707,28 @@ export const createChatHandler = () => {
                                     state.streamFinishReason ||
                                     mergedTodos.length > 0
                                   ) {
-                                    await updateChat({
-                                      chatId,
-                                      title: generatedTitle,
-                                      finishReason: state.streamFinishReason,
-                                      todos: mergedTodos,
-                                      defaultModelSlug: mode,
-                                      sandboxType:
-                                        sandboxManager.getEffectivePreference(),
-                                      selectedModel: selectedModelOverride,
-                                    });
+                                    await observeFinish(
+                                      "update_chat",
+                                      () =>
+                                        updateChat({
+                                          chatId,
+                                          title: generatedTitle,
+                                          finishReason:
+                                            state.streamFinishReason,
+                                          todos: mergedTodos,
+                                          defaultModelSlug: mode,
+                                          sandboxType:
+                                            sandboxManager.getEffectivePreference(),
+                                          selectedModel: selectedModelOverride,
+                                        }),
+                                      "provider_retry",
+                                    );
                                   } else {
-                                    await prepareForNewStream({ chatId });
+                                    await observeFinish(
+                                      "prepare_new_stream",
+                                      () => prepareForNewStream({ chatId }),
+                                      "provider_retry",
+                                    );
                                   }
 
                                   const accumulatedFiles =
@@ -2577,33 +2746,41 @@ export const createChatHandler = () => {
                                         msg,
                                       );
 
-                                    await saveMessage({
-                                      chatId,
-                                      userId,
-                                      message: processed,
-                                      extraFileIds: newFileIds,
-                                      usage: state.streamUsage,
-                                      model: state.responseModel,
-                                      mode,
-                                      generationStartedAt: fallbackStartTime,
-                                      generationTimeMs:
-                                        Date.now() - fallbackStartTime,
-                                      finishReason: state.streamFinishReason,
-                                      userInitiatedAbort:
-                                        retryAborted &&
-                                        !(
-                                          preemptiveTimeout?.isPreemptive() ??
-                                          false
-                                        ) &&
-                                        !state.stoppedDueToBudgetExhaustion &&
-                                        !state.stoppedDueToAgentRunSpendCap &&
-                                        !state.stoppedDueToElapsedTimeout,
-                                      abliterationRouting:
-                                        abliteratedTelemetry?.getRoutingMarker(
-                                          !retryAborted &&
-                                            state.streamFinishReason === "stop",
-                                        ),
-                                    });
+                                    await observeFinish(
+                                      "save_message",
+                                      () =>
+                                        saveMessage({
+                                          chatId,
+                                          userId,
+                                          message: processed,
+                                          extraFileIds: newFileIds,
+                                          usage: state.streamUsage,
+                                          model: state.responseModel,
+                                          mode,
+                                          generationStartedAt:
+                                            fallbackStartTime,
+                                          generationTimeMs:
+                                            Date.now() - fallbackStartTime,
+                                          finishReason:
+                                            state.streamFinishReason,
+                                          userInitiatedAbort:
+                                            retryAborted &&
+                                            !(
+                                              preemptiveTimeout?.isPreemptive() ??
+                                              false
+                                            ) &&
+                                            !state.stoppedDueToBudgetExhaustion &&
+                                            !state.stoppedDueToAgentRunSpendCap &&
+                                            !state.stoppedDueToElapsedTimeout,
+                                          abliterationRouting:
+                                            abliteratedTelemetry?.getRoutingMarker(
+                                              !retryAborted &&
+                                                state.streamFinishReason ===
+                                                  "stop",
+                                            ),
+                                        }),
+                                      "provider_retry",
+                                    );
                                   }
 
                                   // Send file metadata via stream for resumable stream clients
@@ -2662,7 +2839,11 @@ export const createChatHandler = () => {
 
                                 shutdownPostHog(posthog);
                               } finally {
-                                await releaseFreeRunLockOnce();
+                                await observeFinish(
+                                  "release_run_lock",
+                                  () => releaseFreeRunLockOnce(),
+                                  "provider_retry",
+                                );
                               }
                             },
                             sendReasoning: true,
@@ -2784,7 +2965,11 @@ export const createChatHandler = () => {
 
                     // Stop cancellation subscriber
                     stepStart = beginStep("stop_cancellation_subscriber");
-                    await cancellationSubscriber.stop();
+                    await observeFinish(
+                      "stop_cancellation_subscriber",
+                      () => cancellationSubscriber.stop(),
+                      "primary",
+                    );
                     subscriberStopped = true;
                     logStep("stop_cancellation_subscriber", stepStart);
 
@@ -2809,7 +2994,11 @@ export const createChatHandler = () => {
                       cacheWriteTokens: usageTracker.cacheWriteTokens,
                     });
                     captureToolCalls({ posthog, chatLogger, userId, mode });
-                    await drainBackgroundStreamWork();
+                    await observeFinish(
+                      "drain_background_work",
+                      () => drainBackgroundStreamWork(),
+                      "primary",
+                    );
                     // Final reconciliation can change the finish reason to
                     // budget-exhausted; do it before analytics and persistence
                     // consume state.
@@ -2826,7 +3015,9 @@ export const createChatHandler = () => {
                             state.streamFinishReason === "error")
                         ? "error"
                         : "success";
+                    await taskOutcomeSurvey?.flush?.();
                     captureAgentCompletionAnalytics({
+                      maxModelTelemetry,
                       responseMessageId: assistantMessageId,
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
@@ -2866,7 +3057,6 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       experiment: routingExperimentContext,
-                      freeAgentBudget,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
@@ -2903,7 +3093,11 @@ export const createChatHandler = () => {
 
                     // Always wait for title generation to complete
                     stepStart = beginStep("wait_title_generation");
-                    const generatedTitle = await titlePromise;
+                    const generatedTitle = await observeFinish(
+                      "wait_title_generation",
+                      () => titlePromise,
+                      "primary",
+                    );
                     logStep("wait_title_generation", stepStart);
 
                     {
@@ -2925,20 +3119,30 @@ export const createChatHandler = () => {
                       if (shouldPersist) {
                         // updateChat automatically clears stream state (active_stream_id and canceled_at)
                         stepStart = beginStep("update_chat");
-                        await updateChat({
-                          chatId,
-                          title: generatedTitle,
-                          finishReason: state.streamFinishReason,
-                          todos: mergedTodos,
-                          defaultModelSlug: mode,
-                          sandboxType: sandboxManager.getEffectivePreference(),
-                          selectedModel: selectedModelOverride,
-                        });
+                        await observeFinish(
+                          "update_chat",
+                          () =>
+                            updateChat({
+                              chatId,
+                              title: generatedTitle,
+                              finishReason: state.streamFinishReason,
+                              todos: mergedTodos,
+                              defaultModelSlug: mode,
+                              sandboxType:
+                                sandboxManager.getEffectivePreference(),
+                              selectedModel: selectedModelOverride,
+                            }),
+                          "primary",
+                        );
                         logStep("update_chat", stepStart);
                       } else {
                         // If not persisting, still need to clear stream state
                         stepStart = beginStep("prepare_for_new_stream");
-                        await prepareForNewStream({ chatId });
+                        await observeFinish(
+                          "prepare_new_stream",
+                          () => prepareForNewStream({ chatId }),
+                          "primary",
+                        );
                         logStep("prepare_for_new_stream", stepStart);
                       }
 
@@ -2992,10 +3196,11 @@ export const createChatHandler = () => {
                       if (!resolvedUsage && isAborted) {
                         stepStart = beginStep("resolve_stream_usage");
                         try {
-                          resolvedUsage = (await result.usage) as Record<
-                            string,
-                            unknown
-                          >;
+                          resolvedUsage = (await observeFinish(
+                            "resolve_usage",
+                            () => result.usage,
+                            "primary",
+                          )) as Record<string, unknown>;
                         } catch {
                           // Usage unavailable on abort - continue without it
                         } finally {
@@ -3047,7 +3252,11 @@ export const createChatHandler = () => {
                             has_usage_to_record: hasUsageToRecord,
                           }),
                         );
-                        await drainBackgroundStreamWork();
+                        await observeFinish(
+                          "drain_background_work",
+                          () => drainBackgroundStreamWork(),
+                          "primary",
+                        );
                         await deductAccumulatedUsage();
                         shutdownPostHog(posthog);
                         return;
@@ -3075,39 +3284,45 @@ export const createChatHandler = () => {
                         // only patch existing messages (add files/usage), don't create new ones.
                         // Budget/provider/system aborts must insert partial work if no row exists.
                         try {
-                          await saveMessage({
-                            chatId,
-                            userId,
-                            message: processedMessage,
-                            extraFileIds: newFileIds,
-                            model: state.responseModel || configuredModelId,
-                            mode,
-                            generationStartedAt:
-                              processedMessage.role === "assistant"
-                                ? streamStartTime
-                                : undefined,
-                            generationTimeMs: Date.now() - streamStartTime,
-                            finishReason: state.streamFinishReason,
-                            usage: resolvedUsage ?? state.streamUsage,
-                            abliterationRouting:
-                              abliteratedTelemetry?.getRoutingMarker(
-                                !isAborted &&
-                                  state.streamFinishReason === "stop",
-                              ),
-                            userInitiatedAbort: isUserInitiatedAbort,
-                            updateOnly: shouldUseUpdateOnlyForAbortedSave({
-                              isAborted,
-                              isUserInitiatedAbort,
-                            })
-                              ? true
-                              : undefined,
-                            isHidden:
-                              isAutoContinue && processedMessage.role === "user"
-                                ? true
-                                : undefined,
-                            wasAborted: isAborted,
-                            wasPreemptiveTimeout: isPreemptiveAbort,
-                          });
+                          await observeFinish(
+                            "save_message",
+                            () =>
+                              saveMessage({
+                                chatId,
+                                userId,
+                                message: processedMessage,
+                                extraFileIds: newFileIds,
+                                model: state.responseModel || configuredModelId,
+                                mode,
+                                generationStartedAt:
+                                  processedMessage.role === "assistant"
+                                    ? streamStartTime
+                                    : undefined,
+                                generationTimeMs: Date.now() - streamStartTime,
+                                finishReason: state.streamFinishReason,
+                                usage: resolvedUsage ?? state.streamUsage,
+                                abliterationRouting:
+                                  abliteratedTelemetry?.getRoutingMarker(
+                                    !isAborted &&
+                                      state.streamFinishReason === "stop",
+                                  ),
+                                userInitiatedAbort: isUserInitiatedAbort,
+                                updateOnly: shouldUseUpdateOnlyForAbortedSave({
+                                  isAborted,
+                                  isUserInitiatedAbort,
+                                })
+                                  ? true
+                                  : undefined,
+                                isHidden:
+                                  isAutoContinue &&
+                                  processedMessage.role === "user"
+                                    ? true
+                                    : undefined,
+                                wasAborted: isAborted,
+                                wasPreemptiveTimeout: isPreemptiveAbort,
+                              }),
+                            "primary",
+                          );
                         } catch (error) {
                           if (isPreemptiveAbort) {
                             console.error(
@@ -3168,7 +3383,11 @@ export const createChatHandler = () => {
                           : null,
                       });
                       stepStart = beginStep("flush_telemetry");
-                      await phLogger.flush();
+                      await observeFinish(
+                        "flush_telemetry",
+                        () => phLogger.flush(),
+                        "primary",
+                      );
                       logStep("flush_telemetry", stepStart);
                     }
 
@@ -3213,7 +3432,11 @@ export const createChatHandler = () => {
                     shutdownPostHog(posthog);
                   } finally {
                     if (!retryScheduled) {
-                      await releaseFreeRunLockOnce();
+                      await observeFinish(
+                        "release_run_lock",
+                        () => releaseFreeRunLockOnce(),
+                        "primary",
+                      );
                     }
                   }
                 },
@@ -3274,23 +3497,11 @@ export const createChatHandler = () => {
           "Transfer-Encoding": "chunked",
         },
         async consumeSseStream({ stream: sseStream }) {
-          try {
-            const streamContext = getStreamContext();
-            if (streamContext) {
-              const streamId = generateId();
-              await startStream({ chatId, streamId });
-              await streamContext.createNewResumableStream(
-                streamId,
-                () => sseStream,
-              );
-            }
-          } catch (error) {
-            // Non-fatal: stream still works without resumability
-            phLogger.warn("Stream resumption setup failed", {
-              chatId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          await setupChatStreamResumption({
+            chatId,
+            stream: sseStream,
+            getStreamContext,
+          });
         },
       });
     } catch (error) {

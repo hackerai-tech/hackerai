@@ -42,6 +42,7 @@ describe("utils", () => {
         type: "bad_request",
         surface: "api",
         cause: "Failed to start agent run",
+        statusCode: 500,
       });
     });
 

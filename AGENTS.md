@@ -17,6 +17,12 @@ success on one transport does not prove the others work.
 
 ## Code Design and Maintenance
 
+When fixing recurring engineering mistakes or proposing a new rule, skill, or
+`AGENTS.md` instruction, follow the
+[code-first engineering skill](.agents/skills/hackerai-code-first-engineering/SKILL.md).
+Prefer clearer APIs and safe defaults, then automated checks and verification;
+reserve prose for the judgment and constraints those mechanisms cannot express.
+
 Prefer the smallest design that handles the actual requirement. Keep provider
 and transport differences at their adapters and share domain logic across
 callers. Extract a module when it gives a responsibility a clear owner, not just
@@ -65,6 +71,23 @@ desktop, cloud and local sandboxes, and relevant model providers. Check recovery
 as well as the happy path, including cancellation, retry, and reconnect when
 applicable. Apply the visual and manual verification rules below.
 
+For fixes affecting Linux execution, shell commands, file transfers, or network
+behavior, reproduce the failure and verify the fix in an isolated Linux Docker
+container or VM using the actual application code and relevant system tools.
+Check available local Docker contexts and VMs before asking the user for a test
+machine; a missing default Docker socket does not establish that Docker is
+unavailable. Exercise the affected success and failure/recovery paths, record
+the OS and tool versions, and clean up task-owned resources. Distinguish injected
+lab failures from independently confirmed customer causes. Linux checks
+supplement required Windows CI and native Desktop acceptance; they do not replace
+them. Documentation-only changes do not require a container run.
+
+For Windows-specific reproduction, check available Windows VMs before asking
+for another test machine. Record the guest architecture and whether the tested
+executable uses emulation; Windows ARM with an x64 executable is not physical
+x64 Windows evidence. Follow the [Windows VM checks](docs/desktop-local-acceptance.md#windows-vm-checks)
+and retain required Windows CI and native Desktop acceptance.
+
 For native Desktop Computer Use, use the
 [hackerai-desktop-qa skill](.agents/skills/hackerai-desktop-qa/SKILL.md) and its
 local QA runner to reuse builds, record diagnostics and clean up owned processes.
@@ -85,15 +108,20 @@ configuration failures before continuing. Never use masked configuration values
 as credentials or substitute Production.
 
 Run `pnpm test:changed` for local iteration: it runs Jest tests related to
-uncommitted changes with one worker, plus the Node tooling suites outside Jest.
+uncommitted changes with one worker, plus relevant Node tooling suites outside
+Jest. Tooling selection includes staged, unstaged and untracked paths; unknown
+paths or Git discovery failures run every tooling suite.
 The commit hook retains staged lint/format checks and type checking, then uses
 this focused command. It includes staged, unstaged and untracked files.
 Documentation-only changes may select no Jest tests. Configuration changes,
 dynamic imports, and missing dependency links can escape automatic selection, so
-this is a feedback shortcut, not full acceptance: required CI still runs the
-entire suite with coverage. Run an explicit affected suite when the dependency
-graph cannot represent the change. Do not rerun the full suite locally for every
-review correction; use `pnpm test` when a local full run is needed.
+this is a feedback shortcut, not full acceptance. PR CI compares committed
+changes against the PR base, runs related frontend tests or the full suite for
+shared runtime changes, and falls back to all checks for unknown paths or missing
+history. Main and nightly CI run all checks with coverage. The required `CI` gate
+rejects failed, cancelled, missing, or unexpectedly skipped jobs. Run an explicit
+affected suite when the dependency graph cannot represent the change. Do not rerun
+the full suite locally for every review correction; use `pnpm test` when a local full run is needed.
 
 Run focused local tests first, with one worker for small suites. The repository
 limits Jest to two workers by default so concurrent worktrees do not each consume
@@ -108,6 +136,11 @@ finish the build before starting the test so on-demand compilation cannot consum
 request deadlines. Retain local backend/worker/relay and transport verification.
 Use local web development when debugging requires it or Preview cannot exercise
 the affected behavior, and state that reason in the verification record.
+
+For process health and authentication troubleshooting, use the fixed-field
+[local diagnostic helpers](docs/safe-local-diagnostics.md). Avoid raw process
+arguments/environment dumps and full login-page snapshots; these can expose
+credentials or verification codes.
 
 Track task-owned process IDs and ports. Stop unused servers, watchers, and test
 runners when finished; never stop another task's processes to reclaim capacity.
@@ -336,7 +369,7 @@ If manual verification is not needed, say automated validation was sufficient.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
-# This is NOT the Next.js you know
+## This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 

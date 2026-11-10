@@ -35,6 +35,7 @@ type SkillInput = {
   listId: string;
   activeId?: string;
   toggle: () => void;
+  openSelector: () => void;
   remove: (id: Skill["id"]) => void;
   inspect: (element: HTMLTextAreaElement) => void;
   keyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
@@ -252,6 +253,14 @@ export function ComposerSkillsProvider({
     remove: (id) => {
       void change(ids.filter((value) => value !== id));
     },
+    openSelector: () => {
+      token.current = null;
+      dismissed.current = null;
+      setQuery("");
+      setActive(0);
+      setError("");
+      setOpen(true);
+    },
     toggle: () => {
       token.current = null;
       setQuery("");
@@ -426,27 +435,6 @@ export function ComposerSkillsProvider({
         />
       )}
     </SkillInputContext.Provider>
-  );
-}
-export function ComposerSkillsButton() {
-  const skills = useComposerSkills();
-  if (!skills) return null;
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
-      data-active={skills.open || skills.selected.length > 0}
-      aria-expanded={skills.open}
-      aria-controls={skills.open ? skills.listId : undefined}
-      aria-label="Add skill"
-      title="Add a skill ($ or /skill:)"
-      disabled={skills.disabled}
-      onClick={skills.toggle}
-    >
-      <BookOpen className="size-4" />
-    </Button>
   );
 }
 export function ComposerSkillSelections() {

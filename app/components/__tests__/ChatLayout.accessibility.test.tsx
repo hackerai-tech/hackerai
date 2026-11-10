@@ -15,6 +15,7 @@ jest.mock("next/dynamic", () => ({
   __esModule: true,
   default: () => () => null,
 }));
+jest.mock("../KeyboardShortcuts", () => ({ KeyboardShortcuts: () => null }));
 jest.mock("next/navigation", () => ({
   usePathname: () => mockPathname,
 }));
@@ -157,6 +158,23 @@ describe("ChatLayout responsive accessibility", () => {
       "data-project-count",
       "0",
     );
+  });
+
+  it("leaves a portaled dialog alone, then closes navigation from body focus", () => {
+    render(
+      <ChatLayout>
+        <main>Task content</main>
+      </ChatLayout>,
+    );
+    const settings = document.createElement("div");
+    settings.setAttribute("role", "dialog");
+    document.body.append(settings);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(mockSetChatSidebarOpen).not.toHaveBeenCalled();
+    settings.remove();
+    document.body.focus();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(mockSetChatSidebarOpen).toHaveBeenCalledWith(false);
   });
 
   it("uses a rail and opens the task sidebar as an overlay in a compact workspace", () => {

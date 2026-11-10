@@ -1,6 +1,12 @@
 import { getCompactionSections } from "./structured-summary";
 import { randomUUID } from "node:crypto";
 import {
+  INFERENCE_CYBER_FLAG,
+  INFERENCE_CYBER_MODEL_KEY,
+  isInferenceConfigured,
+  isInferenceCyberModel,
+} from "@/lib/ai/inference";
+import {
   ABLITERATION_MODEL_KEY,
   ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
@@ -24,8 +30,15 @@ export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
 // Keep per-model policy labels so compaction monitoring cannot mix cohorts.
 export const MAX_CONTEXT_COMPACTION_POLICY_VERSION = "max_large_v2_context_v1";
 export const PRO_CONTEXT_COMPACTION_POLICY_VERSION = "pro_large_v2_context_v1";
+export const INFERENCE_COMPACTION_POLICY_VERSION =
+  "inference_abliteration_fallback_v1";
+export const INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION =
+  "max_inference_context_v1";
+export const INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION =
+  "pro_inference_context_v1";
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
+  | typeof INFERENCE_CYBER_MODEL_KEY
   | typeof COMPACTION_PRIMARY_MODEL
   | typeof COMPACTION_FALLBACK_MODEL
   | typeof ABLITERATION_LARGE_V2_MODEL_KEY;
@@ -34,6 +47,9 @@ export type CompactionSelection = {
   fallbackModel?: CompactionModel;
   expandedAgentContext?: boolean;
   policy:
+    | typeof INFERENCE_COMPACTION_POLICY_VERSION
+    | typeof INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION
+    | typeof INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION
     | typeof COMPACTION_POLICY_VERSION
     | typeof MODERATION_COMPACTION_POLICY_VERSION
     | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION
@@ -115,21 +131,49 @@ export class CompactionModelPolicy {
   }
 
   private async evaluate(): Promise<CompactionSelection> {
+    const expandedAgentContext =
+      this.context.mode === "agent" &&
+      this.context.expandedAgentContext === true;
+    const configured = isAbliterationConfigured();
+    const abliterationModel = expandedAgentContext
+      ? ABLITERATION_LARGE_V2_MODEL_KEY
+      : COMPACTION_PRIMARY_MODEL;
+    // Share the deployed generation rollout's rollback control. Compaction
+    // applies to every plan and does not change chat-generation eligibility.
+    if (
+      isInferenceConfigured() &&
+      (await getPostHogBooleanFlagDecisionForUser(
+        INFERENCE_CYBER_FLAG,
+        this.context.userId,
+        {
+          subscription: this.context.subscription,
+          subscription_tier: this.context.subscription,
+        },
+        { sendFeatureFlagEvents: false },
+      )) === true
+    ) {
+      return {
+        model: INFERENCE_CYBER_MODEL_KEY,
+        fallbackModel: configured
+          ? abliterationModel
+          : COMPACTION_FALLBACK_MODEL,
+        policy: expandedAgentContext
+          ? this.context.selectedModel === "hackerai-pro"
+            ? INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION
+            : INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION
+          : INFERENCE_COMPACTION_POLICY_VERSION,
+        flagEnabled: true,
+        ...(expandedAgentContext && { expandedAgentContext: true }),
+      };
+    }
     const flagEnabled = await getPostHogBooleanFlagDecisionForUser(
       MODERATION_COMPACTION_FLAG_KEY,
       this.context.userId,
       { subscription_tier: this.context.subscription },
       { sendFeatureFlagEvents: false },
     );
-    const configured = isAbliterationConfigured();
     const useAbliteration =
       configured && (flagEnabled !== true || this.context.platformAuthorized);
-    const expandedAgentContext =
-      this.context.mode === "agent" &&
-      this.context.expandedAgentContext === true;
-    const abliterationModel = expandedAgentContext
-      ? ABLITERATION_LARGE_V2_MODEL_KEY
-      : COMPACTION_PRIMARY_MODEL;
     return {
       model: useAbliteration ? abliterationModel : COMPACTION_FALLBACK_MODEL,
       fallbackModel: useAbliteration
@@ -153,7 +197,9 @@ export class CompactionModelPolicy {
     const properties = {
       userId: this.context.userId,
       compaction_policy: assignment.policy,
-      compaction_flag_key: MODERATION_COMPACTION_FLAG_KEY,
+      compaction_flag_key: isInferenceCyberModel(assignment.model)
+        ? INFERENCE_CYBER_FLAG
+        : MODERATION_COMPACTION_FLAG_KEY,
       compaction_flag_enabled: assignment.flagEnabled,
       compaction_moderation_selected: this.context.platformAuthorized,
       compaction_moderation_routed:

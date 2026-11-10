@@ -12,7 +12,7 @@ describe("checkRateLimit", () => {
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
   const mockPointsPerDollar = 10_000;
-  const mockUsageMultiplier = 1.3;
+  const mockUsageMultiplier = 1.2;
 
   beforeEach(() => {
     jest.resetModules();
@@ -70,77 +70,67 @@ describe("checkRateLimit", () => {
   };
 
   describe("free users", () => {
-    it("treatment Agent admission and resume use cost capacity without consuming request units", async () => {
-      const { checkRateLimit, checkRateLimitCapacity } = getIsolatedModule();
-      const get = jest.fn().mockResolvedValue(800);
-      mockCreateRedisClient.mockReturnValue({ get, eval: mockEvalFn });
-      const policy = {
-        dailyRequests: 3,
-        monthlyCostDollars: 0.1,
-        agentDailyBudget: {
-          bucket: new Date().toISOString().slice(0, 10),
-          resetTimestamp: Date.now() + 86400000,
-        },
-      };
-      const admitted = await checkRateLimit(
-        "user",
-        "agent",
-        "free",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "shared-quota",
-        policy,
-      );
-      const resumed = await checkRateLimitCapacity(
-        "user",
-        "agent",
-        "free",
-        undefined,
-        undefined,
-        undefined,
-        "shared-quota",
-        policy,
-      );
-      expect(admitted).toMatchObject({
-        freeDailyCost: true,
-        limit: 1000,
-        remaining: 200,
-      });
-      expect(resumed.remaining).toBe(200);
-      expect(get).toHaveBeenCalledWith(
-        `free_agent_daily_cost:shared-quota:${policy.agentDailyBudget.bucket}`,
-      );
-      expect(mockEvalFn).not.toHaveBeenCalled();
-      expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
-    });
-
-    it("Ask still consumes request units even if an Agent daily policy is present", async () => {
-      const { checkRateLimit } = getIsolatedModule();
-      const get = jest.fn();
-      mockCreateRedisClient.mockReturnValue({ get, eval: mockEvalFn });
-      await checkRateLimit(
-        "user",
-        "ask",
-        "free",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "shared-quota",
-        {
+    it.each(["ask", "agent"] as const)(
+      "%s uses request units and non-consuming resume checks even with a retained legacy policy",
+      async (mode) => {
+        const { checkRateLimit, checkRateLimitCapacity } = getIsolatedModule();
+        const get = jest.fn().mockResolvedValue(800);
+        mockCreateRedisClient.mockReturnValue({ get, eval: mockEvalFn });
+        mockEvalFn.mockResolvedValueOnce([1, 2]).mockResolvedValueOnce(2);
+        // Old task payloads can retain fields removed from FreeLimitPolicy.
+        const policy = {
           dailyRequests: 3,
           monthlyCostDollars: 0.1,
           agentDailyBudget: {
-            bucket: "unused",
+            bucket: new Date().toISOString().slice(0, 10),
             resetTimestamp: Date.now() + 86400000,
           },
-        },
-      );
-      expect(mockEvalFn).toHaveBeenCalled();
-      expect(get).not.toHaveBeenCalled();
-    });
+        };
+        const admitted = await checkRateLimit(
+          "user",
+          mode,
+          "free",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          "shared-quota",
+          policy,
+        );
+        const resumed = await checkRateLimitCapacity(
+          "user",
+          mode,
+          "free",
+          undefined,
+          undefined,
+          undefined,
+          "shared-quota",
+          policy,
+        );
+        expect(admitted).toMatchObject({ limit: 3, remaining: 2 });
+        expect(resumed).toMatchObject({ limit: 3, remaining: 2 });
+        expect(mockEvalFn).toHaveBeenNthCalledWith(
+          1,
+          expect.any(String),
+          [
+            expect.stringMatching(/^free_limit:shared-quota:free:/),
+            "free_referral_bonus:shared-quota",
+          ],
+          [3, 1, expect.any(Number)],
+        );
+        expect(mockEvalFn).toHaveBeenNthCalledWith(
+          2,
+          expect.any(String),
+          [
+            expect.stringMatching(/^free_limit:shared-quota:free:/),
+            "free_referral_bonus:shared-quota",
+          ],
+          [3],
+        );
+        expect(get).not.toHaveBeenCalled();
+        expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
+      },
+    );
 
     it("peeks at post-wait Agent capacity without consuming units", async () => {
       const { checkRateLimitCapacity } = getIsolatedModule();

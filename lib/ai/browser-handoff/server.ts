@@ -1,15 +1,25 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 
-import { Sandbox } from "@e2b/code-interpreter";
+import { CommandExitError, Sandbox, TimeoutError } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
+import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import { browserBridgeCommand } from "./bridge-program";
+import {
+  browserDaemonCommand,
+  BROWSER_DAEMON_PRECONDITION_REASONS,
+  BROWSER_WRAPPER_ACTIONS,
+  BROWSER_WRAPPER_AGES,
+  BROWSER_OPEN_IDLE_ENV_VALUES,
+  BROWSER_DAEMON_DEADLINE_PHASES,
+} from "./daemon-program";
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
 
@@ -25,6 +35,72 @@ export class BrowserPreviewUnavailable extends Error {
   constructor(readonly state: "loading" | "disconnected" | "closed") {
     super(`Browser preview ${state}`);
   }
+}
+
+// Keep only the existing bounded SDK projection, never the original error or
+// private file path. Other callers retain the same loading response.
+const sessionReadFailures = new WeakMap<
+  object,
+  ReturnType<typeof checkpointCloudErrorContext>
+>();
+
+/** Read closed SDK classes and own numeric exit data, never command output. */
+export function browserRelayRenewFailureContext(error: unknown) {
+  let kind:
+    "command_exit" | "timeout" | "other_error" | "thrown_value" | "unreadable" =
+    "thrown_value";
+  let exitCode: number | "none" | "other" = "none";
+  try {
+    if (error instanceof CommandExitError) {
+      kind = "command_exit";
+      exitCode = "other";
+      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const value =
+        result && typeof result === "object"
+          ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
+          : undefined;
+      if (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 255
+      )
+        exitCode = value;
+    } else if (error instanceof TimeoutError) {
+      kind = "timeout";
+    } else if (error instanceof Error) {
+      kind = "other_error";
+    }
+  } catch {
+    kind = "unreadable";
+    exitCode = "other";
+  }
+  return {
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: kind,
+    relay_renew_command_exit_code: exitCode,
+  };
+}
+
+/** Read optional diagnostics without adding error properties to HTTP responses. */
+export function browserSessionReadFailureContext(error: unknown) {
+  const context =
+    typeof error === "object" && error !== null
+      ? sessionReadFailures.get(error)
+      : undefined;
+  if (!context) return undefined;
+  return {
+    active_session_read_diagnostic_version: 1,
+    active_session_read_error_kind: context.cloud_error_kind,
+    active_session_read_http_status: context.cloud_http_status,
+    ...(context.cloud_type_error_signal === undefined
+      ? {}
+      : {
+          active_session_read_type_error_signal:
+            context.cloud_type_error_signal,
+          active_session_read_transport_code: context.cloud_transport_code,
+        }),
+  };
 }
 
 const SESSION_NAME_RE = /^[^/\u0000\r\n]{1,80}$/;
@@ -63,6 +139,7 @@ export async function connectBrowserSandbox(session: BrowserSessionLocation) {
   });
 }
 
+/** Keep SDK read failures as loading; expose only bounded diagnostics to the owning GET. */
 export async function getActiveBrowserSessionName(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
@@ -75,8 +152,10 @@ export async function getActiveBrowserSessionName(
         requestTimeoutMs: 8_000,
       })
     ).trim();
-  } catch {
-    throw new BrowserPreviewUnavailable("loading");
+  } catch (error) {
+    const unavailable = new BrowserPreviewUnavailable("loading");
+    sessionReadFailures.set(unavailable, checkpointCloudErrorContext(error));
+    throw unavailable;
   }
   if (!SESSION_NAME_RE.test(name))
     throw new BrowserPreviewUnavailable("closed");
@@ -89,14 +168,11 @@ export async function getPrivateStreamPort(
   browserSessionName: string,
 ) {
   const result = await sandbox.commands.run(
-    "agent-browser --json stream status",
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "stream_status",
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
@@ -182,9 +258,8 @@ export async function renewBrowserRelay(
 ) {
   const directory = relayDirectory(session, grant);
   // Atomic replacement avoids a transient empty lease read in the relay.
-  const program = `const fs=require('node:fs');const d=process.argv[1];if(fs.existsSync(d)){if(fs.existsSync(d+'/revoked')||fs.existsSync(d+'/closed'))process.exit(1);fs.writeFileSync(d+'/lease.next',process.argv[2],{mode:384});fs.renameSync(d+'/lease.next',d+'/lease');}`;
   const result = await sandbox.commands.run(
-    `node -e ${quote(program)} ${quote(directory)} ${lease}`,
+    `node -e ${quote(RELAY_RENEW_PROGRAM)} ${quote(directory)} ${lease}`,
     {
       ...buildSandboxCommandOptions(sandbox),
       timeoutMs: 5000,
@@ -212,113 +287,536 @@ export async function stopBrowserRelays(
     throw new BrowserPreviewUnavailable("disconnected");
 }
 
+type FrameDecodeDiagnostic = {
+  capture_frame_decode_version?: 1;
+  capture_frame_stdout_size?:
+    "empty" | "lt1k" | "1k_lt64k" | "64k_lt1m" | "gte1m" | "nonstring";
+  capture_frame_stdout_shape?:
+    | "empty"
+    | "edge_whitespace"
+    | "object_edges"
+    | "object_prefix"
+    | "other"
+    | "nonstring";
+  capture_frame_parse_error_kind?: "syntax_error" | "other";
+};
+
+/** Inspect only length and two 64-unit edges; never retain frame contents. */
+function frameDecodeDiagnostic(
+  stdout: unknown,
+  error: unknown,
+): FrameDecodeDiagnostic {
+  const result: FrameDecodeDiagnostic = {
+    capture_frame_decode_version: 1,
+    capture_frame_parse_error_kind:
+      error instanceof SyntaxError ? "syntax_error" : "other",
+  };
+  if (typeof stdout !== "string")
+    return {
+      ...result,
+      capture_frame_stdout_size: "nonstring",
+      capture_frame_stdout_shape: "nonstring",
+    };
+  const length = stdout.length;
+  const first = stdout.slice(0, 64).trimStart();
+  const last = stdout.slice(-64).trimEnd();
+  return {
+    ...result,
+    capture_frame_stdout_size:
+      length === 0
+        ? "empty"
+        : length < 1024
+          ? "lt1k"
+          : length < 65536
+            ? "1k_lt64k"
+            : length < 1048576
+              ? "64k_lt1m"
+              : "gte1m",
+    capture_frame_stdout_shape:
+      length === 0
+        ? "empty"
+        : !first && !last
+          ? "edge_whitespace"
+          : first.startsWith("{")
+            ? last.endsWith("}")
+              ? "object_edges"
+              : "object_prefix"
+            : "other",
+  };
+}
+
+export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
+  capture_stage:
+    | "stream_status"
+    | "frame_bridge"
+    | "frame_decode"
+    | "frame_validation"
+    | "fresh_screenshot"
+    | "fresh_stat"
+    | "fresh_read"
+    | "fresh_validation";
+  capture_error_kind:
+    | "command_exit"
+    | "timeout"
+    | "preview_unavailable"
+    | "other_error"
+    | "thrown_value"
+    | "unreadable";
+  capture_command_exit_code: number | "none" | "other";
+  capture_precondition_reason?: (typeof BROWSER_DAEMON_PRECONDITION_REASONS)[number];
+  capture_precondition_error?:
+    "missing" | "permission" | "not_directory" | "other";
+  capture_deadline_diagnostic_version?: 1;
+  capture_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
+  capture_wrapper_receipt_version?: 1;
+  capture_wrapper_action?: (typeof BROWSER_WRAPPER_ACTIONS)[number];
+  capture_wrapper_phase?: "started" | "completed";
+  capture_wrapper_exit_code?: number | "none" | "other";
+  capture_wrapper_session_matches?: boolean;
+  capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_wrapper_history_version?: 1;
+  capture_wrapper_history_scope?: "handoff_root";
+  // Other than a recognized version-only invocation; leading options stay ambiguous.
+  capture_wrapper_other_cli_completed?: boolean;
+  capture_wrapper_option_prefix_completed?: boolean;
+  capture_open_receipt_version?: 1;
+  capture_open_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_open_phase?: "started" | "completed";
+  capture_open_exit_code?: number | "none" | "other";
+  capture_open_session_matches?: boolean;
+  capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_open_idle_env_version?: 1;
+  capture_open_idle_env?: (typeof BROWSER_OPEN_IDLE_ENV_VALUES)[number];
+  capture_daemon_process_version?: 1;
+  capture_daemon_pid_status?: "missing" | "invalid" | "unreadable" | "recorded";
+  // A PID can be reused; this is not daemon identity, execution or health.
+  capture_daemon_process_visibility?:
+    | "unavailable"
+    | "not_found"
+    | "same_uid"
+    | "other_uid"
+    | "permission"
+    | "other";
+  capture_close_receipt_version?: 1;
+  capture_close_receipt_status?:
+    "unavailable" | "not_observed" | "unreadable" | "recorded";
+  capture_close_phase?: "started" | "completed";
+  capture_close_exit_code?: number | "none" | "other";
+  capture_close_scope?: "selected_session" | "other_session" | "all_sessions";
+  capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
+};
+
+/**
+ * Capture a validated frame, requesting a separate screenshot when freshness is required.
+ * The optional failure observer receives only bounded context; observer failures
+ * cannot replace the original rejection or change capture, cleanup, or retry behavior.
+ */
 export async function captureBrowserFrame(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
   requireFresh = false,
   streamPort?: number,
+  onFailure?: (context: BrowserCaptureFailureContext) => void,
 ) {
-  const port =
-    streamPort ??
-    (await getPrivateStreamPort(sandbox, session, browserSessionName));
-  const result = await sandbox.commands.run(
-    browserBridgeCommand(port, "frame"),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      timeoutMs: 8_000,
-    },
-  );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
-  let frame: {
-    data: string;
-    width: number;
-    height: number;
-    capturedAt: number;
-  };
+  let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
+  let decodeDiagnostic: FrameDecodeDiagnostic = {};
   try {
-    frame = JSON.parse(result.stdout) as typeof frame;
-  } catch {
-    throw new BrowserPreviewUnavailable("disconnected");
-  }
-  if (
-    typeof frame.data !== "string" ||
-    frame.data.length > 900_000 ||
-    !Number.isFinite(frame.width) ||
-    !Number.isFinite(frame.height) ||
-    frame.width < 1 ||
-    frame.height < 1 ||
-    !Number.isFinite(frame.capturedAt)
-  )
-    throw new BrowserPreviewUnavailable("disconnected");
-  const image = Buffer.from(frame.data, "base64");
-  if (image.byteLength < 4 || image.byteLength > 675_000)
-    throw new BrowserPreviewUnavailable("disconnected");
-  const mime =
-    image[0] === 0xff && image[1] === 0xd8
-      ? "image/jpeg"
-      : image[0] === 0x89 && image[1] === 0x50
-        ? "image/png"
-        : null;
-  if (!mime) throw new BrowserPreviewUnavailable("disconnected");
-  let imageUrl = `data:${mime};base64,${frame.data}`;
-  let capturedAt = frame.capturedAt;
-  if (requireFresh) {
-    // agent-browser 0.26 can replay cached frames with timestamp=0. A new
-    // screenshot proves freshness without assigning a new age to that cache.
-    const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
-    capturedAt = Date.now();
+    const port =
+      streamPort ??
+      (await getPrivateStreamPort(sandbox, session, browserSessionName));
+    stage = "frame_bridge";
+    const result = await sandbox.commands.run(
+      browserBridgeCommand(port, "frame"),
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        timeoutMs: 8_000,
+      },
+    );
+    if (result.exitCode !== 0)
+      throw new BrowserPreviewUnavailable("disconnected");
+    let frame: {
+      data: string;
+      width: number;
+      height: number;
+      capturedAt: number;
+    };
+    stage = "frame_decode";
+    let stdout: unknown;
     try {
-      const screenshot = await sandbox.commands.run(
-        `agent-browser --json --screenshot-format jpeg --screenshot-quality 65 screenshot '${path}'`,
-        {
-          ...buildSandboxCommandOptions(sandbox),
-          envs: {
-            AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-            AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-            AGENT_BROWSER_SESSION: browserSessionName,
+      stdout = result.stdout;
+      frame = JSON.parse(stdout as string) as typeof frame;
+    } catch (error) {
+      try {
+        decodeDiagnostic = frameDecodeDiagnostic(stdout, error);
+      } catch {
+        /* Optional diagnostics cannot replace the existing capture failure. */
+      }
+      throw new BrowserPreviewUnavailable("disconnected");
+    }
+    stage = "frame_validation";
+    if (
+      typeof frame.data !== "string" ||
+      frame.data.length > 900_000 ||
+      !Number.isFinite(frame.width) ||
+      !Number.isFinite(frame.height) ||
+      frame.width < 1 ||
+      frame.height < 1 ||
+      !Number.isFinite(frame.capturedAt)
+    )
+      throw new BrowserPreviewUnavailable("disconnected");
+    const image = Buffer.from(frame.data, "base64");
+    if (image.byteLength < 4 || image.byteLength > 675_000)
+      throw new BrowserPreviewUnavailable("disconnected");
+    const mime =
+      image[0] === 0xff && image[1] === 0xd8
+        ? "image/jpeg"
+        : image[0] === 0x89 && image[1] === 0x50
+          ? "image/png"
+          : null;
+    if (!mime) throw new BrowserPreviewUnavailable("disconnected");
+    let imageUrl = `data:${mime};base64,${frame.data}`;
+    let capturedAt = frame.capturedAt;
+    if (requireFresh) {
+      // agent-browser 0.26 can replay cached frames with timestamp=0. A new
+      // screenshot proves freshness without assigning a new age to that cache.
+      const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
+      capturedAt = Date.now();
+      try {
+        stage = "fresh_screenshot";
+        const screenshot = await sandbox.commands.run(
+          browserDaemonCommand(session.directory, browserSessionName, {
+            action: "screenshot",
+            path,
+            format: "jpeg",
+            quality: 65,
+          }),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            timeoutMs: 8_000,
           },
-          timeoutMs: 8_000,
-        },
-      );
-      if (screenshot.exitCode !== 0)
-        throw new BrowserPreviewUnavailable("disconnected");
-      const info = await sandbox.files.getInfo(path, {
-        user: "root",
-        requestTimeoutMs: 4_000,
-      });
-      if (info.size < 4 || info.size > 675_000)
-        throw new BrowserPreviewUnavailable("disconnected");
-      const fresh = Buffer.from(
-        await sandbox.files.read(path, {
-          format: "bytes",
+        );
+        if (screenshot.exitCode !== 0)
+          throw new BrowserPreviewUnavailable("disconnected");
+        stage = "fresh_stat";
+        const info = await sandbox.files.getInfo(path, {
           user: "root",
           requestTimeoutMs: 4_000,
-        }),
-      );
-      if (
-        fresh.byteLength < 4 ||
-        fresh.byteLength > 675_000 ||
-        fresh[0] !== 0xff ||
-        fresh[1] !== 0xd8
-      )
-        throw new BrowserPreviewUnavailable("disconnected");
-      imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
-    } finally {
-      // The private memory-backed run directory is also erased at run cleanup.
-      await sandbox.files
-        .remove(path, { user: "root", requestTimeoutMs: 4_000 })
-        .catch(() => undefined);
+        });
+        if (info.size < 4 || info.size > 675_000)
+          throw new BrowserPreviewUnavailable("disconnected");
+        stage = "fresh_read";
+        const fresh = Buffer.from(
+          await sandbox.files.read(path, {
+            format: "bytes",
+            user: "root",
+            requestTimeoutMs: 4_000,
+          }),
+        );
+        stage = "fresh_validation";
+        if (
+          fresh.byteLength < 4 ||
+          fresh.byteLength > 675_000 ||
+          fresh[0] !== 0xff ||
+          fresh[1] !== 0xd8
+        )
+          throw new BrowserPreviewUnavailable("disconnected");
+        imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
+      } finally {
+        // The private memory-backed run directory is also erased at run cleanup.
+        await sandbox.files
+          .remove(path, { user: "root", requestTimeoutMs: 4_000 })
+          .catch(() => undefined);
+      }
     }
+    return {
+      image: imageUrl,
+      width: frame.width,
+      height: frame.height,
+      capturedAt,
+      browserSessionName,
+    };
+  } catch (error) {
+    if (onFailure) {
+      let kind: BrowserCaptureFailureContext["capture_error_kind"] =
+        "unreadable";
+      let code: BrowserCaptureFailureContext["capture_command_exit_code"] =
+        "none";
+      const precondition: Pick<
+        BrowserCaptureFailureContext,
+        | "capture_precondition_reason"
+        | "capture_precondition_error"
+        | "capture_wrapper_receipt_version"
+        | "capture_wrapper_action"
+        | "capture_wrapper_phase"
+        | "capture_wrapper_exit_code"
+        | "capture_wrapper_session_matches"
+        | "capture_wrapper_age"
+        | "capture_wrapper_history_version"
+        | "capture_wrapper_history_scope"
+        | "capture_wrapper_other_cli_completed"
+        | "capture_wrapper_option_prefix_completed"
+        | "capture_deadline_diagnostic_version"
+        | "capture_deadline_phase"
+        | "capture_open_receipt_version"
+        | "capture_open_receipt_status"
+        | "capture_open_phase"
+        | "capture_open_exit_code"
+        | "capture_open_session_matches"
+        | "capture_open_age"
+        | "capture_open_idle_env_version"
+        | "capture_open_idle_env"
+        | "capture_daemon_process_version"
+        | "capture_daemon_pid_status"
+        | "capture_daemon_process_visibility"
+        | "capture_close_receipt_version"
+        | "capture_close_receipt_status"
+        | "capture_close_phase"
+        | "capture_close_exit_code"
+        | "capture_close_scope"
+        | "capture_close_age"
+        | "capture_close_open_order"
+      > = {};
+      try {
+        if (error instanceof CommandExitError) {
+          kind = "command_exit";
+          // The SDK stores CommandResult as own data; never read output or invoke accessors.
+          const result = Object.getOwnPropertyDescriptor(
+            error,
+            "result",
+          )?.value;
+          const value =
+            result &&
+            Object.getOwnPropertyDescriptor(result, "exitCode")?.value;
+          code =
+            typeof value === "number" &&
+            Number.isInteger(value) &&
+            value >= 0 &&
+            value <= 255
+              ? value
+              : "other";
+          if (
+            (stage === "stream_status" || stage === "fresh_screenshot") &&
+            typeof code === "number" &&
+            code >= 2 &&
+            code <= 6
+          ) {
+            // Only this controlled helper's bounded failure JSON is eligible;
+            // never inspect successful image responses or bridge command output.
+            // Existing <=512-byte context plus the fixed compact process tuple.
+            const stdout =
+              result &&
+              Object.getOwnPropertyDescriptor(result, "stdout")?.value;
+            if (typeof stdout === "string" && stdout.length <= 544) {
+              const parsed = JSON.parse(stdout);
+              const deadline = parsed?.deadline;
+              if (
+                code === 3 &&
+                Array.isArray(deadline) &&
+                deadline.length === 2 &&
+                deadline[0] === 1 &&
+                BROWSER_DAEMON_DEADLINE_PHASES.includes(deadline[1])
+              ) {
+                precondition.capture_deadline_diagnostic_version = 1;
+                precondition.capture_deadline_phase = deadline[1];
+              }
+              const reason = parsed?.diagnostic_reason;
+              if (
+                code === 2 &&
+                BROWSER_DAEMON_PRECONDITION_REASONS.includes(reason)
+              ) {
+                precondition.capture_precondition_reason = reason;
+                const failure = parsed?.diagnostic_error;
+                if (
+                  failure === "missing" ||
+                  failure === "permission" ||
+                  failure === "not_directory" ||
+                  failure === "other"
+                )
+                  precondition.capture_precondition_error = failure;
+              }
+              const phase = parsed?.wrapper_phase;
+              const exit = parsed?.wrapper_exit;
+              if (
+                parsed?.wrapper_receipt_version === 1 &&
+                BROWSER_WRAPPER_ACTIONS.includes(parsed.wrapper_action) &&
+                (phase === "started" || phase === "completed") &&
+                typeof parsed.wrapper_session_matches === "boolean" &&
+                BROWSER_WRAPPER_AGES.includes(parsed.wrapper_age) &&
+                (phase === "started"
+                  ? exit === "none"
+                  : exit === "other" ||
+                    (typeof exit === "number" &&
+                      Number.isInteger(exit) &&
+                      exit >= 0 &&
+                      exit <= 255))
+              ) {
+                precondition.capture_wrapper_receipt_version = 1;
+                precondition.capture_wrapper_action = parsed.wrapper_action;
+                precondition.capture_wrapper_phase = phase;
+                precondition.capture_wrapper_exit_code = exit;
+                precondition.capture_wrapper_session_matches =
+                  parsed.wrapper_session_matches;
+                precondition.capture_wrapper_age = parsed.wrapper_age;
+              }
+              const history = parsed?.h1;
+              if (history === 0 || history === 1 || history === 3) {
+                precondition.capture_wrapper_history_version = 1;
+                precondition.capture_wrapper_history_scope = "handoff_root";
+                precondition.capture_wrapper_other_cli_completed =
+                  (history & 1) !== 0;
+                precondition.capture_wrapper_option_prefix_completed =
+                  (history & 2) !== 0;
+              }
+              const openStatus = parsed?.open_receipt_status;
+              const openPhase = parsed?.open_phase;
+              const openExit = parsed?.open_exit;
+              if (
+                parsed?.open_receipt_version === 1 &&
+                [
+                  "unavailable",
+                  "not_observed",
+                  "unreadable",
+                  "recorded",
+                ].includes(openStatus) &&
+                (openStatus !== "recorded" ||
+                  ((openPhase === "started" || openPhase === "completed") &&
+                    typeof parsed.open_session_matches === "boolean" &&
+                    BROWSER_WRAPPER_AGES.includes(parsed.open_age) &&
+                    (openPhase === "started"
+                      ? openExit === "none"
+                      : openExit === "other" ||
+                        (typeof openExit === "number" &&
+                          Number.isInteger(openExit) &&
+                          openExit >= 0 &&
+                          openExit <= 255))))
+              ) {
+                precondition.capture_open_receipt_version = 1;
+                precondition.capture_open_receipt_status = openStatus;
+                if (openStatus === "recorded") {
+                  precondition.capture_open_phase = openPhase;
+                  precondition.capture_open_exit_code = openExit;
+                  precondition.capture_open_session_matches =
+                    parsed.open_session_matches;
+                  precondition.capture_open_age = parsed.open_age;
+                }
+              }
+              const processObservation = parsed?.p1;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(processObservation) &&
+                processObservation.length === 3 &&
+                processObservation[0] === 1 &&
+                Number.isInteger(processObservation[1]) &&
+                processObservation[1] >= 0 &&
+                processObservation[1] <= 3 &&
+                Number.isInteger(processObservation[2]) &&
+                processObservation[2] >= 0 &&
+                processObservation[2] <= 5 &&
+                (processObservation[1] === 3 || processObservation[2] === 0)
+              ) {
+                precondition.capture_daemon_process_version = 1;
+                precondition.capture_daemon_pid_status = (
+                  ["missing", "invalid", "unreadable", "recorded"] as const
+                )[processObservation[1]];
+                precondition.capture_daemon_process_visibility = (
+                  [
+                    "unavailable",
+                    "not_found",
+                    "same_uid",
+                    "other_uid",
+                    "permission",
+                    "other",
+                  ] as const
+                )[processObservation[2]];
+              }
+              const openIdle = parsed?.open_idle;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(openIdle) &&
+                openIdle.length === 2 &&
+                openIdle[0] === 1 &&
+                BROWSER_OPEN_IDLE_ENV_VALUES.includes(openIdle[1])
+              ) {
+                precondition.capture_open_idle_env_version = 1;
+                precondition.capture_open_idle_env = openIdle[1];
+              }
+              const close = parsed?.close_receipt;
+              if (Array.isArray(close) && close[0] === 1) {
+                const [, status, phase, exit, scope, age, order] = close;
+                if (
+                  close.length === 2 &&
+                  ["unavailable", "not_observed", "unreadable"].includes(status)
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = status;
+                } else if (
+                  close.length === 7 &&
+                  status === "recorded" &&
+                  (phase === "started" || phase === "completed") &&
+                  [
+                    "selected_session",
+                    "other_session",
+                    "all_sessions",
+                  ].includes(scope) &&
+                  BROWSER_WRAPPER_AGES.includes(age) &&
+                  ["after", "before", "same_time", "unavailable"].includes(
+                    order,
+                  ) &&
+                  (order === "unavailable" ||
+                    (scope !== "other_session" &&
+                      precondition.capture_open_session_matches === true)) &&
+                  (phase === "started"
+                    ? exit === "none"
+                    : exit === "other" ||
+                      (typeof exit === "number" &&
+                        Number.isInteger(exit) &&
+                        exit >= 0 &&
+                        exit <= 255))
+                ) {
+                  precondition.capture_close_receipt_version = 1;
+                  precondition.capture_close_receipt_status = "recorded";
+                  precondition.capture_close_phase = phase;
+                  precondition.capture_close_exit_code = exit;
+                  precondition.capture_close_scope = scope;
+                  precondition.capture_close_age = age;
+                  precondition.capture_close_open_order = order;
+                }
+              }
+            }
+          }
+        } else
+          kind =
+            error instanceof TimeoutError
+              ? "timeout"
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : error instanceof Error
+                  ? "other_error"
+                  : "thrown_value";
+      } catch {
+        /* Preserve the original failure if optional context is unreadable. */
+      }
+      try {
+        onFailure({
+          capture_stage: stage,
+          capture_error_kind: kind,
+          capture_command_exit_code: code,
+          ...precondition,
+          ...decodeDiagnostic,
+        });
+      } catch {
+        /* Observers cannot change capture behavior. */
+      }
+    }
+    throw error;
   }
-  return {
-    image: imageUrl,
-    width: frame.width,
-    height: frame.height,
-    capturedAt,
-    browserSessionName,
-  };
 }
 
 /** Resize only the currently granted session; callers hold the input lease. */
@@ -336,20 +834,28 @@ export async function resizeBrowserViewport(
   )
     throw new Error("Invalid browser viewport");
   const result = await sandbox.commands.run(
-    `agent-browser set viewport ${width} ${height} 1`,
+    browserDaemonCommand(session.directory, browserSessionName, {
+      action: "viewport",
+      width,
+      height,
+      deviceScaleFactor: 1,
+    }),
     {
       ...buildSandboxCommandOptions(sandbox),
-      envs: {
-        AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
-        AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
-        AGENT_BROWSER_SESSION: browserSessionName,
-      },
       timeoutMs: 7_000,
     },
   );
   if (result.exitCode !== 0)
     throw new BrowserPreviewUnavailable("disconnected");
-  return captureBrowserFrame(sandbox, session, browserSessionName, true);
+  const frame = await captureBrowserFrame(
+    sandbox,
+    session,
+    browserSessionName,
+    true,
+  );
+  // The fresh screenshot uses the new viewport, but the stream can replay
+  // metadata from before the resize. Keep input coordinates in the new space.
+  return { ...frame, width, height };
 }
 
 export async function sendBrowserInput(
@@ -357,8 +863,11 @@ export async function sendBrowserInput(
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
+  streamPort?: number,
 ) {
-  const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
+  const port =
+    streamPort ??
+    (await getPrivateStreamPort(sandbox, session, browserSessionName));
   const handle = await sandbox.commands.run(
     browserBridgeCommand(port, "input"),
     {

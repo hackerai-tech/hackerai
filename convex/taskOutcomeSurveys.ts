@@ -1,4 +1,6 @@
 import { v, ConvexError } from "convex/values";
+import { MAX_GROK_46_KEY } from "../lib/experiments/max-grok-46";
+import { DEEPSEEK_1017_MODEL_KEY } from "../lib/experiments/paid-deepseek-1017";
 import { paginationOptsValidator } from "convex/server";
 import { type MutationCtx, mutation, query } from "./lib/serviceFunctions";
 import type { QueryCtx } from "./_generated/server";
@@ -20,6 +22,7 @@ import {
   TASK_OUTCOME_EXPIRY_MS,
   reasonsForAnswer,
   experimentTaskOutcomePhase,
+  PRO_THREE_STEPS_TASK_OUTCOME_PHASE,
 } from "../lib/feedback/task-outcome";
 import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
@@ -206,6 +209,16 @@ export const reserveExperiment = mutation({
     if (
       !["pro", "pro-plus", "ultra", "team"].includes(args.subscription_tier) ||
       experimentTaskOutcomePhase(args.experiment_key) !== args.feedback_phase ||
+      (args.experiment_key === MAX_GROK_46_KEY &&
+        (args.mode !== "agent" ||
+          args.selected_model_override !== "hackerai-max" ||
+          !["model-glm-5.3", DEEPSEEK_1017_MODEL_KEY].includes(
+            args.baseline_model,
+          ) ||
+          args.assigned_model !==
+            (args.experiment_variant === "test"
+              ? "model-grok-4.6"
+              : args.baseline_model))) ||
       (args.experiment_key === ABLITERATED_MAX_EXPERIMENT_KEY &&
         !["hackerai-pro", "hackerai-max"].includes(
           args.selected_model_override,
@@ -364,10 +377,18 @@ export const getForMessage = query({
     if (
       !row ||
       row.chat_id !== args.chat_id ||
-      row.message_id !== args.message_id ||
       row.expires_at <= Date.now() ||
       row.dismissed_at ||
       row.answered_at
+    )
+      return null;
+    if (
+      row.message_id !== args.message_id &&
+      !(
+        row.shown_at &&
+        row.survey_kind === "current_experiment" &&
+        row.feedback_phase === PRO_THREE_STEPS_TASK_OUTCOME_PHASE
+      )
     )
       return null;
     if (

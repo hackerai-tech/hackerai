@@ -23,6 +23,16 @@ const mockPostHogError = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockGetConvexClient = jest.fn();
 
+jest.mock("@/lib/billing/subscription-operation", () => ({
+  withSubscriptionOperation: async (
+    _customer: string,
+    _operation: string,
+    run: (guard: {
+      write: <T>(write: () => Promise<T>) => Promise<T>;
+    }) => Promise<unknown>,
+  ) => run({ write: (write) => write() }),
+}));
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {
@@ -214,13 +224,17 @@ describe("cancelSubscriptionAction", () => {
       alreadyScheduled: false,
     });
 
-    expect(mockUpdateSubscription).toHaveBeenCalledWith("sub_123", {
-      cancel_at_period_end: true,
-      cancellation_details: {
-        feedback: "other",
-        comment: "Done for now",
+    expect(mockUpdateSubscription).toHaveBeenCalledWith(
+      "sub_123",
+      {
+        cancel_at_period_end: true,
+        cancellation_details: {
+          feedback: "other",
+          comment: "Done for now",
+        },
       },
-    });
+      undefined,
+    );
     expect(mockPostHogEvent).toHaveBeenNthCalledWith(
       1,
       PAID_FUNNEL_EVENTS.cancellationReasonSubmitted,
@@ -291,14 +305,18 @@ describe("cancelSubscriptionAction", () => {
       alreadyScheduled: false,
     });
 
-    expect(mockCancelSubscription).toHaveBeenCalledWith("sub_past_due", {
-      cancellation_details: {
-        feedback: "too_expensive",
-        comment: "The renewal payment failed",
+    expect(mockCancelSubscription).toHaveBeenCalledWith(
+      "sub_past_due",
+      {
+        cancellation_details: {
+          feedback: "too_expensive",
+          comment: "The renewal payment failed",
+        },
+        invoice_now: false,
+        prorate: false,
       },
-      invoice_now: false,
-      prorate: false,
-    });
+      undefined,
+    );
     expect(mockUpdateSubscription).not.toHaveBeenCalled();
     expect(mockPostHogEvent).toHaveBeenNthCalledWith(
       2,
@@ -483,7 +501,7 @@ describe("cancelSubscriptionAction", () => {
       2,
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
-        $insert_id: cancellationCompletionInsertId("sub_123"),
+        $insert_id: cancellationCompletionInsertId("sub_123", "reason_123"),
       }),
     );
   });
@@ -618,6 +636,63 @@ describe("cancelSubscriptionAction", () => {
         stripe_customer_id: "cus_123",
         error,
       }),
+    );
+  });
+  it("reuses the survey attempt but refreshes the Stripe key after a lost response", async () => {
+    process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_123",
+          status: "active",
+          cancel_at_period_end: false,
+          metadata: {},
+          items: {
+            data: [
+              { price: { id: "price_pro", lookup_key: "pro-monthly-plan" } },
+            ],
+          },
+        },
+      ],
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce("reason_retry" as never)
+      .mockResolvedValueOnce("reason_retry" as never)
+      .mockResolvedValueOnce({ updatedCount: 1 } as never);
+    mockUpdateSubscription
+      .mockRejectedValueOnce(new Error("Response lost") as never)
+      .mockResolvedValueOnce({
+        id: "sub_123",
+        cancel_at_period_end: true,
+      } as never);
+    const { default: cancel } = await import("../cancel-subscription");
+    const input = {
+      cancellationReason: {
+        reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
+        reasonDetails: "Done",
+      },
+    };
+    await expect(cancel(input)).rejects.toThrow("Response lost");
+    await expect(cancel(input)).resolves.toMatchObject({ canceled: true });
+    const first = mockUpdateSubscription.mock.calls[0];
+    const second = mockUpdateSubscription.mock.calls[1];
+    expect(second.slice(0, 2)).toEqual(first.slice(0, 2));
+    expect(second[2]).not.toEqual(first[2]);
+    expect(first).toEqual([
+      "sub_123",
+      expect.objectContaining({
+        metadata: { hackerai_cancellation_reason_id: "reason_retry" },
+      }),
+      {
+        idempotencyKey: expect.stringMatching(
+          /^cancel:reason_retry:[a-f0-9-]{36}:scheduled$/,
+        ),
+      },
+    ]);
+    expect(mockConvexMutation).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cancellationReasonId: "reason_retry" }),
     );
   });
 });

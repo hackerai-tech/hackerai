@@ -17,7 +17,7 @@ const createClients = ({
     status: string;
     items: {
       data: Array<{
-        price?: { id?: string; lookup_key?: string | null };
+        price?: { id?: string; lookup_key?: string | null; product?: string };
       }>;
     };
   }>;
@@ -150,6 +150,41 @@ describe("getCurrentAgentEntitlementContext", () => {
       ),
     ).resolves.toEqual({ subscription: "free", organizationId: "org_1" });
   });
+
+  it.each([
+    ["trialing", "prod_Swj3ieGCSAzTtj", "pro"],
+    ["active", "prod_Swj3ieGCSAzTtj", "pro"],
+    ["canceled", "prod_Swj3ieGCSAzTtj", "free"],
+    ["trialing", "prod_unknown", "free"],
+  ])(
+    "resolves a lookup-less legacy price with %s status on %s as %s",
+    async (status, product, subscription) => {
+      const clients = createClients({
+        subscriptions: [
+          {
+            status,
+            items: {
+              data: [
+                {
+                  price: {
+                    id: "price_legacy_yearly",
+                    lookup_key: null,
+                    product,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+      await expect(
+        resolveCurrentAgentEntitlementContext(
+          { userId: "user_1", organizationId: "org_1" },
+          clients,
+        ),
+      ).resolves.toEqual({ subscription, organizationId: "org_1" });
+    },
+  );
 
   it("propagates provider failures so automatic approval fails closed", async () => {
     const clients = createClients();

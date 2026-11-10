@@ -1,3 +1,7 @@
+import { sampleDiagnosticOperation } from "@/lib/analytics/diagnostic-sampling";
+jest.mock("@/lib/analytics/diagnostic-sampling", () => ({
+  sampleDiagnosticOperation: jest.fn(() => true),
+}));
 import { cancelDesktopRunLocally } from "../desktop-command-cancellation";
 import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
@@ -56,6 +60,7 @@ jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
   captureQueuedAuthenticatedEvent: jest.fn().mockReturnValue(true),
   getIdentifiedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
+  subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
 }));
 
 // Mock Tauri IPC
@@ -402,6 +407,21 @@ describe("desktop capability registration", () => {
     );
   });
 
+  it("advertises stdin only after native support is confirmed", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_command_stdin_support" ? true : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({ commandStdin: true }),
+      }),
+    );
+    await bridge.stop();
+  });
+
   it("selects command-based files when the legacy file transport is broken, and reprobes on reconnect", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
@@ -448,6 +468,69 @@ describe("desktop capability registration", () => {
     await bridge.stop();
   });
 
+  it("preserves the unavailable native API and failed HTTP causes on a same-connection probe", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request")
+        throw new Error("Command desktop_file_request not found");
+      if (cmd === "get_cmd_server_info")
+        return { port: 49152, token: "PRIVATE_TOKEN" };
+      return original(cmd, args);
+    };
+    global.fetch = jest.fn().mockRejectedValue(new TypeError("Load failed"));
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "desktop_file_bridge_probe_failed",
+      expect.objectContaining({
+        native_failure: "native_ipc_unavailable",
+        file_failure: "legacy_http_transport",
+      }),
+    );
+    getPublicationHandler()({
+      data: {
+        type: "file_stat",
+        requestId: "broken-probe",
+        path: ".",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await waitFor(() =>
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_error",
+          requestId: "broken-probe",
+          fileFailure: "legacy_http_transport",
+          message: expect.stringContaining("Update and fully reopen"),
+        }),
+      ),
+    );
+    expect(
+      JSON.stringify((captureAuthenticatedEvent as jest.Mock).mock.calls),
+    ).not.toContain("PRIVATE_TOKEN");
+    await bridge.stop();
+  });
+
+  it("recovers a transient startup file probe before advertising missing capability", async () => {
+    const original = mockInvokeHandler;
+    let probes = 0;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request" && ++probes === 1)
+        throw new TypeError("Load failed");
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({ files: true }),
+      }),
+    );
+    expect(probes).toBe(2);
+    await bridge.stop();
+  });
+
   it("keeps native permission denials on the native adapter", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {
@@ -471,6 +554,167 @@ describe("desktop capability registration", () => {
     );
     expect(global.fetch).not.toHaveBeenCalled();
     await bridge.stop();
+  });
+
+  it.each([
+    "Command desktop_file_request not allowed by ACL",
+    "desktop_file_request not allowed. Command not found",
+  ])(
+    "refuses to register an ACL-denied Desktop and recovers after reopening (%s)",
+    async (denial) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "plugin:app|version") return "0.0.59";
+        if (cmd === "desktop_file_request") throw new Error(denial);
+        return original(cmd, args);
+      };
+      global.fetch = jest.fn();
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      await expect(bridge.start()).rejects.toMatchObject({
+        fileFailure: "native_ipc_denied",
+      });
+      expect(config.connectDesktop).not.toHaveBeenCalled();
+      expect(mockClient.connect).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_file_bridge_probe_failed",
+        expect.objectContaining({
+          native_app_version: "0.0.59",
+          native_platform: "darwin",
+          file_failure: "native_ipc_denied",
+        }),
+      );
+      await bridge.stop();
+      mockInvokeHandler = original;
+      await bridge.start();
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({ files: true }),
+        }),
+      );
+      await bridge.stop();
+    },
+  );
+
+  it.each(["MINGW64_NT-10.0-22631", "MINGW32_NT-6.1", "MSYS_NT-10.0-22631"])(
+    "publishes Windows identity when the native shell reports %s",
+    async (platform) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (
+          cmd === "execute_command" &&
+          String(args?.command).startsWith("uname")
+        ) {
+          return {
+            stdout: `${platform} 3.5.4 x86_64\r\nqa-host\r\n`,
+            stderr: "",
+            exit_code: 0,
+          };
+        }
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        expect(config.connectDesktop).toHaveBeenCalledWith(
+          expect.objectContaining({
+            osInfo: expect.objectContaining({
+              platform: "win32",
+              arch: "x86_64",
+              hostname: "qa-host",
+            }),
+          }),
+        );
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
+  it("records Windows native diagnostics without trusting the browser user agent", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request")
+        throw new Error("Command desktop_file_request not allowed by ACL");
+      if (cmd === "execute_command") {
+        const command = (args as { command: string }).command;
+        if (command.startsWith("uname"))
+          return { stdout: "", stderr: "", exit_code: 1 };
+        return {
+          stdout: command.startsWith("ver")
+            ? "Microsoft Windows [Version 10.0.22631.4890]\nqa-host"
+            : "AMD64",
+          stderr: "",
+          exit_code: 0,
+        };
+      }
+      return original(cmd, args);
+    };
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await expect(bridge.start()).rejects.toMatchObject({
+      fileFailure: "native_ipc_denied",
+    });
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "desktop_file_bridge_probe_failed",
+      expect.objectContaining({ native_platform: "windows" }),
+    );
+    await bridge.stop();
+  });
+
+  it.each(["PRIVATE_TOKEN /private/customer/file", undefined])(
+    "does not trust invalid native version diagnostics (%s)",
+    async (version) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "plugin:app|version") return version;
+        if (cmd === "desktop_file_request")
+          throw new Error("Command desktop_file_request not allowed by ACL");
+        return original(cmd, args);
+      };
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await expect(bridge.start()).rejects.toMatchObject({
+        fileFailure: "native_ipc_denied",
+      });
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_file_bridge_probe_failed",
+        expect.objectContaining({ native_app_version: "unknown" }),
+      );
+      expect(
+        JSON.stringify((captureAuthenticatedEvent as jest.Mock).mock.calls),
+      ).not.toContain("PRIVATE_TOKEN");
+      await bridge.stop();
+    },
+  );
+
+  it("allows a slow successful probe its original startup budget", async () => {
+    jest.useFakeTimers();
+    const original = mockInvokeHandler;
+    let probes = 0;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request") {
+        probes++;
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      const started = bridge.start();
+      await jest.advanceTimersByTimeAsync(2001);
+      await started;
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({ files: true }),
+        }),
+      );
+      expect(probes).toBe(1);
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
   });
 
   it("does not block terminal startup on a hung file probe", async () => {
@@ -881,6 +1125,41 @@ describe("heartbeat backpressure", () => {
 // ── targetConnectionId filtering ──────────────────────────────────────
 
 describe("targetConnectionId filtering", () => {
+  it("passes stdin as native IPC data without adding it to the command", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    let invoked!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      invoked = resolve;
+    });
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "execute_stream_command") {
+        capturedChannel?.onmessage?.({ type: "exit", exitCode: 0 });
+        invoked();
+      }
+    };
+    getPublicationHandler()({
+      data: {
+        type: "command",
+        commandId: "stdin-command",
+        command: "node helper.js",
+        stdin: "private-response",
+        stdinEncoding: "utf8",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await dispatched;
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.objectContaining({
+        command: "node helper.js",
+        stdin: "private-response",
+        stdinEncoding: "utf8",
+      }),
+    );
+    await bridge.stop();
+  });
   it("handles command when targetConnectionId matches this connection", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();
@@ -1098,6 +1377,104 @@ describe("command cancellation acknowledgement", () => {
 // ── native desktop file relay ─────────────────────────────────────────
 
 describe("native desktop file relay", () => {
+  it("recovers the reply after a real append succeeds without appending twice", async () => {
+    jest.useFakeTimers();
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "file-ack-test-"));
+    const file = path.join(dir, "out.txt");
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    try {
+      await bridge.start();
+      const append = jest.fn(async () => {
+        await fs.appendFile(file, "once\n");
+        return { ok: true };
+      });
+      mockInvokeHandler = async (cmd) => {
+        if (cmd === "desktop_file_request") return append();
+        throw new Error("unexpected native command");
+      };
+      let loseReply = true;
+      mockSubscription.publish.mockImplementation(async (message) => {
+        if (message.type === "file_ok" && loseReply) {
+          loseReply = false;
+          throw { code: 1 };
+        }
+      });
+      const start = {
+        type: "file_append",
+        requestId: "append-ack",
+        targetConnectionId: "conn-123",
+        operationChannel: true,
+        fileResponseAck: true,
+        path: file,
+        content: "once\n",
+      };
+      getPublicationHandler()({ data: start });
+      // The only mocked native boundary actually mutates a disposable file.
+      await jest.advanceTimersByTimeAsync(0);
+      await append.mock.results[0].value;
+      await jest.advanceTimersByTimeAsync(0);
+      getPublicationHandler()({ data: start });
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(await fs.readFile(file, "utf8")).toBe("once\n");
+      expect(
+        mockSubscription.publish.mock.calls.filter(
+          ([m]) => m.type === "file_ok",
+        ),
+      ).toHaveLength(2);
+      expect(
+        mockSubscription.publish.mock.calls.some(
+          ([m]) => m.type === "file_error",
+        ),
+      ).toBe(false);
+      for (const [event, handler] of mockSubscription.on.mock.calls) {
+        if (event === "publication")
+          handler({
+            data: {
+              type: "file_response_ack",
+              requestId: "append-ack",
+              targetConnectionId: "conn-123",
+            },
+          });
+      }
+      expect(mockClient.removeSubscription).toHaveBeenCalled();
+    } finally {
+      await bridge.stop();
+      await fs.rm(dir, { recursive: true, force: true });
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it("discards a native reply that finishes after the bridge stops", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    let finish!: (value: unknown) => void;
+    mockInvokeHandler = () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      });
+    getPublicationHandler()({
+      data: {
+        type: "file_write",
+        requestId: "late-file",
+        targetConnectionId: "conn-123",
+        path: "fixture",
+        content: "once",
+      },
+    });
+    await Promise.resolve();
+    await bridge.stop();
+    finish({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSubscription.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "late-file" }),
+    );
+  });
+
   it.each(["file_write", "file_append"])(
     "does not replay %s after an uncertain transport failure",
     async (type) => {
@@ -1201,6 +1578,48 @@ describe("native desktop file relay", () => {
       content: "hello world\n",
       startLine: 1,
     });
+  });
+
+  it("answers a same-connection file probe after startup timed out without re-registering", async () => {
+    jest.useFakeTimers();
+    const original = mockInvokeHandler;
+    mockInvokeHandler = (cmd, args) =>
+      cmd === "desktop_file_request"
+        ? new Promise(() => {})
+        : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      const starting = bridge.start();
+      await jest.advanceTimersByTimeAsync(3000);
+      await starting;
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: expect.objectContaining({ files: false }),
+        }),
+      );
+      mockInvokeHandler = original;
+      getPublicationHandler()({
+        data: {
+          type: "file_stat",
+          requestId: "recovery-probe",
+          path: ".",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_stat_result",
+          requestId: "recovery-probe",
+          kind: "not_file",
+        }),
+      );
+      expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
   });
 
   it("handles file_stat through the same structured native bridge", async () => {
@@ -1477,7 +1896,7 @@ describe("native desktop file relay", () => {
     });
   });
 
-  it("falls back when native file IPC is blocked by an older Tauri ACL", async () => {
+  it("does not bypass a native ACL denial through loopback HTTP", async () => {
     const bridge = new DesktopSandboxBridge(buildConfig());
     await bridge.start();
     const handler = getPublicationHandler();
@@ -1512,20 +1931,76 @@ describe("native desktop file relay", () => {
     });
     await publicationPublished;
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:49152/files/write",
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockSubscription.publish).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: JSON.stringify({
-          path: "C:\\repo\\transcript.json",
-          content: "compatible",
-          is_base64: false,
-        }),
+        type: "file_error",
+        requestId: "file-acl-fallback-1",
+        fileFailure: "native_ipc_denied",
+        message: expect.stringContaining("Update and fully reopen"),
       }),
     );
-    expect(mockSubscription.publish).toHaveBeenCalledWith({
-      type: "file_ok",
-      requestId: "file-acl-fallback-1",
+  });
+
+  it.each(["file_write", "file_append"])(
+    "refuses %s scoped writes on legacy handlers that may ignore allowedRoot",
+    async (type) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      mockInvokeHandler = async () => {
+        throw new Error("Command desktop_file_request not found");
+      };
+      global.fetch = jest.fn();
+      getPublicationHandler()({
+        data: {
+          type,
+          requestId: "scoped-legacy",
+          path: "/project/output.txt",
+          allowedRoot: "/project",
+          content: "private",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await waitFor(() =>
+        expect(mockSubscription.publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "file_error",
+            requestId: "scoped-legacy",
+            fileFailure: "scoped_write_requires_native",
+          }),
+        ),
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+      await bridge.stop();
+    },
+  );
+
+  it("does not interpret a filesystem path as a missing IPC command", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockInvokeHandler = async () => {
+      throw new Error("Open error: /private/desktop_file_request/not found");
+    };
+    global.fetch = jest.fn();
+    getPublicationHandler()({
+      data: {
+        type: "file_stat",
+        requestId: "path-error",
+        path: "/private",
+        targetConnectionId: "conn-123",
+      },
     });
+    await waitFor(() =>
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_error",
+          requestId: "path-error",
+          fileFailure: "filesystem",
+        }),
+      ),
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    await bridge.stop();
   });
 
   it("does not fall back when native IPC reports a real file error", async () => {
@@ -1557,6 +2032,7 @@ describe("native desktop file relay", () => {
       type: "file_error",
       requestId: "file-denied-1",
       message: "Write error: Permission denied",
+      fileFailure: "filesystem",
     });
   });
 });
@@ -3559,6 +4035,98 @@ it.each([false, true])(
       for (const finish of running.values()) finish();
       await bridge.stop();
       mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each([0, 2])(
+  "preserves native ACK delivery while reducing routine telemetry (exit %i)",
+  async (exitCode) => {
+    jest.useFakeTimers();
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    const native = mockInvokeHandler;
+    try {
+      await bridge.start();
+      const reply = {
+        ...mockSubscription,
+        on: jest.fn(),
+        publish: jest.fn().mockResolvedValue(undefined),
+        unsubscribe: jest.fn(),
+        removeAllListeners: jest.fn(),
+      };
+      mockClient.newSubscription.mockReturnValueOnce(reply);
+      let executions = 0;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "execute_stream_command") {
+          executions++;
+          capturedChannel!.onmessage!({
+            type: "stdout",
+            data: "PRIVATE OUTPUT",
+          });
+          capturedChannel!.onmessage!({ type: "exit", exitCode });
+          return;
+        }
+        return native(cmd, args);
+      };
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId: "unsampled-native",
+          command: "PRIVATE COMMAND",
+          outputProtocol: "ack-v1",
+          operationChannel: true,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const publication = reply.on.mock.calls.find(
+        ([event]) => event === "publication",
+      )![1];
+      publication({
+        data: {
+          type: "command_output_ack",
+          commandId: "unsampled-native",
+          sequence: 1,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(executions).toBe(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      await bridge.stop();
+      const captures = jest.mocked(captureQueuedAuthenticatedEvent).mock.calls;
+      expect(
+        captures.filter(
+          ([event]) => event.event === "desktop_ack_command_started",
+        ),
+      ).toHaveLength(0);
+      const finals = captures.filter(
+        ([event]) => event.event === "desktop_ack_command_settled",
+      );
+      expect(finals).toHaveLength(exitCode === 0 ? 0 : 1);
+      if (exitCode !== 0)
+        expect(finals[0][0].properties).toMatchObject({
+          terminalExitCode: exitCode,
+          telemetry_sampled: false,
+          telemetry_sample_rate: 1,
+        });
+      expect(
+        captures.find(
+          ([event]) => event.event === "desktop_ack_delivery_summary",
+        )![0].properties,
+      ).toMatchObject({
+        startedCount: 1,
+        settledCount: 1,
+        acknowledgedCount: 1,
+        nonzeroExitCount: exitCode === 0 ? 0 : 1,
+      });
+      expect(JSON.stringify(captures)).not.toContain("PRIVATE");
+    } finally {
+      await bridge.stop();
+      mockInvokeHandler = native;
+      jest.mocked(sampleDiagnosticOperation).mockReturnValue(true);
       jest.useRealTimers();
     }
   },

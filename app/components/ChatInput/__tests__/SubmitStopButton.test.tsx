@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { jest } from "@jest/globals";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -56,6 +56,96 @@ function renderButton(
 }
 
 describe("SubmitStopButton paid mode colors", () => {
+  it.each([
+    {
+      sendDisabledReason: undefined,
+      tooltip: "Send message and pause goal (⏎)",
+    },
+    { sendDisabledReason: "Messages loading", tooltip: "Messages loading" },
+  ])(
+    "explains a goal follow-up while preserving the blocking reason: $tooltip",
+    async ({ sendDisabledReason, tooltip }) => {
+      const user = userEvent.setup();
+      render(
+        <TooltipProvider delayDuration={0}>
+          <SubmitStopButton
+            {...defaultProps}
+            chatMode="agent"
+            pausesGoal
+            sendDisabledReason={sendDisabledReason}
+          />
+        </TooltipProvider>,
+      );
+      const sendButton = screen.getByLabelText("Send message and pause goal");
+      if (sendDisabledReason) expect(sendButton).toBeDisabled();
+      else expect(sendButton).toBeEnabled();
+      await user.hover(sendButton.parentElement!);
+      expect(await screen.findByText(tooltip)).toBeInTheDocument();
+    },
+  );
+
+  it("preserves Ctrl+C and only stops with the advertised chord while running", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false, true);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stop from a terminal or behind a dialog", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", false, true);
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    dialog.remove();
+    const terminal = document.createElement("textarea");
+    terminal.className = "xterm";
+    document.body.append(terminal);
+    fireEvent.keyDown(terminal, {
+      key: "Escape",
+    });
+    terminal.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
+
+  it("leaves already-handled Escape and open navigation alone", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("agent", true, true);
+    const handled = new KeyboardEvent("keydown", {
+      key: "Escape",
+      cancelable: true,
+    });
+    handled.preventDefault();
+    window.dispatchEvent(handled);
+    const navigation = document.createElement("div");
+    navigation.dataset.shortcutsScope = "navigation";
+    document.body.append(navigation);
+    fireEvent.keyDown(window, { key: "Escape" });
+    navigation.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
+
+  it("ignores Stop while idle", () => {
+    defaultProps.onStop.mockClear();
+    renderButton("ask", false);
+    fireEvent.keyDown(window, {
+      key: "Escape",
+    });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+  });
   it("disables sending while offline without hiding the composer action", () => {
     render(
       <TooltipProvider>
@@ -64,6 +154,47 @@ describe("SubmitStopButton paid mode colors", () => {
     );
 
     expect(screen.getByLabelText("Send message")).toBeDisabled();
+  });
+
+  it("preserves copy in reply fields and selected page text without disabling the Stop shortcut", () => {
+    render(
+      <TooltipProvider>
+        <p>Question text</p>
+        <SubmitStopButton
+          {...defaultProps}
+          chatMode="agent"
+          isReplyingToAgent
+        />
+      </TooltipProvider>,
+    );
+    defaultProps.onStop.mockClear();
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    const copy = new KeyboardEvent("keydown", {
+      key: "c",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    field.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(false);
+    fireEvent.keyDown(field, { key: "Escape" });
+    field.remove();
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("Question text"));
+    const selection = window.getSelection()!;
+    selection.addRange(range);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    selection.removeAllRanges();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.append(dialog);
+    fireEvent.keyDown(window, { key: "Escape" });
+    dialog.remove();
+    expect(defaultProps.onStop).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(defaultProps.onStop).toHaveBeenCalledTimes(1);
   });
 
   it("prioritizes the loading reason while destination messages load", async () => {
@@ -86,6 +217,31 @@ describe("SubmitStopButton paid mode colors", () => {
 
     expect(await screen.findByText("Messages loading")).toBeInTheDocument();
   });
+
+  it.each([
+    { isOnline: false },
+    { isUploadingFiles: true },
+    { sendDisabledReason: "Wait for the attachment to finish removing." },
+    { status: "submitted" as const },
+  ])(
+    "keeps Stop available when a goal follow-up is blocked by %j",
+    (blocked) => {
+      render(
+        <TooltipProvider>
+          <SubmitStopButton
+            {...defaultProps}
+            chatMode="agent"
+            isGenerating
+            allowSendWhileGenerating
+            status="streaming"
+            {...blocked}
+          />
+        </TooltipProvider>,
+      );
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+      expect(screen.getByLabelText("Stop generation")).toBeEnabled();
+    },
+  );
 
   it("uses the default submit treatment for paid Agent mode", () => {
     const button = renderButton("agent", true);

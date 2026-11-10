@@ -5,9 +5,13 @@ import { logger } from "@/lib/logger";
 import {
   uploadSandboxFileToConvex,
   type GeneratedFileUploadPhase,
+  type GeneratedFileTransferAttemptFailure,
   type NativeStatFailureReason,
 } from "./utils/sandbox-file-uploader";
-import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  getLocalFileRequestFailure,
+  isLocalCommandRelayUnsubscribedError,
+} from "./utils/local-sandbox-errors";
 import {
   getSandboxLogFields,
   isCentrifugoSandbox,
@@ -51,6 +55,19 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           // Optional identity observation must not fail a delivery.
         }
       };
+      const recordTransferAttemptFailure = (
+        failure: GeneratedFileTransferAttemptFailure,
+      ) => {
+        // A native failure can precede a successful command fallback. These
+        // bounded attempt observations are separate from final delivery counts.
+        phLogger.event("agent_file_transfer_attempt_failed", {
+          userId: context.userID,
+          chat_id: context.chatId,
+          trigger_run_id: context.triggerRunId ?? null,
+          transfer_attempt_diagnostic_version: 2,
+          ...failure,
+        });
+      };
       type FailurePhase =
         | GeneratedFileUploadPhase
         | "sandbox_setup"
@@ -67,6 +84,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         | null = "initial_acquisition";
       let completedDeliveryCount = 0;
       const failurePhaseCounts: Partial<Record<FailurePhase, number>> = {};
+      type TransferFailureReason = ReturnType<
+        typeof getLocalFileRequestFailure
+      >;
+      const transferFailureReasonCounts: Partial<
+        Record<TransferFailureReason, number>
+      > = {};
       type MetadataFailureReason =
         `native_${NativeStatFailureReason}` | "unclassified";
       let currentMetadataFailureReason: MetadataFailureReason = "unclassified";
@@ -116,8 +139,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             requested_file_count: files.length,
             delivered_file_count: delivered,
             failed_file_count: failed,
+            abort_signal_aborted: abortSignal?.aborted ?? null,
             file_delivery_diagnostic_version: 1,
             failure_phase_counts: failurePhaseCounts,
+            transfer_failure_diagnostic_version: 1,
+            transfer_failure_reason_counts: transferFailureReasonCounts,
             metadata_failure_diagnostic_version: 1,
             metadata_failure_reason_counts: {
               ...nativeMetadataFailureCounts,
@@ -138,6 +164,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         }
       };
       try {
+        abortSignal?.throwIfAborted();
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
@@ -172,22 +199,32 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 currentPhase = phase;
               },
               onNativeStatFailure: observeNativeStatFailure,
+              onTransferAttemptFailure: recordTransferAttemptFailure,
             });
           } catch (error) {
+            const nativeMetadataRelayRejected =
+              currentPhase === "file_metadata" &&
+              getLocalFileRequestFailure(error) === "relay_unsubscribed";
             if (
+              abortSignal?.aborted ||
+              relayRecoveryAttempted ||
               !isCentrifugoSandbox(sandbox) ||
-              !isLocalCommandRelayUnsubscribedError(error) ||
+              (!isLocalCommandRelayUnsubscribedError(error) &&
+                !nativeMetadataRelayRejected) ||
               !sandboxManager.recoverLocalConnection
             ) {
               throw error;
             }
 
+            // One recovery budget covers every file and candidate path in
+            // this call, including a failed reconnect.
             relayRecoveryAttempted = true;
             currentPhase = "relay_recovery";
             await sandboxManager.recoverLocalConnection(
               sandbox.getConnectionId(),
               "command_relay_unsubscribed",
             );
+            abortSignal?.throwIfAborted();
             const { sandbox: recoveredSandbox } =
               await getSandboxWithFallbackGuard({ sandboxManager });
             observeSandboxType(recoveredSandbox);
@@ -196,6 +233,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 "The selected local sandbox changed during file recovery. Reconnect it and try again.",
               );
             }
+            abortSignal?.throwIfAborted();
             sandbox = recoveredSandbox;
             relayRecoverySucceeded = true;
             // Relay presence rejected the first command before publication.
@@ -210,6 +248,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                 currentPhase = phase;
               },
               onNativeStatFailure: observeNativeStatFailure,
+              onTransferAttemptFailure: recordTransferAttemptFailure,
             });
           }
         };
@@ -227,6 +266,17 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
+          if (abortSignal?.aborted) {
+            const remainingFiles = files.slice(i);
+            countFailure("unknown", remainingFiles.length);
+            blockedFiles.push(
+              ...remainingFiles.map((path) => ({
+                path,
+                reason: "File delivery canceled before this file was retrieved",
+              })),
+            );
+            break;
+          }
           currentPhase = "sandbox_setup";
           setupStage = "path_preparation";
           const originalPath = files[i];
@@ -253,6 +303,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           let fileProcessed = false;
           let lastError: string | null = null;
           let lastFailurePhase: FailurePhase = "unknown";
+          let lastTransferFailureReason: TransferFailureReason = "unknown";
           let lastMetadataFailureReason: MetadataFailureReason = "unclassified";
 
           for (const filePath of pathsToTry) {
@@ -282,8 +333,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
+              abortSignal?.throwIfAborted();
               currentPhase = "unknown";
               const saved = await uploadWithRelayRecovery(filePath);
+              // A returned upload has already been durably registered. Keep its
+              // receipt even if cancellation arrived in flight; the outer loop
+              // stops subsequent files without hiding the completed side effect.
               currentPhase = "finalization";
 
               context.fileAccumulator.add({
@@ -338,8 +393,23 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
               lastError = errorMsg;
-              lastFailurePhase = currentPhase;
+              // Upload observers update the phase across async callbacks.
+              lastFailurePhase = abortSignal?.aborted
+                ? "unknown"
+                : (currentPhase as FailurePhase);
               lastMetadataFailureReason = currentMetadataFailureReason;
+              lastTransferFailureReason = "unknown";
+              if (lastFailurePhase === "transfer") {
+                try {
+                  lastTransferFailureReason =
+                    isLocalCommandRelayUnsubscribedError(e)
+                      ? "relay_unsubscribed"
+                      : getLocalFileRequestFailure(e);
+                } catch {
+                  // Optional classification must preserve the original failure.
+                }
+              }
+              if (abortSignal?.aborted) break;
               // Continue to try next path
             }
           }
@@ -350,6 +420,12 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             // candidate paths/recovery. Successful alternate paths add no failure.
             countFailure(lastFailurePhase);
             countMetadataFailure(lastFailurePhase, lastMetadataFailureReason);
+            if (lastFailurePhase === "transfer") {
+              // Match the terminal phase count, not candidate paths or retries.
+              transferFailureReasonCounts[lastTransferFailureReason] =
+                (transferFailureReasonCounts[lastTransferFailureReason] ?? 0) +
+                1;
+            }
             blockedFiles.push({
               path: originalPath,
               reason: `File not found or upload failed: ${lastError || "Unknown error"}`,

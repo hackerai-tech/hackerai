@@ -1,3 +1,4 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
 import {
   attributeInfluencer,
@@ -258,7 +259,7 @@ async function findReusableCheckoutSession({
   return undefined;
 }
 
-export const POST = async (req: NextRequest) => {
+const handleSubscribe = async (req: NextRequest) => {
   const requestId = req.headers.get("x-vercel-id") ?? "unknown";
   let shouldClearReferralCookies = false;
   const json = (body: unknown, init?: ResponseInit) => {
@@ -932,3 +933,7 @@ export const POST = async (req: NextRequest) => {
     return json({ error: errorMessage }, { status: 500 });
   }
 };
+
+export const POST = withServiceQueryRecovery(handleSubscribe);
+
+export const runtime = "nodejs";

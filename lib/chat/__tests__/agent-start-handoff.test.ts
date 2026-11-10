@@ -90,6 +90,30 @@ it("an older start finishing does not remove a newer pending start", async () =>
   expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
 });
 
+it("acknowledges durable admission after detachment without attaching stale UI or replaying the POST", async () => {
+  const pending = pendingResponse();
+  jest.mocked(fetch).mockReturnValueOnce(pending.promise);
+  const onRunStarted = jest.fn();
+  const onRunAdmitted = jest.fn();
+  const response = fetchAgentLongStream(
+    init(),
+    onRunStarted,
+    undefined,
+    onRunAdmitted,
+  ).catch((error) => error);
+  cancelAgentLongRealtimeStreams("handoff-chat");
+  pending.resolve(handleResponse("run-admitted-before-detach"));
+  expect(await response).toMatchObject({ name: "AbortError" });
+  expect(onRunAdmitted).toHaveBeenCalledWith(
+    expect.objectContaining({
+      chatId: "handoff-chat",
+      runId: "run-admitted-before-detach",
+    }),
+  );
+  expect(onRunStarted).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
 it("surfaces a failed start to Stop and releases the pending handle", async () => {
   const pending = pendingResponse();
   jest.mocked(fetch).mockReturnValueOnce(pending.promise);

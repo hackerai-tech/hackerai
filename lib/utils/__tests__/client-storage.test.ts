@@ -3,6 +3,10 @@ import {
   CONVERSATION_DRAFTS_STORAGE_KEY,
   clearAllDrafts,
   getDraftAttachmentsById,
+  getDraftContentById,
+  isDraftGoalModeById,
+  setDraftGoalMode,
+  removeDraft,
   readOpenSidebarProjectIds,
   readDraftStore,
   readSelectedModel,
@@ -565,5 +569,61 @@ describe("client-storage draft cache", () => {
     expect(
       window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY),
     ).toBeNull();
+  });
+});
+
+describe("goal intent saved with a conversation draft", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("preserves goal intent across text edits, attachment edits, and empty drafts", () => {
+    setDraftGoalMode("chat", true);
+    expect(isDraftGoalModeById("chat")).toBe(true);
+    upsertDraft("chat", "Original goal");
+    upsertDraftAttachments("chat", [
+      {
+        kind: "file",
+        fileId: "file-1",
+        name: "notes.txt",
+        mediaType: "text/plain",
+        size: 4,
+        timestamp: Date.now(),
+      },
+    ]);
+    upsertDraft("chat", "Updated goal");
+    expect(isDraftGoalModeById("chat")).toBe(true);
+    expect(getDraftAttachmentsById("chat")).toHaveLength(1);
+    removeDraftAttachments("chat");
+    expect(isDraftGoalModeById("chat")).toBe(true);
+    expect(getDraftContentById("chat")).toBe("Updated goal");
+    upsertDraft("chat", "");
+    removeDraftAttachments("chat");
+    expect(isDraftGoalModeById("chat")).toBe(true);
+    setDraftGoalMode("chat", false);
+    expect(readDraftStore().drafts).toEqual([]);
+  });
+
+  it("exiting keeps text and attachments; removing or clearing the draft removes its goal intent", () => {
+    upsertDraft("chat", "Keep this text");
+    upsertDraftAttachments("chat", [
+      {
+        kind: "file",
+        fileId: "file-1",
+        name: "notes.txt",
+        mediaType: "text/plain",
+        size: 4,
+        timestamp: Date.now(),
+      },
+    ]);
+    setDraftGoalMode("chat", true);
+    setDraftGoalMode("chat", false);
+    expect(getDraftContentById("chat")).toBe("Keep this text");
+    expect(getDraftAttachmentsById("chat")).toHaveLength(1);
+    expect(isDraftGoalModeById("chat")).toBe(false);
+    setDraftGoalMode("chat", true);
+    removeDraft("chat");
+    expect(isDraftGoalModeById("chat")).toBe(false);
+    setDraftGoalMode("chat", true);
+    clearAllDrafts();
+    expect(isDraftGoalModeById("chat")).toBe(false);
   });
 });

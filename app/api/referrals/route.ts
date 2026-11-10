@@ -36,7 +36,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  // Shared Preview config can name an older branch. Trust only this deployment's
+  // Vercel hosts, as checkout does, rather than accepting an arbitrary Host.
+  const isVercelPreview =
+    process.env.VERCEL_ENV === "preview" && process.env.VERCEL === "1";
+  const trustedPreviewHosts = [
+    process.env.VERCEL_BRANCH_URL,
+    process.env.VERCEL_URL,
+  ];
+  const requestHost = req.nextUrl?.host;
+  const previewHost = isVercelPreview
+    ? requestHost && trustedPreviewHosts.includes(requestHost)
+      ? requestHost
+      : (process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL)
+    : undefined;
+  const baseUrl = previewHost
+    ? `https://${previewHost}`
+    : process.env.NEXT_PUBLIC_BASE_URL;
   if (!baseUrl) {
     return NextResponse.json(
       { error: "NEXT_PUBLIC_BASE_URL is not configured" },

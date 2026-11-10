@@ -51,6 +51,57 @@ it("leaves up to four images native without OCR", async () => {
   expect(describe).not.toHaveBeenCalled();
 });
 
+it("keeps twenty Inference images native without paying for descriptions", async () => {
+  const { describe, preprocess } = setup();
+  const input = images(20);
+  expect(await preprocess(input, { maxNativeImages: 20 })).toBe(input);
+  expect(describe).not.toHaveBeenCalled();
+});
+
+it("describes an Inference history when a tool result adds the twenty-first image", async () => {
+  const { describe, preprocess } = setup();
+  const input = images(20);
+  input.push({
+    role: "tool",
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: "view",
+        toolName: "file",
+        output: {
+          type: "content",
+          value: [
+            { type: "text", text: "Keep this tool evidence" },
+            {
+              type: "image-data",
+              data: "tool-screenshot",
+              mediaType: "image/png",
+            },
+          ],
+        },
+      },
+    ],
+  });
+  const output = await preprocess(input, { maxNativeImages: 20 });
+  expect(describe).toHaveBeenCalledTimes(21);
+  expect(output[1]).toMatchObject({
+    role: "tool",
+    content: [
+      {
+        toolCallId: "view",
+        toolName: "file",
+        output: {
+          value: [
+            { type: "text", text: "Keep this tool evidence" },
+            { type: "text", text: expect.stringContaining('index="21"') },
+          ],
+        },
+      },
+    ],
+  });
+  expect(input[0]).toEqual(images(20)[0]);
+});
+
 it("describes every image in a 14-image history with indexed, escaped text", async () => {
   const { describe, preprocess } = setup();
   const input = images(14);

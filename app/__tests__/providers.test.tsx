@@ -18,6 +18,7 @@ jest.mock("../contexts/GlobalState", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
+  getIdentifiedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
@@ -34,6 +35,7 @@ const { useGlobalState } = jest.requireMock<
 const {
   confirmAuthenticatedAnalyticsUserId,
   getPostHogClient,
+  getIdentifiedAnalyticsUserId,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -41,6 +43,8 @@ const {
 );
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
+const { getUnhandledRejectionDiagnostics } =
+  require("@/lib/posthog/unhandled-rejection-diagnostics") as typeof import("@/lib/posthog/unhandled-rejection-diagnostics");
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
@@ -58,6 +62,7 @@ describe("PostHogProvider", () => {
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
     window.localStorage.clear();
     mockGetPostHogClient.mockReturnValue(null);
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
 
     mockUseGlobalState.mockReturnValue({
       subscription: "pro",
@@ -259,6 +264,113 @@ describe("PostHogProvider", () => {
       expect(sanitized?.properties).toEqual(allowed);
       expect(JSON.stringify(sanitized)).not.toContain("private");
     }
+    const stopSnapshotProperties = {
+      token: "test-ingestion-token",
+      distinct_id: "user-123",
+      $session_id: "session-123",
+      diagnostic_version: 1,
+      preparation_outcome: "compacted",
+      save_outcome: "acknowledged",
+      before_size_bytes: 1600000,
+      after_size_bytes: 100000,
+      part_count: 260,
+      pruned_count: 250,
+      frontend_build_commit: "a".repeat(40),
+      save_error_code: "message_too_large",
+      convex_request_id: "0123456789abcdef",
+    };
+    const stopSnapshot = config.before_send({
+      event: "chat_stop_snapshot_save_outcome",
+      properties: {
+        ...stopSnapshotProperties,
+        $current_url: "private",
+        $referrer: "private",
+        $pathname: "private",
+        $title: "private",
+        command: "private",
+        output: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set: { content: "private" },
+      $set_once: { content: "private" },
+    });
+    expect(stopSnapshot?.properties).toEqual(stopSnapshotProperties);
+    expect(JSON.stringify(stopSnapshot)).not.toContain("private");
+    const diffProperties = {
+      token: "test-ingestion-token",
+      distinct_id: "user-123",
+      $session_id: "session-123",
+      diagnostic_version: 1,
+      diff_view_instance_id: "opaque-instance",
+      stage: "view_rendered",
+      view_mode: "original",
+      instance_observed_computed_before_view: false,
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const diff = config.before_send({
+      event: "diff_view_diagnostic",
+      properties: {
+        ...diffProperties,
+        $current_url: "private",
+        $referrer: "private",
+        $title: "private",
+        $pathname: "private",
+        path: "private",
+        content: "private",
+        language: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set: { content: "private" },
+      $set_once: { content: "private" },
+    });
+    expect(diff?.properties).toEqual(diffProperties);
+    expect(JSON.stringify(diff)).not.toContain("private");
+    const disposalProperties = {
+      diagnostic_version: 1,
+      diff_view_instance_id: "opaque-instance",
+      stage: "first_modified_editor_disposed",
+      instance_observed_computed_before_disposal: false,
+      modified_editor_disposed_at: 1794094000000,
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const disposal = config.before_send({
+      event: "diff_view_diagnostic",
+      properties: {
+        ...disposalProperties,
+        $current_url: "private",
+        content: "private",
+        language: "private",
+      },
+    });
+    expect(disposal?.properties).toEqual(disposalProperties);
+    expect(JSON.stringify(disposal)).not.toContain("private");
+    const summary = config.before_send({
+      event: "desktop_ack_delivery_summary",
+      properties: {
+        schemaVersion: 2,
+        startedCount: 10,
+        settledCount: 9,
+        pendingAtEnd: 1,
+        windowSequence: 0,
+        telemetry_sample_rate: 1,
+        $current_url: "private",
+        commandId: "private",
+        chatId: "private",
+        $set: { content: "private" },
+      },
+      $set_once: { content: "private" },
+    });
+    expect(summary?.properties).toEqual({
+      schemaVersion: 2,
+      startedCount: 10,
+      settledCount: 9,
+      pendingAtEnd: 1,
+      windowSequence: 0,
+      telemetry_sample_rate: 1,
+    });
+    expect(JSON.stringify(summary)).not.toContain("private");
     const ordinaryEvent = {
       event: "ordinary_event",
       properties: { retained: "value" },
@@ -266,6 +378,78 @@ describe("PostHogProvider", () => {
     expect(config.before_send(ordinaryEvent)).toEqual(ordinaryEvent);
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it("adds bounded context through before_send only while identified consent is active", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      capture: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(mockConfirmAuthenticatedAnalyticsUserId).toHaveBeenCalled(),
+    );
+    window.dispatchEvent(
+      new CustomEvent("unhandledrejection", { detail: { reason: undefined } }),
+    );
+    const entry = {
+      type: "UnhandledRejection",
+      value: "Non-Error promise rejection captured with value: undefined",
+      mechanism: { handled: false, synthetic: true },
+    };
+    const config = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => any;
+    };
+    const retained = config.before_send({
+      event: "$exception",
+      properties: { $exception_list: [entry] },
+    });
+    expect(retained.properties).toMatchObject({
+      hackerai_recent_rejection_count: 1,
+    });
+    expect(retained.properties.$exception_list).toEqual([entry]);
+    expect(posthog.capture).not.toHaveBeenCalled();
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
+    window.dispatchEvent(
+      new CustomEvent("unhandledrejection", { detail: { reason: undefined } }),
+    );
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
+  });
+
+  it("does not install a rejection observer when SDK loading finishes after unmount", async () => {
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((done) => {
+      resolve = done;
+    });
+    mockLoadPostHogClient.mockReturnValue(pending);
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(mockLoadPostHogClient).toHaveBeenCalled());
+    view.unmount();
+    const init = jest.fn();
+    resolve({ init });
+    await pending;
+    expect(init).not.toHaveBeenCalled();
+    expect(getUnhandledRejectionDiagnostics()).toEqual({});
   });
 
   it.each(["fr-FR", "es_ES", "invalid locale", "   "])(
@@ -605,6 +789,7 @@ describe("X referral consent and identity continuity", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
+    document.cookie = "hackerai_partner_visit=; Path=/; Max-Age=0";
     mockUseAuth.mockReturnValue({ user: null });
     mockUseGlobalState.mockReturnValue({ subscription: "free" });
     mockGetPostHogClient.mockReturnValue(null);
@@ -614,6 +799,103 @@ describe("X referral consent and identity continuity", () => {
     jest.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0");
   });
   afterEach(() => jest.restoreAllMocks());
+
+  it.each([false, true])(
+    "captures partner arrivals with isolated funnel identity (signed in: %s)",
+    async (signedIn) => {
+      jest.spyOn(document, "referrer", "get").mockReturnValue("");
+      const visitorId = "00000000-0000-4000-8000-000000000001";
+      document.cookie = `hackerai_partner_visit=${encodeURIComponent(
+        JSON.stringify({
+          code: "medusa",
+          visitorId,
+          visitId: "00000000-0000-4000-8000-000000000002",
+          timestamp: Date.now(),
+          environment: "preview",
+        }),
+      )}; Path=/`;
+      if (signedIn)
+        mockUseAuth.mockReturnValue({ user: { id: "existing-user" } });
+      const posthog = client(signedIn ? "existing-user" : undefined);
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+      const view = render(
+        <PostHogProvider analyticsAllowed>content</PostHogProvider>,
+      );
+      await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+      expect(posthog.capture).toHaveBeenCalledWith(
+        "influencer_link_visited",
+        expect.objectContaining({
+          distinct_id: `influencer-visitor:${visitorId}`,
+          influencer_code: "medusa",
+        }),
+        expect.anything(),
+      );
+      expect(posthog.get_distinct_id()).toBe(
+        signedIn ? "existing-user" : "anonymous-x-visitor",
+      );
+      const config = (
+        posthog.init.mock.calls as unknown as [
+          string,
+          { before_send: (event: unknown) => unknown },
+        ][]
+      )[0][1];
+      expect(
+        config.before_send({
+          event: "influencer_link_visited",
+          properties: {
+            distinct_id: `influencer-visitor:${visitorId}`,
+            $process_person_profile: true,
+            $user_id: "existing-user",
+            $current_url: "private",
+          },
+          $set: { email: "private" },
+        }),
+      ).toEqual({
+        event: "influencer_link_visited",
+        properties: {
+          distinct_id: `influencer-visitor:${visitorId}`,
+          $process_person_profile: false,
+          $geoip_disable: true,
+        },
+      });
+      view.unmount();
+      render(<PostHogProvider analyticsAllowed>content</PostHogProvider>);
+      await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+    },
+  );
+
+  it("preserves a pending arrival while consent is resolving, then captures after allowance", async () => {
+    jest.spyOn(document, "referrer", "get").mockReturnValue("");
+    document.cookie = `hackerai_partner_visit=${encodeURIComponent(
+      JSON.stringify({
+        code: "medusa",
+        visitorId: "00000000-0000-4000-8000-000000000001",
+        visitId: "00000000-0000-4000-8000-000000000002",
+        timestamp: Date.now(),
+        environment: "preview",
+      }),
+    )}; Path=/`;
+    const posthog = client();
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed={false}>content</PostHogProvider>,
+    );
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+    expect(document.cookie).toContain("hackerai_partner_visit=");
+    view.rerender(<PostHogProvider analyticsAllowed>content</PostHogProvider>);
+    await waitFor(() => expect(posthog.capture).toHaveBeenCalledTimes(1));
+  });
+
+  it("clears a pending partner visit without loading analytics when consent is denied", () => {
+    document.cookie = "hackerai_partner_visit=pending; Path=/";
+    render(
+      <PostHogProvider analyticsAllowed={false} consentDeclined>
+        content
+      </PostHogProvider>,
+    );
+    expect(document.cookie).not.toContain("hackerai_partner_visit=");
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+  });
 
   it("waits for consent, captures only a referral, and preserves its identity into signup", async () => {
     const posthog = client();

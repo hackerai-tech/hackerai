@@ -148,6 +148,22 @@ describe("regional subscription access", () => {
     expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["control", "test"])(
+    "enforces %s background checks without exposure or flushing",
+    async (variant) => {
+      mockGetFeatureFlagResult.mockResolvedValue(flagResult(variant));
+      const result = enforceRegionalSubscriptionFirst({
+        ...base,
+        captureExposure: false,
+      });
+      if (variant === "test")
+        await expect(result).rejects.toMatchObject({ statusCode: 403 });
+      else await expect(result).resolves.toMatchObject({ variant: "control" });
+      expect(mockCapture).not.toHaveBeenCalled();
+      expect(mockFlush).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not count a presentation lookup as exposure", async () => {
     await evaluateRegionalSubscriptionFirst(base);
     expect(mockCapture).not.toHaveBeenCalled();

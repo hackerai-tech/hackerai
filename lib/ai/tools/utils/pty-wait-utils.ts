@@ -71,6 +71,8 @@ export async function waitForOutput(
     const onAbort = () => finish();
     signal?.addEventListener("abort", onAbort, { once: true });
     void session.handle.exited.then(finish, finish);
+    // Stop can arrive while the caller awaits PTY creation or input delivery.
+    if (signal?.aborted) finish();
 
     function finish() {
       if (settled) return;

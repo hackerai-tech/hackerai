@@ -168,6 +168,7 @@ const projectNewestTail = (
   messages: UIMessage[],
   budgetTokens: number,
   fileTokens: FileTokens,
+  preserveStepStarts = false,
 ): TailProjection => {
   let remaining = Math.max(0, Math.floor(budgetTokens));
   let retainedTokens = 0;
@@ -185,7 +186,11 @@ const projectNewestTail = (
     if (remaining <= 0) break;
 
     const message = messages[messageIndex];
-    const usefulParts = message.parts.filter(isUsefulTailPart);
+    const usefulParts = message.parts.filter(
+      (part) =>
+        isUsefulTailPart(part) ||
+        (preserveStepStarts && part?.type === "step-start"),
+    );
     if (usefulParts.length === 0) continue;
 
     const wholeTokens = estimatePartsTokens(usefulParts, fileTokens);
@@ -210,6 +215,16 @@ const projectNewestTail = (
       if (remaining <= 0) break;
 
       const part = message.parts[partIndex];
+      // Startup projection must not combine sequential tool steps into a
+      // single parallel batch. A leading boundary is optional to the SDK,
+      // but internal boundaries between retained parts must survive.
+      if (preserveStepStarts && part?.type === "step-start") {
+        if (retainedParts.length > 0) {
+          retainedParts.unshift(part);
+          partialStartPartIndex = partIndex;
+        }
+        continue;
+      }
       if (!isUsefulTailPart(part)) continue;
 
       const projected = projectPartToBudget(part, remaining, fileTokens);
@@ -336,12 +351,15 @@ export const projectMessagesToTokenBudget = (
   {
     budgetTokens,
     fileTokens = {} as FileTokens,
+    preserveStepStarts = false,
   }: {
     budgetTokens: number;
     fileTokens?: FileTokens;
+    preserveStepStarts?: boolean;
   },
 ): UIMessage[] =>
-  projectNewestTail(messages, budgetTokens, fileTokens).messages;
+  projectNewestTail(messages, budgetTokens, fileTokens, preserveStepStarts)
+    .messages;
 
 export const projectRetainedTailFromMessages = (
   messages: UIMessage[],

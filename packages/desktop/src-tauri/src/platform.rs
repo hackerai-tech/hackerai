@@ -39,7 +39,7 @@ pub fn get_shell_config() -> ShellConfig {
             if let Some(bash) = find_git_bash() {
                 (bash, "-c", false)
             } else {
-                ("cmd".to_string(), "/C", true)
+                (windows_system_executable("cmd.exe"), "/C", true)
             }
         });
         return ShellConfig {
@@ -80,7 +80,21 @@ pub fn get_shell_config() -> ShellConfig {
 /// Locate `bash.exe` from Git for Windows. Tries:
 ///   1. `HACKERAI_BASH_PATH` env override
 ///   2. Common install locations
-///   3. `where git` → `<gitDir>/../../bin/bash.exe`
+///   3. System `where.exe` searches PATH → `<gitDir>/../../bin/bash.exe`
+#[cfg(windows)]
+fn windows_system_executable(name: &str) -> String {
+    use std::path::PathBuf;
+
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    root.join("System32")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[cfg(windows)]
 fn find_git_bash() -> Option<String> {
     use std::os::windows::process::CommandExt;
@@ -103,8 +117,8 @@ fn find_git_bash() -> Option<String> {
         }
     }
 
-    if let Ok(out) = StdCommand::new("where")
-        .arg("git")
+    if let Ok(out) = StdCommand::new(windows_system_executable("where.exe"))
+        .arg("$PATH:git.exe")
         .creation_flags(CREATE_NO_WINDOW)
         .output()
     {
@@ -112,7 +126,7 @@ fn find_git_bash() -> Option<String> {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let line = line.trim();
-                if line.to_lowercase().ends_with("git.exe") {
+                if PathBuf::from(line).is_absolute() && line.to_lowercase().ends_with("git.exe") {
                     // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
                     let p = PathBuf::from(line);
                     if let Some(git_dir) = p.parent().and_then(|d| d.parent()) {
@@ -199,7 +213,7 @@ pub fn build_command(
 /// Gracefully kill a child process.
 ///
 /// On Unix: sends SIGTERM, waits up to 2 seconds, then sends SIGKILL.
-/// On Windows: calls kill() directly (which is always immediate).
+/// On Windows: stops the process tree before killing/reaping the shell.
 /// Always reaps the process with wait() afterward.
 pub async fn graceful_kill(child: &mut tokio::process::Child) {
     #[cfg(unix)]
@@ -210,13 +224,16 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
             terminate_process_group(pid, libc::SIGTERM);
             // Wait up to 2 seconds for the process to exit
             match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                Ok(_) => return,
+                Ok(_) => {}
                 Err(_) => {
                     // Process didn't exit in time, escalate to SIGKILL
                     terminate_process_group(pid, libc::SIGKILL);
                     let _ = child.kill().await;
                 }
             }
+            // A reaped shell does not prove its descendants stopped. Verify
+            // the group and escalate survivors before releasing update admission.
+            let _ = cancel_process_tree(pid).await;
         } else {
             // No PID available (already exited), just try kill
             let _ = child.kill().await;
@@ -225,6 +242,11 @@ pub async fn graceful_kill(child: &mut tokio::process::Child) {
 
     #[cfg(not(unix))]
     {
+        if let Some(pid) = child.id() {
+            // Killing only bash/cmd can leave its native descendants writing
+            // files after the caller releases update admission.
+            let _ = cancel_process_tree(pid).await;
+        }
         let _ = child.kill().await;
     }
 
@@ -247,9 +269,11 @@ fn terminate_process_group(pid: u32, signal: libc::c_int) {
 
 /// Cancel a streaming command and report success only after the OS confirms
 /// that the process tree is no longer running.
+/// An unknown outcome fences updates even when a caller returns or aborts its
+/// output readers. Other work remains available for the rest of the session.
 pub async fn cancel_process_tree(pid: u32) -> bool {
     #[cfg(unix)]
-    {
+    let stopped = {
         terminate_process_group(pid, libc::SIGTERM);
         for _ in 0..10 {
             if !process_group_is_running(pid) {
@@ -264,24 +288,27 @@ pub async fn cancel_process_tree(pid: u32) -> bool {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        return !process_group_is_running(pid);
-    }
+        !process_group_is_running(pid)
+    };
 
     #[cfg(windows)]
-    {
-        return tokio::process::Command::new("taskkill")
+    let stopped = {
+        tokio::process::Command::new(windows_system_executable("taskkill.exe"))
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .await
             .map(|output| output.status.success())
-            .unwrap_or(false);
-    }
+            .unwrap_or(false)
+    };
 
     #[cfg(not(any(unix, windows)))]
-    {
-        false
+    let stopped = false;
+
+    if !stopped {
+        crate::update_safety::UPDATE_GATE.block_for_unconfirmed_command();
     }
+    stopped
 }
 
 #[cfg(unix)]

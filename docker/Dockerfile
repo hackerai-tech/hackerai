@@ -141,6 +141,10 @@ RUN apt-get update && \
     zaproxy \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
+# Repair the system and Python decoders before later tools download content.
+COPY install_brotli.sh /tmp/install_brotli.sh
+RUN sh /tmp/install_brotli.sh && rm /tmp/install_brotli.sh
+
 # Kali can lag emergency trust-store/runtime releases. Verify the official
 # Debian, Node.js and Go release checksums before installing these fixed builds.
 RUN set -eux; \
@@ -266,11 +270,12 @@ RUN set -eux; \
 # ============================================================================
 # Binary Downloads (Platform-aware)
 # ============================================================================
+COPY install_trivy.sh /tmp/install_trivy.sh
+RUN sh /tmp/install_trivy.sh && rm /tmp/install_trivy.sh
+
 RUN set -eux; \
     # Secret scanning tool
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin && \
-    # Vulnerability scanner for containers and filesystems
-    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
     # httpx with proper architecture detection
     arch=$(uname -m); \
     if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \
@@ -329,7 +334,7 @@ ENV AGENT_BROWSER_SCREENSHOT_DIR=/home/user/agent-browser-screenshots
 # plus a five-minute buffer, then reclaim abandoned Chromium processes.
 ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=900000
 
-RUN npm install -g --cache /tmp/npm-cache agent-browser@0.26.0 && \
+RUN npm install -g --cache /tmp/npm-cache agent-browser@0.39.3 && \
     rm -rf /tmp/npm-cache && \
     mkdir -p /home/user/agent-browser-screenshots && \
     chown -R user:user /home/user/agent-browser-screenshots && \
@@ -447,6 +452,9 @@ RUN set -eux; \
 # Final Cleanup & Permissions
 # ============================================================================
 COPY verify_trust.py test_go_trust.py verify_trust_go_test.go /usr/local/lib/hackerai/
+COPY verify_brotli.py /usr/local/lib/hackerai/
+# Check the active decoders again after pip and tool installers can shadow them.
+RUN python3 -B /usr/local/lib/hackerai/verify_brotli.py
 # E2B dereferences certificate symlinks into its boot seed. Remove materialized
 # copies of the distrusted roots, refresh the store and seed, then test TLS.
 RUN python3 -B /usr/local/lib/hackerai/test_go_trust.py && \

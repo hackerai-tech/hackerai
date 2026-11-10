@@ -6,7 +6,12 @@ import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import { startDesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
+import {
+  DesktopFileBridgeError,
+  getDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   isDesktopAckStopSource,
   type DesktopAckStopSource,
@@ -44,6 +49,7 @@ import {
 } from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import { normalizeSandboxPlatform } from "@/lib/ai/tools/utils/platform-utils";
 
 type RefreshTokenResult =
   | { ok: true; centrifugoToken: string }
@@ -265,6 +271,7 @@ interface DesktopBridgeConfig {
       pty: boolean;
       files?: boolean;
       operationChannels?: boolean;
+      commandStdin?: boolean;
     };
   }) => Promise<{
     connectionId: string;
@@ -308,6 +315,9 @@ export class DesktopSandboxBridge {
   private publishQueue: CentrifugoPublishQueue | null = null;
   private operationRouter: OperationChannelRouter<Subscription> | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
+  private nativeFileIpcFailure: DesktopFileFailure | undefined;
+  private nativeAppVersion = "unknown";
+  private nativePlatform = "unknown";
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private heartbeatInFlightGeneration: number | null = null;
@@ -317,6 +327,7 @@ export class DesktopSandboxBridge {
   private relayStarted = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly relayTelemetry: DesktopRelayTelemetry;
+  private readonly ackTelemetry = new DesktopAckTelemetry();
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
     this.relayTelemetry =
@@ -491,6 +502,7 @@ export class DesktopSandboxBridge {
     this.commandOutputStopSource = reason;
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
     this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);
@@ -536,6 +548,7 @@ export class DesktopSandboxBridge {
     this.isStoppingOrStopped = false;
     this.commandOutputStopSource = "command_cleanup";
     this.nativeFileIpcAvailable = null;
+    this.nativeFileIpcFailure = undefined;
     // Older desktop binaries do not expose identity yet. Keep their legacy
     // registration path until the native update is installed.
     const { invoke } = await import("@tauri-apps/api/core");
@@ -558,9 +571,21 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    const osInfo = await this.getOsInfo();
+    const [osInfo, nativeAppVersion] = await Promise.all([
+      this.getOsInfo(),
+      this.getNativeAppVersion(),
+    ]);
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    this.nativeAppVersion = nativeAppVersion;
+    const platform =
+      osInfo?.platform === "win32" ? "windows" : osInfo?.platform;
+    this.nativePlatform = ["darwin", "linux", "windows"].includes(
+      platform ?? "",
+    )
+      ? platform!
+      : "unknown";
     const files = await this.probeFileBridge();
+    const commandStdin = await this.probeCommandStdin();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
@@ -573,6 +598,7 @@ export class DesktopSandboxBridge {
           pty: true,
           files,
           operationChannels: true,
+          ...(commandStdin && { commandStdin: true }),
         },
       });
 
@@ -929,6 +955,48 @@ export class DesktopSandboxBridge {
     return payload.sub;
   }
 
+  private async getNativeAppVersion(): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const version = await Promise.race([
+        invoke<unknown>("plugin:app|version"),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 500);
+        }),
+      ]);
+      // Only the native package version, never the fixed browser user agent or
+      // arbitrary error text. Diagnostics must not delay or prevent recovery.
+      return typeof version === "string" &&
+        /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)
+        ? version
+        : "unknown";
+    } catch {
+      return "unknown";
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async probeCommandStdin(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await Promise.race([
+        invoke<unknown>("get_command_stdin_support").then(
+          (supported) => supported === true,
+        ),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), 500);
+        }),
+      ]);
+    } catch {
+      return false; // Older native apps must never silently discard stdin.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async getOsInfo(): Promise<
     | { platform: string; arch: string; release: string; hostname: string }
     | undefined
@@ -946,12 +1014,11 @@ export class DesktopSandboxBridge {
       if (result.exit_code === 0) {
         const lines = result.stdout.trim().split("\n");
         const [uname, hostname] = [lines[0] || "", lines[1] || "Desktop"];
-        const parts = uname.split(" ");
+        const parts = uname.trim().split(/\s+/);
         return {
-          platform:
-            parts[0]?.toLowerCase() === "darwin"
-              ? "darwin"
-              : parts[0]?.toLowerCase() || "unknown",
+          platform: normalizeSandboxPlatform(
+            parts[0]?.toLowerCase() || "unknown",
+          ),
           release: parts[1] || "unknown",
           arch: parts[2] || "unknown",
           hostname: hostname.trim(),
@@ -1009,7 +1076,8 @@ export class DesktopSandboxBridge {
       Date.now() +
       (command.timeout ?? 30_000) +
       DESKTOP_COMMAND_DELIVERY_GRACE_MS;
-    const onSettled = startDesktopAckTelemetry({
+    let terminalExitCode: number | null = null;
+    const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
       chatId: command.chatId,
@@ -1023,7 +1091,11 @@ export class DesktopSandboxBridge {
         !this.isStoppingOrStopped &&
         this.operationRouter === router &&
         this.connectionId === connectionId,
-      (settlement) => onSettled(settlement, this.commandOutputStopSource),
+      (settlement) =>
+        onSettled(
+          { ...settlement, terminalExitCode },
+          this.commandOutputStopSource,
+        ),
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
@@ -1032,10 +1104,12 @@ export class DesktopSandboxBridge {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
+        if (chunk.type === "exit") terminalExitCode = chunk.exitCode ?? null;
         if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
       };
       try {
         if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
+          terminalExitCode = 130;
           stream.append({ type: "exit", exitCode: 130 });
         } else {
           await invoke("execute_stream_command", {
@@ -1043,6 +1117,10 @@ export class DesktopSandboxBridge {
             command: command.command,
             cwd: command.cwd,
             env: command.env,
+            ...(command.stdin !== undefined && {
+              stdin: command.stdin,
+              stdinEncoding: command.stdinEncoding ?? "utf8",
+            }),
             timeoutMs: command.timeout ?? 30_000,
             onEvent: channel,
           });
@@ -1317,6 +1395,10 @@ export class DesktopSandboxBridge {
             command: command.command,
             cwd: command.cwd,
             env: command.env,
+            ...(command.stdin !== undefined && {
+              stdin: command.stdin,
+              stdinEncoding: command.stdinEncoding ?? "utf8",
+            }),
             timeoutMs: command.timeout ?? 30000,
             onEvent: channel,
           });
@@ -1452,26 +1534,50 @@ export class DesktopSandboxBridge {
     return error instanceof Error ? error.message : String(error);
   }
 
+  private fileReplyPublisher(): (message: SandboxMessage) => Promise<void> {
+    const router = this.operationRouter;
+    const subscription = this.subscription;
+    return (message) => {
+      // Native I/O may finish after stop/re-registration. Never send an old
+      // operation's result on the replacement connection.
+      if (this.operationRouter !== router || this.subscription !== subscription)
+        return Promise.resolve();
+      return this.publishResult(message);
+    };
+  }
+
   private async publishFileError(
     requestId: string,
     error: unknown,
+    reply: (message: SandboxMessage) => Promise<void>,
   ): Promise<void> {
-    await this.publishResult({
+    const fileFailure = getDesktopFileFailure(error);
+    await reply({
       type: "file_error",
       requestId,
       message: this.getErrorMessage(error),
+      ...(fileFailure !== "unknown" ? { fileFailure } : {}),
     });
   }
 
-  private isUnavailableNativeFileCommandError(error: unknown): boolean {
-    const message = this.getErrorMessage(error).toLowerCase();
-    return (
-      message.includes("desktop_file_request") &&
-      (message.includes("not found") ||
-        message.includes("unknown command") ||
-        message.includes("not registered") ||
-        message.includes("not allowed by acl"))
-    );
+  private unavailableNativeFileCommand(
+    error: unknown,
+  ): DesktopFileFailure | undefined {
+    const message = this.getErrorMessage(error);
+    if (
+      /^(?:command )?desktop_file_request not allowed(?: by acl)?\b/i.test(
+        message,
+      )
+    )
+      return "native_ipc_denied";
+    if (
+      /^(?:command )?desktop_file_request (?:not found|not registered)$/i.test(
+        message,
+      ) ||
+      /^unknown command:? ['"]?desktop_file_request['"]?$/i.test(message)
+    )
+      return "native_ipc_unavailable";
+    return undefined;
   }
 
   private async callLegacyLocalFileServer<T>(
@@ -1483,7 +1589,10 @@ export class DesktopSandboxBridge {
       "get_cmd_server_info",
     );
     if (!info.port || !info.token) {
-      throw new Error("Desktop file server is not ready");
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
+        "Desktop file server is not ready. Fully reopen HackerAI Desktop and reconnect.",
+      );
     }
 
     const response = await fetch(`http://127.0.0.1:${info.port}${route}`, {
@@ -1496,7 +1605,8 @@ export class DesktopSandboxBridge {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(
+      throw new DesktopFileBridgeError(
+        "legacy_http_rejected",
         typeof payload?.error === "string"
           ? payload.error
           : `Desktop file server request failed: ${response.status}`,
@@ -1507,6 +1617,18 @@ export class DesktopSandboxBridge {
 
   /** Check file transport availability without creating files or hanging terminal startup. */
   private async probeFileBridge(): Promise<boolean> {
+    // A startup transport hiccup must not pin this connection to files=false.
+    // Retry only this read-only probe, within the original total startup budget.
+    const deadline = Date.now() + DESKTOP_FILE_PROBE_TIMEOUT_MS;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const remainingMs = deadline - Date.now();
+      if (this.isStoppingOrStopped || remainingMs <= 0) return false;
+      if (await this.probeFileBridgeOnce(remainingMs)) return true;
+    }
+    return false;
+  }
+
+  private async probeFileBridgeOnce(timeoutMs: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       // A read-only directory stat checks the transport without creating files
@@ -1520,7 +1642,7 @@ export class DesktopSandboxBridge {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("Desktop file probe timed out")),
-            DESKTOP_FILE_PROBE_TIMEOUT_MS,
+            timeoutMs,
           );
         }),
       ]);
@@ -1529,7 +1651,10 @@ export class DesktopSandboxBridge {
         payload.kind !== "not_file" ||
         typeof payload.path !== "string"
       ) {
-        throw new Error("Invalid desktop file probe response");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Invalid desktop file probe response",
+        );
       }
       return true;
     } catch (error) {
@@ -1544,7 +1669,15 @@ export class DesktopSandboxBridge {
         transport:
           this.nativeFileIpcAvailable === false ? "legacy_http" : "native_ipc",
         reason: permissionDenied ? "permission_denied" : "unavailable",
+        native_failure: this.nativeFileIpcFailure,
+        file_failure: getDesktopFileFailure(error),
+        native_app_version: this.nativeAppVersion,
+        native_platform: this.nativePlatform,
       });
+      // A native ACL rejection cannot recover through relay retries. Do not
+      // register a connected computer that every subsequent Agent will reject,
+      // or bypass the denial through the HTTP/command adapters.
+      if (getDesktopFileFailure(error) === "native_ipc_denied") throw error;
       return permissionDenied;
     } finally {
       if (timer) clearTimeout(timer);
@@ -1569,13 +1702,22 @@ export class DesktopSandboxBridge {
           request: { ...body, type: requestType },
         });
         this.nativeFileIpcAvailable = true;
+        this.nativeFileIpcFailure = undefined;
         return payload;
       } catch (error) {
-        if (!this.isUnavailableNativeFileCommandError(error)) {
+        const unavailable = this.unavailableNativeFileCommand(error);
+        if (!unavailable) {
           if (isFileTransportError(error)) {
             throw this.fileTransportFailure(requestType, "native_ipc");
           }
           throw error;
+        }
+        this.nativeFileIpcFailure = unavailable;
+        if (unavailable === "native_ipc_denied") {
+          throw new DesktopFileBridgeError(
+            unavailable,
+            "Desktop native file access is denied by the app permissions. Update and fully reopen HackerAI Desktop, then reconnect.",
+          );
         }
         this.nativeFileIpcAvailable = false;
         console.warn(
@@ -1584,6 +1726,18 @@ export class DesktopSandboxBridge {
       }
     }
 
+    // Binaries predating IPC may silently ignore allowed_root. Never send a
+    // scoped mutation to a handler whose containment support is unverified.
+    if (
+      (requestType === "file_write" || requestType === "file_append") &&
+      typeof body.allowed_root === "string" &&
+      body.allowed_root.trim()
+    ) {
+      throw new DesktopFileBridgeError(
+        "scoped_write_requires_native",
+        "Project-folder writes require the native file API. Update HackerAI Desktop, fully reopen it and reconnect before retrying. No file write was sent.",
+      );
+    }
     try {
       return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
     } catch (error) {
@@ -1603,9 +1757,13 @@ export class DesktopSandboxBridge {
       connectionId: this.connectionId,
       operation,
       transport,
+      native_failure: this.nativeFileIpcFailure,
     });
-    return new Error(
-      `Desktop file bridge transport failed (${transport}, ${operation}). Reconnect the Desktop app and retry after it is ready. A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+    return new DesktopFileBridgeError(
+      transport === "legacy_http"
+        ? "legacy_http_transport"
+        : "native_ipc_transport",
+      `Desktop file bridge transport failed (${transport}, ${operation}). ${transport === "legacy_http" ? "Update and fully reopen HackerAI Desktop, then reconnect." : "Reconnect the Desktop app and retry after it is ready."}${["file_write", "file_append", "file_remove"].includes(operation) ? " A file change may have completed; verify the file before retrying a mutation." : ""} This is not a file-permission diagnosis.`,
     );
   }
 
@@ -1677,6 +1835,7 @@ export class DesktopSandboxBridge {
   }
 
   private async handleFileStat(message: FileStatMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const payload = await this.callDesktopFileBridge<{
@@ -1690,12 +1849,18 @@ export class DesktopSandboxBridge {
           payload.kind !== "not_file" &&
           payload.kind !== "missing")
       ) {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
       if (payload.kind === "file" && typeof payload.sizeBytes !== "number") {
-        throw new Error("Desktop file bridge returned an invalid stat payload");
+        throw new DesktopFileBridgeError(
+          "invalid_response",
+          "Desktop file bridge returned an invalid stat payload",
+        );
       }
-      await this.publishResult({
+      await reply({
         type: "file_stat_result",
         requestId,
         kind: payload.kind,
@@ -1703,11 +1868,12 @@ export class DesktopSandboxBridge {
         ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRead(message: FileReadMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, range, maxFullBytes, maxResultBytes } = message;
     try {
       const payload = await this.callDesktopFileBridge<unknown>(
@@ -1721,17 +1887,18 @@ export class DesktopSandboxBridge {
           max_result_bytes: maxResultBytes,
         },
       );
-      await this.publishResult({
+      await reply({
         type: "file_read_result",
         requestId,
         ...this.normalizeReadPayload(path, payload, range),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileWrite(message: FileWriteMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_write", "/files/write", {
@@ -1740,13 +1907,14 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileAppend(message: FileAppendMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
       await this.callDesktopFileBridge("file_append", "/files/append", {
@@ -1755,25 +1923,27 @@ export class DesktopSandboxBridge {
         is_base64: Boolean(isBase64),
         allowed_root: allowedRoot,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileRemove(message: FileRemoveMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       await this.callDesktopFileBridge("file_remove", "/files/remove", {
         path,
       });
-      await this.publishResult({ type: "file_ok", requestId });
+      await reply({ type: "file_ok", requestId });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
   private async handleFileList(message: FileListMessage): Promise<void> {
+    const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
       const entries = await this.callDesktopFileBridge<Array<{ name: string }>>(
@@ -1781,13 +1951,13 @@ export class DesktopSandboxBridge {
         "/files/list",
         { path },
       );
-      await this.publishResult({
+      await reply({
         type: "file_list_result",
         requestId,
         entries,
       });
     } catch (error) {
-      await this.publishFileError(requestId, error);
+      await this.publishFileError(requestId, error, reply);
     }
   }
 
@@ -2384,6 +2554,7 @@ export class DesktopSandboxBridge {
     this.commandOutputStopSource = "bridge_stop";
     this.isStoppingOrStopped = true;
     for (const stream of this.acknowledgedOutputs.values()) stream.stop();
+    this.ackTelemetry.dispose();
     this.acknowledgedOutputs.clear();
     this.commandDeliveryDeadlines.clear();
     for (const timer of this.commandDeliveryCleanupTimers) clearTimeout(timer);

@@ -1,20 +1,30 @@
 "use client";
 
+import {
+  userInputQuestionsSchema,
+  type UserInputQuestion,
+} from "@/lib/chat/user-input-questions";
+import { useQuestionAnswers } from "./useQuestionAnswers";
+import { UserInputQuestionPanel } from "./UserInputQuestionPanel";
+
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ComposerSkillsProvider } from "./ComposerSkills";
+import { useNextActions } from "@/app/hooks/useNextActions";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
+import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
   useComposerInput,
+  useComposerGoalMode,
 } from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
 import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
-import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   isTauriEnvironment,
@@ -22,6 +32,7 @@ import {
 } from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
+  getDraftContentById,
   removeDraft,
   removeDraftAttachments,
   upsertDraftAttachments,
@@ -33,12 +44,20 @@ import {
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
+import { GoalSubmissionUnconfirmedError } from "@/lib/chat/goal-submission";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
-import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
+import {
+  WaitingForReplyBanner,
+  WAITING_FOR_REPLY_DESCRIPTION_ID,
+} from "./WaitingForReplyBanner";
+import {
+  AgentReplyConflictError,
+  type ActiveAgentUserWait,
+} from "@/lib/chat/agent-user-wait";
 import type { UploadedFileState } from "@/types/file";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -55,22 +74,37 @@ import {
 import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
+import { GoalTargetIcon } from "@/components/icons/goal-target";
+import { GoalModeButton } from "./GoalModeButton";
+import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
-  onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
+  completedPredictionTurn?: CompletedPredictionTurn | null;
+  interruptedPredictionTurn?: { chatId: string } | null;
+  latestMessageId?: string;
+  latestMessageIsAssistant?: boolean;
+  predictionModeReady?: boolean;
+  goalPanel?: (placement: "attached" | "detached") => React.ReactNode;
+  hasActiveGoalRun?: boolean;
+  pauseGoalOnSend?: boolean;
+  onSubmit: (
+    e: React.FormEvent,
+    inputOverride?: string,
+    structuredReply?: boolean,
+  ) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
   hasMessages?: boolean;
-  isAtBottom?: boolean;
-  onScrollToBottom?: () => void;
   hideStop?: boolean;
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
@@ -81,21 +115,23 @@ interface ChatInputProps {
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
+  pendingUserWait?: ActiveAgentUserWait | null;
+  pendingGoalQuestions?: { generation: number; questions: UserInputQuestion[] };
   offlineProtection?: boolean;
   sendDisabledReason?: string;
   isResolvingInitialState?: boolean;
+  topNotice?: React.ReactNode;
 }
 
-const COMPACT_AGENT_CONTROLS_BREAKPOINT_PX = 720;
-
-const shouldUseCompactAgentControls = (width: number): boolean =>
-  width > 0 && width < COMPACT_AGENT_CONTROLS_BREAKPOINT_PX;
+const COMPOSER_TAP_CLICK_FALLBACK_MS = 500;
+// Prose-only waits use the same isolated draft without displaying a question panel.
+const PLAIN_REPLY_QUESTIONS: UserInputQuestion[] = [
+  { id: "reply", header: "Reply", question: "Your reply", options: [] },
+];
 
 const ChatInputLoadingState = ({
-  showAgentControls,
-}: {
-  showAgentControls: boolean;
-}) => (
+  topNotice,
+}: Pick<ChatInputProps, "topNotice">) => (
   <div
     aria-label="Loading task input"
     aria-live="polite"
@@ -103,7 +139,10 @@ const ChatInputLoadingState = ({
     data-testid="chat-input-loading-state"
     role="status"
   >
-    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+    <div className="mx-auto w-full min-w-0 max-w-full sm:max-w-[768px]">
+      <div className="max-h-[calc(100dvh-11rem)] overflow-y-auto md:bg-background">
+        {topNotice}
+      </div>
       <div
         className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
         data-testid="chat-input-loading-surface"
@@ -111,13 +150,6 @@ const ChatInputLoadingState = ({
         <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
         <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
       </div>
-      {showAgentControls ? (
-        <div
-          aria-hidden="true"
-          className="chat-input-glass-context relative z-0 mx-6 -mt-2 h-10 rounded-b-[18px] border border-t-0 border-black/8 md:hidden dark:border-border/70"
-          data-testid="chat-input-loading-controls"
-        />
-      ) : null}
     </div>
   </div>
 );
@@ -234,13 +266,24 @@ const uploadedFileToDraftAttachment = (
 
 export const ChatInput = (props: ChatInputProps) => {
   const { activeToolApprovalRequest } = useAgentApproval();
+  const { editingQueuedMessageId } = useGlobalState();
   return (
     <RegionalSubscriptionGate
+      fallbackHeader={
+        props.topNotice ? (
+          <div className="mx-auto w-full max-w-[800px] px-4">
+            {props.topNotice}
+          </div>
+        ) : undefined
+      }
       running={
+        !!props.hasActiveGoalRun ||
         props.status === "submitted" ||
         props.status === "streaming" ||
+        !!props.pendingUserWait ||
         !!activeToolApprovalRequest ||
-        !!props.storedApprovalRequest
+        !!props.storedApprovalRequest ||
+        !!editingQueuedMessageId
       }
     >
       <ChatInputContent {...props} />
@@ -249,6 +292,14 @@ export const ChatInput = (props: ChatInputProps) => {
 };
 
 const ChatInputContent = ({
+  completedPredictionTurn,
+  interruptedPredictionTurn,
+  latestMessageId,
+  latestMessageIsAssistant,
+  predictionModeReady = true,
+  goalPanel,
+  hasActiveGoalRun = false,
+  pauseGoalOnSend = false,
   onSubmit,
   onStop,
   onReconnect,
@@ -256,8 +307,6 @@ const ChatInputContent = ({
   status,
   isCentered = false,
   hasMessages = false,
-  isAtBottom = true,
-  onScrollToBottom,
   hideStop = false,
   isNewChat = false,
   clearDraftOnSubmit = true,
@@ -268,18 +317,24 @@ const ChatInputContent = ({
   autoFocus,
   restoreDraftAttachments = true,
   storedApprovalRequest,
+  pendingUserWait,
+  pendingGoalQuestions,
   offlineProtection = true,
   sendDisabledReason,
   isResolvingInitialState = false,
+  topNotice,
 }: ChatInputProps) => {
   const {
     chatMode,
+    chatModeAccessResolved,
     setChatMode,
     uploadedFiles,
+    getUploadedFiles,
     setUploadedFiles,
     isUploadingFiles,
     messageQueue,
     updateQueuedMessage,
+    editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
     queueBehavior,
@@ -301,7 +356,7 @@ const ChatInputContent = ({
   } = useGlobalState();
   const { user } = useAuth();
   const input = useComposerInput();
-  const { setInput } = useComposerActions();
+  const { setInput, getInput } = useComposerActions();
   const isOnline = useOnlineStatus();
   const isOffline = offlineProtection && !isOnline;
   const {
@@ -314,8 +369,10 @@ const ChatInputContent = ({
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
-  const isGenerating = status === "submitted" || status === "streaming";
+  const isGenerating =
+    hasActiveGoalRun || status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const isEmptyNewChat = isNewChat && !hasMessages;
   const todoPanelVisible =
     !sidebarOpen && getTodoPanelViewState(todos, status).hasActiveTodos;
   const approvalRequest = useMemo(
@@ -336,38 +393,154 @@ const ChatInputContent = ({
     [activeToolApprovalRequest, storedApprovalRequest],
   );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const [submissionPending, setSubmissionPending] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
-  const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const isMobile = useIsMobile();
+  const sandboxInactive = !isEmptyNewChat && !composerFocused;
+  const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerPointerDownRef = useRef(false);
+  const composerPointerReleaseTimerRef = useRef<number | undefined>(undefined);
+  const holdComposerFocusForPointer = () => {
+    window.clearTimeout(composerPointerReleaseTimerRef.current);
+    composerPointerDownRef.current = true;
+  };
+
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
-
-  useLayoutEffect(() => {
-    const container = chatInputContainerRef.current;
-    if (!container) return;
-
-    const updateCompactLayout = (width: number) => {
-      const nextCompact = shouldUseCompactAgentControls(width);
-      setCompactAgentControls((current) =>
-        current === nextCompact ? current : nextCompact,
-      );
-    };
-
-    updateCompactLayout(container.getBoundingClientRect().width);
-    if (typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) updateCompactLayout(entry.contentRect.width);
+  const isWaitingForReply =
+    !!user &&
+    (!!pendingUserWait || !!pendingGoalQuestions) &&
+    !showAgentApprovalPrompt;
+  const questionSource =
+    pendingUserWait?.questions ?? pendingGoalQuestions?.questions;
+  const questions = useMemo(() => {
+    const parsed = userInputQuestionsSchema.safeParse(questionSource);
+    return parsed.success ? parsed.data : [];
+  }, [questionSource]);
+  const questionKey =
+    isWaitingForReply && user
+      ? `hackerai-question:${user.id}:${chatId}:${pendingUserWait ? `${pendingUserWait.runId}:${pendingUserWait.toolCallId}` : `goal:${pendingGoalQuestions!.generation}`}`
+      : undefined;
+  const answerQuestions = questions.length ? questions : PLAIN_REPLY_QUESTIONS;
+  const questionAnswers = useQuestionAnswers(
+    questionKey,
+    answerQuestions,
+    pendingUserWait?.status === "submitting",
+  );
+  const hasQuestionPanel = !!questionKey && questions.length > 0;
+  const exposedQuestionPanelsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (
+      !hasQuestionPanel ||
+      !questionKey ||
+      exposedQuestionPanelsRef.current.has(questionKey)
+    )
+      return;
+    if (
+      captureAuthenticatedEvent("agent_input_questions_exposed", {
+        definition_version: 1,
+        source: pendingUserWait ? "wait_for_user" : "goal",
+        question_count: questions.length,
+      })
+    )
+      exposedQuestionPanelsRef.current.add(questionKey);
+  }, [questionKey, pendingUserWait, questions.length, hasQuestionPanel]);
+  const exposedUserWaitsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isWaitingForReply || !pendingUserWait) return;
+    const key = `${pendingUserWait.runId}:${pendingUserWait.toolCallId}`;
+    if (exposedUserWaitsRef.current.has(key)) return;
+    exposedUserWaitsRef.current.add(key);
+    captureAuthenticatedEvent("agent_wait_for_user_exposed", {
+      definition_version: 1,
     });
-    observer.observe(container);
-    return () => observer.disconnect();
+  }, [isWaitingForReply, pendingUserWait]);
+  const hasJoinedComposerPanels =
+    !!user &&
+    !showAgentApprovalPrompt &&
+    (todoPanelVisible || messageQueue.length > 0 || isWaitingForReply);
+  const hasFilePreviews = !!uploadedFiles?.length;
+  const goalPlacement =
+    isMobile === true ||
+    showAgentApprovalPrompt ||
+    hasJoinedComposerPanels ||
+    hasFilePreviews
+      ? "detached"
+      : "attached";
+
+  useEffect(() => {
+    const releasePointer = (delay: number) => {
+      if (!composerPointerDownRef.current) return;
+      window.clearTimeout(composerPointerReleaseTimerRef.current);
+      composerPointerReleaseTimerRef.current = window.setTimeout(() => {
+        composerPointerDownRef.current = false;
+        const activeElement = document.activeElement;
+        const focusInComposer =
+          activeElement instanceof Node &&
+          chatInputContainerRef.current?.contains(activeElement);
+        const agentMenuOpen = document.querySelector(
+          "[data-chat-input-agent-menu]",
+        );
+        if (!focusInComposer && !agentMenuOpen) setComposerFocused(false);
+      }, delay);
+    };
+    // Touch compatibility mouse events can blur the input after pointerup.
+    // Keep the selector interactive until click opens its menu. Release a
+    // canceled gesture immediately, or a gesture with no click after a fallback.
+    const releaseAfterClick = () => releasePointer(0);
+    const releaseWithoutClick = () =>
+      releasePointer(COMPOSER_TAP_CLICK_FALLBACK_MS);
+    document.addEventListener("pointerup", releaseWithoutClick);
+    document.addEventListener("pointercancel", releaseAfterClick);
+    document.addEventListener("click", releaseAfterClick);
+    return () => {
+      document.removeEventListener("pointerup", releaseWithoutClick);
+      document.removeEventListener("pointercancel", releaseAfterClick);
+      document.removeEventListener("click", releaseAfterClick);
+      window.clearTimeout(composerPointerReleaseTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
-    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
+    if (
+      !isGenerating &&
+      !isWaitingForReply &&
+      !activeToolApprovalRequest &&
+      !storedApprovalRequest
+    ) {
       setIsStoppingAgent(false);
     }
-  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
+  }, [
+    activeToolApprovalRequest,
+    isGenerating,
+    isWaitingForReply,
+    storedApprovalRequest,
+  ]);
+
+  useEffect(() => {
+    if (!composerFocused) return;
+    const dismissOutsideComposer = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (chatInputContainerRef.current?.contains(target)) return;
+      if (
+        target instanceof Element &&
+        target.closest("[data-chat-input-agent-menu]")
+      )
+        return;
+      composerPointerDownRef.current = false;
+      setComposerFocused(false);
+    };
+    document.addEventListener("pointerdown", dismissOutsideComposer);
+    document.addEventListener("focusin", dismissOutsideComposer);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutsideComposer);
+      document.removeEventListener("focusin", dismissOutsideComposer);
+    };
+  }, [composerFocused]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -381,13 +554,20 @@ const ChatInputContent = ({
     }
   };
 
-  const draftId =
-    isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
+  const draftId = isEmptyNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
   const isSubmittingAttachmentsRef = useRef(false);
+  const isSubmittingRef = useRef(false);
+  const isMountedRef = useRef(true);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const draftTextFileIds = useMemo(
     () =>
       restoreDraftAttachments
@@ -442,9 +622,9 @@ const ChatInputContent = ({
     [restoreDraftAttachments, uploadedFiles],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
-  });
+  }, [uploadedFiles]);
 
   useEffect(() => {
     if (!draftTextFileContents || draftTextFileContents.length === 0) {
@@ -768,41 +948,368 @@ const ChatInputContent = ({
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
   const [skillsSaving, setSkillsSaving] = useState(false);
+  const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
+  const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
+  const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
+    useState<string | null>(null);
+  useEffect(() => {
+    setGoalEnabled(null);
+    // Entitlements and the saved chat mode hydrate after the first render.
+    // Do not erase a restored goal draft while that state is unresolved.
+    if (!chatModeAccessResolved || isCheckingProPlan || isResolvingInitialState)
+      return;
+    if (chatMode !== "agent" || subscription === "free") {
+      setGoalMode(false);
+      return;
+    }
+    const abort = new AbortController();
+    fetch("/api/agent-goal", { signal: abort.signal, cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!abort.signal.aborted) setGoalEnabled(data?.enabled === true);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setGoalEnabled(false);
+      });
+    return () => abort.abort();
+  }, [
+    chatId,
+    chatMode,
+    chatModeAccessResolved,
+    isCheckingProPlan,
+    isResolvingInitialState,
+    subscription,
+    setGoalMode,
+  ]);
+  const goalSendDisabledReason =
+    goalMode && !goalEnabled
+      ? goalEnabled === false
+        ? "Goal mode is unavailable. Exit goal mode to send a normal message."
+        : "Checking goal availability…"
+      : undefined;
   const effectiveSendDisabledReason =
     (skillsSaving ? "Saving skill selection" : undefined) ??
-    sendDisabledReason ??
-    (user
+    (submissionPending ? "Sending message…" : undefined) ??
+    (uploadedFiles.some((file) => file.removing)
+      ? "Wait for the attachment to finish removing."
+      : undefined) ??
+    (isWaitingForReply
+      ? uploadedFiles.length > 0
+        ? "Remove attachments to reply"
+        : pendingUserWait
+          ? undefined
+          : sendDisabledReason
+      : sendDisabledReason) ??
+    (isWaitingForReply ? undefined : goalSendDisabledReason) ??
+    (status === "ready" && editingQueuedMessageId
+      ? "Finish editing the queued message before sending a new request"
+      : undefined) ??
+    (user && !pendingUserWait
       ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
       : undefined);
 
+  useEffect(() => {
+    // A no-op setter after every edit leaves synchronous work pending during
+    // native input bursts and can trip React's nested-update limit.
+    if (
+      dismissedGoalSuggestionInput !== null &&
+      dismissedGoalSuggestionInput !== input
+    ) {
+      setDismissedGoalSuggestionInput(null);
+    }
+  }, [input, dismissedGoalSuggestionInput]);
+  const goalSuggestionDraft = getGoalSuggestionDraft(input);
+  const showGoalSuggestion =
+    !showAgentApprovalPrompt &&
+    !isWaitingForReply &&
+    chatMode === "agent" &&
+    subscription !== "free" &&
+    goalEnabled &&
+    !goalMode &&
+    dismissedGoalSuggestionInput !== input &&
+    goalSuggestionDraft !== null;
+  const goalExposure = useRef(false);
+  useEffect(() => {
+    if (showGoalSuggestion && !goalExposure.current) {
+      goalExposure.current = true;
+      captureAuthenticatedEvent("agent_goal_exposed", {
+        surface: "goal_slash_command",
+        composer_layout:
+          isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+        goal_ui_version: 2,
+      });
+    }
+  }, [showGoalSuggestion, isMobile]);
+  const captureGoalComposerAction = (
+    action:
+      | "submit_attempt"
+      | "submit_accepted"
+      | "submit_refused"
+      | "submit_error"
+      | "submit_unconfirmed"
+      | "submit_canceled"
+      | "blocked"
+      | "exit",
+    reason?:
+      | "close_button"
+      | "escape"
+      | "offline"
+      | "send_disabled"
+      | "empty"
+      | "uploading"
+      | "not_ready"
+      | "saved_message"
+      | "start_response_lost"
+      | "lookup_unavailable",
+  ) => {
+    captureAuthenticatedEvent("agent_goal_composer_action", {
+      goal_ui_version: 2,
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      action,
+      ...(reason ? { reason } : {}),
+      has_draft: !!input.trim(),
+      has_attachments: uploadedFiles.length > 0,
+      is_new_chat: draftId === "new",
+      ...(chatId ? { chat_id: chatId } : {}),
+    });
+  };
+  const reportUnconfirmedGoalSubmission = (
+    error: GoalSubmissionUnconfirmedError,
+  ) => {
+    captureGoalComposerAction(
+      "submit_unconfirmed",
+      error.messagePersisted === true
+        ? "saved_message"
+        : error.messagePersisted === false
+          ? "start_response_lost"
+          : "lookup_unavailable",
+    );
+    // The linked originating chat makes this safe after navigation or
+    // unmount; a missing handle must never silently invite a duplicate.
+    toast.info(`${error.message} Your draft is kept.`, {
+      action: {
+        label: "Check chat",
+        onClick: () =>
+          error.chatId
+            ? window.location.assign(`/c/${encodeURIComponent(error.chatId)}`)
+            : window.location.reload(),
+      },
+    });
+  };
+  const exitGoalMode = (reason: "close_button" | "escape") => {
+    if (goalMode) captureGoalComposerAction("exit", reason);
+    setGoalMode(false);
+  };
+  const selectGoal = () => {
+    if (goalSuggestionDraft === null) return;
+    captureAuthenticatedEvent("agent_goal_selected", {
+      surface: "goal_slash_command",
+      composer_layout:
+        isMobile === undefined ? "unknown" : isMobile ? "mobile" : "desktop",
+      goal_ui_version: 2,
+    });
+    setGoalMode(true);
+    setInput(goalSuggestionDraft);
+  };
+  const predictionPreference = useQuery(
+    api.userCustomization.getPredictionPreference,
+    user ? {} : "skip",
+  );
+  const nextActions = useNextActions({
+    userId: user?.id,
+    chatId,
+    chatMode,
+    modeReady: predictionModeReady,
+    completedTurn: completedPredictionTurn,
+    interruptedTurn: interruptedPredictionTurn,
+    latestMessageId,
+    latestMessageIsAssistant,
+    status,
+    input,
+    getInput,
+    setInput,
+    hasAttachments: () =>
+      getUploadedFiles().length > 0 ||
+      getDraftAttachmentsById(draftId).length > 0,
+    blocked:
+      predictionPreference?.enabled !== true ||
+      goalMode ||
+      hasActiveGoalRun ||
+      pauseGoalOnSend ||
+      isMobile !== false ||
+      isOffline ||
+      !!effectiveSendDisabledReason ||
+      isResolvingInitialState ||
+      isUploadingFiles ||
+      uploadedFiles.length > 0 ||
+      !!approvalRequest ||
+      isWaitingForReply ||
+      !!editingQueuedMessageId ||
+      messageQueue.length > 0,
+  });
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isOffline || effectiveSendDisabledReason) return;
+    if (isSubmittingRef.current) return;
+    if (questionKey) {
+      // A persisted "submitting" wait is a reply claim, not an in-flight HTTP
+      // request. Identical retries recover delivery; the server fences changes.
+      if (
+        !questionAnswers.ready ||
+        !questionAnswers.canAdvance ||
+        isOffline ||
+        effectiveSendDisabledReason ||
+        uploadedFiles.length ||
+        submissionPending ||
+        isStoppingAgent
+      )
+        return;
+      if (questionAnswers.index < answerQuestions.length - 1) {
+        questionAnswers.go(questionAnswers.index + 1);
+        return;
+      }
+      if (!questionAnswers.text) {
+        toast.error("Could not send your answers", {
+          id: `question-answer-limit:${questionKey}`,
+          description:
+            "Answer every question and shorten long answers so the combined reply fits within 20,000 characters. Your choices are saved.",
+        });
+        return;
+      }
+      isSubmittingRef.current = true;
+      setSubmissionPending(true);
+      try {
+        questionAnswers.markSubmitted();
+        const accepted = await onSubmit(e, questionAnswers.text, true);
+        if (accepted !== false) questionAnswers.clear();
+      } catch (error) {
+        if (error instanceof AgentReplyConflictError) {
+          questionAnswers.releaseSubmission();
+        } else if (error instanceof GoalSubmissionUnconfirmedError) {
+          reportUnconfirmedGoalSubmission(error);
+        } else if (!(error instanceof Error && error.name === "AbortError")) {
+          toast.error(
+            "Could not send your answer. Your choices are saved; try again.",
+          );
+        }
+      } finally {
+        isSubmittingRef.current = false;
+        if (isMountedRef.current) setSubmissionPending(false);
+      }
+      return;
+    }
+    const isGoalSubmission = goalMode && !isWaitingForReply;
+    if (showGoalSuggestion) {
+      selectGoal();
+      return;
+    }
+    if (
+      isOffline ||
+      effectiveSendDisabledReason ||
+      (isGoalSubmission && !input.trim())
+    ) {
+      if (isGoalSubmission)
+        captureGoalComposerAction(
+          "blocked",
+          isOffline ? "offline" : !input.trim() ? "empty" : "send_disabled",
+        );
+      return;
+    }
 
     const canSubmit =
-      (status === "ready" || status === "streaming") &&
+      (isWaitingForReply ||
+        status === "ready" ||
+        status === "submitted" ||
+        status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
-      isSubmittingAttachmentsRef.current =
-        clearDraftOnSubmit && uploadedFiles.length > 0;
-      const accepted = await onSubmit(e);
-      if (accepted === false) {
-        isSubmittingAttachmentsRef.current = false;
-        return;
-      }
-      if (clearDraftOnSubmit) {
-        uploadedFilesRef.current = [];
-        removeDraft(draftId);
-        if (draftId === "new" && chatId) {
-          removeDraft(chatId);
-        }
-        if (draftId !== "new") {
+      if (isGoalSubmission) captureGoalComposerAction("submit_attempt");
+
+      isSubmittingRef.current = true;
+      const finishPredictionSubmission = nextActions.prepareSubmission();
+      setSubmissionPending(true);
+      const submittedInput = getInput();
+      const submittedFiles = getUploadedFiles();
+      const submittedDraftAttachments = JSON.stringify(
+        getDraftAttachmentsById(draftId),
+      );
+      try {
+        isSubmittingAttachmentsRef.current =
+          clearDraftOnSubmit && uploadedFiles.length > 0;
+        const accepted = await onSubmit(
+          e,
+          isGoalSubmission ? `/goal start ${input}` : undefined,
+        );
+        if (isGoalSubmission)
+          captureGoalComposerAction(
+            accepted === false ? "submit_refused" : "submit_accepted",
+          );
+        finishPredictionSubmission(accepted !== false);
+        if (accepted !== false && isGoalSubmission) setGoalMode(false);
+        const unchanged =
+          getInput() === submittedInput &&
+          (getUploadedFiles() === submittedFiles ||
+            (getUploadedFiles().length === 0 && submittedFiles.length === 0));
+        // The chat handler can already have cleared the accepted submission.
+        const alreadyCleared =
+          getInput() === "" && getUploadedFiles().length === 0;
+        const sameDraft =
+          prevDraftIdRef.current === draftId ||
+          (draftId === "new" && prevDraftIdRef.current === chatId);
+        if (
+          accepted !== false &&
+          (!sameDraft || !isMountedRef.current) &&
+          clearDraftOnSubmit &&
+          getDraftContentById(draftId) === submittedInput &&
+          JSON.stringify(getDraftAttachmentsById(draftId)) ===
+            submittedDraftAttachments
+        )
+          removeDraft(draftId);
+        if (!isMountedRef.current) return;
+        if (
+          accepted === false ||
+          !sameDraft ||
+          (!unchanged && !alreadyCleared)
+        ) {
           isSubmittingAttachmentsRef.current = false;
+          return;
         }
-        setTimeout(() => setInput(""), 0);
+        if (clearDraftOnSubmit) {
+          uploadedFilesRef.current = [];
+          removeDraft(draftId);
+          if (draftId === "new" && chatId) {
+            removeDraft(chatId);
+          }
+          if (draftId !== "new") {
+            isSubmittingAttachmentsRef.current = false;
+          }
+          setInput("");
+        }
+      } catch (error) {
+        finishPredictionSubmission(false);
+        isSubmittingAttachmentsRef.current = false;
+        if (error instanceof GoalSubmissionUnconfirmedError) {
+          reportUnconfirmedGoalSubmission(error);
+          return;
+        }
+        if (error instanceof Error && error.name === "AbortError") {
+          if (goalMode) captureGoalComposerAction("submit_canceled");
+          return;
+        }
+        if (goalMode) captureGoalComposerAction("submit_error");
+        console.error("Failed to submit message:", error);
+      } finally {
+        isSubmittingRef.current = false;
+        if (isMountedRef.current) setSubmissionPending(false);
       }
+    } else if (isGoalSubmission) {
+      captureGoalComposerAction(
+        "blocked",
+        isUploadingFiles ? "uploading" : !input.trim() ? "empty" : "not_ready",
+      );
     }
   };
 
@@ -846,106 +1353,192 @@ const ChatInputContent = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState showAgentControls={!!user && isAgent} />;
+    return <ChatInputLoadingState topNotice={topNotice} />;
   }
 
   return (
-    <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
+    <div
+      className={`relative flex max-h-[calc(100dvh-4rem)] min-h-0 min-w-0 flex-col px-4 ${isCentered ? "" : "pb-3"}`}
+    >
       <div
         ref={chatInputContainerRef}
-        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-1 flex-col sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
-        {isOffline && (
-          <div
-            role="status"
-            aria-live="polite"
-            data-testid="offline-status"
-            className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
-          >
-            <div className="flex min-w-0 flex-1 items-start gap-2">
-              <WifiOff
-                aria-hidden="true"
-                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
-              />
-              <p>
-                You&apos;re offline. Keep typing—this draft will stay on this
-                device.
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="w-full shrink-0 sm:w-auto"
-              disabled={isReconnecting}
-              onClick={() => void handleOfflineReconnect()}
+        {/* Panels keep their content height and scroll as a stack instead of
+            shrinking beneath the next panel. Reserve the input or approval card. */}
+        <div
+          className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+        >
+          {topNotice}
+          {isOffline && (
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="offline-status"
+              className="computer-reconnection-warning mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
             >
-              {isReconnecting ? "Reconnecting..." : "Reconnect"}
-            </Button>
-          </div>
-        )}
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <WifiOff
+                  aria-hidden="true"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+                />
+                <p>
+                  You&apos;re offline. Keep typing—this draft will stay on this
+                  device.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="w-full shrink-0 sm:w-auto"
+                disabled={isReconnecting}
+                onClick={() => void handleOfflineReconnect()}
+              >
+                {isReconnecting ? "Reconnecting..." : "Reconnect"}
+              </Button>
+            </div>
+          )}
 
-        {user && selectedComputerUnavailable && !computerConnectionPending && (
-          <DisconnectedComputerNotice
-            isNewChat={isNewChat}
-            sandboxPreference={sandboxPreference}
-            onSelect={setSandboxPreference}
-            reconnectInstructions={
-              isDesktopPreference(sandboxPreference) && !selectedNativeDesktop
-                ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
-                : undefined
-            }
-            reconnecting={
-              selectedNativeDesktop && desktopBridgeStatus === "connecting"
-            }
-            onReconnect={() => {
-              if (selectedNativeDesktop) retryDesktopBridge();
-              else {
-                requestRemoteConnectionSelection(sandboxPreference);
-                openSettingsDialog("Remote Control");
-              }
-            }}
-          />
-        )}
-
-        {user && rateLimitWarning && onDismissRateLimitWarning && (
-          <RateLimitWarning
-            data={rateLimitWarning}
-            onDismiss={onDismissRateLimitWarning}
-            compact={todoPanelVisible}
-          />
-        )}
-
-        {user && (
-          <div className="flex flex-col [&>*+*]:rounded-t-none">
-            <TodoPanel status={status} />
-
-            {messageQueue.length > 0 && (
-              <QueuedMessagesPanel
-                messages={messageQueue}
-                onSendNow={onSendNow}
-                onEdit={updateQueuedMessage}
-                onEditingMessageChange={setEditingQueuedMessageId}
-                onDelete={removeQueuedMessage}
-                isStreaming={status === "streaming"}
-                queueBehavior={queueBehavior}
-                onQueueBehaviorChange={setQueueBehavior}
+          {user &&
+            selectedComputerUnavailable &&
+            !computerConnectionPending && (
+              <DisconnectedComputerNotice
+                isNewChat={isNewChat}
+                sandboxPreference={sandboxPreference}
+                onSelect={setSandboxPreference}
+                reconnectInstructions={
+                  isDesktopPreference(sandboxPreference) &&
+                  !selectedNativeDesktop
+                    ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
+                    : undefined
+                }
+                reconnecting={
+                  selectedNativeDesktop && desktopBridgeStatus === "connecting"
+                }
+                onReconnect={() => {
+                  if (selectedNativeDesktop) retryDesktopBridge();
+                  else {
+                    requestRemoteConnectionSelection(sandboxPreference);
+                    openSettingsDialog("Remote Control");
+                  }
+                }}
               />
             )}
-          </div>
-        )}
 
-        {uploadedFiles && uploadedFiles.length > 0 && (
-          <FileUploadPreview
-            uploadedFiles={uploadedFiles}
-            onRemoveFile={handleRemoveFile}
-            onRetryFile={handleRetryFile}
-            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
-            onShowGeneratedTextInField={handleShowGeneratedTextInField}
-            generatedTextAttachmentsAvailable={isAgent}
-          />
+          {user && rateLimitWarning && onDismissRateLimitWarning && (
+            <RateLimitWarning
+              data={rateLimitWarning}
+              onDismiss={onDismissRateLimitWarning}
+              compact={todoPanelVisible}
+            />
+          )}
+
+          {/* Hidden selectors take no space; the bottom-anchored composer stays
+              in place while the panels above it use the available height. */}
+          {user &&
+            isAgent &&
+            !showAgentApprovalPrompt &&
+            !isWaitingForReply && (
+              <div
+                className={`relative z-0 mb-1 min-w-0 shrink-0 touch-manipulation items-center justify-end px-2 md:hidden ${sandboxInactive ? "hidden" : "flex"}`}
+                data-testid="chat-input-agent-context"
+                aria-hidden={mobileSandboxHidden || undefined}
+                inert={mobileSandboxHidden || undefined}
+                onPointerDownCapture={holdComposerFocusForPointer}
+              >
+                <div
+                  className="min-w-0 max-w-full"
+                  data-testid="chat-input-mobile-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    compact
+                    size="sm"
+                    menuAlign="end"
+                    className="h-8 rounded-full border bg-background/95 shadow-sm backdrop-blur-md"
+                  />
+                </div>
+              </div>
+            )}
+
+          {user && (
+            <div
+              className={`flex flex-col [&>*+*]:rounded-t-none ${hasJoinedComposerPanels && !isWaitingForReply ? "[&>*:last-child]:pb-[19px] md:[&>*:last-child]:pb-0" : ""} ${hasJoinedComposerPanels && !isWaitingForReply && hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
+            >
+              <TodoPanel status={status} />
+
+              {messageQueue.length > 0 && !isWaitingForReply && (
+                <QueuedMessagesPanel
+                  messages={messageQueue}
+                  onSendNow={onSendNow}
+                  onEdit={updateQueuedMessage}
+                  onEditingMessageChange={setEditingQueuedMessageId}
+                  onDelete={removeQueuedMessage}
+                  isStreaming={status === "streaming"}
+                  queueBehavior={queueBehavior}
+                  onQueueBehaviorChange={setQueueBehavior}
+                />
+              )}
+
+              {isWaitingForReply && !hasQuestionPanel && (
+                <WaitingForReplyBanner
+                  submitting={pendingUserWait?.status === "submitting"}
+                  stopping={isStoppingAgent}
+                  hasAttachments={uploadedFiles.length > 0}
+                  hideStop={hideStop || !pendingUserWait}
+                  onStop={() => void handleAgentStop()}
+                />
+              )}
+            </div>
+          )}
+
+          <span className="sr-only" aria-live="polite" aria-atomic="true">
+            {isWaitingForReply
+              ? pendingUserWait?.status === "submitting"
+                ? "Sending your reply"
+                : "Agent paused. Waiting for your reply"
+              : ""}
+          </span>
+
+          {!showAgentApprovalPrompt &&
+            uploadedFiles &&
+            uploadedFiles.length > 0 && (
+              <div className="order-2 shrink-0">
+                <FileUploadPreview
+                  uploadedFiles={uploadedFiles}
+                  onRemoveFile={handleRemoveFile}
+                  onRetryFile={handleRetryFile}
+                  onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+                  onShowGeneratedTextInField={handleShowGeneratedTextInField}
+                  generatedTextAttachmentsAvailable={isAgent}
+                />
+              </div>
+            )}
+        </div>
+
+        {showGoalSuggestion && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={selectGoal}
+            className="order-1 mb-2 flex min-h-10 w-full min-w-0 items-center gap-3 rounded-2xl border bg-muted px-3 py-1.5 text-left hover:bg-accent"
+          >
+            <GoalTargetIcon className="size-4 shrink-0" />
+            <span className="shrink-0">Goal</span>
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
+              Set a goal to keep pursuing
+            </span>
+          </button>
         )}
+        <div
+          className={`min-w-0 shrink-0 ${goalPlacement === "detached" ? "order-first" : "order-1"}`}
+          data-testid="chat-input-goal-slot"
+        >
+          {goalPanel?.(goalPlacement)}
+        </div>
 
         <input
           ref={fileInputRef}
@@ -956,87 +1549,231 @@ const ChatInputContent = ({
           onChange={handleFileUploadEvent}
         />
 
-        {showAgentApprovalPrompt ? (
+        {showAgentApprovalPrompt && (
           <AgentApprovalPrompt
             request={approvalRequest}
             hasConnectionError={status === "error"}
             onRetryConnection={onReconnect}
             onStop={() => void handleAgentStop()}
           />
-        ) : (
-          <ComposerSkillsProvider
-            chatId={chatId}
-            disabled={!user || isOffline || isGenerating}
-            onSavingChange={setSkillsSaving}
+        )}
+        <ComposerSkillsProvider
+          chatId={chatId}
+          disabled={!user || isOffline || isGenerating || isWaitingForReply}
+          onSavingChange={setSkillsSaving}
+        >
+          <div
+            hidden={showAgentApprovalPrompt}
+            className="order-2 flex min-h-0 flex-col"
           >
+            {user && hasQuestionPanel && questionAnswers.question && (
+              <UserInputQuestionPanel
+                key={`${questionKey}:${questionAnswers.question.id}`}
+                question={questionAnswers.question}
+                answer={questionAnswers.answer}
+                index={questionAnswers.index}
+                total={questions.length}
+                disabled={
+                  !questionAnswers.ready ||
+                  submissionPending ||
+                  isStoppingAgent ||
+                  isOffline ||
+                  !!effectiveSendDisabledReason
+                }
+                answersLocked={questionAnswers.locked}
+                stopping={isStoppingAgent}
+                onSelect={questionAnswers.select}
+                onStop={
+                  pendingUserWait && !hideStop
+                    ? () => void handleAgentStop()
+                    : undefined
+                }
+              />
+            )}
             <div
-              className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+              className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
               data-testid="chat-input-surface"
+              data-panels-joined={hasJoinedComposerPanels || undefined}
+              onPointerDownCapture={holdComposerFocusForPointer}
+              onClick={(event) => {
+                // Reveal controls only after focus, not during touch start. Focus
+                // padding taps inside the click gesture so mobile opens the keyboard.
+                const target = event.target;
+                if (
+                  !(target instanceof Element) ||
+                  !event.currentTarget.contains(target) ||
+                  target.closest(
+                    "button, a, input, textarea, select, label, [contenteditable], [role='button'], [role='menuitem'], [role='option'], [role='combobox']",
+                  )
+                )
+                  return;
+                const textarea = composerTextareaRef.current;
+                if (textarea && textarea !== document.activeElement) {
+                  textarea.focus({ preventScroll: true });
+                }
+              }}
             >
               <ChatInputTextarea
+                answerInput={
+                  questionKey
+                    ? {
+                        value: questionAnswers.answer.customAnswer,
+                        onChange: questionAnswers.setCustomAnswer,
+                      }
+                    : undefined
+                }
+                disabled={
+                  !!questionKey &&
+                  (!questionAnswers.ready ||
+                    questionAnswers.locked ||
+                    questionAnswers.question?.allowCustomAnswer === false ||
+                    submissionPending)
+                }
+                prediction={nextActions.batch?.suggestions[0]}
+                onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
+                onPredictionExposed={nextActions.exposed}
+                onPredictionTyping={nextActions.recordTyping}
+                composerFocused={composerFocused}
+                onDismissPrediction={nextActions.dismiss}
+                composerRef={composerTextareaRef}
                 draftId={draftId}
                 chatMode={chatMode}
                 onEnterSubmit={handleSubmit}
                 minRows={isCentered ? 3 : 1}
-                placeholder={placeholder}
+                placeholder={
+                  hasQuestionPanel
+                    ? questionAnswers.question?.allowCustomAnswer === false
+                      ? "Choose an option above"
+                      : questionAnswers.question?.options.length
+                        ? "Choose an option or type your answer…"
+                        : "Type your answer…"
+                    : isWaitingForReply
+                      ? "Type your answer…"
+                      : goalMode
+                        ? "Describe your goal, define measurable outcomes for best results"
+                        : placeholder
+                }
+                describedBy={
+                  isWaitingForReply && !hasQuestionPanel
+                    ? WAITING_FOR_REPLY_DESCRIPTION_ID
+                    : undefined
+                }
+                isReplyingToAgent={isWaitingForReply}
+                onCommandKeyDown={(e) => {
+                  if (showGoalSuggestion && e.key === "Tab") {
+                    e.preventDefault();
+                    selectGoal();
+                  }
+                  if (e.key === "Escape") {
+                    // Dismiss composer UI before the global Stop shortcut.
+                    if (goalMode || showGoalSuggestion) e.preventDefault();
+                    exitGoalMode("escape");
+                    setDismissedGoalSuggestionInput(input);
+                  }
+                }}
                 autoFocus={autoFocus}
+                onFocus={() => setComposerFocused(true)}
+                onBlur={(event) => {
+                  if (composerPointerDownRef.current) return;
+                  const next = event.relatedTarget;
+                  if (
+                    next instanceof Node &&
+                    (chatInputContainerRef.current?.contains(next) ||
+                      (next instanceof Element &&
+                        next.closest("[data-chat-input-agent-menu]")))
+                  )
+                    return;
+                  setComposerFocused(false);
+                }}
               />
               <ChatInputToolbar
-                chatId={chatId}
-                compactAgentControls={compactAgentControls}
+                replyActionLabel={
+                  isWaitingForReply
+                    ? questionAnswers.index < answerQuestions.length - 1
+                      ? "Next"
+                      : answerQuestions.length > 1
+                        ? "Submit answers"
+                        : "Submit answer"
+                    : undefined
+                }
+                replyBack={
+                  isWaitingForReply && questionAnswers.index > 0
+                    ? {
+                        onClick: () =>
+                          questionAnswers.go(questionAnswers.index - 1),
+                        disabled: submissionPending || isStoppingAgent,
+                      }
+                    : undefined
+                }
+                goalMenu={
+                  !isWaitingForReply &&
+                  isMobile !== undefined &&
+                  user &&
+                  chatMode === "agent" &&
+                  subscription !== "free" &&
+                  goalEnabled
+                    ? {
+                        active: goalMode,
+                        layout: isMobile === true ? "mobile" : "desktop",
+                        hasDraft: !!input.trim(),
+                        hasAttachments: uploadedFiles.length > 0,
+                        onSelect: () => {
+                          setGoalMode(true);
+                        },
+                        onFocusComposer: () =>
+                          composerTextareaRef.current?.focus({
+                            preventScroll: true,
+                          }),
+                      }
+                    : undefined
+                }
+                goalControl={
+                  goalMode && !isWaitingForReply ? (
+                    <GoalModeButton
+                      compact={isMobile === true}
+                      onClear={() => exitGoalMode("close_button")}
+                    />
+                  ) : undefined
+                }
+                allowSendWhileGenerating={hasActiveGoalRun}
+                pausesGoal={
+                  pauseGoalOnSend &&
+                  !isWaitingForReply &&
+                  !goalMode &&
+                  !/^\/goal(?:\s|$)/i.test(input.trim())
+                }
                 onAttachClick={handleAttachClick}
-                isGenerating={isGenerating}
-                hideStop={hideStop}
+                isGenerating={isGenerating && !isWaitingForReply}
+                isReplyingToAgent={isWaitingForReply}
+                attachmentsDisabled={isWaitingForReply}
+                hideStop={hideStop || (isWaitingForReply && !pendingUserWait)}
                 onStop={() => void handleAgentStop()}
                 onSubmit={handleSubmit}
                 status={status}
                 isUploadingFiles={isUploadingFiles}
-                input={input}
+                input={
+                  questionKey
+                    ? questionAnswers.canAdvance
+                      ? "answer"
+                      : ""
+                    : input
+                }
                 uploadedFiles={uploadedFiles}
                 chatMode={user ? chatMode : "ask"}
                 isOnline={!isOffline}
-                sendDisabledReason={effectiveSendDisabledReason}
+                sendDisabledReason={
+                  questionKey && (submissionPending || isStoppingAgent)
+                    ? isStoppingAgent
+                      ? "Stopping…"
+                      : "Sending your answer…"
+                    : goalMode && !isWaitingForReply && !input.trim()
+                      ? "Describe your goal before sending."
+                      : effectiveSendDisabledReason
+                }
               />
             </div>
-          </ComposerSkillsProvider>
-        )}
-
-        {/* Compact Agent controls below the input. The composer switches to
-            this strip whenever its own width is constrained, even on desktop. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
-          <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
-            data-compact={compactAgentControls ? "true" : "false"}
-            data-testid="chat-input-agent-context"
-          >
-            <div
-              className="min-w-0 flex-1"
-              data-testid="chat-input-mobile-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                compact
-              />
-            </div>
-            <div
-              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
-              data-testid="chat-input-mobile-permission"
-            >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
-            </div>
           </div>
-        )}
-
-        {onScrollToBottom && (
-          <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
-            <ScrollToBottomButton
-              onClick={onScrollToBottom}
-              hasMessages={hasMessages}
-              isAtBottom={isAtBottom}
-            />
-          </div>
-        )}
+        </ComposerSkillsProvider>
       </div>
     </div>
   );

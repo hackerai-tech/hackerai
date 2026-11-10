@@ -83,6 +83,51 @@ describe("MessageErrorState", () => {
     jest.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    "renders a region conflict (serialized=%s) as an explicit choice without replaying the prompt",
+    async (serialized) => {
+      const originalFetch = global.fetch;
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          status: "selection_required",
+          token: "a".repeat(64),
+          choices: [
+            { id: "us-existing", region: "us-east-1", lastStartedAt: null },
+            { id: "eu-existing", region: "eu-central-1", lastStartedAt: null },
+          ],
+        }),
+      }) as typeof fetch;
+      const onRetry = jest.fn();
+      try {
+        const error = new ChatSDKError(
+          "bad_request:sandbox",
+          "Choose your workspace",
+          { cloud_workspace_region_selection_required: true },
+        );
+        render(
+          <MessageErrorState
+            error={
+              serialized
+                ? new Error(serializeChatSDKErrorForStream(error))
+                : error
+            }
+            onRetry={onRetry}
+            onReconnect={jest.fn()}
+          />,
+        );
+        expect(
+          await screen.findByRole("radio", { name: /Europe workspace/ }),
+        ).toBeEnabled();
+        expect(
+          screen.queryByRole("button", { name: "Retry" }),
+        ).not.toBeInTheDocument();
+        expect(onRetry).not.toHaveBeenCalled();
+      } finally {
+        global.fetch = originalFetch;
+      }
+    },
+  );
   it("does not offer same-payload retry for provider content blocks", () => {
     const error = new ChatSDKError(
       "forbidden:stream",
@@ -186,6 +231,32 @@ describe("MessageErrorState", () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+  });
+
+  it("explains a spending-cap block without showing the subscription reset countdown", () => {
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "Server message with the subscription renewal date.",
+      {
+        capReason: "extra_usage_cap",
+        resetTimestamp: Date.now() + 86_400_000,
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    expect(
+      screen.getByText(/buying credits won't raise the limit/i),
+    ).toBeVisible();
+    expect(screen.getByText(/start of next month \(UTC\)/i)).toBeVisible();
+    expect(screen.queryByText(/Server message/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Resets in/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Increase Limit" }));
+    expect(openSettingsDialog).toHaveBeenCalledWith("Extra Usage");
   });
 
   it("shows a focused Add Credits plus free Ask CTA when allowance is available", async () => {

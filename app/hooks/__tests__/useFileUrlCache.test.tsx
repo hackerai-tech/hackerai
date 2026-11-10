@@ -34,6 +34,68 @@ function images(count: number): ChatMessage[] {
   ] as unknown as ChatMessage[];
 }
 
+describe("signed URL cache lifetime", () => {
+  const receivedAt = Date.parse("2026-10-29T12:00:00Z");
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockAuth = { isAuthenticated: true, isLoading: false };
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    { query: "X-Amz-Expires=2400", minutes: 39 },
+    { query: "X-Amz-Expires=3600", minutes: 50 },
+    { query: "", minutes: 50 },
+    { query: "X-Amz-Date=20261029T100000Z&X-Amz-Expires=2400", minutes: 39 },
+  ])("expires at minute $minutes for $query", ({ query, minutes }) => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(receivedAt);
+    const url = `https://files.example/object?${query}`;
+    const { result } = renderHook(() => useFileUrlCache([]));
+    result.current.setCachedUrl("file-0", url);
+    now.mockReturnValue(receivedAt + minutes * 60_000 - 1);
+    expect(result.current.getCachedUrl("file-0")).toBe(url);
+    now.mockReturnValue(receivedAt + minutes * 60_000);
+    expect(result.current.getCachedUrl("file-0")).toBeNull();
+  });
+
+  it("also expires prefetched image URLs and permits refetching them", async () => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(receivedAt);
+    const url = "https://files.example/image?X-Amz-Expires=2400";
+    mockFetch.mockResolvedValue({ "file-0": url });
+    const { result, rerender } = renderHook(
+      ({ messages }) => useFileUrlCache(messages),
+      { initialProps: { messages: images(1) } },
+    );
+    await waitFor(() =>
+      expect(result.current.getCachedUrl("file-0")).toBe(url),
+    );
+    now.mockReturnValue(receivedAt + 39 * 60_000);
+    expect(result.current.getCachedUrl("file-0")).toBeNull();
+    mockFetch.mockResolvedValue({
+      "file-0": "https://files.example/refreshed",
+    });
+    rerender({ messages: images(1) });
+    await waitFor(() =>
+      expect(result.current.getCachedUrl("file-0")).toBe(
+        "https://files.example/refreshed",
+      ),
+    );
+  });
+
+  it.each(["abc", "0", "-1", "2400oops", "2400&X-Amz-Expires=3600", "60"])(
+    "does not retain unusable or too-short signed lifetimes: %s",
+    (lifetime) => {
+      const { result } = renderHook(() => useFileUrlCache([]));
+      result.current.setCachedUrl(
+        "file-0",
+        `https://files.example/object?X-Amz-Expires=${lifetime}`,
+      );
+      expect(result.current.getCachedUrl("file-0")).toBeNull();
+    },
+  );
+});
+
 describe("image URL prefetching", () => {
   beforeEach(() => {
     mockFetch.mockReset();

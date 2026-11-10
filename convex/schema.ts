@@ -1,4 +1,13 @@
+import { userInputQuestionsValidator } from "./lib/userInputQuestions";
+import { nextActionsStateValidator } from "./lib/nextActionsState";
+import {
+  settlementIdentityFields,
+  walletActionResult,
+  walletDebitResult,
+} from "./lib/settlementReceiptValidators";
+import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
+import { captchaKind, captchaAttemptState } from "./captchaValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -265,6 +274,8 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
+  agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
+
   // Deprecated scope data stays schema-compatible; runtime no longer reads or writes it.
   // Normal chat/account deletion still cleans these records. No bulk migration.
   engagement_scopes: defineTable({
@@ -295,6 +306,7 @@ export default defineSchema({
   }).index("by_chat_source", ["chat_id", "source_id"]),
   chats: defineTable({
     user_skill_ids: v.optional(v.array(v.id("user_skills"))),
+    next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
     engagement_scope_expected: v.optional(v.boolean()),
     id: v.string(),
@@ -310,6 +322,17 @@ export default defineSchema({
     active_agent_approval_pending: v.optional(v.boolean()),
     active_agent_approval_request: v.optional(
       activeAgentApprovalRequestValidator,
+    ),
+    active_agent_user_wait: v.optional(
+      v.object({
+        questions: v.optional(userInputQuestionsValidator),
+        runId: v.string(),
+        toolCallId: v.string(),
+        tokenId: v.string(),
+        status: v.union(v.literal("waiting"), v.literal("submitting")),
+        replyId: v.optional(v.string()),
+        replyHash: v.optional(v.string()),
+      }),
     ),
     agent_approval_grants: v.optional(
       v.array(agentApprovalTargetGrantValidator),
@@ -371,6 +394,28 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["user_id"],
     }),
+
+  // Provider expense audit, not a customer wallet ledger. No URLs, widget keys,
+  // cookies, API credentials or solutions are retained here.
+  captcha_attempts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    run_id: v.string(),
+    kind: captchaKind,
+    state: captchaAttemptState,
+    task_id: v.optional(v.number()),
+    cost_dollars: v.optional(v.number()),
+    created_at: v.number(),
+    updated_at: v.number(),
+    reconciliation_polls: v.number(),
+  })
+    .index("by_run_id", ["run_id"])
+    .index("by_user_id", ["user_id"]),
+  captcha_daily_limits: defineTable({
+    bucket: v.string(),
+    day: v.string(),
+    attempts: v.number(),
+  }).index("by_bucket_and_day", ["bucket", "day"]),
 
   // One private cloud Chromium owner per Agent tool factory. Browser paths and
   // sandbox identifiers are returned only to service-authenticated functions.
@@ -465,6 +510,12 @@ export default defineSchema({
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
     generation_started_at: v.optional(v.number()),
+    goal: v.optional(
+      v.object({
+        sent: v.optional(v.boolean()),
+        achievedElapsedMs: v.optional(v.number()),
+      }),
+    ),
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     trigger_run_id: v.optional(v.string()),
@@ -695,7 +746,22 @@ export default defineSchema({
     feedback_details: v.optional(v.string()),
   }),
 
+  // A writing owner has no TTL: Stripe may still apply an unknown-outcome write.
+  billing_operations: defineTable({
+    stripe_customer_id: v.string(),
+    token: v.string(),
+    operation: v.union(v.literal("cancel"), v.literal("keep")),
+    writing: v.boolean(),
+    created_at: v.number(),
+    expires_at: v.number(),
+  }).index("by_stripe_customer_id", ["stripe_customer_id"]),
+
   cancellation_reasons: defineTable({
+    operation: v.optional(
+      v.union(v.literal("cancel"), v.literal("pause"), v.literal("downgrade")),
+    ),
+    reversed_at: v.optional(v.number()),
+    superseded_at: v.optional(v.number()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
     stripe_customer_id: v.optional(v.string()),
@@ -772,6 +838,22 @@ export default defineSchema({
     .index("by_tier_started", ["subscription_tier", "started_at"])
     .index("by_started_at", ["started_at"])
     .index("by_status_started", ["status", "started_at"]),
+
+  // The current actual cancellation only. The two history tables below/above
+  // retain every distinct submission, including pauses and reversed decisions.
+  current_cancellation_reasons: defineTable({
+    stripe_subscription_id: v.string(),
+    cancellation_reason_id: v.id("cancellation_reasons"),
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    reason_category: v.string(),
+    reason_subcategory: v.optional(v.string()),
+    reason_details: v.string(),
+    created_at: v.number(),
+  })
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_created_at", ["created_at"]),
 
   cancellation_reason_details: defineTable({
     cancellation_reason_id: v.id("cancellation_reasons"),
@@ -926,6 +1008,8 @@ export default defineSchema({
     // Legacy field retained so historical rows remain schema-valid. The
     // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
+    // Legacy field retained only so historical rows remain schema-valid.
+    // Traits are no longer accepted, returned, or applied to prompts.
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
@@ -940,6 +1024,7 @@ export default defineSchema({
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
     // A saved product preference, not consent or eligibility for a data export.
+    predictions_enabled: v.optional(v.boolean()),
     model_improvement_enabled: v.optional(v.boolean()),
     model_improvement_updated_at: v.optional(v.number()),
     // Legacy MAX Mode flag retained on historical rows. The feature was
@@ -990,6 +1075,8 @@ export default defineSchema({
   // complements processed_checkout_sessions: the processed table is only a
   // dedupe guard, while this row explains the observed purchase lifecycle.
   extra_usage_purchases: defineTable({
+    paid_amount_dollars: v.optional(v.number()),
+    bundle_id: v.optional(v.string()),
     user_id: v.string(),
     amount_dollars: v.number(),
     stripe_checkout_session_id: v.string(),
@@ -1309,6 +1396,7 @@ export default defineSchema({
         pty: v.boolean(),
         files: v.optional(v.boolean()),
         commandStdin: v.optional(v.boolean()),
+        privateArtifactNamespace: v.optional(v.string()),
         operationChannels: v.optional(v.boolean()),
       }),
     ),
@@ -1336,8 +1424,33 @@ export default defineSchema({
     .index("by_user_and_status_and_mode", ["user_id", "status", "mode"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
+  // Immutable financial operation identities; pending actions have no automatic takeover.
+  usage_settlement_operations: defineTable({
+    ...settlementIdentityFields,
+    status: v.union(v.literal("pending"), v.literal("completed")),
+    created_at: v.number(),
+    completed_at: v.optional(v.number()),
+    result: v.optional(walletActionResult),
+    auto_reload_operation_ids: v.optional(v.array(v.string())),
+  })
+    .index("by_operation_id", ["operation_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_usage_settlement_id", ["usage_settlement_id"]),
+  usage_settlement_debits: defineTable({
+    ...settlementIdentityFields,
+    sequence: v.number(),
+    outcome: v.union(v.literal("applied"), v.literal("not_applied")),
+    previous_balance_points: v.union(v.number(), v.null()),
+    new_balance_points: v.union(v.number(), v.null()),
+    created_at: v.number(),
+    result: walletDebitResult,
+  })
+    .index("by_operation_id_and_sequence", ["operation_id", "sequence"])
+    .index("by_user_id", ["user_id"]),
+
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
+    admission_operation_id: v.optional(v.string()),
     usage_settlement_id: v.optional(v.string()),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
@@ -1373,6 +1486,7 @@ export default defineSchema({
     included_points_deducted: v.optional(v.number()),
     extra_usage_points_deducted: v.optional(v.number()),
     uncovered_points: v.optional(v.number()),
+    usage_deduction_outcome_unknown: v.optional(v.boolean()),
     usage_deduction_failed: v.optional(v.boolean()),
     usage_deduction_failure_reason: v.optional(
       usageDeductionFailureReasonValidator,

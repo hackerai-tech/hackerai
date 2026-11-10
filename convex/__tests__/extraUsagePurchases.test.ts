@@ -149,7 +149,10 @@ async function callRecordPurchaseCreated(ctx: any) {
   });
 }
 
-async function callRecordPurchaseFailed(ctx: any) {
+async function callRecordPurchaseFailed(
+  ctx: any,
+  lastError = "serviceKey: secret-value\nsecond line",
+) {
   const { recordPurchaseFailed } = await import("../extraUsage");
   return (recordPurchaseFailed as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
@@ -159,7 +162,7 @@ async function callRecordPurchaseFailed(ctx: any) {
     stripePaymentIntentId: "pi_test",
     stripeInvoiceId: "in_test",
     route: "webhook",
-    lastError: "serviceKey: secret-value\nsecond line",
+    lastError,
   });
 }
 
@@ -371,6 +374,39 @@ describe("extra usage purchase ledger", () => {
     expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "access_token=FAKE_CREDENTIAL",
+    "Authorization: Basic FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
+    'client_secret="prefix\\"FAKE_CREDENTIAL"',
+  ])("redacts %s before persisting a failed purchase", async (credential) => {
+    const { ctx, tables } = createMockCtx();
+    await callRecordPurchaseFailed(
+      ctx,
+      `  HTTP 503 ${credential} request_id=req_fixture ${"x".repeat(600)}\nprivate second line`,
+    );
+    const saved = tables.extra_usage_purchases[0];
+    expect(saved.status).toBe("failed");
+    expect(saved.last_error).not.toContain("FAKE_CREDENTIAL");
+    expect(saved.last_error).not.toContain("private second line");
+    expect(saved.last_error).toMatch(/^HTTP 503/);
+    expect(saved.last_error).toContain("request_id=req_fixture");
+    expect(saved.last_error).toHaveLength(500);
+    expect(mockRecordRevenueEventInternal).not.toHaveBeenCalled();
+  });
+
+  it("does not promote later lines when redacting a multiline quoted credential", async () => {
+    const { ctx, tables } = createMockCtx();
+    await callRecordPurchaseFailed(
+      ctx,
+      'HTTP 503 access_token="FAKE_CREDENTIAL\n"private second line',
+    );
+    const saved = tables.extra_usage_purchases[0].last_error;
+    expect(saved).toContain("HTTP 503");
+    expect(saved).not.toContain("FAKE_CREDENTIAL");
+    expect(saved).not.toContain("private second line");
+  });
+
   it("records sanitized failed credit attempts without sensitive error text", async () => {
     const { ctx, tables } = createMockCtx({
       extra_usage_purchases: [
@@ -394,8 +430,49 @@ describe("extra usage purchase ledger", () => {
       last_result: "failed",
       stripe_payment_intent_id: "pi_test",
       stripe_invoice_id: "in_test",
-      last_error: "serviceKey: [redacted]",
+      last_error: 'serviceKey: "[Redacted]"',
       updated_at: 1_000_000,
     });
+  });
+});
+
+describe("discounted bundle grants", () => {
+  it("grants face-value credit once and records discounted cash revenue", async () => {
+    jest.clearAllMocks();
+    const { ctx, tables } = createMockCtx();
+    const { addCredits } = await import("../extraUsage");
+    const args = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      amountDollars: 250,
+      paidAmountDollars: 200,
+      bundleId: "usage-250-v1",
+      stripeCheckoutSessionId: "cs_bundle",
+      idempotencyKey: "cs_cs_bundle",
+      purchaseRoute: "confirm",
+    };
+    await (addCredits as any).handler(ctx, args);
+    const balance = tables.extra_usage[0].balance_points;
+    expect(balance).toBe(Math.floor((250 / 1.5) * 10000));
+    expect(mockRecordRevenueEventInternal).toHaveBeenCalledWith(
+      ctx,
+      expect.objectContaining({ grossRevenueDollars: 200 }),
+    );
+    expect(tables.extra_usage_purchases[0]).toMatchObject({
+      amount_dollars: 250,
+      paid_amount_dollars: 200,
+      bundle_id: "usage-250-v1",
+    });
+    const retry = await (addCredits as any).handler(ctx, {
+      ...args,
+      purchaseRoute: "webhook",
+    });
+    expect(retry.alreadyProcessed).toBe(true);
+    expect(tables.extra_usage[0].balance_points).toBe(balance);
+    expect(mockRecordRevenueEventInternal).toHaveBeenCalledTimes(1);
+    await expect(
+      (addCredits as any).handler(ctx, { ...args, paidAmountDollars: 1 }),
+    ).rejects.toThrow("Invalid bundle credit");
+    expect(tables.extra_usage_purchases[0].paid_amount_dollars).toBe(200);
   });
 });

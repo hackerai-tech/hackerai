@@ -1,3 +1,4 @@
+import { getSandboxBrowserGuidance } from "@/lib/ai/browser-guidance";
 import { verifySubagentResultAfterHandoff } from "@/lib/ai/subagents/result-handoff";
 import { createBrowserHandoffNoteProjector } from "@/lib/ai/browser-handoff/context";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
@@ -30,8 +31,14 @@ import {
 } from "ai";
 
 import { agentUiStream } from "./streams";
+import { waitForAgentUiStream } from "@/lib/chat/consume-agent-ui-stream";
 import { createTools } from "@/lib/ai/tools";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
+import {
+  buildPromptCacheOptions,
+  addPromptCacheBreakpoints,
+} from "@/lib/ai/prompt-cache";
 import {
   createLoadSkillTool,
   createSearchSkillsTool,
@@ -112,12 +119,10 @@ import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   deductUsage,
-  checkFreeCostBudget,
   isHandledUserRateLimitError,
   recordFreeMonthlyCost,
 } from "@/lib/rate-limit";
 import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
-import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   finalizeHandledSubagentRateLimit,
   type SubagentTerminalOutput as SubagentTaskOutput,
@@ -601,15 +606,6 @@ export const subagentTask = task({
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
     let rateLimitInfo: Awaited<ReturnType<typeof checkSubagentBillingCapacity>>;
     let usageSettled = false;
-    const freeDailySettlement =
-      row.subscription === "free" &&
-      payload.regionalFreeLimits?.agentDailyBudget
-        ? new FreeDailyCostSettlement(
-            row.free_quota_subject ?? row.user_id,
-            payload.regionalFreeLimits,
-            crypto.randomUUID(),
-          )
-        : undefined;
     let triggerRunCostRecorded = false;
     const selectedModel =
       row.selected_model ?? resolveSubagentTextModel(row.subscription);
@@ -656,14 +652,10 @@ export const subagentTask = task({
         return { costDollars, billingFailure: false };
       }
       if (row.subscription === "free") {
-        if (freeDailySettlement) {
-          await freeDailySettlement.settle(costDollars);
-        } else {
-          await recordFreeMonthlyCost(
-            row.free_quota_subject ?? row.user_id,
-            costDollars,
-          );
-        }
+        await recordFreeMonthlyCost(
+          row.free_quota_subject ?? row.user_id,
+          costDollars,
+        );
         usageSettled = true;
         return { costDollars, billingFailure: false };
       }
@@ -1077,6 +1069,7 @@ export const subagentTask = task({
               );
             const {
               cloudNetworkPrompt,
+              sandboxManager,
               tools: unguardedTools,
               cleanupBrowserSessions: cleanupToolBrowsers,
               getBrowserHandoffNotes,
@@ -1144,6 +1137,18 @@ export const subagentTask = task({
             const tools = authorizedTools;
 
             const provider = createTrackedProvider();
+            const getCacheOptions = (modelName: string) => {
+              const requestedModelSlug =
+                provider.languageModel(modelName).modelId;
+              return buildPromptCacheOptions(
+                requestedModelSlug,
+                createOpenRouterCacheSessionId({
+                  chatId: row.subagent_id,
+                  mode: "subagent",
+                  requestedModelSlug,
+                }),
+              );
+            };
             const getGuardedLanguageModel = (
               modelName: string,
               generationAttempt: number,
@@ -1362,7 +1367,11 @@ export const subagentTask = task({
                   generationAttempt,
                   0,
                 ),
-                system: systemPrompt + (await cloudNetworkPrompt()),
+                system:
+                  systemPrompt +
+                  (await cloudNetworkPrompt()) +
+                  getSandboxBrowserGuidance(sandboxManager.getSandboxInfo()),
+                providerOptions: getCacheOptions(activeModelName),
                 messages: conversationMessages,
                 tools: structuredResultRecovery ? undefined : tools,
                 output: structuredResultRecovery
@@ -1381,12 +1390,6 @@ export const subagentTask = task({
                   await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
-                  if (freeDailySettlement) {
-                    await checkFreeCostBudget(
-                      row.free_quota_subject ?? row.user_id,
-                      payload.regionalFreeLimits,
-                    );
-                  }
                   runtimeStage = "generation";
                   let deadlineMessage: ModelMessage | undefined;
                   if (
@@ -1523,8 +1526,17 @@ export const subagentTask = task({
                       generationAttempt,
                       steps.length,
                     ),
-                    system: systemPrompt + (await cloudNetworkPrompt()),
-                    messages: compacted.messages as ModelMessage[],
+                    system:
+                      systemPrompt +
+                      (await cloudNetworkPrompt()) +
+                      getSandboxBrowserGuidance(
+                        sandboxManager.getSandboxInfo(),
+                      ),
+                    messages: addPromptCacheBreakpoints(
+                      compacted.messages as ModelMessage[],
+                      provider.languageModel(activeModelName).modelId,
+                    ),
+                    providerOptions: getCacheOptions(activeModelName),
                   };
                 },
                 onError: ({ error }) => {
@@ -1553,21 +1565,6 @@ export const subagentTask = task({
                     index,
                     openRouter.openrouter_upstream_inference_cost,
                   );
-                  if (freeDailySettlement) {
-                    try {
-                      await freeDailySettlement.settle(
-                        usageTracker.computeCostDollars(
-                          selectedModel,
-                          responseModel,
-                        ) +
-                          resolveTriggerRunCost(triggerUsage.getCurrent())
-                            .totalCostDollars,
-                      );
-                    } catch (error) {
-                      activeAbort.abort();
-                      throw error;
-                    }
-                  }
                   if (
                     usageTracker.computeCostDollars(
                       selectedModel,
@@ -1808,10 +1805,7 @@ export const subagentTask = task({
         },
       });
 
-      const { waitUntilComplete } = agentUiStream.pipe(
-        sanitizeStream(uiStream),
-      );
-      await waitUntilComplete();
+      await waitForAgentUiStream(agentUiStream.pipe(sanitizeStream(uiStream)));
       runtimeStage = "result_finalization";
       await observeFinalization("stream_completion", Boolean(resultValue), () =>
         markSubagentFinalizing(row.subagent_id, ctx.run.id),

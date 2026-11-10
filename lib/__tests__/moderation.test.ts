@@ -143,40 +143,35 @@ describe("getModerationResult", () => {
       score: 0.01,
       category: "illicit",
       flagged: false,
-      continuation: true,
       independent: false,
     },
     {
       score: 0.2,
       category: "illicit",
       flagged: true,
-      continuation: true,
       independent: true,
     },
     {
       score: 0.99,
       category: "illicit",
       flagged: true,
-      continuation: false,
       independent: false,
     },
     {
       score: 0.075,
       category: "sexual/minors",
       flagged: true,
-      continuation: false,
       independent: false,
     },
     {
       score: NaN,
       category: "illicit",
       flagged: false,
-      continuation: false,
       independent: false,
     },
   ])(
-    "separates continuity from the lower threshold while retaining restrictions: %j",
-    async ({ score, category, flagged, continuation, independent }) => {
+    "applies the normal threshold and category restrictions: %j",
+    async ({ score, category, flagged, independent }) => {
       mockModerationsCreate.mockResolvedValue({
         results: [
           {
@@ -187,25 +182,119 @@ describe("getModerationResult", () => {
       });
       expect(await getModerationResult(request, true)).toMatchObject({
         shouldUncensorResponse: independent,
-        allowsAbliterationContinuation: continuation,
       });
       expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
     },
   );
-  it("does not authorize continuity on API failure, missing scores or missing credentials", async () => {
+  it("does not authorize routing on API failure, missing scores or missing credentials", async () => {
     mockModerationsCreate.mockRejectedValueOnce(new Error("offline"));
     expect(
-      (await getModerationResult(request, true)).allowsAbliterationContinuation,
+      (await getModerationResult(request, true)).shouldUncensorResponse,
     ).toBe(false);
     mockModerationsCreate.mockResolvedValueOnce({
       results: [{ categories: {}, category_scores: {} }],
     });
     expect(
-      (await getModerationResult(request, true)).allowsAbliterationContinuation,
+      (await getModerationResult(request, true)).shouldUncensorResponse,
     ).toBe(false);
     delete process.env.OPENAI_API_KEY;
     expect(
-      (await getModerationResult(request, true)).allowsAbliterationContinuation,
+      (await getModerationResult(request, true)).shouldUncensorResponse,
     ).toBe(false);
+  });
+  it.each(["illicit", "illicit/violent"])(
+    "excludes flagged %s intent from Free treatment without changing paid routing",
+    async (category) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          {
+            categories: {
+              illicit: false,
+              "illicit/violent": false,
+              [category]: true,
+            },
+            category_scores: { illicit: 0.9 },
+          },
+        ],
+      });
+      expect(await getModerationResult(request, false)).toMatchObject({
+        shouldUncensorResponse: true,
+        allowsFreeAbliteration: false,
+      });
+      expect(await getModerationResult(request, true)).toMatchObject({
+        shouldUncensorResponse: true,
+      });
+    },
+  );
+  it("keeps legitimate eligible security tasks and requires known illicit-category results", async () => {
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: { illicit: false, "illicit/violent": false },
+          category_scores: { illicit: 0.15 },
+        },
+      ],
+    });
+    expect(await getModerationResult(request, false)).toHaveProperty(
+      "allowsFreeAbliteration",
+      true,
+    );
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: {},
+          category_scores: { illicit: 0.15 },
+        },
+      ],
+    });
+    expect(await getModerationResult(request, false)).toHaveProperty(
+      "allowsFreeAbliteration",
+      false,
+    );
+  });
+  it.each([
+    { tokenCount: 512, expected: true },
+    { tokenCount: 513, expected: false },
+  ])(
+    "requires complete moderation coverage at $tokenCount tokens",
+    async ({ tokenCount, expected }) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          {
+            categories: { illicit: false, "illicit/violent": false },
+            category_scores: { illicit: 0.15 },
+          },
+        ],
+      });
+      const text = " token".repeat(tokenCount);
+      const result = await getModerationResult(
+        [{ role: "user", parts: [{ type: "text", text }] }],
+        false,
+      );
+      expect(result.allowsFreeAbliteration).toBe(expected);
+      expect(result.shouldUncensorResponse).toBe(true);
+      if (expected) expect(result.moderationText).toBe(text);
+      else expect(result.moderationText).not.toBe(text);
+    },
+  );
+
+  it("keeps incomplete middle-text coverage on the Free baseline while preserving paid moderation", async () => {
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: { illicit: false, "illicit/violent": false },
+          category_scores: { illicit: 0.15 },
+        },
+      ],
+    });
+    const text =
+      " start".repeat(300) + " UNREVIEWED_MIDDLE " + " end".repeat(300);
+    const messages = [{ role: "user", parts: [{ type: "text", text }] }];
+    const result = await getModerationResult(messages, false);
+    expect(result.moderationText).not.toContain("UNREVIEWED_MIDDLE");
+    expect(result.allowsFreeAbliteration).toBe(false);
+    expect(
+      (await getModerationResult(messages, true)).shouldUncensorResponse,
+    ).toBe(true);
   });
 });

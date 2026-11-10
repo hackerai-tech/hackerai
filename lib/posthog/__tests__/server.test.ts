@@ -34,6 +34,66 @@ const {
 } = require("../server") as typeof import("../server");
 
 describe("phLogger", () => {
+  it.each([
+    "access_token=FAKE_CREDENTIAL",
+    "client_secret=FAKE_CREDENTIAL",
+    "refreshToken=FAKE_CREDENTIAL",
+    "Authorization: Bearer FAKE_CREDENTIAL",
+    "Provider rejected Bearer prefix=FAKE_CREDENTIAL",
+    'token="prefix\\"FAKE_CREDENTIAL"',
+    JSON.stringify({ message: 'client_secret="prefix FAKE_CREDENTIAL"' }),
+    "access_token:\nFAKE_CREDENTIAL",
+  ])("removes %s from error log and exception sinks", (diagnostic) => {
+    const error = Object.assign(new Error(`HTTP 401 ${diagnostic}`), {
+      cause: new Error(diagnostic),
+    });
+    phLogger.error(`provider_failed ${diagnostic}`, {
+      error,
+      requestId: "req_fixture",
+    });
+    const captured = mockCaptureException.mock.calls[0]?.[0] as Error;
+    const serialized = JSON.stringify({
+      message: captured.message,
+      stack: captured.stack,
+      properties: mockCaptureException.mock.calls[0]?.[2],
+      logs: mockEmitPostHogLog.mock.calls,
+    });
+    expect(serialized).not.toContain("FAKE_CREDENTIAL");
+    expect(serialized).toContain("HTTP 401");
+    expect(serialized).toContain("req_fixture");
+    expect(captured.cause).toBeUndefined();
+  });
+
+  it("redacts credential diagnostics when exception capture falls back to console", () => {
+    const spy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mockCaptureException.mockImplementationOnce(() => {
+      throw new Error("Authorization: Bearer FAKE_TELEMETRY");
+    });
+    try {
+      phLogger.error("client_secret=FAKE_MESSAGE", {
+        error: new Error("refreshToken=FAKE_ERROR"),
+        detail: "access_token=FAKE_DETAIL",
+        requestId: "req_fixture",
+      });
+      const fields = spy.mock.calls[0][1] as {
+        error: Error;
+        telemetryError: Error;
+      };
+      const serialized = JSON.stringify({
+        calls: spy.mock.calls,
+        error: fields.error.message,
+        stack: fields.error.stack,
+        telemetry: fields.telemetryError.message,
+      });
+      expect(serialized).not.toContain("FAKE_");
+      expect(serialized).toContain("req_fixture");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   beforeEach(() => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();

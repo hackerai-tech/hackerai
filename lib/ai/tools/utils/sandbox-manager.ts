@@ -1,3 +1,4 @@
+import { getE2BSandboxVersion } from "./e2b-sandbox-version";
 import type {
   AnySandbox,
   SandboxBootInfo,
@@ -78,6 +79,9 @@ export class DefaultSandboxManager implements SandboxManager {
     return {
       type: "cloud",
       provider: this.activeCloudProvider,
+      sandboxVersion: isE2BSandbox(this.sandbox)
+        ? getE2BSandboxVersion(this.sandbox)
+        : undefined,
     };
   }
 

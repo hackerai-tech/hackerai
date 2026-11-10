@@ -89,6 +89,62 @@ describe("acquireFreeRunConcurrencyLock", () => {
     expect(mockEval).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a long free run exclusive until release and recovers after its lease", async () => {
+    let nowSeconds = 0;
+    let current: { token: string; expiresAt: number } | null = null;
+    const redis = {
+      set: jest.fn(
+        async (_key: string, token: string, options: { ex: number }) => {
+          if (current && current.expiresAt > nowSeconds) return null;
+          current = { token, expiresAt: nowSeconds + options.ex };
+          return "OK";
+        },
+      ),
+      eval: jest.fn(
+        async (_script: string, _keys: string[], args: string[]) => {
+          if (current?.token !== args[0]) return 0;
+          current = null;
+          return 1;
+        },
+      ),
+    };
+    mockCreateRedisClient.mockReturnValue(redis);
+    const { acquireFreeRunConcurrencyLock } = getIsolatedModule();
+    const agentLeaseSeconds = 6 * 60 * 60 + 5 * 60;
+
+    const first = await acquireFreeRunConcurrencyLock(
+      "user-123",
+      agentLeaseSeconds,
+    );
+    nowSeconds = 66 * 60;
+    await expect(
+      acquireFreeRunConcurrencyLock("user-123", agentLeaseSeconds),
+    ).rejects.toMatchObject({ metadata: { capReason: "free_concurrency" } });
+    nowSeconds = 6 * 60 * 60 + 4 * 60;
+    await expect(
+      acquireFreeRunConcurrencyLock("user-123", agentLeaseSeconds),
+    ).rejects.toMatchObject({ metadata: { capReason: "free_concurrency" } });
+
+    await first.release();
+    const second = await acquireFreeRunConcurrencyLock(
+      "user-123",
+      agentLeaseSeconds,
+    );
+    nowSeconds += agentLeaseSeconds + 1;
+    const successor = await acquireFreeRunConcurrencyLock(
+      "user-123",
+      agentLeaseSeconds,
+    );
+    await second.release();
+    await expect(
+      acquireFreeRunConcurrencyLock("user-123", agentLeaseSeconds),
+    ).rejects.toMatchObject({ metadata: { capReason: "free_concurrency" } });
+    await successor.release();
+    await expect(
+      acquireFreeRunConcurrencyLock("user-123", agentLeaseSeconds),
+    ).resolves.toBeDefined();
+  });
+
   it("skips the lock outside production when Redis is unavailable", async () => {
     mockCreateRedisClient.mockReturnValue(null);
     const { acquireFreeRunConcurrencyLock } = getIsolatedModule();

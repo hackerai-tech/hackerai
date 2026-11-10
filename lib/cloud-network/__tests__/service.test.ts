@@ -106,11 +106,63 @@ it("applies saved rules to a newly connected sandbox before returning it", async
 });
 it("keeps default workspaces unchanged and fails closed on storage failure", async () => {
   const sandbox = workspace();
-  query.mockResolvedValueOnce(null);
+  query.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
   await ensureCloudNetwork(sandbox as any, "owner");
   expect(sandbox.updateNetwork).not.toHaveBeenCalled();
   query.mockRejectedValueOnce(new Error("storage unavailable"));
   await expect(ensureCloudNetwork(sandbox as any, "owner")).rejects.toThrow();
+});
+it("reconciles inherited deny-all rules with the unsaved Internet access default without replacing the workspace", async () => {
+  const sandbox = workspace();
+  await sandbox.updateNetwork({ allowOut: [], denyOut: ["0.0.0.0/0"] });
+  sandbox.updateNetwork.mockClear();
+  query.mockResolvedValue(null);
+  const defaultPolicy = { mode: "unrestricted", allow: [] };
+  mutation
+    .mockReset()
+    .mockResolvedValueOnce({
+      policy: defaultPolicy,
+      revision: 1,
+      status: "applying",
+    })
+    .mockResolvedValue(null);
+
+  await ensureCloudNetwork(sandbox as any, "owner");
+
+  expect(mutation).toHaveBeenNthCalledWith(
+    1,
+    expect.anything(),
+    expect.objectContaining({ policy: defaultPolicy, expectedRevision: 0 }),
+  );
+  expect(sandbox.updateNetwork).toHaveBeenCalledWith(
+    { allowOut: [], denyOut: [] },
+    expect.anything(),
+  );
+  expect(mutation.mock.calls[1][1]).toMatchObject({ success: true });
+  expect(sandbox.files.get("/home/user/keep.txt")).toBe("unchanged-file");
+  expect(Sandbox.create).not.toHaveBeenCalled();
+  expect(Sandbox.kill).not.toHaveBeenCalled();
+});
+it("does not overwrite a concurrently saved policy while reconciling an unsaved default", async () => {
+  const sandbox = workspace();
+  await sandbox.updateNetwork({ allowOut: [], denyOut: ["0.0.0.0/0"] });
+  sandbox.updateNetwork.mockClear();
+  query.mockResolvedValue(null);
+  mutation
+    .mockReset()
+    .mockRejectedValueOnce(
+      new ConvexError("Network settings changed. Reload them before saving."),
+    );
+
+  await expect(
+    ensureCloudNetwork(sandbox as any, "owner"),
+  ).rejects.toMatchObject({ status: 409 });
+
+  expect(mutation).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ expectedRevision: 0 }),
+  );
+  expect(sandbox.updateNetwork).not.toHaveBeenCalled();
 });
 it.each([
   "https://example.test/api",

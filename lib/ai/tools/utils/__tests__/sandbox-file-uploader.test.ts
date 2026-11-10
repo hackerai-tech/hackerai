@@ -40,7 +40,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
         if (command.includes("stat -Lc%s")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
-        if (command.startsWith("for %I")) {
+        if (command.includes("for %I")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -568,36 +568,393 @@ describe("uploadSandboxFileToConvex", () => {
     },
   );
 
-  test("falls back to command upload when native Centrifugo upload fails", async () => {
-    const sandbox = makeSandbox(1234);
-    sandbox.files.uploadToUrl.mockRejectedValueOnce(new Error("exit status 1"));
+  test.each([
+    ["SignatureDoesNotMatch", 22, 10, 2],
+    ["SignatureDoesNotMatch", 22, new Error("metadata unavailable"), 2],
+    ["AccessDenied", 22, 20, 1],
+    ["ExpiredToken", 22, 20, 1],
+    ["Unknown", 22, 20, 1],
+    [null, 35, 20, 1],
+    [null, 56, 20, 1],
+  ])(
+    "preserves %s / curl%s without re-signing when changed size is not established",
+    async (storageCode, exitCode, latest, statCalls) => {
+      const sandbox = {
+        ...makeSandbox(10, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      const stat = jest
+        .fn()
+        .mockResolvedValueOnce({ kind: "file", sizeBytes: 10 });
+      if (latest instanceof Error) stat.mockRejectedValueOnce(latest);
+      else stat.mockResolvedValueOnce({ kind: "file", sizeBytes: latest });
+      Object.assign(sandbox.files, { stat });
+      const original = Object.assign(
+        new Error(
+          storageCode
+            ? `Failed to upload file: curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:${storageCode}`
+            : `Failed to upload file: curl: (${exitCode}) connection reset`,
+        ),
+        { exitCode },
+      );
+      sandbox.files.uploadToUrl.mockRejectedValue(original);
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\project\\report.txt",
+        }),
+      ).rejects.toBe(original);
+      expect(stat).toHaveBeenCalledTimes(statCalls as number);
+      expect(mockGenerateS3UploadUrl).toHaveBeenCalledTimes(1);
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(1);
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
 
-    await uploadSandboxFileToConvex({
-      sandbox: sandbox as any,
-      userId: "u1",
-      fullPath: "/home/user/preview.png",
-      mediaType: "image/png",
+  test.each([false, true])(
+    "bounds changed-size recovery and rejects growth past the size limit (oversized=%s)",
+    async (oversized) => {
+      const sandbox = {
+        ...makeSandbox(10, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      const stat = jest
+        .fn()
+        .mockResolvedValueOnce({ kind: "file", sizeBytes: 10 })
+        .mockResolvedValue({
+          kind: "file",
+          sizeBytes: oversized ? MAX_GENERATED_FILE_SIZE_BYTES + 1 : 20,
+        });
+      Object.assign(sandbox.files, { stat });
+      const rejected = Object.assign(
+        new Error(
+          "Failed to upload file: curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:SignatureDoesNotMatch",
+        ),
+        { exitCode: 22 },
+      );
+      sandbox.files.uploadToUrl.mockRejectedValue(rejected);
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\project\\report.txt",
+        }),
+      ).rejects.toThrow(
+        oversized ? "exceeds the maximum generated file size" : "403",
+      );
+      expect(stat).toHaveBeenCalledTimes(2);
+      expect(mockGenerateS3UploadUrl).toHaveBeenCalledTimes(oversized ? 1 : 2);
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(
+        oversized ? 1 : 2,
+      );
+      expect(mockConvexAction).not.toHaveBeenCalled();
+      if (oversized) {
+        expect(
+          consoleWarnSpy.mock.calls.map(([entry]) => JSON.parse(entry)),
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              event: "sandbox_generated_file_too_large",
+              size_bytes: MAX_GENERATED_FILE_SIZE_BYTES + 1,
+              limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
+            }),
+          ]),
+        );
+      }
+    },
+  );
+
+  test.each([false, true])(
+    "does not re-sign after an uncertain native outcome followed by a rejected fallback (diagnostic getter fails=%s)",
+    async (getterFails) => {
+      const sandbox = makeSandbox(10);
+      const nativeError = new Error(
+        "Failed to upload file: curl: (56) connection reset",
+      );
+      let failGetter = getterFails;
+      Object.defineProperty(nativeError, "exitCode", {
+        get() {
+          if (failGetter) {
+            failGetter = false;
+            throw new Error("native diagnostic unavailable");
+          }
+          return 56;
+        },
+      });
+      sandbox.files.uploadToUrl.mockRejectedValue(nativeError);
+      const run = sandbox.commands.run.getMockImplementation()!;
+      let stats = 0;
+      sandbox.commands.run.mockImplementation(async (command) => {
+        if (command.includes("stat -Lc%s"))
+          return { stdout: String(stats++ ? 20 : 10), stderr: "", exitCode: 0 };
+        if (command.includes("curl -fsSL -X PUT"))
+          return {
+            stdout: "",
+            stderr:
+              "curl: (22) The requested URL returned error: 403\n__HACKERAI_UPLOAD_STORAGE_CODE__:SignatureDoesNotMatch",
+            exitCode: 22,
+          };
+        return run(command);
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/tmp/report.txt",
+        }),
+      ).rejects.toThrow("403");
+      expect(mockGenerateS3UploadUrl).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([35, 22, -1, 256])(
+    "retains only a bounded native upload exit code: %s",
+    async (exitCode) => {
+      const sandbox = makeSandbox(1234, false, true);
+      const error = Object.assign(new Error("private transfer failure"), {
+        exitCode,
+      });
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+      const onTransferAttemptFailure = jest.fn();
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "C:\\owned\\report.txt",
+          onTransferAttemptFailure,
+        }),
+      ).rejects.toBe(error);
+      expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transfer_attempt_kind: "native",
+          transfer_exit_code:
+            exitCode >= 0 && exitCode <= 255 ? exitCode : null,
+          upload_reported_http_status: null,
+        }),
+      );
+      expect(JSON.stringify(onTransferAttemptFailure.mock.calls)).not.toContain(
+        "private",
+      );
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([false, true])(
+    "retains the command fallback when native transfer diagnostics fail (async: %s)",
+    async (asyncFailure) => {
+      const sandbox = makeSandbox(1234);
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(
+        new Error("exit status 1"),
+      );
+      const onTransferAttemptFailure = jest.fn(() => {
+        if (asyncFailure) return Promise.reject(new Error("observer failed"));
+        throw new Error("observer failed");
+      });
+
+      await uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/home/user/preview.png",
+        mediaType: "image/png",
+        onTransferAttemptFailure,
+      });
+
+      expect(sandbox.files.uploadToUrl).toHaveBeenCalledWith(
+        "/home/user/preview.png",
+        "https://s3.example/upload",
+        "image/png",
+      );
+      expect(sandbox.commands.run).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining(
+          "curl -fsSL -X PUT -H 'Content-Type: image/png'",
+        ),
+        expect.objectContaining({
+          timeoutMs: expect.any(Number),
+        }),
+      );
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          name: "preview.png",
+          size: 1234,
+        }),
+      );
+      expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+      expect(onTransferAttemptFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ transfer_attempt_kind: "native" }),
+      );
+    },
+  );
+
+  test.each([true, false])(
+    "adds numeric signing diagnostics while preserving the original upload failure (native Windows: %s)",
+    async (nativeWindows) => {
+      const clock = jest
+        .spyOn(Date, "now")
+        .mockReturnValue(Date.parse("2026-10-25T17:57:09Z"));
+      const url =
+        "https://s3.example/upload?X-Amz-Date=20261025T175700Z&X-Amz-Expires=60&X-Amz-Signature=fixture-signature";
+      mockGenerateS3UploadUrl.mockResolvedValueOnce({
+        uploadUrl: url,
+        s3Key: "users/u1/file.txt",
+        storageLocation: { region: "us-west-2", bucket: "test-west-bucket" },
+      });
+      const sandbox = {
+        ...makeSandbox(1234, !nativeWindows, nativeWindows),
+        ...(nativeWindows && { supportsNativeFileRelay: () => true }),
+      };
+      if (nativeWindows) {
+        Object.assign(sandbox.files, {
+          stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+        });
+      }
+      const error = new Error(
+        "Failed to upload file: curl: (22) The requested URL returned error: 403",
+      );
+      const onTransferAttemptFailure = jest.fn();
+      if (nativeWindows) {
+        sandbox.files.uploadToUrl.mockRejectedValueOnce(error);
+      } else {
+        const run = sandbox.commands.run.getMockImplementation()!;
+        sandbox.commands.run.mockImplementation(async (command) =>
+          command.includes("curl -fsSL -X PUT")
+            ? {
+                stdout: "",
+                stderr: "curl: (22) The requested URL returned error: 403",
+                exitCode: 22,
+              }
+            : run(command),
+        );
+      }
+      try {
+        const result = uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/report.txt",
+          onTransferAttemptFailure,
+        });
+        if (nativeWindows) await expect(result).rejects.toBe(error);
+        else
+          await expect(result).rejects.toThrow(
+            "The requested URL returned error: 403",
+          );
+        const calls = nativeWindows
+          ? consoleWarnSpy.mock.calls
+          : consoleErrorSpy.mock.calls;
+        const event = calls
+          .map(([line]) => JSON.parse(line))
+          .find(
+            (value) =>
+              value.event ===
+              (nativeWindows
+                ? "sandbox_generated_file_native_upload_failed"
+                : "sandbox_generated_file_upload_failed"),
+          );
+        expect(event).toMatchObject({
+          upload_reported_http_status: 403,
+          upload_signature_age_ms: 9_000,
+          upload_signature_ttl_ms: 60_000,
+          upload_signature_remaining_ms: 51_000,
+        });
+        expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+        expect(onTransferAttemptFailure).toHaveBeenCalledWith({
+          transfer_attempt_kind: nativeWindows ? "native" : "command",
+          sandbox_type: nativeWindows ? "desktop" : "cloud",
+          transfer_exit_code: nativeWindows ? null : 22,
+          upload_reported_http_status: 403,
+          upload_reported_storage_code: null,
+          upload_storage_diagnostic_present: false,
+          upload_signature_age_ms: 9_000,
+          upload_signature_ttl_ms: 60_000,
+          upload_signature_remaining_ms: 51_000,
+        });
+        expect(JSON.stringify(onTransferAttemptFailure.mock.calls)).not.toMatch(
+          /fixture-signature|X-Amz|s3\.example|report\.txt|requested URL/,
+        );
+        expect(JSON.stringify(calls)).not.toMatch(/fixture-signature|X-Amz/);
+        expect(mockConvexAction).not.toHaveBeenCalled();
+        if (nativeWindows)
+          expect(sandbox.files.uploadToUrl).toHaveBeenCalledTimes(1);
+        else expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  test.each([false, true])(
+    "a transfer diagnostics failure cannot replace the original error (async: %s)",
+    async (asyncFailure) => {
+      const sandbox = {
+        ...makeSandbox(1234, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      Object.assign(sandbox.files, {
+        stat: jest.fn(async () => ({ kind: "file", sizeBytes: 1234 })),
+      });
+      const original = Object.freeze(
+        new Error("private-native-transfer-error"),
+      );
+      sandbox.files.uploadToUrl.mockRejectedValueOnce(original);
+      const onTransferAttemptFailure = jest.fn(() => {
+        if (asyncFailure) return Promise.reject(new Error("observer failed"));
+        throw new Error("observer failed");
+      });
+      await expect(
+        uploadSandboxFileToConvex({
+          sandbox: sandbox as any,
+          userId: "u1",
+          fullPath: "/private/report.txt",
+          onTransferAttemptFailure,
+        }),
+      ).rejects.toBe(original);
+      expect(onTransferAttemptFailure).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(mockConvexAction).not.toHaveBeenCalled();
+    },
+  );
+
+  test("retains diagnostic status from a command error message when stderr is empty", async () => {
+    const sandbox = makeSandbox(1234, true);
+    const originalRun = sandbox.commands.run.getMockImplementation()!;
+    const error = Object.assign(
+      new Error("curl: (22) The requested URL returned error: 403"),
+      { exitCode: 22, stderr: "" },
+    );
+    sandbox.commands.run.mockImplementation(async (command) => {
+      if (command.includes("curl -fsSL -X PUT")) throw error;
+      return originalRun(command);
     });
+    const onTransferAttemptFailure = jest.fn();
 
-    expect(sandbox.files.uploadToUrl).toHaveBeenCalledWith(
-      "/home/user/preview.png",
-      "https://s3.example/upload",
-      "image/png",
-    );
-    expect(sandbox.commands.run).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining("curl -fsSL -X PUT -H 'Content-Type: image/png'"),
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/report.txt",
+        onTransferAttemptFailure,
+      }),
+    ).rejects.toThrow("curl: (22) The requested URL returned error: 403");
+    const event = consoleErrorSpy.mock.calls
+      .map(([line]) => JSON.parse(line))
+      .find((value) => value.event === "sandbox_generated_file_upload_failed");
+    expect(event).toMatchObject({
+      upload_reported_http_status: 403,
+      exit_code: 22,
+    });
+    expect(onTransferAttemptFailure).toHaveBeenCalledWith(
       expect.objectContaining({
-        timeoutMs: expect.any(Number),
+        transfer_attempt_kind: "command",
+        transfer_exit_code: 22,
+        upload_reported_http_status: 403,
       }),
     );
-    expect(mockConvexAction).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        name: "preview.png",
-        size: 1234,
-      }),
-    );
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+    expect(mockConvexAction).not.toHaveBeenCalled();
   });
 
   test("reports command upload stderr instead of a bare exit status", async () => {
@@ -663,7 +1020,9 @@ describe("uploadSandboxFileToConvex", () => {
             exitCode: 1,
           };
         }
-        if (command.startsWith("cmd /d /v:on /s /c")) {
+        if (
+          command.startsWith('"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c')
+        ) {
           return { stdout: "4321", stderr: "", exitCode: 0 };
         }
         return { stdout: "", stderr: "unexpected command", exitCode: 1 };
@@ -678,7 +1037,7 @@ describe("uploadSandboxFileToConvex", () => {
 
     expect(sandbox.commands.run).toHaveBeenNthCalledWith(
       1,
-      'cmd /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
+      '"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c "for %I in ("!HACKERAI_FILE_SIZE_PATH!") do @echo %~zI"',
       expect.objectContaining({
         displayName: "",
         envVars: expect.objectContaining({
@@ -703,7 +1062,7 @@ describe("uploadSandboxFileToConvex", () => {
       return "cmd";
     });
     sandbox.commands.run.mockImplementation(async (command) =>
-      command.startsWith("cmd /d /v:on /s /c")
+      command.startsWith('"%SystemRoot%\\System32\\cmd.exe" /d /v:on /s /c')
         ? { stdout: "4321", stderr: "", exitCode: 0 }
         : { stdout: "", stderr: "POSIX syntax is unavailable", exitCode: 1 },
     );
@@ -739,7 +1098,7 @@ describe("uploadSandboxFileToConvex", () => {
       expect.any(Object),
     );
     expect(sandbox.commands.run).not.toHaveBeenCalledWith(
-      expect.stringContaining("cmd /d"),
+      expect.stringContaining('"%SystemRoot%\\System32\\cmd.exe" /d'),
       expect.any(Object),
     );
   });
@@ -772,13 +1131,29 @@ describe("uploadSandboxFileToConvex", () => {
     expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
   });
 
-  test("derives the file name from Windows-style paths", async () => {
+  test("keeps a Windows-looking filename intact on a POSIX sandbox", async () => {
     const sandbox = makeSandbox(1234);
+    const name = "C:\\literal\\report.txt";
+    const uploaded = await uploadSandboxFileToConvex({
+      sandbox: sandbox as any,
+      userId: "u1",
+      fullPath: `/tmp/${name}`,
+    });
+    expect(uploaded.name).toBe(name);
+    expect(mockConvexAction.mock.calls[0][1].name).toBe(name);
+  });
+
+  test.each([
+    "C:\\Users\\user\\report.txt",
+    "\\\\server\\share\\report.txt",
+    "/c/Users/user/report.txt",
+  ])("derives the file name on Windows: %s", async (fullPath) => {
+    const sandbox = makeSandbox(1234, false, true);
 
     await uploadSandboxFileToConvex({
       sandbox: sandbox as any,
       userId: "u1",
-      fullPath: "C:\\Users\\user\\report.txt",
+      fullPath,
     });
 
     expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(

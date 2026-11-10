@@ -1,3 +1,8 @@
+import { recordWalletDebit } from "./lib/settlementReceipts";
+import {
+  extraUsageBundlesEnabled,
+  getExtraUsageBundle,
+} from "../lib/billing/extra-usage-bundles";
 import {
   internalMutation,
   mutation,
@@ -14,6 +19,7 @@ import {
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
 import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
+import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
 type ExtraUsagePurchaseRoute =
@@ -26,30 +32,8 @@ type MaxModelExtraUsageReason =
 const MAX_PURCHASE_ERROR_LENGTH = 500;
 const AUTO_RELOAD_RETRY_COOLDOWN_MS = 15_000;
 const AUTO_RELOAD_OPERATION_LEASE_MS = 2 * 60_000;
-const PURCHASE_JSON_SECRET_PATTERN =
-  /(["'])(serviceKey|service_key|apiKey|api_key|authorization|cookie|password|secret|token)\1\s*:\s*(["'])(?:(?!\3).)*\3/gi;
-const PURCHASE_ASSIGNMENT_SECRET_PATTERN =
-  /\b(serviceKey|service_key|apiKey|api_key|cookie|password|secret|token)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,}]+)/gi;
-const PURCHASE_AUTHORIZATION_BEARER_PATTERN =
-  /\bAuthorization\s*[:=]\s*Bearer\s+[^\s,}]+/gi;
-const PURCHASE_BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
-
 const sanitizePurchaseError = (error: string): string =>
-  error
-    .replace(
-      PURCHASE_AUTHORIZATION_BEARER_PATTERN,
-      "Authorization: Bearer [redacted]",
-    )
-    .replace(PURCHASE_JSON_SECRET_PATTERN, (_match, quote, key) => {
-      return `${quote}${key}${quote}: "[redacted]"`;
-    })
-    .replace(PURCHASE_BEARER_TOKEN_PATTERN, "Bearer [redacted]")
-    .replace(PURCHASE_ASSIGNMENT_SECRET_PATTERN, (match) => {
-      const separatorIndex = Math.max(match.indexOf(":"), match.indexOf("="));
-      if (separatorIndex === -1) return "[redacted]";
-      return `${match.slice(0, separatorIndex + 1)} [redacted]`;
-    })
-    .split("\n", 1)[0]
+  redactSensitiveErrorMessage(error.split("\n", 1)[0])
     .trim()
     .slice(0, MAX_PURCHASE_ERROR_LENGTH);
 
@@ -155,6 +139,8 @@ async function upsertExtraUsagePurchase(
   args: {
     userId: string;
     amountDollars: number;
+    paidAmountDollars?: number;
+    bundleId?: string;
     stripeCheckoutSessionId: string;
     stripePaymentIntentId?: string;
     stripeInvoiceId?: string;
@@ -178,6 +164,9 @@ async function upsertExtraUsagePurchase(
   const next: Record<string, unknown> = {
     user_id: args.userId,
     amount_dollars: args.amountDollars,
+    paid_amount_dollars:
+      args.paidAmountDollars ?? existing?.paid_amount_dollars,
+    bundle_id: args.bundleId ?? existing?.bundle_id,
     stripe_checkout_session_id: args.stripeCheckoutSessionId,
     stripe_payment_intent_id:
       args.stripePaymentIntentId ?? existing?.stripe_payment_intent_id,
@@ -417,6 +406,8 @@ export const recordPurchaseCreated = internalMutation({
   args: {
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
   },
   returns: v.null(),
@@ -424,6 +415,8 @@ export const recordPurchaseCreated = internalMutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       status: "created",
       route: "checkout_action",
@@ -443,6 +436,8 @@ export const recordPurchasePaidSeen = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
@@ -459,6 +454,8 @@ export const recordPurchasePaidSeen = mutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -480,6 +477,8 @@ export const recordPurchaseFailed = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
@@ -497,6 +496,8 @@ export const recordPurchaseFailed = mutation({
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
       amountDollars: args.amountDollars,
+      paidAmountDollars: args.paidAmountDollars,
+      bundleId: args.bundleId,
       stripeCheckoutSessionId: args.stripeCheckoutSessionId,
       stripePaymentIntentId: args.stripePaymentIntentId,
       stripeInvoiceId: args.stripeInvoiceId,
@@ -518,6 +519,8 @@ export const addCredits = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    paidAmountDollars: v.optional(v.number()),
+    bundleId: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
     legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
     revenueSource: v.optional(
@@ -542,12 +545,34 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate amount
+    if (!Number.isFinite(args.amountDollars) || args.amountDollars <= 0) {
+      throw new Error("Invalid amount: must be a positive number");
+    }
+
+    if (args.bundleId !== undefined) {
+      const bundle = getExtraUsageBundle(args.bundleId);
+      if (
+        !args.stripeCheckoutSessionId ||
+        args.amountDollars !== bundle.creditDollars ||
+        args.paidAmountDollars !== bundle.paidDollars
+      )
+        throw new Error("Invalid bundle credit");
+    } else if (
+      args.paidAmountDollars !== undefined &&
+      args.paidAmountDollars !== args.amountDollars
+    ) {
+      throw new Error("Discount requires a bundle");
+    }
+
     const markPurchaseCredited = async (creditedAt?: number) => {
       if (!args.stripeCheckoutSessionId) return;
 
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -565,6 +590,8 @@ export const addCredits = mutation({
       await upsertExtraUsagePurchase(ctx, {
         userId: args.userId,
         amountDollars: args.amountDollars,
+        paidAmountDollars: args.paidAmountDollars,
+        bundleId: args.bundleId,
         stripeCheckoutSessionId: args.stripeCheckoutSessionId,
         stripePaymentIntentId: args.stripePaymentIntentId,
         stripeInvoiceId: args.stripeInvoiceId,
@@ -608,11 +635,6 @@ export const addCredits = mutation({
         }
         return { newBalance: 0, alreadyProcessed: true };
       }
-    }
-
-    // Validate amount
-    if (isNaN(args.amountDollars) || args.amountDollars <= 0) {
-      throw new Error("Invalid amount: must be a positive number");
     }
 
     const amountPoints = dollarsToPoints(args.amountDollars);
@@ -688,7 +710,7 @@ export const addCredits = mutation({
         args.idempotencyKey ??
         args.stripePaymentIntentId ??
         args.stripeCheckoutSessionId,
-      grossRevenueDollars: args.amountDollars,
+      grossRevenueDollars: args.paidAmountDollars ?? args.amountDollars,
       currency: "usd",
       attributionStrategy: "direct",
       stripeCustomerId: args.stripeCustomerId,
@@ -731,6 +753,8 @@ export const deductPoints = mutation({
     userId: v.string(),
     amountPoints: v.number(),
     usageSettlementId: v.optional(v.string()),
+    settlementOperationId: v.optional(v.string()),
+    settlementDebitSequence: v.optional(v.number()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -741,115 +765,128 @@ export const deductPoints = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    return recordWalletDebit(
+      ctx,
+      args.settlementOperationId
+        ? {
+            operation_id: args.settlementOperationId,
+            user_id: args.userId,
+            usage_settlement_id: args.usageSettlementId,
+            amount_points: args.amountPoints,
+          }
+        : undefined,
+      args.settlementDebitSequence,
+      async () => {
+        // Get current settings
+        const settings = await ctx.db
+          .query("extra_usage")
+          .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+          .first();
 
-    // Get current settings
-    const settings = await ctx.db
-      .query("extra_usage")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .first();
+        if (!settings) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            reason: "no_settings",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: 0,
+            newBalanceDollars: 0,
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    if (!settings) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        reason: "no_settings",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: 0,
-        newBalanceDollars: 0,
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        const currentBalancePoints = settings.balance_points ?? 0;
 
-    const currentBalancePoints = settings.balance_points ?? 0;
+        // Check if user has enough balance
+        if (currentBalancePoints < args.amountPoints) {
+          convexLogger.warn("deduct_points_failed", {
+            user_id: args.userId,
+            amount_points: args.amountPoints,
+            usage_settlement_id: args.usageSettlementId,
+            current_balance_points: currentBalancePoints,
+            reason: "insufficient_balance",
+            insufficient_funds: true,
+          });
+          return {
+            success: false,
+            newBalancePoints: currentBalancePoints,
+            newBalanceDollars: pointsToDollars(currentBalancePoints),
+            insufficientFunds: true,
+            monthlyCapExceeded: false,
+          };
+        }
 
-    // Check if user has enough balance
-    if (currentBalancePoints < args.amountPoints) {
-      convexLogger.warn("deduct_points_failed", {
-        user_id: args.userId,
-        amount_points: args.amountPoints,
-        usage_settlement_id: args.usageSettlementId,
-        current_balance_points: currentBalancePoints,
-        reason: "insufficient_balance",
-        insufficient_funds: true,
-      });
-      return {
-        success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
-        insufficientFunds: true,
-        monthlyCapExceeded: false,
-      };
-    }
+        // Calculate current month for tracking
+        const now = new Date();
+        const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
-    // Calculate current month for tracking
-    const now = new Date();
-    const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+        // Reset monthly spending if month changed
+        let monthlySpentPoints = settings.monthly_spent_points ?? 0;
+        const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
+        if (shouldResetMonthly) {
+          monthlySpentPoints = 0;
+        }
 
-    // Reset monthly spending if month changed
-    let monthlySpentPoints = settings.monthly_spent_points ?? 0;
-    const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
-    if (shouldResetMonthly) {
-      monthlySpentPoints = 0;
-    }
+        // Check monthly spending cap before deducting
+        const monthlyCapPoints = settings.monthly_cap_points;
+        if (monthlyCapPoints !== undefined) {
+          const newMonthlySpent = monthlySpentPoints + args.amountPoints;
+          if (newMonthlySpent > monthlyCapPoints) {
+            convexLogger.warn("deduct_points_failed", {
+              user_id: args.userId,
+              amount_points: args.amountPoints,
+              usage_settlement_id: args.usageSettlementId,
+              monthly_spent_points: monthlySpentPoints,
+              monthly_cap_points: monthlyCapPoints,
+              reason: "monthly_cap_exceeded",
+              monthly_cap_exceeded: true,
+            });
+            return {
+              success: false,
+              newBalancePoints: currentBalancePoints,
+              newBalanceDollars: pointsToDollars(currentBalancePoints),
+              insufficientFunds: true,
+              monthlyCapExceeded: true,
+            };
+          }
+        }
 
-    // Check monthly spending cap before deducting
-    const monthlyCapPoints = settings.monthly_cap_points;
-    if (monthlyCapPoints !== undefined) {
-      const newMonthlySpent = monthlySpentPoints + args.amountPoints;
-      if (newMonthlySpent > monthlyCapPoints) {
-        convexLogger.warn("deduct_points_failed", {
+        // Add to monthly spending
+        monthlySpentPoints += args.amountPoints;
+
+        // Deduct balance and update monthly tracking
+        const newBalancePoints = currentBalancePoints - args.amountPoints;
+        await ctx.db.patch(settings._id, {
+          balance_points: newBalancePoints,
+          monthly_spent_points: monthlySpentPoints,
+          monthly_reset_date: currentMonth,
+          updated_at: Date.now(),
+        });
+
+        convexLogger.info("points_deducted", {
           user_id: args.userId,
           amount_points: args.amountPoints,
           usage_settlement_id: args.usageSettlementId,
+          previous_balance_points: currentBalancePoints,
+          new_balance_points: newBalancePoints,
           monthly_spent_points: monthlySpentPoints,
           monthly_cap_points: monthlyCapPoints,
-          reason: "monthly_cap_exceeded",
-          monthly_cap_exceeded: true,
         });
+
         return {
-          success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
-          insufficientFunds: true,
-          monthlyCapExceeded: true,
+          success: true,
+          newBalancePoints,
+          newBalanceDollars: pointsToDollars(newBalancePoints),
+          insufficientFunds: false,
+          monthlyCapExceeded: false,
         };
-      }
-    }
-
-    // Add to monthly spending
-    monthlySpentPoints += args.amountPoints;
-
-    // Deduct balance and update monthly tracking
-    const newBalancePoints = currentBalancePoints - args.amountPoints;
-    await ctx.db.patch(settings._id, {
-      balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_reset_date: currentMonth,
-      updated_at: Date.now(),
-    });
-
-    convexLogger.info("points_deducted", {
-      user_id: args.userId,
-      amount_points: args.amountPoints,
-      usage_settlement_id: args.usageSettlementId,
-      previous_balance_points: currentBalancePoints,
-      new_balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_cap_points: monthlyCapPoints,
-    });
-
-    return {
-      success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
-      insufficientFunds: false,
-      monthlyCapExceeded: false,
-    };
+      },
+    );
   },
 });
 
@@ -1562,5 +1599,15 @@ export const recordAutoReloadOutcome = internalMutation({
     });
 
     return { autoReloadDisabled: shouldDisable, consecutiveFailures: next };
+  },
+});
+
+/** Same server gate used for displaying offers and creating checkout sessions. */
+export const areBundlesAvailable = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    return !!identity && extraUsageBundlesEnabled(identity.subject);
   },
 });

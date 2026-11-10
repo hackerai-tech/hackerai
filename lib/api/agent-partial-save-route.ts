@@ -1,3 +1,4 @@
+import { runs } from "@trigger.dev/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import type { UIMessagePart } from "ai";
 
@@ -220,6 +221,7 @@ export const createAgentPartialSavePost =
       | "parse_request"
       | "chat_lookup"
       | "run_correlation"
+      | "retrieve_run"
       | "save_message"
       | "update_chat" = "identify_user";
     let userId: string | undefined;
@@ -311,6 +313,35 @@ export const createAgentPartialSavePost =
       }
 
       correlationVerified = true;
+      stage = "retrieve_run";
+      // Missing or unavailable status is not proof that the worker crashed.
+      // Keep the snapshot recoverable even when the status service is offline.
+      let terminal = false;
+      let statusDeadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const run = await Promise.race([
+          runs.retrieve(body.triggerRunId, { retry: { maxAttempts: 1 } }),
+          new Promise<never>((_, reject) => {
+            statusDeadline = setTimeout(
+              () => reject(new Error("Run status deadline")),
+              3_000,
+            );
+          }),
+        ]);
+        terminal = [
+          "COMPLETED",
+          "CANCELED",
+          "FAILED",
+          "CRASHED",
+          "SYSTEM_FAILURE",
+          "EXPIRED",
+          "TIMED_OUT",
+        ].includes(run.status);
+      } catch {
+        // The signed correlation already binds this snapshot to its owner/run.
+      } finally {
+        if (statusDeadline) clearTimeout(statusDeadline);
+      }
       stage = "save_message";
       await saveMessage({
         chatId: body.chatId,
@@ -319,18 +350,20 @@ export const createAgentPartialSavePost =
         mode: "agent",
         generationStartedAt: body.generationStartedAt,
         generationTimeMs: body.generationTimeMs,
-        finishReason: CLIENT_SAVED_FINISH_REASON,
+        finishReason: terminal ? CLIENT_SAVED_FINISH_REASON : undefined,
         triggerRunId: body.triggerRunId,
-        wasAborted: true,
+        clientSnapshot: true,
+        wasAborted: terminal,
       });
       messageSaveCompleted = true;
 
-      if (!chat.finish_reason) {
+      if (terminal && !chat.finish_reason) {
         stage = "update_chat";
         await updateChat({
           chatId: body.chatId,
           finishReason: CLIENT_SAVED_FINISH_REASON,
           defaultModelSlug: "agent",
+          expectedActiveTriggerRunId: body.triggerRunId,
         });
       }
 

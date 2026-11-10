@@ -24,6 +24,7 @@ import {
   MAX_OUTPUT_SIZE,
   getDefaultShell,
   buildShellSpawn,
+  windowsSystemExecutable,
 } from "./utils";
 import {
   ProcessRunner,
@@ -41,9 +42,16 @@ import {
   RelayOutputOverflowError,
 } from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
-import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
-import { CONNECT_HELP, parseCliOptions } from "./cli-options";
+import { preparePrivateArtifactStorage } from "./private-artifact-hardening";
+import {
+  CONNECT_HELP,
+  parseCliOptions,
+  readProtectedTokenFile,
+} from "./cli-options";
 import { commandDisplayText } from "./command-display";
+import { commandIdentityFromEnvironment } from "./command-identity";
+
+const CLIENT_VERSION: string = require("../package.json").version;
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -94,6 +102,7 @@ interface ClientCapabilities {
   commands: boolean;
   pty: boolean;
   commandStdin: boolean;
+  privateArtifactNamespace?: string;
   operationChannels: boolean;
 }
 
@@ -305,6 +314,7 @@ export class LocalSandboxClient {
   private lastActivityTime: number;
   private idleCheckInterval?: NodeJS.Timeout;
   private processRunner: ProcessRunner;
+  private readonly commandIdentity = commandIdentityFromEnvironment();
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
   private operationRouter?: OperationChannelRouter<Subscription>;
@@ -313,6 +323,7 @@ export class LocalSandboxClient {
   private exitRequested = false;
   private relayTransport: string | null = null;
   private privateArtifactStorageReady = false;
+  private privateArtifactNamespace?: string;
 
   constructor(
     private config: Config,
@@ -320,7 +331,7 @@ export class LocalSandboxClient {
   ) {
     this.convexHttp = new ConvexHttpClient(config.convexUrl);
     this.lastActivityTime = Date.now();
-    this.processRunner = new ProcessRunner();
+    this.processRunner = new ProcessRunner(this.commandIdentity);
     this.setupProcessRunnerListeners();
   }
 
@@ -409,7 +420,29 @@ export class LocalSandboxClient {
         "⚠️  Commands run directly on your OS without any isolation.",
       ),
     );
-    this.privateArtifactStorageReady = await hardenExistingTerminalArtifacts();
+    const storage = await preparePrivateArtifactStorage(
+      undefined,
+      this.commandIdentity,
+    );
+    this.privateArtifactStorageReady = storage.ready;
+    this.privateArtifactNamespace = storage.namespace;
+    console.info(
+      JSON.stringify({
+        event: "local_private_artifact_storage",
+        client_version: CLIENT_VERSION,
+        ready: storage.ready,
+        layout: storage.ready
+          ? storage.namespace
+            ? "per_user"
+            : "legacy"
+          : "unavailable",
+      }),
+    );
+    if (!storage.ready && os.platform() !== "win32") {
+      console.warn(
+        "Private terminal saving is unavailable. Check the artifact-root errors above, then restart this client after correcting ownership or permissions. Do not run the client with sudo to bypass them.",
+      );
+    }
     await this.connect();
   }
 
@@ -427,6 +460,9 @@ export class LocalSandboxClient {
       commands: true,
       pty: isPtyAvailable(),
       commandStdin: this.privateArtifactStorageReady,
+      ...(this.privateArtifactNamespace && {
+        privateArtifactNamespace: this.privateArtifactNamespace,
+      }),
       operationChannels: true,
     };
   }
@@ -441,7 +477,7 @@ export class LocalSandboxClient {
           token: this.config.token,
           environmentId: await getEnvironmentId(),
           connectionName: this.config.name,
-          clientVersion: "1.0.0",
+          clientVersion: CLIENT_VERSION,
           osInfo: this.getOsInfo(),
           capabilities: this.getCapabilities(),
         } as never,
@@ -892,10 +928,14 @@ export class LocalSandboxClient {
     }
 
     if (os.platform() === "win32") {
-      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
+      spawn(
+        windowsSystemExecutable("taskkill.exe"),
+        ["/PID", String(pid), "/T", "/F"],
+        {
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
       return;
     }
 
@@ -965,6 +1005,11 @@ export class LocalSandboxClient {
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         detached: os.platform() !== "win32",
+        ...(this.commandIdentity && {
+          uid: this.commandIdentity.uid,
+          gid: this.commandIdentity.gid,
+          env: { ...process.env, HOME: this.commandIdentity.home },
+        }),
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
@@ -1137,6 +1182,11 @@ export class LocalSandboxClient {
     const child = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
       detached: os.platform() !== "win32",
       stdio: "ignore",
+      ...(this.commandIdentity && {
+        uid: this.commandIdentity.uid,
+        gid: this.commandIdentity.gid,
+        env: { ...process.env, HOME: this.commandIdentity.home },
+      }),
       ...spawnSpec.options,
     });
     child.unref();
@@ -1315,9 +1365,11 @@ ${chalk.bold("HackerAI Local Sandbox Client")}
 
 ${chalk.yellow("Usage:")}
   npx @hackerai/local --token TOKEN [options]
+  npx @hackerai/local --token-file PRIVATE_FILE [options]
 
 ${chalk.yellow("Options:")}
-  --token TOKEN       Included in the Remote Control connect command (required)
+  --token TOKEN       Included in the Remote Control connect command
+  --token-file PATH   Alternate private token source without a process argument
   --name NAME         Optional connection name fallback (default: hostname)
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
@@ -1343,7 +1395,7 @@ ${chalk.cyan("Auto-termination:")}
   try {
     const options = parseCliOptions(args);
     client = new LocalSandboxClient({
-      token: options.token,
+      token: options.token ?? readProtectedTokenFile(options.tokenFile!),
       name: options.name ?? os.hostname(),
       convexUrl: options.convexUrl ?? PRODUCTION_CONVEX_URL,
     });

@@ -3,7 +3,9 @@
 This is an operator-only, one-shot path for a **known paused sandbox** whose
 memory restore fails. It is never triggered by a model tool, timeout, or normal
 Agent retry. The operator must confirm that running processes and unflushed
-writes may be lost. Reboot does not recover old jobs.
+writes will be lost if a reboot occurs. Reboot does not recover old jobs or
+upgrade the sandbox's template/envd. For an envd upgrade, follow the
+[template and workspace upgrade procedure](../e2b/README.md#upgrading-envd-and-existing-workspaces).
 
 ## Before running
 
@@ -17,6 +19,15 @@ writes may be lost. Reboot does not recover old jobs.
    sandbox version from the existing workspace record and E2B inventory. The
    command checks these values again through the selected regional E2B key.
    Keep migration and preservation fences intact.
+   The template build-time envd metadata must be a stable version at least `0.5.0`, the
+   [documented prerequisite for independent snapshots](https://docs.e2b.dev/sandbox/snapshots).
+   Recovery refuses an older, missing or prerelease baseline before reboot, and
+   rechecks after fencing. `getInfo().envdVersion` is build-time metadata, not the
+   running binary's version after automatic updates. This conservative snapshot
+   baseline is separate from automatic-update eligibility and readiness safeguards;
+   it does not guarantee snapshot creation. An unverified baseline requires a
+   separately approved preservation/recovery plan, not a diagnostic resume of the
+   paused source. Rebuilding a template does not upgrade that source in place.
 3. Stop new Agent/chat work and other app connections for this user. Quiesce
    inbound traffic to the sandbox, since `autoResume: true` can start it even
    without an app connect. Wait for the Redis workspace activity key to expire
@@ -78,30 +89,98 @@ It checks the target and paused sandbox, atomically writes a durable recovery
 fence in `cloud_workspace_migration:v1:<user>`, then checks the identity
 again. Normal app acquisitions, cached clients, lease refreshes and cleanup
 fail closed while fenced. It issues one
-`Sandbox.connect(id, { onResume: "reboot", requestTimeoutMs: 300000 })`,
+`Sandbox.connect(id, { onResume: "reboot", requestTimeoutMs: 300000, retries: 0 })`,
 checks a harmless command, and hashes bounded top-level `/home/user` file
 metadata without displaying file names or contents. It captures a separate
-ready-state E2B snapshot before explicitly pausing, then normally reconnects,
-checks the metadata fingerprint and pauses again. Only after the final paused
+ready-state E2B snapshot and independently reads back its receipt before
+explicitly pausing, then normally reconnects, checks the metadata fingerprint
+and a synthetic probe's exact bytes, removes the probe and pauses again. SDK
+retries are disabled for recovery connects, snapshot creation and pauses.
+Identity is rechecked after the reboot and both pauses. Only after the final paused
 state is verified does it release the fence and store an idempotent result.
 
 The metadata fingerprint proves the same observed top-level listing across
 the two resumes. It does **not** prove every file's contents, historical
-completeness, or survival of unflushed writes. The original memory snapshot
-may be unreachable after a successful reboot; do not promise rollback. The
-ready-state snapshot ID in the result is backup evidence, not a replacement
-workspace or authorization to create one.
+completeness, or survival of unflushed writes. The probe proves only that our
+new synthetic bytes survived the normal pause/resume cycle. Flushed files survive
+the reboot, but unflushed writes are lost and partial files are possible. The
+original memory cannot be restored into the running rebooted sandbox. The
+ready-state snapshot ID is a backup of the recovered state, not a pre-reboot
+rollback point, replacement workspace or authorization to create one.
+
+The result separates `templateBuildEnvdVersion`, `installedEnvdVersion` and
+`runtimeEnvdVersion`, with
+allocated CPU/memory, lifecycle timeout behavior, expiry, connect
+duration, and the most recent resource sample from the preceding five minutes,
+before and after recovery. The metrics lookup has a two-second timeout and no
+retries; missing samples are `null`, not evidence of low pressure. Sampling uses
+the control-plane API and does not resume the paused sandbox. Only after recovery
+has connected and verified the running sandbox do bounded commands inspect envd.
+`/usr/bin/envd -version` records the installed binary. A separate check reads
+`envd.service`'s systemd MainPID and runs `/proc/PID/exe -version` as root, then
+confirms the service PID did not change. This identifies the serving executable
+even after a live upgrade into `envd.next`; it reads no process environment or
+customer files. Failure leaves the runtime version and readiness minimum unknown;
+neither the installed binary nor build-time metadata is a fallback. An actual version at least `0.10.0` meets the binary minimum for the
+readiness safeguard, but provider rollout remains unknown. These observations
+do not identify the provider's internal readiness stage or establish why a
+previous resume failed. No paths, file names, contents, environment values or
+raw provider messages enter these diagnostics.
+
+The [E2B reboot contract](https://docs.e2b.dev/sandbox/resume-without-memory)
+distinguishes a failed boot (the original paused snapshot remains intact) from a
+successful boot (the old snapshot remains stored until the next pause, but its
+memory cannot be restored into the running sandbox). The next pause saves the
+rebooted disk and memory state and makes the original memory/process state
+unreachable through the API. For HackerAI's `onTimeout: "pause"` lifecycle, this
+also happens **automatically at timeout**. The generic timeout-revert paragraph
+in the reboot documentation does not apply to that lifecycle. There is no API
+rollback to the earlier snapshot; waiting for timeout is not a rollback strategy.
+See also [pause lifecycle](https://docs.e2b.dev/sandbox/persistence).
+
+## Customer failures before reboot
+
+Customer approval is single-use. A failed dispatch or preflight may offer a new
+approval only when Redis proves the receipt never crossed the execution boundary.
+The old receipt is archived and the new offer has a different token, with no
+inherited confirmation or organization binding. Fresh eligibility and owner
+confirmation are required; this never dispatches recovery from a status read.
+
+Immediately before sending the reboot request, recovery durably records
+`reboot_requested`. An owned customer claim can be canceled only before that
+marker, restoring its exact previous workspace record and marking the receipt
+`failurePhase: before_reboot`. The marker, uncertain Redis writes, a reboot
+request, or any later failure keep the durable fence and require support.
+An interrupted worker is not automatically canceled merely because it timed out.
+
+Historical failed receipts without phase evidence remain support-only. An
+operator may use `reconcileLegacyPreflightFailure` only after verifying the
+original task is terminal and obtaining provider confirmation that no reboot
+occurred. It compares the exact raw receipt, refuses any workspace/result/activity
+record, and archives the review evidence before classifying the failure. It does
+not delete consent, renew approval, or touch E2B. Keep account details and the
+review reference in the private incident record. Never expose this operation
+through a customer endpoint.
+
+Deploy the matching web and recovery worker before enabling a renewed offer.
+Expired resume-failure evidence remains expired: the normal acquisition path
+must establish fresh evidence before another approval is offered. Do not rewrite
+failure timestamps to manufacture eligibility.
 
 ## If it stops
 
-The recovery fence has no automatic expiry. A request timeout or cancellation
+The recovery fence has no automatic expiry, but only blocks application admission;
+it does not freeze E2B's lifecycle or preserve the original snapshot. Automatic
+pause can save rebooted state even after the worker fails. A request timeout or cancellation
 does not prove that E2B stopped its provider-side work. A 409, unsupported
 reboot, command/inventory failure, snapshot failure, pause failure, or failed
 normal resume all require inspecting the exact sandbox and provider activity
 before another action. Re-running with the same idempotency key returns the
 stored result only if completed; otherwise it does not issue another reboot.
 Read the last durable `step`, E2B state, snapshot ID if one was created, and
-whether the sandbox is running or paused. A failed progress write may leave
+whether the sandbox is running or paused, its `onTimeout` behavior and expiry.
+After a reboot request, error diagnostics report original-memory preservation as
+`not_guaranteed`, even when the fence remains. A failed progress write may leave
 the durable step behind provider reality, so corroborate it with E2B. Keep the fence while resolving an uncertain
 state. Do not kill, delete, reset, create a fresh workspace, or clear a
 migration fence to make recovery pass. Escalate to E2B support if provider
@@ -125,8 +204,9 @@ The customer path is deliberately narrower than the operator CLI. It requires:
 
 - A current cloud-enabled subscription, access gates, explicit PostHog assignment,
   and a server-owned target manifest matching the web and worker environments.
-- Exact user, sandbox, cluster, template and supported version identity; one
-  workspace in that regional inventory; only recognized metadata (extra metadata
+- Exact user, sandbox, cluster, template and supported version identity; a complete regional
+  inventory containing that exact workspace (legacy unpinned incidents still
+  require a single workspace); only recognized metadata (extra metadata
   may represent a preservation hold).
 - No active parent/child Agent resources, recent workspace activity, migration,
   cleanup, unresolved recovery or uncertain provider action. Cloud Agent admission,
@@ -146,12 +226,14 @@ Unknown lifecycle, provider conflict or uncertain recovery outcome requires
 support. Validate these provider semantics on disposable sandboxes before
 rollout, including a real inbound-traffic race.
 
-Only definite 400/422 ordinary resume failures and known SDK/application
-connection deadlines can contribute to a recoverable incident. A known deadline
-remains uncertain: wait the full fifteen-minute idle window after its last
+Only definite 400/422 ordinary resume failures, known SDK/application
+connection deadlines, and an E2B SDK `SandboxError` with HTTP 504 from a
+verified paused-workspace connect can contribute to a recoverable incident.
+These timeouts remain uncertain, including a gateway timeout before the client
+deadline: wait the full fifteen-minute idle window after the last
 failure, check leases and active work, then independently verify exact paused
 identity and regional inventory. E2B must refuse the single reboot request if an
-old restore is still starting. Cancellation, 409s, 5xx responses and other unknown
+old restore is still starting. Cancellation, 409s, other 5xx responses and unknown
 outcomes remain support-only. Uncertainty from one of those failures cannot be
 erased by a later known timeout or definite failure.
 
@@ -161,9 +243,17 @@ Unconsumed offers expire for confirmation after ten minutes and can be refreshed
 an atomic compare-and-set and never resets confirmed, executing or failed
 receipts. Only the winner of atomic confirmation dispatches a task; the atomic
 workspace claim consumes confirmed consent before any provider mutation.
-Execution must begin within ten minutes of confirmation. A newer failure after
-successful recovery routes to support without authorizing another reboot. Task
-retries are disabled. Lost dispatch, interruption or uncertain provider mutation
+Execution must begin within ten minutes of confirmation. A newer failure after successful recovery can receive a fresh warning only after
+atomic reconciliation archives the verified success, preserves newer failure
+evidence, and fresh eligibility checks pass. The archived token can never claim
+another reboot. Reconciliation requires the exact matching binding and result,
+no preservation fields, no recent activity and no active parent or child tasks;
+concurrent changes abort it. It never changes the pinned workspace or contacts
+the provider. Workspace management also performs this reconciliation so a
+completed recovery does not permanently block the chooser. Task
+retries are disabled. An expired confirmation that was never claimed can be
+atomically revoked by a status check. A concurrent executing worker wins and
+remains untouched. Only proven pre-reboot failure can offer fresh confirmation. Lost dispatch, interruption or uncertain provider mutation
 requires reconciliation, never a customer reset or automatic retry.
 
 The worker rechecks environment/region, assignment, eligibility, billing-backed
@@ -251,3 +341,13 @@ recent lease, concurrent recovery, backup/readback failure, probe mismatch and w
 interruption. These must refuse recovery or retain the exact fence and require
 support. Unit tests and a synthetic browser component harness do not establish
 provider or authenticated Preview acceptance. Do not test customer sandboxes.
+
+### Self-service management and automatic checks
+
+Cloud management shows the same recovery controls directly. Status reads are
+bounded and pause in hidden tabs; customers can restart checks manually. They
+never confirm, reboot or replay a task automatically. A busy provider is not
+presented as proof that a customer task is still running. Retained paused copies
+do not disqualify an exactly pinned recovery target; they remain untouched.
+Unknown provider outcomes, missing backups, identity conflicts and preservation
+holds continue to require reconciliation before any additional provider work.

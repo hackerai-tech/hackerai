@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "0f81f40765f0329006a9a7d2eb97513f56743a9b",
+  "sourceCommit": "06015506625a78b981ae0b34be40239fc1b389be",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -8,10 +8,10 @@
       "filename": "counterevidence",
       "name": "counterevidence",
       "description": "Closure discipline for security findings — what counts as proof of safety, what does not, and how to record an unresolved candidate instead of silently dropping it",
-      "contentBytes": 8905,
+      "contentBytes": 9038,
       "internal": true,
       "sourcePath": "analysis/counterevidence.md",
-      "sourceSha256": "b4d7a8ce6a820a6f4705098aa96524f2a1095a46125d575c5df3cbd1d77e731e"
+      "sourceSha256": "21f3edf62e0d0aca00f0835e4ebd33bd2efd85d0890cc644649f99a7394691d4"
     },
     {
       "id": "analysis/fix_verification",
@@ -41,10 +41,10 @@
       "filename": "source_aware_discovery",
       "name": "source_aware_discovery",
       "description": "Enumeration discipline for reading code — which locations to keep as separate candidates, which safe siblings prove nothing, and the per-family sweeps that are routinely missed",
-      "contentBytes": 10541,
+      "contentBytes": 10648,
       "internal": true,
       "sourcePath": "analysis/source_aware_discovery.md",
-      "sourceSha256": "5d0b9818f54b194b0b183926465c123aff19b53080e688dee78e3436316811cf"
+      "sourceSha256": "e91219d685215d5daaa1293214df927949d11568ab95be083482ef7bee0d6f42"
     },
     {
       "id": "cloud/aws",
@@ -96,10 +96,10 @@
       "filename": "root_agent",
       "name": "root-agent",
       "description": "Orchestration layer that coordinates specialized subagents for security assessments",
-      "contentBytes": 5875,
+      "contentBytes": 5911,
       "internal": true,
       "sourcePath": "coordination/root_agent.md",
-      "sourceSha256": "1405ce4ba9fc38862195c7e65de2f6a1768f02a0490cdf8cb153137ee667834c"
+      "sourceSha256": "fe5ba2d54a231e563ff925f1f0389238096cc688cef3715df2ab6769f79f26aa"
     },
     {
       "id": "coordination/source_aware_whitebox",
@@ -107,10 +107,10 @@
       "filename": "source_aware_whitebox",
       "name": "source-aware-whitebox",
       "description": "Coordination playbook for source-aware white-box testing with static triage and dynamic validation",
-      "contentBytes": 2000,
+      "contentBytes": 2004,
       "internal": true,
       "sourcePath": "coordination/source_aware_whitebox.md",
-      "sourceSha256": "2efc20ae4d6589cbdd962fb66509c8bb3c99c772e856f015ed2f6880c3fb854e"
+      "sourceSha256": "6a61ad6fd8722bb281ea103bedfb0f07b5cbe5ef2e3b0656188dab2aa153efe0"
     },
     {
       "id": "custom/api_spec_testing",
@@ -150,11 +150,11 @@
       "category": "custom",
       "filename": "source_aware_sast",
       "name": "source-aware-sast",
-      "description": "Practical source-aware SAST and AST playbook for semgrep, ast-grep, gitleaks, and trivy fs",
-      "contentBytes": 8093,
+      "description": "Practical source-aware SAST and AST playbook for opengrep, ast-grep, gitleaks, and trivy fs",
+      "contentBytes": 8211,
       "internal": false,
       "sourcePath": "custom/source_aware_sast.md",
-      "sourceSha256": "6746609351bf7bf78d9259fb7d8be558492fbde1df5251256bc9b14d2105bd7d"
+      "sourceSha256": "771a0a54471fe23b91049d84593270061d9ff880a7e311b19539e2f8dad7b931"
     },
     {
       "id": "frameworks/django",
@@ -162,10 +162,10 @@
       "filename": "django",
       "name": "django",
       "description": "Security testing playbook for Django applications covering ORM injection, middleware gaps, auth/session flaws, and template issues",
-      "contentBytes": 10689,
+      "contentBytes": 10728,
       "internal": false,
       "sourcePath": "frameworks/django.md",
-      "sourceSha256": "995afca1c114f5f84b6f828a18ae1fb0a204f0709aaa8dcc5a9773783ac7b319"
+      "sourceSha256": "b3e1dd7ded9ba34c36f7b7be4647a3cd32f9d9ef82316b8801e33445f5a479f0"
     },
     {
       "id": "frameworks/fastapi",
@@ -250,10 +250,10 @@
       "filename": "deep",
       "name": "deep",
       "description": "Exhaustive security assessment with maximum coverage, depth, and vulnerability chaining",
-      "contentBytes": 7232,
+      "contentBytes": 7233,
       "internal": true,
       "sourcePath": "scan_modes/deep.md",
-      "sourceSha256": "a2716675ba0a12da93511460036106d6fd6f3655758f505e1933bd200771fa0b"
+      "sourceSha256": "ac018f9b2db062e790382666b05f03756996ad5cdc2d950ac44d9766434d7ce7"
     },
     {
       "id": "scan_modes/diff",
@@ -261,10 +261,10 @@
       "filename": "diff",
       "name": "diff",
       "description": "Methodology for diff-scoped review of a pull request, commit, or branch — what counts as in scope, how far to follow a change, and what not to report",
-      "contentBytes": 3675,
+      "contentBytes": 3900,
       "internal": true,
       "sourcePath": "scan_modes/diff.md",
-      "sourceSha256": "a7b6ab15cd0ed411449f7813ba272cb95c34d79a897b48fed9cbb59583fd40a6"
+      "sourceSha256": "77161a9f265e706e488aa7a6160c3a55553c06a14a90cd8f9cd36c4ac6e74d83"
     },
     {
       "id": "scan_modes/quick",
@@ -272,10 +272,10 @@
       "filename": "quick",
       "name": "quick",
       "description": "Time-boxed rapid assessment targeting high-impact vulnerabilities",
-      "contentBytes": 3002,
+      "contentBytes": 3003,
       "internal": true,
       "sourcePath": "scan_modes/quick.md",
-      "sourceSha256": "98d97940332d543ce21a3d70c5505a1469db191c6c2ee8c9bfa1257ca57693e0"
+      "sourceSha256": "b5cba380721bd09ff206e86250bfed0176afac0ecad30b565cfd860b8d657d8b"
     },
     {
       "id": "scan_modes/standard",
@@ -283,10 +283,10 @@
       "filename": "standard",
       "name": "standard",
       "description": "Balanced security assessment with systematic methodology and full attack surface coverage",
-      "contentBytes": 3895,
+      "contentBytes": 3896,
       "internal": true,
       "sourcePath": "scan_modes/standard.md",
-      "sourceSha256": "8a08601f0f6b08c6b19060f661323c0edbee46d2fdcb135794f6d5f441ee8fe5"
+      "sourceSha256": "f1db97ebf1caaa746c45e64f6ea9808dc3e5faa174581c47a961a2fe5abf7c11"
     },
     {
       "id": "technologies/active_directory",
@@ -601,11 +601,11 @@
       "category": "vulnerabilities",
       "filename": "semantic_confusion",
       "name": "semantic-confusion",
-      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
-      "contentBytes": 12511,
+      "description": "Cross-component semantic confusion testing for parser differentials, normalization mismatches, email and IDNA identity drift, overloaded fields, lifecycle state drift, internal redirects, protocol translation, and validator-to-sink inconsistencies",
+      "contentBytes": 14778,
       "internal": false,
       "sourcePath": "vulnerabilities/semantic_confusion.md",
-      "sourceSha256": "5b3ebda3fdb48993b3f2cc5afb797343948b44fac4e5cd23b8e00a0712660f38"
+      "sourceSha256": "8d56e4ef328f02ea5336336c19463c633fc5a8a19c0bc6a80826138f84dd0a6e"
     },
     {
       "id": "vulnerabilities/sql_injection",

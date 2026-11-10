@@ -4,6 +4,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
 import { useEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
+import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
 import {
   enrichFrontendExceptionEvent,
   sanitizeFrontendExceptionUrlProperties,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/analytics/acquisition";
 
 import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellation-privacy";
+import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
@@ -35,6 +37,14 @@ import {
   sanitizeXReferralEvent,
   X_REFERRAL_EVENT,
 } from "@/lib/analytics/x-referral";
+
+import {
+  captureInfluencerVisit,
+  clearInfluencerVisit,
+  pendingInfluencerVisit,
+  sanitizeInfluencerVisit,
+} from "@/lib/influencers/browser-visits";
+import { INFLUENCER_VISIT_EVENT } from "@/lib/influencers/visit-handoff";
 
 let lastIdentifiedSignature: string | null = null;
 
@@ -49,15 +59,18 @@ function isEnglishLocale(locale: string | null | undefined) {
   }
 }
 
+/** Configure consent-gated analytics and clean up per-account observers. */
 export function PostHogProvider({
   analyticsAllowed,
   children,
   consentRequired = false,
+  consentDeclined = false,
   firstTouchAttribution = null,
 }: {
   analyticsAllowed: boolean;
   children: React.ReactNode;
   consentRequired?: boolean;
+  consentDeclined?: boolean;
   firstTouchAttribution?: FirstTouchAttribution | null;
 }) {
   const { subscription } = useGlobalState();
@@ -97,12 +110,20 @@ export function PostHogProvider({
         }
         if (!analyticsAllowed) posthog.opt_out_capturing();
       }
-      if (!analyticsAllowed) clearXReferralDedupe();
-      if (!analyticsAllowed || referralHandled.current || !isXReferralLanding())
+      if (!analyticsAllowed) {
+        clearXReferralDedupe();
+        if (consentDeclined) clearInfluencerVisit();
+      }
+      if (
+        !analyticsAllowed ||
+        (!pendingInfluencerVisit() &&
+          (referralHandled.current || !isXReferralLanding()))
+      )
         return;
     }
 
     let cancelled = false;
+    let stopRejectionDiagnostics: (() => void) | undefined;
 
     void loadPostHogClient()
       .then((posthog) => {
@@ -131,6 +152,8 @@ export function PostHogProvider({
             if (!event) {
               return null;
             }
+            if (event.event === INFLUENCER_VISIT_EVENT)
+              return sanitizeInfluencerVisit(event);
             if (event.event === X_REFERRAL_EVENT) {
               return sanitizeXReferralEvent(event);
             }
@@ -142,7 +165,9 @@ export function PostHogProvider({
               sanitizeChatPerformanceEvent(
                 sanitizeDesktopAckEvent(
                   sanitizeAgentCancellationEvent(
-                    sanitizeFrontendExceptionUrlProperties(event),
+                    sanitizeDiffViewEvent(
+                      sanitizeFrontendExceptionUrlProperties(event),
+                    ),
                   ),
                 ),
               ),
@@ -171,6 +196,8 @@ export function PostHogProvider({
         if (posthog.has_opted_out_capturing()) {
           posthog.opt_in_capturing({ captureEventName: false });
         }
+
+        captureInfluencerVisit(posthog);
 
         if (!userId) {
           posthog.stopSessionRecording();
@@ -232,6 +259,7 @@ export function PostHogProvider({
         }
 
         confirmAuthenticatedAnalyticsUserId(userId!);
+        stopRejectionDiagnostics = startUnhandledRejectionDiagnostics();
         if (!referralHandled.current) {
           referralHandled.current = captureXReferralVisit(posthog);
         }
@@ -256,10 +284,12 @@ export function PostHogProvider({
 
     return () => {
       cancelled = true;
+      stopRejectionDiagnostics?.();
     };
   }, [
     analyticsAllowed,
     consentRequired,
+    consentDeclined,
     firstTouchAttribution,
     subscription,
     userEmail,

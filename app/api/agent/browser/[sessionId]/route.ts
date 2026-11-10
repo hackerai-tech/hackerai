@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -10,9 +11,12 @@ import {
 } from "@/lib/ai/browser-handoff/input";
 import {
   BrowserPreviewUnavailable,
+  type BrowserCaptureFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserRelayRenewFailureContext,
+  browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
   resizeBrowserViewport,
@@ -24,17 +28,24 @@ import {
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+class BrowserAuthenticationError extends Error {}
 
 async function resolveSession(
   request: NextRequest,
   sessionId: string,
   allowEnded = false,
 ) {
-  const userId = await getUserID(request);
+  let userId: string;
+  try {
+    userId = await getUserID(request);
+  } catch {
+    throw new BrowserAuthenticationError();
+  }
   if (!serviceKey || !/^[a-f0-9]{32}$/.test(sessionId)) return null;
   const session = await getConvexClient().query(
     api.browserHandoffs.getForBackend,
@@ -55,19 +66,249 @@ const unavailable = (error: unknown) => {
   return json({ state: "disconnected" }, 503);
 };
 
-export async function GET(
+type PreviewGetStage =
+  | "resolve_session"
+  | "connect_sandbox"
+  | "read_active_session"
+  | "capture_frame"
+  | "verify_active_session";
+
+/** One primitive diagnostic per unavailable GET; never retain the private session or frame. */
+const unavailableGet = (
+  error: unknown,
+  stage: PreviewGetStage,
+  request: NextRequest,
+  sessionId: string | undefined,
+  session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
+  captureContext?: BrowserCaptureFailureContext,
+) => {
+  const response = unavailable(error);
+  if (response.status !== 503) return response;
+  try {
+    const state =
+      error instanceof BrowserPreviewUnavailable
+        ? Object.getOwnPropertyDescriptor(error, "state")?.value
+        : undefined;
+    const requestId = request.headers.get("x-vercel-id");
+    const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    phLogger.info("agent_browser_preview_get_unavailable", {
+      diagnostic_version: 1,
+      failure_stage: stage,
+      preview_state: state === "loading" ? "loading" : "disconnected",
+      failure_kind:
+        error instanceof BrowserPreviewUnavailable
+          ? "preview_unavailable"
+          : error instanceof TypeError
+            ? "type_error"
+            : error instanceof Error
+              ? "other_error"
+              : "thrown_value",
+      fresh_requested: request.nextUrl.searchParams.get("fresh") === "1",
+      ...((stage === "read_active_session" ||
+        stage === "verify_active_session") &&
+        browserSessionReadFailureContext(error)),
+      ...(stage === "capture_frame" && captureContext),
+      web_build_commit:
+        build && /^[a-f0-9]{40}$/i.test(build)
+          ? build.toLowerCase()
+          : "unknown",
+      ...(requestId &&
+      /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+        requestId,
+      )
+        ? { request_id: requestId }
+        : {}),
+      ...(sessionId && /^[a-f0-9]{32}$/.test(sessionId)
+        ? { browser_session_id: sessionId }
+        : {}),
+      ...(session && {
+        handoff_state: [
+          "agent",
+          "waiting",
+          "claiming",
+          "human",
+          "recovery",
+          "resuming",
+          "closed",
+        ].includes(session.state)
+          ? session.state
+          : "unknown",
+        run_active:
+          typeof session.runActive === "boolean"
+            ? session.runActive
+            : "unknown",
+        ...(/^run_[a-z0-9]{20,40}$/.test(session.runId)
+          ? { trigger_run_id: session.runId }
+          : {}),
+      }),
+    });
+    after(async () => {
+      try {
+        await phLogger.flush();
+      } catch {
+        /* Optional delivery cannot alter the response. */
+      }
+    });
+  } catch {
+    // Observability must preserve the original unavailable response and retry policy.
+  }
+  return response;
+};
+
+type PreviewPostStage =
+  | "resolve_session"
+  | "connect_sandbox"
+  | "read_active_session"
+  | "pause_browser"
+  | "verify_active_session"
+  | "drain_relays"
+  | "read_stream_port"
+  | "release_pointer"
+  | "capture_frame"
+  | "capture_and_relay"
+  | "start_relay"
+  | "finish_takeover"
+  | "save_exit_note"
+  | "unpause_browser"
+  | "finish_resume"
+  | "renew_relay"
+  | "send_input"
+  | "resize_viewport";
+
+/** Preserve each POST response while recording only finite failure context. */
+const unavailablePost = (
+  error: unknown,
+  stage: PreviewPostStage,
+  request: NextRequest,
+  sessionId: string | undefined,
+  action: unknown,
+  session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
+  recoveryResponse = false,
+  captureDiagnostic?: {
+    context?: BrowserCaptureFailureContext;
+    frameAgeExceeded?: boolean;
+  },
+) => {
+  const response = recoveryResponse
+    ? json({ state: "recovery" }, 503)
+    : unavailable(error);
+  if (response.status !== 503) return response;
+  try {
+    const state =
+      error instanceof BrowserPreviewUnavailable
+        ? Object.getOwnPropertyDescriptor(error, "state")?.value
+        : undefined;
+    const requestId = request.headers.get("x-vercel-id");
+    const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    phLogger.info("agent_browser_preview_post_unavailable", {
+      diagnostic_version: 1,
+      action:
+        typeof action === "string" &&
+        [
+          "exposure",
+          "take",
+          "resume",
+          "release",
+          "heartbeat",
+          "input",
+          "viewport",
+        ].includes(action)
+          ? action
+          : "unknown",
+      failure_stage: stage,
+      ...(stage === "capture_frame" && {
+        post_capture_diagnostic_version: 1,
+        post_capture_context_status: captureDiagnostic?.context
+          ? "recorded"
+          : captureDiagnostic?.frameAgeExceeded
+            ? "frame_age_guard"
+            : "not_observed",
+        ...captureDiagnostic?.context,
+      }),
+      ...(action === "heartbeat" && stage === "renew_relay"
+        ? browserRelayRenewFailureContext(error)
+        : {}),
+      preview_state: recoveryResponse
+        ? "recovery"
+        : state === "loading"
+          ? "loading"
+          : "disconnected",
+      failure_kind:
+        error instanceof BrowserPreviewUnavailable
+          ? "preview_unavailable"
+          : error instanceof TypeError
+            ? "type_error"
+            : error instanceof Error
+              ? "other_error"
+              : "thrown_value",
+      web_build_commit:
+        build && /^[a-f0-9]{40}$/i.test(build)
+          ? build.toLowerCase()
+          : "unknown",
+      ...(requestId &&
+      /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+        requestId,
+      )
+        ? { request_id: requestId }
+        : {}),
+      ...(sessionId && /^[a-f0-9]{32}$/.test(sessionId)
+        ? { browser_session_id: sessionId }
+        : {}),
+      ...(session && {
+        handoff_state: [
+          "agent",
+          "waiting",
+          "claiming",
+          "human",
+          "recovery",
+          "resuming",
+          "closed",
+        ].includes(session.state)
+          ? session.state
+          : "unknown",
+        run_active:
+          typeof session.runActive === "boolean"
+            ? session.runActive
+            : "unknown",
+        ...(/^run_[a-z0-9]{20,40}$/.test(session.runId)
+          ? { trigger_run_id: session.runId }
+          : {}),
+      }),
+    });
+    after(async () => {
+      try {
+        await phLogger.flush();
+      } catch {
+        /* Optional delivery cannot alter the response. */
+      }
+    });
+  } catch {
+    /* Keep input, grants, notes, session names, frames and raw errors private. */
+  }
+  return response;
+};
+
+export const GET = withServiceQueryRecovery(async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
+  let sessionId: string | undefined;
+  let stage: PreviewGetStage = "resolve_session";
+  let captureContext: BrowserCaptureFailureContext | undefined;
   try {
-    resolved = await resolveSession(request, (await params).sessionId);
-  } catch {
-    return json({ state: "unauthorized" }, 401);
+    sessionId = (await params).sessionId;
+    resolved = await resolveSession(request, sessionId);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ state: "unauthorized" }, 401)
+      : unavailableGet(error, stage, request, sessionId);
   }
   if (!resolved) return json({ state: "expired" }, 404);
   try {
+    stage = "connect_sandbox";
     const sandbox = await connectBrowserSandbox(resolved.session);
+    stage = "read_active_session";
     const browserSessionName = await getActiveBrowserSessionName(
       sandbox,
       resolved.session,
@@ -77,11 +318,18 @@ export async function GET(
       resolved.session.controlledSessionName !== browserSessionName
     )
       return json({ state: "stale" }, 409);
+    stage = "capture_frame";
     const frame = await captureBrowserFrame(
       sandbox,
       resolved.session,
       browserSessionName,
+      request.nextUrl.searchParams.get("fresh") === "1",
+      undefined,
+      (context) => {
+        captureContext = context;
+      },
     );
+    stage = "verify_active_session";
     if (
       (await getActiveBrowserSessionName(sandbox, resolved.session)) !==
       browserSessionName
@@ -89,9 +337,16 @@ export async function GET(
       return json({ state: "stale" }, 409);
     return json({ state: resolved.session.state, frame, now: Date.now() });
   } catch (error) {
-    return unavailable(error);
+    return unavailableGet(
+      error,
+      stage,
+      request,
+      sessionId,
+      resolved.session,
+      captureContext,
+    );
   }
-}
+});
 
 type BrowserAction = {
   action?: unknown;
@@ -105,10 +360,16 @@ type BrowserAction = {
   note?: unknown;
 };
 
+/**
+ * Apply authenticated browser controls with the existing grant, rollback and
+ * response contracts. Failure telemetry uses the resolved session snapshot;
+ * it never rereads ownership or records private control payloads.
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
+  const processingStartedAt = performance.now();
   const origin = request.headers.get("origin");
   if (!origin || origin !== new URL(request.url).origin)
     return json({ error: "Invalid origin" }, 403);
@@ -145,14 +406,19 @@ export async function POST(
   if (!body || typeof body !== "object")
     return json({ error: "Invalid input" }, 400);
   let resolved: Awaited<ReturnType<typeof resolveSession>>;
+  let sessionId: string | undefined;
+  let stage: PreviewPostStage = "resolve_session";
   try {
+    sessionId = (await params).sessionId;
     resolved = await resolveSession(
       request,
-      (await params).sessionId,
+      sessionId,
       body.action === "resume",
     );
-  } catch {
-    return json({ error: "Unauthorized" }, 401);
+  } catch (error) {
+    return error instanceof BrowserAuthenticationError
+      ? json({ error: "Unauthorized" }, 401)
+      : unavailablePost(error, stage, request, sessionId, body.action);
   }
   if (!resolved || !serviceKey) return json({ state: "expired" }, 404);
   const { session, userId } = resolved;
@@ -194,27 +460,54 @@ export async function POST(
     );
     if (!claimed) return json({ state: "stale" }, 409);
     let paused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
     try {
+      stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
+      stage = "read_active_session";
       if (
         (await getActiveBrowserSessionName(sandbox, session)) !==
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      stage = "pause_browser";
       await setAgentBrowserPaused(sandbox, session, true);
       paused = true;
+      stage = "verify_active_session";
       if (
         (await getActiveBrowserSessionName(sandbox, session)) !==
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // A previous grant may have disconnected while dragging. Drain its
+      // accepted input and release the pointer before exposing a new grant.
+      stage = "drain_relays";
+      await stopBrowserRelays(sandbox, session);
+      stage = "read_stream_port";
       const streamPort = await getPrivateStreamPort(
         sandbox,
         session,
         body.browserSessionName,
       );
+      stage = "release_pointer";
+      await sendBrowserInput(
+        sandbox,
+        session,
+        body.browserSessionName,
+        [
+          {
+            type: "input_mouse",
+            eventType: "mouseReleased",
+            x: 0,
+            y: 0,
+            button: "left",
+          },
+        ],
+        streamPort,
+      );
       // Both jobs use the same paused browser. Drain both before rollback so
       // a late relay cannot outlive a failed capture and reopen revoked input.
+      stage = "capture_and_relay";
       const [capture, relay] = await Promise.allSettled([
         captureBrowserFrame(
           sandbox,
@@ -222,6 +515,9 @@ export async function POST(
           body.browserSessionName,
           true,
           streamPort,
+          (context) => {
+            captureContext = context;
+          },
         ),
         startBrowserRelay(
           sandbox,
@@ -232,10 +528,17 @@ export async function POST(
           streamPort,
         ),
       ]);
-      if (capture.status === "rejected") throw capture.reason;
-      if (relay.status === "rejected") throw relay.reason;
+      if (capture.status === "rejected") {
+        stage = "capture_frame";
+        throw capture.reason;
+      }
+      if (relay.status === "rejected") {
+        stage = "start_relay";
+        throw relay.reason;
+      }
       const frame = capture.value;
       const relayUrl = relay.value;
+      stage = "finish_takeover";
       const active = await convex.mutation(
         api.browserHandoffs.finishTakeoverForBackend,
         {
@@ -271,7 +574,16 @@ export async function POST(
         grant,
         paused: paused || wasPaused,
       });
-      return unavailable(error);
+      return unavailablePost(
+        error,
+        stage,
+        request,
+        sessionId,
+        body.action,
+        session,
+        false,
+        { context: captureContext },
+      );
     }
   }
 
@@ -318,25 +630,52 @@ export async function POST(
     );
     if (!started) return json({ state: "stale" }, 409);
     let unpaused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
+    let captureFrameAgeExceeded = false;
     try {
+      stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
+      stage = "drain_relays";
       await stopBrowserRelays(sandbox, session);
+      stage = "read_active_session";
       if (
         (await getActiveBrowserSessionName(sandbox, session)) !==
         body.browserSessionName
       )
         throw new BrowserPreviewUnavailable("closed");
+      // Also cover the HTTP fallback and a vanished relay. The resuming state
+      // excludes new input until the pointer is released and a frame is fresh.
+      stage = "release_pointer";
+      await sendBrowserInput(sandbox, session, body.browserSessionName, [
+        {
+          type: "input_mouse",
+          eventType: "mouseReleased",
+          x: 0,
+          y: 0,
+          button: "left",
+        },
+      ]);
+      stage = "capture_frame";
       const frame = await captureBrowserFrame(
         sandbox,
         session,
         body.browserSessionName,
         true,
+        undefined,
+        (context) => {
+          captureContext = context;
+        },
       );
-      if (Date.now() - frame.capturedAt > 15_000)
+      if (Date.now() - frame.capturedAt > 15_000) {
+        captureFrameAgeExceeded = true;
         throw new BrowserPreviewUnavailable("disconnected");
+      }
+      stage = "save_exit_note";
       const continuation = await saveNote();
+      stage = "unpause_browser";
       await setAgentBrowserPaused(sandbox, session, false);
       unpaused = true;
+      stage = "finish_resume";
       const resumed = await convex.mutation(
         api.browserHandoffs.finishResumeForBackend,
         scope,
@@ -362,7 +701,19 @@ export async function POST(
       await convex
         .mutation(api.browserHandoffs.abortResumeForBackend, scope)
         .catch(() => undefined);
-      return unavailable(error);
+      return unavailablePost(
+        error,
+        stage,
+        request,
+        sessionId,
+        body.action,
+        session,
+        false,
+        {
+          context: captureContext,
+          frameAgeExceeded: captureFrameAgeExceeded,
+        },
+      );
     }
   }
 
@@ -378,13 +729,20 @@ export async function POST(
     );
     if (released) {
       try {
-        await stopBrowserRelays(
-          await connectBrowserSandbox(session),
+        stage = "connect_sandbox";
+        const sandbox = await connectBrowserSandbox(session);
+        stage = "drain_relays";
+        await stopBrowserRelays(sandbox, session, body.grant);
+      } catch (error) {
+        return unavailablePost(
+          error,
+          stage,
+          request,
+          sessionId,
+          body.action,
           session,
-          body.grant,
+          true,
         );
-      } catch {
-        return json({ state: "recovery" }, 503);
       }
     }
     return json(
@@ -404,17 +762,32 @@ export async function POST(
     );
     if (valid) {
       try {
-        await renewBrowserRelay(
-          await connectBrowserSandbox(session),
+        stage = "connect_sandbox";
+        const sandbox = await connectBrowserSandbox(session);
+        stage = "renew_relay";
+        await renewBrowserRelay(sandbox, session, body.grant, lease);
+      } catch (error) {
+        return unavailablePost(
+          error,
+          stage,
+          request,
+          sessionId,
+          body.action,
           session,
-          body.grant,
-          lease,
+          true,
         );
-      } catch {
-        return json({ state: "recovery" }, 503);
       }
     }
-    return json({ state: valid ? "human" : "recovery" }, valid ? 200 : 409);
+    return valid
+      ? json({
+          state: "human",
+          leaseValidForMs: Math.max(0, lease - Date.now()),
+          processingDurationMs: Math.max(
+            0,
+            performance.now() - processingStartedAt,
+          ),
+        })
+      : json({ state: "recovery" }, 409);
   }
   if (body.action === "input" || body.action === "viewport") {
     const resizing = body.action === "viewport";
@@ -447,13 +820,16 @@ export async function POST(
     );
     if (!valid) return json({ state: "recovery" }, 409);
     try {
+      stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
+      stage = "read_active_session";
       if (
         (await getActiveBrowserSessionName(sandbox, session)) !==
         session.controlledSessionName
       )
         return json({ state: "stale" }, 409);
       if (resizing) {
+        stage = "resize_viewport";
         const frame = await resizeBrowserViewport(
           sandbox,
           session,
@@ -463,6 +839,7 @@ export async function POST(
         );
         return json({ frame });
       }
+      stage = "send_input";
       await sendBrowserInput(
         sandbox,
         session,
@@ -471,7 +848,14 @@ export async function POST(
       );
       return json({ ok: true });
     } catch (error) {
-      return unavailable(error);
+      return unavailablePost(
+        error,
+        stage,
+        request,
+        sessionId,
+        body.action,
+        session,
+      );
     } finally {
       await convex
         .mutation(api.browserHandoffs.finishInputForBackend, {

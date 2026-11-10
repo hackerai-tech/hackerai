@@ -84,7 +84,41 @@ export async function POST(req: NextRequest) {
     );
     claimState = result.state;
   } catch (error) {
-    console.error("[WorkOS Webhook] Claim failed:", error);
+    // Diagnostic selectors only: unexpected metadata must not affect the claim
+    // policy, expose webhook data, or turn an optional audit into another error.
+    try {
+      const eventId = Object.getOwnPropertyDescriptor(event, "id")?.value;
+      const eventType = Object.getOwnPropertyDescriptor(event, "event")?.value;
+      const requestId = req.headers.get("x-vercel-id");
+      logger.error(
+        "[WorkOS Webhook] Claim failed:",
+        error instanceof Error ? error : undefined,
+        {
+          event: "workos.webhook_claim_failed",
+          workos_claim_diagnostic_version: 1,
+          failure_stage: "claim",
+          ...(typeof eventId === "string" &&
+          /^event_[0-9A-HJKMNP-TV-Z]{26}$/.test(eventId)
+            ? { workos_event_id: eventId }
+            : {}),
+          workos_event_type:
+            eventType === "user.created" ||
+            eventType === "authentication.email_verification_succeeded"
+              ? eventType
+              : "other",
+          ...(typeof requestId === "string" &&
+          /^[a-z0-9]{2,12}(?:::[a-z0-9]{2,12}){0,2}-[0-9]{10,16}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? { request_id: requestId }
+            : {}),
+          service: "hackerai-web",
+          route: "/api/workos/webhook",
+        },
+      );
+    } catch {
+      // The original claim outcome remains unknown; never replay it here.
+    }
     return NextResponse.json(
       { error: "Failed to claim webhook" },
       { status: 500 },
@@ -137,16 +171,60 @@ export async function POST(req: NextRequest) {
 
   after(() => phLogger.flush());
 
-  try {
-    await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
+  // Finalization is idempotent. Retry only this marker, never the handler or
+  // arbitrary mutations: a reset can arrive after Convex committed the write.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let outcome: "recovered" | "exhausted" | "not_retryable";
+    let transportCode: string | undefined;
+    try {
+      await getConvexClient().mutation(
+        api.extraUsage.finalizeWebhookProcessing,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          eventId: event.id,
+        },
+      );
+      if (attempt === 1) break;
+      outcome = "recovered";
+    } catch (error) {
+      let cause: unknown = error;
+      for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (
+          typeof code === "string" &&
+          [
+            "ECONNRESET",
+            "ECONNREFUSED",
+            "ETIMEDOUT",
+            "EAI_AGAIN",
+            "UND_ERR_CONNECT_TIMEOUT",
+            "UND_ERR_HEADERS_TIMEOUT",
+            "UND_ERR_BODY_TIMEOUT",
+            "UND_ERR_SOCKET",
+          ].includes(code)
+        ) {
+          transportCode = code;
+          break;
+        }
+        cause = cause.cause;
+      }
+      if (transportCode && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 100));
+        continue;
+      }
+      outcome = transportCode ? "exhausted" : "not_retryable";
+    }
+    logger.warn("WorkOS webhook finalization outcome", {
+      event: "workos.webhook_finalization",
+      workos_event_id: event.id,
+      request_id: req.headers.get("x-vercel-id") ?? "unknown",
+      service: "hackerai-web",
+      route: "/api/workos/webhook",
+      attempts: attempt,
+      outcome,
+      ...(transportCode ? { transport_code: transportCode } : {}),
     });
-  } catch (error) {
-    console.error(
-      `[WorkOS Webhook] Failed to finalize event ${event.id}:`,
-      error,
-    );
+    break;
   }
 
   return NextResponse.json({ received: true });

@@ -1,4 +1,9 @@
 import {
+  INFERENCE_CYBER_MODEL_ID,
+  INFERENCE_CYBER_MODEL_KEY,
+  INFERENCE_CYBER_PRICING,
+} from "@/lib/ai/inference";
+import {
   DEEPSEEK_1017_MODEL_KEY,
   DEEPSEEK_1017_SLUG,
   DEEPSEEK_1017_CANONICAL_SLUG,
@@ -152,6 +157,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   [DEEPSEEK_1017_MODEL_KEY]: DEEPSEEK_V4_1_FLASH_PRICING,
   [DEEPSEEK_1017_SLUG]: DEEPSEEK_V4_1_FLASH_PRICING,
   [DEEPSEEK_1017_CANONICAL_SLUG]: DEEPSEEK_V4_1_FLASH_PRICING,
+  [INFERENCE_CYBER_MODEL_ID]: INFERENCE_CYBER_PRICING,
+  [INFERENCE_CYBER_MODEL_KEY]: INFERENCE_CYBER_PRICING,
   [ABLITERATION_MODEL_KEY]: ABLITERATION_LARGE_FLASH_PRICING,
   [ABLITERATION_MODEL_ID]: ABLITERATION_BASE_PRICING,
   [ABLITERATION_LARGE_V2_MODEL_KEY]: ABLITERATION_LARGE_FLASH_PRICING,
@@ -290,6 +297,8 @@ export type UsageDeductionFailureReason =
   | "deduction_failed";
 
 export interface UsageDeductionResult {
+  /** An unacknowledged debit may have committed and requires reconciliation. */
+  usageDeductionOutcomeUnknown?: boolean;
   /** Points deducted from the paid plan's included-usage bucket. */
   includedPointsDeducted: number;
   /** Stored points deducted from the prepaid Extra Usage balance. */
@@ -370,6 +379,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig,
   organizationId,
   usageSettlementId,
+  settlementOperationId,
 }: {
   monthly: MonthlyLimiter;
   userId: string;
@@ -378,6 +388,7 @@ const deductAdditionalUsagePoints = async ({
   extraUsageConfig?: ExtraUsageConfig;
   organizationId?: string;
   usageSettlementId?: string;
+  settlementOperationId?: string;
 }): Promise<UsageDeductionResult> => {
   const normalizedAdditionalCost = nonNegativePoints(additionalCostPoints);
   if (normalizedAdditionalCost <= 0) return emptyUsageDeductionResult();
@@ -386,6 +397,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsDeducted: number = 0,
     extraUsagePointsDeducted: number = 0,
     failureReason?: UsageDeductionFailureReason,
+    outcomeUnknown = false,
   ): UsageDeductionResult => {
     const coveredPoints =
       nonNegativePoints(includedPointsDeducted) +
@@ -402,6 +414,7 @@ const deductAdditionalUsagePoints = async ({
       uncoveredPoints,
       usageDeductionFailed: uncoveredPoints > 0 || !!failureReason,
       ...(failureReason && { usageDeductionFailureReason: failureReason }),
+      ...(outcomeUnknown && { usageDeductionOutcomeUnknown: true }),
     };
   };
 
@@ -431,6 +444,7 @@ const deductAdditionalUsagePoints = async ({
     includedPointsToExtraUsagePoints(fromExtraUsage);
   let extraUsageDeducted = 0;
   let failureReason: UsageDeductionFailureReason | undefined;
+  let outcomeUnknown = false;
 
   if (extraUsagePointsToDeduct > 0) {
     if (
@@ -446,15 +460,18 @@ const deductAdditionalUsagePoints = async ({
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               )
             : await deductFromBalance(
                 userId,
                 extraUsagePointsToDeduct,
                 usageSettlementId,
+                ...(settlementOperationId ? [settlementOperationId] : []),
               );
         } catch (error) {
           console.error("Failed to deduct extra usage delta:", error);
           return {
+            outcomeUnknown: true,
             success: false,
             newBalanceDollars: 0,
             insufficientFunds: false,
@@ -466,13 +483,19 @@ const deductAdditionalUsagePoints = async ({
         extraUsageDeducted = extraUsagePointsToDeduct;
       } else {
         failureReason = getDeductionFailureReason(deductResult);
+        outcomeUnknown = deductResult.outcomeUnknown === true;
       }
     } else {
       failureReason = "extra_usage_unavailable";
     }
   }
 
-  return buildDeltaResult(includedDeducted, extraUsageDeducted, failureReason);
+  return buildDeltaResult(
+    includedDeducted,
+    extraUsageDeducted,
+    failureReason,
+    outcomeUnknown,
+  );
 };
 
 const scanRedisKeys = async (
@@ -934,6 +957,7 @@ export const checkTokenBucketLimit = async (
     };
   }
 
+  let admissionOperationId: string | undefined;
   try {
     // For team users: detect new bucket so we can apply seat debt after creation
     if (subscription === "team" && !organizationId) {
@@ -1012,7 +1036,11 @@ export const checkTokenBucketLimit = async (
       return new ChatSDKError(
         "rate_limit:chat",
         `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. ${continueWithCreditsHint}`,
-        limitMetadata(reset, "monthly_exhausted"),
+        limitMetadata(reset, "monthly_exhausted", {
+          ...(admissionOperationId && {
+            extraUsageAdmissionOperationId: admissionOperationId,
+          }),
+        }),
       );
     };
 
@@ -1023,6 +1051,7 @@ export const checkTokenBucketLimit = async (
       result: { remaining: number; reset: number },
       pointsDeducted: number,
       extraUsagePointsDeducted?: number,
+      extraUsageAdmissionOperationId?: string,
     ): RateLimitInfo => ({
       remaining: result.remaining,
       resetTime: new Date(result.reset),
@@ -1033,6 +1062,7 @@ export const checkTokenBucketLimit = async (
         resetTime: new Date(result.reset),
       },
       pointsDeducted,
+      ...(extraUsageAdmissionOperationId && { extraUsageAdmissionOperationId }),
       ...(extraUsagePointsDeducted !== undefined && {
         extraUsagePointsDeducted,
       }),
@@ -1078,13 +1108,21 @@ export const checkTokenBucketLimit = async (
         // Team users draw from the org's shared pool with per-member caps;
         // everyone else hits their personal balance.
         const isTeamPool = subscription === "team" && !!organizationId;
+        admissionOperationId = crypto.randomUUID();
         const deductResult = isTeamPool
           ? await deductFromTeamBalance(
               organizationId!,
               userId,
               extraUsageShortfall,
+              undefined,
+              admissionOperationId,
             )
-          : await deductFromBalance(userId, extraUsageShortfall);
+          : await deductFromBalance(
+              userId,
+              extraUsageShortfall,
+              undefined,
+              admissionOperationId,
+            );
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
@@ -1095,7 +1133,12 @@ export const checkTokenBucketLimit = async (
           // subscription debit to validate, so that failed peek must not block
           // an otherwise successful paid request.
           if (bucketDeduct <= 0) {
-            return buildResult(monthlyCheck, 0, extraUsageShortfall);
+            return buildResult(
+              monthlyCheck,
+              0,
+              extraUsageShortfall,
+              admissionOperationId,
+            );
           }
 
           const monthlyResult = await monthly.limiter.limit(monthly.key, {
@@ -1122,7 +1165,12 @@ export const checkTokenBucketLimit = async (
             throw monthlyLimitError(monthlyResult.reset);
           }
 
-          return buildResult(monthlyResult, bucketDeduct, extraUsageShortfall);
+          return buildResult(
+            monthlyResult,
+            bucketDeduct,
+            extraUsageShortfall,
+            admissionOperationId,
+          );
         }
 
         // Deduction failed - check why
@@ -1233,10 +1281,21 @@ export const checkTokenBucketLimit = async (
 
     return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
-    if (error instanceof ChatSDKError) throw error;
+    if (error instanceof ChatSDKError) {
+      if (admissionOperationId) {
+        error.metadata = {
+          ...error.metadata,
+          extraUsageAdmissionOperationId: admissionOperationId,
+        };
+      }
+      throw error;
+    }
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+      admissionOperationId
+        ? { extraUsageAdmissionOperationId: admissionOperationId }
+        : undefined,
     );
   }
 };
@@ -1252,6 +1311,7 @@ export const deductUsageDelta = async (
   extraUsageConfig?: ExtraUsageConfig,
   organizationId?: string,
   usageSettlementId?: string,
+  settlementSequence?: number,
 ): Promise<UsageDeductionResult> => {
   const redis = createRedisClient();
   if (!redis) {
@@ -1277,6 +1337,10 @@ export const deductUsageDelta = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId:
+        usageSettlementId && settlementSequence !== undefined
+          ? `wallet-v1:${usageSettlementId}:step:${settlementSequence}`
+          : undefined,
     });
   } catch (error) {
     console.error("Failed to deduct usage delta:", error);
@@ -1314,7 +1378,7 @@ export const deductUsage = async (
   initialDeduction?: Pick<
     RateLimitInfo,
     "pointsDeducted" | "extraUsagePointsDeducted"
-  >,
+  > & { usageDeductionOutcomeUnknown?: boolean },
   actualModelName?: string,
   usageSettlementId?: string,
 ): Promise<UsageDeductionResult> => {
@@ -1420,6 +1484,15 @@ export const deductUsage = async (
       actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
 
+    // A lost action response is not proof of no debit. Preserve acknowledged
+    // totals without charging or refunding an unknown debit during finalization.
+    if (initialDeduction?.usageDeductionOutcomeUnknown) {
+      return withFinalCoverage(
+        { ...lastKnownDeductionResult, usageDeductionOutcomeUnknown: true },
+        "deduction_failed",
+      );
+    }
+
     const initialCoveredPoints =
       initialDeduction !== undefined
         ? initialIncludedPoints +
@@ -1505,11 +1578,17 @@ export const deductUsage = async (
       extraUsageConfig,
       organizationId,
       usageSettlementId,
+      settlementOperationId: usageSettlementId
+        ? `wallet-v1:${usageSettlementId}:final`
+        : undefined,
     });
     lastKnownDeductionResult = buildDeductionResult(
       deltaResult.includedPointsDeducted,
       deltaResult.extraUsagePointsDeducted,
     );
+    if (deltaResult.usageDeductionOutcomeUnknown) {
+      lastKnownDeductionResult.usageDeductionOutcomeUnknown = true;
+    }
     return withFinalCoverage(
       lastKnownDeductionResult,
       deltaResult.usageDeductionFailureReason,

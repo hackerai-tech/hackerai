@@ -12,6 +12,7 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import {
   extractErrorDetails,
   getProviderErrorCategory,
+  getProviderStatusCode,
   isRetriableProviderStreamDisconnectError,
 } from "@/lib/utils/error-utils";
 
@@ -153,6 +154,7 @@ export type AuxiliaryVisionModelRunner = (args: {
     raw?: unknown;
   };
   model?: string;
+  finishReason?: unknown;
 }>;
 
 const AUXILIARY_VISION_SYSTEM_PROMPT = `You are a precise visual-analysis component for a text-only cybersecurity assistant. Describe only what is visibly supported by the image.
@@ -206,6 +208,7 @@ const defaultModelRunner: AuxiliaryVisionModelRunner = async ({
     text: result.text,
     usage: result.usage,
     model: result.response.modelId,
+    finishReason: result.finishReason,
   };
 };
 
@@ -259,6 +262,8 @@ export async function describeImageWithAuxiliaryVision({
     const combinedSignal = abortSignal
       ? AbortSignal.any([abortSignal, timeoutController.signal])
       : timeoutController.signal;
+    let emptyDescription = false;
+    let responseFinishReason: string | null = null;
     try {
       combinedSignal.throwIfAborted();
       const result = await modelRunner({
@@ -281,6 +286,20 @@ export async function describeImageWithAuxiliaryVision({
       combinedSignal.throwIfAborted();
       const description = result.text.trim();
       if (!description) {
+        emptyDescription = true;
+        // Keep provider-specific raw reasons and response bodies out of logs.
+        responseFinishReason =
+          typeof result.finishReason === "string" &&
+          [
+            "stop",
+            "length",
+            "content-filter",
+            "tool-calls",
+            "error",
+            "other",
+          ].includes(result.finishReason)
+            ? result.finishReason
+            : null;
         throw new Error("Auxiliary vision model returned an empty description");
       }
       const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
@@ -327,7 +346,23 @@ export async function describeImageWithAuxiliaryVision({
         : timeoutController.signal.aborted
           ? new AuxiliaryVisionTimeoutError(timeoutMs, error)
           : error;
-      const category = getProviderErrorCategory(extractErrorDetails(failure));
+      const details = extractErrorDetails(failure);
+      const category = getProviderErrorCategory(details);
+      // An invalid provider body can fail after HTTP 200. Preserve that wire
+      // status for diagnostics without broadening the retry classifier.
+      const httpStatusCode =
+        typeof details.statusCode === "number"
+          ? details.statusCode
+          : typeof details.statusCode === "string"
+            ? Number(details.statusCode)
+            : undefined;
+      const providerStatusCode =
+        httpStatusCode !== undefined &&
+        Number.isInteger(httpStatusCode) &&
+        httpStatusCode >= 100 &&
+        httpStatusCode <= 599
+          ? httpStatusCode
+          : getProviderStatusCode(details);
       const willRetry =
         attempt === 0 &&
         !abortSignal?.aborted &&
@@ -352,11 +387,20 @@ export async function describeImageWithAuxiliaryVision({
           duration_ms: Date.now() - startedAt,
           attempt: attempt + 1,
           will_retry: willRetry,
+          provider_error_category: category,
+          ...(providerStatusCode && {
+            provider_status_code: providerStatusCode,
+          }),
           failure_reason: abortSignal?.aborted
             ? "caller_aborted"
             : category === "timeout"
               ? "timeout"
-              : "provider_error",
+              : emptyDescription
+                ? "empty_description"
+                : "provider_error",
+          ...(emptyDescription && {
+            response_finish_reason: responseFinishReason,
+          }),
           error_name: failure instanceof Error ? failure.name : "UnknownError",
         }),
       );

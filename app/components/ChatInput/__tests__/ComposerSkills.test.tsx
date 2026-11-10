@@ -1,3 +1,4 @@
+import { AttachmentButton } from "../../AttachmentButton";
 import {
   act,
   fireEvent,
@@ -12,7 +13,6 @@ import {
 } from "@/app/contexts/ComposerState";
 import {
   ComposerSkillSelections,
-  ComposerSkillsButton,
   ComposerSkillsProvider,
   useComposerSkills,
 } from "../ComposerSkills";
@@ -77,9 +77,17 @@ jest.mock("@/convex/_generated/api", () => ({
 }));
 jest.mock("@/lib/analytics/client", () => ({
   captureQueuedAuthenticatedEvent: (...args: unknown[]) => mockCapture(...args),
+  captureAuthenticatedEvent: jest.fn(),
+  captureUpgradeCtaImpression: jest.fn(),
 }));
 
-function Input() {
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ subscription: "pro", isCheckingProPlan: false }),
+}));
+jest.mock("@/app/hooks/usePricingDialog", () => ({
+  redirectToPricing: jest.fn(),
+}));
+function Input({ plusMenu = false }: { plusMenu?: boolean }) {
   const skills = useComposerSkills();
   const input = useComposerInput();
   const { setInput } = useComposerActions();
@@ -103,16 +111,42 @@ function Input() {
             mockSubmit();
         }}
       />
-      <ComposerSkillsButton />
+      {skills &&
+        (plusMenu ? (
+          <AttachmentButton
+            onAttachClick={jest.fn()}
+            skillsMenu={{
+              layout: "desktop",
+              disabled: skills.disabled,
+              onSelect: skills.openSelector,
+            }}
+            goalMenu={{
+              layout: "desktop",
+              active: false,
+              onSelect: jest.fn(),
+              onFocusComposer: jest.fn(),
+            }}
+          />
+        ) : (
+          <button
+            aria-label="Add skill"
+            disabled={skills.disabled}
+            onClick={skills.toggle}
+          >
+            Add skill
+          </button>
+        ))}
     </div>
   );
 }
 function Harness({
   chatId = "chat-1",
   disabled = false,
+  plusMenu = false,
 }: {
   chatId?: string;
   disabled?: boolean;
+  plusMenu?: boolean;
 }) {
   return (
     <ComposerStateProvider>
@@ -121,7 +155,7 @@ function Harness({
         disabled={disabled}
         onSavingChange={mockSaving}
       >
-        <Input />
+        <Input plusMenu={plusMenu} />
       </ComposerSkillsProvider>
     </ComposerStateProvider>
   );
@@ -343,4 +377,28 @@ it("completes an inline dollar token with forward Tab", async () => {
   fireEvent.keyDown(input, { key: "Tab" });
   await waitFor(() => expect(input).toHaveValue("Review "));
   expect(mockSelect).toHaveBeenCalledWith({ chatId: "chat-1", ids: ["one"] });
+});
+
+it("hands off from the plus menu above Pursue goal to a focused skill selector", async () => {
+  render(<Harness plusMenu />);
+  fireEvent.keyDown(
+    screen.getByRole("button", { name: "Add files, skills, or pursue a goal" }),
+    { key: "Enter" },
+  );
+  const items = await screen.findAllByRole("menuitem");
+  expect(items.map((item) => item.textContent)).toEqual([
+    "Add photos & files",
+    "Skills",
+    expect.stringContaining("Pursue goal"),
+  ]);
+  fireEvent.click(
+    screen.getByRole("menuitem", { name: "Skills", exact: true }),
+  );
+  const search = await screen.findByRole("combobox", { name: "Search skills" });
+  await waitFor(() => expect(search).toHaveFocus());
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  fireEvent.keyDown(search, { key: "Enter" });
+  await waitFor(() =>
+    expect(mockSelect).toHaveBeenCalledWith({ chatId: "chat-1", ids: ["one"] }),
+  );
 });

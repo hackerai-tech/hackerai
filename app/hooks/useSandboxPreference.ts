@@ -6,7 +6,12 @@ import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
 import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
-import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import {
+  DESKTOP_UPDATE_URL,
+  isTauriEnvironment,
+  openInBrowser,
+} from "@/app/hooks/useTauri";
+import { getDesktopFileFailure } from "@/lib/centrifugo/desktop-file-errors";
 import {
   captureAuthenticatedEvent,
   subscribeAuthenticatedAnalytics,
@@ -437,6 +442,27 @@ export function useSandboxPreference(
         publishBridgeState(true, "connected", bridge.getEnvironmentId?.());
       } catch (error) {
         if (cancelled) return;
+        if (getDesktopFileFailure(error) === "native_ipc_denied") {
+          bridgeRecoveryExhausted = false;
+          bridgeRecoveryPausedOffline = false;
+          clearBridgeRecovery(true);
+          publishBridgeState(false, "failed");
+          toast.error("HackerAI Desktop can't access files", {
+            id: "desktop-file-access-denied",
+            duration: 20_000,
+            description:
+              "Install the latest version, then fully quit and reopen the app. If it still fails, contact support.",
+            action: {
+              label: "Download update",
+              onClick: () => {
+                void openInBrowser(DESKTOP_UPDATE_URL).then((opened) => {
+                  if (!opened) window.location.href = DESKTOP_UPDATE_URL;
+                });
+              },
+            },
+          });
+          return;
+        }
         if (isUnauthenticatedConvexError(error)) {
           // Registration can reject before the bridge has a connection to
           // terminate. Match the heartbeat/token path: wait for an explicit

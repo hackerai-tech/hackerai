@@ -3,7 +3,10 @@ import {
   OperationChannelRouter,
   sandboxOperationChannel,
 } from "../operation-channels";
-import { CentrifugoMessageReassembler } from "../centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  RelayOutputOverflowError,
+} from "../centrifugo-transport";
 
 class Subscription extends EventEmitter {
   presence = jest.fn().mockResolvedValue({ clients: {} });
@@ -48,6 +51,136 @@ describe("operation channels", () => {
   afterEach(() => {
     router.stop();
     jest.useRealTimers();
+  });
+
+  it("retries only a lost readiness acknowledgement and starts the file operation once", async () => {
+    const sub = new Subscription();
+    sub.publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+    client.newSubscription.mockReturnValueOnce(sub);
+    const handle = jest.fn();
+    const start = request("ready", "file_append");
+    await router.dispatch(start, handle);
+    await router.dispatch(start, handle);
+    expect(sub.publish).toHaveBeenCalledTimes(2);
+    expect(sub.publish.mock.calls[0]).toEqual(sub.publish.mock.calls[1]);
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a lost file reply without replaying the mutation and waits for receiver acknowledgement", async () => {
+    const append = jest.fn();
+    const start = {
+      ...request("append", "file_append"),
+      fileResponseAck: true,
+    };
+    await router.dispatch(start, append);
+    subs[0].presence.mockResolvedValue({
+      clients: { receiver: { user: "user-1" } },
+    });
+    subs[0].publish.mockRejectedValueOnce({ code: 1 });
+    const reply = { type: "file_ok", requestId: "append" };
+    await router.publish(reply);
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    await router.dispatch(start, append);
+    expect(append).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(subs[0].publish).toHaveBeenLastCalledWith(reply);
+    // Broker acceptance alone is insufficient: the receiver may be absent.
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    subs[0].emit("publication", {
+      data: {
+        type: "file_response_ack",
+        requestId: "append",
+        targetConnectionId: "wrong",
+      },
+    });
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    subs[0].emit("publication", {
+      data: {
+        type: "file_response_ack",
+        requestId: "append",
+        targetConnectionId: "conn-1",
+      },
+    });
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    const count = subs[0].publish.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(subs[0].publish).toHaveBeenCalledTimes(count);
+    await router.dispatch(start, append);
+    expect(append).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an oversized retained reply without retrying or replaying the file operation", async () => {
+    const handle = jest.fn();
+    const start = {
+      ...request("oversized", "file_read"),
+      fileResponseAck: true,
+    };
+    await router.dispatch(start, handle);
+    subs[0].publish.mockClear();
+    subs[0].presence.mockResolvedValue({
+      clients: { receiver: { user: "user-1" } },
+    });
+    await expect(
+      router.publish({
+        type: "file_read_result",
+        requestId: "oversized",
+        content: "x".repeat(3 * 1024 * 1024),
+      }),
+    ).rejects.toBeInstanceOf(RelayOutputOverflowError);
+    await jest.advanceTimersByTimeAsync(10000);
+    expect(subs[0].publish).toHaveBeenCalledTimes(1);
+    expect(subs[0].publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file_error", requestId: "oversized" }),
+    );
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+    await router.dispatch(start, handle);
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the first immutable file outcome and drops retained replies on stop", async () => {
+    await router.dispatch(
+      { ...request("file", "file_write"), fileResponseAck: true },
+      jest.fn(),
+    );
+    subs[0].presence.mockResolvedValue({
+      clients: { receiver: { user: "user-1" } },
+    });
+    const reply = { type: "file_ok", requestId: "file" };
+    await router.publish(reply);
+    reply.type = "file_error";
+    await router.publish({
+      type: "file_error",
+      requestId: "file",
+      message: "later delivery failure",
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(subs[0].publish).toHaveBeenLastCalledWith({
+      type: "file_ok",
+      requestId: "file",
+    });
+    router.stop();
+    const count = subs[0].publish.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(200000);
+    expect(subs[0].publish).toHaveBeenCalledTimes(count);
+  });
+
+  it("does not retransmit file contents to an absent receiver and expires retained state", async () => {
+    const handle = jest.fn();
+    const start = { ...request("expire", "file_read"), fileResponseAck: true };
+    await router.dispatch(start, handle);
+    await router.publish({
+      type: "file_read_result",
+      requestId: "expire",
+      content: "bounded fixture",
+    });
+    const count = subs[0].publish.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(200000);
+    expect(subs[0].publish).toHaveBeenCalledTimes(count);
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+    await router.dispatch(start, handle);
+    expect(handle).toHaveBeenCalledTimes(1);
   });
 
   it("retains an opted-in terminal reply until acknowledgement and never restarts on resume", async () => {

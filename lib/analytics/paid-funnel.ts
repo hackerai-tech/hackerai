@@ -55,8 +55,9 @@ export const PAID_FUNNEL_EVENTS = {
 
 export function cancellationCompletionInsertId(
   stripeSubscriptionId: string,
+  cancellationReasonId?: string,
 ): string {
-  return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}`;
+  return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}${cancellationReasonId ? `:${cancellationReasonId}` : ""}`;
 }
 
 export function billingPaymentRecoveryInsertId(

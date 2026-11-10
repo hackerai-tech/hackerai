@@ -6,6 +6,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { createHash } from "node:crypto";
 
 export { EXTRA_USAGE_MULTIPLIER };
 
@@ -79,6 +80,7 @@ const logExtraUsageConvexFailure = ({
   organizationId,
   amountPoints,
   usageSettlementId,
+  settlementOperationId,
   convexFunction,
   operation,
   startedAt,
@@ -90,6 +92,7 @@ const logExtraUsageConvexFailure = ({
   organizationId?: string;
   amountPoints?: number;
   usageSettlementId?: string;
+  settlementOperationId?: string;
   convexFunction: string;
   operation: string;
   startedAt: number;
@@ -101,6 +104,7 @@ const logExtraUsageConvexFailure = ({
     organization_id: organizationId,
     amount_points: amountPoints,
     usage_settlement_id: usageSettlementId,
+    settlement_operation_id: settlementOperationId,
     convex_function: convexFunction,
     operation,
     component: "extra_usage",
@@ -126,6 +130,8 @@ export interface ExtraUsageBalance {
 }
 
 export interface DeductBalanceResult {
+  /** A rejected action may already have committed; never automatically debit it again. */
+  outcomeUnknown?: boolean;
   success: boolean;
   newBalanceDollars: number;
   insufficientFunds: boolean;
@@ -144,6 +150,125 @@ export interface DeductBalanceResult {
   memberDisabled?: boolean;
   /** Team-pool-only: admin disabled the team pool entirely */
   poolDisabled?: boolean;
+}
+
+/** Report caller reconciliation, never receipt contents or a second exception. */
+function logDeductionReconciliation(
+  scope: "personal" | "team",
+  settlementOperationId: string,
+  verifiedResultSuccess: boolean | undefined,
+) {
+  try {
+    // Shape cannot establish provenance. Fingerprint bounded UUID operation
+    // forms for offline joins; never add a caller ID in plaintext.
+    const safeOperationId =
+      settlementOperationId.length <= 80 &&
+      /^[a-z0-9:-]+$/i.test(settlementOperationId) &&
+      (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        settlementOperationId,
+      ) ||
+        /^wallet-v1:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:step:[0-9]{1,16}|final)$/i.test(
+          settlementOperationId,
+        ));
+    phLogger.info("Extra usage deduction reconciliation", {
+      event: "extra_usage_deduction_reconciliation",
+      reconciliation_diagnostic_version: 1,
+      scope,
+      ...(safeOperationId && {
+        settlement_operation_fingerprint: createHash("sha256")
+          .update(settlementOperationId)
+          .digest("hex"),
+      }),
+      reconciliation_outcome:
+        verifiedResultSuccess === undefined
+          ? "unknown_noreplay"
+          : "completed_receipt_verified",
+      ...(verifiedResultSuccess !== undefined && {
+        verified_result_success: verifiedResultSuccess,
+      }),
+    });
+  } catch {
+    // Optional telemetry must not change the financial result or trigger replay.
+  }
+}
+
+/** Read once after a lost acknowledgement. Never resume or replay a wallet action. */
+async function reconcileCompletedDeduction({
+  userId,
+  organizationId,
+  pointsUsed,
+  usageSettlementId,
+  settlementOperationId,
+}: {
+  userId: string;
+  organizationId?: string;
+  pointsUsed: number;
+  usageSettlementId?: string;
+  settlementOperationId: string;
+}): Promise<DeductBalanceResult | undefined> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The race also bounds a transport that does not honor cancellation. The
+    // scoped client cannot change the singleton's options or retry an action.
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Settlement receipt read deadline exceeded"));
+      }, 1500);
+    });
+    const receipt = await Promise.race([
+      getConvexClient(controller.signal).query(
+        api.settlementReceipts.getForBackend,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          operation_id: settlementOperationId,
+          user_id: userId,
+          ...(organizationId !== undefined && {
+            organization_id: organizationId,
+          }),
+        },
+      ),
+      deadline,
+    ]);
+    if (
+      !receipt ||
+      receipt.operation_id !== settlementOperationId ||
+      receipt.user_id !== userId ||
+      receipt.organization_id !== organizationId ||
+      receipt.usage_settlement_id !== usageSettlementId ||
+      receipt.amount_points !== pointsUsed ||
+      receipt.status !== "completed" ||
+      !receipt.result
+    )
+      return;
+
+    // Pending + applied proves a debit, not completion of the enclosing action
+    // or its reload. Only a consistent completed result may clear UNKNOWN.
+    const applied = receipt.debits.filter(
+      (debit) => debit.outcome === "applied",
+    );
+    if (receipt.result.success) {
+      const debit = applied[0];
+      if (
+        applied.length !== 1 ||
+        debit.previous_balance_points === null ||
+        debit.new_balance_points === null ||
+        debit.previous_balance_points - debit.new_balance_points !==
+          pointsUsed ||
+        !debit.result.success
+      )
+        return;
+    } else if (applied.length !== 0) return;
+    return receipt.result;
+  } catch {
+    // Missing, pending, failed, or timed-out reads cannot prove non-application.
+    // Preserve the original failure and the caller's no-adjustment fence.
+    return;
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
 }
 
 /**
@@ -280,6 +405,7 @@ export async function deductFromBalance(
   userId: string,
   pointsUsed: number,
   usageSettlementId?: string,
+  settlementOperationId = crypto.randomUUID(),
 ): Promise<DeductBalanceResult> {
   // No-op: nothing to deduct, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsUsed <= 0) {
@@ -305,6 +431,7 @@ export async function deductFromBalance(
         userId,
         amountPoints: pointsUsed,
         usageSettlementId,
+        settlementOperationId,
       },
     );
 
@@ -323,11 +450,24 @@ export async function deductFromBalance(
       userId,
       amountPoints: pointsUsed,
       usageSettlementId,
+      settlementOperationId,
       convexFunction: "extraUsageActions.deductWithAutoReload",
       operation: "deduct_extra_usage_balance",
       startedAt,
       error,
     });
+    const completed = await reconcileCompletedDeduction({
+      userId,
+      pointsUsed,
+      usageSettlementId,
+      settlementOperationId,
+    });
+    logDeductionReconciliation(
+      "personal",
+      settlementOperationId,
+      completed?.success,
+    );
+    if (completed) return completed;
     // Do NOT report as insufficientFunds — this was a service error, not an
     // empty balance. Returning insufficientFunds: false lets the caller
     // distinguish transient failures from actual balance exhaustion.
@@ -336,6 +476,7 @@ export async function deductFromBalance(
       newBalanceDollars: 0,
       insufficientFunds: false,
       monthlyCapExceeded: false,
+      outcomeUnknown: true,
     };
   }
 }
@@ -415,6 +556,7 @@ export async function deductFromTeamBalance(
   userId: string,
   pointsUsed: number,
   usageSettlementId?: string,
+  settlementOperationId = crypto.randomUUID(),
 ): Promise<DeductBalanceResult> {
   if (pointsUsed <= 0) {
     return {
@@ -437,6 +579,7 @@ export async function deductFromTeamBalance(
         userId,
         amountPoints: pointsUsed,
         usageSettlementId,
+        settlementOperationId,
       },
     );
 
@@ -459,16 +602,31 @@ export async function deductFromTeamBalance(
       organizationId,
       amountPoints: pointsUsed,
       usageSettlementId,
+      settlementOperationId,
       convexFunction: "teamExtraUsageActions.deductWithAutoReloadForTeam",
       operation: "deduct_team_extra_usage_balance",
       startedAt,
       error,
     });
+    const completed = await reconcileCompletedDeduction({
+      userId,
+      organizationId,
+      pointsUsed,
+      usageSettlementId,
+      settlementOperationId,
+    });
+    logDeductionReconciliation(
+      "team",
+      settlementOperationId,
+      completed?.success,
+    );
+    if (completed) return completed;
     return {
       success: false,
       newBalanceDollars: 0,
       insufficientFunds: false,
       monthlyCapExceeded: false,
+      outcomeUnknown: true,
     };
   }
 }

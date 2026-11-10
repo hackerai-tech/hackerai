@@ -502,6 +502,49 @@ describe("current experiment reservation", () => {
   };
   beforeEach(() => jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000));
   afterEach(() => jest.restoreAllMocks());
+  it.each(["control", "test"])(
+    "retains the original shown Pro invitation after follow-ups in %s",
+    async (variant) => {
+      const { ctx } = setup();
+      const row = await invoke(reserveExperiment, ctx, {
+        ...experimentArgs,
+        experiment_key: "abliterated_pro_three_steps_v1",
+        feedback_phase: "abliterated_pro_three_steps_feedback_v1",
+        experiment_variant: variant,
+      });
+      const followup = { chat_id: args.chat_id, message_id: "later-answer" };
+      expect(await invoke(getForMessage, ctx, followup)).toBeNull();
+      await invoke(record, ctx, { id: row._id, action: "shown" });
+      expect(await invoke(getForMessage, ctx, followup)).toMatchObject({
+        _id: row._id,
+        message_id: args.message_id,
+        experiment_request_id: args.request_id,
+      });
+      expect(
+        await invoke(getForMessage, ctx, {
+          ...followup,
+          chat_id: "other-chat",
+        }),
+      ).toBeNull();
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      });
+      expect(await invoke(getForMessage, ctx, followup)).toBeNull();
+    },
+  );
+  it("keeps other survey phases pinned to their original message", async () => {
+    const { ctx } = setup();
+    const row = await invoke(reserveExperiment, ctx, experimentArgs);
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(
+      await invoke(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: "later-answer",
+      }),
+    ).toBeNull();
+  });
   it.each([
     [
       "abliterated_paid_first_step_v2",
@@ -516,6 +559,16 @@ describe("current experiment reservation", () => {
     [
       "abliterated_paid_moderated_default_v1",
       "abliterated_paid_moderated_default_feedback_v1",
+      "test",
+    ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "abliterated_pro_three_steps_feedback_v1",
+      "control",
+    ],
+    [
+      "abliterated_pro_three_steps_v1",
+      "abliterated_pro_three_steps_feedback_v1",
       "test",
     ],
   ])(
@@ -692,6 +745,7 @@ describe("current experiment reservation", () => {
         answer: "not_checked",
       }),
     ).toMatchObject({ answer: "not_checked" });
+    await invoke(record, ctx, { id: row._id, action: "shown" });
     expect(
       await invoke(record, ctx, {
         id: row._id,
@@ -728,5 +782,56 @@ describe("current experiment reservation", () => {
         answer: "solved",
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("Max experiment reservations", () => {
+  const max = {
+    ...args,
+    subscription_tier: "ultra",
+    survey_kind: "current_experiment",
+    experiment_key: "max_grok_46_quality_v1",
+    experiment_variant: "test",
+    experiment_request_id: args.request_id,
+    feedback_phase: "max_grok_46_quality_feedback_v1",
+    selected_model_override: "hackerai-max",
+    assigned_model: "model-grok-4.6",
+    baseline_model: "model-glm-5.3",
+  };
+  it("preserves the first account reservation across concurrent requests and ties feedback to the response", async () => {
+    const { ctx } = setup();
+    const row = await invoke(reserveExperiment, ctx, max);
+    expect(row).toMatchObject({
+      experiment_key: max.experiment_key,
+      assigned_model: "model-grok-4.6",
+    });
+    expect(
+      await invoke(reserveExperiment, ctx, {
+        ...max,
+        request_id: "second",
+        experiment_request_id: "second",
+        message_id: "second",
+      }),
+    ).toBeNull();
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).toMatchObject({ answer: "solved" });
+  });
+  it.each([
+    { selected_model_override: "hackerai-pro" },
+    { mode: "ask" },
+    { assigned_model: "model-glm-5.3" },
+    { feedback_phase: "abliterated_max_moderated_feedback_v1" },
+    { baseline_model: "unknown" },
+  ])("rejects forged cohort context %p", async (patch) => {
+    const { ctx } = setup();
+    expect(
+      await invoke(reserveExperiment, ctx, { ...max, ...patch }),
+    ).toBeNull();
   });
 });

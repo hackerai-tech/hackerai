@@ -9,23 +9,33 @@ import { Button } from "@/components/ui/button";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
 import { AGENT_CONTEXT_FEEDBACK_CLIENT_VERSION } from "@/lib/feedback/agent-context";
+import { getSourceMessageHref } from "@/lib/findings/source-message";
 import {
   PAID_TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
   reasonsForAnswer,
   type TaskOutcomeAnswer,
   type TaskOutcomeReason,
+  PRO_THREE_STEPS_TASK_OUTCOME_PHASE,
 } from "@/lib/feedback/task-outcome";
 
 type Survey = Doc<"task_outcome_surveys">;
+function isPersistentProFeedback(row: Survey) {
+  return (
+    row.survey_kind === "current_experiment" &&
+    row.feedback_phase === PRO_THREE_STEPS_TASK_OUTCOME_PHASE
+  );
+}
+
 function captureSurvey(event: string, row: Survey) {
   const commit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
   captureQueuedAuthenticatedEvent({
     event: `task_outcome_survey_${event}`,
     properties: {
       ...taskOutcomeProperties(row),
-      survey_ui_version: 4,
-      ...(row.survey_kind === "agent_context" &&
+      survey_ui_version: isPersistentProFeedback(row) ? 5 : 4,
+      ...((row.survey_kind === "agent_context" ||
+        isPersistentProFeedback(row)) &&
         /^[a-f0-9]{40}$/i.test(commit ?? "") && {
           hackerai_frontend_build_commit: commit,
         }),
@@ -67,6 +77,7 @@ export function TaskOutcomeFeedback({
       key={messageId}
       survey={survey}
       record={recordCompatible}
+      currentMessageId={messageId}
     />
   );
 }
@@ -76,8 +87,10 @@ export function TaskOutcomeFeedback({
 export function TaskOutcomeFeedbackPrompt({
   survey,
   record,
+  currentMessageId,
 }: {
   survey: Survey | null | undefined;
+  currentMessageId?: string;
   record: (args: {
     id: Survey["_id"];
     action: "shown" | "viewed" | "dismissed" | "answered" | "reason";
@@ -101,17 +114,32 @@ export function TaskOutcomeFeedbackPrompt({
   const [error, setError] = useState(false);
   const [answer, setAnswer] = useState<TaskOutcomeAnswer>();
   const [done, setDone] = useState(false);
+  const refersToEarlierAnswer = Boolean(
+    visibleSurvey &&
+    currentMessageId &&
+    isPersistentProFeedback(visibleSurvey) &&
+    visibleSurvey.message_id !== currentMessageId,
+  );
 
   useEffect(() => {
     if (
       !survey ||
-      survey.shown_at ||
       survey.answered_at ||
       survey.dismissed_at ||
+      survey.expires_at <= Date.now() ||
       claimed.current ||
       hidden
     )
       return;
+    if (survey.shown_at) {
+      // A view is not an answer. Keep the same Pro invitation available when
+      // users return after trying the result; the server still owns deduplication.
+      if (isPersistentProFeedback(survey)) {
+        claimed.current = true;
+        setVisibleSurvey(survey);
+      }
+      return;
+    }
     const element = anchor.current;
     if (!element || typeof IntersectionObserver === "undefined") return;
     let intersecting = false;
@@ -245,7 +273,7 @@ export function TaskOutcomeFeedbackPrompt({
   return (
     <div
       ref={question}
-      className={`relative mb-3 mt-2 flex w-full max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
+      className={`relative mb-3 mt-2 flex w-full max-w-full flex-wrap items-center gap-x-4 gap-y-2 text-sm ${isPersistentProFeedback(visibleSurvey) ? "rounded-xl border border-border bg-muted/30 p-4 pr-14" : `pr-11 sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}`}
       role="group"
       aria-label="Task feedback"
     >
@@ -260,13 +288,17 @@ export function TaskOutcomeFeedbackPrompt({
               ? answer === "helpful"
                 ? "What helped?"
                 : "What could be better?"
-              : "Did this help?"}
+              : isPersistentProFeedback(visibleSurvey)
+                ? refersToEarlierAnswer
+                  ? "Did the earlier answer help with your task?"
+                  : "Did this help with your task?"
+                : "Did this help?"}
         </p>
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="absolute right-0 top-0 size-[44px] rounded-full text-muted-foreground/70 hover:text-foreground sm:size-8"
+          className={`absolute size-[44px] rounded-full text-muted-foreground/70 hover:text-foreground sm:size-8 ${isPersistentProFeedback(visibleSurvey) ? "right-1 top-1" : "right-0 top-0"}`}
           aria-label="Dismiss task feedback"
           onClick={dismiss}
           disabled={busy}
@@ -274,6 +306,26 @@ export function TaskOutcomeFeedbackPrompt({
           <X className="size-4" />
         </Button>
       </div>
+      {isPersistentProFeedback(visibleSurvey) && !answer && (
+        <p className="basis-full text-xs text-muted-foreground">
+          Answer when you’ve tried the result. Your feedback helps improve
+          answers.
+          {refersToEarlierAnswer && (
+            <>
+              {" "}
+              <a
+                className="underline underline-offset-2"
+                href={getSourceMessageHref(
+                  visibleSurvey.chat_id,
+                  visibleSurvey.message_id,
+                )}
+              >
+                Review that answer
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {!done && (
         <>
           {answer ? (

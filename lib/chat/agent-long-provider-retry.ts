@@ -2,6 +2,7 @@ import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
+import type { ToolResultCycle } from "@/lib/chat/tool-loop-observer";
 import type { SubscriptionTier } from "@/types";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import {
@@ -18,6 +19,7 @@ type MessagePartLike = {
   output?: unknown;
   result?: unknown;
   errorText?: unknown;
+  executionOutcome?: unknown;
 };
 
 type RetryDecisionOptions = {
@@ -25,9 +27,21 @@ type RetryDecisionOptions = {
   finishReason?: string;
   providerContentBlocked?: boolean;
   stoppedDueToDoomLoop?: boolean;
+  confirmedToolFailureLoop?: boolean;
   stoppedDueToAssistantContentLoop?: boolean;
   detectAssistantContentLoop?: boolean;
 };
+
+/** Only the early stop for one repeatedly rejected call skips provider fallback. */
+export const isConfirmedToolFailureLoopStop = (
+  stoppedDueToDoomLoop: boolean,
+  cycle: ToolResultCycle | undefined,
+): boolean =>
+  stoppedDueToDoomLoop &&
+  cycle?.confirmedNonExecution === true &&
+  cycle.cycleLength === 1 &&
+  cycle.toolCallCount === 1 &&
+  cycle.repeatCount >= 4;
 
 export type AssistantContentLoopDetection = {
   detected: boolean;
@@ -82,6 +96,16 @@ const getPartState = (part: unknown): string | undefined => {
 const isToolPart = (part: unknown): boolean =>
   getPartType(part)?.startsWith("tool-") ?? false;
 
+const hasUnknownExecutionOutcome = (value: unknown, depth = 0): boolean => {
+  if (!value || typeof value !== "object" || depth > 3) return false;
+  const candidate = value as MessagePartLike;
+  return (
+    candidate.executionOutcome === "unknown" ||
+    hasUnknownExecutionOutcome(candidate.output, depth + 1) ||
+    hasUnknownExecutionOutcome(candidate.result, depth + 1)
+  );
+};
+
 const hasToolOutputOrError = (part: unknown): boolean => {
   if (!part || typeof part !== "object") return false;
   const candidate = part as MessagePartLike;
@@ -109,6 +133,7 @@ export const getProviderOutputDiagnostics = (parts: unknown[]) => ({
   completed_tool_count: parts.filter(isCompletedToolPart).length,
   has_durable_output: hasDurableAssistantPart(parts),
   has_step_boundary: parts.some((part) => getPartType(part) === "step-start"),
+  uncertain_tool_outcome: hasUncertainProviderToolOutcome(parts),
 });
 
 /** Shared eligibility and skip reason so telemetry cannot drift from behavior. */
@@ -145,12 +170,16 @@ export type ProviderDisconnectContinuation = {
   preservedTextPartCount: number;
 };
 
+export type ProviderDisconnectContinuationRejection =
+  "missing_assistant" | "missing_step_boundary";
+
 const DEEPSEEK_PRO_MODEL = "model-deepseek-v4-pro-0813";
 const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
  * Return the next bounded app-side recovery after a stream disconnect.
- * Max uses DeepSeek 1017 then a context-checked Grok attempt. Existing Pro
+ * Max uses GLM for Grok text recovery or DeepSeek 1017 for images/control,
+ * then a context-checked Grok attempt. Existing Pro
  * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
  */
 export const getNextProviderDisconnectRetryModel = ({
@@ -174,9 +203,14 @@ export const getNextProviderDisconnectRetryModel = ({
   | "model-grok-4.6"
   | undefined => {
   if (selectedModelOverride === "hackerai-max") {
+    // Match the recovery already started. New image results can change the
+    // next media policy while GLM is in flight; they must not erase its slot.
+    const isFirstRecovery =
+      failedModel === DEEPSEEK_1017_MODEL_KEY ||
+      (originalModel === "model-grok-4.6" && failedModel === "model-glm-5.3");
     if (
       completedRetryCount !== 1 ||
-      failedModel !== DEEPSEEK_1017_MODEL_KEY ||
+      !isFirstRecovery ||
       requiredContextTokens === undefined ||
       !Number.isFinite(requiredContextTokens) ||
       requiredContextTokens < 0
@@ -221,10 +255,21 @@ export const getNextProviderDisconnectRetryModel = ({
 export const prepareProviderDisconnectContinuation = (
   messages: UIMessage[],
   {
-    allowCompletedTail = false,
     allowEmptyResponse = false,
-  }: { allowCompletedTail?: boolean; allowEmptyResponse?: boolean } = {},
+    onRejected,
+  }: {
+    allowEmptyResponse?: boolean;
+    onRejected?: (reason: ProviderDisconnectContinuationRejection) => void;
+  } = {},
 ): ProviderDisconnectContinuation | undefined => {
+  const reject = (reason: ProviderDisconnectContinuationRejection) => {
+    try {
+      onRejected?.(reason);
+    } catch {
+      // Diagnostics cannot change the existing recovery decision.
+    }
+    return undefined;
+  };
   const assistantIndex = messages.findLastIndex(
     (message) => message.role === "assistant",
   );
@@ -238,7 +283,7 @@ export const prepareProviderDisconnectContinuation = (
         preservedUnknownToolCount: 0,
         preservedTextPartCount: 0,
       };
-    return undefined;
+    return reject("missing_assistant");
   }
 
   const assistant = messages[assistantIndex];
@@ -246,7 +291,7 @@ export const prepareProviderDisconnectContinuation = (
   const lastStepStartIndex = parts.findLastIndex(
     (part) => getPartType(part) === "step-start",
   );
-  if (lastStepStartIndex < 0) return undefined;
+  if (lastStepStartIndex < 0) return reject("missing_step_boundary");
 
   const lastCompletedToolIndex = parts.findLastIndex(isCompletedToolPart);
   const preserveUntil = Math.max(
@@ -256,7 +301,8 @@ export const prepareProviderDisconnectContinuation = (
       : lastStepStartIndex,
   );
   const removedPartCount = parts.length - preserveUntil;
-  if (removedPartCount <= 0 && !allowCompletedTail) return undefined;
+  // A completed tool can be the last part when the next provider request fails
+  // before emitting a new step. Its result is durable even with no tail to trim.
 
   const preservedParts = parts.slice(0, preserveUntil);
   let preservedUnknownToolCount = 0;
@@ -295,6 +341,59 @@ export const prepareProviderDisconnectContinuation = (
         getPartType(part) === "text" && Boolean(getPartText(part)?.trim()),
     ).length,
   };
+};
+
+export const AGENT_LOOP_CONTINUATION_PROMPT =
+  "The previous model was stopped for repeating work without progress. Continue from the preserved tool results, not from the start of the request. Count the calls and completed actions already shown against the user's limits. Do not repeat completed actions or unchanged failed calls. Change approach only within the user's instructions, or report the blocker. Do not claim an action succeeded without a confirming tool result.";
+
+/** Keep settled tool transactions across a loop fallback without replaying looping prose. */
+export const prepareAgentLoopContinuation = (
+  messages: UIMessage[],
+): { messages: UIMessage[] } | undefined => {
+  const preserved: UIMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      preserved.push(message);
+      continue;
+    }
+    // A loop replacement must never erase an in-flight or unknown operation.
+    // Dynamic tools are not used by this harness; reject rather than drop them.
+    if (
+      message.parts.some(
+        (part) =>
+          getPartType(part) === "dynamic-tool" ||
+          (isStaticToolUIPart(part) && part.providerExecuted === true) ||
+          (isToolPart(part) &&
+            (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part))),
+      )
+    )
+      return undefined;
+    const tools = message.parts.filter(isCompletedToolPart);
+    if (!tools.length) continue;
+    // Each settled transaction keeps its original ID and output. Text/reasoning
+    // may be the loop itself and must not seed the replacement model's answer.
+    preserved.push({
+      ...message,
+      parts: message.parts
+        .filter(
+          (part) =>
+            getPartType(part) === "step-start" || isCompletedToolPart(part),
+        )
+        .map((part) => {
+          if (!isStaticToolUIPart(part)) return part;
+          // Provider item IDs/signatures refer to the discarded model leg.
+          // Keep client tool transactions portable across the model switch.
+          const { callProviderMetadata, ...portable } = part;
+          if ("resultProviderMetadata" in portable) {
+            const { resultProviderMetadata, ...withoutResultMetadata } =
+              portable;
+            return withoutResultMetadata;
+          }
+          return portable;
+        }),
+    });
+  }
+  return { messages: preserved };
 };
 
 const isRestartableInterruptedToolInput = (part: unknown): boolean => {
@@ -337,9 +436,143 @@ export const isTerminalEmptyAssistantResponse = (
   finishReason === "stop" &&
   parts.every((part) => isFallbackSafeProviderPart(part) || isToolPart(part));
 
-/** Unknown tool outcomes require user review before any model continuation. */
+export const AGENT_FINISH_CONTINUATION_PROMPT =
+  "Your previous response stopped without completing the next action. Continue from the completed work and tool results already shown. Do not repeat a tool action whose outcome is unknown. Either finish the next useful action, report a concrete blocker, or give a clear, verified partial result.";
+export const AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE =
+  "\n\nI stopped before completing the next action. The work above is preserved, but I could not verify the remaining result. You can continue this chat to investigate further.";
+
+export type AgentFinishContinuation = {
+  reason: "empty_after_tools" | "announced_next_action";
+  messages: UIMessage[];
+};
+
+/** One safe continuation for a normal Agent stop that did not finish its work. */
+export const prepareAgentFinishContinuation = (
+  messages: UIMessage[],
+  finishReason?: string,
+): AgentFinishContinuation | undefined => {
+  if (finishReason !== "stop") return undefined;
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  if (!assistant) return undefined;
+  const parts = assistant.parts ?? [];
+  if (
+    messages.some(
+      (message) =>
+        message.role === "assistant" &&
+        (message.parts ?? []).some(
+          (part) =>
+            isToolPart(part) &&
+            (!isCompletedToolPart(part) || hasUnknownExecutionOutcome(part)),
+        ),
+    )
+  )
+    return undefined;
+
+  const completedToolCount = parts.filter(isCompletedToolPart).length;
+  if (
+    completedToolCount &&
+    isTerminalEmptyAssistantResponse(parts, finishReason)
+  ) {
+    const continuation = prepareProviderDisconnectContinuation(messages);
+    return continuation
+      ? { reason: "empty_after_tools", messages: continuation.messages }
+      : undefined;
+  }
+
+  const lastToolIndex = parts.findLastIndex(isToolPart);
+  const finalText = parts
+    .slice(lastToolIndex + 1)
+    .filter((part) => getPartType(part) === "text")
+    .map((part) => getPartText(part) ?? "")
+    .join(" ")
+    .trim();
+  // Only a short, explicit promise by the assistant to do work is eligible.
+  // A result, blocker, partial report, or proposed user action is a valid stop.
+  if (finalText.length === 0 || finalText.length > 400) return undefined;
+  const finalParagraph =
+    finalText
+      .split(/\n\s*\n/)
+      .at(-1)
+      ?.trim() ?? "";
+  if (
+    /[.!?]\s+\S/.test(finalParagraph) ||
+    !/^(?:I(?:'|’)?ll|I will|I need to|I(?:'|’)?m going to|Let me|Next,? I(?:'|’)?ll)\s+(?:check|test|inspect|verify|run|read|search|review|trace|try|examine|compare|investigate|reproduce|probe|look\s+(?:at|for|into))\b/i.test(
+      finalParagraph,
+    ) ||
+    /\b(?:if you(?:'|’)?d like|if you want|once you|you can|unable to|cannot|can(?:'|’)?t)\b/i.test(
+      finalParagraph,
+    )
+  )
+    return undefined;
+
+  return { reason: "announced_next_action", messages };
+};
+
+/** Prefer the bounded finish message over generic provider-empty handling. */
+export const classifyAgentRetryFinalization = ({
+  messages,
+  finishReason,
+  finishContinuationAttempted,
+  aborted,
+}: {
+  messages: UIMessage[];
+  finishReason?: string;
+  finishContinuationAttempted: boolean;
+  aborted: boolean;
+}): "finish_continuation_limit" | "terminal_empty" | undefined => {
+  if (aborted) return undefined;
+  if (
+    finishContinuationAttempted &&
+    prepareAgentFinishContinuation(messages, finishReason)
+  )
+    return "finish_continuation_limit";
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  return isTerminalEmptyAssistantResponse(assistant?.parts ?? [], finishReason)
+    ? "terminal_empty"
+    : undefined;
+};
+
+/** Make the bounded second stop honest in both the live stream and saved chat. */
+export const appendAgentFinishContinuationLimit = (
+  messages: UIMessage[],
+  writer: UIMessageStreamWriter,
+  messageId: string,
+): void => {
+  const assistant = messages.findLast(
+    (message) => message.role === "assistant",
+  );
+  if (!assistant) return;
+  assistant.parts = [
+    ...assistant.parts,
+    {
+      type: "text",
+      text: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+      state: "done",
+    },
+  ];
+  const textId = `agent-finish-limit-${messageId}`;
+  writer.write({ type: "text-start", id: textId });
+  writer.write({
+    type: "text-delta",
+    id: textId,
+    delta: AGENT_FINISH_CONTINUATION_LIMIT_MESSAGE,
+  });
+  writer.write({ type: "text-end", id: textId });
+};
+
+/** Unknown tool outcomes require review before automatic provider recovery. */
 export const hasUncertainProviderToolOutcome = (parts: unknown[]): boolean =>
-  parts.some((part) => isToolPart(part) && !isCompletedToolPart(part));
+  parts.some(
+    (part) =>
+      isToolPart(part) &&
+      (hasUnknownExecutionOutcome(part) ||
+        (!isCompletedToolPart(part) &&
+          !isRestartableInterruptedToolInput(part))),
+  );
 
 export const PROVIDER_EMPTY_RESPONSE_MESSAGE =
   "The model finished without a usable answer. Any completed tool results remain in this chat, but I could not safely finish the response. Continue this chat to review the work before repeating any action.";
@@ -433,6 +666,46 @@ const tokenSliceEquals = (
   return true;
 };
 
+// A model can repeat a longer block with a short, changing transition between
+// copies. Require sustained, dense repetition so ordinary recurring labels or
+// references do not trigger recovery. Bound work independently of answer size.
+const detectInterruptedTextLoop = (
+  tokens: string[],
+): AssistantContentLoopDetection => {
+  const tail = tokens.slice(-256);
+  for (let length = 8; length <= 32; length++) {
+    const phrases = new Map<
+      string,
+      { start: number; end: number; count: number }
+    >();
+    for (let start = 0; start + length <= tail.length; start++) {
+      const phrase = tail.slice(start, start + length).join(" ");
+      const previous = phrases.get(phrase);
+      if (!previous) {
+        phrases.set(phrase, { start, end: start + length, count: 1 });
+        continue;
+      }
+      if (start < previous.end) continue;
+      previous.end = start + length;
+      previous.count++;
+      const repeatedTokens = previous.count * length;
+      if (
+        previous.count >= 6 &&
+        repeatedTokens >= 96 &&
+        repeatedTokens / (previous.end - previous.start) >= 0.7
+      ) {
+        return {
+          detected: true,
+          reason: "repeated_text",
+          repeatedText: phrase,
+          repeatCount: previous.count,
+        };
+      }
+    }
+  }
+  return NO_ASSISTANT_CONTENT_LOOP;
+};
+
 export const detectAssistantContentLoopFromText = (
   text: string,
 ): AssistantContentLoopDetection => {
@@ -483,7 +756,7 @@ export const detectAssistantContentLoopFromText = (
     }
   }
 
-  return NO_ASSISTANT_CONTENT_LOOP;
+  return detectInterruptedTextLoop(tokens);
 };
 
 export const detectAssistantContentLoopFromParts = (
@@ -536,6 +809,8 @@ export const shouldRetryProviderStreamWithFallback = (
   parts: unknown[],
   options: RetryDecisionOptions,
 ): boolean => {
+  // A provider switch cannot fix the same call rejected before execution.
+  if (options.confirmedToolFailureLoop) return false;
   // Provider content filters are model-specific. Retry the run once with the
   // configured fallback model; the caller's bounded retry guard keeps a second
   // content-filter finish terminal.

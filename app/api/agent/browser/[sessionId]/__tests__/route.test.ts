@@ -1,4 +1,9 @@
-import type { NextRequest } from "next/server";
+import { after, type NextRequest } from "next/server";
+import { phLogger } from "@/lib/posthog/server";
+import {
+  BrowserPreviewUnavailable,
+  getActiveBrowserSessionName,
+} from "@/lib/ai/browser-handoff/server";
 
 const mockStartRelay = jest.fn(async () => {
   if (mockFailure === "relay-start") throw new Error("Relay startup failed");
@@ -7,15 +12,21 @@ const mockStartRelay = jest.fn(async () => {
 const mockStopRelay = jest.fn(async () => {
   if (mockFailure === "relay-stop") throw new Error("Relay still draining");
 });
-const mockCapture = jest.fn(async () => {
+const mockRenewRelay = jest.fn(async (..._args: unknown[]) => undefined);
+const mockCapture = jest.fn(async (..._args: unknown[]) => {
   if (mockFailure === "capture" || mockFailure === "unpause")
-    throw new Error("Capture failed");
+    throw new Error(
+      "PRIVATE capture failed: https://private.invalid/?token=PRIVATE_TOKEN",
+    );
   return { image: "fresh" };
 });
 const mockResize = jest.fn(async (..._args: unknown[]) => ({
   image: "resized",
 }));
-const mockSendInput = jest.fn(async (..._args: unknown[]) => undefined);
+const mockSendInput = jest.fn(async (..._args: unknown[]) => {
+  if (mockFailure === "pointer-release")
+    throw new Error("Pointer release failed");
+});
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
 let mockRunActive = true;
@@ -56,22 +67,49 @@ jest.mock("next/server", () => ({
 jest.mock("@/convex/_generated/api", () => ({
   api: { browserHandoffs: new Proxy({}, { get: (_target, name) => name }) },
 }));
-jest.mock("@/lib/auth/get-user-id", () => ({ getUserID: async () => "owner" }));
+jest.mock("@/lib/auth/get-user-id", () => ({
+  getUserID: async () => {
+    if (mockFailure === "auth") throw new Error("Not signed in");
+    return "owner";
+  },
+}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
-    query: async () => ({
-      sessionId: mockSessionId,
-      state: mockState,
-      runActive: mockRunActive,
-      controlledSessionName: "default",
-    }),
+    query: async () => {
+      if (mockFailure === "lookup")
+        throw new Error("Backend lookup unavailable");
+      if (mockFailure === "missing") return null;
+      return {
+        sessionId: mockSessionId,
+        runId: `run_${"a".repeat(26)}`,
+        chatId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        directory: "/PRIVATE_BROWSER_DIRECTORY",
+        grant: "PRIVATE_GRANT",
+        state: mockState,
+        runActive: mockRunActive,
+        controlledSessionName: "default",
+      };
+    },
     mutation: mockMutation,
   }),
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { event: jest.fn(), flush: jest.fn() },
+  phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserRelayRenewFailureContext: () => ({
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: "other_error",
+    relay_renew_command_exit_code: "none",
+  }),
+  browserSessionReadFailureContext: () =>
+    mockFailure === "read-active"
+      ? {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }
+      : undefined,
   BrowserPreviewUnavailable: class extends Error {
     constructor(public state: string) {
       super(state);
@@ -80,23 +118,30 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   resizeBrowserViewport: (...args: unknown[]) => mockResize(...args),
   sendBrowserInput: (...args: unknown[]) => mockSendInput(...args),
   startBrowserRelay: () => mockStartRelay(),
-  renewBrowserRelay: async () => undefined,
+  renewBrowserRelay: (...args: unknown[]) => mockRenewRelay(...args),
   stopBrowserRelays: () => mockStopRelay(),
-  connectBrowserSandbox: async () => ({}),
-  getActiveBrowserSessionName: async () =>
-    mockFailure === "identity" ? "another-browser" : "default",
+  connectBrowserSandbox: async () => {
+    if (mockFailure === "connect") throw new Error("PRIVATE sandbox");
+    return {};
+  },
+  getActiveBrowserSessionName: jest.fn(async () => {
+    if (mockFailure === "read-active")
+      throw new BrowserPreviewUnavailable("loading");
+    return mockFailure === "identity" ? "another-browser" : "default";
+  }),
   setAgentBrowserPaused: (...args: Parameters<typeof mockPause>) =>
     mockPause(...args),
-  captureBrowserFrame: () => mockCapture(),
+  captureBrowserFrame: (...args: unknown[]) => mockCapture(...args),
   getPrivateStreamPort: async () => 1234,
 }));
 
 let post: typeof import("../route").POST;
+let get: typeof import("../route").GET;
 beforeAll(async () => {
   const original = process.env.CONVEX_SERVICE_ROLE_KEY;
   process.env.CONVEX_SERVICE_ROLE_KEY = "test-only-service-key";
   try {
-    post = (await import("../route")).POST;
+    ({ POST: post, GET: get } = await import("../route"));
   } finally {
     if (original === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
     else process.env.CONVEX_SERVICE_ROLE_KEY = original;
@@ -118,6 +163,234 @@ const jsonBody = (value: unknown) =>
     },
   });
 
+const preview = (
+  fresh: boolean,
+  requestId = "iad1::qa123-1794060000000-abcdef123456",
+) =>
+  get(
+    {
+      headers: new Headers({
+        "x-vercel-id": requestId,
+      }),
+      nextUrl: new URL(
+        `https://preview.example/api/agent/browser/test${fresh ? "?fresh=1" : ""}`,
+      ),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it.each([false, true])(
+  "honors an authenticated fresh screenshot request (fresh: %s)",
+  async (fresh) => {
+    mockFailure = "";
+    mockState = "human";
+    const result = await preview(fresh);
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ frame: { image: "fresh" } });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "default",
+      fresh,
+      undefined,
+      expect.any(Function),
+    );
+  },
+);
+
+it.each([
+  ["auth", 401],
+  ["identity", 409],
+  ["missing", 404],
+])(
+  "does not capture a fresh screenshot after %s validation fails",
+  async (failure, status) => {
+    mockFailure = String(failure);
+    mockState = "human";
+    expect((await preview(true)).status).toBe(status);
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(phLogger.info).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["lookup", "resolve_session", "disconnected"],
+  ["connect", "connect_sandbox", "disconnected"],
+  ["read-active", "read_active_session", "loading"],
+  ["capture", "capture_frame", "disconnected"],
+])(
+  "records one bounded GET diagnostic for %s without changing the response",
+  async (failure, stage, state) => {
+    mockFailure = failure;
+    const response = await preview(true);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({
+        diagnostic_version: 1,
+        failure_stage: stage,
+        preview_state: state,
+        browser_session_id: mockSessionId,
+        fresh_requested: true,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+      }),
+    );
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    if (failure === "read-active")
+      expect(fields).toMatchObject({
+        active_session_read_diagnostic_version: 1,
+        active_session_read_error_kind: "file_not_found",
+        active_session_read_http_status: 404,
+      });
+    else
+      expect(fields).not.toHaveProperty(
+        "active_session_read_diagnostic_version",
+      );
+    if (failure === "lookup")
+      expect(fields).not.toHaveProperty("trigger_run_id");
+    else
+      expect(fields).toMatchObject({
+        trigger_run_id: `run_${"a".repeat(26)}`,
+        run_active: true,
+        handoff_state: "recovery",
+      });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    expect(mockMutation).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["", "read-active"])(
+  "attributes verification failure without replaying a successful capture (%s)",
+  async (failure) => {
+    mockFailure = failure;
+    mockRunActive = false;
+    jest
+      .mocked(getActiveBrowserSessionName)
+      .mockResolvedValueOnce("default")
+      .mockRejectedValueOnce(
+        failure === "read-active"
+          ? new BrowserPreviewUnavailable("loading")
+          : new Error("PRIVATE verification"),
+      );
+    const response = await preview(false);
+    expect(response.status).toBe(503);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_get_unavailable",
+      expect.objectContaining({
+        failure_stage: "verify_active_session",
+        preview_state: failure === "read-active" ? "loading" : "disconnected",
+        run_active: false,
+        ...(failure === "read-active" && {
+          active_session_read_diagnostic_version: 1,
+          active_session_read_error_kind: "file_not_found",
+          active_session_read_http_status: 404,
+        }),
+      }),
+    );
+  },
+);
+
+it("does not add a failure diagnostic to an already closed browser", async () => {
+  mockCapture.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
+  expect((await preview(false)).status).toBe(410);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["PRIVATE_BUILD", "unknown"],
+  ["A".repeat(40), "a".repeat(40)],
+])("bounds correlation fields for build %s", async (build, expectedBuild) => {
+  const prior = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = build;
+  try {
+    expect(
+      (await preview(true, "PRIVATE_HEADER?token=PRIVATE_TOKEN")).status,
+    ).toBe(503);
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(fields).not.toHaveProperty("request_id");
+    expect(fields).toMatchObject({ web_build_commit: expectedBuild });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  } finally {
+    if (prior === undefined)
+      delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = prior;
+  }
+});
+
+it("keeps a successful frame when optional diagnostics are unavailable", async () => {
+  mockFailure = "";
+  expect((await preview(false)).status).toBe(200);
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it("contains asynchronous diagnostic delivery failure after the response", async () => {
+  const response = await preview(false);
+  expect(response.status).toBe(503);
+  const callback = jest.mocked(after).mock.calls[0][0];
+  expect(typeof callback).toBe("function");
+  jest
+    .mocked(phLogger.flush)
+    .mockRejectedValueOnce(new Error("PRIVATE transport"));
+  if (typeof callback === "function")
+    await expect(callback()).resolves.toBeUndefined();
+});
+
+it("preserves a capture failure response when logging throws", async () => {
+  jest.mocked(phLogger.info).mockImplementationOnce(() => {
+    throw new Error("PRIVATE logging failure");
+  });
+  const result = await preview(false);
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+});
+
+it("adds capture suboperation context to the single existing GET failure event", async () => {
+  mockCapture.mockImplementationOnce(async (...args: unknown[]) => {
+    const observe = args[5] as (context: unknown) => void;
+    observe({
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
+    });
+    throw new Error("PRIVATE frame stream");
+  });
+  const result = await preview(false);
+  expect(result.status).toBe(503);
+  expect(await result.json()).toEqual({ state: "disconnected" });
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_get_unavailable",
+    expect.objectContaining({
+      failure_stage: "capture_frame",
+      capture_stage: "frame_bridge",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 6,
+      capture_open_receipt_version: 1,
+      capture_open_receipt_status: "recorded",
+      capture_open_phase: "completed",
+      capture_open_exit_code: 0,
+      capture_open_session_matches: true,
+      capture_open_age: "older",
+      capture_open_idle_env_version: 1,
+      capture_open_idle_env: "15m",
+    }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+});
+
 const take = () =>
   post(
     {
@@ -130,6 +403,49 @@ const take = () =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+const heartbeat = () =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+      }),
+      body: jsonBody({ action: "heartbeat", grant: "g".repeat(32) }),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it("reports only the remaining confirmed relay lease after renewal", async () => {
+  const result = await heartbeat();
+  expect(result.status).toBe(200);
+  const data = await result.json();
+  expect(data.state).toBe("human");
+  expect(data.leaseValidForMs).toBeGreaterThan(0);
+  expect(data.leaseValidForMs).toBeLessThanOrEqual(25_000);
+  expect(Number.isFinite(data.processingDurationMs)).toBe(true);
+  expect(data.processingDurationMs).toBeGreaterThanOrEqual(0);
+  expect(mockRenewRelay).toHaveBeenCalledTimes(1);
+});
+
+it("does not renew a rejected grant", async () => {
+  mockMutation.mockResolvedValueOnce(false);
+  const result = await heartbeat();
+  expect(result.status).toBe(409);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["auth", 401],
+  ["lookup", 503],
+])("distinguishes %s failure from lease expiry", async (failure, status) => {
+  mockFailure = String(failure);
+  const result = await heartbeat();
+  expect(result.status).toBe(status);
+  expect(mockRenewRelay).not.toHaveBeenCalled();
+  expect(mockMutation).not.toHaveBeenCalled();
+});
 
 it.each(["identity", "capture", "claim"])(
   "keeps recovery paused after a %s failure",
@@ -161,6 +477,21 @@ it("admits takeover from the dedicated waiting state", async () => {
     "beginTakeoverForBackend",
     "finishTakeoverForBackend",
   ]);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStartRelay.mock.invocationCallOrder[0],
+  );
+  expect(mockSendInput.mock.calls[0][3]).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 0,
+      y: 0,
+      button: "left",
+    },
+  ]);
+  expect(mockSendInput.mock.invocationCallOrder[0]).toBeLessThan(
+    mockCapture.mock.invocationCallOrder[0],
+  );
 });
 
 it("keeps recovery when rollback cannot reopen the gate", async () => {
@@ -222,6 +553,37 @@ const exitTakeover = (note: unknown = "") =>
     } as NextRequest,
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
+
+it("releases a disconnected fallback pointer before the resume snapshot", async () => {
+  mockFailure = "none";
+  expect((await exitTakeover()).status).toBe(200);
+  expect(mockSendInput.mock.calls[0][3]).toEqual([
+    {
+      type: "input_mouse",
+      eventType: "mouseReleased",
+      x: 0,
+      y: 0,
+      button: "left",
+    },
+  ]);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockSendInput.mock.invocationCallOrder[0],
+  );
+  expect(mockSendInput.mock.invocationCallOrder[0]).toBeLessThan(
+    mockCapture.mock.invocationCallOrder[0],
+  );
+});
+
+it("keeps the Agent paused if pointer release fails during resume", async () => {
+  mockFailure = "pointer-release";
+  expect((await exitTakeover()).status).toBe(503);
+  expect(mockPaused).toBe(true);
+  expect(mockCapture).not.toHaveBeenCalled();
+  expect(mockPause).not.toHaveBeenCalled();
+  expect(
+    mockMutation.mock.calls.some(([name]) => name === "saveExitNoteForBackend"),
+  ).toBe(false);
+});
 
 it("saves even a blank note before unpausing and preserves the gate on save failure", async () => {
   mockFailure = "none";
@@ -350,11 +712,16 @@ it("drains late relay startup before rollback after capture fails", async () => 
   const pending = take();
   for (let i = 0; i < 20; i++) await Promise.resolve();
   expect(mockStartRelay).toHaveBeenCalled();
-  expect(mockStopRelay).not.toHaveBeenCalled();
+  // Old grants were drained before this startup; rollback of the new relay
+  // must still wait for its outstanding startup to settle.
+  expect(mockStopRelay).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStartRelay.mock.invocationCallOrder[0],
+  );
   expect(mockPaused).toBe(true);
   finish("https://relay.example");
   expect((await pending).status).toBe(503);
-  expect(mockStopRelay).toHaveBeenCalledTimes(1);
+  expect(mockStopRelay).toHaveBeenCalledTimes(2);
   expect(mockPaused).toBe(false);
 });
 
@@ -453,3 +820,204 @@ it.each([undefined, "1"])(
     expect(mockMutation).not.toHaveBeenCalled();
   },
 );
+
+const diagnosticPost = (body: Record<string, unknown>) =>
+  post(
+    {
+      url: "https://preview.example/api/agent/browser/test",
+      headers: new Headers({
+        origin: "https://preview.example",
+        "content-type": "application/json",
+        "x-vercel-id": "iad1::qa123-1794060000000-abcdef123456",
+      }),
+      body: jsonBody(body),
+    } as NextRequest,
+    { params: Promise.resolve({ sessionId: mockSessionId }) },
+  );
+
+it.each(["take", "resume"])(
+  "preserves %s rollback and attaches the existing capture helper's finite failure context",
+  async (action) => {
+    const context = {
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 3,
+      capture_deadline_diagnostic_version: 1,
+      capture_deadline_phase: "awaiting_response",
+    };
+    mockCapture.mockImplementationOnce(async (...args) => {
+      const observe = args[5];
+      if (typeof observe === "function") observe(context);
+      throw new Error("PRIVATE capture output and frame");
+    });
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "PRIVATE_GRANT".repeat(3),
+      note: "PRIVATE_NOTE",
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(mockMutation).toHaveBeenCalledWith(
+      action === "take" ? "abortTakeoverForBackend" : "abortResumeForBackend",
+      expect.any(Object),
+    );
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action,
+        failure_stage: "capture_frame",
+        post_capture_diagnostic_version: 1,
+        post_capture_context_status: "recorded",
+        ...context,
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toMatch(
+      /PRIVATE|default/,
+    );
+  },
+);
+
+it("distinguishes the resume frame-age guard from a capture helper failure", async () => {
+  mockFailure = "";
+  mockCapture.mockImplementationOnce(async () => ({
+    image: "PRIVATE_FRAME",
+    capturedAt: Date.now() - 16_000,
+  }));
+  const response = await diagnosticPost({
+    action: "resume",
+    browserSessionName: "default",
+    requestId: "11111111-1111-4111-8111-111111111111",
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ state: "disconnected" });
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      failure_stage: "capture_frame",
+      post_capture_diagnostic_version: 1,
+      post_capture_context_status: "frame_age_guard",
+    }),
+  );
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).not.toHaveProperty("capture_stage");
+  expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+});
+
+it.each([
+  ["take", "lookup", "resolve_session", "disconnected"],
+  ["take", "connect", "connect_sandbox", "disconnected"],
+  ["take", "read-active", "read_active_session", "loading"],
+  ["take", "capture", "capture_frame", "disconnected"],
+  ["take", "relay-start", "start_relay", "disconnected"],
+  ["resume", "capture", "capture_frame", "disconnected"],
+  ["viewport", "connect", "connect_sandbox", "disconnected"],
+  ["release", "relay-stop", "drain_relays", "recovery"],
+  ["heartbeat", "renew", "renew_relay", "recovery"],
+])(
+  "preserves %s/%s POST503 and records its bounded stage",
+  async (action, failure, stage, state) => {
+    mockFailure = failure;
+    if (failure === "renew")
+      mockRenewRelay.mockRejectedValueOnce(new Error("PRIVATE renewal"));
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "PRIVATE_GRANT".repeat(3),
+      note: "PRIVATE_NOTE",
+      width: 390,
+      height: 844,
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state });
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        diagnostic_version: 1,
+        action,
+        failure_stage: stage,
+        preview_state: state,
+        request_id: "iad1::qa123-1794060000000-abcdef123456",
+        browser_session_id: mockSessionId,
+      }),
+    );
+    const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+    expect(Object.keys(fields).sort()).toEqual(
+      (failure === "lookup"
+        ? [
+            "diagnostic_version",
+            "action",
+            "failure_stage",
+            "failure_kind",
+            "preview_state",
+            "web_build_commit",
+            "request_id",
+            "browser_session_id",
+          ]
+        : [
+            "diagnostic_version",
+            "action",
+            "failure_stage",
+            "failure_kind",
+            "preview_state",
+            "web_build_commit",
+            "request_id",
+            "browser_session_id",
+            "handoff_state",
+            "run_active",
+            "trigger_run_id",
+          ]
+      )
+        .concat(
+          failure === "capture"
+            ? ["post_capture_diagnostic_version", "post_capture_context_status"]
+            : [],
+          failure === "renew"
+            ? [
+                "relay_renew_diagnostic_version",
+                "relay_renew_error_kind",
+                "relay_renew_command_exit_code",
+              ]
+            : [],
+        )
+        .sort(),
+    );
+    expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
+  },
+);
+
+it.each(["auth", "identity", "missing"])(
+  "does not report non503 POST %s as unavailable",
+  async (failure) => {
+    mockFailure = failure;
+    const response = await take();
+    expect([401, 404, 410]).toContain(response.status);
+    expect(phLogger.info).not.toHaveBeenCalled();
+  },
+);
+
+it("bounds an unknown action and preserves POST503 when its diagnostic sink throws", async () => {
+  mockFailure = "lookup";
+  const response = await diagnosticPost({
+    action: "PRIVATE_ACTION",
+    note: "PRIVATE_NOTE",
+  });
+  expect(response.status).toBe(503);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({ action: "unknown" }),
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+  jest.mocked(phLogger.info).mockImplementationOnce(() => {
+    throw new Error("PRIVATE sink");
+  });
+  const failedSink = await take();
+  expect(failedSink.status).toBe(503);
+  expect(await failedSink.json()).toEqual({ state: "disconnected" });
+});

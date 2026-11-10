@@ -407,6 +407,18 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         connection_id: "conn-2",
       },
     ],
+    current_cancellation_reasons: [
+      {
+        _id: "current-cancel-user",
+        user_id: userId,
+        reason_details: "private feedback",
+      },
+      {
+        _id: "current-cancel-other",
+        user_id: otherUserId,
+        reason_details: "keep",
+      },
+    ],
     cancellation_reason_details: [
       {
         _id: "cancel-detail-user",
@@ -455,6 +467,25 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         stripe_invoice_id: "in-other",
         recovery_result: "pending",
         occurred_at: 1,
+      },
+    ],
+    usage_settlement_operations: [
+      {
+        _id: "settlement-operation-user",
+        user_id: userId,
+        operation_id: "op-1",
+        status: "pending",
+        amount_points: 20,
+      },
+    ],
+    usage_settlement_debits: [
+      {
+        _id: "settlement-debit-user",
+        user_id: userId,
+        operation_id: "op-1",
+        outcome: "applied",
+        sequence: 0,
+        amount_points: 20,
       },
     ],
     usage_logs: [
@@ -629,6 +660,14 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
     paid_start_mix_daily: [
       { _id: "paid-mix", day: "2026-06-21", tier: "pro", plan: "pro" },
     ],
+    billing_operations: [
+      {
+        _id: "billing-owner",
+        stripe_customer_id: "cus_user",
+        token: "in-flight-owner",
+        writing: true,
+      },
+    ],
     processed_webhooks: [{ _id: "webhook", event_id: "evt_1" }],
     processed_checkout_sessions: [{ _id: "checkout", session_key: "cs_1" }],
     user_deletion_fences: [
@@ -756,6 +795,39 @@ describe("userDeletion", () => {
       USER_DELETION_TABLE_POLICY,
     } = await import("../userDeletion");
     const tables = seedTables();
+    tables.captcha_attempts = [
+      {
+        _id: "captcha-user",
+        user_id: "user_123",
+        chat_id: "private-chat",
+        run_id: "private-run",
+        task_id: 123,
+        state: "processing",
+      },
+      {
+        _id: "captcha-other",
+        user_id: "user_other",
+        chat_id: "other-chat",
+        run_id: "other-run",
+        task_id: 456,
+        state: "ready",
+        cost_dollars: 0.003,
+      },
+    ];
+    tables.captcha_daily_limits = [
+      {
+        _id: "captcha-limit-user",
+        bucket: "user:user_123",
+        day: "2026-11-05",
+        attempts: 1,
+      },
+      {
+        _id: "captcha-limit-global",
+        bucket: "global",
+        day: "2026-11-05",
+        attempts: 2,
+      },
+    ];
     const { ctx, scheduler, deletedIds } = createMockCtx(tables);
 
     await deleteAllUserDataByService.handler(ctx as any, {
@@ -771,6 +843,23 @@ describe("userDeletion", () => {
       ).toBe(false);
     }
 
+    expect(row(tables, "captcha_attempts", "captcha-user")).toMatchObject({
+      user_id: DELETED_USER_ID,
+      chat_id: "",
+      run_id: "deleted:captcha-user",
+      task_id: 123,
+      state: "processing",
+    });
+    expect(row(tables, "captcha_attempts", "captcha-other")).toMatchObject({
+      user_id: "user_other",
+      cost_dollars: 0.003,
+    });
+    expect(
+      row(tables, "captcha_daily_limits", "captcha-limit-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "captcha_daily_limits", "captcha-limit-global"),
+    ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
@@ -802,6 +891,12 @@ describe("userDeletion", () => {
       row(tables, "subagent_work_items", "subagent-work-other"),
     ).toBeTruthy();
 
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "current_cancellation_reasons", "current-cancel-other"),
+    ).toBeDefined();
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });
@@ -819,6 +914,20 @@ describe("userDeletion", () => {
     expect(
       row(tables, "involuntary_churn_events", "churn-other"),
     ).toMatchObject({ user_id: "user_other" });
+    expect(
+      row(tables, "usage_settlement_operations", "settlement-operation-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      status: "pending",
+    });
+    expect(
+      row(tables, "usage_settlement_debits", "settlement-debit-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      operation_id: "op-1",
+      outcome: "applied",
+    });
     expect(row(tables, "usage_logs", "usage-user")).toMatchObject({
       user_id: DELETED_USER_ID,
     });

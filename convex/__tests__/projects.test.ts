@@ -35,6 +35,11 @@ jest.mock("../lib/utils", () => ({
 jest.mock("../lib/suspensionGuards", () => ({
   assertUserCanAccessChatHistory: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock("../lib/sidebarChatAttention", () => ({
+  getSidebarChatAttention: jest.fn(async (_ctx: unknown, chats: unknown[]) =>
+    chats.map(() => ({})),
+  ),
+}));
 
 const {
   createProject,
@@ -266,13 +271,23 @@ describe("projects", () => {
     expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
   });
 
-  it("paginates project tasks through the user and project index", async () => {
+  it("paginates project tasks without exposing private prediction content", async () => {
     const page = {
       page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
       isDone: true,
       continueCursor: "",
     };
-    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const paginate = jest.fn<any>().mockResolvedValue({
+      ...page,
+      page: page.page.map((chat) => ({
+        ...chat,
+        objective_checkpoint: "private checkpoint",
+        next_actions: {
+          consumed: false,
+          batch: { suggestions: ["Private suggestion"] },
+        },
+      })),
+    });
     const order = jest.fn<any>().mockReturnValue({ paginate });
     const projectEq = jest.fn<any>().mockReturnThis();
     const withIndex = jest.fn<any>((indexName, applyIndex) => {

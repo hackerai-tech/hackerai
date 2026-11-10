@@ -32,7 +32,10 @@ import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { phLogger } from "@/lib/posthog/server";
 import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
-import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
+import {
+  LocalCommandRelayUnsubscribedError,
+  LocalFileRequestError,
+} from "../utils/local-sandbox-errors";
 import { saveSandboxGeneratedFile } from "@/convex/fileActions";
 import { getConvexClient } from "@/lib/db/convex-client";
 import * as storage from "@/convex/s3Utils";
@@ -215,7 +218,10 @@ describe("generated artifact delivery over HTTP", () => {
       files: {
         ...connected.files,
         stat: async () => {
-          throw new LocalCommandRelayUnsubscribedError("stale");
+          throw new LocalFileRequestError(
+            "relay_unsubscribed",
+            "Native relay absent",
+          );
         },
       },
       commands: {
@@ -283,6 +289,24 @@ describe("generated artifact delivery over HTTP", () => {
     expect(sandbox.commands.run).not.toHaveBeenCalled();
     expect(runMutation).not.toHaveBeenCalled();
     expect(context.fileAccumulator.add).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "agent_file_transfer_attempt_failed",
+      {
+        userId: "test-user",
+        chat_id: "chat-fixture",
+        trigger_run_id: null,
+        transfer_attempt_diagnostic_version: 2,
+        transfer_attempt_kind: "native",
+        sandbox_type: "desktop",
+        transfer_exit_code: null,
+        upload_reported_http_status: null,
+        upload_reported_storage_code: null,
+        upload_storage_diagnostic_present: false,
+        upload_signature_age_ms: null,
+        upload_signature_ttl_ms: null,
+        upload_signature_remaining_ms: null,
+      },
+    );
     expect(phLogger.event).toHaveBeenLastCalledWith(
       "agent_file_delivery_completed",
       expect.objectContaining({

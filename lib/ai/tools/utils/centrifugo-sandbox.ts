@@ -1,4 +1,24 @@
 import {
+  recordAttachmentDownloadFailure,
+  recordAttachmentDownloadBoundary,
+  type AttachmentDownloadBoundary,
+} from "./attachment-download-diagnostics";
+import {
+  DesktopFileBridgeError,
+  desktopFileUnavailableMessage,
+  getDesktopFileFailure,
+  parseDesktopFileFailure,
+  type DesktopFileFailure,
+} from "@/lib/centrifugo/desktop-file-errors";
+
+import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
+import { phLogger } from "@/lib/posthog/server";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
+import {
+  classifyPersistenceFailure,
+  persistenceCommandError,
+} from "./persistence-failure";
+import {
   createReceiverDiagnostics,
   type ReceiverCleanupReason,
 } from "@/lib/centrifugo/receiver-diagnostics";
@@ -39,13 +59,31 @@ import {
   fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
-import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+  getSandboxFileName,
+} from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
+import {
+  buildPosixCurlUploadCommand,
+  getUploadFailureDiagnostics,
+} from "./sandbox-upload-diagnostics";
 import { validateDownloadUrl } from "./path-validation";
+import {
+  buildUploadNetworkProbeCommand,
+  parseUploadNetworkProbe,
+  type UploadProbeShell,
+} from "./sandbox-upload-network-diagnostics";
 import {
   LocalCommandRelayUnsubscribedError,
   LocalCommandDispatchError,
   LocalFileRequestError,
+  NativePathResolutionError,
+  type NativePathResolutionFailure,
+  type NativePathReceiverMode,
+  getLocalFileRequestFailure,
   isLocalCommandRelayUnsubscribedError,
 } from "./local-sandbox-errors";
 
@@ -92,6 +130,19 @@ const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const COMMAND_CANCEL_RETRY_MS = 1500;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
+
+/** Classify rejected conversion output without retaining any path or output text. */
+function nativePathOutputShape(value: string) {
+  if (value.startsWith("\uFEFF")) return "leading_bom";
+  if (value.startsWith("\u001b")) return "leading_ansi";
+  if (/^["'](?:[A-Za-z]:[\\/]|\\\\)/.test(value))
+    return "quoted_windows_absolute";
+  if (/^[ \t]+(?:[A-Za-z]:[\\/]|\\\\)/.test(value))
+    return "whitespace_windows_absolute";
+  if (value.startsWith("/")) return "posix_absolute";
+  if (/(?:[A-Za-z]:[\\/]|\\\\)/.test(value)) return "embedded_windows_absolute";
+  return "relative_or_other";
+}
 
 type HttpClient = "curl" | "wget" | "powershell";
 
@@ -310,6 +361,19 @@ export interface CentrifugoConfig {
 export class CentrifugoSandbox extends EventEmitter {
   readonly sandboxKind = "centrifugo" as const;
   private activeClients: Centrifuge[] = [];
+  private nativeFileRelayConfirmed = false;
+  private nativeFileRelayConfirmation?: Promise<void>;
+  private readonly commandReceipts = new WeakMap<
+    CommandResult,
+    {
+      commandId: string;
+      acknowledgedOutput: boolean;
+      terminalAckPublished: boolean;
+      lastReceivedSequence: number;
+    }
+  >();
+  private readonly reportedNativePathFailures =
+    new Set<NativePathResolutionFailure>();
 
   constructor(
     private userId: string,
@@ -354,8 +418,63 @@ export class CentrifugoSandbox extends EventEmitter {
   supportsNativeFileRelay(): boolean {
     return (
       this.connectionInfo.isDesktop === true &&
-      this.connectionInfo.capabilities?.files === true
+      (this.connectionInfo.capabilities?.files === true ||
+        this.nativeFileRelayConfirmed)
     );
+  }
+
+  /** Call once before exposing this sandbox: artifact paths must not flip mid-run. */
+  confirmNativeFileRelay(): Promise<void> {
+    if (
+      this.connectionInfo.isDesktop !== true ||
+      this.connectionInfo.capabilities?.files === true
+    )
+      return Promise.resolve();
+    return (this.nativeFileRelayConfirmation ??= this.probeNativeFileRelay());
+  }
+
+  private async probeNativeFileRelay(): Promise<void> {
+    // A slow startup probe can leave a working Desktop registered as files=false.
+    // Confirm on that same connection before choosing artifact paths/transport.
+    // Do not grant commandStdin or bypass Local's private-storage preparation.
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 3000);
+    let failure: string | undefined;
+    let fileFailure: DesktopFileFailure | undefined;
+    try {
+      await this.dispatchFileRequest<FileStatResultMessage>(
+        { type: "file_stat", path: "." },
+        new Set(["file_stat_result"]),
+        3000,
+        controller.signal,
+      );
+      this.nativeFileRelayConfirmed = true;
+    } catch (error) {
+      failure = controller.signal.aborted
+        ? "timeout"
+        : getLocalFileRequestFailure(error);
+      fileFailure =
+        error instanceof LocalFileRequestError ? error.fileFailure : undefined;
+    } finally {
+      clearTimeout(deadline);
+    }
+    console.info(
+      JSON.stringify({
+        event: "desktop_file_capability_probe",
+        service: this.getRelayTrafficSource(),
+        request_id: this.triggerRunId,
+        connection_id: this.connectionInfo.connectionId,
+        outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
+        failure,
+        file_failure: fileFailure,
+      }),
+    );
+    if (!this.nativeFileRelayConfirmed) {
+      throw new DesktopFileBridgeError(
+        fileFailure ?? "unknown",
+        desktopFileUnavailableMessage(fileFailure ?? "unknown"),
+      );
+    }
   }
 
   supportsOperationChannels(): boolean {
@@ -371,6 +490,7 @@ export class CentrifugoSandbox extends EventEmitter {
     if (
       this.connectionInfo.isDesktop === true &&
       this.connectionInfo.capabilities?.files === false &&
+      !this.nativeFileRelayConfirmed &&
       this.workingDirectory
     ) {
       // The native adapter enforces allowedRoot, including symlinks. Do not
@@ -409,16 +529,16 @@ export class CentrifugoSandbox extends EventEmitter {
     const { capabilities, osInfo } = this.connectionInfo;
 
     if (osInfo) {
-      const { platform, arch, release, hostname } = osInfo;
+      const { platform: reportedPlatform, arch, release, hostname } = osInfo;
+      const platform = normalizeSandboxPlatform(reportedPlatform);
       const platformName = getPlatformDisplayName(platform);
 
-      const shellInfo = this.connectionInfo.isDesktop
-        ? platform === "win32"
-          ? "Desktop commands use Git Bash when available, otherwise cmd.exe /C. Confirm the active shell before choosing shell-specific syntax."
-          : 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
-        : platform === "win32"
-          ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
-          : `Commands are invoked via /bin/bash -c.`;
+      const shellInfo =
+        platform === "win32"
+          ? WINDOWS_COMMAND_SHELL_GUIDANCE
+          : this.connectionInfo.isDesktop
+            ? 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
+            : `Commands are invoked via /bin/bash -c.`;
       const agentBrowserProbe =
         platform === "win32"
           ? "where agent-browser && agent-browser --version"
@@ -433,12 +553,14 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
 
-Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Do not install host tools without the user's request.
+Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Other than the browser setup described below, do not install host tools without the user's request.
 
-Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
+Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
 
-    return null;
+    return `You are connected to a computer in DANGEROUS MODE. Commands run directly on the host without Docker isolation. OS information is unavailable; inspect the host before choosing shell-specific commands.
+${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
   }
 
   /**
@@ -453,6 +575,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     expectedTypes: Set<string>,
     timeoutMs = 30000,
     signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
   ): Promise<T> {
     signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
@@ -462,6 +585,38 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       );
     }
 
+    return this.dispatchFileRequest<T>(
+      input,
+      expectedTypes,
+      timeoutMs,
+      signal,
+      nativePaths,
+    );
+  }
+
+  // Only the read-only acquisition probe may enter here without an advertised
+  // capability. All public file operations still pass through runFileRequest.
+  private async dispatchFileRequest<T extends FileResponseMessage>(
+    input: FileRequestInput,
+    expectedTypes: Set<string>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    // Resolve before subscribing so a failed/cancelled shell lookup cannot
+    // leave a pending native mutation or an unhandled subscription callback.
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(input.path),
+      signal,
+      nativePaths,
+    );
+    const allowedRoot =
+      this.workingDirectory &&
+      (input.type === "file_write" || input.type === "file_append")
+        ? await this.toNativePath(this.workingDirectory, signal, nativePaths)
+        : undefined;
+    signal?.throwIfAborted();
     const requestId = crypto.randomUUID();
     const isolated = this.supportsOperationChannels();
     const channel = isolated
@@ -483,6 +638,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
+      let requestPublicationStarted = false;
+      let uncertainReadiness = false;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
       let trafficMetricRecorded = false;
@@ -542,7 +699,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       timeoutId = setTimeout(() => {
         fail(
           new LocalFileRequestError(
-            "timeout",
+            uncertainReadiness ? "readiness_timeout" : "timeout",
             `Desktop file request timed out after ${timeoutMs}ms connectionId=${this.connectionInfo.connectionId}`,
           ),
         );
@@ -568,20 +725,55 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           return;
         }
 
-        if (message.type === "file_error") {
-          fail(new LocalFileRequestError("native_error", message.message));
+        if (message.type !== "file_error" && !expectedTypes.has(message.type))
           return;
-        }
-        if (!expectedTypes.has(message.type)) {
-          return;
-        }
 
         settled = true;
-        cleanup();
-        resolve(message as T);
+        // Receipt is final even if the broker never acknowledges our ACK.
+        // Keep the subscription briefly for delivery, but bound caller cleanup.
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          if (message.type === "file_error")
+            reject(
+              new LocalFileRequestError(
+                "native_error",
+                message.message,
+                parseDesktopFileFailure(message.fileFailure) ??
+                  getDesktopFileFailure(new Error(message.message)),
+              ),
+            );
+          else resolve(message as T);
+        };
+        if (timeoutId) clearTimeout(timeoutId);
+        timeoutId = setTimeout(finish, 1000);
+        void Promise.resolve()
+          .then(() =>
+            isolated && subscription
+              ? subscription.publish({
+                  type: "file_response_ack",
+                  requestId,
+                  targetConnectionId: this.connectionInfo.connectionId,
+                })
+              : undefined,
+          )
+          .catch(() => {})
+          .finally(finish);
       });
 
       subscription.on("error", (ctx) => {
+        // Preserve this request through temporary resubscription failures. The
+        // sender retains its response; we must not replay the file operation.
+        if (
+          isolated &&
+          requestDispatchStarted &&
+          ctx.type === "subscribe" &&
+          (ctx.error.code < 100 ||
+            ("temporary" in ctx.error && ctx.error.temporary === true))
+        )
+          return;
         fail(
           new LocalFileRequestError(
             "subscription_error",
@@ -631,12 +823,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (settled || !subscription) return;
           const request = {
             ...input,
-            path: this.resolveWorkingPath(input.path),
+            ...(isolated ? { fileResponseAck: true } : {}),
+            // Native metadata and mutations must name the same file as shell
+            // transfers, including Windows /tmp and Git Bash drive paths.
+            path: nativePath,
             requestId,
-            ...(this.workingDirectory &&
-            (input.type === "file_write" || input.type === "file_append")
-              ? { allowedRoot: this.workingDirectory }
-              : {}),
+            ...(allowedRoot ? { allowedRoot } : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
@@ -649,11 +841,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 request as unknown as Record<string, unknown>,
                 () => !settled,
                 subscription!,
+                () => {
+                  requestPublicationStarted = true;
+                },
               );
             } else {
               await subscription.publish(request);
             }
           } catch (error) {
+            if (
+              isolated &&
+              requestPublicationStarted &&
+              !settled &&
+              (error instanceof RelayOperationReadinessTimeout ||
+                isCentrifugoPublishTimeout(error))
+            ) {
+              // Publication may have reached the client. Retain the original
+              // reply channel and deadline; never replay a write or append.
+              uncertainReadiness =
+                error instanceof RelayOperationReadinessTimeout;
+              return;
+            }
             fail(
               new LocalFileRequestError(
                 error instanceof RelayOperationReadinessTimeout
@@ -1199,12 +1407,19 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
-                resolve({
+                const completed = {
                   stdout,
                   stderr,
                   exitCode: message.exitCode,
                   pid: message.pid,
+                };
+                this.commandReceipts.set(completed, {
+                  commandId,
+                  acknowledgedOutput,
+                  terminalAckPublished: terminalCursorPublished,
+                  lastReceivedSequence: lastStreamSequence,
                 });
+                resolve(completed);
               };
               if (acknowledgedOutput && sequence !== undefined)
                 void sendOutputCursor("command_output_ack");
@@ -1276,13 +1491,20 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                     ? "terminal_ack_published"
                     : "legacy_terminal",
                 );
-                resolve({
+                const completed = {
                   stdout,
                   stderr: stderr
                     ? `${stderr}\n${message.message}`
                     : message.message,
                   exitCode: -1,
+                };
+                this.commandReceipts.set(completed, {
+                  commandId,
+                  acknowledgedOutput,
+                  terminalAckPublished: terminalCursorPublished,
+                  lastReceivedSequence: lastStreamSequence,
                 });
+                resolve(completed);
               };
               if (acknowledgedOutput && sequence !== undefined)
                 void sendOutputCursor("command_output_ack");
@@ -1432,6 +1654,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                   () => {
                     commandPublicationStarted = true;
                   },
+                  diagnostics.dispatchPhase,
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
@@ -1458,7 +1681,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 if (
                   !settled &&
                   isolated &&
-                  this.connectionInfo.isDesktop &&
                   commandPublicationStarted &&
                   (err instanceof RelayOperationReadinessTimeout ||
                     isCentrifugoPublishTimeout(err))
@@ -1585,9 +1807,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       /^[A-Za-z]:[\\/]/.test(path);
     if (isAbsolute) return path;
 
-    const separator = this.workingDirectory.includes("\\") ? "\\" : "/";
-    const base = this.workingDirectory.replace(/[\\/]+$/, "");
-    const relative = path.replace(/^[\\/]+/, "");
+    const windows = this.isWindows();
+    const separator =
+      windows && this.workingDirectory.includes("\\") ? "\\" : "/";
+    const base = this.workingDirectory.replace(
+      windows ? /[\\/]+$/ : /\/+$/,
+      "",
+    );
+    const relative = path.replace(windows ? /^[\\/]+/ : /^\/+/, "");
     return `${base}${separator}${relative}`;
   }
 
@@ -1603,9 +1830,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   // `echo `, redirect operator, and file path — keep data under 7000 chars.
   private static readonly MAX_CMD_CHUNK_SIZE = 7000;
 
-  /** Extract parent directory from a path, handling both `/` and `\` separators. */
-  private static parentDir(path: string): string {
-    const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  /** Backslashes are filename characters on POSIX, separators on Windows. */
+  private parentDir(path: string): string {
+    const lastSep = this.isWindows()
+      ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+      : path.lastIndexOf("/");
     return lastSep > 0 ? path.substring(0, lastSep) : "";
   }
 
@@ -1615,23 +1844,112 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    */
   isWindows(): boolean {
     return (
-      this.connectionInfo.osInfo?.platform === "win32" ||
-      this.shellKind === "cmd"
+      normalizeSandboxPlatform(this.connectionInfo.osInfo?.platform ?? "") ===
+        "win32" || this.shellKind === "cmd"
     );
   }
 
-  /**
-   * Convert Unix-style paths (e.g. /tmp/hackerai-upload/file.png) to
-   * Windows-native paths when running on a Windows sandbox.
-   * Paths are generated before the sandbox platform is known, so they
-   * always arrive in Unix form and need translating here.
-   */
-  private toNativePath(path: string): string {
+  /** Resolve POSIX mount paths using the same Windows shell that created them. */
+  private async toNativePath(
+    path: string,
+    signal?: AbortSignal,
+    nativePaths?: Map<string, string>,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     if (!this.isWindows()) return path;
-    if (path.startsWith("/tmp/")) {
+    if (
+      path.startsWith("/") &&
+      !path.startsWith("//") &&
+      (await this.detectShell(signal)) === "bash"
+    ) {
+      const cached = nativePaths?.get(path);
+      if (cached !== undefined) return cached;
+      // Git Bash /tmp is an MSYS mount, often the user's Windows TEMP directory.
+      // Use its installed utility, independent of PATH or project executables.
+      const result = await this.runSetupCommand(
+        `/usr/bin/cygpath -w -- ${CentrifugoSandbox.escapePath(path)}`,
+        { signal },
+      );
+      const resolved = result.stdout.replace(/\r?\n$/, "");
+      if (
+        result.exitCode !== 0 ||
+        /[\r\n\0]/.test(resolved) ||
+        !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolved)
+      ) {
+        // Never guess another file location when conversion fails.
+        let failure: NativePathResolutionFailure;
+        if (result.exitCode !== 0) {
+          const category = classifyPersistenceFailure(result.stderr);
+          failure =
+            category === "missing_utility" ||
+            category === "shell_syntax" ||
+            category === "permission"
+              ? category
+              : "command_failed";
+        } else {
+          failure =
+            resolved.length === 0
+              ? "empty_output"
+              : /[\r\n\0]/.test(resolved)
+                ? "output_control"
+                : "non_absolute_output";
+        }
+        // Link the actual guard to existing command receipts, not the metric
+        // exporter's run context. Each sandbox emits at most one per reason.
+        const receipt = this.commandReceipts.get(result);
+        let receiverMode: NativePathReceiverMode | undefined;
+        try {
+          receiverMode = `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
+        } catch {
+          /* Optional mode context cannot replace the guarded path failure. */
+        }
+        if (!this.reportedNativePathFailures.has(failure)) {
+          this.reportedNativePathFailures.add(failure);
+          try {
+            phLogger.info("windows_native_path_resolution_failed", {
+              diagnostic_version: 1,
+              diagnostic_scope: "first_reason_per_sandbox",
+              receiver_mode: receiverMode,
+              reason: failure,
+              trigger_run_id: this.triggerRunId,
+              command_id: receipt?.commandId,
+              receipt_available: receipt !== undefined,
+              acknowledged_output: receipt?.acknowledgedOutput,
+              terminal_ack_published: receipt?.terminalAckPublished,
+              last_received_sequence: receipt?.lastReceivedSequence,
+              exit_success: result.exitCode === 0,
+              ...(failure === "non_absolute_output" && {
+                stdout_shape_version: 1,
+                stdout_shape: nativePathOutputShape(resolved),
+              }),
+              stdout_bytes: Buffer.byteLength(result.stdout, "utf8"),
+              stderr_bytes: Buffer.byteLength(result.stderr, "utf8"),
+            });
+          } catch {
+            // Diagnostics cannot replace the original guarded failure.
+          }
+        }
+        throw new NativePathResolutionError(
+          failure,
+          receiverMode
+            ? {
+                commandId: receipt?.commandId,
+                receiverMode,
+              }
+            : undefined,
+        );
+      }
+      nativePaths?.set(path, resolved);
+      return resolved;
+    }
+    // cmd.exe has no MSYS mount table; preserve its established upload alias.
+    if (path === "/tmp" || path.startsWith("/tmp/")) {
       return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
     }
-    // Translate any remaining absolute Unix paths to Windows-style
+    const bashDrive = path.match(/^\/([A-Za-z])(?:\/(.*))?$/);
+    if (bashDrive) {
+      return `${bashDrive[1].toUpperCase()}:\\${(bashDrive[2] ?? "").replace(/\//g, "\\")}`;
+    }
     return path.replace(/\//g, "\\");
   }
 
@@ -1677,7 +1995,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     // Older desktop clients did not publish osInfo. Probe those connections
     // instead of assuming Bash: a Windows cmd relay would otherwise receive
     // single-quoted signed URLs and split their `&` query fields into commands.
-    if (declaredPlatform && declaredPlatform !== "win32") {
+    if (declaredPlatform && !this.isWindows()) {
       this.shellKind = "bash";
       return "bash";
     }
@@ -1685,6 +2003,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
       displayName: "",
     });
+    if (probe.exitCode !== 0) {
+      throw persistenceCommandError("Failed to detect local shell", probe);
+    }
     this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
@@ -1752,10 +2073,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const shell = await this.detectShell(signal);
     signal?.throwIfAborted();
     const useBash = shell === "bash";
-    const nativePath = this.toNativePath(this.resolveWorkingPath(rawPath));
-    const path = useBash
-      ? CentrifugoSandbox.toBashPath(nativePath)
-      : nativePath;
+    const nativePath = await this.toNativePath(
+      this.resolveWorkingPath(rawPath),
+      signal,
+    );
+    const path =
+      useBash && this.isWindows()
+        ? CentrifugoSandbox.toBashPath(nativePath)
+        : nativePath;
     const escapePath = useBash
       ? (v: string) => CentrifugoSandbox.escapePath(v)
       : (v: string) => this.escapeForTarget(v);
@@ -1789,7 +2114,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       signal,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+      throw persistenceCommandError("Failed to create directory", result);
     }
   }
 
@@ -1898,6 +2223,64 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   private snapCurlFallbackSelected = false;
+
+  private uploadNetworkProbeAttempted = false;
+
+  private async diagnoseUploadNetworkFailure(
+    uploadUrl: string,
+    useBash: boolean,
+    exitCode: 6 | 28 | 35 | 124 | -1,
+  ): Promise<void> {
+    try {
+      if (this.uploadNetworkProbeAttempted) return;
+      const shell: UploadProbeShell = this.isWindows()
+        ? useBash
+          ? "windows-bash"
+          : "cmd"
+        : "posix";
+      const command = buildUploadNetworkProbeCommand(
+        uploadUrl,
+        shell,
+        this.isWindows() && this.curlCaps?.sslNoRevoke === true,
+      );
+      if (!command) return;
+      // Set before awaiting: concurrent uploads share this instance's budget.
+      this.uploadNetworkProbeAttempted = true;
+      let output: string | undefined;
+      let commandExitCode: number | null = null;
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 10_000,
+          displayName: "",
+        });
+        output = result.stdout;
+        if (
+          Number.isSafeInteger(result.exitCode) &&
+          result.exitCode >= 0 &&
+          result.exitCode <= 255
+        )
+          commandExitCode = result.exitCode;
+      } catch {
+        // No retry: this measures connectivity, never repeats the upload.
+      }
+      console.warn(
+        "[centrifugo-http]",
+        JSON.stringify({
+          level: "warn",
+          event: "sandbox_file_upload_network_diagnostic",
+          diagnostic_version: 1,
+          sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
+          platform: this.isWindows() ? "windows" : "posix",
+          shell,
+          upload_exit_code: exitCode,
+          command_exit_code: commandExitCode,
+          ...parseUploadNetworkProbe(output),
+        }),
+      );
+    } catch {
+      // Even a failed probe or logging sink must preserve the original error.
+    }
+  }
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -2064,8 +2447,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const scriptPath = this.workingDirectory
       ? scriptName
       : `/tmp/${scriptName}`;
-    const nativeScriptPath = this.toNativePath(
+    const nativeScriptPath = await this.toNativePath(
       this.resolveWorkingPath(scriptPath),
+      signal,
     );
     try {
       // files.write already chunks legacy cmd.exe writes below its command
@@ -2183,6 +2567,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     firstChunkType: "file_write" | "file_append",
     signal?: AbortSignal,
   ): Promise<void> {
+    // Pin successful mount resolutions only for this write, including its root.
+    // This avoids per-chunk relay probes without reusing stale mounts on a later
+    // operation or replacement connection, or redirecting an append mid-write.
+    const nativePaths = new Map<string, string>();
     for (
       let offset = 0;
       offset < encodedContent.length;
@@ -2201,6 +2589,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         new Set(["file_ok"]),
         120000,
         signal,
+        nativePaths,
       );
     }
   }
@@ -2302,11 +2691,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         return;
       }
 
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escapedPath = escapePath(path);
-      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      // Legacy Windows relays may launch Bash through cmd.exe, whose command
+      // line limit applies even though the inner shell accepts POSIX syntax.
+      const commandBudget = this.isWindows()
+        ? CentrifugoSandbox.MAX_CMD_CHUNK_SIZE
+        : CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
       const overhead = Buffer.byteLength(
         `printf '%s' "" | base64 -d >> ${escapedPath}`,
         "utf8",
@@ -2317,9 +2710,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         throw new Error("File path exceeds the local file command limit");
       }
 
-      // Ensure parent directory exists. Pass the native (unconverted) dir
-      // so ensureDirectory re-applies its own shell-aware path handling.
-      const dir = CentrifugoSandbox.parentDir(this.toNativePath(rawPath));
+      // Use the resolved parent so mkdir and the write target the same mount.
+      const dir = this.parentDir(nativePath);
       if (dir) {
         await this.ensureDirectory(dir, signal);
       }
@@ -2366,22 +2758,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
-              throw new Error(`Failed to write file: ${result.stderr}`);
+              throw persistenceCommandError("Failed to write file", result);
             }
           }
-          // Decode and clean up temp file
+          // files.write replaces existing checkpoints, as the native and POSIX paths do.
+          // certutil otherwise fails with ERROR_FILE_EXISTS on the second write.
           const decodeResult = await this.runFileCommand(
-            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            `certutil -f -decode ${tempFile} ${escapedPath} >nul`,
             { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+            throw persistenceCommandError(
+              "Failed to decode file",
+              decodeResult,
+            );
           }
-        } catch (error) {
+        } finally {
+          // Cleanup must not replace certutil's write status with del's status.
           await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
             () => undefined,
           );
-          throw error;
         }
       } else {
         const literalCommand = isBinary
@@ -2396,7 +2792,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             signal,
           });
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
           return;
         }
@@ -2418,7 +2814,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+            throw persistenceCommandError("Failed to write file", result);
           }
         }
       }
@@ -2434,7 +2830,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
 
       const { useBash, path, escapePath } = await this.shellContext(rawPath);
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe uses `type`, bash uses `cat`
       const command = useBash ? `cat ${escaped}` : `type ${escaped}`;
@@ -2455,8 +2851,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       options?.signal?.throwIfAborted();
       const sourceCtx = await this.shellContext(sourceRawPath, options?.signal);
       const destCtx = await this.shellContext(destRawPath, options?.signal);
-      const fileName = destCtx.path.split(/[/\\]/).pop() || "file";
-      const dir = CentrifugoSandbox.parentDir(destCtx.path);
+      const fileName = getSandboxFileName(destCtx.path, this.isWindows());
+      const dir = this.parentDir(destCtx.path);
 
       const mkdirPart = !dir
         ? ""
@@ -2501,7 +2897,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         rawPath,
         signal,
       );
-      const fileName = path.split(/[/\\]/).pop() || "file";
+      const fileName = getSandboxFileName(path, this.isWindows());
       const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
       const command = useBash
@@ -2553,174 +2949,221 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       rawPath: string,
       options?: { signal?: AbortSignal },
     ): Promise<void> => {
-      const signal = options?.signal;
-      signal?.throwIfAborted();
-      validateDownloadUrl(url);
-      // When the shell is git-bash (default on Windows since PR #346),
-      // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
-      // `if not exist` breaks under bash and leaves the target dir missing,
-      // causing curl to fail with the Windows "invalid filename syntax" error.
-      const { useBash, path, nativePath, escapePath, escapeValue } =
-        await this.shellContext(rawPath, signal);
-      const httpClient = await this.detectHttpClient(signal);
-      const dir = CentrifugoSandbox.parentDir(path);
-      const fileName = path.split(/[/\\]/).pop() || "file";
-
-      const escapedPath = escapePath(path);
-      const escapedUrl = escapeValue(url);
-      const escapedDir = dir ? escapePath(dir) : "";
-      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
-
-      // Combine mkdir + download into a single command to avoid separate
-      // round-trips through the sandbox bridge (e.g. Tauri desktop app),
-      // ensuring the directory exists in the same shell session as the download.
-      // Skip mkdir entirely for root-level destinations (parentDir returns "")
-      // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
-      const mkdirPart = !dir
-        ? ""
-        : useBash
-          ? `mkdir -p ${escapedDir} &&`
-          : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
-      let downloadPart: string;
-      if (httpClient === "curl") {
-        const caps = await this.detectCurlCaps(signal);
-        const curlFlags = [
-          "-fsSL",
-          this.isWindows() && caps.sslNoRevoke ? "--ssl-no-revoke" : "",
-          "--retry 3",
-          "--retry-delay 1",
-          caps.retryAllErrors ? "--retry-all-errors" : "",
-          caps.retryConnrefused ? "--retry-connrefused" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
-      } else if (httpClient === "wget") {
-        downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
-      } else {
-        const powerShellScript = [
-          "$ErrorActionPreference='Stop'",
-          "$ProgressPreference='SilentlyContinue'",
-          `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
-          `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
-          "$directory=[IO.Path]::GetDirectoryName($destination)",
-          "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
-          "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
-        ].join("; ");
-        const prepared = await this.preparePowerShellCommand(
-          powerShellScript,
-          signal,
-        );
-        downloadPart = prepared.command;
-        cleanupPowerShellScript = prepared.cleanup;
-      }
-      const command =
-        httpClient === "powershell"
-          ? downloadPart
-          : `${mkdirPart} ${downloadPart}`;
-
-      // JS-level retry safety net on top of curl's --retry, for transient
-      // network/TLS errors that can survive curl's own retry loop:
-      //   6  = temporary DNS resolution failure
-      //   7  = couldn't connect
-      //   18 = partial transfer
-      //   23 = write error
-      //   28 = operation timeout
-      //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
-      //   56 = failure receiving network data
-      //   92 = HTTP/2 stream error
-      //   124 = local command wrapper timeout
-      const transientExitCodes =
-        httpClient === "curl"
-          ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
-          : httpClient === "wget"
-            ? new Set([4, 124])
-            : new Set<number>();
-      const MAX_ATTEMPTS = 3;
-
+      let phase: AttachmentDownloadBoundary["phase"] = "entry";
+      let diagnosticAttempt = 0;
+      let resultState: AttachmentDownloadBoundary["resultState"] =
+        "not_observed";
       try {
-        let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          signal?.throwIfAborted();
-          try {
-            result = await runAttachmentCommand(this, command, signal, {
-              displayName:
-                attempt === 1
-                  ? `Downloading: ${fileName}`
-                  : `Downloading: ${fileName} (retry ${attempt - 1})`,
-              timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-            });
-          } catch (error) {
-            throwIfAttachmentAborted(signal, error);
+        const signal = options?.signal;
+        signal?.throwIfAborted();
+        phase = "validate_url";
+        validateDownloadUrl(url);
+        // When the shell is git-bash (default on Windows since PR #346),
+        // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
+        // `if not exist` breaks under bash and leaves the target dir missing,
+        // causing curl to fail with the Windows "invalid filename syntax" error.
+        phase = "shell_context";
+        const { useBash, path, nativePath, escapePath, escapeValue } =
+          await this.shellContext(rawPath, signal);
+        phase = "http_client";
+        const httpClient = await this.detectHttpClient(signal);
+        phase = "prepare_command";
+        const dir = this.parentDir(path);
+        const fileName = getSandboxFileName(path, this.isWindows());
+
+        const escapedPath = escapePath(path);
+        const escapedUrl = escapeValue(url);
+        const escapedDir = dir ? escapePath(dir) : "";
+        let cleanupPowerShellScript: (() => Promise<void>) | undefined;
+
+        // Combine mkdir + download into a single command to avoid separate
+        // round-trips through the sandbox bridge (e.g. Tauri desktop app),
+        // ensuring the directory exists in the same shell session as the download.
+        // Skip mkdir entirely for root-level destinations (parentDir returns "")
+        // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
+        const mkdirPart = !dir
+          ? ""
+          : useBash
+            ? `mkdir -p ${escapedDir} &&`
+            : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
+        let downloadPart: string;
+        if (httpClient === "curl") {
+          phase = "curl_capabilities";
+          const caps = await this.detectCurlCaps(signal);
+          phase = "prepare_command";
+          const curlFlags = [
+            "-fsSL",
+            this.isWindows() && caps.sslNoRevoke ? "--ssl-no-revoke" : "",
+            "--retry 3",
+            "--retry-delay 1",
+            caps.retryAllErrors ? "--retry-all-errors" : "",
+            caps.retryConnrefused ? "--retry-connrefused" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
+        } else if (httpClient === "wget") {
+          downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+        } else {
+          const powerShellScript = [
+            "$ErrorActionPreference='Stop'",
+            "$ProgressPreference='SilentlyContinue'",
+            `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
+            `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+            "$directory=[IO.Path]::GetDirectoryName($destination)",
+            "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
+            "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
+          ].join("; ");
+          phase = "powershell_prepare";
+          const prepared = await this.preparePowerShellCommand(
+            powerShellScript,
+            signal,
+          );
+          phase = "prepare_command";
+          downloadPart = prepared.command;
+          cleanupPowerShellScript = prepared.cleanup;
+        }
+        const command =
+          httpClient === "powershell"
+            ? downloadPart
+            : `${mkdirPart} ${downloadPart}`;
+
+        // JS-level retry safety net on top of curl's --retry, for transient
+        // network/TLS errors that can survive curl's own retry loop:
+        //   6  = temporary DNS resolution failure
+        //   7  = couldn't connect
+        //   18 = partial transfer
+        //   23 = write error
+        //   28 = operation timeout
+        //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
+        //   56 = failure receiving network data
+        //   92 = HTTP/2 stream error
+        //   124 = local command wrapper timeout
+        const transientExitCodes =
+          httpClient === "curl"
+            ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
+            : httpClient === "wget"
+              ? new Set([4, 124])
+              : new Set<number>();
+        const MAX_ATTEMPTS = 3;
+
+        try {
+          let result: Awaited<ReturnType<typeof this.commands.run>> | null =
+            null;
+          for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            diagnosticAttempt = attempt;
+            resultState = "not_observed";
+            phase = "download_command";
+            signal?.throwIfAborted();
+            try {
+              result = await runAttachmentCommand(this, command, signal, {
+                displayName:
+                  attempt === 1
+                    ? `Downloading: ${fileName}`
+                    : `Downloading: ${fileName} (retry ${attempt - 1})`,
+                timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+              });
+              resultState = result.exitCode === 0 ? "success" : "nonzero";
+              phase = "check_result";
+            } catch (error) {
+              throwIfAttachmentAborted(signal, error);
+              if (
+                attempt === MAX_ATTEMPTS ||
+                !isTransientCommandTimeoutError(error)
+              ) {
+                throw error;
+              }
+              console.warn(
+                `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+              );
+              phase = "retry_delay";
+              await abortableDelay(500 * attempt, signal);
+              continue;
+            }
+
+            signal?.throwIfAborted();
+            if (result.exitCode === 0) break;
             if (
               attempt === MAX_ATTEMPTS ||
-              !isTransientCommandTimeoutError(error)
+              !transientExitCodes.has(result.exitCode) ||
+              /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
+                result.stderr,
+              )
             ) {
-              throw error;
+              break;
             }
             console.warn(
-              `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+              `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
             );
+            phase = "retry_delay";
             await abortableDelay(500 * attempt, signal);
-            continue;
           }
-
-          signal?.throwIfAborted();
-          if (result.exitCode === 0) break;
-          if (
-            attempt === MAX_ATTEMPTS ||
-            !transientExitCodes.has(result.exitCode) ||
-            /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
-              result.stderr,
-            )
-          ) {
-            break;
+          if (!result) {
+            throw new Error(
+              "Download command failed without returning a result",
+            );
           }
-          console.warn(
-            `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
-          );
-          await abortableDelay(500 * attempt, signal);
-        }
-        if (!result) {
-          throw new Error("Download command failed without returning a result");
-        }
-        if (result.exitCode !== 0) {
-          // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
-          // Fall back to the target's own directory context when the destination
-          // is a drive root and `dir` is empty. Avoid listing directory contents:
-          // this can be a user's local machine in desktop dangerous mode.
-          const diagDir = escapedDir || (useBash ? "/" : '"."');
-          const diagCmd = useBash
-            ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
-            : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-          let diagnosticOutput = "unavailable";
-          try {
-            const diag = await this.commands.run(diagCmd, {
-              displayName: "",
-              timeoutMs: 5_000,
-              signal,
-            });
-            diagnosticOutput = diag.stdout.slice(0, 1024);
-          } catch (error) {
-            throwIfAttachmentAborted(signal, error);
+          if (result.exitCode !== 0) {
+            phase = "failure_diagnostics";
+            // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
+            // Fall back to the target's own directory context when the destination
+            // is a drive root and `dir` is empty. Avoid listing directory contents:
+            // this can be a user's local machine in desktop dangerous mode.
+            const diagDir = escapedDir || (useBash ? "/" : '"."');
+            const diagCmd = useBash
+              ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
+              : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
+            let diagnosticOutput = "unavailable";
+            try {
+              const diag = await this.commands.run(diagCmd, {
+                displayName: "",
+                timeoutMs: 5_000,
+                signal,
+              });
+              diagnosticOutput = diag.stdout.slice(0, 1024);
+            } catch (error) {
+              throwIfAttachmentAborted(signal, error);
+            }
+            signal?.throwIfAborted();
+            const safeStderr = redactTransferDetails(result.stderr, url, [
+              rawPath,
+              path,
+              nativePath,
+            ]);
+            throw recordAttachmentDownloadFailure(
+              new Error(
+                `Failed to download file: ${safeStderr}\n` +
+                  `  source: [redacted-url]\n` +
+                  `  destination: [redacted-destination-path]\n` +
+                  `  command: ${httpClient}\n` +
+                  `  exitCode: ${result.exitCode}\n` +
+                  `  diagnostics: ${diagnosticOutput}`,
+              ),
+              {
+                platform: this.isWindows()
+                  ? "windows"
+                  : ["linux", "darwin", "freebsd", "openbsd"].includes(
+                        this.connectionInfo.osInfo?.platform ?? "",
+                      )
+                    ? "posix"
+                    : "unknown",
+                shell: useBash ? "bash" : "cmd",
+                httpClient,
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+              },
+            );
           }
-          signal?.throwIfAborted();
-          const safeStderr = redactTransferDetails(result.stderr, url, [
-            rawPath,
-            path,
-            nativePath,
-          ]);
-          throw new Error(
-            `Failed to download file: ${safeStderr}\n` +
-              `  source: [redacted-url]\n` +
-              `  destination: [redacted-destination-path]\n` +
-              `  command: ${httpClient}\n` +
-              `  exitCode: ${result.exitCode}\n` +
-              `  diagnostics: ${diagnosticOutput}`,
-          );
+        } finally {
+          await cleanupPowerShellScript?.().catch(() => undefined);
         }
-      } finally {
-        await cleanupPowerShellScript?.().catch(() => undefined);
+      } catch (error) {
+        recordAttachmentDownloadBoundary(error, {
+          phase,
+          attempt: diagnosticAttempt,
+          resultState,
+        });
+        throw error;
       }
     },
 
@@ -2729,7 +3172,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, nativePath, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -2750,8 +3193,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         }
       }
 
-      const fileName = path.split(/[/\\]/).pop() || "file";
-      const escapedPath = escapePath(path);
+      const fileName = getSandboxFileName(path, this.isWindows());
+      // Both native Windows curl and MSYS curl accept C:/... paths. /c/...
+      // depends on MSYS argument conversion, which a caller can disable.
+      const uploadPath =
+        this.isWindows() && useBash ? nativePath.replace(/\\/g, "/") : path;
+      const escapedPath = escapePath(uploadPath);
       const escapedUrl = escapeValue(uploadUrl);
       const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
       const curlUploadFlags =
@@ -2769,7 +3216,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let command: string;
       let cleanupPowerShellScript: (() => Promise<void>) | undefined;
       if (httpClient === "curl") {
-        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+        command =
+          this.isWindows() && !useBash
+            ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+            : buildPosixCurlUploadCommand(uploadPath, uploadUrl, contentType, {
+                sslNoRevoke:
+                  this.isWindows() && (await this.detectCurlCaps()).sslNoRevoke,
+              });
       } else if (httpClient === "wget") {
         command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
       } else {
@@ -2802,11 +3255,29 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               sandbox_type: this.connectionInfo.isDesktop ? "desktop" : "local",
               platform: this.isWindows() ? "windows" : "posix",
               http_client: httpClient,
+              ...(httpClient === "curl"
+                ? getUploadFailureDiagnostics(uploadUrl, result.stderr)
+                : {}),
               exit_code: Number.isSafeInteger(result.exitCode)
                 ? result.exitCode
                 : null,
             }),
           );
+          if (
+            httpClient === "curl" &&
+            (result.exitCode === 6 ||
+              result.exitCode === 28 ||
+              result.exitCode === 35 ||
+              result.exitCode === 124 ||
+              (result.exitCode === -1 &&
+                result.stderr.trim() === "Command timed out"))
+          ) {
+            await this.diagnoseUploadNetworkFailure(
+              uploadUrl,
+              useBash,
+              result.exitCode,
+            );
+          }
           if (
             result.exitCode === 26 &&
             httpClient === "curl" &&
@@ -2819,8 +3290,16 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             rawPath,
             path,
             nativePath,
+            uploadPath,
           ]);
-          throw new Error(`Failed to upload file: ${safeStderr}`);
+          throw Object.assign(
+            new Error(`Failed to upload file: ${safeStderr}`),
+            {
+              exitCode: Number.isSafeInteger(result.exitCode)
+                ? result.exitCode
+                : undefined,
+            },
+          );
         }
       } finally {
         await cleanupPowerShellScript?.().catch(() => undefined);

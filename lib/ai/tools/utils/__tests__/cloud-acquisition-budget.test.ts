@@ -41,6 +41,7 @@ describe("cloud acquisition deadline", () => {
       acquisition_stage: "connect",
       stage_elapsed_ms: 25_000,
       failed_acquisition_wait_ms: 30_000,
+      acquisition_deadline_ms: 30_000,
     });
   });
 
@@ -60,6 +61,13 @@ describe("cloud acquisition deadline", () => {
       .catch((error) => error);
     await jest.advanceTimersByTimeAsync(CLOUD_RESUME_DEADLINE_MS);
     expect(await result).toBeInstanceOf(CloudAcquisitionTimeoutError);
+    expect(
+      JSON.parse(String(jest.mocked(console.warn).mock.calls[0][0])),
+    ).toMatchObject({
+      acquisition_stage: "connect",
+      acquisition_deadline_ms: 90_000,
+      failed_acquisition_wait_ms: 90_000,
+    });
     await expect(
       budget.run(async () => "unexpected", { userId: "test" }),
     ).rejects.toBeInstanceOf(CloudAcquisitionBudgetExhaustedError);

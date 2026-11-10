@@ -13,6 +13,7 @@ import {
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
 import { recoverCrashedAgentRun } from "./agent-crash-recovery";
+import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
 
 const TERMINAL_STATUSES = new Set([
   "COMPLETED",
@@ -112,12 +113,38 @@ export const createAgentResumeGet =
       if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
         if (runStatus === "CRASHED") {
           stage = "recover_crashed_trigger_run";
-          const outcome = await recoverCrashedAgentRun({
-            chatId,
-            userId,
-            runId,
-            metadata: runMetadata,
-          });
+          let outcome: "recovered" | "stale";
+          try {
+            outcome = await recoverCrashedAgentRun({
+              chatId,
+              userId,
+              runId,
+              metadata: runMetadata,
+            });
+          } catch (error) {
+            if (!(error instanceof AgentCrashRecoveryReplayLimitError))
+              throw error;
+            console.warn(
+              JSON.stringify({
+                event: "agent_crash_recovery_blocked",
+                service: "hackerai-web",
+                action: "resume",
+                reason: "replay_byte_limit",
+                chat_id: chatId.slice(0, 128),
+                user_id: userId.slice(0, 128),
+                trigger_run_id: runId.slice(0, 128),
+              }),
+            );
+            return NextResponse.json(
+              {
+                code: "bad_request:api",
+                cause:
+                  "This Agent run stopped. Saved messages are preserved, but its remaining output could not be restored automatically.",
+                metadata: { recovery: "blocked" },
+              },
+              { status: 409 },
+            );
+          }
           if (outcome === "stale")
             return new NextResponse(null, { status: 409 });
         }

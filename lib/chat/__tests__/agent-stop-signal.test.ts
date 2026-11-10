@@ -4,6 +4,8 @@ import { createAgentStopSignal } from "../agent-stop-signal";
 describe("Agent stop diagnostics", () => {
   it.each([
     "trigger_platform",
+    "wait_for_user",
+    "wait_for_user_timeout",
     "active_runtime_budget",
     "auto_review_circuit_breaker",
     "post_wait_authorization_denied",
@@ -23,6 +25,7 @@ describe("Agent stop diagnostics", () => {
       expect(stop.controller.signal.aborted).toBe(true);
       expect(stop.controller.signal.reason).toBe(privateReason);
       expect(onAbort.mock.calls).toEqual([[source]]);
+      expect(stop.source).toBe(source);
     },
   );
 
@@ -59,6 +62,7 @@ describe("Agent stop diagnostics", () => {
     stop.abort("trigger_platform", new Error("later platform stop"));
     expect(stop.controller.signal.reason).toBe(firstReason);
     expect(onAbort.mock.calls).toEqual([["budget_monitor"]]);
+    expect(stop.source).toBe("budget_monitor");
   });
 
   it("keeps cancellation and downstream abort listeners working if diagnostics fail", () => {

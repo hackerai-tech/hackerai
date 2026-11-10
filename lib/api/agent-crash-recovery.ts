@@ -3,15 +3,18 @@ import { streams } from "@trigger.dev/sdk";
 import {
   readUIMessageStream,
   uiMessageChunkSchema,
+  UIMessageStreamError,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
 import { saveMessage } from "@/lib/db/actions";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { CLIENT_SAVED_FINISH_REASON } from "@/lib/chat/stop-conditions";
+import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
 
 // Failure-only replay budgets, shared by the entire run, not by each message.
-// Exceeding them leaves the run attached so recovery can be retried/investigated.
+// Exceeding them leaves the run attached for recovery/investigation. The byte
+// limit is deterministic for an immutable crashed stream, not a retryable poll.
 const MAX_REPLAY_BYTES = 8 * 1024 * 1024;
 const MAX_REPLAY_RECORDS = 100_000;
 const MAX_REPLAY_CHUNKS = 4096;
@@ -88,7 +91,7 @@ export async function recoverCrashedAgentRun({
       if (raw === undefined) continue;
       bytes += Buffer.byteLength(JSON.stringify(raw), "utf8");
       if (bytes > MAX_REPLAY_BYTES)
-        throw new Error("Agent crash recovery replay budget exceeded");
+        throw new AgentCrashRecoveryReplayLimitError();
       const validated = await uiMessageChunkSchema().validate!(raw);
       if (!validated.success)
         throw new Error("Agent crash recovery invalid stream chunk");
@@ -151,7 +154,50 @@ export async function recoverCrashedAgentRun({
           assertWithinBudget();
           latest = message;
         }
-      } catch {
+      } catch (error) {
+        try {
+          const expired = controller.signal.aborted || Date.now() >= deadline;
+          const invalidState = UIMessageStreamError.isInstance(error);
+          const chunkType = invalidState ? error.chunkType : null;
+          // SDK error messages and chunk IDs may contain private tool material.
+          // Keep only SDK-owned chunk categories and already bounded counters.
+          const knownChunkType =
+            chunkType !== null &&
+            [
+              "text-delta",
+              "text-end",
+              "reasoning-delta",
+              "reasoning-end",
+              "tool-input-delta",
+              "tool-invocation",
+            ].includes(chunkType);
+          console.warn(
+            JSON.stringify({
+              event: "agent_crash_reconstruction_failed",
+              service: "hackerai-web",
+              chat_id: chatId,
+              user_id: userId,
+              trigger_run_id: runId,
+              reason: expired
+                ? "deadline_exceeded"
+                : invalidState
+                  ? "invalid_stream_state"
+                  : "unknown",
+              chunk_type: invalidState
+                ? knownChunkType
+                  ? chunkType
+                  : "other"
+                : null,
+              record_count: records,
+              replay_bytes: bytes,
+              coalesced_chunk_count: chunkCount,
+              message_count: groups.length,
+              elapsed_ms: Date.now() - startedAt,
+            }),
+          );
+        } catch {
+          // Diagnostics must not replace the sanitized reconstruction failure.
+        }
         // Reducer errors may contain streamed tool inputs or provider material.
         throw new Error("Agent crash recovery message reconstruction failed");
       }

@@ -99,7 +99,6 @@ describe("processChatMessages authorization metadata", () => {
         expect(result).toMatchObject({
           moderationChecked: true,
           platformAuthorized: false,
-          allowsAbliterationContinuation: true,
         });
       }
       expect(mockModerationsCreate).toHaveBeenCalledTimes(subscriptions.length);

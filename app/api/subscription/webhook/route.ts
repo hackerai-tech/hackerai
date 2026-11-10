@@ -2235,7 +2235,27 @@ async function handleCheckoutSessionCompleted(
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
   previousAttributes: Partial<Stripe.Subscription> | undefined,
+  eventOccurredAtMs: number,
 ): Promise<void> {
+  if (
+    subscription.cancel_at_period_end === false &&
+    previousAttributes?.cancel_at_period_end === true
+  ) {
+    const customerId = stripeObjectId(subscription.customer);
+    if (customerId) {
+      await getConvexClient().mutation(
+        api.cancellationReasons.markCancellationReversed,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          stripeSubscriptionId: subscription.id,
+          stripeCustomerId: customerId,
+          cancellationReasonId:
+            subscription.metadata?.hackerai_cancellation_reason_id,
+          reversedAt: eventOccurredAtMs,
+        },
+      );
+    }
+  }
   const cancellationJustScheduled =
     subscription.cancel_at_period_end === true &&
     Boolean(previousAttributes) &&
@@ -2271,6 +2291,7 @@ async function handleSubscriptionUpdated(
           tier,
           price: currentPrice,
           completionType: "scheduled",
+          eventOccurredAtMs,
         });
       }
     }
@@ -2400,6 +2421,7 @@ async function handleSubscriptionUpdated(
   }
 }
 
+/** Use the event's attempt and occurrence time so delayed delivery cannot complete a later decision. */
 async function recordCancellationCompleted(args: {
   subscription: Stripe.Subscription;
   customerId: string;
@@ -2408,14 +2430,14 @@ async function recordCancellationCompleted(args: {
   tier: SubscriptionTier | null;
   price?: Stripe.Price;
   completionType: "scheduled" | "deleted";
+  eventOccurredAtMs: number;
 }) {
   const stripeCancellationReason =
     args.subscription.cancellation_details?.reason ?? undefined;
   const canceledAt = args.subscription.canceled_at
     ? args.subscription.canceled_at * 1000
     : undefined;
-  const completedAt =
-    args.completionType === "deleted" ? (canceledAt ?? Date.now()) : Date.now();
+  const completedAt = canceledAt ?? args.eventOccurredAtMs;
   const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
     args.subscription.metadata,
     args.price?.lookup_key,
@@ -2431,11 +2453,14 @@ async function recordCancellationCompleted(args: {
   const pauseProperties = retentionPauseProperties(args.subscription);
 
   let updatedCount = 0;
+  let cancellationReasonId: string | undefined;
   try {
     const result = await getConvexClient().mutation(
       api.cancellationReasons.markCancellationCompleted,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        cancellationReasonId:
+          args.subscription.metadata?.hackerai_cancellation_reason_id,
         stripeSubscriptionId: args.subscription.id,
         stripeCustomerId: args.customerId,
         userIds: args.userIds,
@@ -2447,6 +2472,7 @@ async function recordCancellationCompleted(args: {
       },
     );
     updatedCount = result.updatedCount;
+    cancellationReasonId = result.cancellationReasonId;
   } catch (error) {
     phLogger.warn("cancellation_reason_completion_update_failed", {
       stripe_customer_id: args.customerId,
@@ -2454,6 +2480,8 @@ async function recordCancellationCompleted(args: {
       org_id: args.orgId,
       error,
     });
+    // Let Stripe retry a failed write instead of acknowledging lost feedback.
+    throw error;
   }
 
   if (updatedCount === 0) {
@@ -2485,7 +2513,10 @@ async function recordCancellationCompleted(args: {
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
         ...proMonthlyPricingExperimentProperties(pricingExperiment),
-        $insert_id: cancellationCompletionInsertId(args.subscription.id),
+        $insert_id: cancellationCompletionInsertId(
+          args.subscription.id,
+          cancellationReasonId,
+        ),
       }),
     );
   }
@@ -2636,6 +2667,7 @@ async function handleSubscriptionDeleted(
     tier,
     price,
     completionType: "deleted",
+    eventOccurredAtMs,
   });
   await markRetentionPauseEffective(subscription, eventOccurredAtMs);
   const pauseProperties = retentionPauseProperties(subscription);
@@ -2731,7 +2763,10 @@ async function handleSubscriptionDeleted(
  *   payment_intent.payment_failed, payment_intent.requires_action,
  *   payment_intent.canceled, payment_intent.succeeded
  */
-export async function POST(req: NextRequest) {
+async function handleSubscriptionWebhook(
+  req: NextRequest,
+  diagnostic: { phase: SubscriptionWebhookPhase },
+) {
   const body = await req.text();
   const signature = req.headers.get("stripe-signature");
 
@@ -2762,6 +2797,7 @@ export async function POST(req: NextRequest) {
 
   let event: Stripe.Event;
 
+  diagnostic.phase = "verify_signature";
   try {
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err) {
@@ -2782,6 +2818,7 @@ export async function POST(req: NextRequest) {
   // Analytics-only events must not consume the shared fulfillment idempotency
   // record: other webhook endpoints may handle the same PaymentIntent event.
   if (isCheckoutPaymentAnalyticsEvent(event.type)) {
+    diagnostic.phase = "checkout_payment_analytics";
     try {
       await captureCheckoutPaymentAnalytics(stripe, event);
       after(() => phLogger.flush());
@@ -2810,6 +2847,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Idempotency check (check only — mark after successful processing)
+  diagnostic.phase = "idempotency_check";
   try {
     const result = await getConvexClient().mutation(
       api.extraUsage.checkAndMarkWebhook,
@@ -2836,14 +2874,17 @@ export async function POST(req: NextRequest) {
   }
 
   // Handle events
+  diagnostic.phase = "ignored_event";
   switch (event.type) {
     case "checkout.session.completed": {
+      diagnostic.phase = "checkout_session";
       await handleCheckoutSessionCompleted(
         event.data.object as Stripe.Checkout.Session,
       );
       break;
     }
     case "invoice.paid": {
+      diagnostic.phase = "invoice_paid";
       await handleInvoicePaid(
         event.data.object as Stripe.Invoice,
         event.id,
@@ -2852,6 +2893,7 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "invoice.payment_failed": {
+      diagnostic.phase = "invoice_payment_failed";
       await handleInvoicePaymentFailed(
         event.data.object as Stripe.Invoice,
         event.id,
@@ -2860,6 +2902,7 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "customer.subscription.updated": {
+      diagnostic.phase = "subscription_updated";
       const updated = event.data.object as Stripe.Subscription;
       const previous = event.data.previous_attributes as
         Partial<Stripe.Subscription> | undefined;
@@ -2888,10 +2931,12 @@ export async function POST(req: NextRequest) {
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
           Partial<Stripe.Subscription> | undefined,
+        stripeEventOccurredAtMs(event),
       );
       break;
     }
     case "customer.subscription.deleted": {
+      diagnostic.phase = "subscription_deleted";
       await handleSubscriptionDeleted(
         event.data.object as Stripe.Subscription,
         event.id,
@@ -2900,6 +2945,7 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "customer.updated": {
+      diagnostic.phase = "customer_updated";
       const updated = event.data.object as Stripe.Customer;
       const paymentMethodId = stripeObjectId(
         updated.invoice_settings?.default_payment_method,
@@ -2924,6 +2970,7 @@ export async function POST(req: NextRequest) {
     }
     case "refund.created":
     case "refund.updated": {
+      diagnostic.phase = "subscription_refund";
       await handleSubscriptionRefund(
         event.data.object as Stripe.Refund,
         event.id,
@@ -2935,9 +2982,11 @@ export async function POST(req: NextRequest) {
 
   // Flush queued PostHog events after the response is sent. Webhook handlers
   // terminate quickly enough that buffered events would otherwise be dropped.
+  diagnostic.phase = "schedule_flush";
   after(() => phLogger.flush());
 
   // Mark as processed after successful handling
+  diagnostic.phase = "mark_processed";
   try {
     await getConvexClient().mutation(api.extraUsage.checkAndMarkWebhook, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -2951,5 +3000,64 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  diagnostic.phase = "respond";
   return NextResponse.json({ received: true });
+}
+
+type SubscriptionWebhookPhase =
+  | "read_body"
+  | "verify_signature"
+  | "checkout_payment_analytics"
+  | "idempotency_check"
+  | "ignored_event"
+  | "checkout_session"
+  | "invoice_paid"
+  | "invoice_payment_failed"
+  | "subscription_updated"
+  | "subscription_deleted"
+  | "customer_updated"
+  | "subscription_refund"
+  | "schedule_flush"
+  | "mark_processed"
+  | "respond";
+
+/** Drain failure context without creating a second error during request teardown. */
+async function flushWebhookFailureContext() {
+  try {
+    await phLogger.flush();
+  } catch {
+    // Optional telemetry cannot introduce a second request failure.
+  }
+}
+
+/** Add only the last entered phase; Next retains the original error report. */
+export async function POST(req: NextRequest) {
+  const diagnostic: { phase: SubscriptionWebhookPhase } = {
+    phase: "read_body",
+  };
+  try {
+    return await handleSubscriptionWebhook(req, diagnostic);
+  } catch (error) {
+    try {
+      const requestId = req.headers.get("x-vercel-id");
+      const build = process.env.VERCEL_GIT_COMMIT_SHA;
+      phLogger.warn("subscription_webhook_failure_context", {
+        diagnostic_version: 1,
+        webhook_phase: diagnostic.phase,
+        ...(requestId &&
+        /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+          requestId,
+        )
+          ? { request_id: requestId }
+          : {}),
+        ...(build && /^[a-f0-9]{40}$/i.test(build)
+          ? { web_build_commit: build.toLowerCase() }
+          : {}),
+      });
+      after(flushWebhookFailureContext);
+    } catch {
+      // Preserve thrown identity and the existing retry/idempotency contract.
+    }
+    throw error;
+  }
 }

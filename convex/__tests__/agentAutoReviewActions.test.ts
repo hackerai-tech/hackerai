@@ -130,4 +130,34 @@ describe("agentAutoReviewActions.getCurrentEntitlementContext", () => {
     await expect(callAction()).rejects.toThrow("WorkOS unavailable");
     expect(listSubscriptions).not.toHaveBeenCalled();
   });
+
+  it.each(["prod_Swj3ieGCSAzTtj", { id: "prod_Swj3ieGCSAzTtj" }])(
+    "recognizes a legacy Pro subscription with product %p",
+    async (product) => {
+      listSubscriptions.mockResolvedValueOnce({
+        has_more: false,
+        data: [
+          {
+            id: "sub_legacy",
+            status: "trialing",
+            items: {
+              data: [
+                {
+                  price: {
+                    id: "price_legacy_yearly",
+                    lookup_key: null,
+                    product,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      } as never);
+      await expect(callAction()).resolves.toEqual({
+        subscription: "pro",
+        organizationId: "org_1",
+      });
+    },
+  );
 });

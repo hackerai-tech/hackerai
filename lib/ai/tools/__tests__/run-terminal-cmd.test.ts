@@ -53,7 +53,7 @@ jest.mock("../utils/sandbox-file-uploader", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
-import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createGetTerminalFiles } from "../get-terminal-files";
@@ -267,6 +267,212 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
+    const { context, writerWrites } = makeContext({});
+    let finish!: (value: { status: string }) => void;
+    context.requestBrowserChallenge = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = runTool(createRunTerminalCmd(context), {
+      command: "hackerai-captcha solve --session owned",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(writerWrites).toContainEqual({
+      type: "data-terminal",
+      id: "captcha-start-call-1",
+      data: {
+        terminal: "",
+        toolCallId: "call-1",
+        captchaStartedAt: expect.any(Number),
+      },
+    });
+    finish({ status: "token_delivered" });
+    expect(await pending).toMatchObject({
+      result: {
+        browserChallenge: { status: "token_delivered" },
+        callTiming: { elapsedMs: expect.any(Number) },
+      },
+    });
+  });
+  test.each(["solve", "release"])(
+    "routes the on-demand %s request without executing a shell command",
+    async (action) => {
+      const { context } = makeContext({});
+      context.requestBrowserChallenge = jest.fn(async () => ({
+        status: "requested",
+      }));
+      const tool = createRunTerminalCmd(context);
+      expect(
+        await runTool(tool, {
+          command: `hackerai-captcha ${action} --session owned`,
+          interactive: false,
+          is_background: false,
+        }),
+      ).toMatchObject({
+        result: { browserChallenge: { status: "requested" } },
+      });
+      expect(context.requestBrowserChallenge).toHaveBeenCalledWith(
+        action,
+        "owned",
+        undefined,
+      );
+      for (const input of [
+        { command: `hackerai-captcha ${action} --session owned; echo extra` },
+        {
+          command: `hackerai-captcha ${action} --session owned`,
+          interactive: true,
+        },
+        {
+          command: `hackerai-captcha ${action} --session owned`,
+          is_background: true,
+        },
+      ])
+        expect(await runTool(tool, input)).toMatchObject({
+          result: { exitCode: 1 },
+        });
+      expect(context.requestBrowserChallenge).toHaveBeenCalledTimes(1);
+    },
+  );
+  test("keeps optional CAPTCHA instructions within a small initial context budget", () => {
+    const { context } = makeContext({ sandbox: null });
+    const normal = createRunTerminalCmd(context);
+    context.checkBrowserChallenge = jest.fn();
+    const eligible = createRunTerminalCmd(context);
+    const overhead =
+      (eligible.description?.length ?? 0) - (normal.description?.length ?? 0);
+    expect(overhead).toBeGreaterThan(0);
+    expect(overhead).toBeLessThanOrEqual(200);
+  });
+
+  test.each([
+    ["agent-browser snapshot -i", 0, true],
+    ["agent-browser --session owned snapshot --json", 0, true],
+    ["agent-browser snapshot", 1, false],
+    ["echo 'agent-browser snapshot'", 0, false],
+    ["agent-browser snapshot; agent-browser close", 0, false],
+    [
+      "agent-browser --session first snapshot; agent-browser --session second open https://example.com",
+      0,
+      false,
+    ],
+    ["agent-browser --cdp 9222 snapshot", 0, false],
+    ["agent-browser snapshot --session foreign", 0, false],
+    ["agent-browser snapshot | tail $(curl example.com)", 0, false],
+    ["agent-browser snapshot > /tmp/page", 0, false],
+    ["agent-browser open https://example.com", 0, false],
+    ["agent-browser close", 0, false],
+  ])(
+    "runs internal challenge detection only after a completed owned snapshot: %s (%i)",
+    async (command, exitCode, expected) => {
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        getConnectionId: () => "desktop-captcha",
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(async () => ({
+            stdout: "page snapshot",
+            stderr: "",
+            exitCode,
+          })),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      const challenge = {
+        status: "token_delivered",
+        websiteAccepted: false,
+        guidance: "detected challenge instructions",
+      };
+      context.checkBrowserChallenge = jest.fn(async () => challenge);
+      const tool = createRunTerminalCmd(context);
+      const result = await runTool(tool, {
+        command,
+        is_background: false,
+        interactive: false,
+      });
+      expect(result).toMatchObject({ result: { exitCode } });
+      expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(
+        expected ? 1 : 0,
+      );
+      if (expected) {
+        expect(context.checkBrowserChallenge).toHaveBeenCalledWith(undefined, {
+          sandbox,
+          sessionName: command.includes("--session owned")
+            ? "owned"
+            : "default",
+        });
+        expect(result).toMatchObject({
+          result: { exitCode: 0, browserChallenge: challenge },
+        });
+        expect(await getModelOutput(tool, result)).toMatchObject({
+          type: "text",
+          value: expect.stringContaining(
+            '"guidance":"detected challenge instructions"',
+          ),
+        });
+      } else {
+        expect(result).not.toHaveProperty("result.browserChallenge");
+      }
+    },
+  );
+
+  test.each([
+    "agent-browser --session owned snapshot -i 2>&1 | cat",
+    'agent-browser --session owned snapshot -i 2>&1 | tail -60; echo "---EPOCH---"; date +%s',
+    "agent-browser --session owned snapshot -i 2>&1 | tail -60; date -u +%s",
+    'date -u +"%H:%M:%SZ" && agent-browser --session owned snapshot -i 2>&1 | head -80',
+    "cd /home/user && agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
+    "cd /home/user && agent-browser --session owned get count iframe 2>&1 | tail -5; echo ----; agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
+    'agent-browser --session owned snapshot 2>&1 | head -80; echo "=== URL/TITLE ==="; agent-browser --session owned get url 2>&1; agent-browser --session owned get title 2>&1',
+  ])(
+    "a formatted snapshot guides the Agent without paying: %s",
+    async (formattedCommand) => {
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        getConnectionId: () => "desktop-captcha",
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(async () => ({
+            stdout: "page",
+            stderr: "",
+            exitCode: 0,
+          })),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      context.checkBrowserChallenge = jest.fn(async () => ({
+        status: "token_delivered",
+      }));
+      const tool = createRunTerminalCmd(context);
+      const command = `agent-browser --session owned snapshot${formattedCommand.includes("snapshot -i") ? " -i" : ""}`;
+      const formatted = await runTool(tool, {
+        command: formattedCommand,
+        is_background: false,
+        interactive: false,
+      });
+      expect(context.checkBrowserChallenge).not.toHaveBeenCalled();
+      expect(formatted).toMatchObject({
+        result: {
+          browserChallenge: {
+            status: "snapshot_required",
+            message: expect.stringContaining(command),
+          },
+        },
+      });
+      const standalone = await runTool(tool, {
+        command,
+        is_background: false,
+        interactive: false,
+      });
+      expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(1);
+      expect(standalone).toMatchObject({
+        result: { browserChallenge: { status: "token_delivered" } },
+      });
+    },
+  );
+
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];
@@ -646,7 +852,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
-  test("collects bounded script evidence only for automatic review", async () => {
+  test("leaves script inspection unresolved and permits human-approved execution", async () => {
     const run = jest.fn(
       async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
         opts?.onStdout?.("ok\n");
@@ -677,22 +883,15 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         command: "bash scripts/test.sh",
         inspection: {
           kind: "script",
-          status: "resolved",
-          scripts: [
-            {
-              source: "file",
-              path: "/workspace/project/scripts/test.sh",
-              content: "#!/bin/sh\necho ok\n",
-            },
-          ],
-          fingerprint: expect.any(String),
+          status: "unresolved",
+          reason: "inspection_failed",
         },
       });
       return {
         approved: true as const,
         approvalId: "approval-1",
         sandboxIdentity: "connection:desktop-a" as const,
-        approvalSource: "auto_review" as const,
+        approvalSource: "user" as const,
       };
     });
     const { context } = makeContext({
@@ -711,7 +910,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(result.result.exitCode).toBe(0);
     expect(result.result.output).toContain("ok");
-    expect(sandbox.files.readText).toHaveBeenCalledTimes(2);
+    expect(sandbox.files.readText).not.toHaveBeenCalled();
     // Retention can run separately; the approved user command must run only once.
     expect(
       run.mock.calls.filter(([command]) =>
@@ -792,24 +991,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(readText).not.toHaveBeenCalled();
   });
 
-  test("blocks execution when inspected script contents change after automatic review", async () => {
-    const readText = jest
+  test("blocks execution when inspected deletion target changes after automatic review", async () => {
+    const stat = jest
       .fn()
       .mockResolvedValueOnce({
-        type: "file_read_result" as const,
-        requestId: "request-1",
-        path: "/workspace/project/scripts/test.sh",
+        kind: "file" as const,
         sizeBytes: 8,
-        totalLines: 1,
-        content: "echo ok\n",
       })
       .mockResolvedValueOnce({
-        type: "file_read_result" as const,
-        requestId: "request-2",
-        path: "/workspace/project/scripts/test.sh",
+        kind: "file" as const,
         sizeBytes: 9,
-        totalLines: 1,
-        content: "echo bad\n",
       });
     const run = jest.fn();
     const sandbox = {
@@ -818,7 +1009,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       getWorkingDirectory: () => "/workspace/project",
       isWindows: () => false,
       supportsNativeFileRelay: () => true,
-      files: { readText },
+      files: { stat },
       commands: { run },
     };
     const requestToolApproval = jest.fn(async () => ({
@@ -834,8 +1025,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
 
     const result = (await runTool(createRunTerminalCmd(context), {
-      command: "bash scripts/test.sh",
-      brief: "run focused tests",
+      command: "rm -rf build",
+      brief: "remove build output",
       is_background: false,
       timeout: 5,
       interactive: false,
@@ -844,6 +1035,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.error).toContain(
       "inspected files changed after automatic review",
     );
+    expect(stat).toHaveBeenCalledTimes(2);
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -943,6 +1135,141 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
 
     expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  test("both terminal tools expose slow checkpoints as pending and observe a later saved receipt", async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const saving = new Promise<void>((resolve) => (release = resolve));
+    const fakeHandle = makeFakeHandle();
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "checkpoint-fixture",
+      files: {
+        write: jest.fn(async () => {
+          await saving;
+        }),
+        read: jest.fn(async () => {
+          throw new Error("missing");
+        }),
+        list: jest.fn(async () => []),
+        remove: jest.fn(),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    jest.mocked(fakeHandle.sendInput).mockImplementation(async () => {
+      fakeHandle.emit(new TextEncoder().encode("checkpoint fixture\n"));
+    });
+    try {
+      const running = runTool(createRunTerminalCmd(context), {
+        command: "bounded fixture",
+        interactive: true,
+        is_background: false,
+        timeout: 0.1,
+      });
+      await jest.advanceTimersByTimeAsync(3_000);
+      const first = (await running) as { result: Record<string, any> };
+      expect(first.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(first.result).not.toHaveProperty("recordPersistenceFailed");
+      const interact = createInteractTerminalSession(context).execute as any;
+      const viewing = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-view",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(2_100);
+      const pending = await viewing;
+      expect(pending.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(pending.result).not.toHaveProperty("recordPersistenceFailed");
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      const observingSaved = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-saved",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(100);
+      const saved = await observingSaved;
+      expect(saved.result).toMatchObject({
+        recordPersistenceStatus: "saved",
+        recordPath: expect.stringContaining(".json"),
+      });
+      expect(saved.result).not.toHaveProperty("recordPersistenceFailed");
+      // Already-returned tool messages are snapshots, not mutable session state.
+      expect(first.result.recordPersistenceStatus).toBe("pending");
+      expect(pending.result.recordPersistenceStatus).toBe("pending");
+    } finally {
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      await context.ptySessionManager.closeAll(context.chatId);
+      jest.useRealTimers();
+    }
+  });
+
+  test("carries the real tool owner's run into a best-effort cloud no-space checkpoint", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "PRIVATE_SANDBOX",
+      files: {
+        write: jest.fn(async () => {
+          throw Object.assign(new Error("PRIVATE_PATH"), {
+            name: "NotEnoughSpaceError",
+          });
+        }),
+        read: jest.fn(async () => {
+          throw new Error("missing");
+        }),
+        list: jest.fn(async () => []),
+        remove: jest.fn(),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    context.triggerRunId = "run_0123456789abcdefghijklmn";
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    jest.mocked(fakeHandle.sendInput).mockImplementation(async () => {
+      fakeHandle.emit(new TextEncoder().encode("done\n"));
+      fakeHandle.resolveExit(0);
+    });
+    try {
+      const failed = await runTool(createRunTerminalCmd(context), {
+        command: "printf done",
+        brief: "bounded fixture",
+        interactive: true,
+        is_background: false,
+        timeout: 1,
+      });
+      expect(failed).toMatchObject({
+        result: {
+          recordPersistenceStatus: "failed",
+          recordPersistenceFailed: true,
+        },
+      });
+      const receipt = jest
+        .mocked(phLogger.info)
+        .mock.calls.find(
+          ([event]) => event === "terminal_record_checkpoint_unconfirmed",
+        );
+      expect(receipt?.[1]).toMatchObject({
+        cloud_error_kind: "no_space",
+        checkpoint_owner_diagnostic_version: 1,
+        checkpoint_owner_run_status: "recorded",
+        checkpoint_owner_trigger_run_id: context.triggerRunId,
+      });
+      expect(JSON.stringify(receipt)).not.toContain("PRIVATE_");
+      expect(e2b.files.write).toHaveBeenCalled();
+    } finally {
+      await context.ptySessionManager.closeAll(context.chatId);
+    }
   });
 
   test("detectAgentBrowserUsage extracts sanitized actions", () => {
@@ -1176,6 +1503,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const e2b = makeFakeE2BSandbox();
     mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
     const { context } = makeContext({ sandbox: e2b });
+    context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     setTimeout(() => fakeHandle.resolveExit(0), 10);
     await runTool(createRunTerminalCmd(context), {
@@ -1192,7 +1520,67 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
       }),
     );
+    expect(mockPhEvent).toHaveBeenCalledWith(
+      "agent_browser_terminal_command_used",
+      expect.objectContaining({
+        agent_browser_usage_event_version: 3,
+        usage_observation_phase: "before_terminal_dispatch",
+        usage_owner_run_status: "recorded",
+        usage_owner_trigger_run_id: context.triggerRunId,
+        interactive: true,
+      }),
+    );
   });
+
+  test.each([false, true])(
+    "passes owned browser environment to connected commands only when eligible (%s)",
+    async (eligible) => {
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        getWorkingDirectory: () => "/tmp",
+        commands: {
+          run: jest.fn(async (_command: string, _options: unknown) => ({
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          })),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      const prepare = jest.fn(async () => ({
+        AGENT_BROWSER_SESSION: "owned-preview",
+      }));
+      context.browserSessions = {
+        prepare,
+        hasHandoffScope: () => false,
+        hasConnectedChallengeScope: () => eligible,
+      } as unknown as NonNullable<ToolContext["browserSessions"]>;
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://example.com",
+        brief: "inspect page",
+        is_background: false,
+        interactive: false,
+        timeout: 5,
+      });
+      if (eligible) {
+        expect(prepare).toHaveBeenCalledWith(sandbox);
+        expect(sandbox.commands.run).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({
+            envVars: expect.objectContaining({
+              AGENT_BROWSER_SESSION: "owned-preview",
+            }),
+          }),
+        );
+      } else {
+        expect(prepare).not.toHaveBeenCalled();
+        expect(sandbox.commands.run.mock.calls[0][1]).not.toHaveProperty(
+          "envVars",
+        );
+      }
+    },
+  );
 
   test("owns a cloud shell's browser state before a later browser command", async () => {
     const fakeHandle = makeFakeHandle();
@@ -2149,15 +2537,38 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         interactive: false,
         timeout: 5,
       })) as {
-        result: { output: string; error?: string; exitCode?: number | null };
+        result: {
+          output: string;
+          error?: string;
+          exitCode?: number | null;
+          executionOutcome?: string;
+        };
       };
       expect(run).toHaveBeenCalledTimes(1);
       expect(result.result.exitCode).toBeNull();
+      expect(result.result.executionOutcome).toBe("unknown");
       expect(result.result.error).toContain("Do not rerun");
       if (!background)
         expect(result.result.output).toContain("already started");
     },
   );
+
+  test("preserves an unknown execution outcome from an unexpected transport failure", async () => {
+    const { context, sandboxManager } = makeContext({ sandbox: null });
+    sandboxManager.getSandbox.mockRejectedValueOnce(
+      Object.assign(new Error("transport failed"), {
+        executionOutcome: "unknown",
+      }),
+    );
+    const result = (await runTool(createRunTerminalCmd(context), {
+      command: "bounded command",
+      brief: "test transport failure",
+      is_background: false,
+      interactive: false,
+      timeout: 5,
+    })) as { result: { executionOutcome?: string } };
+    expect(result.result.executionOutcome).toBe("unknown");
+  });
 
   test.each([false, true])(
     "saves large unknown-outcome output with a closed notification stream: %s",
@@ -2250,59 +2661,137 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
   });
 
-  test("logs sanitized agent-browser terminal usage to PostHog", async () => {
-    const nonE2B = {
-      sandboxKind: "centrifugo" as const,
-      isWindows: () => false,
-      commands: {
-        run: jest.fn(
-          async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
-            opts?.onStdout?.("opened\n");
-            return { stdout: "opened\n", stderr: "", exitCode: 0 };
-          },
-        ),
-      },
-    };
-
-    const { context } = makeContext({ sandbox: nonE2B });
-    const tool = createRunTerminalCmd(context);
-
-    await runTool(tool, {
-      command:
-        "agent-browser open https://secret.example/login && agent-browser screenshot",
-      brief: "open a browser page",
-      is_background: false,
-      timeout: 5,
-    });
-
-    expect(mockPhEvent).toHaveBeenCalledWith(
-      "agent_browser_terminal_command_used",
-      expect.objectContaining({
-        userId: "u1",
-        chat_id: "chat-1",
-        mode: "agent",
-        subscription_tier: "pro",
-        sandbox_type: "remote-connection",
-        primary_action: "open",
-        actions: ["open", "screenshot"],
-        invocation_count: 2,
-        used_via_npx: false,
-        interactive: false,
+  test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s,json=%s)",
+    async (rejected, json) => {
+      const privateError =
+        "Navigation failed: net::ERR_NAME_NOT_RESOLVED https://private.example/token";
+      const privateOutput = json
+        ? JSON.stringify({ success: false, error: privateError })
+        : privateError;
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStderr?: (s: string) => void }) => {
+              opts?.onStderr?.(privateOutput);
+              if (rejected) throw new CommandExitError("exit" as never);
+              return { stdout: "", stderr: privateOutput, exitCode: 1 };
+            },
+          ),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const output = await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://private.example/token",
         is_background: false,
-        agent_browser_usage_event_version: 2,
-      }),
-    );
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
-      "configured_model",
-    );
-    expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
-    expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
-      "secret.example",
-    );
-    expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
-  });
+        timeout: 5,
+      });
+      expect(output.result).toMatchObject({
+        exitCode: 1,
+        output: privateOutput,
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_open_failure",
+        expect.objectContaining({
+          browser_open_failure_version: 3,
+          observation_scope: "terminal_result_open_intent",
+          public_output_hint: "navigation",
+          exit_code: 1,
+          owner_trigger_run_id: context.triggerRunId,
+        }),
+      );
+      const diagnostic = mockPhEvent.mock.calls.find(
+        ([event]) => event === "agent_browser_terminal_open_failure",
+      );
+      expect(JSON.stringify(diagnostic)).not.toContain("private.example");
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
+    ["recorded", "run_aaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["unavailable", undefined],
+    ["unavailable", "PRIVATE_OWNER https://secret.example/owner"],
+    ["unavailable", `run_${"a".repeat(41)}`],
+  ] as const)(
+    "logs sanitized browser usage with %s run attribution",
+    async (status, runId) => {
+      const nonE2B = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStdout?: (s: string) => void }) => {
+              opts?.onStdout?.("opened\n");
+              return { stdout: "opened\n", stderr: "", exitCode: 0 };
+            },
+          ),
+        },
+      };
+
+      const { context } = makeContext({ sandbox: nonE2B });
+      context.triggerRunId = runId;
+      const tool = createRunTerminalCmd(context);
+
+      await runTool(tool, {
+        command:
+          "agent-browser open https://secret.example/login && agent-browser screenshot",
+        brief: "open a browser page",
+        is_background: false,
+        timeout: 5,
+      });
+
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_command_used",
+        expect.objectContaining({
+          userId: "u1",
+          chat_id: "chat-1",
+          mode: "agent",
+          subscription_tier: "pro",
+          sandbox_type: "remote-connection",
+          primary_action: "open",
+          actions: ["open", "screenshot"],
+          invocation_count: 2,
+          used_via_npx: false,
+          interactive: false,
+          is_background: false,
+          agent_browser_usage_event_version: 3,
+          usage_observation_phase: "before_terminal_dispatch",
+          usage_owner_run_status: status,
+        }),
+      );
+      if (status === "recorded") {
+        expect(mockPhEvent.mock.calls[0]?.[1]).toHaveProperty(
+          "usage_owner_trigger_run_id",
+          runId,
+        );
+      } else {
+        expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+          "usage_owner_trigger_run_id",
+        );
+      }
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("subscription");
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty(
+        "configured_model",
+      );
+      expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("active_model");
+      expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+        "secret.example",
+      );
+      expect(JSON.stringify(mockPhEvent.mock.calls)).not.toContain(
+        "PRIVATE_OWNER",
+      );
+      expect(nonE2B.commands.run.mock.calls[0]?.[1]).not.toHaveProperty("envs");
+    },
+  );
 
   test("schema defaults action=exec and interactive=false when omitted", async () => {
     // A bare `{command}` must flow through the legacy path
@@ -2393,45 +2882,71 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test("exec + interactive=true on Centrifugo sandbox invokes createCentrifugoPtyHandle", async () => {
-    const fakeHandle = makeFakeHandle();
-    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+  test.each([false, true])(
+    "exec + interactive=true preserves connected browser ownership when eligible (%s)",
+    async (eligible) => {
+      const fakeHandle = makeFakeHandle();
+      mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
 
-    const centrifugoSandbox = {
-      sandboxKind: "centrifugo" as const,
-      commands: { run: jest.fn() },
-      getUserId: () => "user-1",
-      getConnectionId: () => "conn-1",
-      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
-      getWorkingDirectory: () => "/tmp/project",
-      isWindows: () => false,
-    };
-    const { context } = makeContext({ sandbox: centrifugoSandbox });
-    const tool = createRunTerminalCmd(context);
+      const centrifugoSandbox = {
+        sandboxKind: "centrifugo" as const,
+        commands: { run: jest.fn() },
+        getUserId: () => "user-1",
+        getConnectionId: () => "conn-1",
+        getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+        getWorkingDirectory: () => "/tmp/project",
+        isWindows: () => false,
+      };
+      const { context } = makeContext({ sandbox: centrifugoSandbox });
+      const prepare = jest.fn(async () => ({
+        AGENT_BROWSER_SESSION: "owned-interactive",
+      }));
+      context.browserSessions = {
+        prepare,
+        hasConnectedChallengeScope: () => eligible,
+      } as unknown as NonNullable<ToolContext["browserSessions"]>;
+      const tool = createRunTerminalCmd(context);
 
-    // Emit some data so waitForOutput resolves
-    setTimeout(() => {
-      fakeHandle.emit(new TextEncoder().encode("$ top\n"));
-      fakeHandle.resolveExit(0);
-    }, 50);
+      // Emit some data so waitForOutput resolves
+      setTimeout(() => {
+        fakeHandle.emit(new TextEncoder().encode("$ top\n"));
+        fakeHandle.resolveExit(0);
+      }, 50);
 
-    const result = (await runTool(tool, {
-      action: "exec",
-      command: "top",
-      brief: "x",
-      is_background: false,
-      interactive: true,
-      timeout: 0.2,
-    })) as { result: { output?: string; session?: string; pid?: number } };
+      const result = (await runTool(tool, {
+        action: "exec",
+        command: "top",
+        brief: "x",
+        is_background: false,
+        interactive: true,
+        timeout: 0.2,
+      })) as { result: { output?: string; session?: string; pid?: number } };
 
-    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
-    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
-      centrifugoSandbox,
-      expect.objectContaining({ cwd: "/tmp/project" }),
-    );
-    expect(result.result.session).toBeDefined();
-    expect(result.result.pid).toBe(fakeHandle.pid);
-  });
+      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+        centrifugoSandbox,
+        expect.objectContaining({ cwd: "/tmp/project" }),
+      );
+      if (eligible) {
+        expect(prepare).toHaveBeenCalledWith(centrifugoSandbox);
+        expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+          centrifugoSandbox,
+          expect.objectContaining({
+            envs: expect.objectContaining({
+              AGENT_BROWSER_SESSION: "owned-interactive",
+            }),
+          }),
+        );
+      } else {
+        expect(prepare).not.toHaveBeenCalled();
+        expect(
+          mockCreateCentrifugoPtyHandle.mock.calls[0][1],
+        ).not.toHaveProperty("envs");
+      }
+      expect(result.result.session).toBeDefined();
+      expect(result.result.pid).toBe(fakeHandle.pid);
+    },
+  );
 
   test("exec + interactive=true on Centrifugo sandbox does NOT send initial command via sendInput", async () => {
     const fakeHandle = makeFakeHandle();

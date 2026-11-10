@@ -1,4 +1,5 @@
 import {
+  extractAllSidebarContent,
   extractSidebarContentFromMessage,
   isSameSidebarContent,
   reconcileSidebarContentAfterRegeneration,
@@ -6,6 +7,95 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
+  it("keeps CAPTCHA progress when resolving the live sidebar and freezes recorded timing after reload", () => {
+    const tool = {
+      type: "tool-run_terminal_cmd",
+      toolCallId: "captcha-1",
+      state: "input-available",
+      input: { command: "hackerai-captcha solve --session owned" },
+    };
+    const startedAt = Date.parse("2026-11-08T12:00:00Z");
+    const message = {
+      role: "assistant",
+      parts: [
+        tool,
+        {
+          type: "data-terminal",
+          data: {
+            toolCallId: tool.toolCallId,
+            terminal: "",
+            captchaStartedAt: startedAt,
+          },
+        },
+      ],
+    };
+    const [live] = extractSidebarContentFromMessage(message, true);
+    expect(live).toMatchObject({ captcha: { state: "solving", startedAt } });
+    const [stopped] = extractSidebarContentFromMessage(message, false);
+    expect(stopped).toMatchObject({ captcha: { state: "stopped" } });
+    const [historical] = extractAllSidebarContent(
+      [message, { role: "assistant", parts: [] }],
+      true,
+    );
+    expect(historical).toMatchObject({ captcha: { state: "stopped" } });
+    const [saved] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          ...tool,
+          state: "output-available",
+          output: {
+            result: {
+              browserChallenge: { status: "token_delivered" },
+              callTiming: {
+                startedAt: "2026-11-08T12:00:00Z",
+                elapsedMs: 27000,
+              },
+            },
+          },
+        },
+      ],
+    });
+    expect(saved).toMatchObject({
+      captcha: {
+        state: "response_delivered",
+        startedAt,
+        elapsedMs: 27000,
+      },
+    });
+  });
+  it.each([
+    [
+      "tool-run_terminal_cmd",
+      { command: 'sh -c "exit 7"' },
+      { result: { exitCode: 7 } },
+    ],
+    [
+      "tool-interact_terminal_session",
+      { action: "wait", session: "qa" },
+      { result: { exited: { exitCode: 7 } } },
+    ],
+    ["tool-shell", { action: "exec", command: "false" }, { exitCode: 7 }],
+  ])(
+    "retains the exit code when rebuilding %s from history",
+    (type, input, output) => {
+      const [terminal] = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type,
+            input,
+            output,
+            toolCallId: "call-exit7",
+            state: "output-available",
+          },
+        ],
+      });
+
+      expect(terminal).toMatchObject({ exitCode: 7, isExecuting: false });
+    },
+  );
+
   it("shows the generated command while automatic review is still pending", () => {
     const startedAt = Date.now();
     const [terminal] = extractSidebarContentFromMessage({
@@ -549,5 +639,89 @@ describe("finding sidebar selection identity", () => {
         toolCallId: "discarded-call",
       }),
     ).toBe(false);
+  });
+});
+
+describe.each(["tool-file", "tool-file_write"])(
+  "file sidebar compatibility: %s",
+  (type) => {
+    it.each(["write", "append"])(
+      "retains streaming and saved %s content",
+      (action) => {
+        const call = {
+          type,
+          toolCallId: "file-content",
+          input: { action, path: "/project/notes.txt", text: "new content\n" },
+        };
+        const [streaming] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [{ ...call, state: "input-streaming" }],
+        });
+        expect(streaming).toMatchObject({
+          path: "/project/notes.txt",
+          content: "new content\n",
+          action: action === "write" ? "creating" : "appending",
+          toolCallId: "file-content",
+          isExecuting: true,
+        });
+        const [saved] = extractSidebarContentFromMessage({
+          role: "assistant",
+          parts: [
+            {
+              ...call,
+              state: "output-available",
+              output:
+                action === "append"
+                  ? { originalContent: "existing\n" }
+                  : { success: true },
+            },
+          ],
+        });
+        expect(saved).toMatchObject({
+          path: "/project/notes.txt",
+          content:
+            action === "write" ? "new content\n" : "existing\nnew content\n",
+          action: action === "write" ? "writing" : "appending",
+          toolCallId: "file-content",
+          isExecuting: false,
+        });
+      },
+    );
+  },
+);
+
+it("shows a dedicated edit in the sidebar without an action argument", () => {
+  const call = {
+    type: "tool-file_edit",
+    toolCallId: "edit-content",
+    input: {
+      path: "/project/notes.txt",
+      edits: [{ find: "old", replace: "new" }],
+    },
+  };
+  const [pending] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [{ ...call, state: "input-available" }],
+  });
+  expect(pending).toMatchObject({
+    path: "/project/notes.txt",
+    action: "editing",
+    isExecuting: true,
+  });
+  const [saved] = extractSidebarContentFromMessage({
+    role: "assistant",
+    parts: [
+      {
+        ...call,
+        state: "output-available",
+        output: { originalContent: "old", modifiedContent: "new" },
+      },
+    ],
+  });
+  expect(saved).toMatchObject({
+    path: "/project/notes.txt",
+    content: "new",
+    action: "editing",
+    isExecuting: false,
   });
 });

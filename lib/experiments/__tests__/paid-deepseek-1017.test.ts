@@ -34,7 +34,7 @@ const client = (variant: unknown) => ({
 
 describe("paid 1017 routing", () => {
   it.each([false, true])(
-    "uses exact 1017 with maximum reasoning for Max uploads and image tool results (direct vision=%s)",
+    "preserves control GLM text and exact 1017 maximum reasoning for Max uploads and image tool results (direct vision=%s)",
     (directGlmVisionEnabled) => {
       const attachmentModel = selectModel(
         "agent",
@@ -111,7 +111,7 @@ describe("paid 1017 routing", () => {
     },
   );
 
-  it("keeps Max text and summarized images on GLM", () => {
+  it("preserves legacy Max GLM text and summarized-image routes", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-glm-5.3",

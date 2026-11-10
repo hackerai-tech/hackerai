@@ -252,3 +252,82 @@ export function detectAgentBrowserUsage(
     usedViaNpx,
   };
 }
+
+/** A narrow opt-in trigger for server-side challenge detection. This is not a
+ * general shell parser: ambiguous commands execute normally without paid work.
+ */
+export function isAgentBrowserSnapshotCommand(command: string): boolean {
+  if (/[`$<>\\\n\r]/.test(command)) return false;
+  const parts = splitShellCommands(command.trim());
+  if (parts.length !== 1) return false;
+  const words = splitShellWords(parts[0]);
+  let index = 0;
+  if (words[index] === "npx") {
+    index++;
+    if (["--yes", "-y"].includes(words[index])) index++;
+  }
+  if (!AGENT_BROWSER_COMMAND_RE.test(words[index++] ?? "")) return false;
+  if (words[index] === "--session") {
+    index++;
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(words[index++] ?? "")) return false;
+  }
+  if (words[index++] !== "snapshot") return false;
+  while (index < words.length) {
+    const option = words[index++];
+    if (["-i", "--interactive", "-c", "--compact", "--json"].includes(option))
+      continue;
+    if (["-d", "--depth"].includes(option)) {
+      if (!/^\d{1,3}$/.test(words[index++] ?? "")) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/** Extract only a validated snapshot's explicit session; undefined uses its runtime default. */
+export function getAgentBrowserSnapshotSession(command: string): {
+  sessionName?: string;
+} | null {
+  if (!isAgentBrowserSnapshotCommand(command)) return null;
+  const words = splitShellWords(command.trim());
+  const sessionIndex = words.indexOf("--session");
+  return sessionIndex === -1 ? {} : { sessionName: words[sessionIndex + 1] };
+}
+
+/** Suggest the read-only command when output formatting hid the opt-in trigger.
+ * This never authorizes a solver call or executes a rewritten shell command.
+ */
+export function getStandaloneSnapshotHint(command: string): string | null {
+  if (/[`$\\<>\n\r]/.test(command.replaceAll("2>&1", ""))) return null;
+  const parts = splitShellCommands(command.trim())
+    .map(splitShellWords)
+    .filter((words) => words.length > 0);
+  const snapshots = parts
+    .map((words) => words.join(" "))
+    .filter(isAgentBrowserSnapshotCommand);
+  if (snapshots.length !== 1) return null;
+  const snapshotIndex = parts.findIndex(
+    (words) => words.join(" ") === snapshots[0],
+  );
+  // A later command could navigate, switch sessions or close the browser.
+  // Only output formatting, literal separators, a clock check, or read-only
+  // URL/title reads may follow it. These common diagnostic bundles still need
+  // a fresh standalone snapshot before the on-demand capability is offered.
+  if (
+    parts
+      .slice(snapshotIndex + 1)
+      .some(
+        (words) =>
+          !["head", "tail", "cat", "echo", "date"].includes(words[0]) &&
+          !/^agent-browser(?: --session [A-Za-z0-9_-]{1,80})? get (?:url|title)$/.test(
+            words.join(" "),
+          ),
+      )
+  )
+    return null;
+  // Other shell segments (for example `cd ... &&`) are deliberately omitted.
+  // This is advice only: the Agent must issue the validated snapshot separately
+  // before the strict trigger can perform a new owned-page check.
+  return snapshots[0];
+}

@@ -11,7 +11,9 @@ import {
   FileDown,
   Radar,
   CircleAlert,
+  Puzzle,
 } from "lucide-react";
+import { getCaptchaActivityLabel } from "./tools/captcha-tool-utils";
 import {
   isSidebarFile,
   isSidebarTerminal,
@@ -136,6 +138,8 @@ export function getActionText(content: SidebarContent): string {
   }
 
   if (isSidebarTerminal(content)) {
+    if (content.captcha) return getCaptchaActivityLabel(content.captcha.state);
+    if (content.executionPhase === "stopped") return "Stopped command";
     if (content.executionPhase === "reviewing") return "Reviewing";
     if (content.executionPhase === "awaiting_approval") {
       return "Awaiting approval";
@@ -149,6 +153,7 @@ export function getActionText(content: SidebarContent): string {
       isActive: content.isExecuting,
       interactive: content.isInteractive,
       isBackground: content.isBackground,
+      exitCode: content.exitCode,
     });
   }
 
@@ -211,7 +216,12 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
     return <Edit className={iconClass} />;
   }
   if (isSidebarProxy(content)) return <Radar className={iconClass} />;
-  if (isSidebarTerminal(content)) return <Terminal className={iconClass} />;
+  if (isSidebarTerminal(content))
+    return content.captcha ? (
+      <Puzzle className={iconClass} />
+    ) : (
+      <Terminal className={iconClass} />
+    );
   if (isSidebarWebSearch(content)) return <Search className={iconClass} />;
   if (isSidebarNotes(content)) return <StickyNote className={iconClass} />;
   if (isSidebarFinding(content)) return <ShieldAlert className={iconClass} />;
@@ -229,6 +239,7 @@ export function getToolName(content: SidebarContent): string {
   }
   if (isSidebarProxy(content)) return "Proxy";
   if (isSidebarTerminal(content)) {
+    if (content.captcha) return "CAPTCHA solver";
     const interactive =
       content.session || isInteractiveShellAction(content.shellAction);
     return interactive ? "Interactive Terminal" : "Terminal";
@@ -251,6 +262,7 @@ export function getDisplayTarget(content: SidebarContent): string {
     return spaceIndex !== -1 ? content.command.slice(spaceIndex + 1) : "";
   }
   if (isSidebarTerminal(content)) {
+    if (content.captcha) return "";
     if (content.shellAction === "send" && content.input) {
       if (Array.isArray(content.input)) {
         return content.input.map((t) => formatSendInput(t)).join(" ");

@@ -136,7 +136,7 @@ export function fragmentCentrifugoMessage(
   const encoded = bytesToBase64(encoder.encode(serialized));
   const total = Math.ceil(encoded.length / MAX_FRAGMENT_DATA_CHARS);
   if (total > MAX_FRAGMENT_COUNT) {
-    throw new Error(
+    throw new RelayOutputOverflowError(
       `Centrifugo message requires ${total} fragments; maximum is ${MAX_FRAGMENT_COUNT}`,
     );
   }
@@ -236,10 +236,10 @@ export const RELAY_QUEUE_MAX_BYTES = 4 * 1024 * 1024;
 export const RELAY_QUEUE_MAX_MESSAGES = 256;
 
 export class RelayOutputOverflowError extends Error {
-  constructor() {
-    super(
-      "Relay output buffer limit exceeded; output is incomplete. Do not treat this operation as successful.",
-    );
+  constructor(
+    message = "Relay output buffer limit exceeded; output is incomplete. Do not treat this operation as successful.",
+  ) {
+    super(message);
     this.name = "RelayOutputOverflowError";
   }
 }

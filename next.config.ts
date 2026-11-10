@@ -38,7 +38,10 @@ const nextConfig: NextConfig = {
   productionBrowserSourceMaps: posthogSourceMapsEnabled,
   typescript: {
     // Pull request CI runs pnpm typecheck while the preview builds in parallel.
-    ignoreBuildErrors: isVercelPreview,
+    // scripts/build.mjs sets this only after generating route types and
+    // successfully checking the complete project with the native compiler.
+    ignoreBuildErrors:
+      isVercelPreview || process.env.HACKERAI_BUILD_TYPECHECKED === "1",
   },
   async headers() {
     const iconCacheHeaders = [

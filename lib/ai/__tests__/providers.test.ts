@@ -1171,6 +1171,10 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response.headers.get(PDF_PARSER_ENGINE_HEADER)).toBe(
       "cloudflare-ai",
     );
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warnSpy.mock.calls[0][0]).event).toBe(
+      "openrouter_pdf_parser_recovery",
+    );
   });
 
   it.each([PDF_PARSER_RATE_LIMIT_ERROR, PDF_PARSER_INVALID_DOCUMENT_ERROR])(
@@ -1213,6 +1217,13 @@ describe("OpenRouter PDF parser recovery", () => {
         MALFORMED_PDF_USER_RESPONSE,
       );
       expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBe("sandbox");
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(
+        warnSpy.mock.calls.every(
+          ([value]) =>
+            JSON.parse(value).event === "openrouter_pdf_parser_recovery",
+        ),
+      ).toBe(true);
     },
   );
 
@@ -1239,6 +1250,119 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response).toBe(cloudflareError);
     expect(response.headers.get(PDF_PARSER_RECOVERY_HEADER)).toBeNull();
   });
+
+  it.each(["mistral-ocr", "cloudflare-ai", "generic"])(
+    "diagnoses unavailable sandbox recovery after %s without another request",
+    async (engine) => {
+      const request = createPdfParserRequest(false);
+      if (engine === "cloudflare-ai") request.plugins[0].pdf.engine = engine;
+      const failure =
+        engine === "generic"
+          ? "Failed to parse the file"
+          : PDF_PARSER_INVALID_DOCUMENT_ERROR;
+      const originalResponse = parserErrorResponse(failure);
+      const fetchMock = jest.fn();
+      if (engine === "mistral-ocr") {
+        fetchMock.mockResolvedValueOnce(parserErrorResponse(failure));
+      }
+      fetchMock.mockResolvedValueOnce(originalResponse);
+      const controller = new AbortController();
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", {
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(engine === "mistral-ocr" ? 2 : 1);
+      for (const [, init] of fetchMock.mock.calls) {
+        expect(init.signal).toBe(controller.signal);
+      }
+      const unavailable = warnSpy.mock.calls
+        .map(([value]) => JSON.parse(value))
+        .filter(
+          (value) =>
+            value.event === "openrouter_pdf_parser_recovery_unavailable",
+        );
+      expect(unavailable).toEqual([
+        {
+          timestamp: expect.any(String),
+          level: "warn",
+          event: "openrouter_pdf_parser_recovery_unavailable",
+          service: "openrouter",
+          environment: expect.any(String),
+          from_engine: engine === "generic" ? "unknown" : "cloudflare-ai",
+          to_engine: "sandbox",
+          reason: engine === "generic" ? "generic_parse" : "invalid_document",
+          unavailable_reason: "no_staged_attachments",
+        },
+      ]);
+    },
+  );
+
+  it.each(["duplicate", "different_message", "different_filename"])(
+    "keeps strict file matching and diagnoses %s ambiguity",
+    async (scenario) => {
+      const request = createPdfParserRequest();
+      request.plugins[0].pdf.engine = "cloudflare-ai";
+      const file = request.messages[0].content[1];
+      if (scenario === "duplicate") request.messages[0].content.push(file);
+      if (scenario === "different_filename")
+        file.file!.filename = "private.pdf";
+      if (scenario === "different_message") {
+        const tag = request.messages[0].content.shift()!;
+        request.messages.unshift({ role: "assistant", content: [tag] });
+      }
+      const serialized = JSON.stringify(request);
+      const originalResponse = parserErrorResponse(
+        PDF_PARSER_INVALID_DOCUMENT_ERROR,
+      );
+      const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", { body: serialized });
+
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1].body).toBe(serialized);
+      expect(JSON.stringify(request)).toBe(serialized);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(warnSpy.mock.calls[0][0]);
+      expect(diagnostic).toMatchObject({
+        event: "openrouter_pdf_parser_recovery_unavailable",
+        unavailable_reason: "no_unique_matching_file",
+      });
+      expect(JSON.stringify(diagnostic)).not.toMatch(
+        /private\.pdf|report\.pdf|\/home\/user|file_data|messages/,
+      );
+    },
+  );
+
+  it.each(["unsupported_request_shape", "no_user_message"])(
+    "preserves the response when recovery has %s",
+    async (reason) => {
+      const request = createPdfParserRequest();
+      request.plugins[0].pdf.engine = "cloudflare-ai";
+      request.messages[0].role = "assistant";
+      const originalResponse = parserErrorResponse("Failed to parse the file");
+      const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+      const response = await createOpenRouterPatchFetch(
+        fetchMock as typeof fetch,
+      )("https://openrouter.test/chat", {
+        body: JSON.stringify(
+          reason === "unsupported_request_shape" ? {} : request,
+        ),
+      });
+      expect(response).toBe(originalResponse);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warnSpy.mock.calls[0][0])).toMatchObject({
+        event: "openrouter_pdf_parser_recovery_unavailable",
+        unavailable_reason: reason,
+      });
+    },
+  );
 
   it("recovers directly to the sandbox when a later step already uses Cloudflare", async () => {
     const request = createPdfParserRequest();

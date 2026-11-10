@@ -6,6 +6,15 @@ const mockSetActiveTriggerRun = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
 const mockLoggerWarn = jest.fn();
+const mockPauseGoal = jest.fn();
+const mockConvexSignal = jest.fn();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: (signal?: AbortSignal) => {
+    mockConvexSignal(signal);
+    return { mutation: mockPauseGoal };
+  },
+}));
+jest.mock("@/lib/goals/server", () => ({ goalServiceKey: () => "synthetic" }));
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
@@ -70,6 +79,7 @@ const request = (
 describe("agent cancel route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCancelAgentTriggerRun.mockResolvedValue(true as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
     mockGetChatById.mockResolvedValue(null as never);
   });
@@ -93,6 +103,36 @@ describe("agent cancel route", () => {
         status_code: 403,
         user_id: "user-1",
         chat_id: "chat-1",
+      }),
+    );
+  });
+
+  it("still cancels the worker and clears its lease if goal pausing fails", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    } as never);
+    mockPauseGoal.mockRejectedValueOnce(
+      new Error("Storage unavailable") as never,
+    );
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(await response.json()).toEqual({ canceled: true, runId: "run-1" });
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-1",
+        triggerRunId: null,
+        expectedRunId: "run-1",
+      }),
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: "agent_cancel_goal_pause_failed",
       }),
     );
   });
@@ -135,6 +175,15 @@ describe("agent cancel route", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockPauseGoal).toHaveBeenCalledWith(expect.anything(), {
+      serviceKey: "synthetic",
+      chatId: "chat-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+    expect(mockPauseGoal.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelAgentTriggerRun.mock.invocationCallOrder[0],
+    );
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
     expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
       chatId: "chat-1",
@@ -179,9 +228,81 @@ describe("agent cancel route", () => {
         chat_id: "chat-1",
       }),
     );
+    expect(mockPauseGoal).not.toHaveBeenCalled();
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("still cancels the captured run when approval cleanup fails", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const { handleAgentRouteError } = await import("../agent-route-errors");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    } as never);
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(
+      new Error("Approval service unavailable") as never,
+    );
+
+    await expect(
+      createAgentCancelPost({ endpoint: "/api/agent" })(
+        request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+      ),
+    ).rejects.toThrow("unexpected route error");
+
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(handleAgentRouteError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ stage: "close_approval_session" }),
+      }),
+    );
+  });
+
+  it("recovers a failed session close after worker exit using the retained association", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const { clearFinishedAgentRun } = await import("../agent-run-cleanup");
+    const owned = {
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    };
+    mockGetChatById.mockResolvedValue(owned as never);
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(
+      new Error("Unavailable") as never,
+    );
+    const post = createAgentCancelPost({ endpoint: "/api/agent" });
+    await expect(
+      post(request({ chatId: "chat-1", expectedTriggerRunId: "run-1" })),
+    ).rejects.toThrow("unexpected route error");
+    // The worker's independent close also failed. Its finalization must keep
+    // the association so a client retry can still reach the old session.
+    await clearFinishedAgentRun({
+      chatId: "chat-1",
+      triggerRunId: "run-1",
+      approvalSessionId: "approval-1",
+      approvalSessionClosed: false,
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    const response = await post(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(await response.json()).toEqual({ canceled: true, runId: "run-1" });
+    expect(mockCloseAgentApprovalSession.mock.calls).toEqual([
+      ["approval-1", "agent-run-canceled"],
+      ["approval-1", "agent-run-canceled"],
+    ]);
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRunId: "run-1",
+        expectedApprovalSessionId: "approval-1",
+        triggerRunId: null,
+        approvalSessionId: null,
+      }),
+    );
   });
 
   it("reports an explicit null when a stale cancellation has no active run", async () => {
@@ -229,6 +350,7 @@ describe("cancellation timeout diagnostics", () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    mockCancelAgentTriggerRun.mockResolvedValue(true as never);
     jest.useFakeTimers();
     jest.spyOn(console, "warn").mockImplementation(() => {});
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
@@ -237,6 +359,127 @@ describe("cancellation timeout diagnostics", () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it("continues Stop after five seconds even if goal storage ignores abort", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const pause = deferred();
+    mockPauseGoal.mockReturnValueOnce(pause.promise);
+    const response = createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    try {
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      expect(await (await response).json()).toEqual({
+        canceled: true,
+        runId: "run-1",
+      });
+      expect(mockConvexSignal.mock.calls[0][0]).toBeInstanceOf(AbortSignal);
+      expect((mockConvexSignal.mock.calls[0][0] as AbortSignal).aborted).toBe(
+        true,
+      );
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          event: "agent_cancel_goal_pause_unconfirmed",
+          pause_acknowledgement: "unconfirmed",
+          failure_reason: "deadline_exceeded",
+        }),
+      );
+      expect(mockSetActiveTriggerRun).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedRunId: "run-1" }),
+      );
+    } finally {
+      pause.resolve();
+      await response;
+    }
+    expect(mockPauseGoal).toHaveBeenCalledTimes(1);
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledTimes(1);
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("clears the goal-pause deadline after prompt storage success", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    );
+    expect(response.status).toBe(200);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect((mockConvexSignal.mock.calls[0][0] as AbortSignal).aborted).toBe(
+      false,
+    );
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("delivers Stop while approval cleanup is pending without acknowledging completion", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const approval = deferred();
+    mockCloseAgentApprovalSession.mockReturnValueOnce(approval.promise);
+    let completed = false;
+    const response = createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({ chatId: "chat-1", expectedTriggerRunId: "run-1" }),
+    ).then((value) => {
+      completed = true;
+      return value;
+    });
+    try {
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+      expect(completed).toBe(false);
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(warnings().map((log) => log.stage)).toEqual([
+        "close_approval_session",
+        "close_approval_session",
+      ]);
+    } finally {
+      approval.resolve();
+      await response;
+    }
+    expect(await (await response).json()).toEqual({
+      canceled: true,
+      runId: "run-1",
+    });
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedRunId: "run-1",
+      expectedApprovalSessionId: "approval-1",
+      clearApprovalPending: true,
+    });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("observes both cleanup failures and preserves ownership for retry", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    const { handleAgentRouteError } = await import("../agent-route-errors");
+    const cancelFailure = new Error("Cancel unavailable");
+    mockCancelAgentTriggerRun.mockRejectedValueOnce(cancelFailure as never);
+    mockCloseAgentApprovalSession.mockRejectedValueOnce(
+      new Error("Close unavailable") as never,
+    );
+    await createAgentCancelPost({ endpoint: "/api/agent" })(request());
+    expect(handleAgentRouteError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: cancelFailure,
+        context: expect.objectContaining({ stage: "cancel_trigger_run" }),
+      }),
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        event: "agent_cancel_approval_cleanup_failed",
+        trigger_run_id: "run-1",
+        approval_session_id: "approval-1",
+      }),
+    );
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it.each([
@@ -261,6 +504,8 @@ describe("cancellation timeout diagnostics", () => {
       mockGetUserIDAndPro.mockReturnValueOnce(pending.promise);
     if (stage === "get_chat")
       mockGetChatById.mockReturnValueOnce(pending.promise);
+    if (stage === "pause_goal")
+      mockPauseGoal.mockReturnValueOnce(pending.promise);
     if (stage === "close_approval_session")
       mockCloseAgentApprovalSession.mockReturnValueOnce(pending.promise);
     if (stage === "cancel_trigger_run")
@@ -282,6 +527,7 @@ describe("cancellation timeout diagnostics", () => {
       elapsed_ms: 10_000,
     });
     const authorized = [
+      "pause_goal",
       "close_approval_session",
       "cancel_trigger_run",
       "clear_active_run",

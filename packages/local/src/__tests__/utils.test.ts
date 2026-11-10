@@ -61,9 +61,11 @@ describe("Output Truncation", () => {
 });
 
 describe("Platform Shell Detection", () => {
-  it("should return cmd.exe for Windows", () => {
+  it("should return the system cmd.exe for Windows", () => {
     const result = getDefaultShell("win32");
-    expect(result.shell).toBe("cmd.exe");
+    expect(result.shell).toBe(
+      `${process.env.SystemRoot || "C:\\Windows"}\\System32\\cmd.exe`,
+    );
     expect(result.shellFlag).toBe("/C");
   });
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { AgentCrashRecoveryReplayLimitError } from "../agent-crash-recovery-error";
 
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
@@ -80,6 +81,36 @@ describe("agent resume route", () => {
     mockRecover.mockReset();
     mockRecover.mockResolvedValue("recovered" as never);
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
+  });
+
+  it("returns a non-retryable blocked replay result without detaching or issuing another stream token", async () => {
+    const { createAgentResumeGet } = await import("../agent-resume-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({
+      status: "CRASHED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    } as never);
+    mockRecover.mockRejectedValueOnce(
+      new AgentCrashRecoveryReplayLimitError() as never,
+    );
+
+    const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
+      requestFor("chat-1"),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "bad_request:api",
+      metadata: { recovery: "blocked" },
+    });
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    expect(mockCreatePublicToken).not.toHaveBeenCalled();
   });
 
   it.each([

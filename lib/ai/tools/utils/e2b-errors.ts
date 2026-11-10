@@ -39,6 +39,38 @@ export type E2BErrorCategory =
   | "command_failure"
   | "unknown";
 
+export type E2BErrorKind =
+  | "authentication"
+  | "not_found"
+  | "template"
+  | "invalid_argument"
+  | "timeout"
+  | "rate_limit"
+  | "disk_space"
+  | "command_exit"
+  | "sandbox"
+  | "other_error"
+  | "non_error"
+  | "unreadable";
+
+/** Closed SDK identity for diagnostics; never read error names or messages. */
+export function getE2BErrorKind(error: unknown): E2BErrorKind {
+  try {
+    if (error instanceof AuthenticationError) return "authentication";
+    if (error instanceof NotFoundError) return "not_found";
+    if (error instanceof TemplateError) return "template";
+    if (error instanceof InvalidArgumentError) return "invalid_argument";
+    if (error instanceof TimeoutError) return "timeout";
+    if (error instanceof RateLimitError) return "rate_limit";
+    if (error instanceof NotEnoughSpaceError) return "disk_space";
+    if (error instanceof CommandExitError) return "command_exit";
+    if (error instanceof SandboxError) return "sandbox";
+    return error instanceof Error ? "other_error" : "non_error";
+  } catch {
+    return "unreadable";
+  }
+}
+
 /**
  * Classify an error into an E2B error category using instanceof checks
  * against the SDK's error class hierarchy.
@@ -107,12 +139,12 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
   }
   if (error instanceof TimeoutError) {
     if (error.message.includes("sandbox timeout")) {
-      return "Sandbox has expired. A new sandbox will be created automatically.";
+      return "Sandbox has expired.";
     }
     return "Sandbox operation timed out. The sandbox may be overloaded. Please try again.";
   }
   if (error instanceof NotFoundError) {
-    return "Sandbox was not found or has expired. A new sandbox will be created automatically.";
+    return "Sandbox was not found or has expired.";
   }
   if (error instanceof InvalidArgumentError) {
     return "Invalid sandbox configuration. Please contact HackerAI support.";

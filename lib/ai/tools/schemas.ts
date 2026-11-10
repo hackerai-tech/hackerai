@@ -264,27 +264,22 @@ export const createFileToolSchema = ({
   modelName?: string;
 }) => {
   const actionSchema = (
-    supportsView
-      ? z.enum(FILE_ACTIONS_WITH_VIEW)
-      : z.enum(FILE_ACTIONS_TEXT_ONLY)
+    supportsView ? z.enum(["read", "view"]) : z.enum(["read"])
   ) as z.ZodType<FileToolAction>;
   const supportedActionsDescription = [
     supportsView
       ? "- view: View raster image files through multimodal understanding."
       : null,
     "- read: Read file content as text (Markdown, code, logs).",
-    "- write: Overwrite the full content of a text file.",
-    "- append: Append content to a text file.",
-    "- edit: Make targeted edits to a text file.",
   ]
     .filter(Boolean)
     .join("\n");
   const instructions = [
     "Prioritize using this tool instead of the shell tool for file content operations to avoid escaping errors.",
     approvalGated
-      ? "Write, append, and edit actions are approval-gated. When one is needed, call this tool and let the platform request approval instead of asking in chat first."
+      ? "File mutations are approval-gated. Call file_edit or file_write and let the platform request approval instead of asking in chat first."
       : null,
-    "For file copying, moving, and deletion, use the shell tool.",
+    "Use file_edit for targeted changes and file_write to write or append content. For file copying, moving, and deletion, use the shell tool.",
     ...(supportsView
       ? [
           "Use 'view' only for raster image files such as PNG, JPEG, GIF, and WebP.",
@@ -296,17 +291,11 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "Save code with this tool before execution via the shell tool. If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown.",
-    "DO NOT write partial or truncated content; always output the full content.",
-    "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
-    "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
     "Text content returned by this tool may prefix each line using the right-aligned, six-character LINE_NUMBER|LINE_CONTENT format. Treat LINE_NUMBER| as metadata, not as part of the file content.",
     "If the range parameter is not specified, the entire file will be read by default.",
     "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
     "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
-    "write and append actions will automatically create files if they do not exist.",
-    "When writing and appending text, ensure necessary trailing newlines are used to comply with POSIX standards.",
     "DO NOT read files that were just written, as their content remains in context.",
     "Choose appropriate file extensions based on file content and syntax, e.g. Markdown syntax MUST use .md extension.",
   ];
@@ -317,7 +306,7 @@ export const createFileToolSchema = ({
 
   return tool({
     description: `Perform operations on files in the sandbox file system.
-This tool is the primary way to manage file content, allowing for reading, writing, appending, editing text-based files, and viewing raster image files.
+Use this tool to read text files and view raster images. Use file_edit for targeted edits and file_write to write or append content.
 
 ### Supported Actions
 
@@ -330,12 +319,6 @@ ${instructionsDescription}`,
       action: actionSchema.describe("The action to perform"),
       path: z.string().describe("The absolute path to the target file"),
       brief: createToolBriefSchema({ modelName }),
-      text: z
-        .string()
-        .optional()
-        .describe(
-          "The content to be written or appended. Required for `write` and `append` actions.",
-        ),
       range: z
         .array(z.number().int())
         .length(2)
@@ -343,15 +326,55 @@ ${instructionsDescription}`,
         .describe(
           "An array of two integers specifying the start and end of the range. For `read`, numbers are 1-indexed line numbers and -1 means read to the end of the file. Do not use range with `view`.",
         ),
-      edits: z
-        .array(fileEditSchema)
-        .optional()
-        .describe(
-          "A list of edits to be sequentially applied to the file. Required for `edit` action.",
-        ),
     }),
   });
 };
+
+// Keep edits required in a plain object: provider routes do not all enforce
+// action-dependent required fields in union schemas.
+export const createFileEditToolSchema = ({
+  approvalGated = false,
+  modelName,
+}: {
+  approvalGated?: boolean;
+  modelName?: string;
+} = {}) =>
+  tool({
+    description: `Make targeted changes to an existing text file. Supply a nonempty edits array; each edit finds exact text and replaces it. All edits must succeed or none are applied. Use file to read before editing, and file_write for full rewrites.
+${approvalGated ? "Edits are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}If an edit reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying an edit whose result is unknown.`,
+    inputSchema: z.object({
+      path: z.string().describe("The absolute path to the existing text file"),
+      edits: z
+        .array(fileEditSchema)
+        .min(1)
+        .describe("Nonempty list of sequential exact-text replacements"),
+      brief: createToolBriefSchema({ modelName }),
+    }),
+  });
+
+// Keep writes in a plain object schema: text must be required for every action
+// exposed by this tool, including on providers that do not honor action unions.
+export const createFileWriteToolSchema = ({
+  approvalGated = false,
+  modelName,
+}: {
+  approvalGated?: boolean;
+  modelName?: string;
+} = {}) =>
+  tool({
+    description: `Write or append text content to a file in the sandbox file system. Use this tool instead of shell commands for writing files, including saving code before execution.
+- write: Overwrite the full file. Supply the complete content in text.
+- append: Append the supplied text to the file.
+Both actions create the file if it does not exist. An explicit empty text string is allowed; never omit text or invent content to fill it.
+${approvalGated ? "Writes and appends are approval-gated. Call this tool and let the platform request approval instead of asking in chat first.\n" : ""}Do not write partial or truncated content. Include necessary trailing newlines. Use appropriate file extensions, including .md for Markdown. Use file for reading or image viewing, file_edit for targeted edits, and shell for copying, moving, or deleting files.
+If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown. Do not read files that were just successfully written, as their content remains in context.`,
+    inputSchema: z.object({
+      action: z.enum(["write", "append"]).describe("The action to perform"),
+      path: z.string().describe("The absolute path to the target file"),
+      text: z.string().describe("The complete content to write or append"),
+      brief: createToolBriefSchema({ modelName }),
+    }),
+  });
 
 export const todoWriteToolInputSchema = z.object({
   merge: z
@@ -569,6 +592,14 @@ export const createOpenUrlToolInputSchema = ({
 }: ModelAwareToolSchemaOptions = {}) =>
   z.object({
     url: z.string().describe("The URL to open and retrieve content from"),
+    cursor: z
+      .string()
+      .min(1)
+      .max(256)
+      .optional()
+      .describe(
+        "Continuation cursor copied exactly from a previous open_url result for the same URL. Omit to start reading.",
+      ),
     brief: createToolBriefSchema({ modelName }),
   });
 
@@ -578,10 +609,12 @@ export const createOpenUrlToolSchema = ({
   modelName,
 }: ModelAwareToolSchemaOptions = {}) =>
   tool({
-    description: `Retrieve the full contents of a specific webpage by URL.
+    description: `Read a specific webpage as Markdown, preserving code, tables, and technical details.
 
 <instructions>
 - Use to fetch and read a specific webpage, usually obtained from a prior search
+- Results contain up to 12,000 tokens. If a continuation cursor is returned, call this tool with the same URL and that cursor to read the next consecutive part; no middle content is discarded
+- Treat a partial page as incomplete. If the page changes between parts, restart without a cursor instead of combining versions
 - URLs must be valid and publicly accessible
 - Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
@@ -1178,6 +1211,8 @@ export const createAgentToolSchemaSet = ({
     interact_terminal_session: interactTerminalSessionTool,
     get_terminal_files: getTerminalFilesTool,
     file: createFileToolSchema({ supportsView: true }),
+    file_edit: createFileEditToolSchema(),
+    file_write: createFileWriteToolSchema(),
     todo_write: todoWriteTool,
     create_vulnerability_report: createVulnerabilityReportTool,
     list_reports: listReportsTool,

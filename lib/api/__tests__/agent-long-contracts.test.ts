@@ -16,6 +16,43 @@
 
 import fs from "fs";
 import path from "path";
+import ts from "typescript";
+
+/** Find awaited settlements so billing-before-continuation guards survive diagnostics. */
+function awaitedUsageDeductions(text: string) {
+  const source = ts.createSourceFile(
+    "caller.ts",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const calls: { position: number; arguments: string[] }[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === "deductAccumulatedUsage"
+    ) {
+      let parent = node.parent;
+      if (ts.isArrowFunction(parent) && parent.body === node) {
+        const observer = parent.parent;
+        if (
+          ts.isCallExpression(observer) &&
+          observer.expression.getText(source) === "observeFinish" &&
+          observer.arguments[1] === parent
+        )
+          parent = observer.parent;
+      }
+      if (ts.isAwaitExpression(parent))
+        calls.push({
+          position: parent.getStart(source),
+          arguments: node.arguments.map((arg) => arg.getText(source)),
+        });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
 
 const transportSrc = fs.readFileSync(
   path.resolve(__dirname, "../../chat/agent-long-transport.ts"),
@@ -254,7 +291,7 @@ describe("direct vision and summary recovery contracts", () => {
       );
       expect(
         source.match(
-          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+          /omitImageViewToolResultsForProviderRetry\(\s*(?:loopRecoveryMessages \?\? )?state\.finalMessages,?\s*\)\.messages/g,
         ),
       ).toHaveLength(2);
       expect(source).toMatch(
@@ -354,7 +391,7 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/method:\s*"POST"/);
     expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
     expect(transportSrc).toMatch(/statusEndpoint/);
-    expect(statusSrc).toMatch(/runs\.retrieve\(runId\)/);
+    expect(statusSrc).toMatch(/runs\.retrieve\(\s*runId\s*[,)]/);
     expect(statusSrc).toMatch(/ApiError/);
     expect(statusSrc).toMatch(/MISSING_RUN_STATUSES/);
     expect(statusSrc).toMatch(/Run not found/);
@@ -628,15 +665,6 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
   });
 
-  test("captures the Trigger run before realtime data reaches useChat", () => {
-    expect(transportSrc).toMatch(
-      /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
-    );
-    expect(chatComponentSrc).toMatch(
-      /fetchAgentLongStream\(\s*init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
-    );
-  });
-
   test("client partial-save endpoint is authenticated and assistant-only", () => {
     expect(agentEndpointsSrc).toMatch(
       /AGENT_PARTIAL_SAVE_ENDPOINT\s*=\s*"\/api\/agent\/partial-save"/,
@@ -871,6 +899,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("uses a six-hour task cap for every subscription tier", () => {
     expect(taskSrc).toMatch(
       /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
+    );
+    expect(taskSrc).toMatch(
+      /FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS\s*=\s*AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*\+\s*5\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
       /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
@@ -1266,7 +1297,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
-      /expectedRunId:\s*triggerRunId,[\s\S]*clearApprovalPending:\s*true/,
+      /await clearFinishedAgentRun\([\s\S]*?triggerRunId,[\s\S]*?approvalSessionId,[\s\S]*?approvalSessionClosed/,
     );
     expect(resumeSrc).toMatch(
       /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
@@ -1311,7 +1342,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("parent completion clears the active run after terminal teardown", () => {
     expect(taskSrc).toMatch(
-      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId/,
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?clearFinishedAgentRun\([\s\S]*?triggerRunId/,
     );
     expect(taskSrc).toMatch(
       /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
@@ -1404,7 +1435,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("an unassociated started run is closed and canceled before failing", () => {
-    expect(routeSrc).toMatch(/association\s*!==\s*"updated"/);
+    expect(routeSrc).toMatch(/typeof association === "string"/);
     expect(routeSrc).toMatch(/agent_run_association:\s*association/);
     expect(routeSrc).toMatch(
       /closeAgentApprovalSession\([\s\S]*"agent-run-association-failed"/,
@@ -1480,7 +1511,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*(?:!activeGoal\s*&&\s*)?autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
       );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
       expect(source).toMatch(/agent_auto_continue_suppressed/);
@@ -1511,10 +1542,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "sendFileMetadataToStream(accumulatedFiles)",
         autoContinueIdx,
       );
-      const deductionIdx = source.lastIndexOf(
-        "await deductAccumulatedUsage",
-        autoContinueIdx,
-      );
+      const deductionIdx =
+        awaitedUsageDeductions(source)
+          .filter((call) => call.position < autoContinueIdx)
+          .at(-1)?.position ?? -1;
 
       expect(autoContinueIdx).toBeGreaterThan(-1);
       expect(persistenceIdx).toBeGreaterThan(-1);
@@ -1541,7 +1572,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)", waitIdx);
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
@@ -1570,7 +1601,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       handledRateLimitIdx,
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
@@ -1636,7 +1667,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
-    const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
+    const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
       "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
@@ -1653,7 +1684,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);\s*const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*return recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]*?withInferenceFallback\(recoveryModel, fallback,[\s\S]*?const sizeRecoveryModel =\s*ctx\.mode === "agent"\s*\? withProviderRequestSizeRecovery\(recoveryModel, \{[\s\S]*?\}\)\s*: recoveryModel;\s*const guardedModel = guardLanguageModelProviderResponse\(sizeRecoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1662,7 +1693,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
     );
     expect(agentStreamRunnerSrc).toMatch(
-      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+      /const requestedModelSlug =[\s\S]{0,400}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
     );
 
     for (const source of [taskSrc, chatHandlerSrc]) {
@@ -1710,7 +1741,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /\(hasTerminalProviderStreamError \|\|\s*terminalEmptyResponse\)/,
     );
     expect(taskSrc).toMatch(
-      /!hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(taskSrc).toMatch(
+      /const providerDisconnectContinuation\s*=\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /hasCandidate:\s*!confirmedFailureLoop &&\s*!uncertainToolOutcome &&/,
+    );
+    expect(taskSrc).toMatch(
+      /const nextContinuation\s*=\s*isTerminalProviderStreamError\(state\)[\s\S]{0,350}!hasUncertainProviderToolOutcome\(\s*normalizedRetryMessages\.findLast/,
     );
     expect(taskSrc).toMatch(
       /isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
@@ -1741,6 +1781,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
     expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
+  });
+
+  test("Ask also blocks automatic recovery after an uncertain tool result", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const uncertainToolOutcome\s*=\s*hasUncertainProviderToolOutcome\(\s*lastAssistantMessageParts/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /if \(\s*!uncertainToolOutcome &&\s*\(!loopTriggeredRetry \|\| loopContinuation !== undefined\) &&\s*\(shouldRecoverAbliterationStreamError/,
+    );
   });
 
   test("persists replay-safe output before fallback stream creation can fail", () => {
@@ -1785,12 +1834,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(lookupIdx).toBeGreaterThan(lookupGuardIdx);
   });
 
+  test("goal continuation claims ownership before persisting a fresh hidden model turn", () => {
+    const claim = taskSrc.indexOf("goalApi.agentGoals.claimRun");
+    const eligibility = taskSrc.indexOf(
+      "await assertGoalExecutionAllowed(payload)",
+      claim,
+    );
+    const protocol = taskSrc.indexOf(
+      "approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION",
+      eligibility,
+    );
+    const regional = taskSrc.indexOf(
+      "await enforceRegionalSubscriptionFirst({",
+      protocol,
+    );
+    const continuation = taskSrc.indexOf(
+      "if (activeGoal && isAutomaticContinuation)",
+      regional,
+    );
+    const hiddenMessage = taskSrc.indexOf(
+      "id: `goal-continue:${ctx.run.id}`",
+      continuation,
+    );
+    const history = taskSrc.indexOf("getMessagesByChatId({", hiddenMessage);
+    expect(claim).toBeGreaterThan(-1);
+    expect(eligibility).toBeGreaterThan(claim);
+    expect(protocol).toBeGreaterThan(eligibility);
+    expect(regional).toBeGreaterThan(protocol);
+    expect(continuation).toBeGreaterThan(regional);
+    expect(hiddenMessage).toBeGreaterThan(continuation);
+    expect(history).toBeGreaterThan(hiddenMessage);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/role: "user"/);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/isHidden: true/);
+  });
+
+  test("persistent goals suppress the separate client auto-continue loop", () => {
+    expect(taskSrc).toMatch(
+      /if \(\s*!activeGoal\s*&&\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+    );
+  });
+
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
       expect(source).toMatch(
-        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+        /if \(\s*(?:!activeGoal\s*&&\s*)?autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
       );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }
@@ -1878,8 +1967,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("/api/chat attributes fallback usage to the persisted retry message", () => {
-    expect(chatHandlerSrc).toMatch(
-      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    const source = ts.createSourceFile(
+      "handler.ts",
+      chatHandlerSrc,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let usageMessageParameter: ts.ParameterDeclaration | undefined;
+    const findUsageHelper = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText(source) === "deductAccumulatedUsage" &&
+        node.initializer &&
+        ts.isArrowFunction(node.initializer)
+      )
+        usageMessageParameter = node.initializer.parameters[0];
+      ts.forEachChild(node, findUsageHelper);
+    };
+    findUsageHelper(source);
+    expect(usageMessageParameter?.name.getText(source)).toBe(
+      "assistantMessageIdForUsage",
+    );
+    expect(usageMessageParameter?.initializer?.getText(source)).toBe(
+      "assistantMessageId",
     );
     expect(
       chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
@@ -1888,10 +1998,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const retryMessageIdIdx = chatHandlerSrc.indexOf(
       "const retryMessageId = generateId()",
     );
-    const retryUsageIdx = chatHandlerSrc.indexOf(
-      "await deductAccumulatedUsage(retryMessageId)",
-      retryMessageIdIdx,
-    );
+    const retryUsageIdx =
+      awaitedUsageDeductions(chatHandlerSrc).find(
+        (call) =>
+          call.position > retryMessageIdIdx &&
+          call.arguments[0] === "retryMessageId",
+      )?.position ?? -1;
 
     expect(retryMessageIdIdx).toBeGreaterThan(-1);
     expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);
@@ -2138,7 +2250,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
-      "await waitForErrorStream()",
+      "await waitForAgentUiStream(agentUiStream.pipe(errorStream))",
       recordedFailureIdx,
     );
     const handledReturnGuardIdx = taskSrc.indexOf(
@@ -2223,17 +2335,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
           expect(afterSurvey).toMatch(
             /if \(\s*shouldAttemptProviderRetry &&\s*!visionSummaryRecoveryFailure &&\s*!userStopSignal\.signal\.aborted\s*\) \{/,
           );
-          if (source === taskSrc) {
-            // Trigger also persists completed work inside the recovery block.
-            expect(afterSurvey).toMatch(
-              /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
-            );
-          } else {
-            // No later async work may open a cancellation race after this guard.
-            expect(afterSurvey.slice(afterSurvey.indexOf(") {"))).not.toMatch(
-              /\bawait\b/,
-            );
-          }
+          // Both callers can persist completed work inside the recovery block.
+          expect(afterSurvey).toMatch(
+            /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
+          );
         }
       }
     }
@@ -2458,7 +2563,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const lock = await acquireFreeRunConcurrencyLock(",
     );
     const monthlyIndex = taskSrc.indexOf(
-      "await checkFreeCostBudget(",
+      "await checkFreeMonthlyCostLimit(",
       lockIndex,
     );
     const consumeIndex = taskSrc.indexOf(
@@ -2481,15 +2586,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
     expect(taskSrc).toMatch(
-      /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
+      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
     );
     expect(
       taskSrc.match(
-        /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
+        /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
-    ).not.toHaveLength(0);
+    ).toHaveLength(5); // Includes revalidation after wait_for_user resumes.
+
     expect(taskSrc).not.toMatch(
-      /checkFreeCostBudget\(freeUsageSubject,\s*userId/,
+      /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
     );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });

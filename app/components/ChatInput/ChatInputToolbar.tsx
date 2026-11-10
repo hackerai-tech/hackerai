@@ -1,7 +1,12 @@
 "use client";
 
-import { ComposerSkillsButton } from "./ComposerSkills";
-import { AttachmentButton } from "@/app/components/AttachmentButton";
+import {
+  AttachmentButton,
+  type AttachmentButtonProps,
+} from "@/app/components/AttachmentButton";
+import { Button } from "@/components/ui/button";
+import { useComposerSkills } from "./ComposerSkills";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
@@ -16,14 +21,19 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
-  compactAgentControls?: boolean;
-  chatId?: string;
-  onAttachClick: () => void;
+  attachmentsDisabled?: boolean;
+  replyBack?: { onClick: () => void; disabled: boolean };
+  goalControl?: React.ReactNode;
+  goalMenu?: AttachmentButtonProps["goalMenu"];
+  onAttachClick: AttachmentButtonProps["onAttachClick"];
 }
 
 export function ChatInputToolbar({
-  compactAgentControls = false,
+  goalControl,
+  replyBack,
+  goalMenu,
   onAttachClick,
+  attachmentsDisabled = false,
   chatMode,
   isOnline = true,
   ...submitStopProps
@@ -40,6 +50,14 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const skills = useComposerSkills();
+  const isMobile = useIsMobile();
+  const showChatModeSelector = Boolean(
+    user &&
+    chatModeAccessResolved &&
+    !paidAgentOnlyActive &&
+    !freeDesktopAgentOnlyActive,
+  );
   const showFreeAskComputerActivation = Boolean(
     chatModeAccessResolved &&
     user &&
@@ -49,55 +67,86 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex min-w-0 items-center gap-2 px-3">
+    <div className="flex min-w-0 shrink-0 items-center gap-1 px-3 min-[360px]:gap-2">
       <div
-        className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden min-[360px]:gap-2 md:flex-wrap"
         data-testid="chat-input-toolbar-controls"
       >
-        <div className="shrink-0">
-          <AttachmentButton
-            onAttachClick={onAttachClick}
-            disabled={!isOnline}
-          />
-        </div>
-        {user &&
-        chatModeAccessResolved &&
-        !paidAgentOnlyActive &&
-        !freeDesktopAgentOnlyActive ? (
-          <ChatModeSelector />
-        ) : null}
-        {user && <ComposerSkillsButton />}
-        {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
-        {user && isAgentMode(chatMode) ? (
+        {submitStopProps.isReplyingToAgent ? (
+          replyBack && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11 rounded-full px-3 text-sm sm:h-8"
+              {...replyBack}
+            >
+              Back
+            </Button>
+          )
+        ) : (
           <>
-            <div
-              className={
-                compactAgentControls ? "hidden" : "hidden shrink-0 md:block"
-              }
-              data-testid="chat-input-desktop-permission"
-            >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
-            </div>
-            <div
-              className={
-                compactAgentControls ? "hidden" : "hidden min-w-0 md:block"
-              }
-              data-testid="chat-input-desktop-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                size="toolbar"
+            <div className="shrink-0">
+              <AttachmentButton
+                goalMenu={goalMenu}
+                skillsMenu={
+                  user && skills && isMobile !== undefined
+                    ? {
+                        layout: isMobile ? "mobile" : "desktop",
+                        disabled: skills.disabled,
+                        onSelect: skills.openSelector,
+                      }
+                    : undefined
+                }
+                onAttachClick={onAttachClick}
+                disabled={!isOnline || attachmentsDisabled}
               />
             </div>
+            {user && isAgentMode(chatMode) ? (
+              <div
+                className="shrink-0 md:hidden"
+                data-testid="chat-input-mobile-permission"
+              >
+                <AgentPermissionSelector
+                  analyticsSurface="chat_input"
+                  iconOnly
+                />
+              </div>
+            ) : null}
+            {showChatModeSelector ? (
+              <ChatModeSelector className="shrink-0" />
+            ) : null}
+            {showFreeAskComputerActivation ? (
+              <FreeAskComputerActivation />
+            ) : null}
+            {user && isAgentMode(chatMode) ? (
+              <>
+                <div
+                  className="hidden min-w-20 max-w-max flex-1 md:block"
+                  data-testid="chat-input-desktop-permission"
+                >
+                  <AgentPermissionSelector analyticsSurface="chat_input" />
+                </div>
+                <div
+                  className="hidden min-w-16 max-w-max flex-1 md:block"
+                  data-testid="chat-input-desktop-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    size="toolbar"
+                  />
+                </div>
+              </>
+            ) : null}
+            {goalControl}
           </>
-        ) : null}
+        )}
       </div>
       <div
-        className="flex shrink-0 items-center gap-2.5"
+        className="flex shrink-0 items-center gap-1 min-[360px]:gap-2.5"
         data-testid="chat-input-primary-actions"
       >
-        {user ? (
+        {user && !submitStopProps.isReplyingToAgent ? (
           <ModelSelector
             value={selectedModel}
             onChange={setSelectedModel}

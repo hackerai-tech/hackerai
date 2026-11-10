@@ -8,17 +8,24 @@
  * @module
  */
 
-import type * as engagementScopes from "../engagementScopes.js";
-import type * as cloudNetwork from "../cloudNetwork.js";
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
+import type * as agentGoals from "../agentGoals.js";
+import type * as billingOperations from "../billingOperations.js";
 import type * as browserHandoffs from "../browserHandoffs.js";
 import type * as cancellationReasons from "../cancellationReasons.js";
+import type * as captchaAttempts from "../captchaAttempts.js";
+import type * as captchaReconciliation from "../captchaReconciliation.js";
+import type * as captchaValidators from "../captchaValidators.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
+import type * as cloudNetwork from "../cloudNetwork.js";
+import type * as cloudNetworkValidators from "../cloudNetworkValidators.js";
 import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as deletions from "../deletions.js";
+import type * as engagementScopeValidators from "../engagementScopeValidators.js";
+import type * as engagementScopes from "../engagementScopes.js";
 import type * as extraUsage from "../extraUsage.js";
 import type * as extraUsageActions from "../extraUsageActions.js";
 import type * as feedback from "../feedback.js";
@@ -36,10 +43,16 @@ import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
+import type * as lib_goalValidators from "../lib/goalValidators.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
 import type * as lib_legacyEngagementScope from "../lib/legacyEngagementScope.js";
 import type * as lib_logger from "../lib/logger.js";
+import type * as lib_nextActionsState from "../lib/nextActionsState.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
+import type * as lib_serviceFunctions from "../lib/serviceFunctions.js";
+import type * as lib_settlementAction from "../lib/settlementAction.js";
+import type * as lib_settlementReceiptValidators from "../lib/settlementReceiptValidators.js";
+import type * as lib_settlementReceipts from "../lib/settlementReceipts.js";
 import type * as lib_sharedChatSnapshot from "../lib/sharedChatSnapshot.js";
 import type * as lib_subscriptionPauseResume from "../lib/subscriptionPauseResume.js";
 import type * as lib_suspensionGuards from "../lib/suspensionGuards.js";
@@ -49,15 +62,19 @@ import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as modelHistory from "../modelHistory.js";
+import type * as nextActions from "../nextActions.js";
+
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
 import type * as redisPubsub from "../redisPubsub.js";
 import type * as referrals from "../referrals.js";
+import type * as runtimeHealth from "../runtimeHealth.js";
 import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
+import type * as settlementReceipts from "../settlementReceipts.js";
 import type * as sharedChats from "../sharedChats.js";
 import type * as subagents from "../subagents.js";
 import type * as subscriptionPauses from "../subscriptionPauses.js";
@@ -83,17 +100,24 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  engagementScopes: typeof engagementScopes;
-  cloudNetwork: typeof cloudNetwork;
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
+  agentGoals: typeof agentGoals;
+  billingOperations: typeof billingOperations;
   browserHandoffs: typeof browserHandoffs;
   cancellationReasons: typeof cancellationReasons;
+  captchaAttempts: typeof captchaAttempts;
+  captchaReconciliation: typeof captchaReconciliation;
+  captchaValidators: typeof captchaValidators;
   chatStreams: typeof chatStreams;
   chats: typeof chats;
+  cloudNetwork: typeof cloudNetwork;
+  cloudNetworkValidators: typeof cloudNetworkValidators;
   constants: typeof constants;
   crons: typeof crons;
   deletions: typeof deletions;
+  engagementScopeValidators: typeof engagementScopeValidators;
+  engagementScopes: typeof engagementScopes;
   extraUsage: typeof extraUsage;
   extraUsageActions: typeof extraUsageActions;
   feedback: typeof feedback;
@@ -111,10 +135,16 @@ declare const fullApi: ApiFromModules<{
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
+  "lib/goalValidators": typeof lib_goalValidators;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
   "lib/legacyEngagementScope": typeof lib_legacyEngagementScope;
   "lib/logger": typeof lib_logger;
+  "lib/nextActionsState": typeof lib_nextActionsState;
   "lib/retainedTail": typeof lib_retainedTail;
+  "lib/serviceFunctions": typeof lib_serviceFunctions;
+  "lib/settlementAction": typeof lib_settlementAction;
+  "lib/settlementReceiptValidators": typeof lib_settlementReceiptValidators;
+  "lib/settlementReceipts": typeof lib_settlementReceipts;
   "lib/sharedChatSnapshot": typeof lib_sharedChatSnapshot;
   "lib/subscriptionPauseResume": typeof lib_subscriptionPauseResume;
   "lib/suspensionGuards": typeof lib_suspensionGuards;
@@ -124,15 +154,19 @@ declare const fullApi: ApiFromModules<{
   localSandbox: typeof localSandbox;
   messages: typeof messages;
   modelHistory: typeof modelHistory;
+  nextActions: typeof nextActions;
+
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;
   rateLimitStatus: typeof rateLimitStatus;
   redisPubsub: typeof redisPubsub;
   referrals: typeof referrals;
+  runtimeHealth: typeof runtimeHealth;
   s3Actions: typeof s3Actions;
   s3Cleanup: typeof s3Cleanup;
   s3Utils: typeof s3Utils;
+  settlementReceipts: typeof settlementReceipts;
   sharedChats: typeof sharedChats;
   subagents: typeof subagents;
   subscriptionPauses: typeof subscriptionPauses;

@@ -85,6 +85,27 @@ it("preserves the reviewed library's five-skill limit and aggregate content budg
     true,
   );
   expect((await execute(tools.load_skill, small)).success).toBe(true);
-  const large = { skills: catalog.slice(-5).map((s) => s.id) };
-  expect((await execute(tools.load_skill, large)).success).toBe(false);
+  expect(
+    (tools.load_skill.inputSchema as any).safeParse({
+      skills: catalog.slice(0, 6).map((s) => s.id),
+    }).success,
+  ).toBe(false);
+  // Exercise the real resolver with deterministic metadata at its aggregate
+  // budget boundary, independent of changes to the bundled methodology text.
+  const oversized = catalog.slice(0, 2);
+  const originalBytes = oversized.map((skill) => skill.contentBytes);
+  try {
+    oversized.forEach((skill) => {
+      skill.contentBytes = 48 * 1024 + 1;
+    });
+    const result = await execute(tools.load_skill, {
+      skills: oversized.map((skill) => skill.id),
+    });
+    expect(result.success).toBe(false);
+    expect(result.results[0].error).toMatch(/too large together/);
+  } finally {
+    oversized.forEach((skill, index) => {
+      skill.contentBytes = originalBytes[index];
+    });
+  }
 });

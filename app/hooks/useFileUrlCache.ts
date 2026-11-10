@@ -7,10 +7,27 @@ import type { ChatMessage } from "@/types";
 
 interface CachedUrl {
   url: string;
-  timestamp: number;
+  expiresAt: number;
 }
 
-const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 hour)
+const URL_CACHE_EXPIRATION = 50 * 60 * 1000;
+const SIGNED_URL_SAFETY_MARGIN = 60 * 1000;
+
+function getCacheLifetime(url: string): number {
+  try {
+    const lifetimes = new URL(url).searchParams.getAll("X-Amz-Expires");
+    if (lifetimes.length === 0) return URL_CACHE_EXPIRATION;
+    if (lifetimes.length !== 1 || !/^\d+$/.test(lifetimes[0])) return 0;
+    const seconds = Number(lifetimes[0]);
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) return 0;
+    return Math.max(
+      0,
+      Math.min(URL_CACHE_EXPIRATION, seconds * 1000 - SIGNED_URL_SAFETY_MARGIN),
+    );
+  } catch {
+    return 0;
+  }
+}
 const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.ts
 
 /**
@@ -18,7 +35,7 @@ const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.t
  *
  * Features:
  * - Batch prefetches URLs for all S3 image files in messages (images need eager loading)
- * - Caches URLs with expiration handling (50 min, before 1 hour S3 expiry)
+ * - Caches fresh URLs for at most 50 minutes, shortened for their signed lifetime
  * - Provides methods to get and set cached URLs (for lazy-loaded non-image files)
  * - Automatically cleans up expired URLs
  */
@@ -57,7 +74,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
     // Check if URL has expired
     const now = Date.now();
-    if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+    if (now >= cached.expiresAt) {
       urlCacheRef.current.delete(fileId);
       prefetchedIdsRef.current.delete(fileId);
       return null;
@@ -68,8 +85,15 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
   // Set/update cached URL for a file (used for lazy-loaded non-image files)
   const setCachedUrl = useCallback((fileId: string, url: string) => {
-    const now = Date.now();
-    urlCacheRef.current.set(fileId, { url, timestamp: now });
+    const lifetime = getCacheLifetime(url);
+    if (lifetime <= 0) {
+      urlCacheRef.current.delete(fileId);
+      prefetchedIdsRef.current.delete(fileId);
+      return;
+    }
+    // Actions sign fresh URLs on demand. Start their TTL on receipt so server
+    // and browser clock differences cannot extend or prematurely expire it.
+    urlCacheRef.current.set(fileId, { url, expiresAt: Date.now() + lifetime });
     prefetchedIdsRef.current.add(fileId);
   }, []);
 
@@ -154,13 +178,11 @@ export function useFileUrlCache(messages: ChatMessage[]) {
           try {
             const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
             if (scope.signal.aborted) return;
-            const now = Date.now();
             if (urlMap && typeof urlMap === "object") {
               for (const [fileId, url] of Object.entries(urlMap) as Array<
                 [string, string]
               >) {
-                urlCacheRef.current.set(fileId, { url, timestamp: now });
-                prefetchedIdsRef.current.add(fileId);
+                setCachedUrl(fileId, url);
               }
             }
           } catch (error) {
@@ -182,7 +204,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
     }
 
     prefetchImageUrls();
-  }, [messages, getFileUrlsBatchAction, authReady]);
+  }, [messages, getFileUrlsBatchAction, authReady, setCachedUrl]);
 
   // Cleanup expired URLs periodically
   useEffect(() => {
@@ -192,7 +214,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         const entriesToDelete: string[] = [];
 
         for (const [fileId, cached] of urlCacheRef.current.entries()) {
-          if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+          if (now >= cached.expiresAt) {
             entriesToDelete.push(fileId);
           }
         }

@@ -37,6 +37,7 @@ import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
 import {
   computeShellTerminalBlock,
+  getTerminalExecutionPhase,
   getTerminalFailureAction,
   type ShellToolInput,
   type ShellToolOutput,
@@ -171,7 +172,11 @@ export const SharedMessagePartHandler = ({
   }
 
   // New unified file tool
-  if (part.type === "tool-file") {
+  if (
+    part.type === "tool-file" ||
+    part.type === "tool-file_edit" ||
+    part.type === "tool-file_write"
+  ) {
     return renderFileTool(part, idx, openSidebar);
   }
 
@@ -358,6 +363,10 @@ function renderTerminalTool(
       streamingOutput: "",
       isExecuting: false,
       hasResult: part.state === "output-available",
+      executionPhase: getTerminalExecutionPhase({
+        toolState: part.state,
+        errorText: part.errorText,
+      }),
       toolCallId: part.toolCallId || "",
       legacyInteractive: legacyInput?.interactive,
       legacyIsBackground: legacyInput?.is_background,
@@ -554,7 +563,8 @@ function renderFileTool(
     error?: string;
   };
   const filePath = fileInput?.path || "";
-  const fileAction = fileInput?.action || "read";
+  const fileAction =
+    fileInput?.action || (part.type === "tool-file_edit" ? "edit" : "read");
   const brief = fileInput?.brief?.trim() || "";
 
   const getFileRange = () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const mockRedirectToBillingPortal = jest.fn();
 const mockOpenRenewalInvoice = jest.fn();
@@ -56,6 +57,18 @@ function unreadableJsonRequest() {
 describe("billing API routes", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it("returns a retryable conflict instead of reporting success for an overlapping keep", async () => {
+    mockKeepSubscription.mockRejectedValue(
+      new Error(BILLING_ERRORS.subscriptionChangeInProgress) as never,
+    );
+    const { POST } = await import("../keep/route");
+    const response = await POST();
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: BILLING_ERRORS.subscriptionChangeInProgress,
+    });
   });
 
   it("returns the server-selected invoice payment page", async () => {

@@ -4,10 +4,21 @@ on:
   push:
     branches: [main]
     paths:
+      - "lib/ai/tools/utils/pty-session-manager.ts"
+      - "lib/ai/tools/utils/terminal-execution-record.ts"
+      - "lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts"
+      - "lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts"
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
+      - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
+      - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
       - "pnpm-lock.yaml"
       - "jest.config.js"
@@ -15,10 +26,21 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "lib/ai/tools/utils/pty-session-manager.ts"
+      - "lib/ai/tools/utils/terminal-execution-record.ts"
+      - "lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts"
+      - "lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts"
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
+      - "lib/ai/tools/utils/platform-utils.ts"
+      - "app/services/desktop-sandbox-bridge.ts"
+      - "lib/ai/tools/utils/sandbox-upload-diagnostics.ts"
+      - "lib/ai/tools/utils/sandbox-upload-network-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics*.test.ts"
+      - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
       - "packages/local/src/utils.ts"
+      - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
       - "pnpm-lock.yaml"
       - "jest.config.js"
@@ -45,3 +67,13 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify real Windows file metadata commands
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-file-uploader.windows.test.ts --runInBand --ci
+      - name: Verify native Windows curl through Git Bash
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-response.windows.test.ts --runInBand --ci
+      - name: Verify native Windows TLS connectivity diagnostics
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.test.ts lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.windows.test.ts --runInBand --ci
+      - name: Verify native Windows file paths
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
+      - name: Verify Windows shell discovery
+        run: pnpm exec jest packages/local/src/__tests__/windows-shell-discovery.test.ts --runInBand --ci
+      - name: Verify bounded terminal checkpoint persistence
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts --runInBand --ci

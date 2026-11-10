@@ -1,3 +1,4 @@
+import { goalElapsedMs } from "../../lib/goals/timing";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -63,7 +64,11 @@ const {
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveAgentApprovalPending,
+  setActiveAgentUserWait,
+  claimAgentUserWaitReply,
   setActiveTriggerRun,
+  replaceActiveTriggerRun,
+  updateChat,
 } = require("../chats") as typeof import("../chats");
 
 const makeCtx = (
@@ -91,6 +96,39 @@ describe("Agent approval lifecycle guards", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each([
+    { nextRunId: "run-old", keepsWait: true },
+    { nextRunId: "run-new", keepsWait: false },
+  ])(
+    "keeps a reply wait only for the same run: %j",
+    async ({ nextRunId, keepsWait }) => {
+      const wait = {
+        runId: "run-old",
+        toolCallId: "tool-1",
+        tokenId: "token-1",
+        status: "waiting",
+      };
+      const { ctx, patch } = makeCtx({
+        _id: "chat-doc",
+        id: "chat-1",
+        user_id: "user-1",
+        active_trigger_run_id: "run-old",
+        active_agent_user_wait: wait,
+      });
+      expect(
+        await setActiveTriggerRun.handler(ctx, {
+          serviceKey: "key",
+          chatId: "chat-1",
+          triggerRunId: nextRunId,
+        }),
+      ).toBe("updated");
+      const fields = patch.mock.calls[0][1];
+      if (keepsWait)
+        expect(fields).not.toHaveProperty("active_agent_user_wait");
+      else expect(fields.active_agent_user_wait).toBeUndefined();
+    },
+  );
 
   it.each([undefined, "stop"])(
     "conditionally detaches recovered crashes without replacing finish reason %s",
@@ -206,6 +244,123 @@ describe("Agent approval lifecycle guards", () => {
         },
         expectedRunId: "parent-run",
         expectedApprovalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("busy");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("does not let a stale run register a user reply wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "new-run",
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "old-run",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("persists structured questions with their current wait identity", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+    });
+    const questions = [
+      {
+        id: "scope",
+        header: "Scope",
+        question: "Choose a scope",
+        options: [{ label: "Alpha", value: "a" }],
+      },
+    ];
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        questions,
+      }),
+    ).resolves.toBe("acquired");
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+        questions,
+      },
+    });
+  });
+
+  it("accepts only one reply to a current user wait", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "waiting",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      }),
+    ).resolves.toBe("claimed");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_agent_user_wait: expect.objectContaining({
+          status: "submitting",
+          replyId: "reply-1",
+        }),
+      }),
+    );
+  });
+
+  it("rejects a different reply after the first delivery is claimed", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_user_wait: {
+        runId: "run-1",
+        toolCallId: "tool-1",
+        tokenId: "waitpoint-1",
+        status: "submitting",
+        replyId: "reply-1",
+        replyHash: "hash-1",
+      },
+    });
+    await expect(
+      claimAgentUserWaitReply.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        userId: "user-1",
+        runId: "run-1",
+        toolCallId: "tool-1",
+        replyId: "reply-2",
+        replyHash: "hash-2",
       }),
     ).resolves.toBe("busy");
     expect(patch).not.toHaveBeenCalled();
@@ -643,85 +798,109 @@ describe("Agent approval lifecycle guards", () => {
       deletion_started_at: expect.any(Number),
     });
   });
-  it("cascades structured findings before deleting their source chat", async () => {
-    const tables: Record<string, Array<Record<string, any>>> = {
-      chats: [
-        {
-          _id: "chat-doc-1",
-          id: "chat-1",
-          user_id: "user-1",
-          canceled_at: 1,
-        },
-      ],
-      findings: [
-        {
-          _id: "finding-doc-1",
-          user_id: "user-1",
-          chat_id: "chat-1",
-          created_at: 1,
-        },
-      ],
-      finding_sources: [
-        {
-          _id: "finding-source-1",
-          user_id: "user-1",
-          chat_id: "chat-1",
-        },
-      ],
-      messages: [],
-      chat_summaries: [],
-    };
-    const deleted: string[] = [];
-    const db = {
-      query: jest.fn((table: string) => ({
-        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
-          const filters: Array<[string, unknown]> = [];
-          const q: any = {
-            eq: (field: string, value: unknown) => {
-              filters.push([field, value]);
-              return q;
-            },
-          };
-          build(q);
-          const rows = () =>
-            (tables[table] ?? []).filter((row) =>
-              filters.every(([field, value]) => row[field] === value),
-            );
-          return {
-            first: jest.fn(async () => rows()[0] ?? null),
-            unique: jest.fn(async () => rows()[0] ?? null),
-            take: jest.fn(async (limit: number) => rows().slice(0, limit)),
-          };
+  it.each([false, true])(
+    "cascades goals and findings before deleting their source chat (bulk: %s)",
+    async (bulk) => {
+      const tables: Record<string, Array<Record<string, any>>> = {
+        chats: [
+          {
+            _id: "chat-doc-1",
+            id: "chat-1",
+            user_id: "user-1",
+            canceled_at: 1,
+          },
+        ],
+        agent_goals: [
+          {
+            _id: "goal-1",
+            chatId: "chat-1",
+            objective: "Private objective",
+            evidence: [{ explanation: "Private evidence" }],
+          },
+          { _id: "other-goal", chatId: "other-chat" },
+        ],
+        findings: [
+          {
+            _id: "finding-doc-1",
+            user_id: "user-1",
+            chat_id: "chat-1",
+            created_at: 1,
+          },
+        ],
+        finding_sources: [
+          {
+            _id: "finding-source-1",
+            user_id: "user-1",
+            chat_id: "chat-1",
+          },
+        ],
+        messages: [],
+        chat_summaries: [],
+      };
+      const deleted: string[] = [];
+      const db = {
+        query: jest.fn((table: string) => ({
+          withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+            const filters: Array<[string, unknown]> = [];
+            const q: any = {
+              eq: (field: string, value: unknown) => {
+                filters.push([field, value]);
+                return q;
+              },
+            };
+            build(q);
+            const rows = () =>
+              (tables[table] ?? []).filter((row) =>
+                filters.every(([field, value]) => row[field] === value),
+              );
+            return {
+              first: jest.fn(async () => rows()[0] ?? null),
+              unique: jest.fn(async () => rows()[0] ?? null),
+              take: jest.fn(async (limit: number) => rows().slice(0, limit)),
+            };
+          }),
+        })),
+        patch: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn(async (id: string) => {
+          deleted.push(id);
+          for (const [table, rows] of Object.entries(tables)) {
+            tables[table] = rows.filter((row) => row._id !== id);
+          }
         }),
-      })),
-      patch: jest.fn().mockResolvedValue(undefined),
-      delete: jest.fn(async (id: string) => {
-        deleted.push(id);
-        for (const [table, rows] of Object.entries(tables)) {
-          tables[table] = rows.filter((row) => row._id !== id);
-        }
-      }),
-    };
+      };
 
-    await expect(
-      deleteChatForBackend.handler(
-        { db, scheduler: { runAfter: jest.fn() } } as any,
-        {
-          serviceKey: "service-key",
-          chatId: "chat-1",
-          userId: "user-1",
-          expectedTriggerRunId: null,
-          expectedApprovalSessionId: null,
-        },
-      ),
-    ).resolves.toBe("deleted");
-
-    expect(deleted).toEqual([
-      "finding-doc-1",
-      "finding-source-1",
-      "chat-doc-1",
-    ]);
-  });
+      if (bulk) {
+        await expect(
+          deleteAllChatsForUser.handler(
+            { db, scheduler: { runAfter: jest.fn() } } as any,
+            { serviceKey: "service-key", userId: "user-1" },
+          ),
+        ).resolves.toBeNull();
+      } else {
+        await expect(
+          deleteChatForBackend.handler(
+            { db, scheduler: { runAfter: jest.fn() } } as any,
+            {
+              serviceKey: "service-key",
+              chatId: "chat-1",
+              userId: "user-1",
+              expectedTriggerRunId: null,
+              expectedApprovalSessionId: null,
+            },
+          ),
+        ).resolves.toBe("deleted");
+      }
+      expect(tables.agent_goals).toEqual([
+        { _id: "other-goal", chatId: "other-chat" },
+      ]);
+      expect(deleted).toEqual([
+        "goal-1",
+        "finding-doc-1",
+        "finding-source-1",
+        "chat-doc-1",
+      ]);
+    },
+  );
 
   it("uses bounded continuation batches for service-key test cleanup", async () => {
     const chat = {
@@ -990,4 +1169,347 @@ describe("Agent approval lifecycle guards", () => {
       deletion_started_at: expect.any(Number),
     });
   });
+});
+
+describe("Agent run replacement", () => {
+  it("allows a replacement run to acquire a wait after late old-run cleanup", async () => {
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "old",
+      active_agent_user_wait: {
+        runId: "old",
+        toolCallId: "old-tool",
+        tokenId: "old-token",
+        status: "waiting",
+      },
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "old",
+      approvalSessionId: null,
+    });
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "old",
+        toolCallId: "old-tool",
+      }),
+    ).resolves.toBe("stale");
+    await expect(
+      setActiveAgentUserWait.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        userId: "user",
+        runId: "new",
+        toolCallId: "new-tool",
+        tokenId: "new-token",
+      }),
+    ).resolves.toBe("acquired");
+  });
+
+  it("retains the current wait on a same-run replacement retry", async () => {
+    const wait = {
+      runId: "current",
+      toolCallId: "tool",
+      tokenId: "token",
+      status: "waiting",
+    };
+    const chat = {
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "current",
+      active_agent_user_wait: wait,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    patch.mockImplementation(async (_id: string, fields: object) => {
+      Object.assign(chat, fields);
+    });
+    await replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "current",
+      expectedRunId: "current",
+      approvalSessionId: null,
+    });
+    expect(chat.active_agent_user_wait).toEqual(wait);
+  });
+
+  it("returns the displaced owner atomically and retains saved chat history", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "old",
+      active_agent_approval_session_id: "old-session",
+    });
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: "new-session",
+      }),
+    ).resolves.toEqual({
+      previousRunId: "old",
+      previousApprovalSessionId: "old-session",
+    });
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc",
+      expect.objectContaining({
+        active_trigger_run_id: "new",
+        active_agent_approval_session_id: "new-session",
+      }),
+    );
+    expect(patch.mock.calls[0][1]).not.toHaveProperty("finish_reason");
+  });
+  it("cannot overwrite a replacement run's status with a late client finish", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: "new",
+    });
+    await updateChat.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      finishReason: "trigger_crashed_client_saved",
+      expectedActiveTriggerRunId: "old",
+    });
+    expect(patch).not.toHaveBeenCalled();
+  });
+  it("rejects replacement behind the deletion fence", async () => {
+    const { ctx, patch } = makeCtx(
+      { _id: "chat-doc", id: "chat", user_id: "user" },
+      true,
+    );
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: null,
+      }),
+    ).resolves.toBe("deleting");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+it("rejects a concurrent admission that already lost its expected owner", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+    active_trigger_run_id: "winner",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "late",
+      expectedRunId: "old",
+      approvalSessionId: null,
+    }),
+  ).resolves.toBe("stale");
+  expect(patch).not.toHaveBeenCalled();
+});
+
+it("claims an empty slot when the expected previous run finished during startup", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "finished",
+      approvalSessionId: null,
+    }),
+  ).resolves.toEqual({ previousRunId: null, previousApprovalSessionId: null });
+  expect(patch).toHaveBeenCalledWith(
+    "chat-doc",
+    expect.objectContaining({ active_trigger_run_id: "new" }),
+  );
+});
+
+it.each(["old", undefined])(
+  "preserves a concurrent retained session when current run is %s",
+  async (currentRunId) => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc",
+      id: "chat",
+      user_id: "user",
+      active_trigger_run_id: currentRunId,
+      active_agent_approval_session_id: "unobserved-session",
+    });
+    await expect(
+      replaceActiveTriggerRun.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        triggerRunId: "new",
+        expectedRunId: "old",
+        approvalSessionId: "new-session",
+        expectedApprovalSessionId: "cleaned-session",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
+  },
+);
+
+it("admits the replacement after worker cleanup clears the observed session", async () => {
+  const { ctx, patch } = makeCtx({
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+  });
+  await expect(
+    replaceActiveTriggerRun.handler(ctx, {
+      serviceKey: "key",
+      chatId: "chat",
+      triggerRunId: "new",
+      expectedRunId: "old",
+      approvalSessionId: "new-session",
+      expectedApprovalSessionId: "cleaned-session",
+    }),
+  ).resolves.toEqual({ previousRunId: null, previousApprovalSessionId: null });
+  expect(patch).toHaveBeenCalledWith(
+    "chat-doc",
+    expect.objectContaining({ active_trigger_run_id: "new" }),
+  );
+});
+
+describe("Goal clock during durable user waits", () => {
+  it("freezes until the matching wait releases, including duplicate acquisition and reply claim", async () => {
+    const chat: any = {
+      _id: "chat-doc",
+      user_id: "user",
+      active_trigger_run_id: "run",
+    };
+    const goal: any = {
+      _id: "goal-doc",
+      userId: "user",
+      activeRunId: "run",
+      state: "running",
+      elapsedMs: 2000,
+      activeSince: 1000,
+      updatedAt: 1000,
+    };
+    const { ctx, patch } = makeCtx(chat);
+    ctx.db.query.mockImplementation((table: string) => ({
+      withIndex: () => ({
+        first: async () => (table === "agent_goals" ? goal : chat),
+        order: () => ({ first: async () => null }),
+      }),
+    }));
+    patch.mockImplementation(async (id: string, fields: object) =>
+      Object.assign(id === goal._id ? goal : chat, fields),
+    );
+    const now = jest.spyOn(Date, "now").mockReturnValue(4000);
+    const identity = {
+      serviceKey: "key",
+      chatId: "chat",
+      userId: "user",
+      runId: "run",
+      toolCallId: "tool",
+    };
+    try {
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      now.mockReturnValue(64000);
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        tokenId: "token",
+      });
+      await claimAgentUserWaitReply.handler(ctx, {
+        ...identity,
+        replyId: "reply",
+        replyHash: "hash",
+      });
+      expect(goalElapsedMs(goal, 64000)).toBe(5000);
+      await setActiveAgentUserWait.handler(ctx, identity);
+      expect(goalElapsedMs(goal, 66000)).toBe(7000);
+      goal.state = "paused";
+      goal.activeSince = undefined;
+      chat.active_agent_user_wait = {
+        runId: "run",
+        toolCallId: "tool2",
+        tokenId: "token2",
+        status: "waiting",
+      };
+      await setActiveAgentUserWait.handler(ctx, {
+        ...identity,
+        toolCallId: "tool2",
+      });
+      expect(goal.activeSince).toBeUndefined();
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
+
+it("keeps Goal time frozen when approval ends during browser takeover", async () => {
+  const chat: any = {
+    _id: "chat-doc",
+    id: "chat",
+    user_id: "user",
+    active_trigger_run_id: "run",
+    active_agent_approval_pending: true,
+    active_agent_approval_request: { approvalId: "approval" },
+  };
+  const goal: any = {
+    _id: "goal-doc",
+    chatId: "chat",
+    userId: "user",
+    activeRunId: "run",
+    state: "needs_approval",
+    elapsedMs: 2000,
+    activeSince: undefined,
+    updatedAt: 1000,
+  };
+  const browser = { user_id: "user", run_id: "run", state: "human" };
+  const { ctx, patch } = makeCtx(chat);
+  ctx.db.query.mockImplementation((table: string) => ({
+    withIndex: () => ({
+      first: async () => (table === "agent_goals" ? goal : chat),
+      unique: async () => goal,
+      order: () => ({ first: async () => browser }),
+    }),
+  }));
+  patch.mockImplementation(async (id: string, fields: object) =>
+    Object.assign(id === goal._id ? goal : chat, fields),
+  );
+  const now = jest.spyOn(Date, "now").mockReturnValue(64000);
+  try {
+    await expect(
+      setActiveAgentApprovalPending.handler(ctx, {
+        serviceKey: "key",
+        chatId: "chat",
+        pending: false,
+        expectedRunId: "run",
+        expectedApprovalId: "approval",
+      }),
+    ).resolves.toBe("released");
+    expect(goal.state).toBe("running");
+    expect(goalElapsedMs(goal, 124000)).toBe(2000);
+  } finally {
+    now.mockRestore();
+  }
 });

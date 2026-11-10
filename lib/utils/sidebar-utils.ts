@@ -8,6 +8,7 @@ import {
 import {
   formatSendInput,
   getTerminalExecutionPhase,
+  getShellExitCode,
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
@@ -18,6 +19,10 @@ import {
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
 import { parseAgentAutoReviewLifecycle } from "@/types";
+import {
+  getCaptchaActivity,
+  getCaptchaStartedAt,
+} from "@/app/components/tools/captcha-tool-utils";
 
 interface MessagePart {
   type: string;
@@ -38,7 +43,11 @@ export interface Message {
 // (e.g. file write/append showing content as the LLM generates it). All other
 // tool types are held back until input-available — see the gate inside the
 // per-part forEach below.
-const STREAMS_DURING_INPUT = new Set<string>(["tool-file"]);
+const STREAMS_DURING_INPUT = new Set<string>([
+  "tool-file",
+  "tool-file_edit",
+  "tool-file_write",
+]);
 
 const getWebSearchQuery = (input: unknown): string => {
   if (!input || typeof input !== "object") return "";
@@ -57,6 +66,7 @@ const getWebSearchQuery = (input: unknown): string => {
  */
 export function extractSidebarContentFromMessage(
   message: Message,
+  isRunActive = false,
 ): SidebarContent[] {
   const contentList: SidebarContent[] = [];
   if (message.role !== "assistant" || !message.parts) return contentList;
@@ -176,6 +186,7 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -250,15 +261,30 @@ export function extractSidebarContentFromMessage(
           ? rawSnapshot
           : streamingOutput || rawSnapshot || undefined
         : undefined;
+      const captcha = getCaptchaActivity({
+        command,
+        output: part.output,
+        executionPhase,
+        hasResult: part.output !== undefined,
+        isExecuting: executionPhase === "executing",
+        isRunActive,
+        startedAt: getCaptchaStartedAt(
+          message.parts!,
+          part.toolCallId || "",
+          command,
+        ),
+      });
 
       contentList.push({
         command,
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
         rawBytes: effectiveRawBytes,
+        ...(captcha ? { captcha } : {}),
         ...(isInteractive
           ? {
               shellAction: action,
@@ -275,6 +301,7 @@ export function extractSidebarContentFromMessage(
       const command = part.input.command || part.input.brief || "";
       const executionPhase = getTerminalExecutionPhase({
         toolState: part.state,
+        errorText: part.errorText,
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
@@ -310,6 +337,7 @@ export function extractSidebarContentFromMessage(
         output: stripAgentOnlyTerminalGuidance(finalOutput),
         isExecuting: executionPhase === "executing",
         executionPhase,
+        exitCode: isComplete ? getShellExitCode(part.output) : undefined,
         isBackground: false,
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
@@ -397,12 +425,16 @@ export function extractSidebarContentFromMessage(
     // File tool streaming - extract during input-streaming/input-available
     // so sidebar auto-follow works for file operations (like terminals)
     if (
-      part.type === "tool-file" &&
+      (part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write") &&
       (part.state === "input-streaming" || part.state === "input-available")
     ) {
       const fileInput = part.input;
       if (fileInput?.path) {
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         if (fileAction === "write" || fileAction === "append") {
           contentList.push({
             path: fileInput.path,
@@ -483,7 +515,9 @@ export function extractSidebarContentFromMessage(
         part.type === "tool-write_file" ||
         part.type === "tool-search_replace" ||
         part.type === "tool-multi_edit" ||
-        part.type === "tool-file") &&
+        part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write") &&
       part.state === "output-available"
     ) {
       const fileInput = part.input;
@@ -499,9 +533,15 @@ export function extractSidebarContentFromMessage(
       let originalContent: string | undefined;
       let modifiedContent: string | undefined;
 
-      if (part.type === "tool-file") {
+      if (
+        part.type === "tool-file" ||
+        part.type === "tool-file_edit" ||
+        part.type === "tool-file_write"
+      ) {
         // New unified file tool
-        const fileAction = fileInput.action as string;
+        const fileAction =
+          (fileInput.action as string | undefined) ??
+          (part.type === "tool-file_edit" ? "edit" : undefined);
         const actionMap: Record<string, SidebarFile["action"]> = {
           view: "viewing",
           read: "reading",
@@ -509,7 +549,7 @@ export function extractSidebarContentFromMessage(
           append: "appending",
           edit: "editing",
         };
-        action = actionMap[fileAction] || "reading";
+        action = (fileAction ? actionMap[fileAction] : undefined) || "reading";
 
         if (fileAction === "view") {
           const output = part.output;
@@ -966,8 +1006,14 @@ export function extractSidebarContentFromMessage(
 
 export function extractAllSidebarContent(
   messages: Message[],
+  isRunActive = false,
 ): SidebarContent[] {
-  return messages.flatMap(extractSidebarContentFromMessage);
+  return messages.flatMap((message, index) =>
+    extractSidebarContentFromMessage(
+      message,
+      isRunActive && index === messages.length - 1,
+    ),
+  );
 }
 
 const getToolCallId = (content: SidebarContent): string | undefined =>

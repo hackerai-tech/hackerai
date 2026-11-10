@@ -360,6 +360,39 @@ describe("SidebarChatSections", () => {
     );
   });
 
+  it("reserves Escape for an active drag, then releases it after cancellation", () => {
+    render(<SidebarChatSections chats={chats} projects={[]} />);
+    act(() =>
+      mockDndContextProps.onDragStart({
+        active: {
+          data: {
+            current: {
+              type: "sidebar-chat",
+              chatId: "task-chat",
+              title: "Task",
+              isPinned: false,
+            },
+          },
+        },
+      }),
+    );
+    const dragEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(dragEscape);
+    expect(dragEscape.defaultPrevented).toBe(true);
+    act(() => mockDndContextProps.onDragCancel({}));
+    const stopEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(stopEscape);
+    expect(stopEscape.defaultPrevented).toBe(false);
+  });
+
   it("pins a dropped task and shows the requested toast", async () => {
     const props = {
       chats: [chats[1]],
