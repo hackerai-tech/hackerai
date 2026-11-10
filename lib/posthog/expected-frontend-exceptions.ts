@@ -437,6 +437,45 @@ function nearbyDispatchGroup(
     )
       return "synthetic_stackless_error";
     if (
+      exception.type === "Error" &&
+      exception.value.length === 2 &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length === 3
+    ) {
+      const current = new URL(properties.$current_url);
+      const chatDocumentPath = /^\/c\/[A-Za-z0-9_-]{1,128}\/?$/;
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        chatDocumentPath.test(current.pathname) &&
+        frames.every(
+          /** Interpret filenames transiently; stored source and in_app do not prove authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              chatDocumentPath.test(source.pathname) &&
+              source.pathname.replace(/\/$/, "") !==
+                current.pathname.replace(/\/$/, "")
+            );
+          },
+        )
+      )
+        return "chat_document_short_error";
+    }
+    if (
       exception.type === "SyntaxError" &&
       exception.mechanism.synthetic === false &&
       exception.mechanism.type === "generic" &&

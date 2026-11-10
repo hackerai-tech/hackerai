@@ -6,6 +6,7 @@ import {
 import {
   enrichFrontendExceptionEvent,
   shouldDropExpectedFrontendException,
+  sanitizeFrontendExceptionUrlProperties,
 } from "../expected-frontend-exceptions";
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -688,3 +689,185 @@ it("keeps unexpected-token attribution within the retained shape and active owne
     ),
   ).toBe(false);
 });
+
+const chatDocumentEntry = () => ({
+  type: "Error",
+  value: "xy",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: ["private-a", "private-b", "private-a"].map((id) => ({
+      filename: `https://hackerai.co/c/${id}?private-query#private-fragment`,
+      in_app: true,
+      lineno: 199,
+      colno: 338,
+    })),
+  },
+});
+
+function chatDocumentEvent(exception: unknown = chatDocumentEntry()) {
+  return {
+    event: "$exception",
+    properties: {
+      $current_url:
+        "https://hackerai.co/c/current?private-query#private-fragment",
+      $exception_list: [exception],
+    },
+  };
+}
+
+/** Privacy assertions inspect added metadata without recapturing the retained exception. */
+function nearbyProperties(event: { properties: Record<string, unknown> }) {
+  return Object.fromEntries(
+    Object.entries(event.properties).filter(([key]) =>
+      key.startsWith("hackerai_nearby_dispatch_"),
+    ),
+  );
+}
+
+it("reuses nearby native context for short errors with other chat-document frames", () => {
+  window.dispatchEvent(
+    new ErrorEvent("error", {
+      filename: `${location.origin}/private-error-source?private-token`,
+      error: new Error("private-error-message"),
+      lineno: 12,
+      colno: 4,
+    }),
+  );
+  const event = chatDocumentEvent();
+  const exceptions = event.properties.$exception_list;
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(
+    sanitizeFrontendExceptionUrlProperties(event),
+  );
+  const context = nearbyProperties(enriched);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_version: 1,
+    hackerai_nearby_dispatch_group: "chat_document_short_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 1,
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+  });
+  expect(JSON.stringify(context)).not.toMatch(/private|hackerai\.co|\/c\/|xy/);
+  expect(enriched.properties.$exception_list).toBe(exceptions);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  identity.mockReturnValue("another-owner");
+  expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual({});
+});
+
+type ChatDocumentFixture = ReturnType<typeof chatDocumentEntry>;
+const otherChatErrorShapes: Array<
+  [string, (entry: ChatDocumentFixture) => unknown]
+> = [
+  ["a longer error", (entry) => ({ ...entry, value: "xyz" })],
+  ["a one-unit error", (entry) => ({ ...entry, value: "x" })],
+  ["a different error class", (entry) => ({ ...entry, type: "TypeError" })],
+  [
+    "a handled error",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, handled: true } }),
+  ],
+  [
+    "a synthetic error",
+    (entry) => ({
+      ...entry,
+      mechanism: { ...entry.mechanism, synthetic: true },
+    }),
+  ],
+  [
+    "a different mechanism",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, type: "other" } }),
+  ],
+  [
+    "two frames",
+    (entry) => ({
+      ...entry,
+      stacktrace: { frames: entry.stacktrace.frames.slice(0, 2) },
+    }),
+  ],
+  [
+    "four frames",
+    (entry) => ({
+      ...entry,
+      stacktrace: {
+        frames: [...entry.stacktrace.frames, entry.stacktrace.frames[0]],
+      },
+    }),
+  ],
+  ...[
+    [
+      "the current document with another query",
+      "https://hackerai.co/c/current?other#fragment",
+    ],
+    [
+      "the current document with a trailing slash",
+      "https://hackerai.co/c/current/",
+    ],
+    ["a different origin", "https://other.example/c/private-a"],
+    ["an origin-prefix spoof", "https://hackerai.co.other.example/c/private-a"],
+    [
+      "a credential-bearing source",
+      "https://private-user@hackerai.co/c/private-a",
+    ],
+    [
+      "a generated script",
+      "https://hackerai.co/_next/static/chunks/private.js",
+    ],
+    ["an empty chat path", "https://hackerai.co/c/"],
+    ["a nested chat path", "https://hackerai.co/c/private-a/extra"],
+    ["an oversized filename", `https://hackerai.co/c/${"a".repeat(4096)}`],
+    ["an anonymous filename", "<anonymous>"],
+  ].map(
+    ([label, filename]): [string, (entry: ChatDocumentFixture) => unknown] => [
+      label,
+      (entry) => ({
+        ...entry,
+        stacktrace: {
+          frames: [
+            { ...entry.stacktrace.frames[0], filename },
+            ...entry.stacktrace.frames.slice(1),
+          ],
+        },
+      }),
+    ],
+  ),
+  [
+    "server-normalized source instead of browser filename",
+    (entry) => ({
+      ...entry,
+      stacktrace: {
+        frames: entry.stacktrace.frames.map(({ filename, ...frame }) => ({
+          ...frame,
+          source: filename,
+        })),
+      },
+    }),
+  ],
+];
+
+it.each(otherChatErrorShapes)(
+  "does not expand nearby context to %s",
+  (_label, change) => {
+    const event = chatDocumentEvent(change(chatDocumentEntry()));
+    expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+  },
+);
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://hackerai.co/c/current",
+  "https://hackerai.co/share/current",
+  "https://private-user@hackerai.co/c/current",
+  `https://hackerai.co/c/${"a".repeat(4096)}`,
+])(
+  "omits the group when the current document is not eligible (%s)",
+  (current) => {
+    const event = chatDocumentEvent();
+    const enriched = enrichFrontendExceptionEvent({
+      ...event,
+      properties: { ...event.properties, $current_url: current },
+    });
+    expect(nearbyProperties(enriched)).toEqual({});
+  },
+);
