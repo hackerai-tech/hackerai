@@ -37,6 +37,9 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -49,6 +52,11 @@ jobs:
             MAJOR="${BASH_REMATCH[1]}"
             MINOR="${BASH_REMATCH[2]}"
             PATCH="${BASH_REMATCH[3]}"
+            LATEST_RELEASE_TAG="$(gh api "repos/${GH_REPO}/releases/latest" --jq '.tag_name')"
+            if [[ "$LATEST_TAG" != "$LATEST_RELEASE_TAG" ]]; then
+              echo "Highest Desktop tag $LATEST_TAG differs from latest published release $LATEST_RELEASE_TAG" >&2
+              exit 1
+            fi
             VERSION="${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
           else
             echo "Latest desktop tag is not a stable semver tag: $LATEST_TAG" >&2
@@ -56,6 +64,14 @@ jobs:
           fi
 
           TAG_NAME="desktop-v$VERSION"
+          if git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            echo "Candidate tag already exists: $TAG_NAME" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Candidate release already exists: $TAG_NAME" >&2
+            exit 1
+          fi
           echo "Building promotable candidate: $TAG_NAME"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
