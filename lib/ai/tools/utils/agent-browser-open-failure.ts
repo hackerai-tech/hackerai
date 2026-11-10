@@ -12,6 +12,104 @@ const PUBLIC_MARKERS = {
   navigation: /^(?:Navigation failed:|page\.goto:)/m,
 } as const;
 
+type BrowserResultGates = {
+  interactive?: boolean;
+  isBackground: boolean;
+  aborted: boolean;
+  result: Record<string, unknown>;
+};
+
+/** Shared with the timing receipt so its eligibility describes the actual guard. */
+export function getAgentBrowserFailureEligibility(args: BrowserResultGates) {
+  const r = args.result;
+  if (args.interactive) return "interactive";
+  if (args.isBackground) return "background";
+  if (args.aborted) return "aborted";
+  if (r.processStarted !== true)
+    return r.processStarted === false
+      ? "process_not_started"
+      : "process_start_unavailable";
+  if (r.executionOutcome === "unknown") return "outcome_unknown";
+  if (r.timedOut) return "timed_out";
+  if (r.approvalDenied) return "approval_denied";
+  if (r.exitCode === 0) return "zero_exit";
+  if (
+    typeof r.exitCode !== "number" ||
+    !Number.isInteger(r.exitCode) ||
+    r.exitCode < 1 ||
+    r.exitCode > 255
+  )
+    return "exit_unqualified";
+  return "eligible";
+}
+
+/** Classifies only bounded, already returned text; never exports its contents. */
+export function getAgentBrowserOutputDiagnostics(r: Record<string, unknown>) {
+  let truncated = false;
+  const samples = [r.output, r.error].map((value) => {
+    if (typeof value !== "string") return "";
+    // At most 8192 UTF-16 units across both fields, before ANSI stripping.
+    if (value.length <= 4096) return stripAnsi(value);
+    truncated = true;
+    return (
+      stripAnsi(value.slice(0, 2048)) + "\n" + stripAnsi(value.slice(-2048))
+    );
+  });
+  const normalize = (value: string) =>
+    stripAnsi(value).replace(/^[ \t]*[✗×][ \t]*/gm, "");
+  const text = normalize(samples.join("\n"));
+  const matches = new Set<string>();
+  const collectMarkers = (value: string) => {
+    for (const [name, pattern] of Object.entries(PUBLIC_MARKERS))
+      if (pattern.test(value)) matches.add(name);
+  };
+  collectMarkers(text);
+  let jsonCandidates = 0;
+  let jsonObserved = false;
+  let jsonUnreadable = false;
+  let jsonLimit = false;
+  // The public CLI prints one compact JSON response per line. Parse at most
+  // eight candidates from the existing 8192-unit sample, never nested data.
+  for (const line of text.split("\n")) {
+    if (!line.trimStart().startsWith("{")) continue;
+    if (jsonCandidates === 8) {
+      jsonLimit = true;
+      break;
+    }
+    jsonCandidates++;
+    try {
+      const response: unknown = JSON.parse(line);
+      if (
+        response !== null &&
+        typeof response === "object" &&
+        !Array.isArray(response) &&
+        "success" in response &&
+        response.success === false &&
+        "error" in response &&
+        typeof response.error === "string"
+      ) {
+        jsonObserved = true;
+        collectMarkers(normalize(response.error));
+      }
+    } catch {
+      jsonUnreadable = true;
+    }
+  }
+  const hints = [...matches];
+  return {
+    public_output_hint:
+      hints.length > 1 ? "multiple_markers" : (hints[0] ?? "no_known_marker"),
+    public_json_error_state: jsonObserved
+      ? "observed"
+      : jsonUnreadable || jsonLimit
+        ? "incomplete"
+        : "not_observed",
+    json_candidate_limit_reached: jsonLimit,
+    output_sample_present: samples.some(Boolean),
+    output_sample_truncated: truncated,
+  };
+}
+
 /** Best effort; never alters execution, retries, terminal output or child stdio. */
 export function captureAgentBrowserOpenFailure(args: {
   context: Pick<ToolContext, "userID" | "chatId" | "triggerRunId">;
@@ -23,77 +121,12 @@ export function captureAgentBrowserOpenFailure(args: {
 }): void {
   try {
     const r = args.result;
-    if (
-      args.interactive ||
-      args.isBackground ||
-      args.aborted ||
-      r.processStarted !== true ||
-      r.executionOutcome === "unknown" ||
-      r.timedOut ||
-      r.approvalDenied ||
-      typeof r.exitCode !== "number" ||
-      !Number.isInteger(r.exitCode) ||
-      r.exitCode === 0 ||
-      r.exitCode < 1 ||
-      r.exitCode > 255
-    )
-      return;
+    if (getAgentBrowserFailureEligibility(args) !== "eligible") return;
     const usage = detectAgentBrowserUsage(args.command);
     if (!usage) return;
     const openIntent = usage.actions.includes("open");
     if (!openIntent && !usage.actions.includes("option")) return;
 
-    let truncated = false;
-    const samples = [r.output, r.error].map((value) => {
-      if (typeof value !== "string") return "";
-      // At most 8192 UTF-16 units across both fields, before ANSI stripping.
-      if (value.length <= 4096) return stripAnsi(value);
-      truncated = true;
-      return (
-        stripAnsi(value.slice(0, 2048)) + "\n" + stripAnsi(value.slice(-2048))
-      );
-    });
-    const normalize = (value: string) =>
-      stripAnsi(value).replace(/^[ \t]*[✗×][ \t]*/gm, "");
-    const text = normalize(samples.join("\n"));
-    const matches = new Set<string>();
-    const collectMarkers = (value: string) => {
-      for (const [name, pattern] of Object.entries(PUBLIC_MARKERS))
-        if (pattern.test(value)) matches.add(name);
-    };
-    collectMarkers(text);
-    let jsonCandidates = 0;
-    let jsonObserved = false;
-    let jsonUnreadable = false;
-    let jsonLimit = false;
-    // The public CLI prints one compact JSON response per line. Parse at most
-    // eight candidates from the existing 8192-unit sample, never nested data.
-    for (const line of text.split("\n")) {
-      if (!line.trimStart().startsWith("{")) continue;
-      if (jsonCandidates === 8) {
-        jsonLimit = true;
-        break;
-      }
-      jsonCandidates++;
-      try {
-        const response: unknown = JSON.parse(line);
-        if (
-          response !== null &&
-          typeof response === "object" &&
-          !Array.isArray(response) &&
-          "success" in response &&
-          response.success === false &&
-          "error" in response &&
-          typeof response.error === "string"
-        ) {
-          jsonObserved = true;
-          collectMarkers(normalize(response.error));
-        }
-      } catch {
-        jsonUnreadable = true;
-      }
-    }
-    const hints = [...matches];
     const runId = args.context.triggerRunId;
     const recordedRun =
       typeof runId === "string" && /^run_[a-z0-9]{20,40}$/.test(runId);
@@ -105,16 +138,7 @@ export function captureAgentBrowserOpenFailure(args: {
       observation_scope: openIntent
         ? "terminal_result_open_intent"
         : "terminal_result_option_intent",
-      public_output_hint:
-        hints.length > 1 ? "multiple_markers" : (hints[0] ?? "no_known_marker"),
-      public_json_error_state: jsonObserved
-        ? "observed"
-        : jsonUnreadable || jsonLimit
-          ? "incomplete"
-          : "not_observed",
-      json_candidate_limit_reached: jsonLimit,
-      output_sample_present: samples.some(Boolean),
-      output_sample_truncated: truncated,
+      ...getAgentBrowserOutputDiagnostics(r),
       detected_invocation_count: Math.min(usage.invocationCount, 16),
       exit_code: r.exitCode,
       owner_run_status: recordedRun ? "recorded" : "unavailable",

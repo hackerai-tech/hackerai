@@ -1,8 +1,4 @@
 import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
-import {
-  MaxModelTelemetry,
-  MAX_GROK_46_KEY,
-} from "@/lib/experiments/max-grok-46";
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
@@ -1258,34 +1254,13 @@ describe("createAgentStream repeated compaction", () => {
           doGenerate: jest.fn(),
           doStream,
         };
-        const capture = jest.fn();
-        const telemetry =
-          mode === "agent"
-            ? new MaxModelTelemetry(
-                { capture } as any,
-                "qa-user",
-                {
-                  key: MAX_GROK_46_KEY,
-                  variant: "test",
-                  modelKey: "model-grok-4.6",
-                  baselineModel: "model-glm-5.3",
-                  hasImages: false,
-                },
-                {
-                  requestId: "size-request",
-                  chatId: "qa-chat",
-                  subscription: "ultra",
-                  environment: "preview",
-                },
-              )
-            : undefined;
         const recordModelCall = jest.fn();
         let handoffReadCount = 0;
         const stream = (await createAgentStream(
           modelName,
           createTestStreamContext({
             mode,
-            maxModelTelemetry: telemetry,
+            selectedModelOverride: mode === "agent" ? "hackerai-max" : "auto",
             platformAuthorized: authorized,
             getBrowserHandoffNotes: async () => [
               {
@@ -1314,11 +1289,7 @@ describe("createAgentStream repeated compaction", () => {
         stream.experimental_onStepStart({
           model: prepared.model ?? stream.model,
         });
-        expect(
-          capture.mock.calls.filter(
-            ([e]) => e.event === "max_model_provider_started",
-          ),
-        ).toHaveLength(0);
+        if (mode === "agent") expect(recordModelCall).not.toHaveBeenCalled();
         const request = (prepared.model ?? stream.model).doStream({
           prompt: [
             { role: "system", content: "system" },
@@ -1332,11 +1303,7 @@ describe("createAgentStream repeated compaction", () => {
           await request;
           expect(doStream).toHaveBeenCalledTimes(2);
           expect(recordModelCall).toHaveBeenCalledTimes(2);
-          expect(
-            capture.mock.calls.filter(
-              ([e]) => e.event === "max_model_provider_started",
-            ),
-          ).toHaveLength(2);
+
           const retryText = JSON.stringify(doStream.mock.calls[1][0].prompt);
           expect(retryText).toContain("HANDOFF: keep my selected account.");
           expect(
@@ -3792,28 +3759,11 @@ describe("createAgentStream repeated compaction", () => {
           usedTokens: 100,
           maxTokens: 200_000,
         });
-        const capture = jest.fn();
-        const telemetry = new MaxModelTelemetry(
-          { capture } as any,
-          "qa-user",
-          {
-            key: MAX_GROK_46_KEY,
-            variant: "test",
-            modelKey: "model-grok-4.6",
-            baselineModel: "model-glm-5.3",
-            hasImages: false,
-          },
-          {
-            requestId: "qa-request",
-            chatId: "qa-chat",
-            subscription: "ultra",
-            environment: "preview",
-          },
-        );
+        const onProviderRequestStart = jest.fn();
         const stream = (await createAgentStream(
           "model-grok-4.6",
           createTestStreamContext({
-            maxModelTelemetry: telemetry,
+            onProviderRequestStart,
             subscription: "ultra",
             selectedModelOverride: "hackerai-max",
             directGlmVisionEnabled: true,
@@ -3847,21 +3797,13 @@ describe("createAgentStream repeated compaction", () => {
           stepNumber: 0,
           messages: stream.messages,
         });
-        expect(telemetry.hasAssignedExposure).toBe(false);
+        expect(onProviderRequestStart).not.toHaveBeenCalled();
         stream.experimental_onStepStart({ model: prepared.model });
-        expect(telemetry.hasAssignedExposure).toBe(false);
+        expect(onProviderRequestStart).not.toHaveBeenCalled();
         await prepared.model.doStream({ prompt: prepared.messages });
-        expect(telemetry.hasAssignedExposure).toBe(true);
-        expect(telemetry.hasImageInputs).toBe(true);
-        expect(capture).toHaveBeenCalledWith(
-          expect.objectContaining({
-            event: "flash_routing_experiment_exposed",
-            properties: expect.objectContaining({
-              experiment_key: MAX_GROK_46_KEY,
-              configured_model: "x-ai/grok-4.6",
-              has_image_inputs: true,
-            }),
-          }),
+        expect(onProviderRequestStart).toHaveBeenCalledWith(
+          "x-ai/grok-4.6",
+          true,
         );
         expect(stream.model.modelId).toBe("x-ai/grok-4.6");
         expect(prepared.model.modelId).toBe("x-ai/grok-4.6");
