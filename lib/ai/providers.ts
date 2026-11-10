@@ -12,6 +12,10 @@ import { customProvider } from "ai";
 import { withOpenRouterStreamErrorContext } from "./openrouter-stream-error-context";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
+  recordOpenRouterBodyFailureContext,
+  type OpenRouterBodyFailurePhase,
+} from "@/lib/utils/openrouter-stream-error-context";
+import {
   abliteration,
   ABLITERATION_LARGE_FLASH_MODEL_ID,
   ABLITERATION_LARGE_V2_MODEL_KEY,
@@ -1057,23 +1061,41 @@ export const attachOpenRouterStreamErrorMetadata = (
   let cancelled = false;
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());
+  const responseStatus = response.status;
+  const responseIdentity = {};
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      let phase: OpenRouterBodyFailurePhase = "read_body";
       try {
         const chunk = await reader.read();
         if (cancelled) return;
         if (chunk.done) {
+          phase = "finish_stream";
           options.signal?.throwIfAborted();
           observer?.finish();
           controller.close();
           return;
         }
+        phase = "observe_chunk";
         observer?.feed(chunk.value);
+        phase = "forward_chunk";
         controller.enqueue(chunk.value);
       } catch (error) {
         observer?.reset();
-        if (!cancelled)
-          controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+        if (!cancelled) {
+          const enriched = enrichOpenRouterStreamError(error, responseHeaders);
+          try {
+            recordOpenRouterBodyFailureContext(
+              enriched,
+              responseIdentity,
+              responseStatus,
+              phase,
+            );
+          } catch {
+            // Optional diagnostics must not replace the original stream failure.
+          }
+          controller.error(enriched);
+        }
       }
     },
     cancel(reason) {
@@ -1084,7 +1106,7 @@ export const attachOpenRouterStreamErrorMetadata = (
   });
 
   return new Response(body, {
-    status: response.status,
+    status: responseStatus,
     statusText: response.statusText,
     headers: response.headers,
   });
