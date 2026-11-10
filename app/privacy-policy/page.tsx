@@ -115,11 +115,13 @@ export default function PrivacyPolicyPage() {
               analytics, customer support, AI model processing, search, content
               retrieval, and agent execution. Content sent to an AI feature may
               be processed by the provider supporting the selected model or
-              tool. We may also disclose information at your direction, to
-              protect users or the Service, in connection with a corporate
-              transaction, or when required by law. We do not currently sell
-              personal information. Any future commercial data contribution
-              program would require the separate choices described below.
+              tool, and a single request can reach more than one provider, for
+              example when a fallback model or image processing is used. We may
+              also disclose information at your direction, to protect users or
+              the Service, in connection with a corporate transaction, or when
+              required by law. We do not currently sell personal information.
+              Any future commercial data contribution program would be subject
+              to the notice and consent requirements described below.
             </p>
             <p className="mt-2">
               Our{" "}
@@ -133,32 +135,22 @@ export default function PrivacyPolicyPage() {
 
           <section id="data-contributions">
             <h2 className="mb-2 text-xl font-semibold">
-              Model improvement and data licensing
+              Model training and data licensing
             </h2>
             <p>
               We may introduce a program to use eligible future task content,
               such as prompts, responses, files, and tool results, to train and
               evaluate AI models. This may include licensing content to AI
-              partners for compensation. Partner data collection is not active.
-              We will provide program details before it starts and obtain any
-              required consent or agreement.
+              partners for compensation. This program is not active, and partner
+              data collection has not started.
             </p>
             <p className="mt-2">
-              Improve the model for everyone is on by default in Settings &gt;
-              Data controls. You can turn it off anytime; your choice is saved
-              to your account. Turning it off excludes your content from future
-              program collection and new transfers without changing your plan or
-              the processing needed to answer your requests. Historical content
-              and tasks created while the setting was off remain excluded, even
-              if you later turn it back on.
-            </p>
-            <p className="mt-2">
-              Participation is subject to applicable law and the rights needed
-              to license the content. An enabled setting does not replace any
-              required consent. Before collection, we will explain the content
-              included, recipients, uses, retention, and applicable privacy
-              choices, including how withdrawal or deletion affects content
-              already shared. Your applicable privacy rights remain in effect.
+              Before any collection, we will explain the content included,
+              recipients, uses, and retention, how consent, withdrawal, and
+              deletion would work, and obtain any consent or agreement required
+              by law. Participation is subject to applicable law and the rights
+              needed to license the content. Your applicable privacy rights
+              remain in effect.
             </p>
           </section>
 
@@ -240,9 +232,9 @@ export default function PrivacyPolicyPage() {
               We may update this policy as the Service or applicable
               requirements change. We will post the updated policy here and
               revise the date above. When appropriate, we may provide additional
-              notice through the Service or another reasonable channel. Policy
-              updates do not override your opt-out. We will provide additional
-              notice and obtain consent where required by law.
+              notice through the Service or another reasonable channel. We will
+              provide additional notice and obtain consent where required by
+              law.
             </p>
           </section>
 

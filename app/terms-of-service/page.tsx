@@ -168,19 +168,18 @@ export default function TermsOfServicePage() {
             </p>
             <p className="mt-2">
               Any future use of Input or Output for model training, evaluation,
-              or commercial licensing to AI partners will be subject to the
-              program notice, your settings, applicable law, and any required
-              agreement or consent. You retain ownership of your content. The
-              service license above does not by itself authorize partner data
-              licensing. See{" "}
+              or commercial licensing to AI partners will be subject to prior
+              program notice, applicable law, and any required agreement or
+              consent. You retain ownership of your content. The service license
+              above does not by itself authorize partner data licensing. See{" "}
               <Link
                 href="/privacy-policy#data-contributions"
                 className={linkClassName}
               >
-                Model improvement and data licensing
+                Model training and data licensing
               </Link>{" "}
-              in our Privacy Policy for the default-on preference, opt-out, and
-              limits on eligible content. Partner data collection is not active.
+              in our Privacy Policy. This program is not active, and partner
+              data collection has not started.
             </p>
           </section>
 
@@ -415,9 +414,9 @@ export default function TermsOfServicePage() {
               required by law, provide additional notice. Changes take effect
               when posted unless we state otherwise. Your continued use after
               the effective date constitutes acceptance, and if you do not agree
-              you must stop using the Service. Continued use does not override
-              your model improvement opt-out or substitute for any consent
-              required for new program partners, purposes, or eligible content.
+              you must stop using the Service. Continued use does not substitute
+              for any consent required for a model training or data licensing
+              program, its partners, purposes, or eligible content.
             </p>
           </section>
 
