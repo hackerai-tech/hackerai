@@ -16,10 +16,17 @@ import {
 import type { CaptchaSolver } from "./solver";
 import {
   CAPTCHA_RUNTIME_GUIDANCE,
-  CAPTCHA_UNSOLVABLE_VISION_GUIDANCE,
+  getCaptchaUnsolvableVisionGuidance,
 } from "./guidance";
+import {
+  buildVisionCaptureScripts,
+  visionScreenshotRequest,
+} from "./vision-capture";
 import { CaptchaUnsolvableError } from "./provider-error";
-import { isAgentBrowserSnapshotCommand } from "@/lib/utils/agent-browser-command";
+import {
+  isAgentBrowserSnapshotCommand,
+  getStandaloneScreenshotHint,
+} from "@/lib/utils/agent-browser-command";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
 import type { CaptchaJournal } from "./journal";
 import {
@@ -81,6 +88,8 @@ export function createBrowserChallengeHandler(
   let visionFallback:
     | (VisionScope & {
         deadline: number;
+        target: Target;
+        captureSupported: boolean;
         completed?: boolean;
         stopped?: boolean;
       })
@@ -120,8 +129,9 @@ export function createBrowserChallengeHandler(
   const check = async (
     abortSignal?: AbortSignal,
     target?: Target,
-    action: "inspect" | "solve" | "release" = "solve",
+    action: "inspect" | "solve" | "release" | "capture" = "solve",
     expected?: Request,
+    capturePath?: string,
   ) => {
     const signals = [runSignal, abortSignal].filter(
       (s): s is AbortSignal => !!s,
@@ -136,6 +146,8 @@ export function createBrowserChallengeHandler(
       !context.browserSessions ||
       context.requestToolApproval
     )
+      return { status: "unavailable" };
+    if (action === "capture" && !visionFallback)
       return { status: "unavailable" };
     if (active)
       return {
@@ -174,9 +186,13 @@ export function createBrowserChallengeHandler(
         status: "handoff_required",
         reason,
         visionFallbackAvailable: available,
+        visionCaptureSupported:
+          available && visionFallback?.captureSupported === true,
         ...(available && {
           visionDeadlineAt: visionFallback!.deadline,
-          visionGuidance: CAPTCHA_UNSOLVABLE_VISION_GUIDANCE,
+          visionGuidance: getCaptchaUnsolvableVisionGuidance(
+            visionFallback!.captureSupported,
+          ),
         }),
         message: available
           ? "2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. Try the bounded vision workflow in this same browser now; request human takeover only if it fails. No further paid attempt is permitted."
@@ -310,6 +326,33 @@ export function createBrowserChallengeHandler(
           visionFallback,
         );
         if (!samePage && action === "inspect") visionFallback.stopped = true;
+        if (
+          action === "capture" &&
+          samePage &&
+          !visionFallback.stopped &&
+          Date.now() < visionFallback.deadline
+        ) {
+          try {
+            if (!browser.captureVision || !capturePath) throw new Error();
+            const capture = await browser.captureVision({
+              path: capturePath,
+              deadline: visionFallback.deadline,
+              ...buildVisionCaptureScripts(visionFallback),
+            });
+            signal.throwIfAborted();
+            if (Date.now() >= visionFallback.deadline) throw new Error();
+            return respond({
+              status: "vision_capture_ready",
+              capture,
+              visionDeadlineAt: visionFallback.deadline,
+              visionFallbackAvailable: true,
+            });
+          } catch {
+            signal.throwIfAborted();
+            visionFallback.stopped = true;
+            return visionReply(false, "vision_capture_unavailable");
+          }
+        }
         if (samePage && target && action === "inspect")
           pendingRequest = {
             target,
@@ -633,6 +676,9 @@ export function createBrowserChallengeHandler(
             )
               visionFallback = {
                 ...attemptedScope,
+                target,
+                captureSupported:
+                  typeof currentBrowser.captureVision === "function",
                 deadline: Date.now() + 60_000,
               };
           } catch {
@@ -691,6 +737,78 @@ export function createBrowserChallengeHandler(
     }
   };
   return Object.assign(check, {
+    captureVisionCommand: async (command: string, signal?: AbortSignal) => {
+      if (!visionFallback?.captureSupported || visionFallback.completed) return;
+      const request = visionScreenshotRequest(command);
+      if (!request) {
+        const hint = getStandaloneScreenshotHint(command);
+        if (!hint) return;
+        return {
+          result: {
+            exitCode: 1,
+            output:
+              "No commands were executed. Keep the checkbox click separate from its screenshot.",
+            browserChallenge: {
+              status: "vision_capture_preparation_required",
+              visionFallbackAvailable: true,
+              visionDeadlineAt: visionFallback.deadline,
+              message: `Run the screenshot alone: ${hint}. No scrolling, --full, selector crop, pipes or appended commands. The original vision deadline still applies.`,
+            },
+          },
+        };
+      }
+      if (request.sessionName !== visionFallback.sessionName) {
+        visionFallback.stopped = true;
+        return {
+          result: {
+            exitCode: 1,
+            output: "",
+            browserChallenge: {
+              status: "handoff_required",
+              reason: "vision_page_changed",
+              visionFallbackAvailable: false,
+            },
+          },
+        };
+      }
+      const result = await check(
+        signal,
+        visionFallback.target,
+        "capture",
+        {
+          target: visionFallback.target,
+          url: visionFallback.url,
+          documentId: visionFallback.documentId,
+          identity: visionFallback.identity,
+        },
+        request.path,
+      );
+      if (
+        result.status !== "vision_capture_ready" &&
+        result.status !== "no_pending_challenge" &&
+        result.status !== "busy" &&
+        visionFallback
+      )
+        visionFallback.stopped = true;
+      return {
+        result: {
+          exitCode: ["vision_capture_ready", "no_pending_challenge"].includes(
+            result.status,
+          )
+            ? 0
+            : 1,
+          output:
+            result.status === "vision_capture_ready"
+              ? `Screenshot saved to ${request.path}`
+              : result.status === "no_pending_challenge"
+                ? "No challenge remains pending. Inspect the website result before any authorized form action."
+                : result.status === "busy"
+                  ? "Another owned browser operation is active; use its result instead of requesting another capture."
+                  : "The whole challenge could not be captured safely. Stop recapturing and request manual verification.",
+          browserChallenge: result,
+        },
+      };
+    },
     guardVisionCommand: (command: string) => {
       if (
         !visionFallback ||

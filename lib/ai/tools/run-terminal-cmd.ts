@@ -1,3 +1,5 @@
+import { visionScreenshotRequest } from "../captcha/vision-capture";
+import { trackCaptchaCapture } from "./utils/captcha-capture-files";
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
 import { parseCaptchaRuntimeCommand } from "../captcha/runtime-command";
@@ -1668,6 +1670,23 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   browserChallenge: visionLimit,
                 },
               };
+            // Qualified recovery captures finish here, even when requested in the
+            // background, so no unqualified shell screenshot can race file view.
+            if (!input.interactive) {
+              const captureOperation = context.captureCaptchaVisionCommand;
+              const request = visionScreenshotRequest(input.command);
+              const executeCapture = async () =>
+                captureOperation?.(input.command, options.abortSignal);
+              const capture =
+                request && captureOperation
+                  ? await trackCaptchaCapture(
+                      context,
+                      request.path,
+                      executeCapture,
+                    )
+                  : await executeCapture();
+              if (capture) return capture;
+            }
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };

@@ -331,3 +331,25 @@ export function getStandaloneSnapshotHint(command: string): string | null {
   // before the strict trigger can perform a new owned-page check.
   return snapshots[0];
 }
+
+/** Advice only: a recovery screenshot must execute alone to keep pixels and input aligned. */
+export function getStandaloneScreenshotHint(command: string): string | null {
+  if (/[`$\\<>\n\r]/.test(command)) return null;
+  const captures = splitShellCommands(command)
+    .map(splitShellWords)
+    .filter(
+      (words) =>
+        words[0] === "agent-browser" &&
+        words[1] === "--session" &&
+        /^[A-Za-z0-9_-]{1,80}$/.test(words[2] ?? "") &&
+        words[3] === "screenshot",
+    );
+  if (captures.length !== 1) return null;
+  const words = captures[0];
+  const path =
+    words
+      .slice(4)
+      .find((word) => /^\/tmp\/[A-Za-z0-9_.-]{1,160}\.png$/.test(word)) ??
+    "/tmp/challenge.png";
+  return `agent-browser --session ${words[2]} screenshot ${path}`;
+}

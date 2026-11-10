@@ -389,6 +389,95 @@ elif action == 'cloudflare':
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+elif action == 'vision':
+    validate()
+    import re, signal, struct
+    request = json.loads(sys.stdin.read(65537))
+    deadline = min(float(sys.argv[3]), float(request['deadline']) / 1000, time.time() + 8)
+    output_path = request['path']
+    if not isinstance(output_path, str) or not re.fullmatch(r'/tmp/[A-Za-z0-9_.-]{1,160}\.png', output_path):
+        raise RuntimeError('Invalid capture path')
+    for key in ('prepareScript','measureScript'):
+        if not isinstance(request.get(key), str) or len(request[key]) > 32768:
+            raise RuntimeError('Invalid capture script')
+    def cancel_capture(signum, frame):
+        raise InterruptedError('Capture cancelled')
+    signal.signal(signal.SIGTERM, cancel_capture)
+    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    temporary = pathlib.Path('/tmp/hackerai-vision-' + os.urandom(16).hex() + '.png')
+    try:
+        while True:
+            if time.time() >= deadline: raise RuntimeError('Capture expired')
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError: time.sleep(0.025)
+        name = (root / 'active-session').read_text().strip()
+        if name != request['sessionName'] or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', name):
+            raise RuntimeError('Browser identity changed')
+        socket_path = root / 'sockets' / (name + '.sock')
+        info = socket_path.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError('Browser unavailable')
+        def call_capture(command):
+            if time.time() >= deadline or (root / 'paused').exists() or (root / 'verify-required').exists() or (root / 'active-session').read_text().strip() != name:
+                raise RuntimeError('Capture ownership ended')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(max(0.01, min(2, deadline - time.time())))
+                connection.connect(str(socket_path))
+                connection.sendall((json.dumps(command) + '\n').encode())
+                with connection.makefile('rb') as response:
+                    line = response.readline(32769)
+                    if not line or len(line) > 32768: raise RuntimeError('Invalid capture response')
+                    reply = json.loads(line)
+                    if reply.get('success') is not True: raise RuntimeError('Capture operation failed')
+                    return reply.get('data', {})
+        def measure(scroll=False):
+            value = call_capture({'id':'captcha-capture-geometry','action':'evaluate','script':request['prepareScript' if scroll else 'measureScript']}).get('result')
+            if not isinstance(value,dict) or value.get('status') not in ('measured','not_visible'):
+                raise RuntimeError('Challenge frame unavailable')
+            return value
+        visible_until = min(deadline, time.time() + 2)
+        before = measure()
+        while before.get('status') == 'not_visible':
+            if time.time() >= visible_until: raise RuntimeError('Challenge frame is not ready')
+            time.sleep(0.05)
+            before = measure()
+        before = measure(True)
+        if before.get('needsViewport'):
+            width = max(before['viewport']['width'], before['frame']['width'] + 48, 1024)
+            height = max(before['viewport']['height'], before['frame']['height'] + 48, 1024)
+            if width > 1920 or height > 1600: raise RuntimeError('Challenge exceeds capture bounds')
+            call_capture({'id':'captcha-capture-viewport','action':'viewport','width':int(width),'height':int(height)})
+            before = measure(True)
+        # Wait on stable public geometry, not an arbitrary screenshot/sleep loop.
+        stable_until = min(deadline, time.time() + 1)
+        while True:
+            after = measure()
+            if after.get('fullyVisible') and after == before: break
+            if time.time() >= stable_until: raise RuntimeError('Challenge remains clipped or unstable')
+            before = after
+            time.sleep(0.05)
+        file_fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(file_fd)
+        call_capture({'id':'captcha-capture-image','action':'screenshot','path':str(temporary),'fullPage':False,'annotate':False,'format':'png'})
+        if measure() != after: raise RuntimeError('Challenge moved during capture')
+        if temporary.stat().st_size > 10000000: raise RuntimeError('Capture image too large')
+        with temporary.open('rb') as image: header = image.read(24)
+        if len(header) != 24 or header[:8] != b'\x89PNG\r\n\x1a\n':
+            raise RuntimeError('Invalid capture image')
+        width,height = struct.unpack('>II',header[16:24])
+        dpr = after['devicePixelRatio']
+        if not 0 < dpr <= 3 or abs(width-after['viewport']['width']*dpr) > 1 or abs(height-after['viewport']['height']*dpr) > 1:
+            raise RuntimeError('Capture coordinate scale changed')
+        if time.time() >= deadline: raise RuntimeError('Capture expired')
+        os.replace(temporary, output_path)
+        print(json.dumps({'path':output_path,'viewport':after['viewport'],'frame':after['frame'],
+          'devicePixelRatio':dpr,'image':{'width':width,'height':height}}))
+    finally:
+        temporary.unlink(missing_ok=True)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 elif action in ('pause', 'resume'):
     validate()
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
@@ -419,7 +508,14 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
-  action: "prepare" | "cleanup" | "pause" | "resume" | "status" | "cloudflare",
+  action:
+    | "prepare"
+    | "cleanup"
+    | "pause"
+    | "resume"
+    | "status"
+    | "cloudflare"
+    | "vision",
   directory: string,
   expiresAt: number,
   gate = false,
@@ -430,6 +526,7 @@ export function browserSessionCommand(
     args.push(String(expiresAt / 1000), BROWSER_SESSION_PROGRAM);
     args.push(gate ? "gate" : "", initScript ?? "");
   }
-  if (action === "cloudflare") args.push(String(expiresAt / 1000));
+  if (action === "cloudflare" || action === "vision")
+    args.push(String(expiresAt / 1000));
   return `python3 -c ${args.map(quote).join(" ")}`;
 }

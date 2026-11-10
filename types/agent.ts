@@ -702,6 +702,10 @@ export interface ToolContext {
     sessionName: string,
     signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
+  captureCaptchaVisionCommand?: (
+    command: string,
+    signal?: AbortSignal,
+  ) => Promise<{ result: Record<string, unknown> } | undefined>;
   guardCaptchaVisionCommand?: (
     command: string,
   ) => Record<string, unknown> | undefined;

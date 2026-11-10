@@ -780,6 +780,7 @@ it.each(["same", "navigated", "other-owner", "invisible", "managed"])(
     expect(result).toMatchObject({
       reason: "provider_unsolvable",
       visionFallbackAvailable: variant === "same",
+      visionCaptureSupported: false,
       providerTaskCreated: true,
       providerCostUSD: 0,
     });
@@ -788,6 +789,8 @@ it.each(["same", "navigated", "other-owner", "invisible", "managed"])(
     );
     expect(onToolCost).toHaveBeenCalledWith(0);
     if (variant === "same") {
+      expect(result.visionGuidance).toContain("no automatic frame fitting");
+      expect(result.visionGuidance).not.toContain("capture.devicePixelRatio");
       expect(await tool.inspect(undefined, target)).toMatchObject({
         visionFallbackAvailable: true,
       });
@@ -1048,4 +1051,113 @@ it("blocks expired recovery commands but permits observation, cleanup and verifi
   } finally {
     now.mockRestore();
   }
+});
+
+it.each(["ready", "failure", "page-change", "expired", "other-session"])(
+  "qualifies a vision screenshot without another provider task: %s",
+  async (variant) => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const { tool, solve, evaluate, getChallengeBrowser, journal } = setup();
+      const captureVision = jest.fn(async () => ({
+        path: "/tmp/image.png",
+        viewport: { width: 1280, height: 1024 },
+        frame: { x: 100, y: 60, width: 400, height: 900 },
+        image: { width: 1280, height: 1024 },
+        devicePixelRatio: 1,
+      }));
+      getChallengeBrowser.mockResolvedValue({
+        identity: "owner",
+        evaluate,
+        captureVision,
+      } as never);
+      const target = { sandbox: {} as never, sessionName: "owned" };
+      await tool.inspect(undefined, target);
+      solve.mockImplementation(async (...args: unknown[]) => {
+        await (args[3] as (id: number) => Promise<void>)(123);
+        throw new CaptchaUnsolvableError();
+      });
+      const offered = await tool.request("solve", "owned");
+      expect(offered).toMatchObject({ visionCaptureSupported: true });
+      expect(offered.visionGuidance).toContain("capture.devicePixelRatio");
+      if (variant === "failure")
+        captureVision.mockRejectedValue(new Error("capture unavailable"));
+      if (variant === "page-change")
+        evaluate.mockResolvedValue({
+          ...cloneObservation(),
+          documentId: "different",
+        });
+      if (variant === "expired") now.mockReturnValue(61000);
+      const session = variant === "other-session" ? "other" : "owned";
+      const result = await tool.captureVisionCommand(
+        `agent-browser --session ${session} screenshot /tmp/image.png`,
+      );
+      expect(result).toMatchObject({
+        result: { exitCode: variant === "ready" ? 0 : 1 },
+      });
+      expect(captureVision).toHaveBeenCalledTimes(
+        ["ready", "failure"].includes(variant) ? 1 : 0,
+      );
+      if (variant === "ready")
+        expect(captureVision).toHaveBeenCalledWith(
+          expect.objectContaining({
+            path: "/tmp/image.png",
+            deadline: 61000,
+            prepareScript: expect.any(String),
+            measureScript: expect.any(String),
+          }),
+        );
+      else {
+        await tool.captureVisionCommand(
+          "agent-browser --session owned screenshot /tmp/image.png",
+        );
+        expect(captureVision).toHaveBeenCalledTimes(
+          variant === "failure" ? 1 : 0,
+        );
+      }
+      await tool.inspect(undefined, target);
+      await tool.request("solve", "owned");
+      expect(solve).toHaveBeenCalledTimes(1);
+      expect(journal.reserve).toHaveBeenCalledTimes(1);
+    } finally {
+      now.mockRestore();
+    }
+  },
+);
+
+it("does not execute a combined action and screenshot during qualified recovery", async () => {
+  const { tool, solve, evaluate, getChallengeBrowser } = setup();
+  const captureVision = jest.fn();
+  getChallengeBrowser.mockResolvedValue({
+    identity: "owner",
+    evaluate,
+    captureVision,
+  } as never);
+  await tool.inspect(undefined, { sandbox: {} as never, sessionName: "owned" });
+  solve.mockImplementation(async (...args: unknown[]) => {
+    await (args[3] as (id: number) => Promise<void>)(123);
+    throw new CaptchaUnsolvableError();
+  });
+  await tool.request("solve", "owned");
+  expect(
+    await tool.captureVisionCommand(
+      "agent-browser --session owned click @e1 && agent-browser --session owned screenshot /tmp/image.png",
+    ),
+  ).toMatchObject({
+    result: {
+      exitCode: 1,
+      browserChallenge: {
+        status: "vision_capture_preparation_required",
+        message: expect.stringContaining(
+          "agent-browser --session owned screenshot /tmp/image.png",
+        ),
+      },
+    },
+  });
+  expect(captureVision).not.toHaveBeenCalled();
+  expect(
+    await tool.captureVisionCommand(
+      'echo "agent-browser --session owned screenshot /tmp/image.png"',
+    ),
+  ).toBeUndefined();
 });
