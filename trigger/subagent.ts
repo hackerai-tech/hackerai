@@ -1616,7 +1616,10 @@ export const subagentTask = task({
                   usageTracker.setAuthoritativeModelCostForStep(
                     index,
                     openRouter.openrouter_upstream_inference_cost,
-                    { isByok: openRouter.openrouter_is_byok },
+                    {
+                      isByok: openRouter.openrouter_is_byok,
+                      chargedCost: openRouter.openrouter_charged_cost,
+                    },
                   );
                   const currentCostDollars =
                     usageTracker.computeCostDollars(

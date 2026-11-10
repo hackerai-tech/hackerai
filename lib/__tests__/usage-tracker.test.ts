@@ -339,7 +339,7 @@ describe("UsageTracker", () => {
       );
     });
 
-    it("should prefer upstream inference cost for BYOK even when OpenRouter reports a fee", () => {
+    it("charges both BYOK provider inference and an OpenRouter platform fee", () => {
       tracker.accumulateStep({
         inputTokens: 1000,
         outputTokens: 500,
@@ -352,8 +352,36 @@ describe("UsageTracker", () => {
         },
       });
 
-      expect(tracker.modelProviderCost).toBeCloseTo(0.003);
-      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.004);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.004);
+    });
+
+    it("adds a BYOK platform fee when route metadata arrives after usage", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.00015 },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.003, {
+        isByok: true,
+      });
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00315);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00315);
+    });
+
+    it("uses generation metadata for a BYOK fee missing from streamed usage", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.003, {
+        isByok: true,
+        chargedCost: 0.00015,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00315);
     });
 
     it("keeps the charged non-BYOK cost after upstream metadata arrives", () => {

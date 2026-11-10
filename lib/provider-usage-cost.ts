@@ -34,9 +34,12 @@ export const getProviderUsageRawModelCost = (
   const reportedIsByok =
     isByok ?? (typeof raw.is_byok === "boolean" ? raw.is_byok : undefined);
 
-  // BYOK inference is charged by the upstream provider even when OpenRouter
-  // reports zero credit spend. Other routes use OpenRouter's charged cost.
+  // BYOK inference is charged by the upstream provider. OpenRouter's reported
+  // credit cost is a separate platform fee, when one applies. Other routes
+  // are fully charged through OpenRouter.
   return reportedIsByok === true
-    ? (upstreamInferenceCost ?? chargedCost)
+    ? upstreamInferenceCost !== undefined
+      ? upstreamInferenceCost + (chargedCost ?? 0)
+      : chargedCost
     : (chargedCost ?? upstreamInferenceCost);
 };

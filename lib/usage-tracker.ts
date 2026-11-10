@@ -275,7 +275,7 @@ export class UsageTracker {
   setAuthoritativeModelCostForStep(
     stepCostIndex: number | undefined,
     costDollars: number | undefined,
-    openRouter?: { isByok?: boolean },
+    openRouter?: { isByok?: boolean; chargedCost?: number },
   ) {
     if (stepCostIndex === undefined) {
       return;
@@ -287,7 +287,7 @@ export class UsageTracker {
       openRouter && isPositiveFiniteNumber(costDollars)
         ? getProviderUsageRawModelCost(
             {
-              cost: stepCost.reportedCost,
+              cost: stepCost.reportedCost ?? openRouter.chargedCost,
               is_byok: stepCost.reportedIsByok,
               cost_details: { upstream_inference_cost: costDollars },
             },
