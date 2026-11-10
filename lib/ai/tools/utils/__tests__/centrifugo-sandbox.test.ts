@@ -5880,65 +5880,80 @@ describe("CentrifugoSandbox", () => {
       );
     });
 
-    it("redacts source and destination paths from direct download failures", async () => {
-      const { sandbox } = createWindowsBashSandbox();
-      const signedUrl =
-        "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
-        "a".repeat(160) +
-        "&X-Amz-Signature=secret";
-      const localPath = "C:/temp/hackerai-upload/private-image.png";
-      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
-        if (cmd.includes("target_dir_exists")) {
+    it.each([23, 28])(
+      "redacts source and destination paths from direct download failures (exit%s)",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const signedUrl =
+          "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
+          "a".repeat(160) +
+          "&X-Amz-Signature=secret";
+        const localPath = "C:/temp/hackerai-upload/private-image.png";
+        (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+          if (cmd.includes("target_dir_exists")) {
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          }
           return {
-            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
-            stderr: "",
-            exitCode: 0,
+            stdout: "",
+            stderr:
+              exitCode === 28
+                ? `curl: (28) Resolving timed out after 10000 milliseconds /opaque-object/private-image.png C:\\sandbox\\private-image.png`
+                : `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
+            exitCode,
           };
-        }
-        return {
-          stdout: "",
-          stderr: `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
-          exitCode: 23,
-        };
-      });
+        });
 
-      const failure = sandbox.files
-        .downloadFromUrl(signedUrl, localPath)
-        .catch((error: unknown) => error);
-      await jest.advanceTimersByTimeAsync(5_000);
-      const error = await failure;
+        const failure = sandbox.files
+          .downloadFromUrl(signedUrl, localPath)
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(5_000);
+        const error = await failure;
 
-      expect(error).toBeInstanceOf(Error);
-      expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
-        attachment_download_diagnostic_version: 1,
-        attachment_download_platform: "windows",
-        attachment_download_shell: "bash",
-        attachment_download_http_client: "curl",
-        attachment_download_exit_code: 23,
-        attachment_download_stderr_signal: "other",
-        attachment_download_boundary_version: 1,
-        attachment_download_phase: "failure_diagnostics",
-        attachment_download_attempt: 3,
-        attachment_download_result_state: "nonzero",
-        attachment_download_result_context_present: true,
-      });
-      const diagnostic = JSON.stringify(
-        getAttachmentDownloadFailureContext(error),
-      );
-      expect(diagnostic).not.toMatch(
-        /storage\.example|private-image|X-Amz|sandbox/,
-      );
-      expect((error as Error).message).toContain("source: [redacted-url]");
-      expect((error as Error).message).toContain(
-        "destination: [redacted-destination-path]",
-      );
-      expect((error as Error).message).not.toContain("storage.example.com");
-      expect((error as Error).message).not.toContain("opaque-object");
-      expect((error as Error).message).not.toContain("private-image.png");
-      expect((error as Error).message).not.toContain(localPath);
-      expect((error as Error).message).not.toContain("X-Amz-Credential");
-      expect((error as Error).message).not.toContain("X-Amz-Signature");
-    });
+        expect(error).toBeInstanceOf(Error);
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_diagnostic_version: 1,
+          attachment_download_platform: "windows",
+          attachment_download_shell: "bash",
+          attachment_download_http_client: "curl",
+          attachment_download_exit_code: exitCode,
+          attachment_download_stderr_signal: "other",
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_attempt: 3,
+          attachment_download_result_state: "nonzero",
+          attachment_download_result_context_present: true,
+        });
+        if (exitCode === 28)
+          expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+            attachment_download_timeout_version: 1,
+            attachment_download_timeout_hint: "resolving",
+          });
+        else
+          expect(getAttachmentDownloadFailureContext(error)).not.toHaveProperty(
+            "attachment_download_timeout_version",
+          );
+        const diagnostic = JSON.stringify(
+          getAttachmentDownloadFailureContext(error),
+        );
+        expect(diagnostic).not.toMatch(
+          /storage\.example|private-image|X-Amz|sandbox/,
+        );
+        expect((error as Error).message).toContain("source: [redacted-url]");
+        expect((error as Error).message).toContain(
+          "destination: [redacted-destination-path]",
+        );
+        expect((error as Error).message).not.toContain("storage.example.com");
+        expect((error as Error).message).not.toContain("opaque-object");
+        expect((error as Error).message).not.toContain("private-image.png");
+        expect((error as Error).message).not.toContain(localPath);
+        expect((error as Error).message).not.toContain("X-Amz-Credential");
+        expect((error as Error).message).not.toContain("X-Amz-Signature");
+      },
+    );
 
     it.each([
       { client: "curl", exitCode: 26, desktop: true, platform: "windows" },
