@@ -2139,7 +2139,8 @@ export const subagentTask = task({
                 code: "spend_cap",
                 summary: `Subagent reached its $${costLimitDollars.toFixed(2)} spend limit.`,
               }
-            : freeMonthlyCostLimitExceeded
+            : freeMonthlyCostLimitExceeded ||
+                rateLimitCapReason === "free_monthly_exhausted"
               ? {
                   status: "failed" as const,
                   code: "free_monthly_cost_cap",
