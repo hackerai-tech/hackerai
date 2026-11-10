@@ -16,7 +16,7 @@ import {
 import type { CaptchaSolver } from "./solver";
 import {
   CAPTCHA_RUNTIME_GUIDANCE,
-  CAPTCHA_UNSOLVABLE_VISION_GUIDANCE,
+  getCaptchaUnsolvableVisionGuidance,
 } from "./guidance";
 import {
   buildVisionCaptureScripts,
@@ -186,9 +186,13 @@ export function createBrowserChallengeHandler(
         status: "handoff_required",
         reason,
         visionFallbackAvailable: available,
+        visionCaptureSupported:
+          available && visionFallback?.captureSupported === true,
         ...(available && {
           visionDeadlineAt: visionFallback!.deadline,
-          visionGuidance: CAPTCHA_UNSOLVABLE_VISION_GUIDANCE,
+          visionGuidance: getCaptchaUnsolvableVisionGuidance(
+            visionFallback!.captureSupported,
+          ),
         }),
         message: available
           ? "2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. Try the bounded vision workflow in this same browser now; request human takeover only if it fails. No further paid attempt is permitted."

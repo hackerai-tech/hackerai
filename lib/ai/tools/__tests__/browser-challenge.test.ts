@@ -780,6 +780,7 @@ it.each(["same", "navigated", "other-owner", "invisible", "managed"])(
     expect(result).toMatchObject({
       reason: "provider_unsolvable",
       visionFallbackAvailable: variant === "same",
+      visionCaptureSupported: false,
       providerTaskCreated: true,
       providerCostUSD: 0,
     });
@@ -788,6 +789,8 @@ it.each(["same", "navigated", "other-owner", "invisible", "managed"])(
     );
     expect(onToolCost).toHaveBeenCalledWith(0);
     if (variant === "same") {
+      expect(result.visionGuidance).toContain("no automatic frame fitting");
+      expect(result.visionGuidance).not.toContain("capture.devicePixelRatio");
       expect(await tool.inspect(undefined, target)).toMatchObject({
         visionFallbackAvailable: true,
       });
@@ -1074,7 +1077,9 @@ it.each(["ready", "failure", "page-change", "expired", "other-session"])(
         await (args[3] as (id: number) => Promise<void>)(123);
         throw new CaptchaUnsolvableError();
       });
-      await tool.request("solve", "owned");
+      const offered = await tool.request("solve", "owned");
+      expect(offered).toMatchObject({ visionCaptureSupported: true });
+      expect(offered.visionGuidance).toContain("capture.devicePixelRatio");
       if (variant === "failure")
         captureVision.mockRejectedValue(new Error("capture unavailable"));
       if (variant === "page-change")
