@@ -271,6 +271,7 @@ function fixture({
   failChecks = false,
   failFinalRead = false,
   headRepo = "o/r",
+  threads = [],
 } = {}) {
   const writes = [];
   let reads = 0;
@@ -306,7 +307,10 @@ function fixture({
         data: {
           repository: {
             pullRequest: {
-              reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+              reviewThreads: {
+                nodes: threads,
+                pageInfo: { hasNextPage: false },
+              },
             },
           },
         },
@@ -406,6 +410,21 @@ test("fresh pending statuses replace old passes before metadata reads; same-name
   assert.equal(
     (await evaluatePullRequest(safeFork.api, "o/r", 1)).state,
     "success",
+  );
+});
+
+test("deleted comment authors do not block review, but malformed thread metadata does", async () => {
+  const deleted = fixture({
+    threads: [{ isResolved: false, comments: { nodes: [{ author: null }] } }],
+  });
+  assert.equal(
+    (await evaluatePullRequest(deleted.api, "o/r", 1)).state,
+    "success",
+  );
+  const malformed = fixture({ threads: [{ isResolved: true, comments: {} }] });
+  assert.equal(
+    (await evaluatePullRequest(malformed.api, "o/r", 1)).state,
+    "failure",
   );
 });
 

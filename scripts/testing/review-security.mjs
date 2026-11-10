@@ -87,7 +87,7 @@ async function reviewThreads(api, repo, number) {
     const collection = response.data?.repository?.pullRequest?.reviewThreads;
     if (
       !Array.isArray(collection?.nodes) ||
-      collection.nodes.some((thread) => !thread.comments?.nodes?.[0]?.author)
+      collection.nodes.some((thread) => !Array.isArray(thread.comments?.nodes))
     )
       throw new Error("Review threads cannot be verified");
     rows.push(...collection.nodes);
