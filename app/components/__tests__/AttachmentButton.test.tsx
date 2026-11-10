@@ -4,11 +4,12 @@ import { AttachmentButton } from "../AttachmentButton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 let mockSubscription = "pro";
+let mockPlanChecking = false;
 const mockCapture = jest.fn();
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     subscription: mockSubscription,
-    isCheckingProPlan: false,
+    isCheckingProPlan: mockPlanChecking,
   }),
 }));
 jest.mock("@/lib/analytics/client", () => ({
@@ -21,6 +22,7 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
 
 beforeEach(() => {
   mockSubscription = "pro";
+  mockPlanChecking = false;
   jest.clearAllMocks();
 });
 
@@ -254,4 +256,35 @@ it("retains the attachment upgrade gate when a free account has Skills access", 
   );
   expect(await screen.findByTestId("file-attach-upgrade-dialog")).toBeVisible();
   expect(onAttachClick).not.toHaveBeenCalled();
+});
+
+it("disables attachment actions during plan hydration while keeping Skills usable", async () => {
+  mockSubscription = "free";
+  mockPlanChecking = true;
+  const onAttachClick = jest.fn();
+  const onSelect = jest.fn();
+  render(
+    <AttachmentButton
+      onAttachClick={onAttachClick}
+      skillsMenu={{ layout: "mobile", disabled: false, onSelect }}
+    />,
+  );
+  fireEvent.keyDown(
+    screen.getByRole("button", { name: "Add files or skills" }),
+    { key: "Enter" },
+  );
+  const files = await screen.findByRole("menuitem", { name: "Photos & files" });
+  const camera = screen.getByRole("menuitem", { name: "Camera" });
+  expect(files).toHaveAttribute("aria-disabled", "true");
+  expect(camera).toHaveAttribute("aria-disabled", "true");
+  fireEvent.click(files);
+  fireEvent.click(camera);
+  expect(onAttachClick).not.toHaveBeenCalled();
+  expect(
+    screen.queryByTestId("file-attach-upgrade-dialog"),
+  ).not.toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("menuitem", { name: "Skills", exact: true }),
+  );
+  await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
 });

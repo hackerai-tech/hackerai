@@ -214,6 +214,7 @@ export const AttachmentButton = ({
             {mobile && (
               <DropdownMenuItem
                 className={rowClass}
+                disabled={isCheckingProPlan}
                 onSelect={() => {
                   selectItem("camera");
                   if (subscription === "free") {
@@ -229,6 +230,7 @@ export const AttachmentButton = ({
             )}
             <DropdownMenuItem
               className={rowClass}
+              disabled={isCheckingProPlan}
               onSelect={() => {
                 selectItem("files");
                 focusComposerOnCloseRef.current = !mobile;
