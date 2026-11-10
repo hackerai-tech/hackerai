@@ -15,6 +15,7 @@ import {
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
 import { downloadFindingsReport } from "@/lib/findings/export-client";
 import type { FindingExportFormat } from "@/lib/findings/export";
+import { cn } from "@/lib/utils";
 import type { FindingDetailRecord } from "@/types/finding";
 
 /** Thrown by getFindings when any requested finding no longer exists. */
@@ -41,10 +42,14 @@ export function FindingExportMenu({
   getFindings,
   label = "Export report",
   disabled = false,
+  variant = "outline",
+  align = "start",
 }: {
   getFindings: () => Promise<FindingDetailRecord[]>;
   label?: string;
   disabled?: boolean;
+  variant?: "outline" | "default";
+  align?: "start" | "end";
 }) {
   const [busyFormat, setBusyFormat] = useState<FindingExportFormat | null>(
     null,
@@ -106,7 +111,7 @@ export function FindingExportMenu({
         <DropdownMenuTrigger asChild>
           <Button
             type="button"
-            variant="outline"
+            variant={variant}
             size="sm"
             disabled={disabled || isBusy}
             aria-busy={isBusy || undefined}
@@ -114,12 +119,15 @@ export function FindingExportMenu({
             <Download className="size-4" aria-hidden="true" />
             {isBusy ? "Exporting…" : label}
             <ChevronDown
-              className="size-3.5 text-muted-foreground"
+              className={cn(
+                "size-3.5",
+                variant === "outline" ? "text-muted-foreground" : "opacity-60",
+              )}
               aria-hidden="true"
             />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-56">
+        <DropdownMenuContent align={align} className="min-w-56">
           <DropdownMenuLabel className="text-xs font-medium text-muted-foreground">
             Download as
           </DropdownMenuLabel>

@@ -1,6 +1,12 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
 const mockUseProjects = jest.fn();
 jest.mock("@/app/hooks/useProjects", () => ({
@@ -140,12 +146,11 @@ describe("FindingsPage", () => {
     expect(screen.getByTestId("finding-severity-dot-finding-1")).toHaveClass(
       "bg-orange-500",
     );
-    expect(screen.getByText("Current Results")).toBeVisible();
+    expect(screen.getByText("In loaded results")).toBeVisible();
     expect(screen.queryByText("Validation Standard")).toBeNull();
     expect(screen.queryByText("Evidence + working PoC")).toBeNull();
     expect(screen.queryByText("Endpoint")).toBeNull();
     expect(screen.queryByText("Source Chat")).toBeNull();
-    expect(screen.getAllByText("Category").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Status").length).toBeGreaterThan(0);
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
     expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
@@ -189,6 +194,12 @@ describe("FindingsPage", () => {
     render(<Page />);
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    const emptySelection = screen.getByRole("region", {
+      name: "Selected findings",
+    });
+    expect(
+      within(emptySelection).getByRole("button", { name: /Export/ }),
+    ).toBeDisabled();
     const rowCheckbox = screen.getByRole("checkbox", {
       name: "Select finding: Confirmed IDOR",
     });
@@ -227,6 +238,59 @@ describe("FindingsPage", () => {
     expect(
       screen.queryByRole("region", { name: "Selected findings" }),
     ).toBeNull();
+  });
+
+  it("applies compact-panel filters immediately, retains them on close, and clears all filters", async () => {
+    mockSearchParams.set("q", "invoice");
+    window.history.replaceState({}, "", "/findings?q=invoice");
+    render(<Page />);
+    fireEvent.click(screen.getByRole("button", { name: "Select findings" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select finding: Confirmed IDOR" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    let panel = screen.getByRole("dialog", { name: "Filters" });
+    fireEvent.click(within(panel).getByLabelText("Filter by severity"));
+    fireEvent.click(screen.getByRole("option", { name: "High", exact: true }));
+    await waitFor(() => {
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ search: "invoice", severity: "high" }),
+        { initialNumItems: 25 },
+      );
+      expect(window.location.search).toContain("severity=high");
+    });
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "Done" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Filters" })).toBeNull(),
+    );
+    expect(window.location.search).toContain("severity=high");
+    expect(
+      screen.queryByRole("region", { name: "Selected findings" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Select findings" }),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /^Filters/ }));
+    panel = screen.getByRole("dialog", { name: "Filters" });
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Clear all filters" }),
+    );
+    await waitFor(() => {
+      expect(window.location.search).toBe("");
+      expect(mockUsePaginatedQuery).toHaveBeenLastCalledWith(
+        expect.anything(),
+        {},
+        { initialNumItems: 25 },
+      );
+    });
+    expect(
+      within(panel).getByLabelText("Filter by severity"),
+    ).toHaveTextContent("All severities");
+    fireEvent.click(within(panel).getByRole("button", { name: "Done" }));
   });
 
   it("scopes the query to an owned project and clears selection when filters change", async () => {
