@@ -1,3 +1,8 @@
+import {
+  insertMessageWithSearch,
+  patchMessageWithSearch,
+  messageDisplayText,
+} from "./lib/messageSearch";
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "../lib/ai/browser-handoff/constants";
 import { v } from "convex/values";
 import {
@@ -598,7 +603,7 @@ export const saveExitNoteForBackend = mutation({
     if (existing) {
       if (existing.user_id !== args.userId || existing.chat_id !== row.chat_id)
         throw new Error("Invalid handoff message");
-      await ctx.db.patch(existing._id, {
+      await patchMessageWithSearch(ctx, existing, {
         is_hidden: true,
         is_browser_handoff: true,
       });
@@ -610,7 +615,7 @@ export const saveExitNoteForBackend = mutation({
     const text = note
       ? `I've finished browser takeover.\n\n${note}`
       : "I've finished browser takeover. No additional details to add; please continue the task.";
-    await ctx.db.insert("messages", {
+    await insertMessageWithSearch(ctx, {
       id,
       chat_id: row.chat_id,
       user_id: args.userId,
@@ -661,8 +666,8 @@ export const getExitNotesForBackend = query({
     return messages.flatMap((message) =>
       message?.user_id === row.user_id &&
       message.chat_id === row.chat_id &&
-      message.content
-        ? [{ id: message.id, text: message.content }]
+      messageDisplayText(message)
+        ? [{ id: message.id, text: messageDisplayText(message)! }]
         : [],
     );
   },

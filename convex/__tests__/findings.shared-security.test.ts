@@ -123,6 +123,8 @@ function createSharedCtx({ authenticated = false } = {}) {
           })),
         };
       }
+      if (table === "message_search_migration" || table === "message_search")
+        return { unique: async () => null };
       throw new Error(`Unexpected table: ${table}`);
     }),
   }));

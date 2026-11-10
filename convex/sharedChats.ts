@@ -1,3 +1,4 @@
+import { insertMessageWithSearch, messageCopyText } from "./lib/messageSearch";
 import { createChatHistoryAccess } from "./lib/chatHistoryAccess";
 import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import { query, mutation } from "./lib/serviceFunctions";
@@ -395,13 +396,13 @@ export const forkSharedChat = mutation({
       const sanitizedParts = sanitizeFindingPartsForShare(
         stripOpenRouterReasoningMetadataFromParts(msg.parts),
       ).filter((part: any) => part.type !== "file");
-      await ctx.db.insert("messages", {
+      await insertMessageWithSearch(ctx, {
         id: newMessageId,
         chat_id: newChatId,
         user_id: identity.subject,
         role: msg.role,
         parts: sanitizedParts,
-        content: msg.content,
+        content: await messageCopyText(ctx, msg),
         source_message_id: msg.id,
         update_time: Date.now(),
         model: msg.model,

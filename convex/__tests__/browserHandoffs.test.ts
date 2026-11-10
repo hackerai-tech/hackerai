@@ -38,6 +38,8 @@ function fixture() {
     browser_handoffs: [],
     agent_goals: [],
     messages: [],
+    message_search: [],
+    message_search_migration: [],
   };
   const ctx = {
     auth: { getUserIdentity: async () => ({ subject: "owner" }) },
@@ -65,6 +67,7 @@ function fixture() {
             );
           return {
             first: async () => selected()[0] ?? null,
+            unique: async () => selected()[0] ?? null,
             order: (_direction: string) => ({
               first: async () => selected().at(-1) ?? null,
               take: async (count: number) => selected().slice(-count).reverse(),

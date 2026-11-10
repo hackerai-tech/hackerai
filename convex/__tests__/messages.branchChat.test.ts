@@ -87,11 +87,13 @@ function makeContext(messages: ReturnType<typeof makeMessage>[]) {
     query: jest
       .fn<any>()
       .mockImplementation((table: string) =>
-        table === "messages"
-          ? messageQueries++ === 0
-            ? anchorQuery
-            : history
-          : chatQuery,
+        table === "message_search_migration"
+          ? { withIndex: () => ({ unique: async () => null }) }
+          : table === "messages"
+            ? messageQueries++ === 0
+              ? anchorQuery
+              : history
+            : chatQuery,
       ),
     insert: jest
       .fn<any>()

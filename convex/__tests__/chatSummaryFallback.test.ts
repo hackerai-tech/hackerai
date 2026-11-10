@@ -301,6 +301,8 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     let messageQueryCount = 0;
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1032,6 +1034,8 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     } = config;
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1193,6 +1197,8 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     const latestSummary = makeSummaryDoc();
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1618,6 +1624,8 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     const chatDoc = makeChatDoc({ latest_summary_id: undefined });
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1825,6 +1833,8 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     };
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1884,6 +1894,8 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     };
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1958,6 +1970,8 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     });
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "model_history") {
         return {
           withIndex: jest.fn().mockReturnValue({

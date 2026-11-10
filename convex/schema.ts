@@ -551,6 +551,35 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
+  message_search: defineTable({
+    message_id: v.id("messages"),
+    id: v.string(),
+    chat_id: v.string(),
+    user_id: v.string(),
+    content: v.optional(v.string()),
+    is_hidden: v.optional(v.boolean()),
+    created_at: v.optional(v.number()),
+    update_time: v.number(),
+  })
+    .index("by_message_id", ["message_id"])
+    .index("by_user_id", ["user_id"])
+    .searchIndex("search_content", {
+      searchField: "content",
+      filterFields: ["user_id"],
+    }),
+
+  message_search_migration: defineTable({
+    name: v.literal("search_text"),
+    phase: v.union(
+      v.literal("copying"),
+      v.literal("stripping"),
+      v.literal("ready"),
+      v.literal("restoring"),
+      v.literal("legacy"),
+    ),
+    cursor: v.union(v.string(), v.null()),
+  }).index("by_name", ["name"]),
+
   findings: defineTable({
     project_id: v.optional(v.id("projects")),
     evidence_status: v.optional(

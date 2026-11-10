@@ -1,3 +1,4 @@
+import { deleteMessageWithSearch } from "./lib/messageSearch";
 import {
   createChatHistoryAccess,
   deleteChatHistoryAccess,
@@ -295,7 +296,7 @@ async function deleteMessageForChatDeletion(
     await ctx.db.delete(message.feedback_id);
   }
 
-  await ctx.db.delete(message._id);
+  await deleteMessageWithSearch(ctx, message);
 }
 
 async function deleteFindingsForChatBatch(

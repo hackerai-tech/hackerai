@@ -119,6 +119,8 @@ describe("saveMessage — is_hidden handling", () => {
     },
   ): void {
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "message_search_migration" || table === "message_search")
+        return { withIndex: () => ({ unique: async () => null }) };
       if (table === "messages") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1436,6 +1438,7 @@ describe("client stop-save routing provenance", () => {
       query: jest.fn().mockReturnValue({
         withIndex: jest.fn().mockReturnValue({
           first: jest.fn<any>().mockResolvedValue(null),
+          unique: jest.fn<any>().mockResolvedValue(null),
         }),
       }),
       insert: jest.fn<any>().mockResolvedValue("doc"),
@@ -1618,6 +1621,7 @@ describe("client stop-save routing provenance", () => {
         query: jest.fn().mockReturnValue({
           withIndex: jest.fn().mockReturnValue({
             first: jest.fn<any>().mockResolvedValue(null),
+            unique: jest.fn<any>().mockResolvedValue(null),
           }),
         }),
         insert,

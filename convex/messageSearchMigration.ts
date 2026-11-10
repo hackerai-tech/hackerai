@@ -1,0 +1,97 @@
+import { v } from "convex/values";
+import { internalMutation } from "./lib/serviceFunctions";
+import {
+  getMessageSearchMigration,
+  syncMessageSearch,
+} from "./lib/messageSearch";
+
+// Operator-driven, never started by deploy, a client, or a scheduled job.
+// Restore must finish before deploying code that only reads messages.content.
+export const start = internalMutation({
+  args: { direction: v.union(v.literal("separate"), v.literal("restore")) },
+  returns: v.null(),
+  handler: async (ctx, { direction }) => {
+    const state = await getMessageSearchMigration(ctx);
+    if (direction === "separate") {
+      if (!state) {
+        await ctx.db.insert("message_search_migration", {
+          name: "search_text",
+          phase: "copying",
+          cursor: null,
+        });
+      } else if (state.phase === "legacy") {
+        await ctx.db.patch(state._id, { phase: "copying", cursor: null });
+      } else if (state.phase === "restoring") {
+        throw new Error("Finish restoring message search first");
+      }
+    } else if (
+      state &&
+      state.phase !== "legacy" &&
+      state.phase !== "restoring"
+    ) {
+      if (state.phase === "copying") {
+        // Legacy text has not been removed yet.
+        await ctx.db.patch(state._id, { phase: "legacy", cursor: null });
+      } else {
+        await ctx.db.patch(state._id, { phase: "restoring", cursor: null });
+      }
+    }
+    return null;
+  },
+});
+
+export const advance = internalMutation({
+  args: {},
+  returns: v.object({
+    phase: v.string(),
+    processed: v.number(),
+    done: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    const state = await getMessageSearchMigration(ctx);
+    if (!state) throw new Error("Start message search migration explicitly");
+    if (state.phase === "ready" || state.phase === "legacy")
+      return { phase: state.phase, processed: 0, done: true };
+    const page = await ctx.db
+      .query("messages")
+      .order("asc")
+      .paginate({
+        cursor: state.cursor,
+        numItems: 100,
+        maximumBytesRead: 1024 * 1024,
+      });
+    for (const message of page.page) {
+      if (state.phase === "copying") {
+        await syncMessageSearch(ctx, message);
+      } else if (state.phase === "stripping") {
+        if (message.content !== undefined)
+          await ctx.db.patch(message._id, { content: undefined });
+      } else {
+        const search = await ctx.db
+          .query("message_search")
+          .withIndex("by_message_id", (q) => q.eq("message_id", message._id))
+          .unique();
+        if (!search)
+          throw new Error("Cannot restore missing message search text");
+        if (message.content !== search.content)
+          await ctx.db.patch(message._id, { content: search.content });
+      }
+    }
+    const phase = page.isDone
+      ? state.phase === "copying"
+        ? "stripping"
+        : state.phase === "stripping"
+          ? "ready"
+          : "legacy"
+      : state.phase;
+    await ctx.db.patch(state._id, {
+      phase,
+      cursor: page.isDone ? null : page.continueCursor,
+    });
+    return {
+      phase,
+      processed: page.page.length,
+      done: phase === "ready" || phase === "legacy",
+    };
+  },
+});

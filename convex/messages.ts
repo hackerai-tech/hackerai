@@ -1,4 +1,13 @@
 import {
+  insertMessageWithSearch,
+  patchMessageWithSearch,
+  deleteMessageWithSearch,
+  getMessageSearchMigration,
+  usesSeparateMessageSearch,
+  messageDisplayText,
+  messageCopyText,
+} from "./lib/messageSearch";
+import {
   assertChatHistoryOwner,
   createChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
@@ -883,7 +892,7 @@ export const saveMessage = mutation({
           }
           patch.update_time = Date.now();
           failureStage = "patch_existing_message";
-          await ctx.db.patch(existingMessage._id, patch);
+          await patchMessageWithSearch(ctx, existingMessage, patch);
         }
 
         return null;
@@ -997,7 +1006,7 @@ export const saveMessage = mutation({
       }
 
       failureStage = "insert_message";
-      await ctx.db.insert("messages", {
+      await insertMessageWithSearch(ctx, {
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
@@ -1465,7 +1474,7 @@ export const saveAssistantMessage = mutation({
       const indexedContent = content
         ? fitSearchContentToDocument(messageDocumentBase, content)
         : null;
-      await ctx.db.insert("messages", {
+      await insertMessageWithSearch(ctx, {
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
@@ -1603,7 +1612,7 @@ export const deleteLastAssistantMessage = mutation({
               );
             }
           }
-          await ctx.db.delete(msg._id);
+          await deleteMessageWithSearch(ctx, msg);
         }
       }
 
@@ -1849,9 +1858,12 @@ export const searchMessages = query({
       const SEARCH_CHAT_METADATA_CAP = 50;
 
       const searchStartedAt = Date.now();
+      const separateSearch = usesSeparateMessageSearch(
+        await getMessageSearchMigration(ctx),
+      );
       const [messageSearch, chatSearch] = await Promise.allSettled([
         ctx.db
-          .query("messages")
+          .query(separateSearch ? "message_search" : "messages")
           .withSearchIndex("search_content", (q) =>
             q.search("content", searchQuery).eq("user_id", user.subject),
           )
@@ -1867,7 +1879,9 @@ export const searchMessages = query({
       const failedIndexes: Array<{ index: string; error: string }> = [];
       if (messageSearch.status === "rejected") {
         failedIndexes.push({
-          index: "messages.search_content",
+          index: separateSearch
+            ? "message_search.search_content"
+            : "messages.search_content",
           error: getErrorMessage(messageSearch.reason),
         });
       }
@@ -1981,7 +1995,9 @@ export const searchMessages = query({
           id: msg.id,
           chat_id: msg.chat_id,
           content: msg.content || "",
-          created_at: msg._creationTime,
+          created_at:
+            ("created_at" in msg ? msg.created_at : undefined) ??
+            msg._creationTime,
           updated_at: chat?.update_time || msg.update_time,
           chat_title: chat?.title || "",
           match_type: "message",
@@ -2164,10 +2180,22 @@ export const branchChat = mutation({
         });
 
       const messagesToCopy = branchPage.page;
-      const historyBytes = messagesToCopy.reduce(
+      let historyBytes = messagesToCopy.reduce(
         (bytes, msg) => bytes + getMessageDocumentSize(msg),
         0,
       );
+      const copyText = new Map<string, string | undefined>();
+      if (branchPage.isDone && historyBytes <= MESSAGE_PAGE_MAX_BYTES) {
+        for (const msg of messagesToCopy) {
+          const content = await messageCopyText(ctx, msg);
+          copyText.set(msg.id, content);
+          // Account for both records in the existing atomic-copy budget.
+          historyBytes +=
+            getMessageDocumentSize({ ...msg, content }) -
+            getMessageDocumentSize(msg);
+          if (historyBytes > MESSAGE_PAGE_MAX_BYTES) break;
+        }
+      }
       if (
         !branchPage.isDone ||
         branchPage.pageStatus === "SplitRequired" ||
@@ -2205,13 +2233,13 @@ export const branchChat = mutation({
       for (const msg of messagesToCopy) {
         const newMessageId = crypto.randomUUID();
         messageIdMap.set(msg.id, newMessageId);
-        await ctx.db.insert("messages", {
+        await insertMessageWithSearch(ctx, {
           id: newMessageId,
           chat_id: newChatId,
           user_id: user.subject,
           role: msg.role,
           parts: msg.parts,
-          content: msg.content,
+          content: copyText.get(msg.id),
           file_ids: msg.file_ids,
           source_message_id: msg.id,
           is_hidden: msg.is_hidden,
@@ -2465,7 +2493,7 @@ export const regenerateWithNewContent = mutation({
       }
 
       await invalidateModelHistory(ctx, message.chat_id);
-      await ctx.db.patch(message._id, {
+      await patchMessageWithSearch(ctx, message, {
         parts:
           newParts.length > 0
             ? newParts
@@ -2519,7 +2547,7 @@ export const regenerateWithNewContent = mutation({
           }
         }
 
-        await ctx.db.delete(msg._id);
+        await deleteMessageWithSearch(ctx, msg);
       }
 
       // Keep the persisted todo snapshot consistent with the messages removed
@@ -2696,7 +2724,7 @@ export const getPreviewMessages = query({
         return {
           id: m.id,
           role: m.role,
-          content: m.content,
+          content: messageDisplayText(m),
           parts: stripOpenRouterReasoningMetadataFromParts(m.parts),
           fileDetails,
         };

@@ -17,6 +17,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "chat_history_access",
     "chat_summaries",
     "messages",
+    "message_search",
     "files",
     "feedback",
     "findings",
@@ -399,6 +400,13 @@ async function cleanupUserDataForUser(
     (q) => q.eq("user_id", userId),
     messageLimit,
   );
+  const messageSearchBatch = await collectByIndexBatch<Doc<"message_search">>(
+    ctx,
+    budget,
+    "message_search",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const messages: Doc<"messages">[] = [];
   const feedback: Array<Doc<"feedback"> | null> = [];
   for (const message of messagesBatch.docs) {
@@ -576,6 +584,7 @@ async function cleanupUserDataForUser(
     cloudNetworkBatch,
     customizationBatch,
     messagesBatch,
+    messageSearchBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
     localSandboxHeartbeatsBatch,
@@ -673,6 +682,7 @@ async function cleanupUserDataForUser(
   );
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
+  await deleteDocs(ctx, stats, "message_search", messageSearchBatch.docs, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
   await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);

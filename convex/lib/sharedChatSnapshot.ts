@@ -1,3 +1,4 @@
+import { messageDisplayText } from "./messageSearch";
 import { sanitizeFindingPartsForShare } from "../../lib/findings/share-sanitizer";
 import type { GenericDatabaseReader } from "convex/server";
 import { v } from "convex/values";
@@ -92,7 +93,7 @@ export const listVisibleSharedMessages = async (
     .map((message) => ({
       id: message.id,
       role: message.role,
-      content: message.content,
+      content: messageDisplayText(message),
       update_time: message.update_time,
       parts: sanitizeFindingPartsForShare(
         stripOpenRouterReasoningMetadataFromParts(message.parts),
