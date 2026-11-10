@@ -207,6 +207,10 @@ function createMockCtx(tables: Tables, subject = "user_123") {
 
 function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
   return {
+    chat_history_access: [
+      { _id: "access-user", chat_id: "chat-1", user_id: userId },
+      { _id: "access-other", chat_id: "chat-other-id", user_id: otherUserId },
+    ],
     chats: [
       {
         _id: "chat-doc",

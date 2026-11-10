@@ -1011,13 +1011,21 @@ describe("getMessagesByChatId — is_hidden filtering", () => {
       isDone: true,
       continueCursor: "",
     });
-    mockCtx.db.query.mockReturnValue({
-      withIndex: jest.fn().mockReturnValue({
-        order: jest.fn().mockReturnValue({
-          paginate: paginateMock,
-        }),
-      }),
-    });
+    mockCtx.db.query.mockImplementation((table: string) =>
+      table === "chat_history_access"
+        ? {
+            withIndex: () => ({
+              unique: async () => ({ chat_id: CHAT_ID, user_id: USER_ID }),
+            }),
+          }
+        : {
+            withIndex: jest.fn().mockReturnValue({
+              order: jest.fn().mockReturnValue({
+                paginate: paginateMock,
+              }),
+            }),
+          },
+    );
     return paginateMock;
   }
 

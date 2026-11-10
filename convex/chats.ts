@@ -1,3 +1,7 @@
+import {
+  createChatHistoryAccess,
+  deleteChatHistoryAccess,
+} from "./lib/chatHistoryAccess";
 import { userInputQuestionsValidator } from "./lib/userInputQuestions";
 import { userInputQuestionsSchema } from "../lib/chat/user-input-questions";
 import { syncGoalInputTiming } from "./lib/goalInputTiming";
@@ -472,6 +476,7 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     return;
   }
   // Delete the chat itself
+  await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
 }
 
@@ -536,6 +541,7 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }
+  await deleteChatHistoryAccess(ctx, chat.id);
   await ctx.db.delete(chat._id);
   await scheduleDeleteAllChatsBatch(ctx, userId);
   return true;
@@ -846,6 +852,8 @@ export const saveChat = mutation({
         ...(args.sandboxType ? { sandbox_type: args.sandboxType } : {}),
         update_time: Date.now(),
       });
+
+      await createChatHistoryAccess(ctx, args.id, args.userId);
 
       if (projectId) {
         await ctx.db.patch(projectId, { updated_at: Date.now() });
