@@ -267,6 +267,25 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("does not dispatch a terminal command after the CAPTCHA recovery deadline", async () => {
+    const { context, sandboxManager } = makeContext({});
+    context.guardCaptchaVisionCommand = jest.fn(() => ({
+      status: "handoff_required",
+      reason: "vision_budget_exhausted",
+    }));
+    expect(
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned click @e1",
+      }),
+    ).toMatchObject({
+      result: {
+        exitCode: 1,
+        browserChallenge: { reason: "vision_budget_exhausted" },
+      },
+    });
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+  });
+
   test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
     const { context, writerWrites } = makeContext({});
     let finish!: (value: { status: string }) => void;
