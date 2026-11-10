@@ -16,9 +16,14 @@ import {
 } from "../../captcha/cloudflare";
 import {
   visionCaptureResult,
+  type VisionCapture,
   type VisionCaptureRequest,
   type VisionCaptureResult,
 } from "../../captcha/vision-capture";
+import {
+  renderFocusedChallenge,
+  type FocusedChallenge,
+} from "../../captcha/vision-image";
 import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -207,9 +212,7 @@ export class BrowserSessions {
   ): Promise<{
     identity: string;
     evaluate: (script: string) => Promise<unknown>;
-    captureVision?: (
-      request: VisionCaptureRequest,
-    ) => Promise<VisionCaptureResult>;
+    captureVision?: (request: VisionCaptureRequest) => Promise<VisionCapture>;
     deliverCloudflare?: (
       userAgent: string,
       page: { url: string; documentId: string; originalUserAgent: string },
@@ -336,10 +339,18 @@ export class BrowserSessions {
             timeoutMs: 10_000,
           },
         );
+        let capture: VisionCaptureResult;
         try {
           await assertOwned();
           await withCancellation(
-            handle.sendStdin(JSON.stringify({ ...request, sessionName: name })),
+            handle.sendStdin(
+              JSON.stringify({
+                ...request,
+                // Per-operation bound for the daemon calls, not a recovery budget.
+                deadline: Date.now() + 8_000,
+                sessionName: name,
+              }),
+            ),
             signal,
           );
           await withCancellation(handle.closeStdin(), signal);
@@ -347,14 +358,62 @@ export class BrowserSessions {
           await assertOwned();
           if (result.exitCode !== 0 || result.stdout.length > 4096)
             throw new Error();
-          const capture = visionCaptureResult.parse(JSON.parse(result.stdout));
+          capture = visionCaptureResult.parse(JSON.parse(result.stdout));
           if (capture.path !== request.path) throw new Error();
-          return capture;
         } catch {
           await handle.kill().catch(() => false);
           signal.throwIfAborted();
           throw new Error("Challenge capture could not be qualified.");
         }
+        // Small puzzles are unreadable at viewport scale. Enlarge the exact
+        // qualified bytes; any failure keeps the validated original usable.
+        const focus = async (): Promise<FocusedChallenge> => {
+          const original = await withCancellation(
+            sandbox.files.read(capture.path, {
+              format: "bytes",
+              user: "root",
+              requestTimeoutMs: 8000,
+              signal,
+            }),
+            signal,
+          );
+          const { bytes, ...geometry } = await renderFocusedChallenge(
+            original,
+            capture,
+            signal,
+          );
+          await assertOwned();
+          // The existing owner cleanup/watchdog erases this session's shim
+          // directory. Retain the original screenshot at the requested path.
+          // A unique focused path is advertised only after its write completes.
+          const imageDirectory = session.directory.replace(
+            "/dev/shm/",
+            "/tmp/",
+          );
+          const path = `${imageDirectory}/challenge-${randomBytes(12).toString("hex")}.png`;
+          await withCancellation(
+            sandbox.files.write(
+              path,
+              bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength,
+              ),
+              { user: "root", requestTimeoutMs: 8000, signal },
+            ),
+            signal,
+          );
+          return { path, ...geometry };
+        };
+        let focused: FocusedChallenge | undefined;
+        try {
+          focused = await focus();
+        } catch {
+          signal.throwIfAborted();
+        }
+        await assertOwned();
+        return focused
+          ? { ...capture, focused }
+          : { ...capture, focusedUnavailable: true };
       },
       evaluate: async (script) => {
         await assertOwned();
