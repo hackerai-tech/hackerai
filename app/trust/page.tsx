@@ -56,11 +56,31 @@ interface Subprocessor {
   dataCategories: string;
 }
 
+const MODEL_REQUEST_DATA =
+  "Prompts, conversation context, file content and images, tool output";
+
 const subprocessors: Subprocessor[] = [
   {
     name: "OpenRouter",
-    purpose: "Routes task requests to third-party AI model providers",
-    dataCategories: "Prompts, conversation context, file content, tool output",
+    purpose: "Routes most model requests to an upstream model host",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Upstream model hosts (via OpenRouter)",
+    purpose:
+      "Generate responses for models routed through OpenRouter; the host can differ from the model's author",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Inference.net",
+    purpose: "Serves some security-tuned models directly, without OpenRouter",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Abliteration.ai",
+    purpose:
+      "Serves abliterated models directly, without OpenRouter, and handles some fallback requests",
+    dataCategories: MODEL_REQUEST_DATA,
   },
   {
     name: "OpenAI",
@@ -76,6 +96,12 @@ const subprocessors: Subprocessor[] = [
     name: "Jina AI",
     purpose: "Webpage content retrieval for the agent",
     dataCategories: "URLs and retrieved page content",
+  },
+  {
+    name: "2Captcha",
+    purpose: "Solves CAPTCHAs the agent encounters while browsing",
+    dataCategories:
+      "Page URL and CAPTCHA site key; challenge parameters and browser user agent when applicable",
   },
   {
     name: "E2B",
@@ -110,8 +136,20 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "PostHog",
-    purpose: "Product analytics and error tracking",
-    dataCategories: "Usage events and diagnostic data",
+    purpose: "Product analytics, eligible session replay, and error tracking",
+    dataCategories:
+      "Usage events, diagnostic data, and interface recordings where enabled",
+  },
+  {
+    name: "Intercom",
+    purpose: "Customer support messaging",
+    dataCategories:
+      "Account identifier, email, name, and support messages and attachments you send",
+  },
+  {
+    name: "Cloudflare Turnstile",
+    purpose: "Bot verification on the abuse report form",
+    dataCategories: "Browser and device signals, verification token",
   },
   {
     name: "Trigger.dev",
@@ -227,35 +265,68 @@ function TrustContent() {
 
           <Section icon={Bot} title="AI model providers">
             <p>
-              Task requests are routed through OpenRouter to the provider behind
-              the model you select, such as Anthropic, Google, DeepSeek,
-              Moonshot AI, or xAI. Your prompt, relevant conversation context,
-              and tool results are sent to that provider to generate a response.
+              HackerAI sends your prompt, relevant conversation context, file
+              content, images, and tool results to the company serving the
+              model. Most model requests go through OpenRouter and an upstream
+              model host. The host may be the model&apos;s developer, such as
+              xAI, DeepSeek, Moonshot AI, Z.ai, or MiniMax, or another company
+              serving the same model. See the{" "}
+              <InlineLink href="https://openrouter.ai/privacy">
+                OpenRouter privacy policy
+              </InlineLink>{" "}
+              and{" "}
+              <InlineLink href="https://openrouter.ai/docs/guides/privacy/provider-logging">
+                upstream host data policies
+              </InlineLink>
+              .
             </p>
             <p>
-              When the agent searches the web or opens a URL, search queries are
-              processed by Perplexity and page content is retrieved through Jina
-              AI. Message content is screened by OpenAI for content moderation.
+              Some security-tuned models are served directly by Inference.net,
+              and abliterated models are served directly by Abliteration.ai,
+              without passing through OpenRouter. See the{" "}
+              <InlineLink href="https://inference.net/privacy-policy/">
+                Inference.net privacy policy
+              </InlineLink>{" "}
+              and{" "}
+              <InlineLink href="https://abliteration.ai/privacy-policy">
+                Abliteration.ai privacy policy
+              </InlineLink>
+              .
             </p>
             <p>
-              Each provider processes data under its own terms. Whether data is
-              used for model training varies by provider, so we don&apos;t make
-              a blanket guarantee on this point &mdash; refer to the policies of
-              the providers listed below.
+              More than one provider can process a request. If a model fails or
+              is unavailable, HackerAI may use a fallback on a different route;
+              for example, Inference.net can fall back to Abliteration.ai.
+              Uploaded images and browser screenshots may also be processed by a
+              separate image model. The selected model does not identify every
+              company that may receive relevant task content.
+            </p>
+            <p>
+              When the agent searches the web or opens a URL, Perplexity
+              processes search queries and Jina AI retrieves page content.
+              OpenAI screens message content for moderation. When the agent uses
+              CAPTCHA solving, 2Captcha receives the page URL and site key, plus
+              challenge parameters and the browser user agent when applicable.
+            </p>
+            <p>
+              Each provider processes data under its own terms. Retention and
+              model training policies vary by provider, so we do not make a
+              blanket no-training or zero-retention guarantee. Refer to the
+              provider policies linked above.
             </p>
           </Section>
 
-          <Section icon={FileText} title="Model improvement and data licensing">
+          <Section icon={FileText} title="Model training and data licensing">
             <p>
               A future program may use eligible task content to train and
-              evaluate AI models, including paid licensing to AI partners.
-              Partner data collection is not active. Improve the model for
-              everyone is on by default and can be turned off in Settings &gt;
-              Data controls. See our{" "}
+              evaluate AI models, including paid licensing to AI partners. This
+              program is not active, and partner data collection has not
+              started. See our{" "}
               <InlineLink href="/privacy-policy#data-contributions">
                 Privacy Policy
               </InlineLink>{" "}
-              for eligibility, notice, and privacy choices.
+              for the notice and consent requirements that would apply before
+              any collection.
             </p>
           </Section>
 
@@ -267,10 +338,13 @@ function TrustContent() {
                 Settings &rarr; Data controls.
               </p>
               <p>
-                A local execution mode is also available. It runs commands
-                directly on your machine with your user&apos;s privileges and{" "}
-                <strong className="text-foreground">no isolation</strong>, so we
-                recommend it only on machines dedicated to testing.
+                Local and Desktop modes run commands directly on your machine
+                with your user&apos;s privileges and{" "}
+                <strong className="text-foreground">no E2B isolation</strong>,
+                so we recommend them only on machines dedicated to testing. They
+                are not offline: relevant commands, output, file content, and
+                screenshots are still sent to HackerAI and the model providers
+                above.
               </p>
             </Section>
 
