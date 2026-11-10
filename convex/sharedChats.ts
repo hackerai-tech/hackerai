@@ -13,6 +13,7 @@ import {
   isUserBlockedFromChatHistory,
 } from "./lib/suspensionGuards";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { sanitizeTerminalPartForShare } from "../lib/chat/shared-terminal-sanitizer";
 import {
   getVisibleSharedChatByShareId,
   listVisibleSharedMessages,
@@ -402,7 +403,9 @@ export const forkSharedChat = mutation({
         // as broken "Unknown file" cards in the regular chat view.
         const sanitizedParts = sanitizeFindingPartsForShare(
           stripOpenRouterReasoningMetadataFromParts(msg.parts),
-        ).filter((part: any) => part.type !== "file");
+        )
+          .filter((part: any) => part.type !== "file")
+          .map(sanitizeTerminalPartForShare);
         await insertMessageWithSearch(
           ctx,
           {

@@ -106,6 +106,46 @@ describe("free monthly cost limit", () => {
     );
   });
 
+  it("checkpoints child cost against one run across retries and a month rollover", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockEval.mockResolvedValue(1200);
+    const { recordFreeMonthlySubagentCost } = getIsolatedModule();
+
+    jest.useFakeTimers().setSystemTime(new Date("2026-10-31T23:59:59Z"));
+    try {
+      await expect(
+        recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.01),
+      ).resolves.toEqual({ usedPoints: 1200, limitPoints: 2500 });
+      jest.setSystemTime(new Date("2026-11-01T00:00:01Z"));
+      await recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.015);
+
+      const first = mockEval.mock.calls[0] as [string, string[], number[]];
+      const second = mockEval.mock.calls[1] as [string, string[], number[]];
+      expect(first[1]).toEqual([
+        "free_monthly_cost:quota-subject:2026-10",
+        "free_monthly_subagent_cost:quota-subject:run-123",
+      ]);
+      expect(first[2][0]).toBe(100);
+      expect(second[1]).toEqual([
+        "free_monthly_cost:quota-subject:2026-11",
+        first[1][1],
+      ]);
+      expect(second[2][0]).toBe(150);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("fails closed when the child checkpoint returns an invalid total", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockEval.mockResolvedValue("invalid");
+    const { recordFreeMonthlySubagentCost } = getIsolatedModule();
+
+    await expect(
+      recordFreeMonthlySubagentCost("quota-subject", "run-123", 0.01),
+    ).rejects.toThrow("invalid total");
+  });
+
   it("can key free monthly usage by privacy-safe quota subject", async () => {
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
     const { checkFreeMonthlyCostLimit, recordFreeMonthlyCost } =

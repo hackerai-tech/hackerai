@@ -75,6 +75,30 @@ describe("getSharedSnapshot", () => {
         update_time: 100,
       },
       {
+        _id: "message-terminal",
+        _creationTime: 25,
+        id: "visible-terminal",
+        chat_id: sharedChat.id,
+        user_id: sharedChat.user_id,
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            input: { command: "pwd" },
+            state: "output-available",
+            output: {
+              result: {
+                output: "project ready",
+                exitCode: 0,
+                workingDirectory: "/Users/owner/SecretProject",
+                recordPath: "/Users/owner/SecretProject/.run.json",
+              },
+            },
+          },
+        ],
+        update_time: 175,
+      },
+      {
         _id: "message-3",
         _creationTime: 30,
         id: "hidden",
@@ -135,6 +159,20 @@ describe("getSharedSnapshot", () => {
           content: "download",
           parts: [{ type: "file", placeholder: true }],
           update_time: 150,
+        },
+        {
+          id: "visible-terminal",
+          role: "assistant",
+          content: undefined,
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              input: { command: "pwd" },
+              state: "output-available",
+              output: { result: { output: "project ready", exitCode: 0 } },
+            },
+          ],
+          update_time: 175,
         },
       ],
     });
@@ -263,7 +301,32 @@ describe("forkSharedChat", () => {
       update_time: 100,
     };
     const sourceFirst = jest.fn<any>().mockResolvedValue(sourceChat);
-    const messagesCollect = jest.fn<any>().mockResolvedValue([]);
+    const messagesCollect = jest.fn<any>().mockResolvedValue([
+      {
+        _id: "source-message",
+        _creationTime: 1,
+        id: "terminal-message",
+        chat_id: sourceChat.id,
+        user_id: sourceChat.user_id,
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-interact_terminal_session",
+            input: { action: "wait" },
+            output: {
+              result: {
+                output: "finished",
+                workingDirectory: "/Users/owner/SecretProject",
+                outputPath: "/Users/owner/SecretProject/output.txt",
+                artifactPaths: ["/Users/owner/SecretProject/output.txt"],
+                sandboxInstance: "connection:private-host",
+              },
+            },
+          },
+        ],
+        update_time: 50,
+      },
+    ]);
     const insert = jest.fn<any>().mockResolvedValue("fork-doc");
     const ctx = {
       auth: {
@@ -302,6 +365,18 @@ describe("forkSharedChat", () => {
         user_id: "fork-owner",
         branched_from_chat_id: "source-1",
         branched_from_title: "Shared title",
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({
+        parts: [
+          {
+            type: "tool-interact_terminal_session",
+            input: { action: "wait" },
+            output: { result: { output: "finished" } },
+          },
+        ],
       }),
     );
   });
