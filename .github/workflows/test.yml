@@ -25,6 +25,7 @@ jobs:
     outputs:
       jest: ${{ steps.plan.outputs.jest }}
       typecheck: ${{ steps.plan.outputs.typecheck }}
+      lint: ${{ steps.plan.outputs.lint }}
       tooling: ${{ steps.plan.outputs.tooling }}
       tooling_suites: ${{ steps.plan.outputs.tooling_suites }}
       integrations: ${{ steps.plan.outputs.integrations }}
@@ -45,6 +46,23 @@ jobs:
         env:
           CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/testing/ci.mjs plan
+
+  lint:
+    name: ESLint
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Lint relevant source without autofix
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/testing/lint-ci.mjs
 
   typecheck:
     name: Typecheck and skill integrity
@@ -194,7 +212,7 @@ jobs:
 
   ci:
     name: CI
-    needs: [changes, typecheck, jest, tooling, integrations, codeql]
+    needs: [changes, lint, typecheck, jest, tooling, integrations, codeql]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

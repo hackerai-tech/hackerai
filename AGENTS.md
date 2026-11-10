@@ -119,7 +119,13 @@ this is a feedback shortcut, not full acceptance. PR CI compares committed
 changes against the PR base, runs related frontend tests or the full suite for
 shared runtime changes, and falls back to all checks for unknown paths or missing
 history. Main and nightly CI run all checks with coverage. The required `CI` gate
-rejects failed, cancelled, missing, or unexpectedly skipped jobs. Run an explicit
+rejects failed, cancelled, missing, or unexpectedly skipped jobs, including
+server-side lint. The required `Review and security` status verifies an actual
+CodeRabbit review of the current commit and blocks new high/critical findings
+from selected CodeQL scans; inert documentation retains intentional skips.
+After resolving review threads, re-evaluate that status with the `Update review
+and security policy` workflow's PR-number input if no provider event refreshes it.
+Run an explicit
 affected suite when the dependency graph cannot represent the change. Do not rerun
 the full suite locally for every review correction; use `pnpm test` when a local full run is needed.
 
