@@ -381,6 +381,15 @@ test("orchestration blocks a finding even when the scanner job and review succee
     (await evaluatePullRequest(legacy.api, "o/r", 1)).state,
     "success",
   );
+  const pending = fixture({ checks: [receipt] });
+  assert.equal(
+    (await evaluatePullRequest(pending.api, "o/r", 1)).state,
+    "pending",
+  );
+  assert.match(
+    pending.writes.at(-1).body.description,
+    /^Waiting for the selected CodeQL jobs/,
+  );
 });
 
 test("fresh pending statuses replace old passes before metadata reads; same-name jobs cannot approve code", async () => {

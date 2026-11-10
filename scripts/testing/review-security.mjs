@@ -307,9 +307,14 @@ export async function evaluatePullRequest(
       detailsUrl,
       decision.state === "success"
         ? "Current review and selected security scans passed."
-        : decision.security.state === "fail"
-          ? decision.security.reason
-          : decision.review.reason,
+        : (
+            [decision.security, decision.review].find(
+              (item) => item.state === "fail",
+            ) ??
+            [decision.security, decision.review].find(
+              (item) => item.state === "pending",
+            )
+          ).reason,
     );
   return decision;
 }
