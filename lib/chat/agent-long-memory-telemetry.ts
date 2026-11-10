@@ -1,5 +1,9 @@
 import { getHeapStatistics } from "node:v8";
 import { openSync, readSync, closeSync } from "node:fs";
+import {
+  getAgentRunClockContext,
+  type AgentRunClockContext,
+} from "./agent-run-clock";
 
 import type {
   ProviderRequestDiagnostics,
@@ -47,53 +51,54 @@ type MemoryCheckpointInput = {
   retention?: ProviderRequestRetentionDiagnostics;
 };
 
-type MemoryCheckpointEvent = V8MemoryFields & {
-  level: "info";
-  event: "agent_long_memory_checkpoint";
-  service: "agent-long";
-  environment: string;
-  timestamp: string;
-  run_id: string;
-  chat_id: string;
-  user_id: string;
-  phase: MemoryCheckpointPhase;
-  activity_version: 1;
-  active_operation: "unobserved" | MemoryOperation;
-  operation_age_ms?: number;
-  stream_chunk_count: number;
-  stream_text_utf16_units: number;
-  stream_reasoning_utf16_units: number;
-  stream_tool_input_utf16_units: number;
-  stream_max_delta_utf16_units: number;
-  stream_last_chunk_age_ms?: number;
-  checkpoint_reason:
-    | "initial"
-    | "forced"
-    | "heap_growth"
-    | "rss_growth"
-    | "external_growth"
-    | "interval"
-    | "periodic";
-  sample_gap_ms?: number;
-  sample_gap_high_water_ms?: number;
-  rss_bytes: number;
-  rss_high_water_bytes: number;
-  process_rss_os_high_water_bytes?: number;
-  process_memory_constraint_bytes?: number;
-  process_available_memory_bytes?: number;
-  process_rss_anon_bytes?: number;
-  process_rss_file_bytes?: number;
-  process_rss_shmem_bytes?: number;
-  heap_total_bytes: number;
-  heap_used_bytes: number;
-  heap_used_high_water_bytes: number;
-  heap_limit_bytes: number;
-  heap_used_percent: number;
-  external_bytes: number;
-  array_buffer_bytes: number;
-  provider_request?: ProviderRequestDiagnostics;
-  retention?: ProviderRequestRetentionDiagnostics;
-};
+type MemoryCheckpointEvent = V8MemoryFields &
+  Partial<AgentRunClockContext> & {
+    level: "info";
+    event: "agent_long_memory_checkpoint";
+    service: "agent-long";
+    environment: string;
+    timestamp: string;
+    run_id: string;
+    chat_id: string;
+    user_id: string;
+    phase: MemoryCheckpointPhase;
+    activity_version: 1;
+    active_operation: "unobserved" | MemoryOperation;
+    operation_age_ms?: number;
+    stream_chunk_count: number;
+    stream_text_utf16_units: number;
+    stream_reasoning_utf16_units: number;
+    stream_tool_input_utf16_units: number;
+    stream_max_delta_utf16_units: number;
+    stream_last_chunk_age_ms?: number;
+    checkpoint_reason:
+      | "initial"
+      | "forced"
+      | "heap_growth"
+      | "rss_growth"
+      | "external_growth"
+      | "interval"
+      | "periodic";
+    sample_gap_ms?: number;
+    sample_gap_high_water_ms?: number;
+    rss_bytes: number;
+    rss_high_water_bytes: number;
+    process_rss_os_high_water_bytes?: number;
+    process_memory_constraint_bytes?: number;
+    process_available_memory_bytes?: number;
+    process_rss_anon_bytes?: number;
+    process_rss_file_bytes?: number;
+    process_rss_shmem_bytes?: number;
+    heap_total_bytes: number;
+    heap_used_bytes: number;
+    heap_used_high_water_bytes: number;
+    heap_limit_bytes: number;
+    heap_used_percent: number;
+    external_bytes: number;
+    array_buffer_bytes: number;
+    provider_request?: ProviderRequestDiagnostics;
+    retention?: ProviderRequestRetentionDiagnostics;
+  };
 
 type ProcessRssFields = Pick<
   MemoryCheckpointEvent,
@@ -106,6 +111,7 @@ type AgentLongMemoryTelemetryOptions = {
   runId: string;
   chatId: string;
   userId: string;
+  attempt?: number;
   environment?: string;
   emit: (event: MemoryCheckpointEvent) => void;
   now?: () => number;
@@ -374,6 +380,7 @@ export class AgentLongMemoryTelemetry {
         run_id: this.options.runId,
         chat_id: this.options.chatId,
         user_id: this.options.userId,
+        ...getAgentRunClockContext(this.options.attempt),
         phase: input.phase,
         // Last observed lifecycle boundary, not an allocation-site attribution.
         // Widths are cumulative UTF-16 units, not bytes, tokens or live heap.

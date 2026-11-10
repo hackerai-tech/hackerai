@@ -12,6 +12,8 @@ import {
   assertGoalExecutionAllowed,
 } from "@/lib/goals/server";
 import { scheduleGoalContinuation } from "./agent-goal-dispatch";
+import { trace } from "@opentelemetry/api";
+import { getAgentRunClockContext } from "@/lib/chat/agent-run-clock";
 import { restoreProviderRecoveryContext } from "@/lib/chat/provider-recovery-context";
 import { estimateSummaryInputTokens } from "@/lib/chat/summarization/helpers";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
@@ -1627,6 +1629,22 @@ export const agentLongTask = task({
   machine: { preset: "small-1x" },
 
   onSuccess: async ({ payload, ctx }) => {
+    try {
+      const clock = getAgentRunClockContext(ctx.attempt?.number);
+      if (clock)
+        trace.getActiveSpan()?.setAttributes({
+          "hackerai.app_on_success_entry.run_clock_version":
+            clock.run_clock_version,
+          "hackerai.app_on_success_entry.run_clock_process_instance":
+            clock.run_clock_process_instance,
+          "hackerai.app_on_success_entry.run_clock_uptime_ms":
+            clock.run_clock_uptime_ms,
+          "hackerai.app_on_success_entry.run_clock_attempt":
+            clock.run_clock_attempt,
+        });
+    } catch {
+      // App-hook entry is not SDK completion; telemetry must not block continuation.
+    }
     await scheduleGoalContinuation(
       {
         ...payload,
@@ -1813,6 +1831,7 @@ export const agentLongTask = task({
       runId: ctx.run.id,
       chatId,
       userId,
+      attempt: ctx.attempt?.number,
       emit: (event) =>
         triggerLogger.info("[agent-long] memory checkpoint", event),
     });
