@@ -39,7 +39,7 @@ const sanitizeTerminalText = (text: string): string =>
       : stripSavedOutputPath(text);
 
 const sanitizeTerminalResult = (value: unknown): unknown => {
-  if (typeof value === "string") return sanitizeTerminalText(value);
+  if (typeof value === "string") return sanitizeSerializedTerminalText(value);
   if (!isRecord(value)) return value;
   const sanitized = { ...value };
   let changed = false;
@@ -60,6 +60,32 @@ const sanitizeTerminalResult = (value: unknown): unknown => {
   }
   return changed ? sanitized : value;
 };
+
+function sanitizeSerializedTerminalText(text: string): string {
+  const sanitized = sanitizeTerminalText(text);
+  const newline = sanitized.startsWith("Process ")
+    ? sanitized.indexOf("\n")
+    : -1;
+  const prefix = newline < 0 ? "" : sanitized.slice(0, newline + 1);
+  const serialized = sanitized.slice(prefix.length);
+  if (!serialized.startsWith('{"result":')) return sanitized;
+
+  try {
+    const envelope: unknown = JSON.parse(serialized);
+    if (
+      !isRecord(envelope) ||
+      Object.keys(envelope).length !== 1 ||
+      !isRecord(envelope.result)
+    )
+      return sanitized;
+    const result = sanitizeTerminalResult(envelope.result);
+    return result === envelope.result
+      ? sanitized
+      : `${prefix}${JSON.stringify({ result })}`;
+  } catch {
+    return sanitized;
+  }
+}
 
 /** Remove unshown local path metadata from public shares and chat forks. */
 export const sanitizeTerminalPartForShare = (part: any): any => {

@@ -102,6 +102,29 @@ describe("sanitizeTerminalPartForShare", () => {
     });
   });
 
+  it("hides metadata in serialized terminal result text", () => {
+    const result = JSON.stringify({
+      result: {
+        output: "ordinary stdout",
+        exitCode: 0,
+        workingDirectory: "/Users/owner/PrivateProject",
+        recordPath: "/Users/owner/PrivateProject/record.json",
+      },
+    });
+    const expected = JSON.stringify({
+      result: { output: "ordinary stdout", exitCode: 0 },
+    });
+
+    for (const prefix of ["", "Process exited with code 0\n"]) {
+      expect(
+        sanitizeTerminalPartForShare({
+          type: "tool-run_terminal_cmd",
+          output: `${prefix}${result}`,
+        }).output,
+      ).toBe(`${prefix}${expected}`);
+    }
+  });
+
   it("preserves user-authored paths and unrelated tool outputs", () => {
     const terminal = {
       type: "tool-shell",
