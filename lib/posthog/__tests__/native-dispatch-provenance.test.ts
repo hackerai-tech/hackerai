@@ -445,6 +445,81 @@ const syntaxEntry = () => ({
   stacktrace: { frames: [] as unknown[] },
 });
 
+it.each([false, true])(
+  "retains a stackless DOMException with private-safe nearby context (frames absent: %s)",
+  (absent) => {
+    const exception = {
+      type: "DOMException",
+      value: "PRIVATE retained reason",
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+      stacktrace: { frames: [] as unknown[] },
+    };
+    if (absent) Reflect.deleteProperty(exception, "stacktrace");
+    const dispatched = new ErrorEvent("error", {
+      message: "PRIVATE native reason",
+      filename: `${location.origin}/PRIVATE-path?token=canary`,
+      error: new DOMException("PRIVATE object reason"),
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const list = [exception];
+    const event = {
+      event: "$exception",
+      properties: { $exception_list: list },
+    };
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    const context = snapshot(exception);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_version: 1,
+      hackerai_nearby_dispatch_group: "stackless_dom_exception",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+      hackerai_nearby_dispatch_error_latest_object: true,
+    });
+    expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|token=/);
+    expect(dispatched.defaultPrevented).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(snapshot(exception)).toEqual({});
+  },
+);
+
+it("limits stackless DOMException context to the retained bounded mechanism", () => {
+  const exception = {
+    type: "DOMException",
+    value: "x".repeat(256),
+    mechanism: { handled: false, synthetic: false, type: "generic" },
+    stacktrace: { frames: [] as unknown[] },
+  };
+  expect(snapshot(exception).hackerai_nearby_dispatch_group).toBe(
+    "stackless_dom_exception",
+  );
+  for (const candidate of [
+    { ...exception, type: "Error" },
+    { ...exception, type: "AbortError" },
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    { ...exception, mechanism: { ...exception.mechanism, type: "onerror" } },
+    { ...exception, value: "x".repeat(257) },
+    { ...exception, value: undefined },
+    { ...exception, stacktrace: { frames: [{}] } },
+    { ...exception, stacktrace: { frames: null } },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+});
+
 const anonymousReferenceEntry = () => ({
   type: "ReferenceError",
   value: "PRIVATE_identifier is not defined",

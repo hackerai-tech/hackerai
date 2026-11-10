@@ -476,6 +476,14 @@ function nearbyDispatchGroup(
         return "chat_document_short_error";
     }
     if (
+      exception.type === "DOMException" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 256 &&
+      (frames === undefined || (Array.isArray(frames) && frames.length === 0))
+    )
+      return "stackless_dom_exception";
+    if (
       exception.type === "SyntaxError" &&
       exception.mechanism.synthetic === false &&
       exception.mechanism.type === "generic" &&
