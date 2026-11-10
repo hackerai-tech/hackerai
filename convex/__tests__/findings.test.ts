@@ -1,7 +1,16 @@
+jest.mock("../_generated/api", () => ({
+  internal: {
+    findings: {
+      backfillFindingProjects: "backfillFindingProjects",
+      syncChatFindingProject: "syncChatFindingProject",
+    },
+  },
+}));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
+  internalMutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
 }));
 
@@ -185,6 +194,9 @@ function createMockCtx(
   let nextId = 1;
   const indexes: string[] = [];
   const query = jest.fn((table: string) => ({
+    order: jest.fn((direction: "asc" | "desc") =>
+      createResult(tables[table] ?? [], [], paginationFailure).order(direction),
+    ),
     withIndex: jest.fn((index: string, build: (q: any) => any) => {
       indexes.push(index);
       const filters: Array<[string, unknown]> = [];
@@ -243,7 +255,19 @@ function createMockCtx(
           .fn()
           .mockResolvedValue(subject ? { subject } : null),
       },
-      db: { query, insert, patch, delete: deleteDoc },
+      db: {
+        query,
+        insert,
+        patch,
+        delete: deleteDoc,
+        get: jest.fn(
+          async (id: string) =>
+            Object.values(tables)
+              .flat()
+              .find((row) => row._id === id) ?? null,
+        ),
+      },
+      scheduler: { runAfter: jest.fn() },
     } as any,
     insert,
     patch,
@@ -1586,5 +1610,132 @@ describe("Agent report cursor validation", () => {
     expect(
       mock.ctx.db.query.mock.calls.map(([table]: [string]) => table),
     ).toEqual(["chats"]);
+  });
+});
+
+describe("project finding membership and evidence basis", () => {
+  it("persists explicit evidence basis and keeps legacy records unknown", async () => {
+    const { createFindingForBackend, getFinding } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const result = await (createFindingForBackend as any).handler(
+      ctx,
+      createArgs({
+        report: report({
+          evidence_status: "runtime_reproduced",
+          evidence_status_reason:
+            "Actual cross-account response observed in this run.",
+        }),
+      }),
+    );
+    expect(result.success).toBe(true);
+    const saved = await (getFinding as any).handler(ctx, {
+      findingId: result.finding_id,
+    });
+    expect(saved.evidence_status).toBe("runtime_reproduced");
+    delete tables.findings[0].evidence_status;
+    expect(
+      (await (getFinding as any).handler(ctx, { findingId: result.finding_id }))
+        .evidence_status,
+    ).toBeUndefined();
+  });
+  it.each([
+    { poc_script_code: "curl /invoice/new" },
+    {
+      description:
+        "A revised finding claim changes the asserted authorization failure and requires reassessment.",
+    },
+  ])(
+    "clears a previous runtime claim when changed evidence or claims are not reassessed: %j",
+    async (changes) => {
+      const { createFindingForBackend, updateFindingForBackend, getFinding } =
+        await import("../findings");
+      const tables = seedTables();
+      const { ctx } = createMockCtx(tables);
+      const created = await (createFindingForBackend as any).handler(
+        ctx,
+        createArgs({
+          report: report({
+            evidence_status: "runtime_reproduced",
+            evidence_status_reason: "Actual cross-account response observed.",
+          }),
+        }),
+      );
+      const row = tables.findings[0];
+      const result = await (updateFindingForBackend as any).handler(ctx, {
+        serviceKey: "key",
+        userId: "user-1",
+        chatId: "chat-1",
+        messageId: "message-1",
+        toolCallId: "update-1",
+        update: {
+          finding_id: created.finding_id,
+          expected_updated_at: row.updated_at,
+          reason: "Different reproduction",
+          changes,
+        },
+      });
+      expect(result.success).toBe(true);
+      const saved = await (getFinding as any).handler(ctx, {
+        findingId: created.finding_id,
+      });
+      expect(saved.evidence_status).toBeUndefined();
+      expect(saved.evidence_status_reason).toBeUndefined();
+      expect(saved.correction_history.at(-1).changed_fields).toEqual(
+        expect.arrayContaining(["evidence_status", "evidence_status_reason"]),
+      );
+    },
+  );
+  it("returns only the owned project's findings and hides stale membership during moves", async () => {
+    const { createFindingForBackend, listFindings } =
+      await import("../findings");
+    const tables = seedTables();
+    tables.projects = [
+      { _id: "project-1", user_id: "user-1" },
+      { _id: "foreign-project", user_id: "other-user" },
+    ];
+    tables.chats[0].project_id = "project-1";
+    const { ctx, indexes } = createMockCtx(tables);
+    await (createFindingForBackend as any).handler(ctx, createArgs());
+    const args = {
+      projectId: "project-1",
+      paginationOpts: { cursor: null, numItems: 25 },
+    };
+    expect((await (listFindings as any).handler(ctx, args)).page).toHaveLength(
+      1,
+    );
+    expect(indexes).toContain("by_user_project_created");
+    tables.chats[0].project_id = undefined;
+    expect((await (listFindings as any).handler(ctx, args)).page).toHaveLength(
+      0,
+    );
+    expect(
+      (
+        await (listFindings as any).handler(ctx, {
+          ...args,
+          projectId: "foreign-project",
+        })
+      ).page,
+    ).toHaveLength(0);
+  });
+  it("backfills existing reports from current chat membership and follows a later move", async () => {
+    const {
+      createFindingForBackend,
+      backfillFindingProjects,
+      syncChatFindingProject,
+    } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await (createFindingForBackend as any).handler(ctx, createArgs());
+    tables.chats[0].project_id = "project-1";
+    await (backfillFindingProjects as any).handler(ctx, { cursor: null });
+    expect(tables.findings[0].project_id).toBe("project-1");
+    tables.chats[0].project_id = "project-2";
+    await (syncChatFindingProject as any).handler(ctx, {
+      chatId: "chat-1",
+      userId: "user-1",
+      cursor: null,
+    });
+    expect(tables.findings[0].project_id).toBe("project-2");
   });
 });

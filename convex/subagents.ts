@@ -22,6 +22,7 @@ import {
 import { SUBAGENT_PARENT_DELIVERY_CLAIM_TTL_MS } from "../lib/ai/subagents/parent-delivery";
 import { toSubagentHandle } from "../lib/ai/subagents/agent-handle";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
+import { isUserBlockedFromChatHistory } from "./lib/suspensionGuards";
 
 const statusValidator = v.union(
   v.literal("queued"),
@@ -139,7 +140,8 @@ async function isSubagentChatAvailable(
   return (
     chat !== null &&
     chat.user_id === userId &&
-    chat.deletion_started_at === undefined
+    chat.deletion_started_at === undefined &&
+    !(await isUserBlockedFromChatHistory(ctx, userId))
   );
 }
 
@@ -943,6 +945,19 @@ export const attachTriggerRunForBackend = mutation({
     if (!row) return "not_found" as const;
     if (row.trigger_run_id && row.trigger_run_id !== args.triggerRunId) {
       return "stale" as const;
+    }
+    if (
+      isActiveStatus(row.status) &&
+      (await isUserBlockedFromChatHistory(ctx, row.user_id))
+    ) {
+      await ctx.db.patch(row._id, {
+        trigger_run_id: args.triggerRunId,
+        status: "canceled",
+        cancel_reason: "account_restricted",
+        completed_at: Date.now(),
+        updated_at: Date.now(),
+      });
+      return "terminal" as const;
     }
     const terminal = !isActiveStatus(row.status);
     const now = Date.now();

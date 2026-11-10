@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "HackerAI Desktop Application"
 authors = ["HackerAI"]
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.90"
 
 [lib]
 name = "hackerai_desktop_lib"
@@ -15,14 +15,14 @@ name = "hackerai-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2.12", features = [] }
 tauri-plugin-os = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"

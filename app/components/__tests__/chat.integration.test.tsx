@@ -119,7 +119,12 @@ jest.mock("convex/react", () => {
       if (getFunctionName(query) === "agentGoals:get") return mockSavedGoal;
       if (getFunctionName(query) === "browserHandoffs:getForUser")
         return mockBrowserHandoffSession;
-      if (getFunctionName(query) === "localSandbox:listConnections")
+      if (
+        [
+          "localSandbox:listConnectionDetails",
+          "localSandbox:getConnectionHeartbeats",
+        ].includes(getFunctionName(query))
+      )
         return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
         mockRestoredChat

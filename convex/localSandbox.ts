@@ -2,6 +2,12 @@ import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { DatabaseReader } from "./lib/serviceFunctions";
+import {
+  findHeartbeat,
+  lastHeartbeat,
+  recordHeartbeat,
+} from "./lib/localSandboxHeartbeat";
+import type { Doc } from "./_generated/dataModel";
 import { SignJWT } from "jose";
 import { isEnvironmentPreference } from "../lib/sandbox/environment";
 
@@ -94,6 +100,8 @@ export const purgeStaleDisconnectedConnections = internalMutation({
       .take(limit);
 
     for (const row of rows) {
+      const heartbeat = await findHeartbeat(ctx.db, row.connection_id);
+      if (heartbeat) await ctx.db.delete(heartbeat._id);
       await ctx.db.delete(row._id);
     }
     return { deletedCount: rows.length };
@@ -369,10 +377,9 @@ export const ready = mutation({
     ) {
       throw new ConvexError("Connection is no longer active");
     }
-    await ctx.db.patch(connection._id, {
-      ready: true,
-      last_heartbeat: Date.now(),
-    });
+    await recordHeartbeat(ctx, connection);
+    if (connection.ready !== true)
+      await ctx.db.patch(connection._id, { ready: true });
     return null;
   },
 });
@@ -483,10 +490,13 @@ export const refreshCentrifugoToken = mutation({
     }
 
     if (connection.status !== "connected") {
-      return terminatedResult("connection_inactive", connectionId, connection);
+      return terminatedResult("connection_inactive", connectionId, {
+        ...connection,
+        last_heartbeat: await lastHeartbeat(ctx.db, connection),
+      });
     }
 
-    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    await recordHeartbeat(ctx, connection);
 
     const centrifugoToken = await generateCentrifugoToken(
       connection.user_id,
@@ -656,10 +666,13 @@ export const refreshCentrifugoTokenDesktop = mutation({
     }
 
     if (connection.status !== "connected") {
-      return terminatedResult("connection_inactive", connectionId, connection);
+      return terminatedResult("connection_inactive", connectionId, {
+        ...connection,
+        last_heartbeat: await lastHeartbeat(ctx.db, connection),
+      });
     }
 
-    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    await recordHeartbeat(ctx, connection);
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { ok: true as const, centrifugoToken };
@@ -696,10 +709,9 @@ export const heartbeatDesktop = mutation({
       return { success: false };
     }
 
-    await ctx.db.patch(connection._id, {
-      last_heartbeat: Date.now(),
-      ready: true,
-    });
+    await recordHeartbeat(ctx, connection);
+    if (connection.ready !== true)
+      await ctx.db.patch(connection._id, { ready: true });
     return { success: true };
   },
 });
@@ -774,109 +786,123 @@ export const disconnectByBackend = mutation({
   },
 });
 
+const connectionDetailsFields = {
+  connectionId: v.string(),
+  environmentId: v.optional(v.string()),
+  createdAt: v.optional(v.number()),
+  name: v.string(),
+  osInfo: v.optional(
+    v.object({
+      platform: v.string(),
+      arch: v.string(),
+      release: v.string(),
+      hostname: v.string(),
+    }),
+  ),
+  isDesktop: v.boolean(),
+  capabilities: v.object({
+    commands: v.boolean(),
+    pty: v.boolean(),
+    files: v.optional(v.boolean()),
+    commandStdin: v.optional(v.boolean()),
+    privateArtifactNamespace: v.optional(v.string()),
+    operationChannels: v.optional(v.boolean()),
+  }),
+};
+
+function connectionDetails(conn: Doc<"local_sandbox_connections">) {
+  return {
+    connectionId: conn.connection_id,
+    environmentId: conn.environment_id,
+    createdAt: conn._creationTime,
+    name: conn.connection_name,
+    osInfo: conn.os_info,
+    isDesktop: conn.client_version === "desktop",
+    capabilities: conn.capabilities ?? { commands: true, pty: true },
+  };
+}
+
+// Connection selectors need membership/readiness/capabilities, not a timestamp
+// change every 30 seconds. Do not join heartbeat rows into this subscription.
+export const listConnectionDetails = query({
+  args: {},
+  returns: v.array(v.object(connectionDetailsFields)),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    const connections = await collectConnectedLocalConnections(
+      ctx.db,
+      identity.subject,
+    );
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map(connectionDetails);
+  },
+});
+
+// Only selected remote Desktop sessions need reactive freshness in the UI.
+// Heartbeat ownership is immutable; membership/readiness comes from the stable
+// list. Legacy sessions fall back until their first separated heartbeat arrives.
+export const getConnectionHeartbeats = query({
+  args: { connectionIds: v.array(v.string()) },
+  returns: v.array(
+    v.object({ connectionId: v.string(), lastSeen: v.number() }),
+  ),
+  handler: async (ctx, { connectionIds }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    const result = [];
+    for (const connectionId of new Set(connectionIds)) {
+      const heartbeat = await findHeartbeat(ctx.db, connectionId);
+      if (heartbeat) {
+        if (heartbeat.user_id === identity.subject)
+          result.push({ connectionId, lastSeen: heartbeat.last_heartbeat });
+      } else {
+        const connection = await ctx.db
+          .query("local_sandbox_connections")
+          .withIndex("by_connection_id", (q) =>
+            q.eq("connection_id", connectionId),
+          )
+          .unique();
+        if (connection?.user_id === identity.subject)
+          result.push({ connectionId, lastSeen: connection.last_heartbeat });
+      }
+    }
+    return result;
+  },
+});
+
+async function connectionsWithHeartbeats(db: DatabaseReader, userId: string) {
+  const connections = await collectConnectedLocalConnections(db, userId);
+  return Promise.all(
+    connections
+      .filter((conn) => conn.ready !== false)
+      .map(async (conn) => ({
+        ...connectionDetails(conn),
+        lastSeen: await lastHeartbeat(db, conn),
+      })),
+  );
+}
+
+// Preserve fresh timestamps for already-open clients during a rolling deploy.
 export const listConnections = query({
   args: {},
   returns: v.array(
-    v.object({
-      connectionId: v.string(),
-      environmentId: v.optional(v.string()),
-      createdAt: v.optional(v.number()),
-      name: v.string(),
-      osInfo: v.optional(
-        v.object({
-          platform: v.string(),
-          arch: v.string(),
-          release: v.string(),
-          hostname: v.string(),
-        }),
-      ),
-      lastSeen: v.number(),
-      isDesktop: v.boolean(),
-      capabilities: v.object({
-        commands: v.boolean(),
-        pty: v.boolean(),
-        files: v.optional(v.boolean()),
-        commandStdin: v.optional(v.boolean()),
-        privateArtifactNamespace: v.optional(v.string()),
-        operationChannels: v.optional(v.boolean()),
-      }),
-    }),
+    v.object({ ...connectionDetailsFields, lastSeen: v.number() }),
   ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      return [];
-    }
-
-    const userId = identity.subject;
-
-    const connections = await collectConnectedLocalConnections(ctx.db, userId);
-
-    return connections
-      .filter((conn) => conn.ready !== false)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        environmentId: conn.environment_id,
-        createdAt: conn._creationTime,
-        name: conn.connection_name,
-        osInfo: conn.os_info,
-        lastSeen: conn.last_heartbeat,
-        isDesktop: conn.client_version === "desktop",
-        capabilities: conn.capabilities ?? { commands: true, pty: true },
-      }));
+    return identity ? connectionsWithHeartbeats(ctx.db, identity.subject) : [];
   },
 });
 
 export const listConnectionsForBackend = query({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-  },
+  args: { serviceKey: v.string(), userId: v.string() },
   returns: v.array(
-    v.object({
-      connectionId: v.string(),
-      environmentId: v.optional(v.string()),
-      createdAt: v.optional(v.number()),
-      name: v.string(),
-      osInfo: v.optional(
-        v.object({
-          platform: v.string(),
-          arch: v.string(),
-          release: v.string(),
-          hostname: v.string(),
-        }),
-      ),
-      lastSeen: v.number(),
-      isDesktop: v.boolean(),
-      capabilities: v.object({
-        commands: v.boolean(),
-        pty: v.boolean(),
-        files: v.optional(v.boolean()),
-        commandStdin: v.optional(v.boolean()),
-        privateArtifactNamespace: v.optional(v.string()),
-        operationChannels: v.optional(v.boolean()),
-      }),
-    }),
+    v.object({ ...connectionDetailsFields, lastSeen: v.number() }),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-
-    const connections = await collectConnectedLocalConnections(
-      ctx.db,
-      args.userId,
-    );
-
-    return connections
-      .filter((conn) => conn.ready !== false)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        environmentId: conn.environment_id,
-        createdAt: conn._creationTime,
-        name: conn.connection_name,
-        osInfo: conn.os_info,
-        lastSeen: conn.last_heartbeat,
-        isDesktop: conn.client_version === "desktop",
-        capabilities: conn.capabilities ?? { commands: true, pty: true },
-      }));
+    return connectionsWithHeartbeats(ctx.db, args.userId);
   },
 });

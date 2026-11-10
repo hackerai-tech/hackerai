@@ -28,6 +28,11 @@ jest.mock("convex/values", () => ({
   ConvexError: class ConvexError extends Error {},
 }));
 
+const mockBlocked = jest.fn<any>().mockResolvedValue(false);
+jest.mock("../lib/suspensionGuards", () => ({
+  isUserBlockedFromChatHistory: (...args: unknown[]) => mockBlocked(...args),
+}));
+
 const validateServiceKey = jest.fn();
 jest.mock("../lib/utils", () => ({
   validateServiceKey: (...args: unknown[]) => validateServiceKey(...args),
@@ -1582,4 +1587,62 @@ describe("subagent deletion cancellation", () => {
     ).resolves.toEqual({ triggerRunIds: [], hasMore: true });
     expect(patch).not.toHaveBeenCalled();
   });
+});
+
+describe("suspended child attachment", () => {
+  afterEach(() => mockBlocked.mockResolvedValue(false));
+  it.each([
+    ["running", "run_authoritative", "run_stale", "stale"],
+    ["running", "run_authoritative", "run_authoritative", "terminal"],
+    ["completed", "run_authoritative", "run_authoritative", "terminal"],
+    ["failed", "run_authoritative", "run_authoritative", "terminal"],
+    ["queued", undefined, "run_new", "terminal"],
+  ])(
+    "preserves %s history and rejects stale run ownership",
+    async (status, existing, incoming, outcome) => {
+      mockBlocked.mockResolvedValue(true);
+      const row = {
+        _id: "child",
+        user_id: "subject",
+        subagent_id: "child",
+        status,
+        trigger_run_id: existing,
+        started_at: 10,
+        completed_at:
+          status === "completed" || status === "failed" ? 20 : undefined,
+      };
+      const patch = jest
+        .fn<any>()
+        .mockImplementation(async (_id, update) => Object.assign(row, update));
+      const ctx = {
+        db: {
+          query: () => ({ withIndex: () => ({ first: async () => row }) }),
+          patch,
+        },
+        scheduler: { runAfter: jest.fn() },
+      };
+      expect(
+        await attachTriggerRunForBackend.handler(ctx, {
+          serviceKey: "test",
+          subagentId: "child",
+          triggerRunId: incoming,
+        }),
+      ).toBe(outcome);
+      if (
+        status === "queued" ||
+        (status === "running" && outcome === "terminal")
+      )
+        expect(row).toMatchObject({
+          status: "canceled",
+          trigger_run_id: incoming,
+          cancel_reason: "account_restricted",
+        });
+      else
+        expect(row).toMatchObject({
+          status,
+          trigger_run_id: "run_authoritative",
+        });
+      if (outcome === "stale") expect(patch).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -8,12 +8,14 @@ import {
   reviewResult,
   securityResult,
   policyResult,
+  sameTestMerge,
 } from "./review-security-policy.mjs";
 import {
   evaluatePullRequest,
   resolvePullRequests,
   githubClient,
   pages,
+  mergeAliases,
 } from "./review-security.mjs";
 
 const head = "a".repeat(40),
@@ -268,10 +270,11 @@ function fixture({
   analyses = [analysis()],
   failMetadata = false,
   changeHead = false,
+  changeMerge = false,
+  sameMergeTree = false,
   failChecks = false,
   failFinalRead = false,
   headRepo = "o/r",
-  threads = [],
 } = {}) {
   const writes = [];
   let reads = 0;
@@ -291,8 +294,20 @@ function fixture({
     if (path === "/repos/o/r/pulls/1") {
       reads++;
       if (failFinalRead && reads > 1) throw new Error("read unavailable");
+      if (changeMerge && reads > 1)
+        return { ...pr, merge_commit_sha: "d".repeat(40) };
       return changeHead && reads > 1 ? { ...pr, head: { sha: base } } : pr;
     }
+    if (path.includes("/git/commits/"))
+      return {
+        tree: {
+          sha:
+            path.endsWith(merge) || sameMergeTree
+              ? "e".repeat(40)
+              : "f".repeat(40),
+        },
+        parents: [{ sha: base }, { sha: head }],
+      };
     if (path.includes("/check-runs?")) {
       if (failChecks) throw new Error("check unavailable");
       return { check_runs: checks };
@@ -301,20 +316,6 @@ function fixture({
       if (failMetadata) throw new Error("private-sentinel");
       return files;
     }
-    if (path.includes("/reviews?")) return [];
-    if (path === "/graphql")
-      return {
-        data: {
-          repository: {
-            pullRequest: {
-              reviewThreads: {
-                nodes: threads,
-                pageInfo: { hasNextPage: false },
-              },
-            },
-          },
-        },
-      };
     if (path.includes("/analyses?")) return analyses;
     if (path.includes("/alerts?pr=")) return alerts;
     if (path.includes("/alerts?ref=")) return baseline;
@@ -401,7 +402,7 @@ test("fresh pending statuses replace old passes before metadata reads; same-name
     assert.equal(f.writes.at(-1).body.state, "failure");
   }
   const spoof = fixture({
-    checks: [scan, { ...scan, name: "Review and security" }],
+    checks: [receipt, { ...scan, name: "Review and security" }],
   });
   assert.notEqual(
     (await evaluatePullRequest(spoof.api, "o/r", 1)).state,
@@ -422,18 +423,20 @@ test("fresh pending statuses replace old passes before metadata reads; same-name
   );
 });
 
-test("deleted comment authors do not block review, but malformed thread metadata does", async () => {
-  const deleted = fixture({
-    threads: [{ isResolved: false, comments: { nodes: [{ author: null }] } }],
+test("a changed test merge cannot pass when the PR head and reported base SHA stay unchanged", async () => {
+  const changed = fixture({ changeMerge: true });
+  assert.equal(
+    (await evaluatePullRequest(changed.api, "o/r", 1)).state,
+    "pending",
+  );
+  assert.equal(changed.writes.at(-1).body.state, "pending");
+  const docs = fixture({
+    changeMerge: true,
+    files: [{ filename: "README.md", status: "modified" }],
   });
   assert.equal(
-    (await evaluatePullRequest(deleted.api, "o/r", 1)).state,
+    (await evaluatePullRequest(docs.api, "o/r", 1)).state,
     "success",
-  );
-  const malformed = fixture({ threads: [{ isResolved: true, comments: {} }] });
-  assert.equal(
-    (await evaluatePullRequest(malformed.api, "o/r", 1)).state,
-    "failure",
   );
 });
 
@@ -486,4 +489,115 @@ test("collections are paginated; provider failures never echo credentials or res
     (error) => !error.message.includes("private-token"),
   );
   await assert.rejects(api("//elsewhere"));
+});
+
+test("regenerated test merges reuse scans only with the exact tree and ordered current parents", async () => {
+  const pr = {
+    base: { sha: base },
+    head: { sha: head },
+    merge_commit_sha: merge,
+  };
+  const commit = {
+    tree: { sha: "e".repeat(40) },
+    parents: [{ sha: base }, { sha: head }],
+  };
+  assert.equal(sameTestMerge(pr, commit, structuredClone(commit)), true);
+  for (const changed of [
+    { ...commit, tree: { sha: "f".repeat(40) } },
+    { ...commit, parents: [{ sha: head }, { sha: base }] },
+    { ...commit, parents: [{ sha: merge }, { sha: head }] },
+    { ...commit, parents: [{ sha: base }] },
+    { ...commit, tree: {} },
+  ])
+    assert.equal(sameTestMerge(pr, commit, changed), false);
+  const alias = "d".repeat(40),
+    unrelated = "f".repeat(40);
+  const aliases = await mergeAliases(
+    async (path) =>
+      path.endsWith(unrelated)
+        ? { ...commit, parents: [{ sha: head }] }
+        : commit,
+    "/repos/o/r",
+    pr,
+    [{ commit_sha: alias }, { commit_sha: unrelated }],
+  );
+  assert.deepEqual([...aliases], [merge, alias]);
+});
+
+test("live policy accepts identical scan aliases but never an aliased critical finding or changed merge tree", async () => {
+  const alias = "d".repeat(40);
+  for (const options of [
+    { changeMerge: true, sameMergeTree: true },
+    { analyses: [{ ...analysis(), commit_sha: alias }], sameMergeTree: true },
+  ])
+    assert.equal(
+      (await evaluatePullRequest(fixture(options).api, "o/r", 1)).state,
+      "success",
+    );
+  const blocked = await evaluatePullRequest(
+    fixture({
+      analyses: [{ ...analysis(), commit_sha: alias }],
+      sameMergeTree: true,
+      alerts: [alert(99, "critical", alias)],
+    }).api,
+    "o/r",
+    1,
+  );
+  assert.equal(blocked.state, "failure");
+  assert.match(blocked.security.reason, /#99/);
+  assert.equal(
+    (
+      await evaluatePullRequest(
+        fixture({
+          analyses: [{ ...analysis(), commit_sha: alias }],
+        }).api,
+        "o/r",
+        1,
+      )
+    ).state,
+    "pending",
+  );
+});
+
+test("CodeRabbit availability is advisory while selected security evidence remains mandatory", async () => {
+  for (const reviewChecks of [
+    [],
+    [{ ...receipt, status: "in_progress", conclusion: null }],
+    [{ ...receipt, conclusion: "skipped" }],
+    [
+      {
+        ...receipt,
+        conclusion: "neutral",
+        output: { summary: "Rate limited" },
+      },
+    ],
+    [{ ...receipt, conclusion: "failure" }],
+  ]) {
+    const f = fixture({ checks: [scan, ...reviewChecks] });
+    assert.equal((await evaluatePullRequest(f.api, "o/r", 1)).state, "success");
+    assert.match(f.writes.at(-1).body.description, /CodeRabbit.*advisory/);
+    const pending = fixture({ checks: reviewChecks });
+    assert.equal(
+      (await evaluatePullRequest(pending.api, "o/r", 1)).state,
+      "pending",
+    );
+    assert.match(
+      pending.writes.at(-1).body.description,
+      /^Waiting for the selected CodeQL jobs/,
+    );
+
+    assert.equal(
+      (
+        await evaluatePullRequest(
+          fixture({
+            checks: [scan, ...reviewChecks],
+            alerts: [alert(99, "critical")],
+          }).api,
+          "o/r",
+          1,
+        )
+      ).state,
+      "failure",
+    );
+  }
 });

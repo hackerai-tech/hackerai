@@ -360,6 +360,22 @@ export async function saveFileToLocal(
   return invoke<string | null>("save_file_with_dialog", { filename, content });
 }
 
+/** Binary reports use a separate command so older Desktop versions fail safely
+ * instead of saving base64 text under a .pdf extension. */
+export async function saveBinaryFileToLocal(
+  filename: string,
+  content: Uint8Array,
+): Promise<string | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  let binary = "";
+  for (let offset = 0; offset < content.length; offset += 8192)
+    binary += String.fromCharCode(...content.subarray(offset, offset + 8192));
+  return invoke<string | null>("save_binary_file_with_dialog", {
+    filename,
+    contentBase64: btoa(binary),
+  });
+}
+
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;
