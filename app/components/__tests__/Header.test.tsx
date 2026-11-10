@@ -74,4 +74,15 @@ describe("Header", () => {
       within(navigation).getByRole("link", { name: "Trust" }),
     ).not.toHaveAttribute("aria-current");
   });
+
+  it("offers direct sign in in the redesigned mobile menu", async () => {
+    const user = userEvent.setup();
+    render(<Header currentPath="/pricing" publicRedesign />);
+
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const dialog = await screen.findByRole("dialog", { name: "Navigation" });
+    await user.click(within(dialog).getByRole("button", { name: "Sign in" }));
+
+    expect(mockNavigateToAuth).toHaveBeenCalledWith("/login");
+  });
 });
