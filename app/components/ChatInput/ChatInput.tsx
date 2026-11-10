@@ -1625,7 +1625,6 @@ const ChatInputContent = ({
               onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
               onPredictionExposed={nextActions.exposed}
               onPredictionTyping={nextActions.recordTyping}
-              composerFocused={composerFocused}
               onDismissPrediction={nextActions.dismiss}
               composerRef={composerTextareaRef}
               draftId={draftId}
