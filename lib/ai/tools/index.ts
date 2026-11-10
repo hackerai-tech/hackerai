@@ -29,6 +29,10 @@ import {
   createGetReport,
   createUpdateVulnerabilityReport,
 } from "./findings";
+import {
+  createGetHttpRetestRecipe,
+  createSaveHttpRetestRecipe,
+} from "./finding-retests";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -91,6 +95,10 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  /** Expose recipe save/read tools only when the caller has already
+   * evaluated the http_finding_retests_v1 rollout for this user. The tools
+   * re-check the flag and fail closed on every call. */
+  httpRetestToolsEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -410,6 +418,10 @@ export const createTools = (
         context,
         () => sandbox,
       ),
+      ...(runtimePolicy.httpRetestToolsEnabled && {
+        get_http_retest_recipe: createGetHttpRetestRecipe(context),
+        save_http_retest_recipe: createSaveHttpRetestRecipe(context),
+      }),
       ...(notesEnabled && {
         create_note: createCreateNote(context),
         list_notes: createListNotes(context),

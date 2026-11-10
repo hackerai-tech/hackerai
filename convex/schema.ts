@@ -26,6 +26,13 @@ import { abuseCaseFields, abuseEventFields } from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
+  httpRetestEnvironmentValidator,
+  httpRetestOutcomeValidator,
+  httpRetestReasonValidator,
+  httpRetestRecipeValidator,
+  httpRetestStepValidator,
+} from "./findingRetestValidators";
+import {
   researchCohortReportValidator,
   researchCoverageValidator,
   researchRunStatusValidator,
@@ -801,6 +808,46 @@ export default defineSchema({
   })
     .index("by_user_and_latest", ["user_id", "latest_finding_at"])
     .index("by_user_chat", ["user_id", "chat_id"]),
+
+  // Immutable executable-retest recipe versions. Recipes name runtime
+  // credential bindings only; credential values are never stored.
+  finding_retest_recipes: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    source: v.union(v.literal("user"), v.literal("agent")),
+    created_at: v.number(),
+  })
+    .index("by_finding_and_version", ["finding_id", "version"])
+    .index("by_user_and_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+
+  // One row per retest execution. A run is finalized once and then never
+  // changes; it keeps the recipe snapshot and controlled observations only.
+  finding_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    request_id: v.string(),
+    recipe_version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    status: v.union(v.literal("running"), v.literal("finished")),
+    started_at: v.number(),
+    lease_expires_at: v.number(),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(httpRetestOutcomeValidator),
+    reason: v.optional(httpRetestReasonValidator),
+    steps: v.optional(v.array(httpRetestStepValidator)),
+    environment: v.optional(httpRetestEnvironmentValidator),
+    evidence_sha256: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_status", ["finding_id", "status"])
+    .index("by_user_and_request", ["user_id", "request_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
 
   files: defineTable({
     s3_key: v.optional(v.string()),

@@ -1,5 +1,6 @@
 jest.mock("../_generated/api", () => ({
   internal: {
+    findingRetests: { deleteForFinding: "deleteFindingRetests" },
     findings: {
       backfillFindingProjects: "backfillFindingProjects",
       syncChatFindingProject: "syncChatFindingProject",

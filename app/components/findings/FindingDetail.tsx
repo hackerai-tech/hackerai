@@ -56,6 +56,7 @@ import {
 } from "./FindingEvidenceBadge";
 import { FindingExportMenu } from "./FindingExportMenu";
 import { FindingFollowupActions } from "./FindingFollowupActions";
+import { FindingHttpRetests } from "./FindingHttpRetests";
 import { FindingDiscoveredAt } from "./FindingTime";
 
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
@@ -595,6 +596,7 @@ export function FindingDetail({
 
         <div className="pt-9">
           <div className="min-w-0 max-w-4xl space-y-10 @min-[760px]:space-y-12">
+            <FindingHttpRetests key={finding.finding_id} finding={finding} />
             <section
               id={sectionId("overview")}
               className="scroll-mt-8 space-y-4 border-b border-border pb-10"

@@ -21,6 +21,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "feedback",
     "findings",
     "finding_sources",
+    "finding_retest_recipes",
+    "finding_retest_runs",
     "task_outcome_surveys",
     "notes",
     "user_customization",
@@ -470,6 +472,16 @@ async function cleanupUserDataForUser(
     "by_user_and_latest",
     (q) => q.eq("user_id", userId),
   );
+  const findingRetestRecipesBatch = await collectByIndexBatch<
+    Doc<"finding_retest_recipes">
+  >(ctx, budget, "finding_retest_recipes", "by_user", (q) =>
+    q.eq("user_id", userId),
+  );
+  const findingRetestRunsBatch = await collectByIndexBatch<
+    Doc<"finding_retest_runs">
+  >(ctx, budget, "finding_retest_runs", "by_user_and_started", (q) =>
+    q.eq("user_id", userId),
+  );
   const cloudNetworkBatch = await collectByIndexBatch<
     Doc<"cloud_network_settings">
   >(ctx, budget, "cloud_network_settings", "by_user_id", (q) =>
@@ -571,6 +583,8 @@ async function cleanupUserDataForUser(
     filesBatch,
     findingsBatch,
     findingSourcesBatch,
+    findingRetestRecipesBatch,
+    findingRetestRunsBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
     cloudNetworkBatch,
@@ -697,6 +711,20 @@ async function cleanupUserDataForUser(
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_retest_recipes",
+    findingRetestRecipesBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_retest_runs",
+    findingRetestRunsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(
     ctx,

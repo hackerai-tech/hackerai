@@ -37,6 +37,8 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as findingRetestValidators from "../findingRetestValidators.js";
+import type * as findingRetests from "../findingRetests.js";
 import type * as findingValidators from "../findingValidators.js";
 import type * as findings from "../findings.js";
 import type * as influencerAnalytics from "../influencerAnalytics.js";
@@ -140,6 +142,8 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  findingRetestValidators: typeof findingRetestValidators;
+  findingRetests: typeof findingRetests;
   findingValidators: typeof findingValidators;
   findings: typeof findings;
   influencerAnalytics: typeof influencerAnalytics;

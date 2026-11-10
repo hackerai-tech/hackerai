@@ -72,7 +72,7 @@ export function FindingFollowupActions({
         </Button>
         <Button variant="outline" size="sm" onClick={() => prepare("retest")}>
           <RotateCcw className="size-4" aria-hidden="true" />
-          Retest
+          Retest with Agent
         </Button>
       </div>
       <Dialog

@@ -34,7 +34,9 @@ it("prepares an editable scoped request without submitting or replacing an exist
   expect(getDraftContentById("chat-1")).toBe("My existing draft");
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(getDraftContentById("chat-1")).toBe("My existing draft");
-  fireEvent.click(screen.getByRole("button", { name: "Retest", exact: true }));
+  fireEvent.click(
+    screen.getByRole("button", { name: "Retest with Agent", exact: true }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Add below draft" }));
   expect(getDraftContentById("chat-1")).toMatch(/^My existing draft\n\nRetest/);
   expect(push).toHaveBeenCalledWith("/c/chat-1");

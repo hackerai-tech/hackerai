@@ -79,6 +79,40 @@ export interface FindingDetailRecord extends FindingSummary {
   updated_at: number;
 }
 
+export type FindingRetestRunView = {
+  run_id: string;
+  request_id: string;
+  status: "running" | "finished";
+  recipe_version: number;
+  recipe: import("@/lib/findings/http-retest").HttpRetestRecipe;
+  started_at: number;
+  finished_at?: number;
+  outcome?: import("@/lib/findings/http-retest").HttpRetestOutcome;
+  reason?: import("@/lib/findings/http-retest").HttpRetestReason;
+  steps?: import("@/lib/findings/http-retest").HttpRetestStep[];
+  environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
+  evidence_sha256?: string;
+};
+
+export type FindingRetestRecipeView = {
+  version: number;
+  recipe: import("@/lib/findings/http-retest").HttpRetestRecipe;
+  source: "user" | "agent";
+  created_at: number;
+};
+
+/** Response of GET /api/finding-retests. */
+export type FindingRetestState =
+  | { enabled: false }
+  | {
+      enabled: true;
+      finding: { finding_id: string; chat_title: string; target: string };
+      environment: { kind: "cloud" | "local"; revision: string };
+      recipe: FindingRetestRecipeView | null;
+      runs: FindingRetestRunView[];
+      server_time: number;
+    };
+
 export interface FindingSourceChat {
   chat_id: string;
   chat_title: string;
