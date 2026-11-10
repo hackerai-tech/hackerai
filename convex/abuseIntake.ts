@@ -63,8 +63,9 @@ export const receive = mutation({
       if (
         queued.status === "expired" ||
         (queued.status !== "sent" &&
-          queued.payloadExpiresAt !== undefined &&
-          queued.payloadExpiresAt <= Date.now())
+          (!queued.ciphertext ||
+            queued.payloadExpiresAt === undefined ||
+            queued.payloadExpiresAt <= Date.now()))
       )
         return { outcome: "expired" as const };
       return { outcome: "received" as const, reference: args.reference };

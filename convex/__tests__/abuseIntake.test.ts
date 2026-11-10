@@ -160,3 +160,16 @@ test("an expired delivery cannot return a new success receipt or be silently res
   expect(await invoke("receive", ctx, intake)).toEqual({ outcome: "expired" });
   expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
 });
+
+test("an uncertain receipt with an expired erased payload requires an explicit new submission", async () => {
+  const ctx = database();
+  await invoke("receive", ctx, intake);
+  await ctx.db.patch(ctx.tables.abuse_notifications[0]._id, {
+    status: "uncertain",
+    ciphertext: undefined,
+    payloadExpiresAt: undefined,
+  });
+  expect(await invoke("receive", ctx, intake)).toEqual({ outcome: "expired" });
+  expect(ctx.tables.abuse_notifications).toHaveLength(1);
+  expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+});
