@@ -984,7 +984,7 @@ describe("proxy", () => {
           event: "auth.session_refresh_failed",
           error: "Refresh failed",
           is_transient: isTransient,
-          auth_refresh_diagnostic_version: 1,
+          auth_refresh_diagnostic_version: 2,
           auth_refresh_error_kind: "Error",
           auth_refresh_error_status: null,
           auth_refresh_error_status_shape: "non_numeric",
