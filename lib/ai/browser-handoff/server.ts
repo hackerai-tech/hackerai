@@ -7,7 +7,11 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
-import { browserBridgeCommand } from "./bridge-program";
+import {
+  browserBridgeCommand,
+  browserBridgeFailureContext,
+  type BrowserBridgeFailureContext,
+} from "./bridge-program";
 import {
   browserDaemonCommand,
   BROWSER_DAEMON_PRECONDITION_REASONS,
@@ -345,7 +349,10 @@ function frameDecodeDiagnostic(
   };
 }
 
-export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
+type FrameCaptureDiagnostic = FrameDecodeDiagnostic &
+  BrowserBridgeFailureContext;
+
+export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_stage:
     | "stream_status"
     | "frame_bridge"
@@ -407,7 +414,6 @@ export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
   capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
 };
-
 /**
  * Capture a validated frame, requesting a separate screenshot when freshness is required.
  * The optional failure observer receives only bounded context; observer failures
@@ -423,6 +429,7 @@ export async function captureBrowserFrame(
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
+  let returnedBridgeFailure: unknown;
   try {
     const port =
       streamPort ??
@@ -435,8 +442,10 @@ export async function captureBrowserFrame(
         timeoutMs: 8_000,
       },
     );
-    if (result.exitCode !== 0)
+    if (result.exitCode !== 0) {
+      returnedBridgeFailure = result;
       throw new BrowserPreviewUnavailable("disconnected");
+    }
     let frame: {
       data: string;
       width: number;
@@ -603,8 +612,8 @@ export async function captureBrowserFrame(
             code >= 2 &&
             code <= 6
           ) {
-            // Only this controlled helper's bounded failure JSON is eligible;
-            // never inspect successful image responses or bridge command output.
+            // This daemon parser never sees successful images or bridge output;
+            // bridge exit-6 packets have a separate strict parser below.
             // Existing <=512-byte context plus the fixed compact process tuple.
             const stdout =
               result &&
@@ -803,6 +812,17 @@ export async function captureBrowserFrame(
       } catch {
         /* Preserve the original failure if optional context is unreadable. */
       }
+      let bridgeDiagnostic: BrowserBridgeFailureContext = {};
+      try {
+        if (stage === "frame_bridge")
+          bridgeDiagnostic = browserBridgeFailureContext(
+            error instanceof CommandExitError
+              ? Object.getOwnPropertyDescriptor(error, "result")?.value
+              : returnedBridgeFailure,
+          );
+      } catch {
+        /* Optional transport metadata cannot replace the original rejection. */
+      }
       try {
         onFailure({
           capture_stage: stage,
@@ -810,6 +830,7 @@ export async function captureBrowserFrame(
           capture_command_exit_code: code,
           ...precondition,
           ...decodeDiagnostic,
+          ...bridgeDiagnostic,
         });
       } catch {
         /* Observers cannot change capture behavior. */
