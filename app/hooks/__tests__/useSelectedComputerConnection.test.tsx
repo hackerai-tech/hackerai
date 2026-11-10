@@ -19,6 +19,18 @@ const mockGlobalState = {
       }>
     | undefined,
 };
+let mockHeartbeatsLoading = false;
+const mockHeartbeatQuery = jest.fn((_query: unknown, args: any) =>
+  args === "skip" || mockHeartbeatsLoading
+    ? undefined
+    : mockGlobalState.localConnections
+        ?.filter((c) => args.connectionIds.includes(c.connectionId))
+        .map((c) => ({ connectionId: c.connectionId, lastSeen: c.lastSeen })),
+);
+jest.mock("convex/react", () => ({
+  useQuery: (...args: [unknown, any]) => mockHeartbeatQuery(...args),
+}));
+
 const mockIsTauriEnvironment = jest.fn(() => true);
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -206,4 +218,36 @@ describe("selected computer hydration", () => {
     act(() => jest.advanceTimersByTime(750));
     expect(result.current.selectedComputerUnavailable).toBe(false);
   });
+});
+
+it("waits for selected heartbeat loading without asking a healthy computer to reconnect", () => {
+  mockIsTauriEnvironment.mockReturnValue(false);
+  mockGlobalState.sandboxPreference = "desktop";
+  mockGlobalState.localConnections = [
+    { connectionId: "fresh", isDesktop: true, lastSeen: Date.now() },
+  ];
+  mockHeartbeatsLoading = true;
+  const { result, rerender } = renderHook(useSelectedComputerConnection);
+  expect(result.current.sendDisabledReason).toBe(
+    "Checking your computer connection",
+  );
+  mockHeartbeatsLoading = false;
+  rerender();
+  expect(result.current.sendDisabledReason).toBeUndefined();
+});
+
+it("does not subscribe to heartbeat updates for the native bridge or Cloud", () => {
+  mockIsTauriEnvironment.mockReturnValue(true);
+  mockGlobalState.sandboxPreference = "desktop";
+  const { rerender } = renderHook(useSelectedComputerConnection);
+  expect(mockHeartbeatQuery).toHaveBeenLastCalledWith(
+    expect.anything(),
+    "skip",
+  );
+  mockGlobalState.sandboxPreference = "e2b";
+  rerender();
+  expect(mockHeartbeatQuery).toHaveBeenLastCalledWith(
+    expect.anything(),
+    "skip",
+  );
 });

@@ -403,6 +403,20 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },
     ],
+    local_sandbox_heartbeats: [
+      {
+        _id: "heartbeat-user",
+        user_id: userId,
+        connection_id: "conn-1",
+        last_heartbeat: 1,
+      },
+      {
+        _id: "heartbeat-other",
+        user_id: otherUserId,
+        connection_id: "conn-2",
+        last_heartbeat: 2,
+      },
+    ],
     local_sandbox_connections: [
       { _id: "connection-user", user_id: userId, connection_id: "conn-1" },
       {

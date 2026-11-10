@@ -1352,6 +1352,14 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_token", ["token"]),
 
+  local_sandbox_heartbeats: defineTable({
+    connection_id: v.string(),
+    user_id: v.string(),
+    last_heartbeat: v.number(),
+  })
+    .index("by_connection_id", ["connection_id"])
+    .index("by_user_id", ["user_id"]),
+
   local_sandbox_connections: defineTable({
     user_id: v.string(),
     connection_id: v.string(),
@@ -1386,6 +1394,7 @@ export default defineSchema({
         operationChannels: v.optional(v.boolean()),
       }),
     ),
+    // Initial timestamp and fallback for sessions created before heartbeat separation.
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
