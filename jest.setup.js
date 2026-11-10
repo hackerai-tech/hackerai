@@ -14,20 +14,21 @@ global.TextDecoder = TextDecoder;
 global.ReadableStream = ReadableStream;
 global.TransformStream = TransformStream;
 
-// Mock window.matchMedia
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: jest.fn().mockImplementation((query) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: jest.fn(), // Deprecated
-    removeListener: jest.fn(), // Deprecated
-    addEventListener: jest.fn(),
-    removeEventListener: jest.fn(),
-    dispatchEvent: jest.fn(),
-  })),
-});
+// Mock window.matchMedia for DOM tests; pure report/PDF tests run in Node.
+if (typeof window !== "undefined")
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: jest.fn().mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: jest.fn(), // Deprecated
+      removeListener: jest.fn(), // Deprecated
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    })),
+  });
 
 // Global test utilities
 global.beforeEach(() => {

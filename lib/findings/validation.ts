@@ -1,3 +1,4 @@
+import { findingEvidenceStatusSchema } from "./evidence-status";
 import { validateFindingAssessment } from "./quality";
 import { z } from "zod";
 import { CVSS31_METRIC_VALUES } from "./cvss31";
@@ -147,6 +148,11 @@ const findingReportFieldsSchema = z
     evidence: requiredText("Evidence", 16_000),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: proseText("Assumptions", 4_000),
+    evidence_status: findingEvidenceStatusSchema.optional(),
+    evidence_status_reason: proseText(
+      "Evidence status reason",
+      2_000,
+    ).optional(),
     confidence: z.enum(["low", "medium", "high"]),
     confidence_rationale: proseText("Confidence rationale", 4_000).optional(),
     counterevidence: proseText("Counterevidence", 4_000),
@@ -186,6 +192,16 @@ const findingReportFieldsSchema = z
 export const createVulnerabilityReportInputSchema =
   findingReportFieldsSchema.superRefine((input, ctx) => {
     validateFindingAssessment(input, ctx);
+    if (
+      Boolean(input.evidence_status) !== Boolean(input.evidence_status_reason)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence_status_reason"],
+        message:
+          "Evidence status and its factual reason must be supplied together",
+      });
+    }
     const payloadBytes = new TextEncoder().encode(JSON.stringify(input)).length;
     if (payloadBytes > FINDING_PAYLOAD_MAX_BYTES) {
       ctx.addIssue({
