@@ -1,7 +1,3 @@
-import {
-  MaxModelTelemetry,
-  MAX_GROK_46_KEY,
-} from "@/lib/experiments/max-grok-46";
 import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
@@ -3227,62 +3223,5 @@ it.each(["ask", "agent"] as const)(
         }),
       );
     }
-  },
-);
-
-it.each(["success", "error", "aborted"] as const)(
-  "records the actual Max terminal %s once before cleanup",
-  (outcome) => {
-    const capture = jest.fn();
-    const recorder = new MaxModelTelemetry(
-      { capture } as any,
-      "user",
-      {
-        key: MAX_GROK_46_KEY,
-        variant: "test",
-        modelKey: "model-grok-4.6",
-        baselineModel: "model-glm-5.3",
-        hasImages: false,
-      },
-      {
-        requestId: "original-request",
-        chatId: "chat",
-        subscription: "ultra",
-        environment: "preview",
-      },
-    );
-    recorder.providerStarted("x-ai/grok-4.6", false);
-    captureAgentCompletionAnalytics({
-      posthog: { capture } as any,
-      maxModelTelemetry: recorder,
-      userId: "user",
-      chatId: "chat",
-      endpoint: "/api/agent-long",
-      mode: "agent",
-      subscription: "ultra",
-      sandboxInfo: null,
-      outcome,
-      hasResponseContent: outcome === "success",
-      finishReason: outcome === "success" ? "stop" : "error",
-      responseMessageId: "recovered-message",
-      selectedModel: "model-grok-4.6",
-      configuredModelId: "x-ai/grok-4.6",
-      responseModel: "z-ai/glm-5.3",
-      chatLogger: undefined,
-      abliteratedProviderSummary: undefined,
-    });
-    recorder.recordTerminal({ outcome: "error", naturalCompletion: false });
-    const events = capture.mock.calls
-      .map(([e]) => e)
-      .filter((e) => e.event === "paid_model_response_outcome");
-    expect(events).toHaveLength(1);
-    expect(events[0].properties).toMatchObject({
-      experiment_key: MAX_GROK_46_KEY,
-      outcome,
-      natural_completion: outcome === "success",
-      message_id: "recovered-message",
-      response_model: "z-ai/glm-5.3",
-      exposed_to_assigned_model: true,
-    });
   },
 );

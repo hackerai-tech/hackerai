@@ -299,13 +299,7 @@ describe("selectModel", () => {
                   directGlmVisionEnabled,
                 },
               ),
-            ).toBe(
-              maxAllowed
-                ? hasImage
-                  ? DEEPSEEK_1017_MODEL_KEY
-                  : "model-glm-5.3"
-                : DEEPSEEK_1017_MODEL_KEY,
-            );
+            ).toBe(maxAllowed ? "model-grok-4.6" : DEEPSEEK_1017_MODEL_KEY);
           }
           expect(
             selectModel(
@@ -321,7 +315,7 @@ describe("selectModel", () => {
             ),
           ).toBe(
             subscription === "ultra" || extraUsageAvailable
-              ? "model-glm-5.3"
+              ? "model-grok-4.6"
               : DEEPSEEK_1017_MODEL_KEY,
           );
         }

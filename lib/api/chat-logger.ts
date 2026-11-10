@@ -1,4 +1,3 @@
-import type { MaxModelTelemetry } from "@/lib/experiments/max-grok-46";
 import {
   AGENT_MODEL_CONTEXT_FLAG,
   type AgentModelContextVariant,
@@ -1369,7 +1368,6 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
-  maxModelTelemetry?: MaxModelTelemetry;
   agentModelContextVariant?: AgentModelContextVariant;
   agentModelContextFlag?: AgentModelContextFlag;
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
@@ -1824,20 +1822,6 @@ export function captureAgentCompletionAnalytics(
     args.hasResponseContent &&
     !args.stepLimitTelemetry?.stepLimitReached &&
     args.finishReason === "stop";
-  args.maxModelTelemetry?.recordTerminal({
-    outcome,
-    naturalCompletion,
-    responseMessageId: args.responseMessageId,
-    responseModel: args.responseModel,
-    finishReason: args.finishReason,
-    abortSource: args.abortSource,
-    firstChunkMs: args.requestToFirstModelChunkMs,
-    recoveryAttempts: args.providerRecoveryAttempts,
-    recoverySucceeded: args.providerRecoverySucceeded,
-    handledToolFailures: args.handledToolFailureCount,
-    stepLimitReached: args.stepLimitTelemetry?.stepLimitReached,
-    usage: args.usageMeasurement,
-  });
   const isFreeAskExperiment =
     args.experiment?.key === FREE_ASK_DEEPSEEK_1017_KEY;
   if (
