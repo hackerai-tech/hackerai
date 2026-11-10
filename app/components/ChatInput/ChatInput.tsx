@@ -1561,6 +1561,12 @@ const ChatInputContent = ({
           chatId={chatId}
           disabled={!user || isOffline || isGenerating || isWaitingForReply}
           onSavingChange={setSkillsSaving}
+          onFocusComposer={
+            isMobile === false
+              ? () =>
+                  composerTextareaRef.current?.focus({ preventScroll: true })
+              : undefined
+          }
         >
           <div
             hidden={showAgentApprovalPrompt}

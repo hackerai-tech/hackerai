@@ -47,12 +47,14 @@ type Props = {
   chatId?: string;
   disabled: boolean;
   onSavingChange: (saving: boolean) => void;
+  onFocusComposer?: () => void;
   children: ReactNode;
 };
 export function ComposerSkillsProvider({
   chatId,
   disabled,
   onSavingChange,
+  onFocusComposer,
   children,
 }: Props) {
   const enabled = useSkillsAccess();
@@ -147,6 +149,7 @@ export function ComposerSkillsProvider({
       }
       token.current = null;
       setOpen(false);
+      if (!selectedToken) requestAnimationFrame(() => onFocusComposer?.());
     } catch (cause) {
       if (!mounted.current || currentChat.current !== chatId) return;
       setOpen(true);

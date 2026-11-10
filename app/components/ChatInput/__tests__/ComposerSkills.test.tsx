@@ -154,6 +154,9 @@ function Harness({
         chatId={chatId}
         disabled={disabled}
         onSavingChange={mockSaving}
+        onFocusComposer={() =>
+          screen.getByRole("textbox", { name: "Message" }).focus()
+        }
       >
         <Input plusMenu={plusMenu} />
       </ComposerSkillsProvider>
@@ -400,5 +403,8 @@ it("hands off from the plus menu above Pursue goal to a focused skill selector",
   fireEvent.keyDown(search, { key: "Enter" });
   await waitFor(() =>
     expect(mockSelect).toHaveBeenCalledWith({ chatId: "chat-1", ids: ["one"] }),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus(),
   );
 });
