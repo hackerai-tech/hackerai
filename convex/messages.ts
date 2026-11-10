@@ -661,6 +661,7 @@ export const saveMessage = mutation({
     let failureStage = "start";
     let messageOwnershipMismatch: "chat" | "user" | "chat_and_user" | undefined;
     let chatForInsert: Doc<"chats"> | null = null;
+    let searchMigration: Doc<"message_search_migration"> | null | undefined;
 
     try {
       const ensureOwnedFiles = async (
@@ -904,12 +905,15 @@ export const saveMessage = mutation({
         }
 
         failureStage = "verify_chat_writable_for_insert";
-        chatForInsert = await ensureChatWritableForMessageInsert(
-          ctx,
-          args.chatId,
-          args.userId,
-          args.role,
-        );
+        [chatForInsert, searchMigration] = await Promise.all([
+          ensureChatWritableForMessageInsert(
+            ctx,
+            args.chatId,
+            args.userId,
+            args.role,
+          ),
+          getMessageSearchMigration(ctx),
+        ]);
       }
 
       let newMessageFiles: Doc<"files">[] = [];
@@ -1006,10 +1010,14 @@ export const saveMessage = mutation({
       }
 
       failureStage = "insert_message";
-      await insertMessageWithSearch(ctx, {
-        ...messageDocumentBase,
-        content: indexedContent?.content,
-      });
+      await insertMessageWithSearch(
+        ctx,
+        {
+          ...messageDocumentBase,
+          content: indexedContent?.content,
+        },
+        searchMigration,
+      );
 
       // Move the chat to the top of the sidebar as soon as the user submits a
       // visible message. Existing-message retries return above, so they do not
@@ -2128,37 +2136,12 @@ export const branchChat = mutation({
         return null;
       }
 
-      const chatExists: boolean = await ctx.runQuery(
-        internal.messages.verifyChatOwnership,
-        {
-          chatId: message.chat_id,
-          userId: user.subject,
-        },
-      );
-
-      if (!chatExists) {
-        convexLogger.warn("branch_chat_chat_missing_or_denied", {
-          user_id: user.subject,
-          message_id: args.messageId,
-          chat_id: message.chat_id,
-        });
-        return null;
-      }
-
-      // Get original chat to copy title
-      const originalChat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
-        .first();
-
-      if (!originalChat) {
-        convexLogger.warn("branch_chat_original_chat_missing", {
-          user_id: user.subject,
-          message_id: args.messageId,
-          chat_id: message.chat_id,
-        });
-        return null;
-      }
+      // Ownership and title come from the same read. A nested ownership query
+      // would load this chat again and add another function invocation.
+      const [originalChat, migration] = await Promise.all([
+        loadOwnedChat(ctx, message.chat_id, user.subject),
+        getMessageSearchMigration(ctx),
+      ]);
 
       // Branching is one atomic transaction. Bound the entire history read,
       // leaving room for ownership reads, pagination lookahead and the summary.
@@ -2184,7 +2167,6 @@ export const branchChat = mutation({
         (bytes, msg) => bytes + getMessageDocumentSize(msg),
         0,
       );
-      const migration = await getMessageSearchMigration(ctx);
       const copyText = new Map<string, string | undefined>();
       if (branchPage.isDone && historyBytes <= MESSAGE_PAGE_MAX_BYTES) {
         const contents = await messageCopyTexts(ctx, messagesToCopy, migration);
@@ -2345,14 +2327,17 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) =>
-          q
-            .eq("chat_id", message.chat_id)
-            .gt("_creationTime", message._creationTime),
-        )
-        .collect();
+      const [messages, searchMigration] = await Promise.all([
+        ctx.db
+          .query("messages")
+          .withIndex("by_chat_id", (q) =>
+            q
+              .eq("chat_id", message.chat_id)
+              .gt("_creationTime", message._creationTime),
+          )
+          .collect(),
+        getMessageSearchMigration(ctx),
+      ]);
 
       if (
         message.role !== "user" ||
@@ -2501,15 +2486,21 @@ export const regenerateWithNewContent = mutation({
       }
 
       await invalidateModelHistory(ctx, message.chat_id);
-      await patchMessageWithSearch(ctx, message, {
-        parts:
-          newParts.length > 0
-            ? newParts
-            : [{ type: "text", text: args.newContent }],
-        content: args.newContent.trim() || undefined,
-        file_ids: newFileIds && newFileIds.length > 0 ? newFileIds : undefined,
-        update_time: Date.now(),
-      });
+      await patchMessageWithSearch(
+        ctx,
+        message,
+        {
+          parts:
+            newParts.length > 0
+              ? newParts
+              : [{ type: "text", text: args.newContent }],
+          content: args.newContent.trim() || undefined,
+          file_ids:
+            newFileIds && newFileIds.length > 0 ? newFileIds : undefined,
+          update_time: Date.now(),
+        },
+        searchMigration,
+      );
 
       // Check summary invalidation before deleting messages
       await checkAndInvalidateSummary(ctx, message.chat_id, [

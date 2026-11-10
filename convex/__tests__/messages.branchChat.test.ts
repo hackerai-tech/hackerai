@@ -119,6 +119,7 @@ function makeContext(messages: ReturnType<typeof makeMessage>[]) {
     },
     anchor,
     anchorQuery,
+    chatQuery,
     originalChat,
     history,
     readBudget: () => ({ bytes: readBytes, rows: readRows }),
@@ -332,8 +333,16 @@ describe("atomic chat branching", () => {
           ...f.anchor,
           user_id: "another-user",
         });
-      else f.ctx.runQuery.mockResolvedValue(false);
-      await expect(branch(f)).resolves.toBeNull();
+      else
+        f.chatQuery.first.mockResolvedValue({
+          ...f.originalChat,
+          user_id: "another-user",
+        });
+      if (kind === "message") await expect(branch(f)).resolves.toBeNull();
+      else
+        await expect(branch(f)).rejects.toMatchObject({
+          data: { code: "CHAT_UNAUTHORIZED" },
+        });
       expect(f.history.paginate).not.toHaveBeenCalled();
       expect(f.ctx.db.insert).not.toHaveBeenCalled();
     },
@@ -347,5 +356,15 @@ describe("atomic chat branching", () => {
     f.ctx.auth.getUserIdentity.mockResolvedValue(null);
     await expect(branch(f)).rejects.toThrow("Unauthorized");
     expect(f.ctx.db.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a deleted source chat before copying its remaining messages", async () => {
+    const f = makeContext([makeMessage(0)]);
+    f.chatQuery.first.mockResolvedValue(null);
+    await expect(branch(f)).rejects.toMatchObject({
+      data: { code: "CHAT_NOT_FOUND" },
+    });
+    expect(f.history.paginate).not.toHaveBeenCalled();
+    expect(f.ctx.db.insert).not.toHaveBeenCalled();
   });
 });

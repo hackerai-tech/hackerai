@@ -143,12 +143,16 @@ export async function patchMessageWithSearch(
   ctx: MutationCtx,
   message: Message,
   patch: Partial<WithoutSystemFields<Message>>,
+  migration?: Doc<"message_search_migration"> | null,
 ) {
-  const state = await getMessageSearchMigration(ctx);
+  const state =
+    migration === undefined ? await getMessageSearchMigration(ctx) : migration;
   const strip =
     usesSeparateMessageSearch(state) && state?.phase !== "restoring";
+  let updated: Message | undefined;
+  let search: Doc<"message_search"> | null = null;
   if (state) {
-    const search = await ctx.db
+    search = await ctx.db
       .query("message_search")
       .withIndex("by_message_id", (q) => q.eq("message_id", message._id))
       .unique();
@@ -156,7 +160,7 @@ export async function patchMessageWithSearch(
       if (!search) throw new Error("Message search document missing");
       message = { ...message, content: search.content };
     }
-    const updated = { ...message, ...patch };
+    updated = { ...message, ...patch };
     // Separation must not admit an edit/metadata update that the legacy
     // document cannot represent. Otherwise a valid write can wedge rollback.
     if (getDocumentSize(updated) > 1024 * 1024)
@@ -164,12 +168,16 @@ export async function patchMessageWithSearch(
         code: "MESSAGE_TOO_LARGE",
         message: "Message is too large to save",
       });
-    await syncMessageSearch(ctx, updated, search);
   }
-  await ctx.db.patch(message._id, {
-    ...patch,
-    ...(strip ? { content: undefined } : {}),
-  });
+  // Validate before either write. Both records still commit or roll back in
+  // the same mutation, without serializing independent database operations.
+  await Promise.all([
+    updated ? syncMessageSearch(ctx, updated, search) : undefined,
+    ctx.db.patch(message._id, {
+      ...patch,
+      ...(strip ? { content: undefined } : {}),
+    }),
+  ]);
 }
 
 export async function deleteMessageWithSearch(
@@ -180,6 +188,8 @@ export async function deleteMessageWithSearch(
     .query("message_search")
     .withIndex("by_message_id", (q) => q.eq("message_id", message._id))
     .unique();
-  if (search) await ctx.db.delete(search._id);
-  await ctx.db.delete(message._id);
+  await Promise.all([
+    search ? ctx.db.delete(search._id) : undefined,
+    ctx.db.delete(message._id),
+  ]);
 }
