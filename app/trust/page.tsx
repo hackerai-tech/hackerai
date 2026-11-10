@@ -164,53 +164,6 @@ const subprocessors: Subprocessor[] = [
   },
 ];
 
-interface ModelRoute {
-  title: string;
-  scope: string;
-  description: string;
-  policies: { href: string; label: string }[];
-}
-
-const modelRoutes: ModelRoute[] = [
-  {
-    title: "Through OpenRouter",
-    scope: "Most models",
-    description:
-      "OpenRouter receives the request and forwards it to an upstream host for that model. The host can be the model's author, such as xAI, DeepSeek, Moonshot AI, Z.ai, or MiniMax, or another company serving the same model. Both OpenRouter and that host process the request, and each host sets its own logging, retention, and training terms.",
-    policies: [
-      { href: "https://openrouter.ai/privacy", label: "OpenRouter privacy" },
-      {
-        href: "https://openrouter.ai/docs/guides/privacy/provider-logging",
-        label: "Upstream host data policies",
-      },
-    ],
-  },
-  {
-    title: "Direct to Inference.net",
-    scope: "Some security-tuned models",
-    description:
-      "Requests go from HackerAI to Inference.net without passing through OpenRouter.",
-    policies: [
-      {
-        href: "https://inference.net/privacy-policy/",
-        label: "Inference.net privacy policy",
-      },
-    ],
-  },
-  {
-    title: "Direct to Abliteration.ai",
-    scope: "Abliterated models",
-    description:
-      "Requests go from HackerAI to Abliteration.ai without passing through OpenRouter.",
-    policies: [
-      {
-        href: "https://abliteration.ai/privacy-policy",
-        label: "Abliteration.ai privacy policy",
-      },
-    ],
-  },
-];
-
 interface SectionProps {
   id?: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -310,77 +263,70 @@ function TrustContent() {
             />
           </Section>
 
-          <Section
-            id="ai-model-providers"
-            icon={Bot}
-            title="AI model providers"
-          >
+          <Section icon={Bot} title="AI model providers">
             <p>
-              To answer a request, HackerAI sends your prompt, relevant
-              conversation context, tool results, and any images in the request
-              to the company serving the model. The route depends on the model:
-            </p>
-            <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-              {modelRoutes.map((route) => (
-                <li
-                  key={route.title}
-                  className="flex flex-col gap-2.5 p-4 sm:flex-row sm:gap-6 sm:px-5"
-                >
-                  <div className="flex shrink-0 flex-col gap-1 sm:w-52">
-                    <h3 className="font-semibold text-foreground">
-                      {route.title}
-                    </h3>
-                    <p className="font-mono text-xs leading-5">{route.scope}</p>
-                  </div>
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <p>{route.description}</p>
-                    <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
-                      {route.policies.map((policy) => (
-                        <InlineLink key={policy.href} href={policy.href}>
-                          {policy.label}
-                        </InlineLink>
-                      ))}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <p>
-              <strong className="text-foreground">
-                More than one provider can process a request.
-              </strong>{" "}
-              If the selected model fails or is unavailable, HackerAI may retry
-              with a fallback model on a different route; for example, an
-              Inference.net request can fall back to Abliteration.ai. Images you
-              upload and browser screenshots the agent captures are sent to
-              whichever model handles the request, and in some cases a separate
-              model processes image content. The model you select doesn&apos;t
-              always identify every company that receives your request.
+              HackerAI sends your prompt, relevant conversation context, file
+              content, images, and tool results to the company serving the
+              model. Most model requests go through OpenRouter and an upstream
+              model host. The host may be the model&apos;s developer, such as
+              xAI, DeepSeek, Moonshot AI, Z.ai, or MiniMax, or another company
+              serving the same model. See the{" "}
+              <InlineLink href="https://openrouter.ai/privacy">
+                OpenRouter privacy policy
+              </InlineLink>{" "}
+              and{" "}
+              <InlineLink href="https://openrouter.ai/docs/guides/privacy/provider-logging">
+                upstream host data policies
+              </InlineLink>
+              .
             </p>
             <p>
-              <strong className="text-foreground">
-                Retention and training vary by provider.
-              </strong>{" "}
-              Each provider processes data under its own terms, so we don&apos;t
-              make a blanket no-training or zero-retention guarantee. Check the
-              policies linked above.
+              Some security-tuned models are served directly by Inference.net,
+              and abliterated models are served directly by Abliteration.ai,
+              without passing through OpenRouter. See the{" "}
+              <InlineLink href="https://inference.net/privacy-policy/">
+                Inference.net privacy policy
+              </InlineLink>{" "}
+              and{" "}
+              <InlineLink href="https://abliteration.ai/privacy-policy">
+                Abliteration.ai privacy policy
+              </InlineLink>
+              .
             </p>
             <p>
-              <strong className="text-foreground">
-                Search, browsing, and moderation.
-              </strong>{" "}
-              Perplexity processes web search queries, Jina AI retrieves page
-              content, and OpenAI screens message content for moderation. If the
-              agent meets a CAPTCHA while browsing, 2Captcha receives the
-              details needed to solve it.
+              More than one provider can process a request. If a model fails or
+              is unavailable, HackerAI may use a fallback on a different route;
+              for example, Inference.net can fall back to Abliteration.ai.
+              Uploaded images and browser screenshots may also be processed by a
+              separate image model. The selected model does not identify every
+              company that may receive relevant task content.
             </p>
             <p>
-              <strong className="text-foreground">Data licensing.</strong> The
-              future model training and data licensing program described in our{" "}
+              When the agent searches the web or opens a URL, Perplexity
+              processes search queries and Jina AI retrieves page content.
+              OpenAI screens message content for moderation. When the agent uses
+              CAPTCHA solving, 2Captcha receives the page URL, site key,
+              challenge parameters, and browser user agent needed to solve it.
+            </p>
+            <p>
+              Each provider processes data under its own terms. Retention and
+              model training policies vary by provider, so we do not make a
+              blanket no-training or zero-retention guarantee. Refer to the
+              provider policies linked above.
+            </p>
+          </Section>
+
+          <Section icon={FileText} title="Model training and data licensing">
+            <p>
+              A future program may use eligible task content to train and
+              evaluate AI models, including paid licensing to AI partners. This
+              program is not active, and partner data collection has not
+              started. See our{" "}
               <InlineLink href="/privacy-policy#data-contributions">
                 Privacy Policy
               </InlineLink>{" "}
-              is not active.
+              for the notice and consent requirements that would apply before
+              any collection.
             </p>
           </Section>
 
@@ -472,64 +418,36 @@ function TrustContent() {
 
           <Section icon={Network} title="Subprocessors">
             <p>The following services process data on our behalf:</p>
-            <div className="overflow-hidden rounded-lg border border-border">
-              {/* Explicit roles keep table semantics when narrow screens
-                  stack each row into a block. */}
-              <table role="table" className="w-full border-collapse text-sm">
-                <thead role="rowgroup" className="max-sm:sr-only">
-                  <tr
-                    role="row"
-                    className="border-b border-border bg-muted/60 text-left"
-                  >
-                    <th
-                      role="columnheader"
-                      className="px-4 py-3 font-semibold text-foreground"
-                    >
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/60 text-left">
+                    <th className="px-4 py-3 font-semibold text-foreground">
                       Provider
                     </th>
-                    <th
-                      role="columnheader"
-                      className="px-4 py-3 font-semibold text-foreground"
-                    >
+                    <th className="px-4 py-3 font-semibold text-foreground">
                       Purpose
                     </th>
-                    <th
-                      role="columnheader"
-                      className="px-4 py-3 font-semibold text-foreground"
-                    >
+                    <th className="px-4 py-3 font-semibold text-foreground">
                       Data categories
                     </th>
                   </tr>
                 </thead>
-                <tbody role="rowgroup">
-                  {subprocessors.map((subprocessor) => (
+                <tbody>
+                  {subprocessors.map((subprocessor, index) => (
                     <tr
                       key={subprocessor.name}
-                      role="row"
-                      className="border-b border-border align-top last:border-b-0 max-sm:block max-sm:space-y-1 max-sm:px-4 max-sm:py-3.5"
+                      className={
+                        index < subprocessors.length - 1
+                          ? "border-b border-border align-top"
+                          : "align-top"
+                      }
                     >
-                      <td
-                        role="cell"
-                        className="px-4 py-3 font-medium text-foreground max-sm:block max-sm:p-0 sm:w-44"
-                      >
+                      <td className="whitespace-nowrap px-4 py-3 font-medium text-foreground">
                         {subprocessor.name}
                       </td>
-                      <td
-                        role="cell"
-                        className="px-4 py-3 max-sm:block max-sm:p-0"
-                      >
-                        {subprocessor.purpose}
-                      </td>
-                      <td
-                        role="cell"
-                        className="px-4 py-3 max-sm:block max-sm:p-0"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="font-medium text-foreground sm:hidden"
-                        >
-                          Data:{" "}
-                        </span>
+                      <td className="px-4 py-3">{subprocessor.purpose}</td>
+                      <td className="px-4 py-3">
                         {subprocessor.dataCategories}
                       </td>
                     </tr>
