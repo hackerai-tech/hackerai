@@ -189,6 +189,19 @@ export async function pickLocalFiles(): Promise<string[]> {
   if (!detectTauri()) return [];
 
   try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string[]>("pick_local_files");
+  } catch (error) {
+    // Keep older installed binaries usable until they receive the native
+    // picker update. A new binary's ACL denial must not select this fallback.
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open native file picker:", error);
+      toast.error("Failed to open file picker");
+      return [];
+    }
+  }
+
+  try {
     const dialog = await import("@tauri-apps/plugin-dialog");
     const selected = await dialog.open({
       multiple: true,
@@ -379,6 +392,17 @@ export async function saveBinaryFileToLocal(
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_downloads_folder");
+    return true;
+  } catch (error) {
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open Downloads folder:", error);
+      return false;
+    }
   }
 
   try {

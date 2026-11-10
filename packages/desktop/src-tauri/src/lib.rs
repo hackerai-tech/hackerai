@@ -35,13 +35,8 @@ const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
 /// Port for the local dev auth callback server (0 = not started)
 static DEV_AUTH_PORT: AtomicU16 = AtomicU16::new(0);
 
-/// Port for the command execution server (0 = not started)
-static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
-
-/// Session token for authenticating command server requests
-static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
 struct PendingDesktopAuthStates(std::sync::Mutex<HashMap<String, SystemTime>>);
+struct SelectedLocalFiles(std::sync::Mutex<HashSet<PathBuf>>);
 
 fn generate_desktop_auth_state() -> String {
     format!(
@@ -88,15 +83,6 @@ fn prepare_desktop_auth_state(
     Ok(state)
 }
 
-/// Get the command server port, session token, and OS info
-#[tauri::command]
-fn get_cmd_server_info() -> CmdServerInfo {
-    CmdServerInfo {
-        port: CMD_SERVER_PORT.load(Ordering::Relaxed),
-        token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
-    }
-}
-
 /// Write only after the user selects a destination in the native save dialog.
 /// No path supplied by the webview is accepted as a write destination.
 #[tauri::command]
@@ -124,6 +110,18 @@ async fn save_binary_file_with_dialog(
         .decode(content_base64)
         .map_err(|_| "Invalid report encoding".to_string())?;
     save_report_with_dialog(app, window, filename, bytes).await
+}
+
+#[tauri::command]
+fn open_downloads_folder(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = app
+        .path()
+        .download_dir()
+        .map_err(|error| error.to_string())?;
+    app.opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 async fn save_report_with_dialog(
@@ -160,12 +158,6 @@ async fn save_report_with_dialog(
 }
 
 #[derive(Serialize)]
-struct CmdServerInfo {
-    port: u16,
-    token: String,
-}
-
-#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalFileMetadata {
     path: String,
@@ -197,17 +189,54 @@ struct LocalTextFileData {
     content: String,
 }
 
-fn json_error_body(message: &str) -> String {
-    serde_json::to_string(&serde_json::json!({ "error": message }))
-        .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+#[tauri::command]
+async fn pick_local_files(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    tokio::task::spawn_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .blocking_pick_files()
+            .unwrap_or_default();
+        let mut paths = Vec::with_capacity(selected.len());
+        let selected_files = app.state::<SelectedLocalFiles>();
+        let mut grants = selected_files
+            .0
+            .lock()
+            .map_err(|_| "Selected file lock poisoned".to_string())?;
+        for selected_path in selected {
+            let path = selected_path
+                .into_path()
+                .map_err(|error| error.to_string())?;
+            let canonical = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            if !canonical.is_file() {
+                return Err("Selected path is not a file".to_string());
+            }
+            grants.insert(canonical);
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        Ok(paths)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-fn json_stream_error_line(message: &str) -> String {
-    serde_json::to_string(&serde_json::json!({
-        "type": "error",
-        "message": message,
-    }))
-    .unwrap_or_else(|_| r#"{"type":"error","message":"serialization failed"}"#.to_string())
+fn selected_file_path(grants: &SelectedLocalFiles, path: &str) -> Result<PathBuf, String> {
+    let canonical = fs::canonicalize(path).map_err(|_| "File is no longer available")?;
+    if !grants
+        .0
+        .lock()
+        .map_err(|_| "Selected file lock poisoned".to_string())?
+        .contains(&canonical)
+    {
+        return Err("Select this file in the Desktop picker first".to_string());
+    }
+    Ok(canonical)
 }
 
 fn guess_media_type(path: &std::path::Path) -> String {
@@ -241,8 +270,15 @@ fn guess_media_type(path: &std::path::Path) -> String {
 }
 
 #[tauri::command]
-fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
-    let path_buf = PathBuf::from(&path);
+fn get_local_file_metadata(
+    path: String,
+    grants: tauri::State<'_, SelectedLocalFiles>,
+) -> Result<LocalFileMetadata, String> {
+    let path_buf = selected_file_path(&grants, &path)?;
+    local_file_metadata(&path, &path_buf)
+}
+
+fn local_file_metadata(path: &str, path_buf: &Path) -> Result<LocalFileMetadata, String> {
     let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
     if !metadata.is_file() {
         return Err("Selected path is not a file".to_string());
@@ -261,7 +297,7 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
         .unwrap_or(0);
 
     Ok(LocalFileMetadata {
-        path,
+        path: path.to_string(),
         name,
         media_type: guess_media_type(&path_buf),
         size: metadata.len(),
@@ -321,7 +357,7 @@ fn write_generated_text_attachment(
     let _operation = update_safety::UPDATE_GATE.operation()?;
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
     fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
-    get_local_file_metadata(path.to_string_lossy().to_string())
+    local_file_metadata(&path.to_string_lossy(), &path)
 }
 
 #[tauri::command]
@@ -331,7 +367,7 @@ fn read_generated_text_attachment(
     file_name: String,
 ) -> Result<LocalTextFileData, String> {
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
-    let metadata = get_local_file_metadata(path.to_string_lossy().to_string())?;
+    let metadata = local_file_metadata(&path.to_string_lossy(), &path)?;
     let content = fs::read_to_string(&metadata.path).map_err(|e| format!("Read error: {}", e))?;
 
     Ok(LocalTextFileData {
@@ -360,26 +396,37 @@ fn remove_generated_text_attachment(
 }
 
 #[tauri::command]
-fn read_local_file(path: String) -> Result<LocalFileData, String> {
-    read_local_file_data(path, None)
+fn read_local_file(
+    path: String,
+    grants: tauri::State<'_, SelectedLocalFiles>,
+) -> Result<LocalFileData, String> {
+    read_local_file_data(path, None, &grants)
 }
 
 #[tauri::command(async)]
-fn read_local_preview_file(path: String) -> Result<LocalFileData, String> {
-    read_local_file_data(path, Some(10 * 1024 * 1024))
+fn read_local_preview_file(
+    path: String,
+    grants: tauri::State<'_, SelectedLocalFiles>,
+) -> Result<LocalFileData, String> {
+    read_local_file_data(path, Some(10 * 1024 * 1024), &grants)
 }
 
-fn read_local_file_data(path: String, max_bytes: Option<u64>) -> Result<LocalFileData, String> {
+fn read_local_file_data(
+    path: String,
+    max_bytes: Option<u64>,
+    grants: &SelectedLocalFiles,
+) -> Result<LocalFileData, String> {
     use base64::Engine;
     use std::io::Read;
 
-    let metadata = get_local_file_metadata(path.clone())?;
+    let selected_path = selected_file_path(grants, &path)?;
+    let metadata = local_file_metadata(&path, &selected_path)?;
     let bytes = if let Some(limit) = max_bytes {
         let limit = limit.min(10 * 1024 * 1024);
         if metadata.size > limit {
             return Err("File exceeds preview limit".into());
         }
-        let file = fs::File::open(&path).map_err(|_| "File is no longer available")?;
+        let file = fs::File::open(&selected_path).map_err(|_| "File is no longer available")?;
         let mut bytes = Vec::new();
         file.take(limit + 1)
             .read_to_end(&mut bytes)
@@ -389,7 +436,7 @@ fn read_local_file_data(path: String, max_bytes: Option<u64>) -> Result<LocalFil
         }
         bytes
     } else {
-        fs::read(&path).map_err(|e| format!("Read error: {}", e))?
+        fs::read(&selected_path).map_err(|e| format!("Read error: {}", e))?
     };
 
     Ok(LocalFileData {
@@ -407,7 +454,7 @@ mod local_preview_tests {
     use super::*;
 
     #[test]
-    fn preview_reads_bytes_and_rejects_oversized_or_missing_files() {
+    fn preview_requires_picker_grant_and_rejects_oversized_or_missing_files() {
         let path = std::env::temp_dir().join(format!(
             "hackerai-preview-{}-{}.txt",
             std::process::id(),
@@ -418,7 +465,15 @@ mod local_preview_tests {
         ));
         fs::write(&path, b"local preview").unwrap();
         let name = path.to_string_lossy().into_owned();
-        let result = read_local_preview_file(name.clone()).unwrap();
+        let grants = SelectedLocalFiles(std::sync::Mutex::new(HashSet::new()));
+        assert!(selected_file_path(&grants, &name).is_err());
+        assert!(read_local_file_data(name.clone(), Some(1024), &grants).is_err());
+        grants
+            .0
+            .lock()
+            .unwrap()
+            .insert(fs::canonicalize(&path).unwrap());
+        let result = read_local_file_data(name.clone(), Some(1024), &grants).unwrap();
         assert_eq!(result.base64, "bG9jYWwgcHJldmlldw==");
         fs::OpenOptions::new()
             .write(true)
@@ -427,28 +482,14 @@ mod local_preview_tests {
             .set_len(10 * 1024 * 1024 + 1)
             .unwrap();
         assert!(
-            matches!(read_local_preview_file(name.clone()), Err(e) if e == "File exceeds preview limit")
+            matches!(read_local_file_data(name.clone(), Some(10 * 1024 * 1024), &grants), Err(e) if e == "File exceeds preview limit")
         );
         fs::remove_file(&path).unwrap();
-        assert!(read_local_preview_file(name).is_err());
+        assert!(read_local_file_data(name, Some(1024), &grants).is_err());
     }
 }
 
-// ── Command Execution Server ──────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct ExecRequest {
-    command: String,
-    cwd: Option<String>,
-    env: Option<HashMap<String, String>>,
-    #[serde(default = "default_timeout")]
-    timeout_ms: u64,
-}
-
-fn default_timeout() -> u64 {
-    30000
-}
-
+#[cfg(test)]
 #[derive(Serialize)]
 struct ExecResponse {
     stdout: String,
@@ -456,6 +497,7 @@ struct ExecResponse {
     exit_code: i32,
 }
 
+#[cfg(test)]
 async fn wait_with_output_or_kill_on_timeout(
     mut child: tokio::process::Child,
     timeout: Duration,
@@ -579,401 +621,6 @@ struct FileListRequest {
 #[derive(Deserialize)]
 struct FileStatRequest {
     path: String,
-}
-
-/// Start the local command execution HTTP server.
-/// Binds to 127.0.0.1 only and requires a session token for all requests.
-async fn start_cmd_server() {
-    // Generate a random session token
-    let token = uuid::Uuid::new_v4().to_string();
-    let _ = CMD_SERVER_TOKEN.set(token.clone());
-
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("Failed to start command server: {}", e);
-            return;
-        }
-    };
-
-    let port = match listener.local_addr() {
-        Ok(addr) => addr.port(),
-        Err(e) => {
-            log::error!("Failed to get command server address: {}", e);
-            return;
-        }
-    };
-    CMD_SERVER_PORT.store(port, Ordering::Relaxed);
-    log::info!("Command server listening on http://127.0.0.1:{}", port);
-
-    loop {
-        let (stream, addr) = match listener.accept().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                log::warn!("Command server accept error: {}", e);
-                continue;
-            }
-        };
-
-        // Only accept connections from localhost
-        if !addr.ip().is_loopback() {
-            log::warn!("Rejected non-loopback connection from {}", addr);
-            continue;
-        }
-
-        let token = token.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_cmd_request(stream, &token).await {
-                log::warn!("Command server request error: {}", e);
-            }
-        });
-    }
-}
-
-/// Maximum allowed header size (256KB). Requests with headers exceeding this are rejected.
-const MAX_HEADER_SIZE: usize = 256 * 1024;
-
-/// Maximum allowed body size (10MB). Requests with bodies exceeding this are rejected.
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
-
-/// Parse an HTTP request from the stream, returning (method, path, headers, body)
-async fn parse_http_request(
-    stream: &mut tokio::net::TcpStream,
-) -> Result<(String, String, HashMap<String, String>, String), String> {
-    let mut buf = vec![0u8; 64 * 1024]; // 64KB initial buffer
-    let mut total_read = 0;
-
-    // Read headers first (with size cap to prevent OOM)
-    loop {
-        let n = stream
-            .read(&mut buf[total_read..])
-            .await
-            .map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Err("Connection closed".into());
-        }
-        total_read += n;
-
-        // Check if we have the full headers (search in bytes, not string)
-        if buf[..total_read].windows(4).any(|w| w == b"\r\n\r\n") {
-            break;
-        }
-
-        // Reject oversized headers
-        if total_read > MAX_HEADER_SIZE {
-            return Err("Request headers too large".into());
-        }
-
-        // Grow buffer if needed (up to the cap)
-        if total_read >= buf.len() {
-            let new_size = (buf.len() * 2).min(MAX_HEADER_SIZE + 1);
-            if new_size <= buf.len() {
-                return Err("Request headers too large".into());
-            }
-            buf.resize(new_size, 0);
-        }
-    }
-
-    // Find header/body boundary in raw bytes to avoid string/byte index mismatch
-    let header_end = buf[..total_read]
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or("No header end")?;
-    let body_start_idx = header_end + 4;
-
-    let header_section = String::from_utf8_lossy(&buf[..header_end]).to_string();
-
-    // Parse request line
-    let first_line = header_section.lines().next().ok_or("Empty request")?;
-    let parts: Vec<&str> = first_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return Err("Invalid request line".into());
-    }
-    let method = parts[0].to_string();
-    let path = parts[1].to_string();
-
-    // Parse headers
-    let mut headers = HashMap::new();
-    for line in header_section.lines().skip(1) {
-        if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
-        }
-    }
-
-    // Read body based on content-length
-    let content_length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-
-    if content_length > MAX_BODY_SIZE {
-        return Err("Request body too large".into());
-    }
-
-    let body_bytes_read = total_read - body_start_idx;
-    let mut body_buf = buf[body_start_idx..total_read].to_vec();
-
-    // Read remaining body if needed
-    if body_bytes_read < content_length {
-        let remaining = content_length - body_bytes_read;
-        let mut remaining_buf = vec![0u8; remaining];
-        let mut read_so_far = 0;
-        while read_so_far < remaining {
-            let n = stream
-                .read(&mut remaining_buf[read_so_far..])
-                .await
-                .map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            read_so_far += n;
-        }
-        body_buf.extend_from_slice(&remaining_buf[..read_so_far]);
-    }
-
-    let body = String::from_utf8_lossy(&body_buf[..content_length.min(body_buf.len())]).to_string();
-
-    Ok((method, path, headers, body))
-}
-
-async fn handle_cmd_request(
-    mut stream: tokio::net::TcpStream,
-    expected_token: &str,
-) -> Result<(), String> {
-    let (method, path, headers, body) = parse_http_request(&mut stream).await?;
-
-    // CORS preflight
-    if method == "OPTIONS" {
-        let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
-        stream
-            .write_all(response.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    // Validate auth token
-    let auth_header = headers.get("authorization").cloned().unwrap_or_default();
-    let provided_token = auth_header.strip_prefix("Bearer ").unwrap_or("");
-    if provided_token != expected_token {
-        let body = r#"{"error":"unauthorized"}"#;
-        let response = format!(
-            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(), body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    // Streaming execute gets special handling (writes directly to stream)
-    if method == "POST" && path == "/execute/stream" {
-        return handle_execute_stream(&body, &mut stream).await;
-    }
-
-    let (route_path, _query_string) = if let Some(idx) = path.find('?') {
-        (&path[..idx], &path[idx + 1..])
-    } else {
-        (path.as_str(), "")
-    };
-
-    let result = match (method.as_str(), route_path) {
-        ("POST", "/execute") => handle_execute(&body).await,
-        ("POST", "/files/stat") => handle_file_stat(&body).await,
-        ("POST", "/files/read") => handle_file_read(&body).await,
-        ("POST", "/files/write") => handle_file_write(&body).await,
-        ("POST", "/files/append") => handle_file_append(&body).await,
-        ("POST", "/files/remove") => handle_file_remove(&body).await,
-        ("POST", "/files/list") => handle_file_list(&body).await,
-        (_, "/health") => Ok(r#"{"status":"ok"}"#.to_string()),
-        _ => Err("not found".to_string()),
-    };
-
-    let (status, resp_body) = match result {
-        Ok(json) => ("200 OK", json),
-        Err(e) if e == "not found" => ("404 Not Found", json_error_body("not found")),
-        Err(e) => ("500 Internal Server Error", json_error_body(&e)),
-    };
-
-    let response = format!(
-        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-        status, resp_body.len(), resp_body
-    );
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn handle_execute(body: &str) -> Result<String, String> {
-    let _operation = update_safety::UPDATE_GATE.operation()?;
-    let req: ExecRequest =
-        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    let mut cmd = platform::build_command(&req.command, req.cwd.as_deref(), req.env.as_ref());
-
-    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
-
-    let timeout = Duration::from_millis(req.timeout_ms);
-    let output = wait_with_output_or_kill_on_timeout(child, timeout, req.timeout_ms).await?;
-
-    // Truncate output to 1MB to prevent huge responses
-    const MAX_OUTPUT: usize = 1024 * 1024;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout_str = if stdout.len() > MAX_OUTPUT {
-        format!(
-            "{}... [truncated, {} total bytes]",
-            &stdout[..MAX_OUTPUT],
-            stdout.len()
-        )
-    } else {
-        stdout.to_string()
-    };
-    let stderr_str = if stderr.len() > MAX_OUTPUT {
-        format!(
-            "{}... [truncated, {} total bytes]",
-            &stderr[..MAX_OUTPUT],
-            stderr.len()
-        )
-    } else {
-        stderr.to_string()
-    };
-
-    let resp = ExecResponse {
-        stdout: stdout_str,
-        stderr: stderr_str,
-        exit_code: output.status.code().unwrap_or(-1),
-    };
-
-    serde_json::to_string(&resp).map_err(|e| format!("Serialize error: {}", e))
-}
-
-/// Streaming execute: sends NDJSON lines as stdout/stderr arrive, then a final
-/// line with exit_code. Each line is one of:
-///   {"type":"stdout","data":"..."}
-///   {"type":"stderr","data":"..."}
-///   {"type":"exit","exit_code":0}
-///   {"type":"error","message":"..."}
-async fn handle_execute_stream(
-    body: &str,
-    stream: &mut (impl tokio::io::AsyncWrite + Unpin),
-) -> Result<(), String> {
-    let _operation = update_safety::UPDATE_GATE.operation()?;
-    let req: ExecRequest =
-        serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    let mut cmd = platform::build_command(&req.command, req.cwd.as_deref(), req.env.as_ref());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let err_body = json_error_body(&format!("Failed to spawn: {}", e));
-            let resp = format!(
-                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-                err_body.len(), err_body
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            return Ok(());
-        }
-    };
-
-    // Send chunked response headers
-    let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
-    if let Err(error) = stream.write_all(headers.as_bytes()).await {
-        // The command has already started. Keep update admission blocked until
-        // it is stopped and reaped, even if the HTTP client disconnected.
-        platform::graceful_kill(&mut child).await;
-        return Err(error.to_string());
-    }
-
-    let timeout = Duration::from_millis(req.timeout_ms);
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-
-    let result = tokio::time::timeout(timeout, async {
-        let mut stdout_buf = [0u8; 4096];
-        let mut stderr_buf = [0u8; 4096];
-        let mut stdout_done = false;
-        let mut stderr_done = false;
-
-        loop {
-            if stdout_done && stderr_done {
-                break;
-            }
-
-            tokio::select! {
-                result = stdout.read(&mut stdout_buf), if !stdout_done => {
-                    match result {
-                        Ok(0) => stdout_done = true,
-                        Ok(n) => {
-                            let text = String::from_utf8_lossy(&stdout_buf[..n]);
-                            let escaped = serde_json::to_string(&text).unwrap_or_default();
-                            let line = format!(r#"{{"type":"stdout","data":{}}}"#, escaped);
-                            write_chunk(stream, &line).await;
-                        }
-                        Err(_) => stdout_done = true,
-                    }
-                }
-                result = stderr.read(&mut stderr_buf), if !stderr_done => {
-                    match result {
-                        Ok(0) => stderr_done = true,
-                        Ok(n) => {
-                            let text = String::from_utf8_lossy(&stderr_buf[..n]);
-                            let escaped = serde_json::to_string(&text).unwrap_or_default();
-                            let line = format!(r#"{{"type":"stderr","data":{}}}"#, escaped);
-                            write_chunk(stream, &line).await;
-                        }
-                        Err(_) => stderr_done = true,
-                    }
-                }
-            }
-        }
-
-        // Wait for process to exit
-        child.wait().await
-    })
-    .await;
-
-    match result {
-        Ok(Ok(status)) => {
-            let line = format!(
-                r#"{{"type":"exit","exit_code":{}}}"#,
-                status.code().unwrap_or(-1)
-            );
-            write_chunk(stream, &line).await;
-        }
-        Ok(Err(e)) => {
-            let line = json_stream_error_line(&format!("Process error: {}", e));
-            write_chunk(stream, &line).await;
-        }
-        Err(_) => {
-            // Timeout — gracefully kill the process
-            platform::graceful_kill(&mut child).await;
-            let line =
-                json_stream_error_line(&format!("Command timed out after {}ms", req.timeout_ms));
-            write_chunk(stream, &line).await;
-        }
-    }
-
-    // Terminal chunk
-    write_chunk(stream, "").await;
-    Ok(())
-}
-
-/// Write a single HTTP chunked-transfer chunk
-async fn write_chunk(stream: &mut (impl tokio::io::AsyncWrite + Unpin), data: &str) {
-    let payload = if data.is_empty() {
-        "0\r\n\r\n".to_string()
-    } else {
-        let line = format!("{}\n", data);
-        format!("{:x}\r\n{}\r\n", line.len(), line)
-    };
-    let _ = stream.write_all(payload.as_bytes()).await;
-    let _ = stream.flush().await;
 }
 
 async fn count_file_lines(path: &std::path::Path, file_size: u64) -> Result<u64, String> {
@@ -1358,12 +1005,125 @@ async fn dispatch_desktop_file_request(
         .map_err(|error| format!("Failed to parse desktop file response: {}", error))
 }
 
-/// Executes desktop file operations through Tauri IPC so the HTTPS webview
-/// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
-/// handlers remain available for rolling compatibility with older web bundles.
+#[cfg(test)]
 #[tauri::command]
 async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
     dispatch_desktop_file_request(request).await
+}
+
+fn authorized_message_digest(message: &serde_json::Value) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let canonical =
+        serde_json::to_vec(message).map_err(|_| "Invalid Desktop operation".to_string())?;
+    Ok(format!("{:x}", Sha256::digest(&canonical)))
+}
+
+async fn redeem_authorized_message(
+    authorization_id: &str,
+    mut message: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if authorization_id.len() != 64
+        || !authorization_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Invalid Desktop operation authorization".to_string());
+    }
+    let fields = message
+        .as_object_mut()
+        .ok_or_else(|| "Invalid Desktop operation".to_string())?;
+    fields.remove("authorizationId");
+    fields.remove("operationChannel");
+    let digest = authorized_message_digest(&message)?;
+
+    #[cfg(debug_assertions)]
+    let url = "http://localhost:3000/api/desktop/authorized-operation";
+    #[cfg(not(debug_assertions))]
+    let url = "https://hackerai.co/api/desktop/authorized-operation";
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Desktop authorization client unavailable".to_string())?;
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({ "id": authorization_id, "digest": digest }))
+        .send()
+        .await
+        .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
+    if !response.status().is_success() {
+        return Err("Desktop operation was not authorized".to_string());
+    }
+    let approval: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| "Invalid Desktop authorization response".to_string())?;
+    if approval.get("approved") != Some(&serde_json::Value::Bool(true)) {
+        return Err("Desktop operation was not authorized".to_string());
+    }
+    Ok(message)
+}
+
+fn authorized_operation_type<'a>(
+    message: &'a serde_json::Value,
+    allowed: &[&str],
+) -> Result<&'a str, String> {
+    let kind = message
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Desktop operation type is missing".to_string())?;
+    if !allowed.contains(&kind) {
+        return Err("Desktop operation type is not allowed here".to_string());
+    }
+    Ok(kind)
+}
+
+#[tauri::command]
+async fn authorized_desktop_file_request(
+    authorization_id: String,
+    message: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    let kind = authorized_operation_type(
+        &message,
+        &[
+            "file_stat",
+            "file_read",
+            "file_write",
+            "file_append",
+            "file_remove",
+            "file_list",
+        ],
+    )?;
+    let path = message.get("path").cloned().ok_or("File path is missing")?;
+    let request = match kind {
+        "file_read" => {
+            let range = message.get("range").and_then(serde_json::Value::as_array);
+            serde_json::json!({
+                "type": kind,
+                "path": path,
+                "range_start": range.and_then(|value| value.first()),
+                "range_end": range.and_then(|value| value.get(1)),
+                "max_full_bytes": message.get("maxFullBytes"),
+                "max_result_bytes": message.get("maxResultBytes"),
+            })
+        }
+        "file_write" | "file_append" => serde_json::json!({
+            "type": kind,
+            "path": path,
+            "content": message.get("content"),
+            "is_base64": message.get("isBase64").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            "allowed_root": message.get("allowedRoot"),
+        }),
+        _ => serde_json::json!({ "type": kind, "path": path }),
+    };
+    dispatch_desktop_file_request(request).await
+}
+
+#[tauri::command]
+async fn probe_desktop_file_bridge() -> Result<serde_json::Value, String> {
+    dispatch_desktop_file_request(serde_json::json!({ "type": "file_stat", "path": "." })).await
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1427,6 +1187,7 @@ fn request_stream_command_cancel(
     commands.canceled.insert(command_id.to_string());
     Ok(commands.running.get(command_id).copied())
 }
+#[cfg(test)]
 #[tauri::command]
 async fn execute_command(
     command: String,
@@ -1471,6 +1232,29 @@ async fn execute_command(
 #[tauri::command]
 fn get_command_stdin_support() -> bool {
     true
+}
+
+#[derive(Serialize)]
+struct DesktopOsInfo {
+    platform: String,
+    arch: String,
+    release: String,
+    hostname: String,
+}
+
+#[tauri::command]
+fn get_desktop_os_info() -> DesktopOsInfo {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    DesktopOsInfo {
+        platform: std::env::consts::OS.to_string(),
+        arch: arch.to_string(),
+        release: os_info::get().version().to_string(),
+        hostname: gethostname::gethostname().to_string_lossy().into_owned(),
+    }
 }
 
 #[tauri::command]
@@ -1566,6 +1350,43 @@ async fn execute_stream_command(
         commands.running.remove(&command_id);
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedCommandMessage {
+    command_id: String,
+    command: String,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    stdin: Option<String>,
+    stdin_encoding: Option<String>,
+    timeout: Option<u64>,
+}
+
+#[tauri::command]
+async fn execute_authorized_stream_command(
+    state: tauri::State<'_, StreamCommandState>,
+    authorization_id: String,
+    message: serde_json::Value,
+    on_event: tauri::ipc::Channel<StreamEvent>,
+) -> Result<(), String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    authorized_operation_type(&message, &["command"])?;
+    let command: AuthorizedCommandMessage =
+        serde_json::from_value(message).map_err(|_| "Invalid authorized command".to_string())?;
+    execute_stream_command(
+        state,
+        command.command_id,
+        command.command,
+        command.cwd,
+        command.env,
+        command.stdin,
+        command.stdin_encoding,
+        command.timeout,
+        on_event,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2117,9 +1938,128 @@ async fn execute_pty_kill(
     manager.kill(&session_id)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedPtyCreate {
+    session_id: String,
+    command: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedPtyInput {
+    session_id: String,
+    data: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedPtyResize {
+    session_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedPtyKill {
+    session_id: String,
+}
+
+#[tauri::command]
+async fn execute_authorized_pty_create(
+    state: tauri::State<'_, PtyState>,
+    authorization_id: String,
+    message: serde_json::Value,
+    on_data: tauri::ipc::Channel<String>,
+) -> Result<pty::PtyCreateResult, String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    authorized_operation_type(&message, &["pty_create"])?;
+    let request: AuthorizedPtyCreate =
+        serde_json::from_value(message).map_err(|_| "Invalid authorized PTY".to_string())?;
+    execute_pty_create(
+        state,
+        request.session_id,
+        request.command,
+        request.cols.unwrap_or(80),
+        request.rows.unwrap_or(24),
+        request.cwd,
+        request.env,
+        on_data,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn execute_authorized_pty_input(
+    state: tauri::State<'_, PtyState>,
+    authorization_id: String,
+    message: serde_json::Value,
+) -> Result<(), String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    authorized_operation_type(&message, &["pty_input"])?;
+    let request: AuthorizedPtyInput =
+        serde_json::from_value(message).map_err(|_| "Invalid authorized PTY input".to_string())?;
+    execute_pty_input(state, request.session_id, request.data).await
+}
+
+#[tauri::command]
+async fn execute_authorized_pty_resize(
+    state: tauri::State<'_, PtyState>,
+    authorization_id: String,
+    message: serde_json::Value,
+) -> Result<(), String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    authorized_operation_type(&message, &["pty_resize"])?;
+    let request: AuthorizedPtyResize =
+        serde_json::from_value(message).map_err(|_| "Invalid authorized PTY resize".to_string())?;
+    execute_pty_resize(state, request.session_id, request.cols, request.rows).await
+}
+
+#[tauri::command]
+async fn execute_authorized_pty_kill(
+    state: tauri::State<'_, PtyState>,
+    authorization_id: String,
+    message: serde_json::Value,
+) -> Result<(), String> {
+    let message = redeem_authorized_message(&authorization_id, message).await?;
+    authorized_operation_type(&message, &["pty_kill"])?;
+    let request: AuthorizedPtyKill =
+        serde_json::from_value(message).map_err(|_| "Invalid authorized PTY kill".to_string())?;
+    execute_pty_kill(state, request.session_id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authorized_operation_digest_matches_server_canonical_json() {
+        let message = serde_json::json!({
+            "type": "command",
+            "commandId": "cmd-1",
+            "command": "printf safe",
+            "env": { "B": "2", "A": "1" },
+            "targetConnectionId": "desktop-1",
+        });
+        assert_eq!(
+            authorized_message_digest(&message).unwrap(),
+            "ff460f40034c348f7eba59c682589ea4af814bb8287bc49c3a44ab46b6e53405"
+        );
+        let unicode = serde_json::json!({
+            "type": "command",
+            "command": "printf 'π\\n' && echo 🔒",
+            "env": { "LANG": "en_US.UTF-8" },
+        });
+        assert_eq!(
+            authorized_message_digest(&unicode).unwrap(),
+            "7ac733d7b148971df6b6f1c0b540f44d1bfb5c2517b2dc5c8008eb334426e080"
+        );
+    }
 
     #[tokio::test]
     async fn stream_cancel_before_launch_prevents_a_native_process() {
@@ -2406,23 +2346,26 @@ pub fn run() {
             environment_identity::get_environment_id,
             get_dev_auth_port,
             prepare_desktop_auth_state,
-            get_cmd_server_info,
+            pick_local_files,
             save_file_with_dialog,
             save_binary_file_with_dialog,
-            desktop_file_request,
+            open_downloads_folder,
+            authorized_desktop_file_request,
+            probe_desktop_file_bridge,
             get_local_file_metadata,
             write_generated_text_attachment,
             read_generated_text_attachment,
             remove_generated_text_attachment,
             read_local_file,
             read_local_preview_file,
-            execute_command,
+            get_desktop_os_info,
             get_command_stdin_support,
-            execute_stream_command,
+            execute_authorized_stream_command,
             cancel_stream_command,
-            execute_pty_create,
-            execute_pty_input,
-            execute_pty_resize,
+            execute_authorized_pty_create,
+            execute_authorized_pty_input,
+            execute_authorized_pty_resize,
+            execute_authorized_pty_kill,
             execute_pty_kill
         ])
         .plugin(tauri_plugin_os::init())
@@ -2462,6 +2405,7 @@ pub fn run() {
         .manage(PendingDesktopAuthStates(std::sync::Mutex::new(
             HashMap::new(),
         )))
+        .manage(SelectedLocalFiles(std::sync::Mutex::new(HashSet::new())))
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -2502,9 +2446,6 @@ pub fn run() {
                 let dev_handle = app.handle().clone();
                 tauri::async_runtime::spawn(start_dev_auth_server(dev_handle));
             }
-
-            // Start command execution server (always, for local terminal commands)
-            tauri::async_runtime::spawn(start_cmd_server());
 
             // Check for updates on every launch
             let handle = app.handle().clone();
