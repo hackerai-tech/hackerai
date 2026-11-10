@@ -1668,7 +1668,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   browserChallenge: visionLimit,
                 },
               };
-            if (!input.is_background && !input.interactive) {
+            // Qualified recovery captures finish here, even when requested in the
+            // background, so no unqualified shell screenshot can race file view.
+            if (!input.interactive) {
               const capture = await context.captureCaptchaVisionCommand?.(
                 input.command,
                 options.abortSignal,
