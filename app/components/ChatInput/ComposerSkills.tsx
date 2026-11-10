@@ -300,7 +300,7 @@ export function ComposerSkillsProvider({
           align="start"
           sideOffset={8}
           collisionPadding={16}
-          className="flex max-h-[var(--radix-popover-content-available-height)] w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border-border/70 bg-background p-0 text-foreground shadow-lg shadow-black/10 dark:bg-muted dark:shadow-black/30"
+          className="flex max-h-[var(--radix-popover-content-available-height)] w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] flex-col overflow-x-hidden overflow-y-auto rounded-2xl border-border/70 bg-background p-0 text-foreground shadow-lg shadow-black/10 dark:bg-muted dark:shadow-black/30"
           onOpenAutoFocus={(event) => {
             if (token.current) event.preventDefault();
           }}
@@ -346,7 +346,7 @@ export function ComposerSkillsProvider({
             id={listId}
             role="listbox"
             aria-label="Skills"
-            className="min-h-0 max-h-60 overflow-y-auto p-1"
+            className="min-h-11 max-h-60 overflow-y-auto p-1"
           >
             {matches.map((skill, index) => (
               <button
