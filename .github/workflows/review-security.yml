@@ -1,0 +1,88 @@
+name: Update review and security policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types:
+      [
+        opened,
+        synchronize,
+        reopened,
+        ready_for_review,
+        converted_to_draft,
+        edited,
+      ]
+  check_run:
+    types: [created, completed, rerequested]
+  workflow_run:
+    workflows: [Run Tests]
+    types: [completed]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to re-evaluate after review thread resolution
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  resolve:
+    if: >-
+      (github.event_name != 'check_run' ||
+       github.event.check_run.app.id == 347564 ||
+       github.event.check_run.app.id == 57789) &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request &&
+        (github.event.action != 'edited' ||
+         github.event.comment.user.login == 'coderabbitai[bot]')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prs: ${{ steps.resolve.outputs.prs }}
+      has_prs: ${{ steps.resolve.outputs.has_prs }}
+    steps:
+      # Never check out a PR revision, install its packages, or consume its artifacts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/testing/review-security.mjs resolve
+
+  evaluate:
+    name: Update policy for PR ${{ matrix.pr }}
+    needs: resolve
+    if: needs.resolve.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: write
+      security-events: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.resolve.outputs.prs) }}
+    # Different event types for the same PR must not race or publish stale decisions.
+    concurrency:
+      group: review-security-pr-${{ matrix.pr }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr }}
+        run: node scripts/testing/review-security.mjs evaluate

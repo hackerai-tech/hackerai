@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ABUSE_EMAIL } from "@/lib/abuse/report";
 import {
   HELP_CENTER_URL,
   PUBLIC_PAGE_LAST_MODIFIED,
@@ -251,6 +252,24 @@ export default function TermsOfServicePage() {
               any time to protect the Service, manage capacity, or respond to
               provider availability.
             </p>
+            <p className="mt-3">
+              To report suspected misuse of HackerAI, use our{" "}
+              <Link href="/abuse" className={linkClassName}>
+                abuse reporting form
+              </Link>
+              . You do not need a HackerAI account or ownership of the affected
+              system to submit a report.
+              {process.env.ABUSE_EMAIL_VERIFIED === "true" && (
+                <>
+                  {" "}
+                  You can also email{" "}
+                  <a href={`mailto:${ABUSE_EMAIL}`} className={linkClassName}>
+                    {ABUSE_EMAIL}
+                  </a>
+                  .
+                </>
+              )}
+            </p>
           </section>
 
           <section>
@@ -270,6 +289,14 @@ export default function TermsOfServicePage() {
               Sections that by their nature should survive, including those on
               content, payments, disclaimers, liability, indemnity, and
               disputes, survive termination.
+            </p>
+            <p className="mt-3">
+              To request review of a restriction, select “Appeal a decision” on
+              the{" "}
+              <Link href="/abuse" className={linkClassName}>
+                reporting form
+              </Link>
+              . An appeal does not automatically lift a restriction.
             </p>
           </section>
 

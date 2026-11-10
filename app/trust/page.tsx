@@ -127,13 +127,17 @@ const subprocessors: Subprocessor[] = [
 ];
 
 interface SectionProps {
+  id?: string;
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   children: React.ReactNode;
 }
 
-const Section = ({ icon: Icon, title, children }: SectionProps) => (
-  <section className="rounded-xl border border-border bg-card p-6 sm:p-8">
+const Section = ({ id, icon: Icon, title, children }: SectionProps) => (
+  <section
+    id={id}
+    className="rounded-xl border border-border bg-card p-6 sm:p-8"
+  >
     <div className="mb-4 flex items-center gap-3">
       <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted">
         <Icon className="size-4.5 text-foreground" />
@@ -380,7 +384,11 @@ function TrustContent() {
           </Section>
 
           <div className="grid gap-6 md:grid-cols-2">
-            <Section icon={Bug} title="Responsible disclosure">
+            <Section
+              id="responsible-disclosure"
+              icon={Bug}
+              title="Responsible disclosure"
+            >
               <p>
                 Found a security vulnerability in HackerAI? Report it through
                 the <InlineLink href={HELP_CENTER_URL}>help center</InlineLink>.
@@ -434,6 +442,16 @@ function TrustContent() {
 
         {/* Related documents */}
         <footer className="mt-12">
+          <p className="mb-6 text-sm leading-7 text-muted-foreground">
+            Suspected misuse of HackerAI, or a restriction you want reviewed?{" "}
+            <a
+              href="/abuse"
+              className="font-medium text-foreground underline underline-offset-4"
+            >
+              Report abuse or appeal a decision
+            </a>
+            . You do not need a HackerAI account.
+          </p>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
               { href: "/privacy-policy", label: "Privacy Policy" },

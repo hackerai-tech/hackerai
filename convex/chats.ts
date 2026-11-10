@@ -1822,6 +1822,7 @@ export const replaceActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return "not_found" as const;
+    await assertUserCanAccessChatHistory(ctx, chat.user_id);
     if (
       chat.deletion_started_at !== undefined ||
       (await isUserDeletionFenced(ctx.db, chat.user_id))
@@ -1887,6 +1888,9 @@ export const setActiveTriggerRun = mutation({
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
     if (!chat) return "not_found" as const;
+    // Cleanup may detach a stopped run, but suspended users cannot attach or retry work.
+    if (args.triggerRunId !== null)
+      await assertUserCanAccessChatHistory(ctx, chat.user_id);
     if (
       args.triggerRunId !== null &&
       (await isUserDeletionFenced(ctx.db, chat.user_id))
