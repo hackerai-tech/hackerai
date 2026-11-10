@@ -2,7 +2,6 @@ import {
   resolvePrivateSkillTools,
   PRIVATE_SKILL_DISCOVERY,
 } from "@/lib/user-skills/runtime";
-import type { MaxModelTelemetry } from "@/lib/experiments/max-grok-46";
 import {
   INFERENCE_CYBER_MODEL_KEY,
   INFERENCE_MAX_IMAGES_PER_REQUEST,
@@ -870,9 +869,11 @@ export type AgentStreamContext = {
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
-  /** Called after step preparation, immediately before the actual provider call. */
-  maxModelTelemetry?: MaxModelTelemetry;
-  onProviderRequestStart?: (configuredModel: string) => void;
+  /** Called at the provider adapter for Max, or before the prepared step otherwise. */
+  onProviderRequestStart?: (
+    configuredModel: string,
+    hasImageInputs?: boolean,
+  ) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
   /** Content-free lifecycle and delta widths for the worker's sampled memory log. */
@@ -1152,28 +1153,29 @@ export async function createAgentStream(
     if (recovered) unproductiveCompactionCount = 0;
   };
   let toolHistoryRepairReported = false;
+  // Max counts retries beneath recovery middleware, including rejected adapter calls.
+  const countMaxAdapterCalls = ctx.selectedModelOverride === "hackerai-max";
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
     const wrapAttempt = (attemptModel: LanguageModel): LanguageModel => {
       const historyModel =
-        ctx.chatLogger || ctx.maxModelTelemetry
+        ctx.chatLogger || countMaxAdapterCalls
           ? withProviderModelHistory(attemptModel, {
               configured: activeStepModelName,
               generationStep: stepIndex + 1,
               onStart: (entry) => {
                 ctx.chatLogger?.recordProviderModelCall(entry);
-                if (ctx.maxModelTelemetry && !abortSignal.aborted) {
+                if (countMaxAdapterCalls && !abortSignal.aborted) {
                   // Below recovery middleware: each real adapter call counts,
                   // including rejected requests and compacted same-step retries.
                   ctx.usageTracker.recordModelCall?.();
-                  ctx.maxModelTelemetry.providerStarted(
+                  ctx.onProviderRequestStart?.(
                     entry.requested,
                     streamHasImageViewResults ||
                       uiMessagesContainImageAttachment(state.finalMessages),
                   );
-                  ctx.onProviderRequestStart?.(entry.requested);
                 }
               },
             })
@@ -2242,12 +2244,12 @@ export async function createAgentStream(
           $process_person_profile: false,
         });
       }
-      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
+      if (!abortSignal.aborted && !countMaxAdapterCalls)
         ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       reportMemoryActivity({ operation: "provider_stream" });
       ctx.onModelStreamStart?.();
-      if (!abortSignal.aborted && !ctx.maxModelTelemetry)
+      if (!abortSignal.aborted && !countMaxAdapterCalls)
         ctx.onProviderRequestStart?.(model.modelId);
     },
     experimental_onToolCallStart: () => {
@@ -3123,14 +3125,6 @@ export async function createAgentStream(
       text,
       finishReason,
     }) => {
-      ctx.maxModelTelemetry?.providerCompleted({
-        responseModel: response?.modelId,
-        finishReason,
-        toolCalls: toolCalls?.length ?? 0,
-        hasImageToolResults: toolResultsContainImageViewResult(
-          toolResults ?? [],
-        ),
-      });
       reportMemoryActivity({ operation: "step_finalize" });
       lastCompletedResponseMessages = response?.messages ?? [];
       if (ctx.subscription === "free") {

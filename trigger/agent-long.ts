@@ -1,7 +1,3 @@
-import {
-  evaluateMaxGrok46,
-  MaxModelTelemetry,
-} from "@/lib/experiments/max-grok-46";
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
@@ -1994,7 +1990,6 @@ export const agentLongTask = task({
       getFailureSignalContext: (error) =>
         agentFailureSignalContext(error, triggerSignal, userStopSignal.signal),
     });
-    let maxModelTelemetry: MaxModelTelemetry | undefined;
     let taskOutcomeSurvey: Awaited<ReturnType<typeof selectTaskOutcomeSurvey>>;
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
@@ -2257,47 +2252,22 @@ export const agentLongTask = task({
         );
       }
 
-      const maxGrokAssignment = await evaluateMaxGrok46({
+      const contextTaskOutcomeSurvey = await selectContextTaskOutcomeSurvey({
         posthog,
         userId,
-        subscription,
+        chatId,
+        messageId: assistantMessageId,
+        triggerRunId: ctx.run.id,
         mode,
+        subscription,
         selectedModelOverride,
-        hasImages:
-          countFileAttachments(messagesForProcessing).imageCount > 0 ||
-          uiMessagesContainImageViewResult(processedMessages),
-        limitRescue: Boolean(limitRescue),
+        variant: agentModelContextVariant,
+        release: ctx.deployment?.version ?? "unknown",
       });
-      if (maxGrokAssignment) {
-        selectedModel = maxGrokAssignment.modelKey;
-        maxModelTelemetry = new MaxModelTelemetry(
-          posthog,
-          userId,
-          maxGrokAssignment,
-          {
-            requestId: assistantMessageId,
-            chatId,
-            subscription,
-            release: ctx.deployment?.version,
-            environment: ctx.environment.type.toLowerCase(),
-          },
-        );
-      }
-      const contextTaskOutcomeSurvey = maxGrokAssignment
-        ? undefined
-        : await selectContextTaskOutcomeSurvey({
-            posthog,
-            userId,
-            chatId,
-            messageId: assistantMessageId,
-            triggerRunId: ctx.run.id,
-            mode,
-            subscription,
-            selectedModelOverride,
-            variant: agentModelContextVariant,
-            release: ctx.deployment?.version ?? "unknown",
-          });
 
+      // Keep the entitled Max baseline stable while shared security steps run.
+      const maxBaselineModel =
+        selectedModelOverride === "hackerai-max" ? selectedModel : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           ctx.environment.type === "PRODUCTION"
@@ -2341,7 +2311,6 @@ export const agentLongTask = task({
         contextTaskOutcomeSurvey ??
         (await selectTaskOutcomeSurvey({
           assignment: abliteratedExperiment,
-          modelExperimentAssignment: maxGrokAssignment,
           selectedModelOverride,
           release: ctx.deployment?.version,
           posthog,
@@ -2372,7 +2341,7 @@ export const agentLongTask = task({
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
         ),
       });
-      const requestHasImages =
+      let requestHasImages =
         countFileAttachments(messagesForProcessing).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
@@ -3536,12 +3505,11 @@ export const agentLongTask = task({
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(
-                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     {
-                      hasImageInputs:
-                        maxModelTelemetry?.hasImageInputs ?? requestHasImages,
+                      hasImageInputs: requestHasImages,
                     },
                   );
             let activeModelName = selectedModel;
@@ -4173,14 +4141,15 @@ export const agentLongTask = task({
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
-              maxModelTelemetry,
-              onProviderRequestStart: (configuredModel) => {
+              onProviderRequestStart: (configuredModel, hasImageInputs) => {
                 recordFlashRoutingExposure(configuredModel);
-                if (maxModelTelemetry?.hasAssignedExposure)
-                  taskOutcomeSurvey?.expose?.();
-                if (maxModelTelemetry?.hasImageInputs) {
+                requestHasImages ||= Boolean(hasImageInputs);
+                if (
+                  selectedModelOverride === "hackerai-max" &&
+                  requestHasImages
+                ) {
                   fallbackModel = getRetryFallbackModel(
-                    maxGrokAssignment?.modelKey ?? selectedModel,
+                    maxBaselineModel ?? selectedModel,
                     mode,
                     selectedModelOverride,
                     { hasImageInputs: true },
@@ -4494,7 +4463,6 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               runReporting.captureTerminal(captureAgentCompletionAnalytics, {
-                maxModelTelemetry,
                 responseMessageId: retryMessageId,
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
@@ -5541,8 +5509,7 @@ export const agentLongTask = task({
                                   const finalRetryModel = nextContinuation
                                     ? getNextProviderDisconnectRetryModel({
                                         originalModel:
-                                          maxGrokAssignment?.modelKey ??
-                                          selectedModel,
+                                          maxBaselineModel ?? selectedModel,
                                         failedModel: retryModel,
                                         completedRetryCount:
                                           providerRecoveryAttempts,
@@ -5749,7 +5716,6 @@ export const agentLongTask = task({
                       runReporting.captureTerminal(
                         captureAgentCompletionAnalytics,
                         {
-                          maxModelTelemetry,
                           responseMessageId: assistantMessageId,
                           cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                           usageMeasurement:
@@ -6335,16 +6301,6 @@ export const agentLongTask = task({
             : undefined,
         triggerDurationMs: reportingUsage?.compute?.total?.durationMs,
         observedAccumulatedCostDollars: observedUsageTracker?.providerCost,
-      });
-      await taskOutcomeSurvey?.flush?.();
-      maxModelTelemetry?.recordTerminal({
-        outcome: userStopSignal.signal.aborted ? "aborted" : "error",
-        naturalCompletion: false,
-        finishReason: terminalAgentState?.streamFinishReason,
-        responseModel: terminalAgentState?.responseModel,
-        usage: observedUsageTracker?.measurementProperties(
-          maxModelTelemetry.assignment.modelKey,
-        ),
       });
       // Flush fallback records and quota-check exposure before the worker exits.
       await posthog?.shutdown().catch(() => undefined);
