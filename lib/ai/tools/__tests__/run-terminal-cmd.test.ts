@@ -286,6 +286,29 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
   });
 
+  test("returns a runtime-qualified vision image without dispatching the original screenshot", async () => {
+    const { context, sandboxManager } = makeContext({});
+    context.captureCaptchaVisionCommand = jest.fn(async () => ({
+      result: {
+        exitCode: 0,
+        output: "Screenshot saved",
+        browserChallenge: { status: "vision_capture_ready" },
+      },
+    }));
+    expect(
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned screenshot /tmp/image.png",
+      }),
+    ).toMatchObject({
+      result: {
+        exitCode: 0,
+        browserChallenge: { status: "vision_capture_ready" },
+      },
+    });
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+    expect(context.captureCaptchaVisionCommand).toHaveBeenCalledTimes(1);
+  });
+
   test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
     const { context, writerWrites } = makeContext({});
     let finish!: (value: { status: string }) => void;

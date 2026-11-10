@@ -1668,6 +1668,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   browserChallenge: visionLimit,
                 },
               };
+            if (!input.is_background && !input.interactive) {
+              const capture = await context.captureCaptchaVisionCommand?.(
+                input.command,
+                options.abortSignal,
+              );
+              if (capture) return capture;
+            }
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };

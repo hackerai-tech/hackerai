@@ -376,6 +376,8 @@ export const createTools = (
       : undefined;
   context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
   context.requestBrowserChallenge = checkBrowserChallenge?.request;
+  context.captureCaptchaVisionCommand =
+    checkBrowserChallenge?.captureVisionCommand;
   context.guardCaptchaVisionCommand = checkBrowserChallenge?.guardVisionCommand;
   context.finishCaptchaVisionCommand =
     checkBrowserChallenge?.finishVisionCommand;
