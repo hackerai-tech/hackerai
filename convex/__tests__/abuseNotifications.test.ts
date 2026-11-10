@@ -8,7 +8,11 @@ const run = (name: keyof typeof notifications, ctx: any, args: any) =>
 function fixture() {
   const row: any = {
     _id: "notification",
-    caseId: "case",
+    reference: "AB-123e4567-e89b-42d3-a456-426614174000",
+    ciphertext: "encrypted",
+    receivedAt: Date.now(),
+    payloadExpiresAt: Date.now() + 7 * 86400000,
+    expiresAt: Date.now() + 30 * 86400000,
     status: "pending",
     attempts: 0,
   };
@@ -19,12 +23,20 @@ function fixture() {
   };
   const ctx: any = {
     db: {
-      query: () => ({
+      query: (table: string) => ({
         withIndex: (_name: string, callback: (q: any) => unknown) => {
-          let matches = true;
+          let matches = table === "abuse_notifications";
           const q: any = {
             eq: (field: string, value: unknown) => {
               matches = matches && row[field] === value;
+              return q;
+            },
+            gt: (field: string, value: number) => {
+              matches = matches && row[field] > value;
+              return q;
+            },
+            lte: (field: string, value: number) => {
+              matches = matches && row[field] <= value;
               return q;
             },
             lt: (field: string, value: number) => {
@@ -37,7 +49,13 @@ function fixture() {
         },
       }),
       get: async (id: string) => (id === "notification" ? row : report),
-      patch: async (_id: string, patch: any) => Object.assign(row, patch),
+      patch: async (_id: string, patch: any) => {
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === undefined) delete row[key];
+          else row[key] = value;
+        }
+      },
+      delete: jest.fn(),
     },
     scheduler: { runAfter: jest.fn() },
   };
@@ -105,7 +123,7 @@ test("a crashed or ambiguous send is retained for reconciliation without automat
 test.each(["disabled", "erased"])("does not transmit %s work", async (mode) => {
   const { row, report, ctx } = fixture();
   if (mode === "disabled") delete process.env.ABUSE_SMTP_PASSWORD;
-  else delete report.ciphertext;
+  else delete row.ciphertext;
   expect(
     await run("claim", ctx, { notificationId: "notification" }),
   ).toBeNull();
@@ -187,4 +205,70 @@ test("the sweep recovers a dropped pending action without advancing a legitimate
   expect(
     await run("claim", ctx, { notificationId: "notification" }),
   ).toBeNull();
+});
+
+test("confirmation erases a new delivery payload while keeping its receipt for deduplication", async () => {
+  const { row, ctx } = fixture();
+  await run("claim", ctx, { notificationId: "notification" });
+  await run("finish", ctx, {
+    notificationId: "notification",
+    attempt: 1,
+    outcome: "sent",
+  });
+  expect(row).not.toHaveProperty("ciphertext");
+  expect(row).not.toHaveProperty("payloadExpiresAt");
+  expect(row).toMatchObject({
+    status: "sent",
+    reference: "AB-123e4567-e89b-42d3-a456-426614174000",
+    attempts: 1,
+  });
+});
+
+test("an expired payload cannot be claimed or explicitly retried", async () => {
+  const { row, ctx } = fixture();
+  row.payloadExpiresAt = Date.now() - 1;
+  expect(
+    await run("claim", ctx, { notificationId: "notification" }),
+  ).toBeNull();
+  expect(row.status).toBe("expired");
+  expect(row).not.toHaveProperty("ciphertext");
+  expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  row.status = "failed";
+  await expect(
+    run("retryFailed", ctx, {
+      notificationId: "notification",
+      expectedAttempts: 0,
+    }),
+  ).rejects.toThrow("unavailable");
+});
+
+test("mailbox reconciliation can confirm acceptance without another send or permit a checked retry", async () => {
+  const { row, ctx } = fixture();
+  row.status = "uncertain";
+  row.attempts = 1;
+  await run("reconcileUncertain", ctx, {
+    notificationId: "notification",
+    expectedAttempts: 1,
+    decision: "confirmed_sent",
+  });
+  expect(row.status).toBe("sent");
+  expect(row).not.toHaveProperty("ciphertext");
+  expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  const other = fixture();
+  other.row.status = "uncertain";
+  other.row.attempts = 1;
+  await run("reconcileUncertain", other.ctx, {
+    notificationId: "notification",
+    expectedAttempts: 1,
+    decision: "confirmed_not_sent",
+  });
+  expect(other.row.status).toBe("pending");
+  expect(other.ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
+  await expect(
+    run("reconcileUncertain", other.ctx, {
+      notificationId: "notification",
+      expectedAttempts: 1,
+      decision: "confirmed_not_sent",
+    }),
+  ).rejects.toThrow("changed");
 });

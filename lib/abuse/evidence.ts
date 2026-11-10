@@ -7,7 +7,7 @@ export function abuseIntakeEnabled(): boolean {
   if (process.env.ABUSE_INTAKE_ENABLED !== "true") return false;
   try {
     abuseEvidenceKeyring();
-    return Boolean(process.env.ABUSE_OPERATOR_USER_IDS?.trim());
+    return true;
   } catch {
     return false;
   }

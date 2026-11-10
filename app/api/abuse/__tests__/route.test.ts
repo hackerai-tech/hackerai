@@ -50,7 +50,7 @@ function request(
 }
 beforeEach(() => {
   process.env.ABUSE_INTAKE_ENABLED = "true";
-  process.env.ABUSE_OPERATOR_USER_IDS = "operator";
+  delete process.env.ABUSE_OPERATOR_USER_IDS;
   process.env.ABUSE_TURNSTILE_SITE_KEY = "synthetic-site-key-for-testing";
   process.env.ABUSE_TURNSTILE_SECRET_KEY = "synthetic-secret-key-for-testing";
   process.env.ABUSE_TURNSTILE_HOSTNAMES = "hackerai.co";
@@ -73,7 +73,7 @@ afterEach(() => {
   process.env = { ...originalEnv };
   global.fetch = originalFetch;
 });
-test("anonymous intake returns a receipt only after encrypted storage confirms it", async () => {
+test("anonymous intake returns a receipt only after encrypted queue storage confirms it", async () => {
   let release: (value: unknown) => void = () => {};
   let reachedStorage: () => void = () => {};
   const storageStarted = new Promise<void>((resolve) => {
@@ -271,4 +271,12 @@ test("does not expose provider errors or receipt fields for validation and rate-
   const limited = await POST(request());
   expect(limited.status).toBe(429);
   expect((await limited.json()).received).toBeUndefined();
+});
+
+test("expired delivery receipts return a finite resubmission response without a new success", async () => {
+  mockMutation.mockResolvedValue({ outcome: "expired" });
+  const response = await POST(request());
+  expect(response.status).toBe(410);
+  expect(await response.json()).toMatchObject({ code: "report_expired" });
+  expect((await response.json()).reference).toBeUndefined();
 });

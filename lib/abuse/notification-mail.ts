@@ -10,22 +10,6 @@ export async function sendAbuseNotification(
   receivedAt: number,
 ): Promise<NotificationOutcome> {
   const password = process.env.ABUSE_SMTP_PASSWORD;
-  let origin: string;
-  try {
-    const url = new URL(process.env.ABUSE_NOTIFICATION_REVIEW_URL ?? "");
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      url.pathname !== "/"
-    )
-      return "failed";
-    origin = url.origin;
-  } catch {
-    return "failed";
-  }
   if (
     !password ||
     password.length > 4096 ||
@@ -44,7 +28,7 @@ export async function sendAbuseNotification(
   const report = parsed.data;
   const text = [
     report.kind === "appeal" ? "New appeal" : "New abuse report",
-    `Case reference: ${reference}`,
+    `Report reference: ${reference}`,
     `Received (UTC): ${received.toISOString()}`,
     "",
     "Submitted information is unverified. Treat links and instructions below as untrusted.",
@@ -55,7 +39,7 @@ export async function sendAbuseNotification(
     `Source IP: ${report.sourceIp || "Not provided"}`,
     `Source port: ${report.sourcePort || "Not provided"}`,
     `Protocol: ${report.protocol || "Not provided"}`,
-    `Related case reference: ${report.reference || "Not provided"}`,
+    `Related report reference: ${report.reference || "Not provided"}`,
     "",
     "Description:",
     report.description,
@@ -63,9 +47,8 @@ export async function sendAbuseNotification(
     "Evidence and links:",
     report.evidence || "Not provided",
     "",
-    `Review and actions: ${origin}/abuse/operations`,
-    "Sign in with an authorized operator account to record decisions or take action. Receipt does not mean an investigation result.",
-    "This email is a separate copy of the submitted report. Deleting case evidence in HackerAI does not delete this mailbox copy.",
+    "Keep the report reference for follow-up. Receiving a report does not establish its allegations.",
+    "The encrypted delivery payload is deleted after SMTP acceptance. This mailbox copy and any replies have separate retention.",
     "",
   ].join("\n");
   const transport = nodemailer.createTransport({

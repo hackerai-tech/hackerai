@@ -30,8 +30,6 @@ const notify = (value: string) =>
 beforeEach(() => {
   verify.mockReset().mockResolvedValue(true);
   process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
-  process.env.ABUSE_NOTIFICATION_REVIEW_URL =
-    "https://hackerai-git-test-hackerai.vercel.app";
   sendMail.mockReset().mockResolvedValue({ accepted: ["abuse@hackerai.co"] });
 });
 afterEach(() => {
@@ -53,32 +51,17 @@ test("sends the complete submitted report in plain text with fixed headers and m
   const message = sendMail.mock.calls[0][0];
   expect(message.to).toBe("abuse@hackerai.co");
   expect(message.text).toContain(reference);
-  expect(message.text).toContain(
-    "https://hackerai-git-test-hackerai.vercel.app/abuse/operations",
-  );
   for (const value of Object.values(report))
     expect(message.text).toContain(value);
   expect(message.text).toContain("2026-11-09T16:31:00.000Z");
-  expect(message.text).toContain("does not delete this mailbox copy");
+  expect(message.text).toContain("deleted after SMTP acceptance");
+  expect(message.text).not.toContain("/abuse/operations");
   expect(message.subject).toBe(`HackerAI report received: ${reference}`);
   expect(message.from.address).toBe("abuse@hackerai.co");
   expect(message).not.toHaveProperty("html");
   expect(message).not.toHaveProperty("replyTo");
   expect(message).not.toHaveProperty("attachments");
   expect(close).toHaveBeenCalled();
-});
-test.each([
-  "http://hackerai.co",
-  "https://user:password@example.test",
-  "https://example.test/abuse/operations",
-  "https://example.test/#fragment",
-  "not-a-url",
-  "",
-  "https://hackerai.co/?secret=x",
-])("rejects invalid review origins before SMTP: %s", async (url) => {
-  process.env.ABUSE_NOTIFICATION_REVIEW_URL = url;
-  expect(await notify(reference)).toBe("failed");
-  expect(sendMail).not.toHaveBeenCalled();
 });
 test("rejects missing credentials and malformed references without transmission", async () => {
   delete process.env.ABUSE_SMTP_PASSWORD;
@@ -107,17 +90,6 @@ test("a preflight network failure is safely retried without sending a message", 
   expect(await notify(reference)).toBe("retry");
   expect(sendMail).not.toHaveBeenCalled();
 });
-test.each(["https://hackerai.co", "https://reports.example.org"])(
-  "uses the configured HTTPS review origin without a separate environment setting: %s",
-  async (origin) => {
-    process.env.ABUSE_NOTIFICATION_REVIEW_URL = origin;
-    expect(await notify(reference)).toBe("sent");
-    expect(sendMail.mock.calls[0][0].text).toContain(
-      `${origin}/abuse/operations`,
-    );
-  },
-);
-
 test.each([
   { ...report, submissionId: "123e4567-e89b-42d3-a456-426614174001" },
   { ...report, description: "short" },

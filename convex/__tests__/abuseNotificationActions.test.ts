@@ -41,7 +41,11 @@ afterEach(() => {
 
 function fixture() {
   const row: any = {
-    caseId: "case",
+    reference,
+    ciphertext: encryptAbuseEvidence(reference, report),
+    receivedAt: Date.UTC(2026, 10, 9),
+    payloadExpiresAt: Date.now() + 7 * 86400000,
+    expiresAt: Date.now() + 30 * 86400000,
     status: "pending",
     attempts: 0,
   };
@@ -53,7 +57,12 @@ function fixture() {
   const ctx: any = {
     db: {
       get: async (id: string) => (id === "notification" ? row : saved),
-      patch: async (_id: string, change: unknown) => Object.assign(row, change),
+      patch: async (_id: string, change: any) => {
+        for (const [key, value] of Object.entries(change)) {
+          if (value === undefined) delete row[key];
+          else row[key] = value;
+        }
+      },
     },
     scheduler: { runAfter: jest.fn() },
     runMutation: jest.fn(async (ref: any, args: any) => {
@@ -70,6 +79,8 @@ test("the actual claim, decrypt, send and finish pipeline delivers report detail
   await (deliver as any).handler(ctx, { notificationId: "notification" });
   expect(row).toMatchObject({ status: "sent", attempts: 1 });
   expect(sendMail).toHaveBeenCalledTimes(1);
+  expect(row).not.toHaveProperty("ciphertext");
+  expect(row).not.toHaveProperty("payloadExpiresAt");
   const message = sendMail.mock.calls[0][0];
   expect(message.to).toBe("abuse@hackerai.co");
   for (const value of [
@@ -85,7 +96,7 @@ test("the actual claim, decrypt, send and finish pipeline delivers report detail
 });
 
 test.each(["missing key", "wrong key", "corrupt ciphertext"])(
-  "fails closed before SMTP for %s without logging report contents",
+  "fails closed before SMTP for %s",
   async (failure) => {
     const { row, saved, ctx } = fixture();
     if (failure === "missing key") delete process.env.ABUSE_EVIDENCE_KEYS;
@@ -94,7 +105,7 @@ test.each(["missing key", "wrong key", "corrupt ciphertext"])(
         active: "test",
         keys: { test: "22".repeat(32) },
       });
-    else saved.ciphertext += "corrupt";
+    else row.ciphertext += "corrupt";
     await (deliver as any).handler(ctx, { notificationId: "notification" });
     expect(row).toMatchObject({ status: "failed", attempts: 1 });
     expect(verify).not.toHaveBeenCalled();

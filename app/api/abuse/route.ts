@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
         },
         verification === "rejected" ? 403 : 503,
       );
-    const receipt = await getConvexClient().mutation(api.abuseCases.receive, {
+    const receipt = await getConvexClient().mutation(api.abuseIntake.receive, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       reference,
       digests: abuseFingerprints("submission", JSON.stringify(report)),
@@ -124,6 +124,15 @@ export async function POST(request: NextRequest) {
         },
         409,
       );
+    if (receipt.outcome === "expired")
+      return reply(
+        {
+          code: "report_expired",
+          error:
+            "This report's delivery window expired. Submit it again with a new reference.",
+        },
+        410,
+      );
     return reply({ reference: receipt.reference, received: true }, 201);
   } catch (error) {
     if (error instanceof AbuseRequestError)
@@ -140,7 +149,7 @@ export async function POST(request: NextRequest) {
     return reply(
       {
         error:
-          "We could not confirm that your report was saved. Your details are still here; please retry.",
+          "We could not confirm that your report was queued. Your details are still here; please retry.",
       },
       503,
     );

@@ -93,7 +93,7 @@ test("a lost response retains fields and retries the same submission with a new 
     "Synthetic observation for a retry regression test.",
   );
   expect(
-    screen.queryByRole("heading", { name: "Your report is saved" }),
+    screen.queryByRole("heading", { name: "Your report was received" }),
   ).not.toBeInTheDocument();
   submit();
   expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -101,7 +101,7 @@ test("a lost response retains fields and retries the same submission with a new 
   verified("renewed-challenge");
   submit();
   expect(
-    await screen.findByRole("heading", { name: "Your report is saved" }),
+    await screen.findByRole("heading", { name: "Your report was received" }),
   ).toHaveFocus();
   const first = fetchMock.mock.calls[0][1],
     retry = fetchMock.mock.calls[1][1];
@@ -182,4 +182,38 @@ test("server verification failure renews the widget and displays only the finite
   );
   submit();
   expect(global.fetch).toHaveBeenCalledTimes(1);
+});
+
+test("an expired delivery window retains fields but starts a fresh submission after the next check", async () => {
+  const fetchMock = global.fetch as jest.Mock;
+  fetchMock.mockResolvedValueOnce({
+    ok: false,
+    status: 410,
+    json: async () => ({ code: "report_expired" }),
+  });
+  fetchMock.mockImplementationOnce(async (_url, init) => ({
+    ok: true,
+    json: async () => ({
+      received: true,
+      reference: `AB-${JSON.parse(init.body).submissionId}`,
+    }),
+  }));
+  render(<ReportForm available siteKey="synthetic-site-key" />);
+  fill();
+  verified();
+  submit();
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "delivery window expired",
+  );
+  expect(screen.getByLabelText("What happened?")).toHaveValue(
+    "Synthetic observation for a retry regression test.",
+  );
+  verified("fresh-challenge");
+  submit();
+  expect(
+    await screen.findByRole("heading", { name: "Your report was received" }),
+  ).toBeInTheDocument();
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).submissionId).not.toBe(
+    JSON.parse(fetchMock.mock.calls[0][1].body).submissionId,
+  );
 });
