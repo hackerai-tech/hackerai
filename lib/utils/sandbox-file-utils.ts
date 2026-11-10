@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   copyAttachmentDownloadFailureContext,
+  recordAttachmentDownloadFailure,
   recordAttachmentDownloadRoute,
   type AttachmentDownloadRoute,
   getAttachmentDownloadFailureContext,
@@ -36,7 +37,10 @@ import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
-import { getSandboxLogFields } from "@/lib/ai/tools/utils/sandbox-types";
+import {
+  getSandboxLogFields,
+  isE2BSandbox,
+} from "@/lib/ai/tools/utils/sandbox-types";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 import { phLogger } from "@/lib/posthog/server";
 
@@ -89,6 +93,8 @@ type SandboxCommandResult = {
   stderr: string;
   exitCode: number;
   error?: string;
+  stderrFromErrorMessage?: true;
+  exitCodeFromErrorMessage?: true;
 };
 
 type LocalCopyFailureReason =
@@ -209,12 +215,17 @@ const logLocalAttachmentDebug = (
   console.info(`[local-attachments] ${event}`, data);
 };
 
-const extractCommandExitCode = (error: unknown): number | null => {
-  if (typeof error === "object" && error !== null) {
-    const maybeExitCode = (error as { exitCode?: unknown }).exitCode;
-    if (typeof maybeExitCode === "number") return maybeExitCode;
-  }
+const readReportedCommandExitCode = (error: unknown): number | null => {
+  if (typeof error !== "object" || error === null) return null;
+  const exitCode = (error as { exitCode?: unknown }).exitCode;
+  return typeof exitCode === "number" ? exitCode : null;
+};
 
+const extractCommandExitCode = (
+  error: unknown,
+  reportedExitCode = readReportedCommandExitCode(error),
+): number | null => {
+  if (reportedExitCode !== null) return reportedExitCode;
   const message = error instanceof Error ? error.message : String(error);
   const match =
     message.match(/\b(?:exit status|exitCode:|curl exit)\s*(\d+)\b/i) ??
@@ -225,7 +236,8 @@ const extractCommandExitCode = (error: unknown): number | null => {
 };
 
 const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
-  const exitCode = extractCommandExitCode(error);
+  const reportedExitCode = readReportedCommandExitCode(error);
+  const exitCode = extractCommandExitCode(error, reportedExitCode);
   if (exitCode === null) return null;
 
   const commandError =
@@ -233,15 +245,18 @@ const commandErrorToResult = (error: unknown): SandboxCommandResult | null => {
       ? (error as { stdout?: unknown; stderr?: unknown })
       : {};
   const message = error instanceof Error ? error.message : String(error);
+  const stderr = commandError.stderr;
+  const hasReportedStderr = typeof stderr === "string" && stderr.length > 0;
 
   return copyAttachmentCommandFailureContext(error, {
     stdout: typeof commandError.stdout === "string" ? commandError.stdout : "",
-    stderr:
-      typeof commandError.stderr === "string" && commandError.stderr
-        ? commandError.stderr
-        : message,
+    stderr: hasReportedStderr ? stderr : message,
     exitCode,
     error: message,
+    ...(!hasReportedStderr && { stderrFromErrorMessage: true as const }),
+    ...(reportedExitCode === null && {
+      exitCodeFromErrorMessage: true as const,
+    }),
   });
 };
 
@@ -1007,7 +1022,7 @@ const downloadFileToSandbox = async (
       safeUrl = url.split("?")[0];
     }
 
-    throw copyAttachmentCommandFailureContext(
+    const error = copyAttachmentCommandFailureContext(
       result,
       new Error(
         `Failed to download file: ${result.stderr}\n` +
@@ -1016,6 +1031,37 @@ const downloadFileToSandbox = async (
           `  exitCode: ${result.exitCode}`,
       ),
     );
+    try {
+      const commandFailure = getAttachmentCommandFailureContext(result);
+      // A message-derived exit may preserve existing control flow without
+      // proving a process result. Only classify confirmed E2B command exits.
+      const observedExit =
+        result.error === undefined ||
+        (commandFailure?.attachment_command_error_kind === "command_exit" &&
+          (commandFailure.attachment_command_stage === "foreground" ||
+            (commandFailure.attachment_command_stage === "wait" &&
+              commandFailure.attachment_command_exit_observed === true)));
+      if (
+        observedExit &&
+        !result.exitCodeFromErrorMessage &&
+        isE2BSandbox(sandbox) &&
+        Number.isInteger(result.exitCode) &&
+        result.exitCode > 0 &&
+        result.exitCode <= 255
+      ) {
+        recordAttachmentDownloadFailure(error, {
+          platform: "unknown",
+          shell: "bash",
+          httpClient: "curl",
+          exitCode: result.exitCode,
+          // The legacy error keeps its fallback text; it is not SDK stderr.
+          stderr: result.stderrFromErrorMessage ? "" : result.stderr,
+        });
+      }
+    } catch {
+      // An optional diagnostic must not replace the transfer failure.
+    }
+    throw error;
   } catch (error) {
     recordAttachmentDownloadRoute(error, route);
     throw error;
