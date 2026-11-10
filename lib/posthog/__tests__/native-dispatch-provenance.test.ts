@@ -32,6 +32,96 @@ function snapshot(exception: unknown = entry()) {
     ),
   );
 }
+const longErrorEntry = (value = "x".repeat(1108)) => ({
+  type: "Error",
+  value,
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  // Owned fixture only; stored resolved frames do not reconstruct client frames.
+  stacktrace: {
+    frames: [{ filename: "PRIVATE-fixture-source?token=canary", in_app: true }],
+  },
+});
+
+it("retains long generic Errors with private-safe nearby dispatch context and owner fencing", () => {
+  const dispatched = new ErrorEvent("error", {
+    message: "PRIVATE native message",
+    filename: `${location.origin}/PRIVATE-source?token=canary`,
+    error: new Error("PRIVATE error object"),
+    cancelable: true,
+  });
+  window.dispatchEvent(dispatched);
+  const exception = longErrorEntry("PRIVATE-".repeat(140));
+  const list = [exception];
+  const event = { event: "$exception", properties: { $exception_list: list } };
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(event);
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  const context = snapshot(exception);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_group: "long_generic_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+    hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    hackerai_nearby_dispatch_error_latest_object: true,
+  });
+  expect(JSON.stringify(context)).not.toMatch(/PRIVATE|canary|token=/);
+  expect(dispatched.defaultPrevented).toBe(false);
+  identity.mockReturnValue("another-owner");
+  expect(snapshot(exception)).toEqual({});
+});
+
+it.each([
+  ["lower included bound", "x".repeat(257)],
+  ["upper included bound", "x".repeat(4096)],
+  ["1108 UTF8 bytes of BMP text", "界".repeat(369) + "x"],
+  ["1108 UTF8 bytes of astral text", "🚀".repeat(277)],
+])(
+  "observes long Error %s without requiring a particular client stack",
+  (_, value) => {
+    const exception = longErrorEntry(value);
+    Reflect.deleteProperty(exception, "stacktrace");
+    expect(snapshot(exception).hackerai_nearby_dispatch_group).toBe(
+      "long_generic_error",
+    );
+  },
+);
+
+it.each([256, 4097])(
+  "does not widen long Error context to %i code units",
+  (length) => {
+    expect(snapshot(longErrorEntry("x".repeat(length)))).toEqual({});
+  },
+);
+
+it("keeps the long Error selector scoped to one retained generic nonsynthetic error", () => {
+  const exception = longErrorEntry();
+  for (const candidate of [
+    { ...exception, type: "TypeError" },
+    { ...exception, type: "DOMException" },
+    { ...exception, mechanism: { ...exception.mechanism, handled: true } },
+    { ...exception, mechanism: { ...exception.mechanism, synthetic: true } },
+    { ...exception, mechanism: { handled: false, type: "generic" } },
+    { ...exception, mechanism: { ...exception.mechanism, type: "onerror" } },
+    { ...exception, value: undefined },
+  ])
+    expect(snapshot(candidate)).toEqual({});
+  expect(
+    enrichFrontendExceptionEvent({
+      event: "$exception",
+      properties: { $exception_list: [exception, exception] },
+    }).properties,
+  ).not.toHaveProperty("hackerai_nearby_dispatch_group");
+  expect(
+    snapshot({
+      ...exception,
+      mechanism: { ...exception.mechanism, synthetic: true },
+      stacktrace: { frames: [] },
+    }).hackerai_nearby_dispatch_group,
+  ).toBe("synthetic_stackless_error");
+});
 beforeEach(() => {
   identity.mockReturnValue("fixture-owner");
   now = 10000;

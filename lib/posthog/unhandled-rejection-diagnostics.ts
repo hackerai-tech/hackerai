@@ -368,7 +368,8 @@ export type NearbyDispatchGroup =
   | "stackless_dom_exception"
   | "anonymous_missing_identifier_referenceerror"
   | "stackless_end_of_script_syntaxerror"
-  | "stackless_unexpected_token_syntaxerror";
+  | "stackless_unexpected_token_syntaxerror"
+  | "long_generic_error";
 
 /** Prune a bounded ring, including samples made invalid by a clock reset. */
 function recentSamples<T extends { at: number }>(
@@ -421,6 +422,7 @@ export function getNearbyDispatchDiagnostics(
         "anonymous_missing_identifier_referenceerror",
         "stackless_end_of_script_syntaxerror",
         "stackless_unexpected_token_syntaxerror",
+        "long_generic_error",
       ].includes(group) ||
       !active
     )
