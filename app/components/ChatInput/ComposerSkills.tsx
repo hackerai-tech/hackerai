@@ -298,7 +298,7 @@ export function ComposerSkillsProvider({
           align="start"
           sideOffset={8}
           collisionPadding={16}
-          className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border-border/70 bg-background p-0 text-foreground shadow-lg shadow-black/10 dark:bg-muted dark:shadow-black/30"
+          className="flex max-h-[var(--radix-popover-content-available-height)] w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border-border/70 bg-background p-0 text-foreground shadow-lg shadow-black/10 dark:bg-muted dark:shadow-black/30"
           onOpenAutoFocus={(event) => {
             if (token.current) event.preventDefault();
           }}
@@ -307,7 +307,7 @@ export function ComposerSkillsProvider({
             if (event.target === textarea.current) event.preventDefault();
           }}
         >
-          <div className="flex h-10 items-center gap-2.5 border-b border-border/60 px-3.5">
+          <div className="flex h-10 shrink-0 items-center gap-2.5 border-b border-border/60 px-3.5">
             <Search
               aria-hidden="true"
               className="size-3.5 shrink-0 text-muted-foreground"
@@ -344,7 +344,7 @@ export function ComposerSkillsProvider({
             id={listId}
             role="listbox"
             aria-label="Skills"
-            className="max-h-60 overflow-y-auto p-1"
+            className="min-h-0 max-h-60 overflow-y-auto p-1"
           >
             {matches.map((skill, index) => (
               <button
@@ -403,7 +403,7 @@ export function ComposerSkillsProvider({
               {error}
             </p>
           )}
-          <div className="flex min-h-9 items-center justify-between gap-2 border-t border-border/60 px-2">
+          <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-t border-border/60 px-2">
             <Button
               type="button"
               variant="ghost"
