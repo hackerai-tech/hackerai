@@ -339,12 +339,13 @@ describe("UsageTracker", () => {
       );
     });
 
-    it("should prefer OpenRouter upstream inference cost over raw provider cost", () => {
+    it("should prefer upstream inference cost for BYOK even when OpenRouter reports a fee", () => {
       tracker.accumulateStep({
         inputTokens: 1000,
         outputTokens: 500,
         raw: {
           cost: 0.001,
+          is_byok: true,
           cost_details: {
             upstream_inference_cost: 0.003,
           },
@@ -353,6 +354,58 @@ describe("UsageTracker", () => {
 
       expect(tracker.modelProviderCost).toBeCloseTo(0.003);
       expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+    });
+
+    it("keeps the charged non-BYOK cost after upstream metadata arrives", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.0015,
+          is_byok: false,
+          cost_details: { upstream_inference_cost: 0.0012 },
+        },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.0012, {
+        isByok: false,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0015);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0015);
+    });
+
+    it("uses charged cost when BYOK metadata is missing and cost is positive", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.0015,
+          cost_details: { upstream_inference_cost: 0.0012 },
+        },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.0012, {});
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0015);
+    });
+
+    it("keeps BYOK and non-BYOK costs separate across model steps", () => {
+      const byok = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0, is_byok: true },
+      });
+      const nonByok = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.0015, is_byok: false },
+      });
+      tracker.setAuthoritativeModelCostForStep(byok, 0.003, { isByok: true });
+      tracker.setAuthoritativeModelCostForStep(nonByok, 0.0012, {
+        isByok: false,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0045);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0045);
     });
 
     it("should fall back to raw provider cost when OpenRouter upstream inference cost is not positive", () => {

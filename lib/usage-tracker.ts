@@ -19,6 +19,7 @@ interface StepUsage {
   };
   raw?: {
     cost?: number;
+    is_byok?: boolean;
     cost_details?: {
       upstream_inference_cost?: number;
       upstreamInferenceCost?: number;
@@ -38,6 +39,8 @@ type ModelStepCost = {
   inputReported: boolean;
   cacheReadReported: boolean;
   rawCost: number;
+  reportedCost?: number;
+  reportedIsByok?: boolean;
   authoritativeCost?: number;
   inputTokens: number;
   outputTokens: number;
@@ -182,18 +185,25 @@ export class UsageTracker {
     this.cacheWriteTokens += cacheWriteTokens;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
+    const reportedCost = isPositiveFiniteNumber(usage.raw?.cost)
+      ? usage.raw.cost
+      : undefined;
     const stepCostIndex =
       this.modelStepCosts.push({
-        measurementCost: [
-          usage.raw?.cost_details?.upstream_inference_cost,
-          usage.raw?.cost_details?.upstreamInferenceCost,
-          usage.raw?.costDetails?.upstream_inference_cost,
-          usage.raw?.costDetails?.upstreamInferenceCost,
-          usage.raw?.cost,
-        ].find(isValidCacheTokenCount),
+        measurementCost: isPositiveFiniteNumber(stepCost)
+          ? stepCost
+          : [
+              usage.raw?.cost_details?.upstream_inference_cost,
+              usage.raw?.cost_details?.upstreamInferenceCost,
+              usage.raw?.costDetails?.upstream_inference_cost,
+              usage.raw?.costDetails?.upstreamInferenceCost,
+              usage.raw?.cost,
+            ].find(isValidCacheTokenCount),
         inputReported: isValidCacheTokenCount(usage.inputTokens),
         cacheReadReported: isValidCacheTokenCount(reportedCacheReadTokens),
         rawCost,
+        reportedCost,
+        reportedIsByok: usage.raw?.is_byok,
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
         cacheReadTokens,
@@ -265,22 +275,34 @@ export class UsageTracker {
   setAuthoritativeModelCostForStep(
     stepCostIndex: number | undefined,
     costDollars: number | undefined,
+    openRouter?: { isByok?: boolean },
   ) {
-    if (stepCostIndex !== undefined && isValidCacheTokenCount(costDollars)) {
-      const step = this.modelStepCosts[stepCostIndex];
-      if (step) step.measurementCost = costDollars;
-    }
-    if (!isPositiveFiniteNumber(costDollars) || stepCostIndex === undefined) {
+    if (stepCostIndex === undefined) {
       return;
     }
 
     const stepCost = this.modelStepCosts[stepCostIndex];
     if (!stepCost) return;
+    const resolvedCost =
+      openRouter && isPositiveFiniteNumber(costDollars)
+        ? getProviderUsageRawModelCost(
+            {
+              cost: stepCost.reportedCost,
+              is_byok: stepCost.reportedIsByok,
+              cost_details: { upstream_inference_cost: costDollars },
+            },
+            openRouter.isByok,
+          )
+        : costDollars;
+    if (isValidCacheTokenCount(resolvedCost)) {
+      stepCost.measurementCost = resolvedCost;
+    }
+    if (!isPositiveFiniteNumber(resolvedCost)) return;
 
     const previousCost = stepCost.authoritativeCost ?? stepCost.rawCost;
-    stepCost.authoritativeCost = costDollars;
-    this.providerCost += costDollars - previousCost;
-    this.modelProviderCost += costDollars - previousCost;
+    stepCost.authoritativeCost = resolvedCost;
+    this.providerCost += resolvedCost - previousCost;
+    this.modelProviderCost += resolvedCost - previousCost;
   }
 
   private get allModelSteps(): ModelStepCost[] {

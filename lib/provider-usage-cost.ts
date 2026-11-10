@@ -24,11 +24,19 @@ export const getOpenRouterUpstreamInferenceCostFromUsageRaw = (
 
 export const getProviderUsageRawModelCost = (
   raw: unknown,
+  isByok?: boolean,
 ): number | undefined => {
+  if (!isRecord(raw)) return undefined;
+
   const upstreamInferenceCost =
     getOpenRouterUpstreamInferenceCostFromUsageRaw(raw);
-  if (upstreamInferenceCost !== undefined) return upstreamInferenceCost;
+  const chargedCost = isPositiveFiniteNumber(raw.cost) ? raw.cost : undefined;
+  const reportedIsByok =
+    isByok ?? (typeof raw.is_byok === "boolean" ? raw.is_byok : undefined);
 
-  if (!isRecord(raw)) return undefined;
-  return isPositiveFiniteNumber(raw.cost) ? raw.cost : undefined;
+  // BYOK inference is charged by the upstream provider even when OpenRouter
+  // reports zero credit spend. Other routes use OpenRouter's charged cost.
+  return reportedIsByok === true
+    ? (upstreamInferenceCost ?? chargedCost)
+    : (chargedCost ?? upstreamInferenceCost);
 };
