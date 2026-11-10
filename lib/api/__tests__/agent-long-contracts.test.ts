@@ -403,7 +403,7 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/method:\s*"POST"/);
     expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
     expect(transportSrc).toMatch(/statusEndpoint/);
-    expect(statusSrc).toMatch(/runs\.retrieve\(runId\)/);
+    expect(statusSrc).toMatch(/runs\.retrieve\(\s*runId\s*[,)]/);
     expect(statusSrc).toMatch(/ApiError/);
     expect(statusSrc).toMatch(/MISSING_RUN_STATUSES/);
     expect(statusSrc).toMatch(/Run not found/);
@@ -1681,7 +1681,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
+      "getTerminalProviderStreamError(",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1737,9 +1737,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
-    const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
-    );
+    const terminalCheckIdx = taskSrc.indexOf("getTerminalProviderStreamError(");
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
     expect(terminalCheckIdx).toBeGreaterThan(-1);

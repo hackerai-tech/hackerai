@@ -73,7 +73,7 @@ const getServerActionErrorMetadata = (
   };
 };
 
-/** Correlate unexpected root reads without exporting headers or error contents. */
+/** Correlate selected page reads without exporting headers or error contents. */
 function getRootRequestErrorMetadata(
   error: unknown,
   request: Parameters<Instrumentation.onRequestError>[1],
@@ -81,7 +81,7 @@ function getRootRequestErrorMetadata(
   path: string,
 ) {
   if (
-    !["/", "/index", "/login"].includes(path) ||
+    !["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
     (request.method !== "GET" && request.method !== "HEAD")
   )
     return undefined;
@@ -127,7 +127,10 @@ export const onRequestError: Instrumentation.onRequestError = (
   context,
 ) => {
   // Next includes the query in request.path; OAuth callbacks can carry credentials.
-  const path = request.path.split(/[?#]/, 1)[0];
+  const requestPath = request.path.split(/[?#]/, 1)[0];
+  // A public share URL is still a resource identifier. Keep only its route
+  // template in both the existing error export and its finite native receipt.
+  const path = requestPath.replace(/^\/share\/[^/]+\/?$/, "/share/[shareId]");
 
   if (isEndedSessionRefreshError(error)) {
     phLogger.warn("auth_session_refresh_ended", {

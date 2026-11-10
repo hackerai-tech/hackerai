@@ -497,6 +497,83 @@ describe("agent status timeout diagnostics", () => {
     expect(timers).toBe(0);
   });
 
+  it.each([false, true])(
+    "distinguishes the validated API-body boundary during a slow owned read (observed=%s)",
+    async (observed) => {
+      const { createAgentStatusPost } = await import("../agent-status-route");
+      let finish!: (value: any) => void;
+      let options: { onResponseBody?: () => void } | undefined;
+      mockRunsRetrieve.mockImplementationOnce(((
+        _runId: string,
+        value: typeof options,
+      ) => {
+        options = value;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }) as never);
+      const request = requestFor("chat-1", "run-1");
+      request.json = async () => ({
+        chatId: "chat-1",
+        runId: "run-1",
+        prompt: "PRIVATE_REQUEST",
+      });
+      const pending = createAgentStatusPost({ endpoint: "/api/agent" })(
+        request,
+      );
+      await jest.advanceTimersByTimeAsync(10_000);
+      const first = JSON.parse(
+        jest.mocked(console.warn).mock.calls[0][0] as string,
+      );
+      expect(first).toMatchObject({
+        stage: "retrieve_trigger_run",
+        trigger_run_read_diagnostic_version: 1,
+        trigger_run_read_api_body: "not_observed",
+        trigger_run_read_api_body_elapsed_ms: null,
+      });
+      await jest.advanceTimersByTimeAsync(5_000);
+      if (observed && options?.onResponseBody)
+        Reflect.apply(options.onResponseBody, undefined, [
+          new Proxy(
+            {},
+            {
+              get() {
+                throw new Error("PRIVATE_BODY_READ");
+              },
+            },
+          ),
+        ]);
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(console.warn).toHaveBeenCalledTimes(2);
+      const second = JSON.parse(
+        jest.mocked(console.warn).mock.calls[1][0] as string,
+      );
+      expect(second).toMatchObject({
+        stage: "retrieve_trigger_run",
+        trigger_run_read_diagnostic_version: 1,
+        trigger_run_read_api_body: observed
+          ? "validated_body_observed"
+          : "not_observed",
+        trigger_run_read_api_body_elapsed_ms: observed ? 15_000 : null,
+        trigger_run_read_api_body_elapsed_capped: false,
+      });
+      expect(JSON.stringify([first, second])).not.toContain("PRIVATE");
+      finish({
+        status: "EXECUTING",
+        metadata: { chatId: "chat-1", userId: "user-1" },
+      });
+      const response = await pending;
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        status: "EXECUTING",
+        terminal: false,
+      });
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(console.warn).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it.each(["/api/agent", "/api/agent-long"] as const)(
     "observes the real pending session phase on %s without changing request completion",
     async (endpoint) => {

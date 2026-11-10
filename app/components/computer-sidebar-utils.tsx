@@ -139,6 +139,7 @@ export function getActionText(content: SidebarContent): string {
 
   if (isSidebarTerminal(content)) {
     if (content.captcha) return getCaptchaActivityLabel(content.captcha.state);
+    if (content.executionPhase === "interrupted") return "Command interrupted";
     if (content.executionPhase === "stopped") return "Stopped command";
     if (content.executionPhase === "reviewing") return "Reviewing";
     if (content.executionPhase === "awaiting_approval") {

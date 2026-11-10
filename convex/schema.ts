@@ -22,6 +22,7 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
+import { abuseCaseFields, abuseEventFields } from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -199,6 +200,37 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  abuse_notifications: defineTable({
+    caseId: v.id("abuse_cases"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("paused"),
+      v.literal("sending"),
+      v.literal("sent"),
+      v.literal("failed"),
+      v.literal("uncertain"),
+    ),
+    attempts: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_caseId", ["caseId"])
+    .index("by_status", ["status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"]),
+  // Evidence is encrypted before transport; ordinary users have no read path.
+  abuse_cases: defineTable(abuseCaseFields)
+    .index("by_active_containment_user", ["activeContainmentUserId"])
+    .index("by_reference", ["reference"])
+    .index("by_status", ["status"]),
+  abuse_events: defineTable(abuseEventFields)
+    .index("by_caseId", ["caseId"])
+    .index("by_caseId_and_kind", ["caseId", "kind"]),
+  abuse_rate_limits: defineTable({
+    bucket: v.string(),
+    count: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_bucket", ["bucket"])
+    .index("by_expiresAt", ["expiresAt"]),
   cloud_network_settings: defineTable({
     user_id: v.string(),
     policy: networkPolicy,
@@ -286,6 +318,11 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  chat_history_access: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.

@@ -40,9 +40,12 @@ environments, or full authentication pages. Browser diagnostics do not establish
 native WebView authentication.
 
 Record the tested source revision and binary hash. Independently establish the
-backend account/project/deployment and matching worker environment/branch before
-using external test services. Configured identity and TCP reachability are not
-proof of the backend or worker serving a run. Verify the actual frontend in the
+authorized backend account/project/deployment and matching worker environment/branch.
+Use `desktop:qa verify <config.json>` for read-only provider and live-instance
+checks; `doctor`, `start` and `serve` also enforce them. Missing verification credentials
+or a mismatch blocks launch. The tokens come from the approved environment source,
+never the launch record. Target identity and TCP reachability do not prove the
+backend or worker serving a run. Verify the actual frontend in the
 native WebView, selected account, worker run and sandbox transport.
 
 ## Computer Use navigation

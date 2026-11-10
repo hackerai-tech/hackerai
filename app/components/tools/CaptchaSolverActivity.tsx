@@ -59,7 +59,8 @@ export function CaptchaSolverActivity({
     needs_verification:
       "Automatic solving could not finish. Manual verification may be needed.",
     failed: "The solve could not finish. See the Agent’s reply.",
-    stopped: "A provider charge may still apply. Check the Agent’s recap.",
+    stopped:
+      "A response may already have reached the page, and a provider charge may still apply. Check the page before continuing.",
     unavailable: "Automatic solving is unavailable for this request.",
     preparation_required: "Close the open challenge before solving.",
     capture_incomplete: "No paid solve started.",

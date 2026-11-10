@@ -2,6 +2,8 @@
 
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
+import { isAbuseTelemetry, isAbuseReportingPath } from "@/lib/abuse/privacy";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
@@ -81,10 +83,41 @@ export function PostHogProvider({
   const userLastName = user?.lastName;
   const userLocale = user?.locale;
   const referralHandled = useRef(false);
+  const pathname = usePathname();
+  const privatePage = isAbuseReportingPath(pathname ?? "");
+  const privateReplaySession = useRef(false);
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
+
+    const replayBlockKey = "hackerai_abuse_replay_blocked";
+    const blockReplay = () => {
+      privateReplaySession.current = true;
+      try {
+        window.sessionStorage.setItem(replayBlockKey, "1");
+      } catch {
+        /* In-memory protection remains. */
+      }
+    };
+    try {
+      privateReplaySession.current ||=
+        window.sessionStorage.getItem(replayBlockKey) === "1";
+    } catch {
+      /* Storage may be unavailable. */
+    }
+    if (privatePage) {
+      blockReplay();
+      setAuthenticatedAnalyticsUserId(null);
+      const loaded = getPostHogClient();
+      loaded?.stopSessionRecording();
+      loaded?.set_config({
+        disable_session_recording: true,
+        capture_exceptions: false,
+        before_send: () => null,
+      });
+      return;
+    }
 
     const shouldTrack = Boolean(userId) && analyticsAllowed;
     setAuthenticatedAnalyticsUserId(shouldTrack ? userId! : null);
@@ -152,6 +185,14 @@ export function PostHogProvider({
             if (!event) {
               return null;
             }
+            if (isAbuseTelemetry(window.location.pathname, event.properties)) {
+              blockReplay();
+              return null;
+            }
+            // rrweb snapshots can flush after navigation without an originating
+            // URL. Keep replay off for the rest of this tab session, including reload.
+            if (event.event === "$snapshot" && privateReplaySession.current)
+              return null;
             if (event.event === INFLUENCER_VISIT_EVENT)
               return sanitizeInfluencerVisit(event);
             if (event.event === X_REFERRAL_EVENT) {
@@ -267,6 +308,7 @@ export function PostHogProvider({
         const replayLocale =
           userLocale == null ? window.navigator.language : userLocale;
         const shouldRecordSession =
+          !privateReplaySession.current &&
           !consentRequired &&
           subscription !== "free" &&
           isEnglishLocale(replayLocale);
@@ -288,6 +330,7 @@ export function PostHogProvider({
     };
   }, [
     analyticsAllowed,
+    privatePage,
     consentRequired,
     consentDeclined,
     firstTouchAttribution,

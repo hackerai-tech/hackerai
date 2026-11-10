@@ -2,12 +2,20 @@ import type { ToolExecutionOptions } from "ai";
 import type { ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 import { sampleDiagnosticOperation } from "@/lib/analytics/diagnostic-sampling";
+import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
+import {
+  getAgentBrowserFailureEligibility,
+  getAgentBrowserOutputDiagnostics,
+} from "./agent-browser-open-failure";
 
 const SLOW_TERMINAL_CALL_MS = 30_000;
 
 type TerminalInput = {
   timeout?: number;
   action?: "send" | "wait" | "view" | "kill";
+  command?: string;
+  interactive?: boolean;
+  is_background?: boolean;
 };
 
 /** Measures the tool call, including approval/setup/recovery, not process lifetime. */
@@ -36,11 +44,72 @@ export function withTerminalCallTiming<
       result?: Record<string, unknown>,
     ) => {
       try {
+        // Intent is a property of this returned tool call, not proof that every
+        // CLI child ran or that its exit determined a compound shell's exit.
+        // Never inspect interaction stdin or launch another command.
+        const usage =
+          toolName === "run_terminal_cmd" && typeof input.command === "string"
+            ? detectAgentBrowserUsage(input.command)
+            : null;
+        const browserIntent = usage?.actions.includes("open")
+          ? "open"
+          : usage?.actions.includes("option")
+            ? "option"
+            : null;
+        const browserOutput =
+          browserIntent && result
+            ? getAgentBrowserOutputDiagnostics(result)
+            : null;
+        const browserContext = browserIntent
+          ? {
+              browser_result_context_version: 1,
+              browser_intent: browserIntent,
+              browser_detected_invocation_count: Math.min(
+                usage!.invocationCount,
+                16,
+              ),
+              browser_interactive: input.interactive === true,
+              browser_background: input.is_background === true,
+              browser_approval_denied: Boolean(result?.approvalDenied),
+              browser_process_started:
+                result?.processStarted === true
+                  ? "true"
+                  : result?.processStarted === false
+                    ? "false"
+                    : "unavailable",
+              browser_execution_outcome:
+                result?.executionOutcome === undefined
+                  ? "absent"
+                  : result.executionOutcome === "unknown"
+                    ? "unknown"
+                    : "other",
+              browser_failure_capture_eligibility: result
+                ? getAgentBrowserFailureEligibility({
+                    result,
+                    interactive: input.interactive,
+                    isBackground: input.is_background === true,
+                    aborted: options.abortSignal?.aborted === true,
+                  })
+                : "result_unavailable",
+              ...(browserOutput && {
+                browser_public_output_hint: browserOutput.public_output_hint,
+                browser_public_json_error_state:
+                  browserOutput.public_json_error_state,
+                browser_json_candidate_limit_reached:
+                  browserOutput.json_candidate_limit_reached,
+                browser_output_sample_present:
+                  browserOutput.output_sample_present,
+                browser_output_sample_truncated:
+                  browserOutput.output_sample_truncated,
+              }),
+            }
+          : {};
         const exitCode = result?.exitCode;
         const nestedExitCode = (
           result?.exited as { exitCode?: unknown } | undefined
         )?.exitCode;
         const diagnostic =
+          browserIntent !== null ||
           outcome === "threw" ||
           options.abortSignal?.aborted === true ||
           Boolean(result?.error) ||
@@ -120,6 +189,7 @@ export function withTerminalCallTiming<
             typeof result?.output === "string"
               ? Buffer.byteLength(result.output)
               : 0,
+          ...browserContext,
         });
       } catch {
         // Diagnostics cannot change execution, cancellation, or the result.

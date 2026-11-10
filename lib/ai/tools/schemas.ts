@@ -593,6 +593,14 @@ export const createOpenUrlToolInputSchema = ({
 }: ModelAwareToolSchemaOptions = {}) =>
   z.object({
     url: z.string().describe("The URL to open and retrieve content from"),
+    cursor: z
+      .string()
+      .min(1)
+      .max(256)
+      .optional()
+      .describe(
+        "Continuation cursor copied exactly from a previous open_url result for the same URL. Omit to start reading.",
+      ),
     brief: createToolBriefSchema({ modelName }),
   });
 
@@ -602,10 +610,12 @@ export const createOpenUrlToolSchema = ({
   modelName,
 }: ModelAwareToolSchemaOptions = {}) =>
   tool({
-    description: `Retrieve the full contents of a specific webpage by URL.
+    description: `Read a specific webpage as Markdown, preserving code, tables, and technical details.
 
 <instructions>
 - Use to fetch and read a specific webpage, usually obtained from a prior search
+- Results contain up to 12,000 tokens. If a continuation cursor is returned, call this tool with the same URL and that cursor to read the next consecutive part; no middle content is discarded
+- Treat a partial page as incomplete. If the page changes between parts, restart without a cursor instead of combining versions
 - URLs must be valid and publicly accessible
 - Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
 - Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)

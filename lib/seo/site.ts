@@ -25,8 +25,9 @@ export const PUBLIC_PAGE_LAST_MODIFIED = {
   pricing: "2026-10-06",
   download: "2026-09-02",
   trust: "2026-10-31",
+  abuse: "2026-11-08",
   privacy: "2026-10-14",
-  terms: "2026-10-14",
+  terms: "2026-11-08",
 } as const;
 
 export function formatPublicPageDate(date: string): string {

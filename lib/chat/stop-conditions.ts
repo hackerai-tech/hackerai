@@ -1,4 +1,5 @@
 import type { ToolResultCycle } from "./tool-loop-observer";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "./local-connection-stop";
 import type { StopCondition } from "ai";
 import {
   detectDoomLoop,
@@ -46,6 +47,7 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToPostSummarizationIncomplete: boolean;
   stoppedDueToStepLimit?: boolean;
 }): AgentAutoContinueStopSource | null {
+  if (state.finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) return null;
   // Hard stops must win over overlapping context/compaction flags.
   if (
     state.stoppedDueToStepLimit ||

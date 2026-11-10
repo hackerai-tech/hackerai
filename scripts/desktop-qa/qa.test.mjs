@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import {
   validateConfig,
   verifyApp,
@@ -378,4 +378,100 @@ test("a synchronous spawn failure restores the callers signal listeners", async 
     signals.map((name) => process.listenerCount(name)),
     before,
   );
+});
+
+test("start verifies targets but never passes control-plane tokens to its child", async (t) => {
+  const gitEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.startsWith("GIT_")),
+  );
+  for (const name of Object.keys(gitEnvironment)) delete process.env[name];
+  t.after(() => Object.assign(process.env, gitEnvironment));
+  const root = await temp(t);
+  const c = config();
+  const server = createServer((req, res) => res.end("local-worktree"));
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => server.close(done)));
+  c.frontend = c.backend.url = `http://127.0.0.1:${server.address().port}`;
+  c.relay = c.backend.url;
+  await mkdir(join(root, ".convex/local/default"), { recursive: true });
+  await writeFile(
+    join(root, ".convex/local/default/config.json"),
+    JSON.stringify({
+      deploymentName: "local-worktree",
+      ports: { cloud: server.address().port },
+    }),
+  );
+  await mkdir(join(root, ".artifacts"));
+  const output = join(root, "child-flags.json");
+  const child = `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify({ convex: !!process.env.CONVEX_ACCESS_TOKEN, trigger: !!process.env.TRIGGER_ACCESS_TOKEN }));\n`;
+  c.app.executable = ".artifacts/qa-app.cjs";
+  c.app.sha256 = createHash("sha256").update(child).digest("hex");
+  await writeFile(join(root, c.app.executable), child, { mode: 0o700 });
+  await mkdir(join(root, "scripts"));
+  await writeFile(
+    join(root, "scripts/verify-local-dependencies.mjs"),
+    await readFile("scripts/verify-local-dependencies.mjs"),
+  );
+  await writeFile(join(root, "package.json"), "{}");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=QA Fixture",
+      "-c",
+      "user.email=qa@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "fixture",
+    ],
+    { cwd: root },
+  );
+  await writeFile(join(root, "config.json"), JSON.stringify(c));
+  const originalFetch = globalThis.fetch;
+  const verifiedPaths = [];
+  t.mock.method(globalThis, "fetch", (url, init) => {
+    if (String(url).startsWith("https://api.trigger.dev/")) {
+      verifiedPaths.push(new URL(url).pathname);
+      assert.equal(
+        init.headers.authorization,
+        "Bearer synthetic-control-token",
+      );
+      return Promise.resolve(
+        Response.json(
+          String(url).endsWith("workers/current")
+            ? { worker: { id: "test", version: "unverified" } }
+            : { externalRef: "proj_example" },
+        ),
+      );
+    }
+    return originalFetch(url, init);
+  });
+  const oldConvex = process.env.CONVEX_ACCESS_TOKEN;
+  const oldTrigger = process.env.TRIGGER_ACCESS_TOKEN;
+  process.env.CONVEX_ACCESS_TOKEN = "synthetic-control-token";
+  process.env.TRIGGER_ACCESS_TOKEN = "synthetic-control-token";
+  t.after(() => {
+    for (const [name, value] of [
+      ["CONVEX_ACCESS_TOKEN", oldConvex],
+      ["TRIGGER_ACCESS_TOKEN", oldTrigger],
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  await main(["start", "token-isolation", join(root, "config.json")], root);
+  assert.deepEqual(verifiedPaths, [
+    "/api/v1/projects/proj_example",
+    "/api/v1/projects/proj_example/dev/workers/current",
+  ]);
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), {
+    convex: false,
+    trigger: false,
+  });
 });

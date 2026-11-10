@@ -1,4 +1,7 @@
-import { recordAttachmentDownloadFailure } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+import {
+  recordAttachmentDownloadFailure,
+  recordAttachmentDownloadBoundary,
+} from "@/lib/ai/tools/utils/attachment-download-diagnostics";
 jest.mock("../sandbox-upload-readiness", () => ({
   checkAttachmentReadiness: jest.fn(),
   sampleAttachmentFailureMetrics: jest.fn(async () => ({
@@ -2536,29 +2539,42 @@ it("skips attachment refresh when an earlier acquisition has already spent the f
   }
 });
 
-it.each([false, true])(
-  "retains only the final download diagnostic through image fallback (path fallback=%s)",
-  async (fallback) => {
+it.each([
+  { fallback: false, boundaryOnly: false },
+  { fallback: true, boundaryOnly: false },
+  { fallback: false, boundaryOnly: true },
+])(
+  "retains only the final download diagnostic through image fallback ($fallback/$boundaryOnly)",
+  async ({ fallback, boundaryOnly }) => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     const info = jest.spyOn(console, "info").mockImplementation(() => {});
     const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
     const url = "https://private.example/secret.png?signature=secret";
     const path = "/home/user/upload/private-image.png";
-    const makeError = (final: boolean) =>
-      recordAttachmentDownloadFailure(
-        new Error(
-          `Failed to download file: private detail\nexitCode: ${final ? 1 : 23}`,
-        ),
-        {
-          platform: "windows",
-          shell: "bash",
-          httpClient: final ? "powershell" : "curl",
-          exitCode: final ? 1 : 23,
-          stderr: final
-            ? "The remote server returned an error: (403) private detail"
-            : "permission denied",
-        },
-      );
+    const makeError = (final: boolean) => {
+      const error = boundaryOnly
+        ? new Error("private setup rejection")
+        : recordAttachmentDownloadFailure(
+            new Error(
+              `Failed to download file: private detail\nexitCode: ${final ? 1 : 23}`,
+            ),
+            {
+              platform: "windows",
+              shell: "bash",
+              httpClient: final ? "powershell" : "curl",
+              exitCode: final ? 1 : 23,
+              stderr: final
+                ? "The remote server returned an error: (403) private detail"
+                : "permission denied",
+            },
+          );
+      recordAttachmentDownloadBoundary(error, {
+        phase: boundaryOnly ? "http_client" : "failure_diagnostics",
+        attempt: boundaryOnly ? 0 : 1,
+        resultState: boundaryOnly ? "not_observed" : "nonzero",
+      });
+      return error;
+    };
     const sandbox = {
       sandboxKind: "centrifugo",
       getConnectionInfo: () => ({ isDesktop: true }),
@@ -2591,12 +2607,32 @@ it.each([false, true])(
       );
       expect(result.failedCount).toBe(1);
       const expected = {
-        attachment_download_diagnostic_version: 1,
-        attachment_download_http_client: "powershell",
-        attachment_download_exit_code: 1,
-        attachment_download_reported_http_status: 403,
+        attachment_download_route_version: 1,
+        attachment_download_route: "native_method",
+        attachment_download_boundary_present: true,
+        attachment_download_boundary_version: 1,
+        attachment_download_phase: boundaryOnly
+          ? "http_client"
+          : "failure_diagnostics",
+        attachment_download_attempt: boundaryOnly ? 0 : 1,
+        attachment_download_result_state: boundaryOnly
+          ? "not_observed"
+          : "nonzero",
+        attachment_download_result_context_present: !boundaryOnly,
+        ...(boundaryOnly
+          ? {}
+          : {
+              attachment_download_diagnostic_version: 1,
+              attachment_download_http_client: "powershell",
+              attachment_download_exit_code: 1,
+              attachment_download_reported_http_status: 403,
+            }),
       };
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
+      if (boundaryOnly)
+        expect(getSandboxUploadFailureMetadata(result)).not.toHaveProperty(
+          "attachment_download_diagnostic_version",
+        );
       expect(event).toHaveBeenCalledWith(
         "sandbox_attachment_staging_failed",
         expect.objectContaining(expected),
@@ -2626,6 +2662,70 @@ it.each([false, true])(
       expect(JSON.stringify(bypass)).not.toMatch(
         /private\.example|secret|private detail|private-image|fallback-image/,
       );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      event.mockRestore();
+    }
+  },
+);
+
+it.each(["native_method", "generic_command"] as const)(
+  "records the selected %s route even without an adapter boundary receipt",
+  async (route) => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const rejection = Object.freeze(
+      Object.assign(new Error("private rejection"), { exitCode: 1 }),
+    );
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+      files:
+        route === "native_method"
+          ? { downloadFromUrl: jest.fn().mockRejectedValue(rejection) }
+          : undefined,
+      commands: {
+        run: jest.fn(async () => ({ stdout: "", stderr: "", exitCode: 1 })),
+      },
+    };
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://private.example/secret?token=hidden",
+            localPath: "/tmp/private-file",
+          },
+        ],
+        async () => sandbox,
+      );
+      expect(result.failedCount).toBe(1);
+      const context = getSandboxUploadFailureMetadata(result);
+      expect(context).toMatchObject({
+        attachment_download_route_version: 1,
+        attachment_download_route: route,
+        attachment_download_boundary_present: false,
+      });
+      expect(context).not.toHaveProperty(
+        "attachment_download_boundary_version",
+      );
+      expect(context).not.toHaveProperty(
+        "attachment_download_diagnostic_version",
+      );
+      expect(
+        JSON.stringify(
+          Object.fromEntries(
+            Object.entries(context).filter(([key]) =>
+              key.startsWith("attachment_download_"),
+            ),
+          ),
+        ),
+      ).not.toMatch(/private|secret|hidden/);
+      if (route === "native_method")
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+      else expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
       info.mockRestore();

@@ -305,6 +305,7 @@ export interface SidebarTerminal {
     | "executing"
     | "completed"
     | "failed"
+    | "interrupted"
     | "stopped";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */

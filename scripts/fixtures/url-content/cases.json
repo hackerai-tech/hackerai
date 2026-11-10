@@ -1,0 +1,72 @@
+[
+  {
+    "id": "h1-home",
+    "url": "https://www.hackerone.com/",
+    "kind": "marketing"
+  },
+  {
+    "id": "h1-policy",
+    "url": "https://hackerone.com/security",
+    "kind": "dynamic program policy"
+  },
+  {
+    "id": "h1-report",
+    "url": "https://hackerone.com/reports/502023",
+    "kind": "dynamic public report"
+  },
+  {
+    "id": "h1-safe-harbor",
+    "url": "https://docs.hackerone.com/en/articles/8494502-safe-harbor-overview-faq",
+    "kind": "help article"
+  },
+  {
+    "id": "h1-pdf",
+    "url": "https://www.hackerone.com/sites/default/files/2021-03/vulnerability-disclosure-policy-what-is-it-why-you-need-one-how-to-get-started.pdf",
+    "kind": "PDF"
+  },
+  {
+    "id": "ps-ssrf",
+    "url": "https://portswigger.net/web-security/ssrf",
+    "kind": "technical article"
+  },
+  {
+    "id": "ps-sqli",
+    "url": "https://portswigger.net/web-security/sql-injection",
+    "kind": "technical article"
+  },
+  {
+    "id": "owasp-wstg",
+    "url": "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting",
+    "kind": "testing methodology"
+  },
+  {
+    "id": "owasp-ssrf",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html",
+    "kind": "long technical cheatsheet"
+  },
+  {
+    "id": "nvd-log4shell",
+    "url": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
+    "kind": "CVE record"
+  },
+  {
+    "id": "mitre-cwe79",
+    "url": "https://cwe.mitre.org/data/definitions/79.html",
+    "kind": "long CWE record"
+  },
+  {
+    "id": "hacktricks-ssrf",
+    "url": "https://book.hacktricks.wiki/en/pentesting-web/ssrf-server-side-request-forgery/index.html",
+    "kind": "technical handbook"
+  },
+  {
+    "id": "github-ssrf",
+    "url": "https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Server%20Side%20Request%20Forgery/README.md",
+    "kind": "GitHub technical markdown"
+  },
+  {
+    "id": "working-pdf",
+    "url": "https://www.hackerone.com/sites/default/files/2025-02/Third-Party-Security-Checklist.pdf",
+    "kind": "2-page PDF"
+  }
+]

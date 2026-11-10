@@ -147,7 +147,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if (!found) {
           return {
             error: errorResult(
-              `Session ${sid} not found. Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one.`,
+              `Session ${sid} not found. Only use the exact session ID returned by run_terminal_cmd; a PID is not a session ID and must never be converted into one. Missing tracking or a missing record does not prove that the command never ran; do not repeat it solely because this lookup failed.`,
             ),
           };
         }
@@ -550,6 +550,25 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       // Historical records are evidence only: never adopt their PIDs, replay
       // commands, or perform send/kill without a live handle.
       if (!ptySessionManager.get(ptyScopeId, sessionId)) {
+        if (
+          await ptySessionManager.waitForPendingRecord(ptyScopeId, sessionId)
+        ) {
+          return {
+            result: {
+              session: sessionId,
+              resumable: false,
+              recordPersistencePending: true,
+              output:
+                "The execution record is still being saved. Use view or wait with this same session ID again to inspect it; do not rerun the command just because its record is pending.",
+              ...(action === "send" || action === "kill"
+                ? {
+                    error:
+                      "The requested action was not performed because no live session is available.",
+                  }
+                : {}),
+            },
+          };
+        }
         try {
           const { sandbox } = await getSandboxWithFallbackGuard({
             sandboxManager: context.sandboxManager,

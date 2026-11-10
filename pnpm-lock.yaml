@@ -308,6 +308,9 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      nodemailer:
+        specifier: ^10.4.0
+        version: 10.4.0
       openai:
         specifier: 6.49.0
         version: 6.49.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -7338,6 +7341,10 @@ packages:
     resolution: {integrity: sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ==}
     engines: {node: '>=18'}
 
+  nodemailer@10.4.0:
+    resolution: {integrity: sha512-fyy6r4Q5euRJ9Qr3Cts9K7SZrfe9zmz9oLOYiAR02MEJRDRci+99y0OoYBYBgpLffOqkkjXrB/d26VfiMje/kA==}
+    engines: {node: '>=20.0.0'}
+
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
@@ -10154,7 +10161,7 @@ snapshots:
 
   '@jest/pattern@30.0.1':
     dependencies:
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       jest-regex-util: 30.0.1
 
   '@jest/pattern@30.5.0':
@@ -10251,7 +10258,7 @@ snapshots:
       '@jest/schemas': 30.0.5
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       '@types/yargs': 17.0.34
       chalk: 4.1.2
 
@@ -14716,7 +14723,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.20.0)
+      retry-axios: 2.6.0(axios@1.20.0(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -15207,7 +15214,7 @@ snapshots:
   jest-mock@30.2.0:
     dependencies:
       '@jest/types': 30.2.0
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       jest-util: 30.2.0
 
   jest-mock@30.5.1:
@@ -15322,7 +15329,7 @@ snapshots:
   jest-util@30.2.0:
     dependencies:
       '@jest/types': 30.2.0
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       chalk: 4.1.2
       ci-info: 4.3.1
       graceful-fs: 4.2.11
@@ -16198,6 +16205,8 @@ snapshots:
 
   node-releases@2.0.54: {}
 
+  nodemailer@10.4.0: {}
+
   normalize-path@3.0.0: {}
 
   npm-run-path@4.0.1:
@@ -16577,7 +16586,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.1
-      '@types/node': 25.9.3
+      '@types/node': 25.9.5
       long: 5.3.2
 
   proxy-addr@2.0.8:
@@ -16919,7 +16928,7 @@ snapshots:
 
   resumable-stream@2.2.13(patch_hash=10637d9574b54edf9e3632eb1e4bfad1f106af41b3a8227a04a2d3d81a204995): {}
 
-  retry-axios@2.6.0(axios@1.20.0):
+  retry-axios@2.6.0(axios@1.20.0(debug@4.4.3)):
     dependencies:
       axios: 1.20.0(debug@4.4.3)
 
