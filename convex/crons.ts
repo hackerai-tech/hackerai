@@ -118,7 +118,7 @@ export const runOldFeedbackPurge = internalAction({
 
 const crons = cronJobs();
 crons.interval(
-  "resume paused abuse notifications",
+  "maintain temporary abuse email queue",
   { minutes: 5 },
   internal.abuseNotifications.resumePaused,
   {},
