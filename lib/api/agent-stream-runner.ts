@@ -3253,6 +3253,10 @@ export async function createAgentStream(
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndex,
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
+        {
+          isByok: stepOpenRouterMetadata.openrouter_is_byok,
+          chargedCost: stepOpenRouterMetadata.openrouter_charged_cost,
+        },
       );
 
       const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
@@ -3410,6 +3414,10 @@ export async function createAgentStream(
         ctx.usageTracker.setAuthoritativeModelCostForStep(
           stepUsageCostIndexes[index],
           metadata.openrouter_upstream_inference_cost,
+          {
+            isByok: metadata.openrouter_is_byok,
+            chargedCost: metadata.openrouter_charged_cost,
+          },
         );
       }
       const finishOpenRouterMetadata = extractOpenRouterMetadata({
@@ -3428,6 +3436,10 @@ export async function createAgentStream(
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndexes.at(-1),
         openRouterMetadata.openrouter_upstream_inference_cost,
+        {
+          isByok: openRouterMetadata.openrouter_is_byok,
+          chargedCost: openRouterMetadata.openrouter_charged_cost,
+        },
       );
 
       const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
