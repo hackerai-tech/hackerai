@@ -1565,6 +1565,11 @@ export const moveChatToProject = mutation({
 
     if (args.projectId === null) {
       if (chat.project_id === undefined) return false;
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.syncChatFindingProject,
+        { chatId: args.chatId, userId: user.subject, cursor: null },
+      );
       await ctx.db.patch(chat._id, {
         project_id: undefined,
         agent_approval_grants: undefined,
@@ -1585,6 +1590,11 @@ export const moveChatToProject = mutation({
       });
     }
     if (chat.project_id === args.projectId) return false;
+    await ctx.scheduler.runAfter(0, internal.findings.syncChatFindingProject, {
+      chatId: args.chatId,
+      userId: user.subject,
+      cursor: null,
+    });
 
     const now = Date.now();
     await Promise.all([

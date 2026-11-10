@@ -98,6 +98,11 @@ const detachNextProjectTasksBatch = async (
     .take(PROJECT_TASK_DETACH_BATCH_SIZE + 1);
 
   for (const task of tasks.slice(0, PROJECT_TASK_DETACH_BATCH_SIZE)) {
+    await ctx.scheduler.runAfter(0, internal.findings.syncChatFindingProject, {
+      chatId: task.id,
+      userId,
+      cursor: null,
+    });
     await ctx.db.patch(task._id, {
       project_id: undefined,
       agent_approval_grants: undefined,

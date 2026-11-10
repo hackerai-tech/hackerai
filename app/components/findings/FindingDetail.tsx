@@ -5,15 +5,13 @@ import { useMutation, useQueries, type RequestForQueries } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   ArrowLeft,
-  CheckCircle2,
   ChevronDown,
   Clock3,
   Copy,
-  Download,
   LockKeyhole,
   MessageSquareText,
+  ScrollText,
   ShieldAlert,
-  ShieldCheck,
   Target,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -47,13 +45,17 @@ import type {
   FindingDetailRecord,
 } from "@/types/finding";
 import { cn } from "@/lib/utils";
-import { downloadFile } from "@/lib/utils/file-download";
-import { renderFindingMarkdown } from "@/lib/findings/markdown";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import {
   getFindingSeverityClasses,
   getFindingSeverityDotClasses,
 } from "./FindingCard";
+import {
+  FINDING_EVIDENCE_BASIS_NOTE,
+  FindingEvidenceBadge,
+} from "./FindingEvidenceBadge";
+import { FindingExportMenu } from "./FindingExportMenu";
+import { FindingFollowupActions } from "./FindingFollowupActions";
 import { FindingDiscoveredAt } from "./FindingTime";
 
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
@@ -404,8 +406,8 @@ export function FindingDetail({
           <div className="flex flex-col gap-5 @min-[760px]:flex-row @min-[760px]:items-start @min-[760px]:justify-between">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-                <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                  <ShieldCheck className="size-4" aria-hidden="true" />
+                <span className="inline-flex items-center gap-1.5">
+                  <ShieldAlert className="size-4" aria-hidden="true" />
                   Vulnerability finding
                 </span>
                 <span aria-hidden="true">·</span>
@@ -421,6 +423,8 @@ export function FindingDetail({
                   />
                   {finding.status === "active" ? "Active" : "Closed"}
                 </span>
+                <span aria-hidden="true">·</span>
+                <FindingEvidenceBadge status={finding.evidence_status} />
               </div>
 
               <h2 className="mt-3 max-w-4xl text-balance text-2xl font-semibold leading-tight text-foreground @min-[760px]:text-3xl">
@@ -467,29 +471,9 @@ export function FindingDetail({
             ) : null}
           </div>
 
-          <div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                void downloadFile({
-                  filename: `finding-${finding.finding_id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`,
-                  content: renderFindingMarkdown(finding),
-                  mimeType: "text/markdown;charset=utf-8",
-                }).then((result) =>
-                  captureFindingEvent({
-                    operation: "export",
-                    ...result,
-                    format: "markdown",
-                    finding_id: finding.finding_id,
-                    report_updated_at: finding.updated_at,
-                  }),
-                )
-              }
-            >
-              <Download className="size-4" aria-hidden="true" />
-              Download report
-            </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <FindingExportMenu getFindings={async () => [finding]} />
+            <FindingFollowupActions finding={finding} />
           </div>
 
           <dl className="grid gap-x-8 gap-y-6 border-t border-border pt-6 @min-[520px]:grid-cols-2 @min-[880px]:grid-cols-4">
@@ -680,6 +664,33 @@ export function FindingDetail({
                 </p>
               </div>
 
+              <section
+                className="rounded-xl border border-border bg-muted/10 p-4"
+                aria-labelledby={`${sectionId("evidence")}-basis-heading`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4
+                    id={`${sectionId("evidence")}-basis-heading`}
+                    className="text-sm font-semibold text-foreground"
+                  >
+                    Evidence basis
+                  </h4>
+                  <FindingEvidenceBadge status={finding.evidence_status} />
+                </div>
+                {finding.evidence_status_reason ? (
+                  <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
+                    {finding.evidence_status_reason}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    No reasoning was recorded for this evidence basis.
+                  </p>
+                )}
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {FINDING_EVIDENCE_BASIS_NOTE}
+                </p>
+              </section>
+
               {finding.evidence_verification?.warning && (
                 <div
                   role="note"
@@ -721,14 +732,17 @@ export function FindingDetail({
               )}
 
               <section
-                className="border-l-2 border-emerald-500/60 pl-4"
+                className="border-l-2 border-border pl-4"
                 aria-labelledby={`${sectionId("evidence")}-captured-heading`}
               >
                 <h4
                   id={`${sectionId("evidence")}-captured-heading`}
-                  className="flex items-center gap-2 text-sm font-semibold text-emerald-600 dark:text-emerald-400"
+                  className="flex items-center gap-2 text-sm font-semibold text-foreground"
                 >
-                  <CheckCircle2 className="size-4" aria-hidden="true" />
+                  <ScrollText
+                    className="size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
                   Observed Evidence
                 </h4>
                 <pre className="mt-3 max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-4 text-xs leading-relaxed text-foreground">
