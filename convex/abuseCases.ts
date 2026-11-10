@@ -168,7 +168,7 @@ export const receive = mutation({
     // Enqueue atomically with the first receipt, never on idempotent retries.
     // This is also an activation gate: reports received while off are not
     // retroactively emailed. Only work already queued can pause and resume.
-    if (process.env.ABUSE_NOTIFICATIONS_ENABLED === "true") {
+    if (process.env.ABUSE_SMTP_PASSWORD) {
       const notificationId = await ctx.db.insert("abuse_notifications", {
         caseId,
         status: "pending",

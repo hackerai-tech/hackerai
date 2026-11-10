@@ -16,11 +16,7 @@ export async function sendAbuseNotification(
       url.password ||
       url.search ||
       url.hash ||
-      url.pathname !== "/" ||
-      !(process.env.ABUSE_NOTIFICATION_ENVIRONMENT === "production"
-        ? url.hostname === "hackerai.co"
-        : process.env.ABUSE_NOTIFICATION_ENVIRONMENT === "preview" &&
-          /^hackerai-git-[a-z0-9-]+-hackerai\.vercel\.app$/.test(url.hostname))
+      url.pathname !== "/"
     )
       return "failed";
     origin = url.origin;

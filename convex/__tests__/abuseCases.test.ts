@@ -126,6 +126,7 @@ const originalEnv = { ...process.env };
 beforeEach(() => {
   process.env.ABUSE_OPERATOR_USER_IDS = "operator";
   process.env.ABUSE_INTAKE_ENABLED = "true";
+  delete process.env.ABUSE_SMTP_PASSWORD;
 });
 afterEach(() => {
   process.env = { ...originalEnv };
@@ -179,7 +180,7 @@ test("receipts survive key rotation; changed retries conflict and do not duplica
   );
 });
 test("an accepted report atomically queues one notification across receipt retries", async () => {
-  process.env.ABUSE_NOTIFICATIONS_ENABLED = "true";
+  process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
   const ctx = { ...database(), scheduler: { runAfter: jest.fn() } };
   await invoke("receive", ctx, intake);
   await invoke("receive", ctx, intake);
@@ -192,6 +193,20 @@ test("an accepted report atomically queues one notification across receipt retri
   });
   expect(ctx.scheduler.runAfter).toHaveBeenCalledTimes(1);
 });
+test.each([undefined, ""])(
+  "does not enqueue new reports without an SMTP token (%s), including later receipt retries",
+  async (password) => {
+    if (password === undefined) delete process.env.ABUSE_SMTP_PASSWORD;
+    else process.env.ABUSE_SMTP_PASSWORD = password;
+    const ctx = { ...database(), scheduler: { runAfter: jest.fn() } };
+    await invoke("receive", ctx, intake);
+    process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
+    await invoke("receive", ctx, intake);
+    expect(ctx.tables.abuse_cases).toHaveLength(1);
+    expect(ctx.tables.abuse_notifications).toBeUndefined();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  },
+);
 test("intake alone never restricts an account and per-email limits cannot be bypassed by rotating a retained key", async () => {
   const ctx = database();
   for (let i = 0; i < 3; i++)

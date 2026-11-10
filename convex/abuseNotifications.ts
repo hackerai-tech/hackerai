@@ -19,7 +19,7 @@ export const claim = internalMutation({
       });
       return null;
     }
-    if (process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true") {
+    if (!process.env.ABUSE_SMTP_PASSWORD) {
       await ctx.db.patch(notificationId, {
         status: "paused",
         updatedAt: Date.now(),
@@ -46,7 +46,7 @@ export const resumePaused = internalMutation({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    if (process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true") return null;
+    if (!process.env.ABUSE_SMTP_PASSWORD) return null;
     const rows = await ctx.db
       .query("abuse_notifications")
       .withIndex("by_status", (q) => q.eq("status", "paused"))
@@ -92,10 +92,7 @@ export const retryFailed = internalMutation({
     if (!row || row.status !== "failed" || row.attempts !== expectedAttempts)
       throw new Error("Notification changed or is not a confirmed failure");
     const report = await ctx.db.get(row.caseId);
-    if (
-      !report?.ciphertext ||
-      process.env.ABUSE_NOTIFICATIONS_ENABLED !== "true"
-    )
+    if (!report?.ciphertext || !process.env.ABUSE_SMTP_PASSWORD)
       throw new Error("Notification unavailable");
     await ctx.db.patch(notificationId, {
       status: "pending",

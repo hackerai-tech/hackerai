@@ -12,7 +12,6 @@ import { sendAbuseNotification } from "../notification-mail";
 const original = { ...process.env };
 const reference = "AB-123e4567-e89b-42d3-a456-426614174000";
 beforeEach(() => {
-  process.env.ABUSE_NOTIFICATION_ENVIRONMENT = "preview";
   verify.mockReset().mockResolvedValue(true);
   process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
   process.env.ABUSE_NOTIFICATION_REVIEW_URL =
@@ -47,8 +46,11 @@ test("sends only fixed headers and a case reference through mandatory STARTTLS",
 });
 test.each([
   "http://hackerai.co",
-  "https://other.test",
-  "https://other-hackerai.vercel.app",
+  "https://user:password@example.test",
+  "https://example.test/abuse/operations",
+  "https://example.test/#fragment",
+  "not-a-url",
+  "",
   "https://hackerai.co/?secret=x",
 ])("rejects invalid review origins before SMTP: %s", async (url) => {
   process.env.ABUSE_NOTIFICATION_REVIEW_URL = url;
@@ -84,10 +86,13 @@ test("a preflight network failure is safely retried without sending a message", 
   expect(await sendAbuseNotification(reference)).toBe("retry");
   expect(sendMail).not.toHaveBeenCalled();
 });
-test("Production cannot send a notification linked to a Preview origin", async () => {
-  process.env.ABUSE_NOTIFICATION_ENVIRONMENT = "production";
-  expect(await sendAbuseNotification(reference)).toBe("failed");
-  expect(sendMail).not.toHaveBeenCalled();
-  process.env.ABUSE_NOTIFICATION_REVIEW_URL = "https://hackerai.co";
-  expect(await sendAbuseNotification(reference)).toBe("sent");
-});
+test.each(["https://hackerai.co", "https://reports.example.org"])(
+  "uses the configured HTTPS review origin without a separate environment setting: %s",
+  async (origin) => {
+    process.env.ABUSE_NOTIFICATION_REVIEW_URL = origin;
+    expect(await sendAbuseNotification(reference)).toBe("sent");
+    expect(sendMail.mock.calls[0][0].text).toContain(
+      `${origin}/abuse/operations`,
+    );
+  },
+);

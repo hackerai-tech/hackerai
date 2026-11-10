@@ -43,7 +43,7 @@ function fixture() {
   return { row, report, ctx };
 }
 beforeEach(() => {
-  process.env.ABUSE_NOTIFICATIONS_ENABLED = "true";
+  process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
 });
 afterEach(() => {
   process.env = { ...original };
@@ -103,7 +103,7 @@ test("a crashed or ambiguous send is retained for reconciliation without automat
 });
 test.each(["disabled", "erased"])("does not transmit %s work", async (mode) => {
   const { row, report, ctx } = fixture();
-  if (mode === "disabled") delete process.env.ABUSE_NOTIFICATIONS_ENABLED;
+  if (mode === "disabled") delete process.env.ABUSE_SMTP_PASSWORD;
   else delete report.ciphertext;
   expect(
     await run("claim", ctx, { notificationId: "notification" }),
@@ -113,13 +113,13 @@ test.each(["disabled", "erased"])("does not transmit %s work", async (mode) => {
 });
 test("paused work survives disabling and resumes once after re-enabling", async () => {
   const { row, ctx } = fixture();
-  delete process.env.ABUSE_NOTIFICATIONS_ENABLED;
+  delete process.env.ABUSE_SMTP_PASSWORD;
   await run("claim", ctx, { notificationId: "notification" });
   expect(row.status).toBe("paused");
   expect(row.attempts).toBe(0);
   await run("resumePaused", ctx, {});
   expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
-  process.env.ABUSE_NOTIFICATIONS_ENABLED = "true";
+  process.env.ABUSE_SMTP_PASSWORD = "synthetic-smtp-password";
   await run("resumePaused", ctx, {});
   await run("resumePaused", ctx, {});
   expect(row.status).toBe("pending");
