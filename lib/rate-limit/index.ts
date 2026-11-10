@@ -94,6 +94,7 @@ export { acquireFreeRunConcurrencyLock } from "./free-concurrency";
 export {
   checkFreeMonthlyCostLimit,
   recordFreeMonthlyCost,
+  recordFreeMonthlySubagentCost,
 } from "./free-monthly-cost";
 export {
   getPaidDailyFreeAllowanceStatus,
