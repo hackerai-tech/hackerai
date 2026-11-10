@@ -1442,6 +1442,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       ([command]) => command === "echo ok",
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
+    expect(prepareBrowser).toHaveBeenCalledWith(
+      e2b,
+      "recognized_browser_command",
+    );
     expect(browserCall?.[0]).toContain(
       'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
@@ -1467,6 +1471,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: false,
     });
     expect(gated).toMatchObject({ result: { exitCode: 0 } });
+    expect(prepareBrowser).toHaveBeenLastCalledWith(e2b, "gate_only");
     expect(
       e2b.commands.run.mock.calls.find(([command]) =>
         command.includes("echo gated"),
@@ -1564,7 +1569,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         timeout: 5,
       });
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(sandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          sandbox,
+          "recognized_browser_command",
+        );
         expect(sandbox.commands.run).toHaveBeenCalledWith(
           expect.any(String),
           expect.objectContaining({
@@ -1605,7 +1613,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: true,
     });
 
-    expect(prepareBrowser).toHaveBeenCalledWith(e2b);
+    expect(prepareBrowser).toHaveBeenCalledWith(e2b, "interactive_shell");
     expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
       e2b,
       expect.objectContaining({
@@ -2928,7 +2936,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         expect.objectContaining({ cwd: "/tmp/project" }),
       );
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(centrifugoSandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          centrifugoSandbox,
+          "interactive_shell",
+        );
         expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
           centrifugoSandbox,
           expect.objectContaining({
