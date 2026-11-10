@@ -15,7 +15,6 @@ import {
   resolvePullRequests,
   githubClient,
   pages,
-  reviewWithCarryForward,
   mergeAliases,
 } from "./review-security.mjs";
 
@@ -276,7 +275,6 @@ function fixture({
   failChecks = false,
   failFinalRead = false,
   headRepo = "o/r",
-  threads = [],
 } = {}) {
   const writes = [];
   let reads = 0;
@@ -318,20 +316,6 @@ function fixture({
       if (failMetadata) throw new Error("private-sentinel");
       return files;
     }
-    if (path.includes("/reviews?")) return [];
-    if (path === "/graphql")
-      return {
-        data: {
-          repository: {
-            pullRequest: {
-              reviewThreads: {
-                nodes: threads,
-                pageInfo: { hasNextPage: false },
-              },
-            },
-          },
-        },
-      };
     if (path.includes("/analyses?")) return analyses;
     if (path.includes("/alerts?pr=")) return alerts;
     if (path.includes("/alerts?ref=")) return baseline;
@@ -418,7 +402,7 @@ test("fresh pending statuses replace old passes before metadata reads; same-name
     assert.equal(f.writes.at(-1).body.state, "failure");
   }
   const spoof = fixture({
-    checks: [scan, { ...scan, name: "Review and security" }],
+    checks: [receipt, { ...scan, name: "Review and security" }],
   });
   assert.notEqual(
     (await evaluatePullRequest(spoof.api, "o/r", 1)).state,
@@ -453,21 +437,6 @@ test("a changed test merge cannot pass when the PR head and reported base SHA st
   assert.equal(
     (await evaluatePullRequest(docs.api, "o/r", 1)).state,
     "success",
-  );
-});
-
-test("deleted comment authors do not block review, but malformed thread metadata does", async () => {
-  const deleted = fixture({
-    threads: [{ isResolved: false, comments: { nodes: [{ author: null }] } }],
-  });
-  assert.equal(
-    (await evaluatePullRequest(deleted.api, "o/r", 1)).state,
-    "success",
-  );
-  const malformed = fixture({ threads: [{ isResolved: true, comments: {} }] });
-  assert.equal(
-    (await evaluatePullRequest(malformed.api, "o/r", 1)).state,
-    "failure",
   );
 });
 
@@ -520,108 +489,6 @@ test("collections are paginated; provider failures never echo credentials or res
     (error) => !error.message.includes("private-token"),
   );
   await assert.rejects(api("//elsewhere"));
-});
-
-const skipped = {
-  ...receipt,
-  conclusion: "skipped",
-  output: {
-    summary: "Result: Skipped - No files to review\nRun ID: example",
-  },
-};
-
-test("merge-only updates reuse authenticated review only after exact merge-tree verification", async () => {
-  const api = async (path) => {
-    if (path.includes("/commits?")) return [{ sha: base }];
-    if (path.includes(`/commits/${base}/check-runs?`))
-      return {
-        check_runs: [
-          { ...receipt, head_sha: base, pull_requests: [{ number: 1 }] },
-        ],
-      };
-    throw new Error("Unexpected carry-forward request");
-  };
-  const pr = { number: 1, head: { sha: head }, base: { sha: merge } };
-  const run = (checks, verify, threads = []) =>
-    reviewWithCarryForward(api, "/repos/o/r", pr, checks, [], threads, verify);
-  let proof;
-  assert.equal(
-    (
-      await run([skipped], (...args) => {
-        proof = args;
-        return true;
-      })
-    ).state,
-    "pass",
-  );
-  assert.deepEqual(proof, [base, merge, head]);
-  const foreign = async (path) =>
-    path.includes("/commits?")
-      ? [{ sha: base }]
-      : {
-          check_runs: [
-            { ...receipt, head_sha: base, pull_requests: [{ number: 2 }] },
-          ],
-        };
-  assert.notEqual(
-    (
-      await reviewWithCarryForward(
-        foreign,
-        "/repos/o/r",
-        pr,
-        [skipped],
-        [],
-        [],
-        () => true,
-      )
-    ).state,
-    "pass",
-  );
-  assert.notEqual((await run([skipped], () => false)).state, "pass");
-  for (const check of [
-    { ...skipped, conclusion: "failure" },
-    { ...skipped, conclusion: "neutral" },
-    { ...skipped, status: "in_progress" },
-    { ...skipped, app: { id: ACTIONS_APP } },
-    { ...skipped, output: { summary: "Result: Skipped - Rate limited" } },
-  ])
-    assert.notEqual(
-      (
-        await run([check], () => {
-          throw new Error("must not reuse");
-        })
-      ).state,
-      "pass",
-    );
-  assert.notEqual(
-    (
-      await run([skipped], () => true, [
-        {
-          isResolved: false,
-          comments: {
-            nodes: [{ author: { login: "coderabbitai", type: "Bot" } }],
-          },
-        },
-      ])
-    ).state,
-    "pass",
-  );
-  assert.notEqual(
-    (
-      await reviewWithCarryForward(
-        async () => {
-          throw new Error("metadata unavailable");
-        },
-        "/repos/o/r",
-        pr,
-        [skipped],
-        [],
-        [],
-        () => true,
-      ).catch(() => ({ state: "fail" }))
-    ).state,
-    "pass",
-  );
 });
 
 test("regenerated test merges reuse scans only with the exact tree and ordered current parents", async () => {
@@ -690,4 +557,37 @@ test("live policy accepts identical scan aliases but never an aliased critical f
     ).state,
     "pending",
   );
+});
+
+test("CodeRabbit availability is advisory while selected security evidence remains mandatory", async () => {
+  for (const reviewChecks of [
+    [],
+    [{ ...receipt, status: "in_progress", conclusion: null }],
+    [{ ...receipt, conclusion: "skipped" }],
+    [
+      {
+        ...receipt,
+        conclusion: "neutral",
+        output: { summary: "Rate limited" },
+      },
+    ],
+    [{ ...receipt, conclusion: "failure" }],
+  ]) {
+    const f = fixture({ checks: [scan, ...reviewChecks] });
+    assert.equal((await evaluatePullRequest(f.api, "o/r", 1)).state, "success");
+    assert.match(f.writes.at(-1).body.description, /CodeRabbit.*advisory/);
+    assert.equal(
+      (
+        await evaluatePullRequest(
+          fixture({
+            checks: [scan, ...reviewChecks],
+            alerts: [alert(99, "critical")],
+          }).api,
+          "o/r",
+          1,
+        )
+      ).state,
+      "failure",
+    );
+  }
 });

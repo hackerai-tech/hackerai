@@ -185,7 +185,8 @@ export function securityResult(
 }
 
 export function policyResult(review, security) {
-  const states = [review.state, security.state];
+  // CodeRabbit is advisory; only selected security evidence blocks merging.
+  const states = [security.state];
   return {
     state: states.includes("fail")
       ? "failure"

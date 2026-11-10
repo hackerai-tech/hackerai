@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { reviewMergeVerifier } from "./review-equivalence.mjs";
 import { pathToFileURL } from "node:url";
 import {
   ACTIONS_APP,
@@ -13,61 +12,6 @@ import {
   policyResult,
   sameTestMerge,
 } from "./review-security-policy.mjs";
-
-/** A provider skip is not approval: reuse only a real receipt and an exact merge proof. */
-export async function reviewWithCarryForward(
-  api,
-  root,
-  pr,
-  checks,
-  reviews,
-  threads,
-  verify,
-) {
-  const direct = reviewResult(pr.head.sha, checks, reviews, threads);
-  const latest = checks
-    .filter(
-      (check) =>
-        check.name === "CodeRabbit" &&
-        check.app?.id === CODE_RABBIT_APP &&
-        check.head_sha === pr.head.sha,
-    )
-    .sort((a, b) => b.id - a.id)[0];
-  if (
-    latest?.status !== "completed" ||
-    latest.conclusion !== "skipped" ||
-    !latest.output?.summary
-      ?.trimStart()
-      .startsWith("Result: Skipped - No files to review\n")
-  )
-    return direct;
-  const commits = await pages(api, `${root}/pulls/${pr.number}/commits`);
-  // Bound receipt lookups. Older/unknown history requires a fresh full review.
-  for (const commit of commits.slice(-20).reverse()) {
-    if (!/^[a-f0-9]{40}$/.test(commit.sha ?? "") || commit.sha === pr.head.sha)
-      continue;
-    const previous = await pages(
-      api,
-      `${root}/commits/${commit.sha}/check-runs?filter=all`,
-      "check_runs",
-    );
-    const scoped = previous.filter((check) =>
-      check.pull_requests?.some((item) => item.number === pr.number),
-    );
-    if (reviewResult(commit.sha, scoped, reviews, threads).state !== "pass")
-      continue;
-    if (await verify(commit.sha, pr.base.sha, pr.head.sha))
-      return {
-        state: "pass",
-        reason: `Authenticated CodeRabbit review of ${commit.sha} reused after exact clean-merge tree verification.`,
-      };
-  }
-  return {
-    state: "fail",
-    reason:
-      "CodeRabbit skipped; no equivalent reviewed merge could be verified. Request a full CodeRabbit review.",
-  };
-}
 
 /** Only exact tree+ordered-parent aliases can stand in for a regenerated test merge. */
 export async function mergeAliases(api, root, pr, analyses) {
@@ -143,35 +87,6 @@ export async function pages(api, path, field) {
   throw new Error("GitHub pagination is incomplete");
 }
 
-const threadsQuery = `query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
-  repository(owner:$owner,name:$name) { pullRequest(number:$number) {
-    reviewThreads(first:100,after:$cursor) { nodes { isResolved isOutdated comments(first:1) { nodes { author { login __typename } } } } pageInfo { hasNextPage endCursor } }
-  } }
-}`;
-
-async function reviewThreads(api, repo, number) {
-  const [owner, name] = repo.split("/");
-  const rows = [];
-  let cursor = null;
-  for (let page = 0; page < 40; page++) {
-    const response = await api("/graphql", "POST", {
-      query: threadsQuery,
-      variables: { owner, name, number, cursor },
-    });
-    const collection = response.data?.repository?.pullRequest?.reviewThreads;
-    if (
-      !Array.isArray(collection?.nodes) ||
-      collection.nodes.some((thread) => !Array.isArray(thread.comments?.nodes))
-    )
-      throw new Error("Review threads cannot be verified");
-    rows.push(...collection.nodes);
-    if (collection.pageInfo?.hasNextPage === false) return rows;
-    cursor = collection.pageInfo?.endCursor;
-    if (!cursor) throw new Error("Review thread pagination is incomplete");
-  }
-  throw new Error("Review thread pagination exceeded its bound");
-}
-
 /** Events are wake-ups only: each serialized evaluation reads the current PR. */
 export async function resolvePullRequests(api, repo, eventName, event) {
   let candidates = [];
@@ -221,11 +136,7 @@ export async function evaluatePullRequest(
   api,
   repo,
   number,
-  {
-    publish = true,
-    detailsUrl = "https://github.com",
-    verifyMerge = () => false,
-  } = {},
+  { publish = true, detailsUrl = "https://github.com" } = {},
 ) {
   const root = `/repos/${repo}`;
   const pr = await api(`${root}/pulls/${number}`);
@@ -239,7 +150,7 @@ export async function evaluatePullRequest(
       pr.head.sha,
       "pending",
       detailsUrl,
-      "Verifying current review and security evidence.",
+      "Verifying selected security evidence; CodeRabbit is advisory.",
     );
   let decision;
   try {
@@ -282,19 +193,8 @@ export async function evaluatePullRequest(
         },
       );
     } else {
-      const [reviews, threads] = await Promise.all([
-        pages(api, `${root}/pulls/${number}/reviews`),
-        reviewThreads(api, repo, number),
-      ]);
-      const review = await reviewWithCarryForward(
-        api,
-        root,
-        pr,
-        checks,
-        reviews,
-        threads,
-        verifyMerge,
-      );
+      // Review is informational only. Do not depend on review/thread API availability.
+      const review = reviewResult(pr.head.sha, checks, [], []);
       let security;
       if (!plan.languages.length)
         security = securityResult(pr.merge_commit_sha, [], [], [], []);
@@ -419,7 +319,7 @@ export async function evaluatePullRequest(
       decision.state,
       detailsUrl,
       decision.state === "success"
-        ? "Current review and selected security scans passed."
+        ? "Selected security scans passed; CodeRabbit is advisory."
         : (
             [decision.security, decision.review].find(
               (item) => item.state === "fail",
@@ -466,7 +366,6 @@ export async function main(action, env = process.env) {
   const publish = env.POLICY_READ_ONLY !== "true";
   const decision = await evaluatePullRequest(api, repo, Number(env.PR_NUMBER), {
     publish,
-    verifyMerge: reviewMergeVerifier(repo, token),
     detailsUrl: `https://github.com/${repo}/actions/runs/${env.GITHUB_RUN_ID ?? ""}`,
   });
   if (decision) console.log(JSON.stringify(decision));
