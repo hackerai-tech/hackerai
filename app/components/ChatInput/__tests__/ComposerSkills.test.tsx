@@ -408,3 +408,17 @@ it("hands off from the plus menu above Pursue goal to a focused skill selector",
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus(),
   );
 });
+
+// Switching modes can leave query, active index, and open state unchanged.
+it("switches an open menu search to inline completion even with an empty query", () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+  expect(
+    screen.getByRole("combobox", { name: "Search skills" }),
+  ).toBeInTheDocument();
+  typeAt("$");
+  expect(
+    screen.queryByRole("combobox", { name: "Search skills" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("Select a skill")).toBeInTheDocument();
+});

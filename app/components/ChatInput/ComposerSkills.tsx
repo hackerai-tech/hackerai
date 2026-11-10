@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -68,6 +69,7 @@ export function ComposerSkillsProvider({
   const select = useMutation(api.userSkills.select);
   const { getInput, setInput } = useComposerActions();
   const [open, setOpen] = useState(false);
+  const [inline, setInline] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -80,7 +82,9 @@ export function ComposerSkillsProvider({
   const dismissed = useRef<number | null>(null);
   const pending = useRef(false);
   const currentChat = useRef(chatId);
-  currentChat.current = chatId;
+  useLayoutEffect(() => {
+    currentChat.current = chatId;
+  }, [chatId]);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -90,6 +94,7 @@ export function ComposerSkillsProvider({
   }, []);
   useEffect(() => {
     token.current = null;
+    setInline(false);
     dismissed.current = null;
     setOpen(false);
     setManagerOpen(false);
@@ -148,6 +153,7 @@ export function ComposerSkillsProvider({
         }
       }
       token.current = null;
+      setInline(false);
       setOpen(false);
       if (!selectedToken) requestAnimationFrame(() => onFocusComposer?.());
     } catch (cause) {
@@ -185,6 +191,7 @@ export function ComposerSkillsProvider({
       element.selectionStart !== element.selectionEnd
     ) {
       token.current = null;
+      setInline(false);
       setOpen(false);
       return;
     }
@@ -197,12 +204,14 @@ export function ComposerSkillsProvider({
         /^[({]/.test(match[2]));
     if (!match || literalDollar) {
       token.current = null;
+      setInline(false);
       dismissed.current = null;
       setOpen(false);
       return;
     }
     const start = before.length - match[2].length - match[1].length;
     token.current = { start, end: before.length, text: before.slice(start) };
+    setInline(true);
     if (dismissed.current === start) return;
     dismissed.current = null;
     setQuery(match[2]);
@@ -258,6 +267,7 @@ export function ComposerSkillsProvider({
     },
     openSelector: () => {
       token.current = null;
+      setInline(false);
       dismissed.current = null;
       setQuery("");
       setActive(0);
@@ -266,6 +276,7 @@ export function ComposerSkillsProvider({
     },
     toggle: () => {
       token.current = null;
+      setInline(false);
       setQuery("");
       setActive(0);
       setError("");
@@ -301,7 +312,7 @@ export function ComposerSkillsProvider({
               aria-hidden="true"
               className="size-3.5 shrink-0 text-muted-foreground"
             />
-            {token.current ? (
+            {inline ? (
               <span className="truncate text-xs text-muted-foreground">
                 {query ? `Skills matching “${query}”` : "Select a skill"}
               </span>
@@ -322,11 +333,11 @@ export function ComposerSkillsProvider({
                   setActive(0);
                 }}
                 onKeyDown={navigate}
-                className="h-9 rounded-none border-0 bg-transparent p-0 text-[13px] shadow-none placeholder:text-muted-foreground focus-visible:ring-0 dark:bg-transparent md:text-[13px]"
+                className="h-9 rounded-none border-0 bg-transparent p-0 text-base shadow-none placeholder:text-muted-foreground focus-visible:ring-0 dark:bg-transparent md:text-[13px]"
               />
             )}
             <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
-              Your skills
+              {selected.length} of {MAX_SELECTED_SKILLS} selected
             </span>
           </div>
           <div
@@ -346,7 +357,7 @@ export function ComposerSkillsProvider({
                 onMouseEnter={() => setActive(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => pick(skill)}
-                className={`flex min-h-9 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left disabled:opacity-50 ${index === activeIndex ? "bg-muted text-foreground dark:bg-background/60" : "text-foreground/80 hover:bg-muted dark:hover:bg-background/40"}`}
+                className={`flex min-h-11 w-full md:min-h-9 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left disabled:opacity-50 ${index === activeIndex ? "bg-muted text-foreground dark:bg-background/60" : "text-foreground/80 hover:bg-muted dark:hover:bg-background/40"}`}
               >
                 <BookOpen
                   aria-hidden="true"
@@ -397,7 +408,7 @@ export function ComposerSkillsProvider({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-8 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
+              className="h-11 gap-1.5 px-2 text-xs md:h-8 font-normal text-muted-foreground hover:text-foreground"
               onClick={() => {
                 close();
                 if (openManager) openManager();
@@ -419,11 +430,6 @@ export function ComposerSkillsProvider({
                   <kbd className="font-sans">↵</kbd> Select
                 </span>
               </div>
-            )}
-            {selected.length > 0 && !matches.length && (
-              <span className="pr-1.5 text-[11px] text-muted-foreground">
-                {selected.length} of 3 selected
-              </span>
             )}
           </div>
         </PopoverContent>
@@ -451,14 +457,14 @@ export function ComposerSkillSelections() {
       {skills.selected.map((skill) => (
         <span
           key={skill.id}
-          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 py-1 pl-2 pr-1 text-xs text-foreground/90 dark:bg-muted"
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 py-0 pl-2 pr-0 text-xs md:py-1 md:pr-1 text-foreground/90 dark:bg-muted"
           title={`${skill.description || skill.name}. Available for this chat; content loads when relevant.`}
         >
           <BookOpen className="size-3 shrink-0 text-muted-foreground" />
           <span className="max-w-48 truncate">{skill.name}</span>
           <button
             type="button"
-            className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="flex size-11 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground md:size-4 md:p-0.5"
             aria-label={`Remove ${skill.name} from this chat`}
             disabled={skills.disabled}
             onClick={() => skills.remove(skill.id)}
