@@ -29,6 +29,14 @@ import {
   getStandaloneScreenshotHint,
 } from "@/lib/utils/agent-browser-command";
 import { CAPTCHA_VISION_GUIDANCE } from "./vision-guidance";
+import {
+  applyVisionProgress,
+  INITIAL_VISION_PROGRESS,
+  VISION_REJECTION_LIMIT,
+  type VisionProgress,
+  type VisionProgressReport,
+  type VisionProgressStop,
+} from "./vision-progress";
 import type { CaptchaJournal } from "./journal";
 import {
   cloudflarePageUrl,
@@ -86,11 +94,13 @@ export function createBrowserChallengeHandler(
     siteKey: string;
     widgetId?: string;
   };
-  // The Agent judges progress across rounds; general run limits still apply.
+  // Recovery stops on reported verification feedback, never on elapsed time or
+  // accepted stages; general run limits still apply.
   let visionFallback:
     | (VisionScope & {
         target: Target;
         captureSupported: boolean;
+        progress: VisionProgress;
         /** No pending challenge at the last owned observation. */
         completed?: boolean;
         /** A command after completion may have submitted the form. */
@@ -98,9 +108,24 @@ export function createBrowserChallengeHandler(
         stopped?:
           | "vision_page_changed"
           | "vision_challenge_returned"
-          | "vision_capture_unavailable";
+          | "vision_capture_unavailable"
+          | VisionProgressStop;
       })
     | undefined;
+  const describeVisionProgress = ({
+    nextAttempt,
+    rejected,
+  }: VisionProgress) => ({
+    nextAttempt,
+    rejectedVerifications: rejected,
+    rejectionLimit: VISION_REJECTION_LIMIT,
+  });
+  const ownedVisionRequest = (scope: NonNullable<typeof visionFallback>) => ({
+    target: scope.target,
+    url: scope.url,
+    documentId: scope.documentId,
+    identity: scope.identity,
+  });
   const matchesVisionScope = (
     identity: string,
     observation: BrowserChallengeObservation,
@@ -136,9 +161,10 @@ export function createBrowserChallengeHandler(
   const check = async (
     abortSignal?: AbortSignal,
     target?: Target,
-    action: "inspect" | "solve" | "release" | "capture" = "solve",
+    action: "inspect" | "solve" | "release" | "capture" | "progress" = "solve",
     expected?: Request,
     capturePath?: string,
+    report?: VisionProgressReport,
   ) => {
     const signals = [runSignal, abortSignal].filter(
       (s): s is AbortSignal => !!s,
@@ -154,7 +180,7 @@ export function createBrowserChallengeHandler(
       context.requestToolApproval
     )
       return { status: "unavailable" };
-    if (action === "capture" && !visionFallback)
+    if ((action === "capture" || action === "progress") && !visionFallback)
       return { status: "unavailable" };
     if (active)
       return {
@@ -195,14 +221,23 @@ export function createBrowserChallengeHandler(
         visionFallbackAvailable: available,
         visionCaptureSupported:
           available && visionFallback?.captureSupported === true,
+        ...(visionFallback && {
+          visionProgress: describeVisionProgress(visionFallback.progress),
+        }),
         ...(available && {
           visionGuidance: getCaptchaUnsolvableVisionGuidance(
             visionFallback!.captureSupported,
           ),
         }),
         message: available
-          ? "2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. Try the vision workflow in this same browser now; request human takeover when it stops making visible progress or the outcome is uncertain. No further paid attempt is permitted."
-          : "2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. Vision recovery is unavailable or has ended for this challenge. Use manual verification; do not request another paid solve.",
+          ? "2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. Try the vision workflow in this same browser now and report each Next/Verify result with the progress command in visionGuidance. Recovery stops after two rejected verifications or uncertain feedback. No further paid attempt is permitted."
+          : `2Captcha returned confirmed unsolvable with no delivered response and zero provider fee. ${
+              reason === "vision_verification_rejected"
+                ? "Two rejected verifications were reported, so native vision recovery has ended."
+                : reason === "vision_feedback_uncertain"
+                  ? "Native vision recovery has ended because verification feedback was uncertain, skipped or conflicting."
+                  : "Vision recovery is unavailable or has ended for this challenge."
+            } Do not click, retry, reload or reset the challenge. Request human takeover with browser_handoff for this Cloud browser; for Local, Desktop or remote browsers explain that manual verification is required. Do not request another paid solve.`,
       });
     const recordToolCost = (costDollars: number) => {
       if (costRecorded) return;
@@ -305,6 +340,9 @@ export function createBrowserChallengeHandler(
         return respond({ status: "no_pending_challenge" });
       }
       if (action === "release") {
+        // Releasing must never clear an ended recovery and revive automation.
+        if (visionFallback?.stopped)
+          return visionReply(false, visionFallback.stopped);
         visionFallback = undefined;
         const restored = managed
           ? (await releaseManaged?.()) === true
@@ -347,12 +385,34 @@ export function createBrowserChallengeHandler(
               status: "vision_capture_ready",
               capture,
               visionFallbackAvailable: true,
+              visionProgress: describeVisionProgress(visionFallback.progress),
             });
           } catch {
             signal.throwIfAborted();
             visionFallback.stopped ??= "vision_capture_unavailable";
             return visionReply(false, "vision_capture_unavailable");
           }
+        }
+        // Mutate only after ownership, scope and cancellation are confirmed.
+        if (action === "progress" && samePage && !visionFallback.stopped) {
+          signal.throwIfAborted();
+          const previous = visionFallback.progress;
+          const progress = applyVisionProgress(previous, report);
+          visionFallback.progress = progress;
+          if (progress.stopped) visionFallback.stopped = progress.stopped;
+          else
+            return respond({
+              status:
+                progress === previous
+                  ? "vision_progress_unchanged"
+                  : "vision_progress_recorded",
+              visionFallbackAvailable: true,
+              visionProgress: describeVisionProgress(progress),
+              message:
+                progress === previous
+                  ? `This report was already recorded or is older than the last one; nothing changed. Report the next Next/Verify result as --attempt ${progress.nextAttempt}.`
+                  : `Recorded attempt ${progress.last?.attempt} as ${progress.last?.outcome}. Report the next Next/Verify result as --attempt ${progress.nextAttempt}.`,
+            });
         }
         if (samePage && target && action === "inspect")
           pendingRequest = {
@@ -368,6 +428,9 @@ export function createBrowserChallengeHandler(
             : (visionFallback.stopped ?? "provider_unsolvable"),
         );
       }
+      // Recovery may have been closed while this check awaited the browser.
+      if (action === "capture" || action === "progress")
+        return respond({ status: "unavailable" });
       challengeDetected = true;
       record("browser_captcha_challenge_detected", {
         widget_count: pending.length,
@@ -673,6 +736,7 @@ export function createBrowserChallengeHandler(
                 target,
                 captureSupported:
                   typeof currentBrowser.captureVision === "function",
+                progress: INITIAL_VISION_PROGRESS,
               };
           } catch {
             signal.throwIfAborted();
@@ -767,12 +831,7 @@ export function createBrowserChallengeHandler(
         signal,
         visionFallback.target,
         "capture",
-        {
-          target: visionFallback.target,
-          url: visionFallback.url,
-          documentId: visionFallback.documentId,
-          identity: visionFallback.identity,
-        },
+        ownedVisionRequest(visionFallback),
         request.path,
       );
       if (
@@ -868,9 +927,29 @@ export function createBrowserChallengeHandler(
       pendingRequest = undefined;
       return check(signal, expected.target, action, expected);
     },
+    /** Records observed feedback only; never loads or reserves a provider. */
+    reportProgress: (
+      sessionName: string,
+      report: VisionProgressReport | undefined,
+      signal?: AbortSignal,
+    ) =>
+      visionFallback?.sessionName === sessionName
+        ? check(
+            signal,
+            visionFallback.target,
+            "progress",
+            ownedVisionRequest(visionFallback),
+            undefined,
+            report,
+          )
+        : Promise.resolve({
+            status: "unavailable",
+            message:
+              "No native vision recovery is active in this session. Nothing was recorded.",
+          }),
     getReceiptPrompt: () =>
       providerAttemptStarted
-        ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${providerUnsolvable ? " Provider outcome: confirmed unsolvable. Any subsequent native vision completion is a separate result, not a provider solve." : ""}${visionFallback ? (visionFallback.completed ? " No pending challenge was observed. Native completion is not website acceptance; verify it from page evidence and never resubmit an uncertain form." : visionFallback.stopped ? " Native vision recovery has ended for this challenge; request manual verification or inspect/close only." : " Native vision recovery remains available in the same owned session and widget. Continue only while rounds make visible progress; request manual verification when stuck or uncertain.") : providerUnsolvable ? " Native recovery is unavailable or ended; do not restart it in another session." : ""}${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`
+        ? `\n<captcha_runtime_receipt>\nAuthoritative receipt for this run, refreshed by the runtime. Provider: 2Captcha. Paid task creation: ${providerTaskCreated ? "confirmed, exactly one task" : "outcome unknown; do not retry"}. Provider cost: ${knownCostDollars === undefined ? "unknown, never report zero" : `${knownCostDollars} USD`}. Response delivery: ${deliveryOutcome}.${providerUnsolvable ? " Provider outcome: confirmed unsolvable. Any subsequent native vision completion is a separate result, not a provider solve." : ""}${visionFallback ? (visionFallback.completed ? " No pending challenge was observed. Native completion is not website acceptance; verify it from page evidence and never resubmit an uncertain form." : visionFallback.stopped ? " Native vision recovery has ended for this challenge; request manual verification or inspect/close only." : ` Native vision recovery remains available in the same owned session and widget. Report the next Next/Verify result as --attempt ${visionFallback.progress.nextAttempt}; rejected verifications so far: ${visionFallback.progress.rejected} of ${VISION_REJECTION_LIMIT}. Request manual verification when feedback is uncertain.`) : providerUnsolvable ? " Native recovery is unavailable or ended; do not restart it in another session." : ""}${managedGateOutcome ? ` Managed gate at the post-delivery check: ${managedGateOutcome}.` : ""}\nUse these exact provider/task/cost facts in the final recap; do not substitute model API costs or invent providers, amounts, task IDs or URLs. Repeated receipt text is the same task, not an additional charge. Delivery does not prove form submission or website acceptance; report those only from observed page evidence. No second paid attempt.\n</captcha_runtime_receipt>\n`
         : "",
   });
 }
