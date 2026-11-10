@@ -912,7 +912,7 @@ it("can release a vision recovery and never revive its paid offer", async () => 
   expect(journal.reserve).toHaveBeenCalledTimes(1);
 });
 
-it("does not advertise vision after another solved widget is added", async () => {
+it("stops vision after another widget appears even if it disappears", async () => {
   const { tool, solve, evaluate } = setup();
   const target = { sandbox: {} as never, sessionName: "owned" };
   await tool.inspect(undefined, target);
@@ -932,7 +932,44 @@ it("does not advertise vision after another solved widget is added", async () =>
     reason: "vision_page_changed",
     visionFallbackAvailable: false,
   });
+  evaluate.mockResolvedValue(cloneObservation());
+  expect(await tool.inspect(undefined, target)).toMatchObject({
+    visionFallbackAvailable: false,
+  });
+  expect(
+    tool.guardVisionCommand("agent-browser --session owned click @e1"),
+  ).toMatchObject({ reason: "vision_budget_exhausted" });
+  expect(solve).toHaveBeenCalledTimes(1);
 });
+
+it.each(["url", "documentId"])(
+  "does not treat a different %s as vision completion",
+  async (field) => {
+    const { tool, solve, evaluate } = setup();
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    await tool.inspect(undefined, target);
+    solve.mockImplementation(async (...args: unknown[]) => {
+      await (args[3] as (id: number) => Promise<void>)(123);
+      throw new CaptchaUnsolvableError();
+    });
+    await tool.request("solve", "owned");
+    evaluate.mockResolvedValue({
+      ...cloneObservation(),
+      [field]:
+        field === "url" ? "https://example.com/another-page" : "different",
+      widgets: [],
+    } as never);
+    await tool.inspect(undefined, target);
+    expect(
+      tool.guardVisionCommand("agent-browser --session owned click @e1"),
+    ).toMatchObject({ reason: "vision_budget_exhausted" });
+    evaluate.mockResolvedValue(cloneObservation());
+    expect(await tool.inspect(undefined, target)).toMatchObject({
+      visionFallbackAvailable: false,
+    });
+    expect(solve).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("blocks expired recovery commands but permits observation, cleanup and verified completion", async () => {
   const now = jest.spyOn(Date, "now").mockReturnValue(1000);

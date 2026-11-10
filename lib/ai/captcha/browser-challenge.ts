@@ -269,13 +269,18 @@ export function createBrowserChallengeHandler(
         if (
           visionFallback &&
           browser.identity === visionFallback.identity &&
-          target?.sessionName === visionFallback.sessionName
+          target?.sessionName === visionFallback.sessionName &&
+          observation.url === visionFallback.url &&
+          observation.documentId === visionFallback.documentId
         ) {
           visionFallback.completed = true;
           // Human verification may resolve a challenge after recovery stopped.
           // Permit the authorized form action; completed stays latched so any
           // returning challenge stops again instead of receiving a new budget.
           visionFallback.stopped = false;
+        } else if (visionFallback && !visionFallback.completed) {
+          // Navigating away is not evidence that the original widget completed.
+          visionFallback.stopped = true;
         }
         return respond({ status: "no_pending_challenge" });
       }
@@ -304,6 +309,7 @@ export function createBrowserChallengeHandler(
           target?.sessionName,
           visionFallback,
         );
+        if (!samePage && action === "inspect") visionFallback.stopped = true;
         if (samePage && target && action === "inspect")
           pendingRequest = {
             target,
@@ -316,10 +322,10 @@ export function createBrowserChallengeHandler(
             samePage &&
             !visionFallback.stopped &&
             Date.now() < visionFallback.deadline,
-          visionFallback.stopped
-            ? "vision_challenge_returned"
-            : !samePage
-              ? "vision_page_changed"
+          !samePage
+            ? "vision_page_changed"
+            : visionFallback.stopped
+              ? "vision_challenge_returned"
               : Date.now() >= visionFallback.deadline
                 ? "vision_budget_exhausted"
                 : "provider_unsolvable",
