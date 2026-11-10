@@ -196,3 +196,13 @@ export function policyResult(review, security) {
     security,
   };
 }
+
+/** GitHub may regenerate a test merge's timestamp without changing scanned code. */
+export function sameTestMerge(pr, first, second) {
+  const valid = (commit) =>
+    /^[a-f0-9]{40}$/.test(commit?.tree?.sha ?? "") &&
+    commit.parents?.length === 2 &&
+    commit.parents[0].sha === pr.base.sha &&
+    commit.parents[1].sha === pr.head.sha;
+  return valid(first) && valid(second) && first.tree.sha === second.tree.sha;
+}

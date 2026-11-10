@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { reviewMergeVerifier } from "./review-equivalence.mjs";
 import { pathToFileURL } from "node:url";
 import {
   ACTIONS_APP,
@@ -10,7 +11,80 @@ import {
   reviewResult,
   securityResult,
   policyResult,
+  sameTestMerge,
 } from "./review-security-policy.mjs";
+
+/** A provider skip is not approval: reuse only a real receipt and an exact merge proof. */
+export async function reviewWithCarryForward(
+  api,
+  root,
+  pr,
+  checks,
+  reviews,
+  threads,
+  verify,
+) {
+  const direct = reviewResult(pr.head.sha, checks, reviews, threads);
+  const latest = checks
+    .filter(
+      (check) =>
+        check.name === "CodeRabbit" &&
+        check.app?.id === CODE_RABBIT_APP &&
+        check.head_sha === pr.head.sha,
+    )
+    .sort((a, b) => b.id - a.id)[0];
+  if (
+    latest?.status !== "completed" ||
+    latest.conclusion !== "skipped" ||
+    !latest.output?.summary
+      ?.trimStart()
+      .startsWith("Result: Skipped - No files to review\n")
+  )
+    return direct;
+  const commits = await pages(api, `${root}/pulls/${pr.number}/commits`);
+  // Bound receipt lookups. Older/unknown history requires a fresh full review.
+  for (const commit of commits.slice(-20).reverse()) {
+    if (!/^[a-f0-9]{40}$/.test(commit.sha ?? "") || commit.sha === pr.head.sha)
+      continue;
+    const previous = await pages(
+      api,
+      `${root}/commits/${commit.sha}/check-runs?filter=all`,
+      "check_runs",
+    );
+    const scoped = previous.filter((check) =>
+      check.pull_requests?.some((item) => item.number === pr.number),
+    );
+    if (reviewResult(commit.sha, scoped, reviews, threads).state !== "pass")
+      continue;
+    if (await verify(commit.sha, pr.base.sha, pr.head.sha))
+      return {
+        state: "pass",
+        reason: `Authenticated CodeRabbit review of ${commit.sha} reused after exact clean-merge tree verification.`,
+      };
+  }
+  return {
+    state: "fail",
+    reason:
+      "CodeRabbit skipped; no equivalent reviewed merge could be verified. Request a full CodeRabbit review.",
+  };
+}
+
+/** Only exact tree+ordered-parent aliases can stand in for a regenerated test merge. */
+export async function mergeAliases(api, root, pr, analyses) {
+  const aliases = new Set([pr.merge_commit_sha]);
+  const candidates = [...new Set(analyses.map((item) => item.commit_sha))]
+    .filter(
+      (sha) => /^[a-f0-9]{40}$/.test(sha ?? "") && sha !== pr.merge_commit_sha,
+    )
+    .slice(0, 20);
+  if (!candidates.length) return aliases;
+  const current = await api(`${root}/git/commits/${pr.merge_commit_sha}`);
+  for (const sha of candidates) {
+    const previous = await api(`${root}/git/commits/${sha}`);
+    if (sameTestMerge(pr, current, previous)) aliases.add(sha);
+  }
+  return aliases;
+}
 
 const pageSize = 100;
 const validNumber = (value) =>
@@ -147,7 +221,11 @@ export async function evaluatePullRequest(
   api,
   repo,
   number,
-  { publish = true, detailsUrl = "https://github.com" } = {},
+  {
+    publish = true,
+    detailsUrl = "https://github.com",
+    verifyMerge = () => false,
+  } = {},
 ) {
   const root = `/repos/${repo}`;
   const pr = await api(`${root}/pulls/${number}`);
@@ -208,7 +286,15 @@ export async function evaluatePullRequest(
         pages(api, `${root}/pulls/${number}/reviews`),
         reviewThreads(api, repo, number),
       ]);
-      const review = reviewResult(pr.head.sha, checks, reviews, threads);
+      const review = await reviewWithCarryForward(
+        api,
+        root,
+        pr,
+        checks,
+        reviews,
+        threads,
+        verifyMerge,
+      );
       let security;
       if (!plan.languages.length)
         security = securityResult(pr.merge_commit_sha, [], [], [], []);
@@ -256,11 +342,23 @@ export async function evaluatePullRequest(
               `${root}/code-scanning/alerts?ref=${encodeURIComponent(`refs/heads/${pr.base.ref}`)}&state=open&tool_name=CodeQL`,
             ),
           ]);
+          const aliases = await mergeAliases(api, root, pr, analyses);
+          const normalize = (sha) =>
+            aliases.has(sha) ? pr.merge_commit_sha : sha;
           security = securityResult(
             pr.merge_commit_sha,
             plan.languages,
-            analyses,
-            alerts,
+            analyses.map((item) => ({
+              ...item,
+              commit_sha: normalize(item.commit_sha),
+            })),
+            alerts.map((item) => ({
+              ...item,
+              most_recent_instance: {
+                ...item.most_recent_instance,
+                commit_sha: normalize(item.most_recent_instance?.commit_sha),
+              },
+            })),
             baseline,
           );
         }
@@ -283,11 +381,24 @@ export async function evaluatePullRequest(
   }
   try {
     const current = await api(`${root}/pulls/${number}`);
+    let mergeChanged =
+      decision.security.state !== "skip" &&
+      current.merge_commit_sha !== pr.merge_commit_sha;
+    if (
+      mergeChanged &&
+      current.head?.sha === pr.head.sha &&
+      current.base?.sha === pr.base.sha
+    ) {
+      const [first, second] = await Promise.all([
+        api(`${root}/git/commits/${pr.merge_commit_sha}`),
+        api(`${root}/git/commits/${current.merge_commit_sha}`),
+      ]);
+      mergeChanged = !sameTestMerge(pr, first, second);
+    }
     if (
       current.head?.sha !== pr.head.sha ||
       current.base?.sha !== pr.base.sha ||
-      (decision.security.state !== "skip" &&
-        current.merge_commit_sha !== pr.merge_commit_sha) ||
+      mergeChanged ||
       current.state !== "open"
     )
       decision = policyResult(
@@ -355,6 +466,7 @@ export async function main(action, env = process.env) {
   const publish = env.POLICY_READ_ONLY !== "true";
   const decision = await evaluatePullRequest(api, repo, Number(env.PR_NUMBER), {
     publish,
+    verifyMerge: reviewMergeVerifier(repo, token),
     detailsUrl: `https://github.com/${repo}/actions/runs/${env.GITHUB_RUN_ID ?? ""}`,
   });
   if (decision) console.log(JSON.stringify(decision));

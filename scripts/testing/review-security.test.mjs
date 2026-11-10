@@ -8,12 +8,15 @@ import {
   reviewResult,
   securityResult,
   policyResult,
+  sameTestMerge,
 } from "./review-security-policy.mjs";
 import {
   evaluatePullRequest,
   resolvePullRequests,
   githubClient,
   pages,
+  reviewWithCarryForward,
+  mergeAliases,
 } from "./review-security.mjs";
 
 const head = "a".repeat(40),
@@ -269,6 +272,7 @@ function fixture({
   failMetadata = false,
   changeHead = false,
   changeMerge = false,
+  sameMergeTree = false,
   failChecks = false,
   failFinalRead = false,
   headRepo = "o/r",
@@ -296,6 +300,16 @@ function fixture({
         return { ...pr, merge_commit_sha: "d".repeat(40) };
       return changeHead && reads > 1 ? { ...pr, head: { sha: base } } : pr;
     }
+    if (path.includes("/git/commits/"))
+      return {
+        tree: {
+          sha:
+            path.endsWith(merge) || sameMergeTree
+              ? "e".repeat(40)
+              : "f".repeat(40),
+        },
+        parents: [{ sha: base }, { sha: head }],
+      };
     if (path.includes("/check-runs?")) {
       if (failChecks) throw new Error("check unavailable");
       return { check_runs: checks };
@@ -506,4 +520,174 @@ test("collections are paginated; provider failures never echo credentials or res
     (error) => !error.message.includes("private-token"),
   );
   await assert.rejects(api("//elsewhere"));
+});
+
+const skipped = {
+  ...receipt,
+  conclusion: "skipped",
+  output: {
+    summary: "Result: Skipped - No files to review\nRun ID: example",
+  },
+};
+
+test("merge-only updates reuse authenticated review only after exact merge-tree verification", async () => {
+  const api = async (path) => {
+    if (path.includes("/commits?")) return [{ sha: base }];
+    if (path.includes(`/commits/${base}/check-runs?`))
+      return {
+        check_runs: [
+          { ...receipt, head_sha: base, pull_requests: [{ number: 1 }] },
+        ],
+      };
+    throw new Error("Unexpected carry-forward request");
+  };
+  const pr = { number: 1, head: { sha: head }, base: { sha: merge } };
+  const run = (checks, verify, threads = []) =>
+    reviewWithCarryForward(api, "/repos/o/r", pr, checks, [], threads, verify);
+  let proof;
+  assert.equal(
+    (
+      await run([skipped], (...args) => {
+        proof = args;
+        return true;
+      })
+    ).state,
+    "pass",
+  );
+  assert.deepEqual(proof, [base, merge, head]);
+  const foreign = async (path) =>
+    path.includes("/commits?")
+      ? [{ sha: base }]
+      : {
+          check_runs: [
+            { ...receipt, head_sha: base, pull_requests: [{ number: 2 }] },
+          ],
+        };
+  assert.notEqual(
+    (
+      await reviewWithCarryForward(
+        foreign,
+        "/repos/o/r",
+        pr,
+        [skipped],
+        [],
+        [],
+        () => true,
+      )
+    ).state,
+    "pass",
+  );
+  assert.notEqual((await run([skipped], () => false)).state, "pass");
+  for (const check of [
+    { ...skipped, conclusion: "failure" },
+    { ...skipped, conclusion: "neutral" },
+    { ...skipped, status: "in_progress" },
+    { ...skipped, app: { id: ACTIONS_APP } },
+    { ...skipped, output: { summary: "Result: Skipped - Rate limited" } },
+  ])
+    assert.notEqual(
+      (
+        await run([check], () => {
+          throw new Error("must not reuse");
+        })
+      ).state,
+      "pass",
+    );
+  assert.notEqual(
+    (
+      await run([skipped], () => true, [
+        {
+          isResolved: false,
+          comments: {
+            nodes: [{ author: { login: "coderabbitai", type: "Bot" } }],
+          },
+        },
+      ])
+    ).state,
+    "pass",
+  );
+  assert.notEqual(
+    (
+      await reviewWithCarryForward(
+        async () => {
+          throw new Error("metadata unavailable");
+        },
+        "/repos/o/r",
+        pr,
+        [skipped],
+        [],
+        [],
+        () => true,
+      ).catch(() => ({ state: "fail" }))
+    ).state,
+    "pass",
+  );
+});
+
+test("regenerated test merges reuse scans only with the exact tree and ordered current parents", async () => {
+  const pr = {
+    base: { sha: base },
+    head: { sha: head },
+    merge_commit_sha: merge,
+  };
+  const commit = {
+    tree: { sha: "e".repeat(40) },
+    parents: [{ sha: base }, { sha: head }],
+  };
+  assert.equal(sameTestMerge(pr, commit, structuredClone(commit)), true);
+  for (const changed of [
+    { ...commit, tree: { sha: "f".repeat(40) } },
+    { ...commit, parents: [{ sha: head }, { sha: base }] },
+    { ...commit, parents: [{ sha: merge }, { sha: head }] },
+    { ...commit, parents: [{ sha: base }] },
+    { ...commit, tree: {} },
+  ])
+    assert.equal(sameTestMerge(pr, commit, changed), false);
+  const alias = "d".repeat(40),
+    unrelated = "f".repeat(40);
+  const aliases = await mergeAliases(
+    async (path) =>
+      path.endsWith(unrelated)
+        ? { ...commit, parents: [{ sha: head }] }
+        : commit,
+    "/repos/o/r",
+    pr,
+    [{ commit_sha: alias }, { commit_sha: unrelated }],
+  );
+  assert.deepEqual([...aliases], [merge, alias]);
+});
+
+test("live policy accepts identical scan aliases but never an aliased critical finding or changed merge tree", async () => {
+  const alias = "d".repeat(40);
+  for (const options of [
+    { changeMerge: true, sameMergeTree: true },
+    { analyses: [{ ...analysis(), commit_sha: alias }], sameMergeTree: true },
+  ])
+    assert.equal(
+      (await evaluatePullRequest(fixture(options).api, "o/r", 1)).state,
+      "success",
+    );
+  const blocked = await evaluatePullRequest(
+    fixture({
+      analyses: [{ ...analysis(), commit_sha: alias }],
+      sameMergeTree: true,
+      alerts: [alert(99, "critical", alias)],
+    }).api,
+    "o/r",
+    1,
+  );
+  assert.equal(blocked.state, "failure");
+  assert.match(blocked.security.reason, /#99/);
+  assert.equal(
+    (
+      await evaluatePullRequest(
+        fixture({
+          analyses: [{ ...analysis(), commit_sha: alias }],
+        }).api,
+        "o/r",
+        1,
+      )
+    ).state,
+    "pending",
+  );
 });
