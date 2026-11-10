@@ -668,12 +668,17 @@ export const subagentTask = task({
         return { costDollars, billingFailure: false };
       }
       if (row.subscription === "free") {
-        await recordFreeMonthlySubagentCost(
-          row.free_quota_subject ?? row.user_id,
-          ctx.run.id,
-          costDollars,
-          payload.regionalFreeLimits,
-        );
+        try {
+          await recordFreeMonthlySubagentCost(
+            row.free_quota_subject ?? row.user_id,
+            ctx.run.id,
+            costDollars,
+            payload.regionalFreeLimits,
+          );
+        } catch (error) {
+          freeMonthlyAccountingFailed = true;
+          throw error;
+        }
         usageSettled = true;
         return { costDollars, billingFailure: false };
       }
@@ -1405,6 +1410,13 @@ export const subagentTask = task({
                 maxOutputTokens: profile.maxOutputTokens,
                 abortSignal: activeAbort.signal,
                 prepareStep: async ({ messages, steps }) => {
+                  if (
+                    !resultValue &&
+                    (freeMonthlyCostLimitExceeded || spendCapExceeded)
+                  ) {
+                    activeAbort.abort();
+                    throw new Error("Subagent usage limit reached");
+                  }
                   await waitForBrowserHandoff(activeAbort.signal);
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
@@ -1633,12 +1645,12 @@ export const subagentTask = task({
                       !resultValue
                     ) {
                       freeMonthlyCostLimitExceeded = true;
-                      activeAbort.abort();
+                      if (!structuredResultRecovery) activeAbort.abort();
                     }
                   }
                   if (currentCostDollars >= costLimitDollars && !resultValue) {
                     spendCapExceeded = true;
-                    activeAbort.abort();
+                    if (!structuredResultRecovery) activeAbort.abort();
                   }
                 },
               });
@@ -1649,6 +1661,10 @@ export const subagentTask = task({
                   const recoveredResult = await generation.output;
                   if (recoveredResult) {
                     await acceptResult(recoveredResult);
+                  }
+                  if (resultValue) {
+                    freeMonthlyCostLimitExceeded = false;
+                    spendCapExceeded = false;
                   }
                 } catch (error) {
                   attemptError ??= error;
@@ -1698,6 +1714,7 @@ export const subagentTask = task({
 
               if (isHandledUserRateLimitError(attemptError)) throw attemptError;
               if (resultValue) break;
+              if (freeMonthlyCostLimitExceeded || spendCapExceeded) break;
               if (attemptError) {
                 if (structuredResultRecovery) {
                   const recoveryRetry = getSubagentResultRecoveryRetryDecision(
