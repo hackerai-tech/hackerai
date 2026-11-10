@@ -478,20 +478,23 @@ function nearbyDispatchGroup(
         current.protocol === "https:" &&
         !current.username &&
         !current.password &&
-        frames.every((frame) => {
-          if (
-            typeof frame?.filename !== "string" ||
-            frame.filename.length > 4096
-          )
-            return false;
-          const source = new URL(frame.filename);
-          return (
-            source.origin === current.origin &&
-            !source.username &&
-            !source.password &&
-            source.pathname === current.pathname
-          );
-        })
+        frames.every(
+          /** Compare transient URLs exactly; never export their paths or infer authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              source.pathname === current.pathname
+            );
+          },
+        )
       )
         return "same_document_short_error";
     }
