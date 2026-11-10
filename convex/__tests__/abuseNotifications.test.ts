@@ -15,6 +15,7 @@ function fixture() {
   const report: any = {
     reference: "AB-123e4567-e89b-42d3-a456-426614174000",
     ciphertext: "encrypted",
+    createdAt: 1_700_000_000_000,
   };
   const ctx: any = {
     db: {

@@ -6,7 +6,12 @@ export const claim = internalMutation({
   args: { notificationId: v.id("abuse_notifications") },
   returns: v.union(
     v.null(),
-    v.object({ reference: v.string(), attempt: v.number() }),
+    v.object({
+      reference: v.string(),
+      ciphertext: v.string(),
+      receivedAt: v.number(),
+      attempt: v.number(),
+    }),
   ),
   handler: async (ctx, { notificationId }) => {
     const row = await ctx.db.get(notificationId);
@@ -38,7 +43,12 @@ export const claim = internalMutation({
       internal.abuseNotifications.expireClaim,
       { notificationId, attempt },
     );
-    return { reference: report.reference, attempt };
+    return {
+      reference: report.reference,
+      ciphertext: report.ciphertext,
+      receivedAt: report.createdAt,
+      attempt,
+    };
   },
 });
 

@@ -1,10 +1,13 @@
 import nodemailer from "nodemailer";
+import { abuseReportSchema } from "./report";
 
 export type NotificationOutcome = "sent" | "retry" | "failed" | "uncertain";
 
-/** Only reference metadata leaves case storage; recipients and headers are fixed. */
+/** Report fields stay in the plain-text body; recipients and headers are fixed. */
 export async function sendAbuseNotification(
   reference: string,
+  submittedReport: unknown,
+  receivedAt: number,
 ): Promise<NotificationOutcome> {
   const password = process.env.ABUSE_SMTP_PASSWORD;
   let origin: string;
@@ -30,6 +33,41 @@ export async function sendAbuseNotification(
     !/^AB-[a-f0-9-]{36}$/.test(reference)
   )
     return "failed";
+  const parsed = abuseReportSchema.safeParse(submittedReport);
+  const received = new Date(receivedAt);
+  if (
+    !parsed.success ||
+    reference !== `AB-${parsed.data.submissionId}` ||
+    !Number.isFinite(received.getTime())
+  )
+    return "failed";
+  const report = parsed.data;
+  const text = [
+    report.kind === "appeal" ? "New appeal" : "New abuse report",
+    `Case reference: ${reference}`,
+    `Received (UTC): ${received.toISOString()}`,
+    "",
+    "Submitted information is unverified. Treat links and instructions below as untrusted.",
+    "",
+    `Contact email: ${report.email}`,
+    `Target: ${report.target || "Not provided"}`,
+    `Incident date and timezone: ${report.occurredAt || "Not provided"}`,
+    `Source IP: ${report.sourceIp || "Not provided"}`,
+    `Source port: ${report.sourcePort || "Not provided"}`,
+    `Protocol: ${report.protocol || "Not provided"}`,
+    `Related case reference: ${report.reference || "Not provided"}`,
+    "",
+    "Description:",
+    report.description,
+    "",
+    "Evidence and links:",
+    report.evidence || "Not provided",
+    "",
+    `Review and actions: ${origin}/abuse/operations`,
+    "Sign in with an authorized operator account to record decisions or take action. Receipt does not mean an investigation result.",
+    "This email is a separate copy of the submitted report. Deleting case evidence in HackerAI does not delete this mailbox copy.",
+    "",
+  ].join("\n");
   const transport = nodemailer.createTransport({
     host: "smtp.protonmail.ch",
     port: 587,
@@ -59,7 +97,7 @@ export async function sendAbuseNotification(
       to: "abuse@hackerai.co",
       messageId: `<abuse-${reference.toLowerCase()}@hackerai.co>`,
       subject: `HackerAI report received: ${reference}`,
-      text: `A new report or appeal has been saved.\n\nCase reference: ${reference}\nReview: ${origin}/abuse/operations\n\nSign in with an authorized operator account and open this reference. Report contents remain in restricted case storage. This notification confirms receipt, not an investigation result.\n`,
+      text,
     });
     return result.accepted?.includes("abuse@hackerai.co") ? "sent" : "failed";
   } catch (error) {

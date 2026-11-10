@@ -10,9 +10,10 @@ Enable only after a named operator owns intake review, escalation, and preservat
 review. Record those assignments and review dates in the owning internal issue.
 Before enabling intake for real reports, the owner must approve and record the retention policy described below. Proposed periods are not an adopted policy. Configure each environment independently:
 
-- Web: `ABUSE_EVIDENCE_KEYS`, a JSON keyring with `active` key ID and `keys` mapping
-  key IDs to 32-byte hexadecimal keys. Keep keys in the environment secret store.
-  Retain old keys while evidence or idempotent retries still depend on them.
+- Web and Convex: `ABUSE_EVIDENCE_KEYS`, the same environment-specific JSON keyring
+  with `active` key ID and `keys` mapping key IDs to 32-byte hexadecimal keys. Keep keys in the environment secret store.
+  Retain old keys while evidence, queued notifications or idempotent retries still
+  depend on them. Update both consumers together; never copy keys across environments.
 - Web and Convex: `ABUSE_OPERATOR_USER_IDS`, an explicit comma-separated allowlist
   of immutable WorkOS user IDs. Ordinary support membership grants no access.
 - Web and Convex: `ABUSE_INTAKE_ENABLED=true`. Missing configuration fails closed.
@@ -28,7 +29,8 @@ Before enabling intake for real reports, the owner must approve and record the r
 
 The operator page requires a WorkOS session; the API checks both that identity and
 same-origin requests. Convex requires the existing signed service proof and the
-operator allowlist. Every evidence read and action creates an audit event.
+operator allowlist. Operator evidence reads and actions create audit events; email delivery attempts
+are tracked in the notification outbox.
 Do not share session cookies, service credentials, or evidence keys with reviewers.
 Case evidence is encrypted before RPC so validation errors cannot echo report text.
 The reporting and operator routes suppress PostHog events and Intercom startup.
@@ -221,9 +223,28 @@ STARTTLS and certificate verification. No sender, recipient, or SMTP endpoint is
 accepted from a report.
 
 The initial case transaction creates one outbox row and schedules delivery;
-receipt retries do not enqueue duplicates. Notifications contain only the case
-reference and restricted operator-page link, without report text, evidence,
-contact email, or submitted targets. Email recipients still need operator access.
+receipt retries do not enqueue duplicates. The Node delivery action decrypts the
+claimed case using this deployment's `ABUSE_EVIDENCE_KEYS`. The keyring must match
+the web app's keyring for this environment, including retained keys for queued
+reports. Missing keys, corrupt ciphertext or invalid report fields fail before
+SMTP; repair configuration before explicitly retrying a confirmed failed entry.
+Plaintext report content is not added to scheduler arguments or outbox rows.
+
+Each plain-text notification contains the report or appeal type, case reference,
+receipt time, contact email, target, incident date/time, source IP/port, protocol,
+related reference, description and full submitted evidence/links. Empty optional
+fields are marked as not provided. Only bounded fields from the report schema
+are included; verification tokens, cryptographic material and internal review
+notes are excluded. Recipients and mail headers remain fixed, submitted links
+are not fetched, and no HTML or attachments are generated. A restricted review
+link remains for recording decisions and taking actions; operator access is
+required for those actions, not for reading the emailed report.
+
+Email is a separate copy in the abuse mailbox. Erasing case evidence does not
+erase delivered email or quoted copies. Include the mailbox and any replies or
+forwarded copies in the owner-approved retention/deletion policy, and verify
+mailbox deletion separately. In-flight claimed mail may already contain the
+report when case erasure completes.
 
 Inspect `abuse_notifications` in the authorized Convex dashboard, using its status
 index. `sent` means Proton accepted the message, not that inbox delivery was
