@@ -15,6 +15,8 @@ import {
   type ShellToolOutput,
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { CaptchaSolverActivity } from "./CaptchaSolverActivity";
+import { getCaptchaStartedAt } from "./captcha-tool-utils";
 import {
   getAgentAutoReviewDisplayState,
   getStreamedAgentAutoReviewLifecycle,
@@ -112,13 +114,24 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     autoReviewLifecycleDisplay,
   );
 
+  const isRunActive = status === "streaming" || status === "submitted";
   const executionPhase = getTerminalExecutionPhase({
     toolState: state,
     autoReviewStatus: streamedAutoReviewLifecycle?.status,
     errorText,
+    isRunActive,
   });
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
+  const captchaStartedAt = useMemo(
+    () =>
+      getCaptchaStartedAt(
+        message.parts,
+        effectiveToolCallId,
+        terminalInput?.command,
+      ),
+    [message.parts, effectiveToolCallId, terminalInput?.command],
+  );
 
   const { blockAction, blockTarget, sidebarContent } = useMemo(
     () =>
@@ -139,6 +152,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           : undefined,
         legacyCommand: !isShellTool ? terminalInput?.command : undefined,
         executionPhase,
+        captchaStartedAt,
+        isRunActive: status === "streaming" || status === "submitted",
       }),
     [
       isShellTool,
@@ -153,6 +168,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       terminalInput?.is_background,
       terminalInput?.command,
       executionPhase,
+      captchaStartedAt,
+      status,
     ],
   );
 
@@ -164,6 +181,21 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
 
   const shellAction = (input as { action?: string })?.action;
   const isStoppedByUser = isUserStoppedToolError(errorText);
+
+  if (
+    sidebarContent?.captcha &&
+    state !== "approval-requested" &&
+    state !== "input-streaming"
+  )
+    return (
+      <CaptchaSolverActivity
+        key={toolCallId}
+        activity={sidebarContent.captcha}
+        compact
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
+      />
+    );
 
   switch (state) {
     case "input-streaming": {
@@ -196,10 +228,15 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           key={toolCallId}
           icon={<Terminal />}
           action={
-            autoReviewDisplay?.action ?? blockAction(status === "streaming")
+            executionPhase === "interrupted"
+              ? "Command interrupted"
+              : (autoReviewDisplay?.action ?? blockAction(isRunActive))
           }
           target={blockTarget}
-          isShimmer={autoReviewDisplay?.isShimmer ?? status === "streaming"}
+          isShimmer={
+            executionPhase !== "interrupted" &&
+            (autoReviewDisplay?.isShimmer ?? isRunActive)
+          }
           isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}

@@ -53,7 +53,7 @@ jest.mock("../utils/sandbox-file-uploader", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
-import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createGetTerminalFiles } from "../get-terminal-files";
@@ -267,6 +267,36 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
+    const { context, writerWrites } = makeContext({});
+    let finish!: (value: { status: string }) => void;
+    context.requestBrowserChallenge = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = runTool(createRunTerminalCmd(context), {
+      command: "hackerai-captcha solve --session owned",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(writerWrites).toContainEqual({
+      type: "data-terminal",
+      id: "captcha-start-call-1",
+      data: {
+        terminal: "",
+        toolCallId: "call-1",
+        captchaStartedAt: expect.any(Number),
+      },
+    });
+    finish({ status: "token_delivered" });
+    expect(await pending).toMatchObject({
+      result: {
+        browserChallenge: { status: "token_delivered" },
+        callTiming: { elapsedMs: expect.any(Number) },
+      },
+    });
+  });
   test.each(["solve", "release"])(
     "routes the on-demand %s request without executing a shell command",
     async (action) => {
@@ -1107,6 +1137,84 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(e2b.setTimeout).toHaveBeenCalledTimes(1);
   });
 
+  test("both terminal tools expose slow checkpoints as pending and observe a later saved receipt", async () => {
+    jest.useFakeTimers();
+    let release!: () => void;
+    const saving = new Promise<void>((resolve) => (release = resolve));
+    const fakeHandle = makeFakeHandle();
+    const e2b = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "checkpoint-fixture",
+      files: {
+        write: jest.fn(async () => {
+          await saving;
+        }),
+        read: jest.fn(async () => {
+          throw new Error("missing");
+        }),
+        list: jest.fn(async () => []),
+        remove: jest.fn(),
+      },
+    };
+    const { context } = makeContext({ sandbox: e2b });
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    jest.mocked(fakeHandle.sendInput).mockImplementation(async () => {
+      fakeHandle.emit(new TextEncoder().encode("checkpoint fixture\n"));
+    });
+    try {
+      const running = runTool(createRunTerminalCmd(context), {
+        command: "bounded fixture",
+        interactive: true,
+        is_background: false,
+        timeout: 0.1,
+      });
+      await jest.advanceTimersByTimeAsync(3_000);
+      const first = (await running) as { result: Record<string, any> };
+      expect(first.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(first.result).not.toHaveProperty("recordPersistenceFailed");
+      const interact = createInteractTerminalSession(context).execute as any;
+      const viewing = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-view",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(2_100);
+      const pending = await viewing;
+      expect(pending.result).toMatchObject({
+        recordPersistenceStatus: "pending",
+      });
+      expect(pending.result).not.toHaveProperty("recordPersistenceFailed");
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      const observingSaved = interact(
+        { action: "view", session: first.result.session },
+        {
+          toolCallId: "checkpoint-saved",
+          messages: [],
+        },
+      );
+      await jest.advanceTimersByTimeAsync(100);
+      const saved = await observingSaved;
+      expect(saved.result).toMatchObject({
+        recordPersistenceStatus: "saved",
+        recordPath: expect.stringContaining(".json"),
+      });
+      expect(saved.result).not.toHaveProperty("recordPersistenceFailed");
+      // Already-returned tool messages are snapshots, not mutable session state.
+      expect(first.result.recordPersistenceStatus).toBe("pending");
+      expect(pending.result.recordPersistenceStatus).toBe("pending");
+    } finally {
+      release();
+      await jest.advanceTimersByTimeAsync(0);
+      await context.ptySessionManager.closeAll(context.chatId);
+      jest.useRealTimers();
+    }
+  });
+
   test("carries the real tool owner's run into a best-effort cloud no-space checkpoint", async () => {
     const fakeHandle = makeFakeHandle();
     const e2b = {
@@ -1133,12 +1241,18 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       fakeHandle.resolveExit(0);
     });
     try {
-      await runTool(createRunTerminalCmd(context), {
+      const failed = await runTool(createRunTerminalCmd(context), {
         command: "printf done",
         brief: "bounded fixture",
         interactive: true,
         is_background: false,
         timeout: 1,
+      });
+      expect(failed).toMatchObject({
+        result: {
+          recordPersistenceStatus: "failed",
+          recordPersistenceFailed: true,
+        },
       });
       const receipt = jest
         .mocked(phLogger.info)
@@ -1328,6 +1442,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       ([command]) => command === "echo ok",
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
+    expect(prepareBrowser).toHaveBeenCalledWith(
+      e2b,
+      "recognized_browser_command",
+    );
     expect(browserCall?.[0]).toContain(
       'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
@@ -1353,6 +1471,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: false,
     });
     expect(gated).toMatchObject({ result: { exitCode: 0 } });
+    expect(prepareBrowser).toHaveBeenLastCalledWith(e2b, "gate_only");
     expect(
       e2b.commands.run.mock.calls.find(([command]) =>
         command.includes("echo gated"),
@@ -1450,7 +1569,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         timeout: 5,
       });
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(sandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          sandbox,
+          "recognized_browser_command",
+        );
         expect(sandbox.commands.run).toHaveBeenCalledWith(
           expect.any(String),
           expect.objectContaining({
@@ -1491,7 +1613,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       interactive: true,
     });
 
-    expect(prepareBrowser).toHaveBeenCalledWith(e2b);
+    expect(prepareBrowser).toHaveBeenCalledWith(e2b, "interactive_shell");
     expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
       e2b,
       expect.objectContaining({
@@ -2548,6 +2670,60 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   });
 
   test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    "records only closed hints from a failed foreground OPEN terminal result (rejected=%s,json=%s)",
+    async (rejected, json) => {
+      const privateError =
+        "Navigation failed: net::ERR_NAME_NOT_RESOLVED https://private.example/token";
+      const privateOutput = json
+        ? JSON.stringify({ success: false, error: privateError })
+        : privateError;
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(
+            async (_cmd: string, opts?: { onStderr?: (s: string) => void }) => {
+              opts?.onStderr?.(privateOutput);
+              if (rejected) throw new CommandExitError("exit" as never);
+              return { stdout: "", stderr: privateOutput, exitCode: 1 };
+            },
+          ),
+        },
+      };
+      const { context } = makeContext({ sandbox });
+      context.triggerRunId = "run_aaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const output = await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser open https://private.example/token",
+        is_background: false,
+        timeout: 5,
+      });
+      expect(output.result).toMatchObject({
+        exitCode: 1,
+        output: privateOutput,
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "agent_browser_terminal_open_failure",
+        expect.objectContaining({
+          browser_open_failure_version: 3,
+          observation_scope: "terminal_result_open_intent",
+          public_output_hint: "navigation",
+          exit_code: 1,
+          owner_trigger_run_id: context.triggerRunId,
+        }),
+      );
+      const diagnostic = mockPhEvent.mock.calls.find(
+        ([event]) => event === "agent_browser_terminal_open_failure",
+      );
+      expect(JSON.stringify(diagnostic)).not.toContain("private.example");
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each([
     ["recorded", "run_aaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ["unavailable", undefined],
     ["unavailable", "PRIVATE_OWNER https://secret.example/owner"],
@@ -2760,7 +2936,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         expect.objectContaining({ cwd: "/tmp/project" }),
       );
       if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(centrifugoSandbox);
+        expect(prepare).toHaveBeenCalledWith(
+          centrifugoSandbox,
+          "interactive_shell",
+        );
         expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
           centrifugoSandbox,
           expect.objectContaining({

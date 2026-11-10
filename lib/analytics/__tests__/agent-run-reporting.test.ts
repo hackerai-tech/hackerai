@@ -162,6 +162,24 @@ describe("Agent run reporting", () => {
     },
   );
 
+  it.each(["user_wait_timeout", "user_wait_failed"])(
+    "retains %s when terminal capture fails before later cancellation",
+    (abortSource) => {
+      const { reporter, events } = setup();
+      reporter.captureTerminal(
+        () => {
+          throw new Error("enqueue unavailable");
+        },
+        { outcome: "aborted", abortSource },
+      );
+      reporter.finalize({ canceled: true });
+      expect(events()[0].properties).toMatchObject({
+        outcome: "aborted",
+        abort_source: abortSource,
+      });
+    },
+  );
+
   it.each([undefined, "stop", "length", "private arbitrary value"])(
     "retains only bounded observed finish reasons after failed capture: %s",
     (finishReason) => {

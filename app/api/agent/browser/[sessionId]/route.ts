@@ -15,6 +15,7 @@ import {
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserRelayRenewFailureContext,
   browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
@@ -183,6 +184,10 @@ const unavailablePost = (
   action: unknown,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
   recoveryResponse = false,
+  captureDiagnostic?: {
+    context?: BrowserCaptureFailureContext;
+    frameAgeExceeded?: boolean;
+  },
 ) => {
   const response = recoveryResponse
     ? json({ state: "recovery" }, 503)
@@ -211,6 +216,18 @@ const unavailablePost = (
           ? action
           : "unknown",
       failure_stage: stage,
+      ...(stage === "capture_frame" && {
+        post_capture_diagnostic_version: 1,
+        post_capture_context_status: captureDiagnostic?.context
+          ? "recorded"
+          : captureDiagnostic?.frameAgeExceeded
+            ? "frame_age_guard"
+            : "not_observed",
+        ...captureDiagnostic?.context,
+      }),
+      ...(action === "heartbeat" && stage === "renew_relay"
+        ? browserRelayRenewFailureContext(error)
+        : {}),
       preview_state: recoveryResponse
         ? "recovery"
         : state === "loading"
@@ -443,6 +460,7 @@ export async function POST(
     );
     if (!claimed) return json({ state: "stale" }, 409);
     let paused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -497,6 +515,9 @@ export async function POST(
           body.browserSessionName,
           true,
           streamPort,
+          (context) => {
+            captureContext = context;
+          },
         ),
         startBrowserRelay(
           sandbox,
@@ -560,6 +581,8 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        { context: captureContext },
       );
     }
   }
@@ -607,6 +630,8 @@ export async function POST(
     );
     if (!started) return json({ state: "stale" }, 409);
     let unpaused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
+    let captureFrameAgeExceeded = false;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -636,9 +661,15 @@ export async function POST(
         session,
         body.browserSessionName,
         true,
+        undefined,
+        (context) => {
+          captureContext = context;
+        },
       );
-      if (Date.now() - frame.capturedAt > 15_000)
+      if (Date.now() - frame.capturedAt > 15_000) {
+        captureFrameAgeExceeded = true;
         throw new BrowserPreviewUnavailable("disconnected");
+      }
       stage = "save_exit_note";
       const continuation = await saveNote();
       stage = "unpause_browser";
@@ -677,6 +708,11 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        {
+          context: captureContext,
+          frameAgeExceeded: captureFrameAgeExceeded,
+        },
       );
     }
   }

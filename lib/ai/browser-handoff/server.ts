@@ -44,6 +44,44 @@ const sessionReadFailures = new WeakMap<
   ReturnType<typeof checkpointCloudErrorContext>
 >();
 
+/** Read closed SDK classes and own numeric exit data, never command output. */
+export function browserRelayRenewFailureContext(error: unknown) {
+  let kind:
+    "command_exit" | "timeout" | "other_error" | "thrown_value" | "unreadable" =
+    "thrown_value";
+  let exitCode: number | "none" | "other" = "none";
+  try {
+    if (error instanceof CommandExitError) {
+      kind = "command_exit";
+      exitCode = "other";
+      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const value =
+        result && typeof result === "object"
+          ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
+          : undefined;
+      if (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= 0 &&
+        value <= 255
+      )
+        exitCode = value;
+    } else if (error instanceof TimeoutError) {
+      kind = "timeout";
+    } else if (error instanceof Error) {
+      kind = "other_error";
+    }
+  } catch {
+    kind = "unreadable";
+    exitCode = "other";
+  }
+  return {
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: kind,
+    relay_renew_command_exit_code: exitCode,
+  };
+}
+
 /** Read optional diagnostics without adding error properties to HTTP responses. */
 export function browserSessionReadFailureContext(error: unknown) {
   const context =
@@ -249,7 +287,65 @@ export async function stopBrowserRelays(
     throw new BrowserPreviewUnavailable("disconnected");
 }
 
-export type BrowserCaptureFailureContext = {
+type FrameDecodeDiagnostic = {
+  capture_frame_decode_version?: 1;
+  capture_frame_stdout_size?:
+    "empty" | "lt1k" | "1k_lt64k" | "64k_lt1m" | "gte1m" | "nonstring";
+  capture_frame_stdout_shape?:
+    | "empty"
+    | "edge_whitespace"
+    | "object_edges"
+    | "object_prefix"
+    | "other"
+    | "nonstring";
+  capture_frame_parse_error_kind?: "syntax_error" | "other";
+};
+
+/** Inspect only length and two 64-unit edges; never retain frame contents. */
+function frameDecodeDiagnostic(
+  stdout: unknown,
+  error: unknown,
+): FrameDecodeDiagnostic {
+  const result: FrameDecodeDiagnostic = {
+    capture_frame_decode_version: 1,
+    capture_frame_parse_error_kind:
+      error instanceof SyntaxError ? "syntax_error" : "other",
+  };
+  if (typeof stdout !== "string")
+    return {
+      ...result,
+      capture_frame_stdout_size: "nonstring",
+      capture_frame_stdout_shape: "nonstring",
+    };
+  const length = stdout.length;
+  const first = stdout.slice(0, 64).trimStart();
+  const last = stdout.slice(-64).trimEnd();
+  return {
+    ...result,
+    capture_frame_stdout_size:
+      length === 0
+        ? "empty"
+        : length < 1024
+          ? "lt1k"
+          : length < 65536
+            ? "1k_lt64k"
+            : length < 1048576
+              ? "64k_lt1m"
+              : "gte1m",
+    capture_frame_stdout_shape:
+      length === 0
+        ? "empty"
+        : !first && !last
+          ? "edge_whitespace"
+          : first.startsWith("{")
+            ? last.endsWith("}")
+              ? "object_edges"
+              : "object_prefix"
+            : "other",
+  };
+}
+
+export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
   capture_stage:
     | "stream_status"
     | "frame_bridge"
@@ -278,6 +374,11 @@ export type BrowserCaptureFailureContext = {
   capture_wrapper_exit_code?: number | "none" | "other";
   capture_wrapper_session_matches?: boolean;
   capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  capture_wrapper_history_version?: 1;
+  capture_wrapper_history_scope?: "handoff_root";
+  // Other than a recognized version-only invocation; leading options stay ambiguous.
+  capture_wrapper_other_cli_completed?: boolean;
+  capture_wrapper_option_prefix_completed?: boolean;
   capture_open_receipt_version?: 1;
   capture_open_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -287,6 +388,16 @@ export type BrowserCaptureFailureContext = {
   capture_open_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_open_idle_env_version?: 1;
   capture_open_idle_env?: (typeof BROWSER_OPEN_IDLE_ENV_VALUES)[number];
+  capture_daemon_process_version?: 1;
+  capture_daemon_pid_status?: "missing" | "invalid" | "unreadable" | "recorded";
+  // A PID can be reused; this is not daemon identity, execution or health.
+  capture_daemon_process_visibility?:
+    | "unavailable"
+    | "not_found"
+    | "same_uid"
+    | "other_uid"
+    | "permission"
+    | "other";
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -311,6 +422,7 @@ export async function captureBrowserFrame(
   onFailure?: (context: BrowserCaptureFailureContext) => void,
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
+  let decodeDiagnostic: FrameDecodeDiagnostic = {};
   try {
     const port =
       streamPort ??
@@ -332,9 +444,16 @@ export async function captureBrowserFrame(
       capturedAt: number;
     };
     stage = "frame_decode";
+    let stdout: unknown;
     try {
-      frame = JSON.parse(result.stdout) as typeof frame;
-    } catch {
+      stdout = result.stdout;
+      frame = JSON.parse(stdout as string) as typeof frame;
+    } catch (error) {
+      try {
+        decodeDiagnostic = frameDecodeDiagnostic(stdout, error);
+      } catch {
+        /* Optional diagnostics cannot replace the existing capture failure. */
+      }
       throw new BrowserPreviewUnavailable("disconnected");
     }
     stage = "frame_validation";
@@ -435,6 +554,10 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_wrapper_history_version"
+        | "capture_wrapper_history_scope"
+        | "capture_wrapper_other_cli_completed"
+        | "capture_wrapper_option_prefix_completed"
         | "capture_deadline_diagnostic_version"
         | "capture_deadline_phase"
         | "capture_open_receipt_version"
@@ -445,6 +568,9 @@ export async function captureBrowserFrame(
         | "capture_open_age"
         | "capture_open_idle_env_version"
         | "capture_open_idle_env"
+        | "capture_daemon_process_version"
+        | "capture_daemon_pid_status"
+        | "capture_daemon_process_visibility"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -479,10 +605,11 @@ export async function captureBrowserFrame(
           ) {
             // Only this controlled helper's bounded failure JSON is eligible;
             // never inspect successful image responses or bridge command output.
+            // Existing <=512-byte context plus the fixed compact process tuple.
             const stdout =
               result &&
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
-            if (typeof stdout === "string" && stdout.length <= 512) {
+            if (typeof stdout === "string" && stdout.length <= 544) {
               const parsed = JSON.parse(stdout);
               const deadline = parsed?.deadline;
               if (
@@ -534,6 +661,15 @@ export async function captureBrowserFrame(
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
               }
+              const history = parsed?.h1;
+              if (history === 0 || history === 1 || history === 3) {
+                precondition.capture_wrapper_history_version = 1;
+                precondition.capture_wrapper_history_scope = "handoff_root";
+                precondition.capture_wrapper_other_cli_completed =
+                  (history & 1) !== 0;
+                precondition.capture_wrapper_option_prefix_completed =
+                  (history & 2) !== 0;
+              }
               const openStatus = parsed?.open_receipt_status;
               const openPhase = parsed?.open_phase;
               const openExit = parsed?.open_exit;
@@ -566,6 +702,38 @@ export async function captureBrowserFrame(
                     parsed.open_session_matches;
                   precondition.capture_open_age = parsed.open_age;
                 }
+              }
+              const processObservation = parsed?.p1;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(processObservation) &&
+                processObservation.length === 3 &&
+                processObservation[0] === 1 &&
+                Number.isInteger(processObservation[1]) &&
+                processObservation[1] >= 0 &&
+                processObservation[1] <= 3 &&
+                Number.isInteger(processObservation[2]) &&
+                processObservation[2] >= 0 &&
+                processObservation[2] <= 5 &&
+                (processObservation[1] === 3 || processObservation[2] === 0)
+              ) {
+                precondition.capture_daemon_process_version = 1;
+                precondition.capture_daemon_pid_status = (
+                  ["missing", "invalid", "unreadable", "recorded"] as const
+                )[processObservation[1]];
+                precondition.capture_daemon_process_visibility = (
+                  [
+                    "unavailable",
+                    "not_found",
+                    "same_uid",
+                    "other_uid",
+                    "permission",
+                    "other",
+                  ] as const
+                )[processObservation[2]];
               }
               const openIdle = parsed?.open_idle;
               if (
@@ -641,6 +809,7 @@ export async function captureBrowserFrame(
           capture_error_kind: kind,
           capture_command_exit_code: code,
           ...precondition,
+          ...decodeDiagnostic,
         });
       } catch {
         /* Observers cannot change capture behavior. */

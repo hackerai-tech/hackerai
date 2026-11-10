@@ -7,6 +7,12 @@ import {
   beforeEach,
   afterAll,
 } from "@jest/globals";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../../lib/pricing/pro-yearly";
+import {
+  HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+  PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+} from "../../lib/billing/included-usage";
 import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
 jest.mock("../lib/serviceFunctions", () => ({
@@ -120,10 +126,13 @@ afterAll(() => {
   }
 });
 
-function makeCtx(userId = "user_member") {
+function makeCtx(userId = "user_member", organizationId?: string) {
   return {
     auth: {
-      getUserIdentity: jest.fn(async () => ({ subject: userId })),
+      getUserIdentity: jest.fn(async () => ({
+        subject: userId,
+        org_id: organizationId,
+      })),
     },
     runQuery: jest.fn(async () => null),
     runMutation: jest.fn(async () => null),
@@ -239,6 +248,158 @@ describe("extraUsageActions billing authorization", () => {
     mockGetOrganization.mockResolvedValue({
       stripeCustomerId: "cus_team",
     } as never);
+  });
+
+  it("prices a bundle server-side and rejects mismatched credit values", async () => {
+    const previousAllowlist = process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+    process.env.EXTRA_USAGE_BUNDLES_USER_IDS = "user_member";
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "owner" },
+        },
+        {
+          organizationId: "org_personal",
+          status: "active",
+          role: { slug: "owner" },
+        },
+      ],
+    } as never);
+    mockSubscriptionsList.mockResolvedValue({
+      data: [
+        { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        { items: { data: [{ price: { lookup_key: "pro-monthly" } }] } },
+      ],
+    } as never);
+    try {
+      const result = await callCreatePurchaseSession(
+        makeCtx("user_member", "org_personal"),
+        {
+          amountDollars: 250,
+          bundleId: "usage-250-v1",
+        },
+      );
+      expect(result.url).toBeTruthy();
+      expect(mockGetOrganization).toHaveBeenCalledWith("org_personal");
+      expect(mockListOrganizationMemberships).toHaveBeenCalledWith({
+        userId: "user_member",
+        organizationId: "org_personal",
+        statuses: ["active"],
+      });
+      expect(mockSubscriptionsList).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 100 }),
+      );
+      expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [
+            expect.objectContaining({
+              price_data: expect.objectContaining({ unit_amount: 20000 }),
+            }),
+          ],
+          metadata: expect.objectContaining({
+            amountDollars: "250",
+            paidAmountDollars: "200",
+            bundleId: "usage-250-v1",
+          }),
+        }),
+      );
+      for (const priceId of [
+        GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
+        GRANDFATHERED_PRO_YEARLY_PRICE_ID,
+        HACKERAI_PRO_20_MONTHLY_PRICE_ID,
+        PENTESTGPT_PRO_20_MONTHLY_PRICE_ID,
+      ]) {
+        mockSubscriptionsList.mockResolvedValue({
+          data: [
+            { items: { data: [{ price: { id: priceId, lookup_key: null } }] } },
+          ],
+        } as never);
+        expect(
+          (
+            await callCreatePurchaseSession(
+              makeCtx("user_member", "org_personal"),
+              {
+                amountDollars: 250,
+                bundleId: "usage-250-v1",
+              },
+            )
+          ).url,
+        ).toBeTruthy();
+      }
+      mockCheckoutSessionCreate.mockClear();
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_personal"),
+            {
+              amountDollars: 1000,
+              bundleId: "usage-250-v1",
+            },
+          )
+        ).url,
+      ).toBeNull();
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+      mockSubscriptionsList.mockResolvedValue({
+        data: [
+          { items: { data: [{ price: { lookup_key: "team-monthly" } }] } },
+        ],
+      } as never);
+      expect(
+        await callCreatePurchaseSession(
+          makeCtx("user_member", "org_personal"),
+          {
+            amountDollars: 250,
+            bundleId: "usage-250-v1",
+          },
+        ),
+      ).toEqual({
+        url: null,
+        error: "An active paid subscription is required",
+      });
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+      mockGetOrganization.mockClear();
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_unrelated"),
+            { amountDollars: 250, bundleId: "usage-250-v1" },
+          )
+        ).url,
+      ).toBeNull();
+      expect(
+        (
+          await callCreatePurchaseSession(makeCtx(), {
+            amountDollars: 250,
+            bundleId: "usage-250-v1",
+          })
+        ).url,
+      ).toBeNull();
+      mockListOrganizationMemberships.mockResolvedValue({
+        data: [
+          {
+            organizationId: "org_personal",
+            status: "active",
+            role: { slug: "member" },
+          },
+        ],
+      } as never);
+      expect(
+        (
+          await callCreatePurchaseSession(
+            makeCtx("user_member", "org_personal"),
+            { amountDollars: 250, bundleId: "usage-250-v1" },
+          )
+        ).url,
+      ).toBeNull();
+      expect(mockGetOrganization).not.toHaveBeenCalled();
+      expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+    } finally {
+      if (previousAllowlist === undefined)
+        delete process.env.EXTRA_USAGE_BUNDLES_USER_IDS;
+      else process.env.EXTRA_USAGE_BUNDLES_USER_IDS = previousAllowlist;
+    }
   });
 
   it("blocks Checkout creation while the account has an active dispute hold", async () => {

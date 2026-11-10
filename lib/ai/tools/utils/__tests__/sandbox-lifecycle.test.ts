@@ -69,6 +69,10 @@ import {
   Template,
   SandboxError,
   TimeoutError,
+  NotFoundError,
+  AuthenticationError,
+  TemplateError,
+  InvalidArgumentError,
 } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
@@ -1160,6 +1164,129 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandboxApi.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [NotFoundError, "not_found"],
+    [AuthenticationError, "authentication"],
+    [TemplateError, "template"],
+    [InvalidArgumentError, "invalid_argument"],
+  ] as const)(
+    "identifies a pinned identity-read failure without attempting recovery (%s)",
+    async (ErrorType, kind) => {
+      const errorLog = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const setSandbox = jest.fn();
+      sandboxApi.getInfo.mockRejectedValueOnce(
+        new ErrorType("private-provider-response"),
+      );
+      try {
+        const error = await ensureSandboxConnection(
+          { userID: "user-1", setSandbox },
+          {
+            destinationId: "private-workspace-id",
+            acquisitionId: "acq-1",
+            triggerRunId: "run-1",
+          },
+        ).catch((error) => error);
+        expect(error.name).toBe("E2BAcquisitionError");
+        expect(error.diagnostics).toMatchObject({
+          e2b_phase: "connect",
+          e2b_error_category: "permanent",
+          e2b_workspace_identity_diagnostic_version: 1,
+          e2b_workspace_identity_operation: "get_info",
+          e2b_workspace_identity_error_kind: kind,
+          e2b_workspace_identity_requested_target_fingerprint:
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+          e2b_workspace_identity_requested_cluster: "us",
+        });
+        expect(error.diagnostics).not.toHaveProperty("e2b_http_status");
+        const native = JSON.parse(String(errorLog.mock.calls[0][0]));
+        expect(native).toMatchObject({
+          ...error.diagnostics,
+          acquisition_id: "acq-1",
+          trigger_run_id: "run-1",
+          e2b_connect_state: null,
+          e2b_connect_selection_source: null,
+          e2b_connect_target_fingerprint: null,
+        });
+        expect(JSON.stringify([native, error.diagnostics])).not.toMatch(
+          /private-workspace-id|private-provider-response/,
+        );
+        expect(sandboxApi.getInfo).toHaveBeenCalledTimes(1);
+        expect(sandboxApi.getInfo).toHaveBeenCalledWith(
+          "private-workspace-id",
+          expect.objectContaining({ requestTimeoutMs: 10_000 }),
+        );
+        expect(sandboxApi.connect).not.toHaveBeenCalled();
+        expect(sandboxApi.create).not.toHaveBeenCalled();
+        expect(sandboxApi.kill).not.toHaveBeenCalled();
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(recordResumeFailure).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
+
+  it("identifies a rejected identity as validation, not an SDK or connect failure", async () => {
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    sandboxApi.getInfo.mockResolvedValueOnce({
+      sandboxId: "private-other-workspace",
+      state: "paused",
+      metadata: { userID: "private-owner" },
+    });
+    try {
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          { destinationId: "private-workspace-id" },
+        ),
+      ).rejects.toMatchObject({
+        diagnostics: {
+          e2b_workspace_identity_operation: "validate",
+          e2b_workspace_identity_error_kind: "other_error",
+        },
+      });
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(JSON.stringify(errorLog.mock.calls)).not.toMatch(
+        /private-workspace-id|private-other-workspace|private-owner/,
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it.each(["https://private.example/id?token=private", "x".repeat(129)])(
+    "omits unsafe requested identity material (%#)",
+    async (destinationId) => {
+      const errorLog = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      sandboxApi.getInfo.mockRejectedValueOnce(
+        new NotFoundError("private-provider-response"),
+      );
+      try {
+        await expect(
+          ensureSandboxConnection(
+            { userID: "user-1", setSandbox: jest.fn() },
+            { destinationId },
+          ),
+        ).rejects.toMatchObject({
+          diagnostics: {
+            e2b_workspace_identity_requested_target_fingerprint: null,
+          },
+        });
+        expect(JSON.stringify(errorLog.mock.calls)).not.toContain(
+          destinationId,
+        );
+        expect(sandboxApi.connect).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
+
   it("does not kill or replace a shared sandbox after a transient connect error", async () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -1315,6 +1442,22 @@ describe("E2B sandbox lease lifecycle", () => {
       expect(
         new Set([fingerprints[0], fingerprints[2], fingerprints[3]]).size,
       ).toBe(3);
+      sandboxApi.connect.mockClear();
+      sandboxApi.getInfo.mockRejectedValueOnce(
+        new NotFoundError("private-provider-response"),
+      );
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          { destinationId: "private-workspace-id" },
+        ),
+      ).rejects.toMatchObject({
+        diagnostics: {
+          e2b_workspace_identity_operation: "get_info",
+          e2b_workspace_identity_requested_target_fingerprint: fingerprints[0],
+        },
+      });
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
       expect(sandboxApi.kill).not.toHaveBeenCalled();
     } finally {

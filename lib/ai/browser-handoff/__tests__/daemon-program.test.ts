@@ -32,6 +32,13 @@ function daemon(
     receiptSymlink?: boolean;
     receiptRegular?: boolean;
     stdoutThrows?: boolean;
+    procUnavailable?: boolean;
+    pidFile?: string;
+    pidOwner?: number;
+    pidMode?: number;
+    pidSymlink?: boolean;
+    pidSize?: number;
+    processVisibility?: "same_uid" | "other_uid" | "missing" | "permission";
   } = {},
 ) {
   const socketPath = path.join(
@@ -85,11 +92,23 @@ function daemon(
           : options.receiptSymlink) &&
       (open || options.receiptRegular !== false),
   });
+  const pidStat = () => ({
+    uid: options.pidOwner ?? 1000,
+    mode: options.pidMode ?? 0o644,
+    size: options.pidSize ?? options.pidFile?.length,
+    isFile: () => !options.pidSymlink && options.pidFile !== undefined,
+  });
   const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
-    bytes.write(JSON.stringify(fileReceipt(fd === 8, fd === 9)), "utf8"),
+    bytes.write(
+      fd === 10
+        ? options.pidFile!
+        : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
+      "utf8",
+    ),
   );
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
+    if (file.endsWith(".pid")) return 10;
     const open = file.endsWith("/open-receipt.json");
     const close = file.endsWith("/close-receipt.json");
     if (
@@ -113,10 +132,40 @@ function daemon(
         return {
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
-          fstatSync: (fd: number) => receiptStat(fd === 8, fd === 9),
+          fstatSync: (fd: number) =>
+            fd === 10 ? pidStat() : receiptStat(fd === 8, fd === 9),
+          statSync: (file: string) => {
+            if (file === "/proc") {
+              if (options.procUnavailable)
+                throw Object.assign(new Error("PRIVATE unavailable procfs"), {
+                  code: "ENOENT",
+                });
+              return { isDirectory: () => true };
+            }
+            if (file !== "/proc/314159")
+              throw new Error("Unexpected process path");
+            if (
+              options.processVisibility === "missing" ||
+              options.processVisibility === "permission"
+            )
+              throw Object.assign(new Error("PRIVATE process"), {
+                code:
+                  options.processVisibility === "missing" ? "ENOENT" : "EACCES",
+              });
+            return {
+              uid: options.processVisibility === "other_uid" ? 0 : 1000,
+            };
+          },
           readSync: readReceipt,
           closeSync: closeReceipt,
           lstatSync: (file: string) => {
+            if (file.endsWith(".pid")) {
+              if (options.pidFile === undefined)
+                throw Object.assign(new Error("PRIVATE missing PID"), {
+                  code: "ENOENT",
+                });
+              return pidStat();
+            }
             if (
               file.endsWith("/wrapper-receipt.json") ||
               file.endsWith("/open-receipt.json") ||
@@ -154,6 +203,7 @@ function daemon(
         JSON.stringify({ action: options.action ?? "stream_status" }),
       ],
       getuid: () => 1000,
+      platform: "linux",
       stdout: { write: output },
       exit,
     },
@@ -432,6 +482,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
       action: "version",
       open_receipt_support: 1,
       close_receipt_support: 1,
+      history: [1, true, false],
     },
     openReceipt: {
       ...longest,
@@ -447,6 +498,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
   expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
   expect(JSON.parse(text)).toMatchObject({
     deadline: [1, "awaiting_response"],
+    h1: 1,
     open_idle: [1, "unparsed"],
     close_receipt: [
       1,
@@ -724,36 +776,51 @@ it.each([
   },
 );
 
-it("keeps the combined close/open diagnostic within512 bytes and censors cross-session order", () => {
-  const longest = {
-    ...receipt,
-    at: Date.now() + 60000,
-    exit: 999,
-    session_key: "a".repeat(64),
-  };
-  const d = daemon({
-    missingPath: directory + "/sockets/default.sock",
-    receipt: {
-      ...longest,
-      action: "version",
-      open_receipt_support: 1,
-      close_receipt_support: 1,
-    },
-    openReceipt: { ...longest, action: "open" },
-    closeReceipt: { ...longest, action: "close" },
-  });
-  const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
-  expect(JSON.parse(text).close_receipt).toEqual([
-    1,
-    "recorded",
-    "completed",
-    "other",
-    "other_session",
-    "unknown",
-    "unavailable",
-  ]);
-});
+it.each([false, true])(
+  "keeps maximal history/close/open context within512 bytes and censors cross-session order (%s)",
+  (selectedClose) => {
+    const longest = {
+      ...receipt,
+      at: Date.now() + 60000,
+      exit: 999,
+      session_key: "a".repeat(64),
+    };
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      missingCode: "ENOTDIR",
+      receipt: {
+        ...longest,
+        action: "version",
+        open_receipt_support: 1,
+        close_receipt_support: 1,
+        history: [1, true, false],
+      },
+      openReceipt: {
+        ...longest,
+        action: "open",
+        session_key: receipt.session_key,
+        idle_env_version: 1,
+        idle_env: "unparsed",
+      },
+      closeReceipt: {
+        ...longest,
+        action: "close",
+        session_key: selectedClose ? receipt.session_key : longest.session_key,
+      },
+    });
+    const text = d.output.mock.calls[0][0];
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+    expect(JSON.parse(text).close_receipt).toEqual([
+      1,
+      "recorded",
+      "completed",
+      "other",
+      selectedClose ? "selected_session" : "other_session",
+      "unknown",
+      selectedClose ? "same_time" : "unavailable",
+    ]);
+  },
+);
 
 it("attributes a completed close-all to the selected session without requiring its name to match", () => {
   const d = daemon({
@@ -776,4 +843,111 @@ it("attributes a completed close-all to the selected session without requiring i
     expect.any(String),
     "after",
   ]);
+});
+
+const successfulOpen = {
+  ...receipt,
+  action: "open",
+  exit: 0,
+};
+
+it.each([
+  [{}, [1, 0, 0]],
+  [{ pidFile: "314159", processVisibility: "same_uid" }, [1, 3, 2]],
+  [{ pidFile: "314159", procUnavailable: true }, [1, 3, 0]],
+  [{ pidFile: "314159", processVisibility: "missing" }, [1, 3, 1]],
+  [{ pidFile: "314159", processVisibility: "other_uid" }, [1, 3, 3]],
+  [{ pidFile: "314159", processVisibility: "permission" }, [1, 3, 4]],
+  [{ pidFile: "PRIVATE" }, [1, 1, 0]],
+  [{ pidFile: "0" }, [1, 1, 0]],
+  [{ pidFile: "314159", pidSymlink: true }, [1, 2, 0]],
+  [{ pidFile: "314159", pidOwner: 0 }, [1, 2, 0]],
+  [{ pidFile: "314159", pidMode: 0o666 }, [1, 2, 0]],
+  [{ pidFile: "314159", pidSize: 33 }, [1, 2, 0]],
+] as const)(
+  "reports bounded PID-sidecar/process visibility without changing a missing-socket exit (%#)",
+  (options, expected) => {
+    const d = daemon({
+      ...options,
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...receipt, open_receipt_support: 1 },
+      openReceipt: successfulOpen,
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text).p1).toEqual(expected);
+    expect(text).not.toMatch(/PRIVATE|314159|\/proc|\/dev\/shm|default/);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+    if (expected[1] === 3) {
+      expect(d.openReceipt).toHaveBeenCalledWith(
+        directory + "/sockets/default.pid",
+        256 | 2048,
+      );
+      expect(d.closeReceipt).toHaveBeenCalledWith(10);
+    }
+  },
+);
+
+it("leaves successful capture and mismatched open observations unprobed", () => {
+  const d = daemon({
+    receipt: { ...receipt, open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, session_key: "a".repeat(64) },
+    pidFile: "314159",
+  });
+  d.reply({ id: "hackerai-preview", success: true, data: { port: 9223 } });
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(d.openReceipt).not.toHaveBeenCalled();
+  const failure = daemon({
+    receipt: { ...receipt, open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, session_key: "a".repeat(64) },
+    pidFile: "314159",
+    missingPath: directory + "/sockets/default.sock",
+  });
+  expect(JSON.parse(failure.output.mock.calls[0][0]).p1).toBeUndefined();
+  expect(
+    failure.openReceipt.mock.calls.every(([file]) => !file.endsWith(".pid")),
+  ).toBe(true);
+});
+
+it("keeps the combined selected process and maximal existing receipts within one 544-byte packet", () => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
+  const d = daemon({
+    missingPath: directory + "/sockets/default.sock",
+    missingCode: "ENOTDIR",
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    receipt: {
+      ...longest,
+      action: "version",
+      session_key: "a".repeat(64),
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+      history: [1, true, true],
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      exit: 0,
+      idle_env_version: 1,
+      idle_env: "unparsed",
+    },
+    closeReceipt: { ...longest, action: "close", close_all: true },
+  });
+  const text = d.output.mock.calls[0][0];
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+  expect(JSON.parse(text)).toMatchObject({
+    p1: [1, 3, 2],
+    h1: 3,
+    open_idle: [1, "unparsed"],
+    close_receipt: [
+      1,
+      "recorded",
+      "completed",
+      "other",
+      "all_sessions",
+      "unknown",
+      "same_time",
+    ],
+  });
 });

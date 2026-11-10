@@ -80,8 +80,23 @@ export interface PtySession {
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
   recordPath?: string;
-  recordPersistenceFailed?: boolean;
+  /** Latest checkpoint write; pending does not invalidate an earlier recordPath. */
+  recordPersistenceStatus?: "pending" | "saved" | "failed";
+  /** Compatibility flag: a bounded wait deadline is not a failed write. */
+  readonly recordPersistenceFailed?: boolean;
   outputPath?: string;
+}
+
+/** Share checkpoint state across both terminal tools without treating delay as loss. */
+export function terminalRecordPersistenceFields(session: PtySession) {
+  return {
+    ...(session.recordPersistenceStatus
+      ? { recordPersistenceStatus: session.recordPersistenceStatus }
+      : {}),
+    ...(session.recordPersistenceFailed
+      ? { recordPersistenceFailed: true }
+      : {}),
+  };
 }
 
 export interface CreateSessionOpts {
@@ -111,7 +126,10 @@ export interface CreateSessionOpts {
 }
 
 type RecordWork = {
+  sessionId: string;
   pending: Set<Promise<void>>;
+  checkpoints: Set<Promise<void>>;
+  checkpointWaiters: Set<() => void>;
   retention: Set<AbortController>;
 };
 
@@ -173,6 +191,7 @@ export class PtySessionManager {
     chatId: string,
     work: RecordWork,
     operation: Promise<void>,
+    checkpoint = false,
   ): void {
     let groups = this.recordWork.get(chatId);
     if (!groups) this.recordWork.set(chatId, (groups = new Set()));
@@ -181,13 +200,43 @@ export class PtySessionManager {
       .catch(() => undefined)
       .finally(() => {
         work.pending.delete(pending);
+        work.checkpoints.delete(pending);
         if (!work.pending.size && !work.retention.size) {
           const groups = this.recordWork.get(chatId);
           groups?.delete(work);
           if (groups?.size === 0) this.recordWork.delete(chatId);
         }
+        for (const notify of work.checkpointWaiters) notify();
       });
     work.pending.add(pending);
+    if (checkpoint) work.checkpoints.add(pending);
+  }
+
+  /** Wait only for this record's writes; a slow transport must remain pending. */
+  async waitForPendingRecord(
+    chatId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const groups = [...(this.recordWork.get(chatId) ?? [])].filter(
+      (work) => work.sessionId === sessionId,
+    );
+    const pending = () => groups.some((work) => work.checkpoints.size > 0);
+    if (!pending()) return false;
+    return new Promise<boolean>((resolve) => {
+      const finish = (stillPending: boolean) => {
+        clearTimeout(timer);
+        for (const work of groups) work.checkpointWaiters.delete(notify);
+        resolve(stillPending);
+      };
+      const notify = () => {
+        // Coalesced writes stay owned by the same group until its final save.
+        if (!pending()) finish(false);
+      };
+      const timer = setTimeout(() => finish(true), RECORD_CHECKPOINT_WAIT_MS);
+      for (const work of groups) work.checkpointWaiters.add(notify);
+      // Timeout removes observers even if the underlying transport never settles.
+      notify();
+    });
   }
 
   async create(chatId: string, opts: CreateSessionOpts): Promise<PtySession> {
@@ -231,6 +280,9 @@ export class PtySessionManager {
         buffer: [],
         readCursor: 0,
         bufferTruncated: false,
+        get recordPersistenceFailed() {
+          return this.recordPersistenceStatus === "failed";
+        },
         droppedBytes: 0,
         idleTimer: null,
         lifetimeTimer: null,
@@ -240,7 +292,13 @@ export class PtySessionManager {
         closing: false,
         exitedNaturally: null,
         executionRecord: opts.executionRecord,
-        recordWork: { pending: new Set(), retention: new Set() },
+        recordWork: {
+          sessionId,
+          pending: new Set(),
+          checkpoints: new Set(),
+          checkpointWaiters: new Set(),
+          retention: new Set(),
+        },
         recordQueue: Promise.resolve(),
         recordWriting: false,
         recordDirty: false,
@@ -476,8 +534,9 @@ export class PtySessionManager {
           )
             continue;
           record.updatedAt = Date.now();
+          session.recordPersistenceStatus = "pending";
           const path = await internal.executionRecord!.save(record);
-          session.recordPersistenceFailed = !path;
+          session.recordPersistenceStatus = path ? "saved" : "failed";
           if (!path)
             this.reportRecordCheckpointIssue(internal, "save_unacknowledged");
           if (path) {
@@ -489,7 +548,7 @@ export class PtySessionManager {
         }
       })()
         .catch(() => {
-          session.recordPersistenceFailed = true;
+          session.recordPersistenceStatus = "failed";
           this.reportRecordCheckpointIssue(internal, "checkpoint_threw");
         })
         .finally(async () => {
@@ -500,6 +559,7 @@ export class PtySessionManager {
         session.chatId,
         internal.recordWork,
         internal.recordQueue,
+        true,
       );
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -507,7 +567,6 @@ export class PtySessionManager {
       internal.recordQueue,
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          session.recordPersistenceFailed = true;
           this.reportRecordCheckpointIssue(internal, "wait_deadline");
           resolve();
         }, RECORD_CHECKPOINT_WAIT_MS);

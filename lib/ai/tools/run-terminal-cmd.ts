@@ -1,5 +1,6 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
+import { parseCaptchaRuntimeCommand } from "../captcha/runtime-command";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
@@ -40,6 +41,7 @@ import {
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
+  terminalRecordPersistenceFields,
   type PtySession,
 } from "./utils/pty-session-manager";
 import {
@@ -63,6 +65,7 @@ import {
   detectAgentBrowserUsage,
 } from "./utils/agent-browser-usage";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
+import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -178,9 +181,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
-          ...(session.recordPersistenceFailed
-            ? { recordPersistenceFailed: true }
-            : {}),
+          ...terminalRecordPersistenceFields(session),
         }
       : {};
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
@@ -274,7 +275,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     if (!env && !required && !gateOnly) return undefined;
     let sessionEnv: Record<string, string> | undefined;
     try {
-      sessionEnv = await context.browserSessions?.prepare(sandbox);
+      sessionEnv = await context.browserSessions?.prepare(
+        sandbox,
+        gateOnly
+          ? "gate_only"
+          : interactiveShell
+            ? "interactive_shell"
+            : "recognized_browser_command",
+      );
     } catch (error) {
       if (!gateOnly) throw error;
       console.warn("[run-terminal-cmd] browser gate unavailable");
@@ -1611,10 +1619,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         const execute = async () => {
           try {
             if (/^\s*hackerai-captcha\b/.test(input.command)) {
-              const request =
-                /^hackerai-captcha (solve|release) --session ([A-Za-z0-9_-]{1,80})$/.exec(
-                  input.command.trim(),
-                );
+              const request = parseCaptchaRuntimeCommand(input.command);
               if (
                 !request ||
                 input.is_background ||
@@ -1628,12 +1633,25 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
                   },
                 };
+              if (request.action === "solve") {
+                // UI-only metadata: elapsed time, no target, challenge data or
+                // provider response. Historical results use callTiming below.
+                writer.write({
+                  type: "data-terminal",
+                  id: `captcha-start-${options.toolCallId}`,
+                  data: {
+                    terminal: "",
+                    toolCallId: options.toolCallId,
+                    captchaStartedAt: Date.now(),
+                  },
+                });
+              }
               return {
                 result: {
                   exitCode: 0,
                   browserChallenge: await context.requestBrowserChallenge(
-                    request[1] as "solve" | "release",
-                    request[2],
+                    request.action,
+                    request.sessionName,
                     options.abortSignal,
                   ),
                 },
@@ -1642,6 +1660,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };
+            captureAgentBrowserOpenFailure({
+              context,
+              command: input.command,
+              interactive: input.interactive,
+              isBackground: input.is_background,
+              aborted: options.abortSignal?.aborted === true,
+              result: output.result,
+            });
             // A completed direct snapshot discovers the on-demand capability.
             // Only an explicit runtime request above can initiate a paid solve.
             // The page is inspected through the owned browser, never from stdout.

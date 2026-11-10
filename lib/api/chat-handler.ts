@@ -1,3 +1,4 @@
+import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -137,7 +138,6 @@ import {
   handleInitialChatAndUserMessage,
   prepareForNewStream,
   saveMessage,
-  startStream,
   updateChat,
   updateChatTitle,
 } from "@/lib/db/actions";
@@ -586,6 +586,9 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
+      // Keep the entitled Max baseline stable while shared security steps run.
+      const maxBaselineModel =
+        selectedModelOverride === "hackerai-max" ? selectedModel : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           process.env.VERCEL_ENV === "production" ||
@@ -655,7 +658,7 @@ export const createChatHandler = () => {
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
         ),
       });
-      const requestHasImages =
+      let requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
@@ -1267,11 +1270,18 @@ export const createChatHandler = () => {
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
+            let fallbackModel =
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    maxBaselineModel ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    {
+                      hasImageInputs: requestHasImages,
+                    },
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1722,8 +1732,20 @@ export const createChatHandler = () => {
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
-              onProviderRequestStart: (configuredModel) => {
+              onProviderRequestStart: (configuredModel, hasImageInputs) => {
                 recordFlashRoutingExposure(configuredModel);
+                requestHasImages ||= Boolean(hasImageInputs);
+                if (
+                  selectedModelOverride === "hackerai-max" &&
+                  requestHasImages
+                ) {
+                  fallbackModel = getRetryFallbackModel(
+                    maxBaselineModel ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    { hasImageInputs: true },
+                  );
+                }
               },
               trackedProvider,
               currentSystemPrompt,
@@ -3448,23 +3470,11 @@ export const createChatHandler = () => {
           "Transfer-Encoding": "chunked",
         },
         async consumeSseStream({ stream: sseStream }) {
-          try {
-            const streamContext = getStreamContext();
-            if (streamContext) {
-              const streamId = generateId();
-              await startStream({ chatId, streamId });
-              await streamContext.createNewResumableStream(
-                streamId,
-                () => sseStream,
-              );
-            }
-          } catch (error) {
-            // Non-fatal: stream still works without resumability
-            phLogger.warn("Stream resumption setup failed", {
-              chatId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          await setupChatStreamResumption({
+            chatId,
+            stream: sseStream,
+            getStreamContext,
+          });
         },
       });
     } catch (error) {

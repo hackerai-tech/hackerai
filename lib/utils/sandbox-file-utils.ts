@@ -1,6 +1,14 @@
 import "server-only";
 
 import {
+  copyAttachmentDownloadFailureContext,
+  recordAttachmentDownloadRoute,
+  type AttachmentDownloadRoute,
+  getAttachmentDownloadFailureContext,
+  type AttachmentDownloadFailureContext,
+} from "@/lib/ai/tools/utils/attachment-download-diagnostics";
+
+import {
   CloudAcquisitionBudgetExhaustedError,
   CloudAcquisitionTimeoutError,
   isCloudAcquisitionBudgetSpent,
@@ -137,6 +145,7 @@ type SandboxUploadFailureDetail = {
   sandboxReadinessReason: SandboxReadinessFailureReason;
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
   commandFailureContext?: AttachmentCommandFailureContext;
+  downloadFailureContext?: AttachmentDownloadFailureContext;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -821,6 +830,7 @@ export const recoverProviderVisibleImagesAfterSandboxUploadFailure = (
       user_id: options.userId,
       chat_id: options.chatId,
       failed_image_count: failedImageFiles.length,
+      ...failure?.downloadFailureContext,
       failure_reason: failure?.reason ?? "unknown",
       sandbox_readiness_reason: failure?.sandboxReadinessReason ?? "unknown",
       retried_after_reconnect: uploadResult.retriedAfterReconnect ?? false,
@@ -917,86 +927,99 @@ const downloadFileToSandbox = async (
   localPath: string,
   signal?: AbortSignal,
 ): Promise<void> => {
-  signal?.throwIfAborted();
-  validateDownloadUrl(url);
-
-  // CentrifugoSandbox has downloadFromUrl method
-  if (sandbox.files?.downloadFromUrl) {
-    await sandbox.files.downloadFromUrl(
-      url,
-      localPath,
-      ...(signal ? [{ signal }] : []),
-    );
-    signal?.throwIfAborted();
-    return;
-  }
-
-  // E2B sandbox - use curl with --create-dirs to avoid a separate mkdir race
-  const escapedUrl = url.replace(/'/g, "'\\''");
-  const escapedLocalPath = localPath.replace(/'/g, "'\\''");
-
-  // Transient curl exit codes worth retrying at the JS layer as a safety net
-  // on top of curl's own --retry. Covers post-resume filesystem hiccups and
-  // flaky network recv:
-  //   6  = could not resolve host (DNS lag after sandbox resume)
-  //   7  = couldn't connect
-  //   18 = partial transfer
-  //   56 = failure receiving network data
-  // Write failures go straight to the writable-path fallback. Repeating the
-  // same destination cannot repair permissions or a full filesystem.
-  const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
-  const MAX_ATTEMPTS = 3;
-
-  const curlCmd =
-    `curl -fsSL --connect-timeout 10 --max-time 120 ` +
-    `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
-    `-o '${escapedLocalPath}' '${escapedUrl}'`;
-
-  // --retry-max-time bounds when another attempt may start, not its duration.
-  // The last attempt can consume another --max-time. Keep the SDK stream open
-  // beyond both budgets so curl reports its exit instead of replaying a healthy
-  // slow transfer after the SDK's default 60-second timeout. Stop still kills
-  // only the owned command through runAttachmentCommand.
-  const commandOptions = { timeoutMs: 250_000 };
-  let result = await runSandboxCommand(
-    sandbox,
-    curlCmd,
-    signal,
-    commandOptions,
-  );
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (result.exitCode === 0) return;
-    if (
-      attempt === MAX_ATTEMPTS ||
-      !TRANSIENT_CURL_EXIT_CODES.has(result.exitCode)
-    ) {
-      break;
-    }
-    console.warn(
-      `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
-    );
-    await delay(500 * attempt, signal);
-    result = await runSandboxCommand(sandbox, curlCmd, signal, commandOptions);
-  }
-
-  // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
-  let safeUrl = url;
+  let route: AttachmentDownloadRoute = "selection";
   try {
-    const parsed = new URL(url);
-    safeUrl = `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    safeUrl = url.split("?")[0];
-  }
+    signal?.throwIfAborted();
+    validateDownloadUrl(url);
 
-  throw copyAttachmentCommandFailureContext(
-    result,
-    new Error(
-      `Failed to download file: ${result.stderr}\n` +
-        `  url: ${safeUrl}\n` +
-        `  path: ${localPath}\n` +
-        `  exitCode: ${result.exitCode}`,
-    ),
-  );
+    // CentrifugoSandbox has downloadFromUrl method
+    if (sandbox.files?.downloadFromUrl) {
+      route = "native_method";
+      await sandbox.files.downloadFromUrl(
+        url,
+        localPath,
+        ...(signal ? [{ signal }] : []),
+      );
+      signal?.throwIfAborted();
+      return;
+    }
+
+    route = "generic_command";
+    // E2B sandbox - use curl with --create-dirs to avoid a separate mkdir race
+    const escapedUrl = url.replace(/'/g, "'\\''");
+    const escapedLocalPath = localPath.replace(/'/g, "'\\''");
+
+    // Transient curl exit codes worth retrying at the JS layer as a safety net
+    // on top of curl's own --retry. Covers post-resume filesystem hiccups and
+    // flaky network recv:
+    //   6  = could not resolve host (DNS lag after sandbox resume)
+    //   7  = couldn't connect
+    //   18 = partial transfer
+    //   56 = failure receiving network data
+    // Write failures go straight to the writable-path fallback. Repeating the
+    // same destination cannot repair permissions or a full filesystem.
+    const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
+    const MAX_ATTEMPTS = 3;
+
+    const curlCmd =
+      `curl -fsSL --connect-timeout 10 --max-time 120 ` +
+      `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
+      `-o '${escapedLocalPath}' '${escapedUrl}'`;
+
+    // --retry-max-time bounds when another attempt may start, not its duration.
+    // The last attempt can consume another --max-time. Keep the SDK stream open
+    // beyond both budgets so curl reports its exit instead of replaying a healthy
+    // slow transfer after the SDK's default 60-second timeout. Stop still kills
+    // only the owned command through runAttachmentCommand.
+    const commandOptions = { timeoutMs: 250_000 };
+    let result = await runSandboxCommand(
+      sandbox,
+      curlCmd,
+      signal,
+      commandOptions,
+    );
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (result.exitCode === 0) return;
+      if (
+        attempt === MAX_ATTEMPTS ||
+        !TRANSIENT_CURL_EXIT_CODES.has(result.exitCode)
+      ) {
+        break;
+      }
+      console.warn(
+        `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
+      );
+      await delay(500 * attempt, signal);
+      result = await runSandboxCommand(
+        sandbox,
+        curlCmd,
+        signal,
+        commandOptions,
+      );
+    }
+
+    // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
+    let safeUrl = url;
+    try {
+      const parsed = new URL(url);
+      safeUrl = `${parsed.origin}${parsed.pathname}`;
+    } catch {
+      safeUrl = url.split("?")[0];
+    }
+
+    throw copyAttachmentCommandFailureContext(
+      result,
+      new Error(
+        `Failed to download file: ${result.stderr}\n` +
+          `  url: ${safeUrl}\n` +
+          `  path: ${localPath}\n` +
+          `  exitCode: ${result.exitCode}`,
+      ),
+    );
+  } catch (error) {
+    recordAttachmentDownloadRoute(error, route);
+    throw error;
+  }
 };
 
 const copyLocalFileToSandbox = async (
@@ -1236,6 +1259,7 @@ const stageSandboxFile = async (
         { exitCode: extractCommandExitCode(fallbackError) },
       );
       copyAttachmentCommandFailureContext(fallbackError, combinedError);
+      copyAttachmentDownloadFailureContext(fallbackError, combinedError);
       if (file.kind === "localPath") {
         finalLocalCopyReasons.set(
           combinedError,
@@ -1325,6 +1349,7 @@ const summarizeSandboxUploadFailure = (
       ? parseCloudAcquisitionStage(acquisitionError.acquisitionStage)
       : undefined;
   const commandFailureContext = getAttachmentCommandFailureContext(error);
+  const downloadFailureContext = getAttachmentDownloadFailureContext(error);
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1353,6 +1378,7 @@ const summarizeSandboxUploadFailure = (
       readinessProbeReason: classifySandboxUploadReadinessProbeFailure(error),
     }),
     ...(commandFailureContext && { commandFailureContext }),
+    ...(downloadFailureContext && { downloadFailureContext }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1524,6 +1550,7 @@ const uploadSandboxFilesOnce = async (
           primaryFailure.localCopyFailureReason ?? null,
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1566,6 +1593,7 @@ const uploadSandboxFilesOnce = async (
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1607,6 +1635,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         ...primaryFailure.commandFailureContext,
+        ...primaryFailure.downloadFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1653,6 +1682,7 @@ export const getSandboxUploadFailureMetadata = (
 
   return {
     ...failure?.commandFailureContext,
+    ...failure?.downloadFailureContext,
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(acquisitionStage

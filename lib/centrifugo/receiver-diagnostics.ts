@@ -1,3 +1,5 @@
+import type { IsolatedOperationPhase } from "./dispatch-operation";
+
 type ReceiverState = {
   sequence: number;
   terminalReceived: boolean;
@@ -42,6 +44,9 @@ export function createReceiverDiagnostics(
   let terminalType: "exit" | "error" | undefined;
   let cancelConfirmed: boolean | undefined;
   let lastPublishError: "timeout" | "other" | undefined;
+  let dispatchPhase: IsolatedOperationPhase | "not_started" | "uncertain" =
+    "not_started";
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
   const emit = (
     phase: string,
     details: Record<string, string | number | boolean | undefined> = {},
@@ -83,7 +88,18 @@ export function createReceiverDiagnostics(
     }
   };
   return {
-    start: () => emit("started"),
+    start() {
+      emit("started");
+      if (context.enabled && !closed && !waitTimer) {
+        // One passive snapshot before a web request's platform deadline.
+        waitTimer = setTimeout(() => {
+          emit("command_wait", { dispatch_phase: dispatchPhase });
+        }, 10_000);
+      }
+    },
+    dispatchPhase(phase: IsolatedOperationPhase) {
+      dispatchPhase = phase;
+    },
     subscribed(recovered: boolean) {
       generation++;
       emit("subscribed", { recovered });
@@ -98,6 +114,7 @@ export function createReceiverDiagnostics(
         | "client_retry"
         | "dispatch_uncertain",
     ) {
+      if (phase === "dispatch_uncertain") dispatchPhase = "uncertain";
       emit(phase);
     },
     cursorAttempt(resume: boolean) {
@@ -131,6 +148,7 @@ export function createReceiverDiagnostics(
         });
     },
     finish(reason: ReceiverCleanupReason) {
+      clearTimeout(waitTimer);
       emit("cleanup", { reason }, true);
       closed = true;
     },

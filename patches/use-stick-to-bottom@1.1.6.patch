@@ -1,0 +1,22 @@
+diff --git a/dist/useStickToBottom.js b/dist/useStickToBottom.js
+index 7d659edace3f497dc867d3ce24d31180e18cf909..0dacfd601a82f0beac049b9e95c092817c782e64 100644
+--- a/dist/useStickToBottom.js
++++ b/dist/useStickToBottom.js
+@@ -53,8 +53,15 @@ export const useStickToBottom = (options = {}) => {
+             return false;
+         }
+         const range = selection.getRangeAt(0);
+-        return (range.commonAncestorContainer.contains(scrollRef.current) ||
+-            scrollRef.current?.contains(range.commonAncestorContainer));
++        try {
++            return (range.commonAncestorContainer.contains(scrollRef.current) ||
++                scrollRef.current?.contains(range.commonAncestorContainer));
++        }
++        catch {
++            // Firefox can expose selection nodes whose properties are inaccessible.
++            // Treat them like a selection outside this scroll container.
++            return false;
++        }
+     }, []);
+     const setIsAtBottom = useCallback((isAtBottom) => {
+         state.isAtBottom = isAtBottom;

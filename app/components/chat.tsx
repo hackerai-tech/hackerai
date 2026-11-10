@@ -6,6 +6,7 @@ import {
   CloudRecoveryAdmissionContext,
   useCloudRecoveryAdmission,
 } from "@/app/hooks/useCloudRecoveryAdmission";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 
 import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart } from "ai";
@@ -421,8 +422,10 @@ function StreamEffects({
   resetRef,
   hasActiveStream,
   sendDisabledReason,
+  finishReason,
 }: {
   sendDisabledReason?: string;
+  finishReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -463,6 +466,7 @@ function StreamEffects({
     agentPermissionMode,
     selectedModel,
     sendDisabledReason,
+    finishReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -993,6 +997,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const closedAgentLongRunIdsRef = useRef(new Set<string>());
   const agentLongRequestGenerationRef = useRef(0);
   const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
     useState(0);
@@ -1040,6 +1045,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
   const handleAgentLongRunClosed = (runId: string) => {
+    // Closing the transport can beat useChat consuming buffered correlation
+    // chunks. Those chunks must not restore a finished run and block Goal replies.
+    closedAgentLongRunIdsRef.current.add(runId);
+    if (agentLongRunCorrelationRef.current?.runId === runId)
+      agentLongRunCorrelationRef.current = null;
     setAgentLongRunId((current) => (current === runId ? null : current));
   };
 
@@ -1169,12 +1179,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               removeDraft("new");
               setIsExistingChat(true);
             }
-            setAgentLongRunId(run.runId);
-            if (run.runCorrelationToken) {
-              agentLongRunCorrelationRef.current = {
-                runId: run.runId,
-                token: run.runCorrelationToken,
-              };
+            // An idempotent retry is still durably admitted even when the
+            // original run finished. Acknowledge it without restoring its lease.
+            if (!closedAgentLongRunIdsRef.current.has(run.runId)) {
+              setAgentLongRunId(run.runId);
+              if (run.runCorrelationToken) {
+                agentLongRunCorrelationRef.current = {
+                  runId: run.runId,
+                  token: run.runCorrelationToken,
+                };
+              }
             }
 
             recordedRunId = run.runId;
@@ -1333,6 +1347,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         if (
           typeof correlationData.runId === "string" &&
           typeof correlationData.token === "string" &&
+          !closedAgentLongRunIdsRef.current.has(correlationData.runId) &&
           (correlationData.chatId === undefined ||
             correlationData.chatId === chatId)
         ) {
@@ -2507,7 +2522,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // otherwise cause a visible flicker from new object references.
     // Content comparison is required because a partial and completed text part can
     // share the same message ID and part count.
-    const current = messagesRef.current;
+    // Resume prompts are local control messages omitted from saved history.
+    // They must not block a completed answer or file receipt from reconciling.
+    const current = messagesRef.current.filter(
+      (message) => message.role !== "user" || !message.metadata?.isAutoContinue,
+    );
 
     // Don't overwrite with fewer messages — the backend (e.g. agent-long Trigger.dev
     // task) hasn't finished persisting the generated messages yet. Once it catches
@@ -2728,6 +2747,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       persistedGoal?.state !== "running" &&
       !agentLongRunId &&
       !activeTriggerRunId &&
+      chatDataForCurrentChat?.finish_reason !==
+        LOCAL_CONNECTION_LOST_FINISH_REASON &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2778,6 +2799,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     persistedGoal?.state,
     agentLongRunId,
     activeTriggerRunId,
+    chatDataForCurrentChat?.finish_reason,
     shouldUseAgentLong,
     messageQueue,
     queueChatId,
@@ -2969,6 +2991,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   return (
     <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
       <StreamEffects
+        finishReason={chatDataForCurrentChat?.finish_reason}
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
@@ -3089,6 +3112,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       isMobile={isMobile}
                       tempChatFileDetails={tempChatFileDetails}
                       finishReason={chatDataForCurrentChat?.finish_reason}
+                      continueDisabledReason={computerSendDisabledReason}
                       agentRunSpendCapWarning={agentRunSpendCapWarning}
                       uploadStatus={uploadStatus}
                       summarizationStatus={summarizationStatus}

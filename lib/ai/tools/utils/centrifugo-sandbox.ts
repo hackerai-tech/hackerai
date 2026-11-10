@@ -1,4 +1,9 @@
 import {
+  recordAttachmentDownloadFailure,
+  recordAttachmentDownloadBoundary,
+  type AttachmentDownloadBoundary,
+} from "./attachment-download-diagnostics";
+import {
   DesktopFileBridgeError,
   desktopFileUnavailableMessage,
   getDesktopFileFailure,
@@ -1649,6 +1654,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   () => {
                     commandPublicationStarted = true;
                   },
+                  diagnostics.dispatchPhase,
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
@@ -2943,174 +2949,221 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       rawPath: string,
       options?: { signal?: AbortSignal },
     ): Promise<void> => {
-      const signal = options?.signal;
-      signal?.throwIfAborted();
-      validateDownloadUrl(url);
-      // When the shell is git-bash (default on Windows since PR #346),
-      // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
-      // `if not exist` breaks under bash and leaves the target dir missing,
-      // causing curl to fail with the Windows "invalid filename syntax" error.
-      const { useBash, path, nativePath, escapePath, escapeValue } =
-        await this.shellContext(rawPath, signal);
-      const httpClient = await this.detectHttpClient(signal);
-      const dir = this.parentDir(path);
-      const fileName = getSandboxFileName(path, this.isWindows());
-
-      const escapedPath = escapePath(path);
-      const escapedUrl = escapeValue(url);
-      const escapedDir = dir ? escapePath(dir) : "";
-      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
-
-      // Combine mkdir + download into a single command to avoid separate
-      // round-trips through the sandbox bridge (e.g. Tauri desktop app),
-      // ensuring the directory exists in the same shell session as the download.
-      // Skip mkdir entirely for root-level destinations (parentDir returns "")
-      // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
-      const mkdirPart = !dir
-        ? ""
-        : useBash
-          ? `mkdir -p ${escapedDir} &&`
-          : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
-      let downloadPart: string;
-      if (httpClient === "curl") {
-        const caps = await this.detectCurlCaps(signal);
-        const curlFlags = [
-          "-fsSL",
-          this.isWindows() && caps.sslNoRevoke ? "--ssl-no-revoke" : "",
-          "--retry 3",
-          "--retry-delay 1",
-          caps.retryAllErrors ? "--retry-all-errors" : "",
-          caps.retryConnrefused ? "--retry-connrefused" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-        downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
-      } else if (httpClient === "wget") {
-        downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
-      } else {
-        const powerShellScript = [
-          "$ErrorActionPreference='Stop'",
-          "$ProgressPreference='SilentlyContinue'",
-          `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
-          `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
-          "$directory=[IO.Path]::GetDirectoryName($destination)",
-          "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
-          "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
-        ].join("; ");
-        const prepared = await this.preparePowerShellCommand(
-          powerShellScript,
-          signal,
-        );
-        downloadPart = prepared.command;
-        cleanupPowerShellScript = prepared.cleanup;
-      }
-      const command =
-        httpClient === "powershell"
-          ? downloadPart
-          : `${mkdirPart} ${downloadPart}`;
-
-      // JS-level retry safety net on top of curl's --retry, for transient
-      // network/TLS errors that can survive curl's own retry loop:
-      //   6  = temporary DNS resolution failure
-      //   7  = couldn't connect
-      //   18 = partial transfer
-      //   23 = write error
-      //   28 = operation timeout
-      //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
-      //   56 = failure receiving network data
-      //   92 = HTTP/2 stream error
-      //   124 = local command wrapper timeout
-      const transientExitCodes =
-        httpClient === "curl"
-          ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
-          : httpClient === "wget"
-            ? new Set([4, 124])
-            : new Set<number>();
-      const MAX_ATTEMPTS = 3;
-
+      let phase: AttachmentDownloadBoundary["phase"] = "entry";
+      let diagnosticAttempt = 0;
+      let resultState: AttachmentDownloadBoundary["resultState"] =
+        "not_observed";
       try {
-        let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          signal?.throwIfAborted();
-          try {
-            result = await runAttachmentCommand(this, command, signal, {
-              displayName:
-                attempt === 1
-                  ? `Downloading: ${fileName}`
-                  : `Downloading: ${fileName} (retry ${attempt - 1})`,
-              timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-            });
-          } catch (error) {
-            throwIfAttachmentAborted(signal, error);
+        const signal = options?.signal;
+        signal?.throwIfAborted();
+        phase = "validate_url";
+        validateDownloadUrl(url);
+        // When the shell is git-bash (default on Windows since PR #346),
+        // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
+        // `if not exist` breaks under bash and leaves the target dir missing,
+        // causing curl to fail with the Windows "invalid filename syntax" error.
+        phase = "shell_context";
+        const { useBash, path, nativePath, escapePath, escapeValue } =
+          await this.shellContext(rawPath, signal);
+        phase = "http_client";
+        const httpClient = await this.detectHttpClient(signal);
+        phase = "prepare_command";
+        const dir = this.parentDir(path);
+        const fileName = getSandboxFileName(path, this.isWindows());
+
+        const escapedPath = escapePath(path);
+        const escapedUrl = escapeValue(url);
+        const escapedDir = dir ? escapePath(dir) : "";
+        let cleanupPowerShellScript: (() => Promise<void>) | undefined;
+
+        // Combine mkdir + download into a single command to avoid separate
+        // round-trips through the sandbox bridge (e.g. Tauri desktop app),
+        // ensuring the directory exists in the same shell session as the download.
+        // Skip mkdir entirely for root-level destinations (parentDir returns "")
+        // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
+        const mkdirPart = !dir
+          ? ""
+          : useBash
+            ? `mkdir -p ${escapedDir} &&`
+            : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
+        let downloadPart: string;
+        if (httpClient === "curl") {
+          phase = "curl_capabilities";
+          const caps = await this.detectCurlCaps(signal);
+          phase = "prepare_command";
+          const curlFlags = [
+            "-fsSL",
+            this.isWindows() && caps.sslNoRevoke ? "--ssl-no-revoke" : "",
+            "--retry 3",
+            "--retry-delay 1",
+            caps.retryAllErrors ? "--retry-all-errors" : "",
+            caps.retryConnrefused ? "--retry-connrefused" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
+        } else if (httpClient === "wget") {
+          downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+        } else {
+          const powerShellScript = [
+            "$ErrorActionPreference='Stop'",
+            "$ProgressPreference='SilentlyContinue'",
+            `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
+            `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+            "$directory=[IO.Path]::GetDirectoryName($destination)",
+            "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
+            "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
+          ].join("; ");
+          phase = "powershell_prepare";
+          const prepared = await this.preparePowerShellCommand(
+            powerShellScript,
+            signal,
+          );
+          phase = "prepare_command";
+          downloadPart = prepared.command;
+          cleanupPowerShellScript = prepared.cleanup;
+        }
+        const command =
+          httpClient === "powershell"
+            ? downloadPart
+            : `${mkdirPart} ${downloadPart}`;
+
+        // JS-level retry safety net on top of curl's --retry, for transient
+        // network/TLS errors that can survive curl's own retry loop:
+        //   6  = temporary DNS resolution failure
+        //   7  = couldn't connect
+        //   18 = partial transfer
+        //   23 = write error
+        //   28 = operation timeout
+        //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
+        //   56 = failure receiving network data
+        //   92 = HTTP/2 stream error
+        //   124 = local command wrapper timeout
+        const transientExitCodes =
+          httpClient === "curl"
+            ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
+            : httpClient === "wget"
+              ? new Set([4, 124])
+              : new Set<number>();
+        const MAX_ATTEMPTS = 3;
+
+        try {
+          let result: Awaited<ReturnType<typeof this.commands.run>> | null =
+            null;
+          for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            diagnosticAttempt = attempt;
+            resultState = "not_observed";
+            phase = "download_command";
+            signal?.throwIfAborted();
+            try {
+              result = await runAttachmentCommand(this, command, signal, {
+                displayName:
+                  attempt === 1
+                    ? `Downloading: ${fileName}`
+                    : `Downloading: ${fileName} (retry ${attempt - 1})`,
+                timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+              });
+              resultState = result.exitCode === 0 ? "success" : "nonzero";
+              phase = "check_result";
+            } catch (error) {
+              throwIfAttachmentAborted(signal, error);
+              if (
+                attempt === MAX_ATTEMPTS ||
+                !isTransientCommandTimeoutError(error)
+              ) {
+                throw error;
+              }
+              console.warn(
+                `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+              );
+              phase = "retry_delay";
+              await abortableDelay(500 * attempt, signal);
+              continue;
+            }
+
+            signal?.throwIfAborted();
+            if (result.exitCode === 0) break;
             if (
               attempt === MAX_ATTEMPTS ||
-              !isTransientCommandTimeoutError(error)
+              !transientExitCodes.has(result.exitCode) ||
+              /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
+                result.stderr,
+              )
             ) {
-              throw error;
+              break;
             }
             console.warn(
-              `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+              `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
             );
+            phase = "retry_delay";
             await abortableDelay(500 * attempt, signal);
-            continue;
           }
-
-          signal?.throwIfAborted();
-          if (result.exitCode === 0) break;
-          if (
-            attempt === MAX_ATTEMPTS ||
-            !transientExitCodes.has(result.exitCode) ||
-            /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
-              result.stderr,
-            )
-          ) {
-            break;
+          if (!result) {
+            throw new Error(
+              "Download command failed without returning a result",
+            );
           }
-          console.warn(
-            `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
-          );
-          await abortableDelay(500 * attempt, signal);
-        }
-        if (!result) {
-          throw new Error("Download command failed without returning a result");
-        }
-        if (result.exitCode !== 0) {
-          // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
-          // Fall back to the target's own directory context when the destination
-          // is a drive root and `dir` is empty. Avoid listing directory contents:
-          // this can be a user's local machine in desktop dangerous mode.
-          const diagDir = escapedDir || (useBash ? "/" : '"."');
-          const diagCmd = useBash
-            ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
-            : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-          let diagnosticOutput = "unavailable";
-          try {
-            const diag = await this.commands.run(diagCmd, {
-              displayName: "",
-              timeoutMs: 5_000,
-              signal,
-            });
-            diagnosticOutput = diag.stdout.slice(0, 1024);
-          } catch (error) {
-            throwIfAttachmentAborted(signal, error);
+          if (result.exitCode !== 0) {
+            phase = "failure_diagnostics";
+            // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
+            // Fall back to the target's own directory context when the destination
+            // is a drive root and `dir` is empty. Avoid listing directory contents:
+            // this can be a user's local machine in desktop dangerous mode.
+            const diagDir = escapedDir || (useBash ? "/" : '"."');
+            const diagCmd = useBash
+              ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
+              : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
+            let diagnosticOutput = "unavailable";
+            try {
+              const diag = await this.commands.run(diagCmd, {
+                displayName: "",
+                timeoutMs: 5_000,
+                signal,
+              });
+              diagnosticOutput = diag.stdout.slice(0, 1024);
+            } catch (error) {
+              throwIfAttachmentAborted(signal, error);
+            }
+            signal?.throwIfAborted();
+            const safeStderr = redactTransferDetails(result.stderr, url, [
+              rawPath,
+              path,
+              nativePath,
+            ]);
+            throw recordAttachmentDownloadFailure(
+              new Error(
+                `Failed to download file: ${safeStderr}\n` +
+                  `  source: [redacted-url]\n` +
+                  `  destination: [redacted-destination-path]\n` +
+                  `  command: ${httpClient}\n` +
+                  `  exitCode: ${result.exitCode}\n` +
+                  `  diagnostics: ${diagnosticOutput}`,
+              ),
+              {
+                platform: this.isWindows()
+                  ? "windows"
+                  : ["linux", "darwin", "freebsd", "openbsd"].includes(
+                        this.connectionInfo.osInfo?.platform ?? "",
+                      )
+                    ? "posix"
+                    : "unknown",
+                shell: useBash ? "bash" : "cmd",
+                httpClient,
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+              },
+            );
           }
-          signal?.throwIfAborted();
-          const safeStderr = redactTransferDetails(result.stderr, url, [
-            rawPath,
-            path,
-            nativePath,
-          ]);
-          throw new Error(
-            `Failed to download file: ${safeStderr}\n` +
-              `  source: [redacted-url]\n` +
-              `  destination: [redacted-destination-path]\n` +
-              `  command: ${httpClient}\n` +
-              `  exitCode: ${result.exitCode}\n` +
-              `  diagnostics: ${diagnosticOutput}`,
-          );
+        } finally {
+          await cleanupPowerShellScript?.().catch(() => undefined);
         }
-      } finally {
-        await cleanupPowerShellScript?.().catch(() => undefined);
+      } catch (error) {
+        recordAttachmentDownloadBoundary(error, {
+          phase,
+          attempt: diagnosticAttempt,
+          resultState,
+        });
+        throw error;
       }
     },
 

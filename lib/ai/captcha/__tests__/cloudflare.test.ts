@@ -32,6 +32,8 @@ beforeEach(() => {
   document.body.innerHTML = "";
 });
 afterEach(() => {
+  // Let the bounded observer remove its DOM listener before clearing timers.
+  jest.advanceTimersByTime(30000);
   jest.clearAllTimers();
   jest.useRealTimers();
   delete page[key];
@@ -262,6 +264,131 @@ it("lets the vendor initialize its global before capturing the first managed ren
   expect(original).not.toHaveBeenCalled();
   expect(inspect().widgets[0]?.managed).toBeDefined();
 });
+
+it("captures a render from the vendor load callback before the polling interval runs", () => {
+  window.eval(cloudflareInitScript());
+  expect("turnstile" in window).toBe(false);
+  const original = jest.fn();
+  const api = { render: original };
+  const script = document.createElement("script");
+  script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+  document.body.append(script);
+  script.addEventListener("load", () => {
+    api.render(document.body, {
+      sitekey: "public-managed-key",
+      action: "managed",
+      cData: "opaque",
+      chlPageData: "opaque-page",
+      callback: jest.fn(),
+    });
+  });
+  page.turnstile = api;
+  // The script loads and its ready callback runs within the same timer turn.
+  script.dispatchEvent(new Event("load"));
+  expect(original).not.toHaveBeenCalled();
+  expect(inspect().widgets[0]?.managed).toBeDefined();
+});
+
+it.each([false, true])(
+  "offers one capture recovery without spending when the API is assigned=%s",
+  async (apiAssigned) => {
+    process.env = { ...originalEnv, TWOCAPTCHA_API_KEY: "private-key" };
+    document.body.innerHTML =
+      '<h2>Performing security verification</h2><iframe title="Widget containing a Cloudflare security challenge"></iframe>';
+    window.eval(cloudflareInitScript());
+    if (apiAssigned) {
+      const original = jest.fn();
+      const api = { render: original };
+      page.turnstile = api;
+      // Rendering inside the vendor script itself is earlier than its load
+      // event. Keep this limitation visible rather than claiming capture.
+      api.render(document.body, {
+        sitekey: "public-managed-key",
+        action: "managed",
+        cData: "opaque",
+        chlPageData: "opaque-page",
+        callback: jest.fn(),
+      });
+      expect(original).toHaveBeenCalledTimes(1);
+    }
+    const solverFactory = jest.fn();
+    const context = {
+      userID: "qa-user",
+      triggerRunId: "test-run",
+      browserSessions: {
+        getChallengeBrowser: async () => ({
+          identity: "owner",
+          evaluate: async (script: string) => window.eval(script),
+          deliverCloudflare: jest.fn(),
+        }),
+      },
+    } as unknown as ToolContext;
+    const handler = createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      solverFactory,
+    );
+    const target = { sandbox: {} as never, sessionName: "owned" };
+    expect(await handler.inspect(undefined, target)).toMatchObject({
+      status: "capture_incomplete",
+      reason: "managed_parameters_not_captured",
+      captureState: apiAssigned ? "render_not_captured" : "api_not_ready",
+      recoveryAvailable: true,
+      providerTaskCreated: false,
+      providerCostUSD: 0,
+    });
+    expect(await handler.inspect(undefined, target)).toMatchObject({
+      status: "handoff_required",
+      recoveryAvailable: false,
+    });
+    render();
+    expect(await handler.inspect(undefined, target)).toMatchObject({
+      status: "solve_available",
+      providerTaskCreated: false,
+    });
+    expect(solverFactory).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["not_initialized", "manual", "url_ineligible"])(
+  "does not offer a reload or spend when capture is unavailable: %s",
+  async (state) => {
+    process.env = { ...originalEnv, TWOCAPTCHA_API_KEY: "private-key" };
+    const solverFactory = jest.fn();
+    const context = {
+      userID: "qa-user",
+      triggerRunId: "test-run",
+      browserSessions: {
+        getChallengeBrowser: async () => ({
+          identity: "owner",
+          evaluate: async () => ({
+            url: location.href,
+            documentId: "owned-page",
+            interstitial: true,
+            widgets: [],
+            cloudflareCaptureState: state,
+          }),
+        }),
+      },
+    } as unknown as ToolContext;
+    const result = await createBrowserChallengeHandler(
+      context,
+      "PREVIEW",
+      undefined,
+      solverFactory,
+    ).inspect(undefined, { sandbox: {} as never, sessionName: "owned" });
+    expect(result).toMatchObject({
+      status: "handoff_required",
+      reason: "managed_parameters_not_captured",
+      captureState: state,
+      recoveryAvailable: false,
+      providerTaskCreated: false,
+      providerCostUSD: 0,
+    });
+    expect(solverFactory).not.toHaveBeenCalled();
+  },
+);
 
 it("captures a managed render before it runs and delivers only to its pinned callback once", () => {
   const { api, original, callback } = render();

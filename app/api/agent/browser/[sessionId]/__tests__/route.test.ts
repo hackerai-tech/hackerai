@@ -97,6 +97,11 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserRelayRenewFailureContext: () => ({
+    relay_renew_diagnostic_version: 1,
+    relay_renew_error_kind: "other_error",
+    relay_renew_command_exit_code: "none",
+  }),
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
       ? {
@@ -830,6 +835,77 @@ const diagnosticPost = (body: Record<string, unknown>) =>
     { params: Promise.resolve({ sessionId: mockSessionId }) },
   );
 
+it.each(["take", "resume"])(
+  "preserves %s rollback and attaches the existing capture helper's finite failure context",
+  async (action) => {
+    const context = {
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 3,
+      capture_deadline_diagnostic_version: 1,
+      capture_deadline_phase: "awaiting_response",
+    };
+    mockCapture.mockImplementationOnce(async (...args) => {
+      const observe = args[5];
+      if (typeof observe === "function") observe(context);
+      throw new Error("PRIVATE capture output and frame");
+    });
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "PRIVATE_GRANT".repeat(3),
+      note: "PRIVATE_NOTE",
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state: "disconnected" });
+    expect(mockMutation).toHaveBeenCalledWith(
+      action === "take" ? "abortTakeoverForBackend" : "abortResumeForBackend",
+      expect.any(Object),
+    );
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action,
+        failure_stage: "capture_frame",
+        post_capture_diagnostic_version: 1,
+        post_capture_context_status: "recorded",
+        ...context,
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toMatch(
+      /PRIVATE|default/,
+    );
+  },
+);
+
+it("distinguishes the resume frame-age guard from a capture helper failure", async () => {
+  mockFailure = "";
+  mockCapture.mockImplementationOnce(async () => ({
+    image: "PRIVATE_FRAME",
+    capturedAt: Date.now() - 16_000,
+  }));
+  const response = await diagnosticPost({
+    action: "resume",
+    browserSessionName: "default",
+    requestId: "11111111-1111-4111-8111-111111111111",
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ state: "disconnected" });
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      failure_stage: "capture_frame",
+      post_capture_diagnostic_version: 1,
+      post_capture_context_status: "frame_age_guard",
+    }),
+  );
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).not.toHaveProperty("capture_stage");
+  expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+});
+
 it.each([
   ["take", "lookup", "resolve_session", "disconnected"],
   ["take", "connect", "connect_sandbox", "disconnected"],
@@ -895,7 +971,20 @@ it.each([
             "run_active",
             "trigger_run_id",
           ]
-      ).sort(),
+      )
+        .concat(
+          failure === "capture"
+            ? ["post_capture_diagnostic_version", "post_capture_context_status"]
+            : [],
+          failure === "renew"
+            ? [
+                "relay_renew_diagnostic_version",
+                "relay_renew_error_kind",
+                "relay_renew_command_exit_code",
+              ]
+            : [],
+        )
+        .sort(),
     );
     expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
   },

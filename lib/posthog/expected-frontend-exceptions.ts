@@ -418,6 +418,19 @@ function nearbyDispatchGroup(
       return "wallet_property_typeerror";
     const frames = exception.stacktrace?.frames;
     if (
+      exception.type === "ReferenceError" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 128 &&
+      /^[A-Za-z_$][\w$]{0,63} is not defined$/.test(exception.value) &&
+      Array.isArray(frames) &&
+      frames.length === 2 &&
+      [frames[0], frames[1]].every(
+        (frame) => frame?.filename === "<anonymous>" && frame?.in_app === false,
+      )
+    )
+      return "anonymous_missing_identifier_referenceerror";
+    if (
       exception.type === "Error" &&
       exception.mechanism.synthetic === true &&
       (frames === undefined || (Array.isArray(frames) && frames.length === 0))

@@ -84,7 +84,41 @@ export async function POST(req: NextRequest) {
     );
     claimState = result.state;
   } catch (error) {
-    console.error("[WorkOS Webhook] Claim failed:", error);
+    // Diagnostic selectors only: unexpected metadata must not affect the claim
+    // policy, expose webhook data, or turn an optional audit into another error.
+    try {
+      const eventId = Object.getOwnPropertyDescriptor(event, "id")?.value;
+      const eventType = Object.getOwnPropertyDescriptor(event, "event")?.value;
+      const requestId = req.headers.get("x-vercel-id");
+      logger.error(
+        "[WorkOS Webhook] Claim failed:",
+        error instanceof Error ? error : undefined,
+        {
+          event: "workos.webhook_claim_failed",
+          workos_claim_diagnostic_version: 1,
+          failure_stage: "claim",
+          ...(typeof eventId === "string" &&
+          /^event_[0-9A-HJKMNP-TV-Z]{26}$/.test(eventId)
+            ? { workos_event_id: eventId }
+            : {}),
+          workos_event_type:
+            eventType === "user.created" ||
+            eventType === "authentication.email_verification_succeeded"
+              ? eventType
+              : "other",
+          ...(typeof requestId === "string" &&
+          /^[a-z0-9]{2,12}(?:::[a-z0-9]{2,12}){0,2}-[0-9]{10,16}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? { request_id: requestId }
+            : {}),
+          service: "hackerai-web",
+          route: "/api/workos/webhook",
+        },
+      );
+    } catch {
+      // The original claim outcome remains unknown; never replay it here.
+    }
     return NextResponse.json(
       { error: "Failed to claim webhook" },
       { status: 500 },

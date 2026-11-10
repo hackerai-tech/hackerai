@@ -9,6 +9,20 @@ jest.mock("next/dynamic", () => ({
 import { TerminalCodeBlock } from "../TerminalCodeBlock";
 
 describe("TerminalCodeBlock automatic review preview", () => {
+  it("renders CAPTCHA status without falling back to the runtime command", () => {
+    render(
+      <TerminalCodeBlock
+        command="hackerai-captcha solve --session synthetic"
+        captcha={{ state: "response_delivered", elapsedMs: 53000 }}
+        status="ready"
+        variant="sidebar"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Response delivered");
+    expect(screen.getByText("· 0:53")).toBeVisible();
+    expect(screen.queryByText(/hackerai-captcha/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Command details")).not.toBeInTheDocument();
+  });
   it("shows the exact command before execution starts", () => {
     render(
       <TerminalCodeBlock

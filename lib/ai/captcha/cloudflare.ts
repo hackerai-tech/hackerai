@@ -62,6 +62,8 @@ export function cloudflareOutcomeScript(url: string): string {
 export function cloudflareReleaseScript(approvedUrls?: string[]): string {
   return `(() => {
     if (window !== top || !${CLOUDFLARE_PAGE_URL_SCRIPT}${approvedUrls ? ` || !${JSON.stringify(approvedUrls)}.includes(${CLOUDFLARE_PAGE_URL_SCRIPT})` : ""}) return false;
+    const init = window[Symbol.for('hackerai.cloudflareInit')];
+    if (init) init.manual = true;
     try { sessionStorage.setItem('hackerai.cloudflareManual:' + ${CLOUDFLARE_PAGE_URL_SCRIPT}, '1'); } catch {}
     const current = window[Symbol.for('hackerai.cloudflareChallenge')];
     if (!current || current.delivered || typeof current.release !== 'function') return false;
@@ -76,7 +78,8 @@ export function cloudflareInitScript(): string {
   return `(() => {
     if (window !== top) return;
     const canonical = ${CLOUDFLARE_PAGE_URL_SCRIPT};
-    window[Symbol.for('hackerai.cloudflareInit')] = {exact:location.href === canonical, queryAllowed:!!canonical};
+    const init = {exact:location.href === canonical, queryAllowed:!!canonical, manual:false, scriptLoadObserved:false};
+    window[Symbol.for('hackerai.cloudflareInit')] = init;
     if (!canonical) return;
     // Releasing a detached widget cannot replay it. Let a human reload this
     // page without capturing it again, for the lifetime of this owned tab.
@@ -84,7 +87,7 @@ export function cloudflareInitScript(): string {
     const manualRequested = () => {
       try { return sessionStorage.getItem(manualKey) === '1'; } catch { return false; }
     };
-    if (manualRequested()) return;
+    if (manualRequested()) { init.manual = true; return; }
     const key = Symbol.for('hackerai.cloudflareChallenge');
     let disabled = false;
     let timer;
@@ -114,8 +117,9 @@ export function cloudflareInitScript(): string {
         captured.release = () => {
           if (window[key] !== captured || captured.delivered) return false;
           try { sessionStorage.setItem(manualKey, '1'); } catch {}
+          init.manual = true;
           disabled = true;
-          clearInterval(timer);
+          stopWatching();
           api.render = original;
           delete window[key];
           if (!target.isConnected || (typeof container === 'string' && document.querySelector(container) !== target)) return false;
@@ -129,9 +133,28 @@ export function cloudflareInitScript(): string {
     };
     // The vendor checks 'turnstile' in window before loading. Reserving that
     // property, even with an undefined getter, makes it skip initialization.
+    // A script's load event reaches this capture listener before its onload
+    // callback. Wrap then too: a callback queued before our 10ms poll could
+    // otherwise render the first challenge without being observed.
+    const onScriptLoad = event => {
+      const script = event.target;
+      if (!(script instanceof HTMLScriptElement)) return;
+      let source;
+      try { source = new URL(script.src); } catch { return; }
+      if (source.protocol === 'https:' && source.hostname === 'challenges.cloudflare.com' &&
+          source.pathname.startsWith('/turnstile/') && source.pathname.endsWith('/api.js')) {
+        init.scriptLoadObserved = true;
+        wrap(window.turnstile);
+      }
+    };
+    const stopWatching = () => {
+      clearInterval(timer);
+      document.removeEventListener('load', onScriptLoad, true);
+    };
+    document.addEventListener('load', onScriptLoad, true);
     wrap(window.turnstile);
     // Wait for the real API before wrapping; do not reserve its global name.
     timer = setInterval(() => wrap(window.turnstile), 10);
-    setTimeout(() => clearInterval(timer), 30000);
+    setTimeout(stopWatching, 30000);
   })()`;
 }

@@ -178,7 +178,8 @@ const DEEPSEEK_PRO_RECOVERY_CHAIN = ["model-glm-5.3", "model-kimi-k3"] as const;
 
 /**
  * Return the next bounded app-side recovery after a stream disconnect.
- * Max uses DeepSeek 1017 then a context-checked Grok attempt. Existing Pro
+ * Max uses GLM for Grok text recovery or DeepSeek 1017 for images/control,
+ * then a context-checked Grok attempt. Existing Pro
  * recovery remains DeepSeek Pro -> GLM -> Kimi. Counts are attempts started.
  */
 export const getNextProviderDisconnectRetryModel = ({
@@ -202,9 +203,14 @@ export const getNextProviderDisconnectRetryModel = ({
   | "model-grok-4.6"
   | undefined => {
   if (selectedModelOverride === "hackerai-max") {
+    // Match the recovery already started. New image results can change the
+    // next media policy while GLM is in flight; they must not erase its slot.
+    const isFirstRecovery =
+      failedModel === DEEPSEEK_1017_MODEL_KEY ||
+      (originalModel === "model-grok-4.6" && failedModel === "model-glm-5.3");
     if (
       completedRetryCount !== 1 ||
-      failedModel !== DEEPSEEK_1017_MODEL_KEY ||
+      !isFirstRecovery ||
       requiredContextTokens === undefined ||
       !Number.isFinite(requiredContextTokens) ||
       requiredContextTokens < 0

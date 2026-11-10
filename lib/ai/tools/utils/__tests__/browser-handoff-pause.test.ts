@@ -126,7 +126,13 @@ it.each([
       /DO_NOT_LOG|private\.example|test-key|stdout|stderr|\/dev\/shm/,
     );
     expect(
-      Object.keys(jest.mocked(phLogger.info).mock.calls[0][1]!).sort(),
+      Object.keys(
+        jest
+          .mocked(phLogger.info)
+          .mock.calls.find(
+            ([event]) => event === "browser_handoff_admission_diagnostics",
+          )![1]!,
+      ).sort(),
     ).toEqual([
       "admission_env_idle_timeout",
       "admission_observation_phase",
@@ -223,7 +229,13 @@ it("caps admission observation across repeated handoffs without capping admissio
     await sessions.waitForHumanHandoff(undefined, true);
   expect(mockMutation).toHaveBeenCalledTimes(4);
   expect(run).toHaveBeenCalledTimes(3); // preparation and at most two passive probes
-  expect(phLogger.info).toHaveBeenCalledTimes(2);
+  expect(
+    jest
+      .mocked(phLogger.info)
+      .mock.calls.filter(
+        ([event]) => event === "browser_handoff_admission_diagnostics",
+      ),
+  ).toHaveLength(2);
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -266,7 +278,10 @@ it("honors Stop during the observation without reporting a completed handoff", a
   stop.abort(new Error("Stopped by user"));
   await rejected;
   expect(mockMutation).toHaveBeenCalledTimes(1);
-  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(phLogger.info).not.toHaveBeenCalledWith(
+    "browser_handoff_admission_diagnostics",
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -367,7 +382,10 @@ it("waits through takeover and resumes within one check without a sandbox sleep"
   });
   const tool = createBrowserHandoff(sessions);
   const finished = jest.fn();
-  const pending = tool.execute!({}, { toolCallId: "handoff", messages: [] });
+  const pending = tool.execute!(
+    { reason: "The user requested browser control." },
+    { toolCallId: "handoff", messages: [] },
+  );
   const result = Promise.resolve(pending).then(finished);
   for (const next of ["waiting", "claiming", "human", "recovery", "resuming"]) {
     await jest.advanceTimersByTimeAsync(0);
@@ -402,7 +420,41 @@ it("Stop interrupts the dedicated wait and never reports a successful handoff", 
   expect(jest.getTimerCount()).toBe(0);
 });
 
-it.each(["restored", "failed", "stopped"])(
+it("admits human handoff without inspecting a disabled managed CAPTCHA adapter", async () => {
+  const sessions = new BrowserSessions(
+    {
+      userId: "owner",
+      chatId: "chat",
+      runId: "run",
+      agentId: "parent",
+      serviceKey: "test-key",
+    },
+    undefined,
+    async () => false,
+    { enabled: async () => false },
+  );
+  await sessions.prepare({
+    sandboxId: "cloud",
+    commands: {
+      run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
+    },
+    files: { read: jest.fn(async () => "default") },
+  } as unknown as AnySandbox);
+  mockQuery.mockResolvedValue({
+    state: "agent",
+    runActive: true,
+    updatedAt: 1,
+  });
+  const inspect = jest
+    .spyOn(sessions, "getChallengeBrowser")
+    .mockRejectedValue(new Error("disabled adapter must not run"));
+  mockMutation.mockClear();
+  await sessions.waitForHumanHandoff();
+  expect(mockMutation).toHaveBeenCalledTimes(1);
+  expect(inspect).not.toHaveBeenCalled();
+});
+
+it.each(["restored", "failed", "stopped", "pending"])(
   "keeps managed release scoped and handoff available: %s",
   async (outcome) => {
     const sessions = new BrowserSessions(
@@ -414,8 +466,8 @@ it.each(["restored", "failed", "stopped"])(
         serviceKey: "test-key",
       },
       undefined,
-      false,
-      { urls: ["https://example.com/login"], enabled: async () => true },
+      async () => false,
+      { enabled: async () => true },
     );
     const sandboxes = ["first", "last"].map(
       (sandboxId) =>
@@ -435,6 +487,7 @@ it.each(["restored", "failed", "stopped"])(
     });
     const controller = new AbortController();
     const release = jest.fn(async () => {
+      if (outcome === "pending") return new Promise<boolean>(() => {});
       if (outcome === "stopped") controller.abort(new Error("stopped"));
       if (outcome !== "restored") throw new Error("release unavailable");
       return true;
@@ -447,12 +500,24 @@ it.each(["restored", "failed", "stopped"])(
       throw new Error("end test after release");
     });
     mockMutation.mockClear();
-    await expect(
+    const rejected = expect(
       sessions.waitForHumanHandoff(controller.signal),
     ).rejects.toThrow(
-      outcome === "stopped" ? "stopped" : "end test after release",
+      outcome === "stopped"
+        ? "stopped"
+        : outcome === "pending"
+          ? "No handoff was requested"
+          : "end test after release",
     );
-    expect(mockMutation).toHaveBeenCalledTimes(outcome === "stopped" ? 0 : 1);
+    if (outcome === "pending") {
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(controller.signal.aborted).toBe(false);
+    }
+    await rejected;
+    expect(mockMutation).toHaveBeenCalledTimes(
+      outcome === "stopped" || outcome === "pending" ? 0 : 1,
+    );
     expect(getBrowser).toHaveBeenCalledWith(expect.any(AbortSignal), {
       sandbox: sandboxes[0],
       sessionName: "first",
@@ -473,7 +538,10 @@ it.each([undefined, true])(
     const tool = createBrowserHandoff(sessions);
     await expect(
       tool.execute!(
-        { requestAnotherTakeover },
+        {
+          reason: "The user requested browser control.",
+          requestAnotherTakeover,
+        },
         { toolCallId: "handoff", messages: [] },
       ),
     ).resolves.toMatchObject({ status: "resumed" });
@@ -494,7 +562,10 @@ it("does not overwrite a resume that wins the wait registration race", async () 
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     "ownership changed",
   );
-  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(phLogger.info).not.toHaveBeenCalledWith(
+    "browser_handoff_admission_diagnostics",
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 

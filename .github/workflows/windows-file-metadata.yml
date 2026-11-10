@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
     paths:
+      - "lib/ai/tools/utils/pty-session-manager.ts"
+      - "lib/ai/tools/utils/terminal-execution-record.ts"
+      - "lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts"
+      - "lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts"
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
       - "lib/ai/tools/utils/platform-utils.ts"
       - "app/services/desktop-sandbox-bridge.ts"
@@ -22,6 +26,10 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "lib/ai/tools/utils/pty-session-manager.ts"
+      - "lib/ai/tools/utils/terminal-execution-record.ts"
+      - "lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts"
+      - "lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts"
       - "lib/ai/tools/utils/sandbox-file-uploader.ts"
       - "lib/ai/tools/utils/platform-utils.ts"
       - "app/services/desktop-sandbox-bridge.ts"
@@ -67,3 +75,5 @@ jobs:
         run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
       - name: Verify Windows shell discovery
         run: pnpm exec jest packages/local/src/__tests__/windows-shell-discovery.test.ts --runInBand --ci
+      - name: Verify bounded terminal checkpoint persistence
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/pty-checkpoint-diagnostics.test.ts lib/ai/tools/utils/__tests__/terminal-execution-record.test.ts --runInBand --ci

@@ -1,10 +1,11 @@
 import {
   browserSessionReadFailureContext,
+  browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
   resizeBrowserViewport,
 } from "../server";
-import { CommandExitError } from "@e2b/code-interpreter";
+import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
 
 jest.mock("server-only", () => ({}));
@@ -35,6 +36,55 @@ const location = {
 };
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
+
+it.each([
+  [undefined, false],
+  [1, true],
+  [0, true],
+  [3, true],
+  [4, false],
+  [2, false],
+  ["PRIVATE", false],
+  [true, false],
+  [[1, 1, "PRIVATE"], false],
+])(
+  "projects only bounded root-scoped wrapper completion history (%#)",
+  async (history, valid) => {
+    const sandbox = fixture();
+    sandbox.commands.run.mockRejectedValue(
+      new CommandExitError({
+        exitCode: 2,
+        stderr: "PRIVATE",
+        stdout: JSON.stringify({
+          diagnostic_reason: "socket_stat",
+          h1: history,
+        }),
+      }),
+    );
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toThrow();
+    const context = observe.mock.calls[0][0];
+    if (valid)
+      expect(context).toMatchObject({
+        capture_wrapper_history_version: 1,
+        capture_wrapper_history_scope: "handoff_root",
+        capture_wrapper_other_cli_completed: ((history as number) & 1) !== 0,
+        capture_wrapper_option_prefix_completed:
+          ((history as number) & 2) !== 0,
+      });
+    else expect(context).not.toHaveProperty("capture_wrapper_history_version");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
 
 it.each([
   [[1, "15m"], true, "15m"],
@@ -1036,4 +1086,260 @@ it("censors close/open ordering when valid same-session open evidence is absent"
   expect(observed.mock.calls[0][0]).not.toHaveProperty(
     "capture_close_receipt_version",
   );
+});
+
+it.each([
+  [
+    "command exit",
+    () =>
+      new CommandExitError({
+        exitCode: 17,
+        stdout: "PRIVATE",
+        stderr: "PRIVATE",
+      }),
+    "command_exit",
+    17,
+  ],
+  ["SDK timeout", () => new TimeoutError("PRIVATE"), "timeout", "none"],
+  ["other error", () => new Error("PRIVATE"), "other_error", "none"],
+  ["non-Error throw", () => "PRIVATE", "thrown_value", "none"],
+] as const)(
+  "attributes a relay renewal %s without exporting its contents",
+  (_label, createError, kind, exitCode) => {
+    const fields = browserRelayRenewFailureContext(createError());
+    expect(fields).toEqual({
+      relay_renew_diagnostic_version: 1,
+      relay_renew_error_kind: kind,
+      relay_renew_command_exit_code: exitCode,
+    });
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each(["accessor", "unbounded", "unreadable"] as const)(
+  "preserves renewal recovery and privacy for %s SDK exit data",
+  async (shape) => {
+    const error = new CommandExitError({
+      exitCode: 1,
+      stdout: "PRIVATE",
+      stderr: "PRIVATE",
+    });
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE getter");
+    });
+    const result =
+      shape === "unreadable"
+        ? new Proxy({}, { getOwnPropertyDescriptor: getter })
+        : shape === "accessor"
+          ? Object.defineProperty({}, "exitCode", { get: getter })
+          : { exitCode: "PRIVATE" };
+    Object.defineProperty(error, "result", { value: result });
+    const fields = browserRelayRenewFailureContext(error);
+    expect(fields).toEqual({
+      relay_renew_diagnostic_version: 1,
+      relay_renew_error_kind:
+        shape === "unreadable" ? "unreadable" : "command_exit",
+      relay_renew_command_exit_code: "other",
+    });
+    expect(getter).toHaveBeenCalledTimes(shape === "unreadable" ? 1 : 0);
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  [[1, 0, 0], "missing", "unavailable"],
+  [[1, 1, 0], "invalid", "unavailable"],
+  [[1, 2, 0], "unreadable", "unavailable"],
+  [[1, 3, 0], "recorded", "unavailable"],
+  [[1, 3, 1], "recorded", "not_found"],
+  [[1, 3, 2], "recorded", "same_uid"],
+  [[1, 3, 3], "recorded", "other_uid"],
+  [[1, 3, 4], "recorded", "permission"],
+  [[1, 3, 5], "recorded", "other"],
+  [[1, 0, 2], undefined, undefined],
+  [[2, 3, 2], undefined, undefined],
+  [[1, 3, "PRIVATE"], undefined, undefined],
+  [[1, 3, 6], undefined, undefined],
+  [[1, 3, 2, "PRIVATE"], undefined, undefined],
+])(
+  "projects only the closed process tuple beside a matching successful OPEN (%#)",
+  async (p1, status, visibility) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        p1,
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+        private: "PRIVATE",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    const context = observe.mock.calls[0][0];
+    expect(context.capture_daemon_process_version).toBe(status ? 1 : undefined);
+    expect(context.capture_daemon_pid_status).toBe(status);
+    expect(context.capture_daemon_process_visibility).toBe(visibility);
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  { open_session_matches: false },
+  { open_phase: "started", open_exit: "none" },
+  { open_exit: 1 },
+  { open_receipt_version: 2 },
+])(
+  "keeps process evidence censored without a matching successful OPEN: %j",
+  async (override) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        p1: [1, 3, 2],
+        open_receipt_version: 1,
+        open_receipt_status: "recorded",
+        open_phase: "completed",
+        open_exit: 0,
+        open_session_matches: true,
+        open_age: "older",
+        ...override,
+      }),
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    expect(
+      observe.mock.calls[0][0].capture_daemon_process_version,
+    ).toBeUndefined();
+  },
+);
+
+it("retains closed frame-decode context without exposing stdout or retrying", async () => {
+  const sandbox = fixture();
+  sandbox.commands.run.mockResolvedValueOnce({
+    exitCode: 0,
+    stdout: "{PRIVATE_INCOMPLETE",
+  });
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observed,
+    ),
+  ).rejects.toThrow();
+  expect(observed).toHaveBeenCalledWith(
+    expect.objectContaining({
+      capture_stage: "frame_decode",
+      capture_frame_decode_version: 1,
+      capture_frame_stdout_size: "lt1k",
+      capture_frame_stdout_shape: "object_prefix",
+      capture_frame_parse_error_kind: "syntax_error",
+    }),
+  );
+  expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["", "empty", "empty"],
+  [" \n\t", "lt1k", "edge_whitespace"],
+  ["PRIVATE_TEXT", "lt1k", "other"],
+  ['{ "PRIVATE": }', "lt1k", "object_edges"],
+  ["{" + "x".repeat(1024), "1k_lt64k", "object_prefix"],
+  ["{" + "x".repeat(65536), "64k_lt1m", "object_prefix"],
+  ["{" + "x".repeat(1048576), "gte1m", "object_prefix"],
+  [undefined, "nonstring", "nonstring"],
+])(
+  "classifies malformed frame stdout by bounded size and edges (%#)",
+  async (stdout, size, shape) => {
+    const sandbox = fixture();
+    sandbox.commands.run.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: stdout as string,
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        1234,
+        observed,
+      ),
+    ).rejects.toThrow();
+    expect(observed.mock.calls[0][0]).toMatchObject({
+      capture_frame_decode_version: 1,
+      capture_frame_stdout_size: size,
+      capture_frame_stdout_shape: shape,
+      capture_frame_parse_error_kind: "syntax_error",
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("isolates a frame-decode observer failure and leaves valid frames free of diagnostics", async () => {
+  const sandbox = fixture();
+  sandbox.commands.run.mockResolvedValueOnce({
+    exitCode: 0,
+    stdout: "PRIVATE_TEXT",
+  });
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      () => {
+        throw new Error("PRIVATE_OBSERVER");
+      },
+    ),
+  ).rejects.toThrow("Browser preview disconnected");
+  const observed = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observed,
+    ),
+  ).resolves.toMatchObject({ width: 800, height: 600 });
+  expect(observed).not.toHaveBeenCalled();
 });
