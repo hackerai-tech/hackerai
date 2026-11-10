@@ -715,6 +715,7 @@ function chatDocumentEvent(exception: unknown = chatDocumentEntry()) {
   };
 }
 
+/** Privacy assertions inspect added metadata without recapturing the retained exception. */
 function nearbyProperties(event: { properties: Record<string, unknown> }) {
   return Object.fromEntries(
     Object.entries(event.properties).filter(([key]) =>
