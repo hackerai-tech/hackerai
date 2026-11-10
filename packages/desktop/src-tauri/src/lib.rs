@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncBufReadExt;
+#[cfg(any(debug_assertions, test))]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
