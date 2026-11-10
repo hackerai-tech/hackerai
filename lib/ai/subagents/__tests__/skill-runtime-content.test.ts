@@ -66,6 +66,14 @@ describe("worker skill runtime compatibility", () => {
     expect(loaded.content).toContain("incomplete or inconclusive analysis");
     expect(loaded.content).toContain("unknown");
     expect(loaded.content).toContain("cannot be inspected");
+    expect(loaded.content).toContain(
+      "all discovered import and affected-symbol call sites",
+    );
+    expect(loaded.content).not.toContain("`reachability_evidence`");
+    expect(loaded.content).not.toContain("blob, a private bundle");
+    expect(loaded.content).not.toContain(
+      "named in the summary as not analyzed",
+    );
     expect(loaded.content).toContain("Return every advisory-matched candidate");
     expect(loaded.content).not.toContain("There are three answers and no");
     expect(loaded.content).not.toContain(

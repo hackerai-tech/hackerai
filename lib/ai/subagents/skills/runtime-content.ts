@@ -25,7 +25,7 @@ const reviewedSources: Record<string, string> = {
     "84dd66db527ace752b958eb2aa84a51fdcaf5144f8fada72f714388b0cafdb99",
 };
 const contracts: Record<string, string> = {
-  "custom/dependency_cve_scanning": `Return separate evidence for each advisory-matched dependency CVE: lockfile and scanner artifacts, package/ecosystem, installed and fixed versions, all affected manifests, direct introducer and dependency chain, advisory source and published CVSS, reachability/source-to-sink evidence, and limitations. A pinned vulnerable version is static dependency evidence, not proof of a dynamically exploitable application path. Keep dynamically reproduced application chains separate from the dependency candidate. Return every advisory-matched candidate, including incomplete or inconclusive analysis, to the parent with the remaining proof gap; do not silently drop it or treat missing evidence as a negative verdict. The parent decides what to report and how to rate it.`,
+  "custom/dependency_cve_scanning": `Return separate evidence for each advisory-matched dependency CVE: lockfile and scanner artifacts, package/ecosystem, installed and fixed versions, all affected manifests and all discovered import and affected-symbol call sites with verified repository-relative file:line references, direct introducer and dependency chain, advisory source and published CVSS, reachability/source-to-sink evidence, and limitations. Keep the published advisory severity separate from observed code-path reachability; lack of a dynamic reproduction is not grounds to drop a known dependency CVE. A pinned vulnerable version is static dependency evidence, not proof of a dynamically exploitable application path. Keep dynamically reproduced application chains separate from the dependency candidate. Return every advisory-matched candidate, including incomplete or inconclusive analysis, to the parent with the remaining proof gap; do not silently drop it or treat missing evidence as a negative verdict. The parent decides what to report and how to rate it.`,
   "custom/source_aware_sast": `Return static candidates with source-to-sink traces, controls and counterevidence, scanner coverage/failures and artifact references. Advisory-matched dependency candidates can use lockfile, scanner and advisory evidence without a dynamic exploit claim; load custom/dependency_cve_scanning through the available skill tool when that methodology is needed. Keep dynamic reproductions distinct from static-only candidates.`,
   "custom/npx_confusion": `A namespace-resolution candidate without an advisory-matched CVE is not a dependency-CVE finding. Return the actual package/bin resolution, registry ownership evidence, triggering command/environment, applicable core condition, observed impact and counterevidence to the parent. Do not claim a verified execution path when only a spelling or namespace lead was found.`,
   "technologies/llm_applications": `Return advisory-matched dependency evidence separately from application/model/RAG/agent candidates. Preserve application/model/prompt/tool/corpus versions, baseline and adversarial trial counts, and external observations of authorization, data origin, downstream effects, persistence and consumption. Group evidence by technical root cause and distinguish static analysis, model behavior and dynamically reproduced effects.`,
@@ -95,6 +95,25 @@ export function compileSubagentSkillContent(
         "### Reachability is a verdict on the code path, not on severity",
         "",
       );
+      const budgetStart = content.indexOf("Work in severity order");
+      // The heading was removed above; the remaining budget paragraph ends at
+      // the severity guidance, which is removed with foreign reporting prose.
+      const budgetParagraphEnd = content.indexOf("\n\n", budgetStart);
+      if (budgetStart < 0 || budgetParagraphEnd < 0)
+        return {
+          success: false,
+          error: "Skill analysis budget section changed",
+        };
+      content =
+        content.slice(0, budgetStart) +
+        "Prioritize critical, high and KEV advisories. Return every advisory-matched candidate to the parent, including unfinished analysis, with its scanner/lockfile evidence, searches performed and remaining proof gap. Never guess a verdict or treat an uninspected dependency as safe." +
+        content.slice(budgetParagraphEnd);
+      content = content
+        .replaceAll("`reachability_evidence`", "the returned evidence")
+        .replace(
+          "the contextual CVSS carries that.",
+          "the parent evaluates contextual severity from that evidence.",
+        );
       content = content.replace(
         "contains it, then pass to `create_dependency_report`:",
         "contains it, then return the introducer and resolution path as evidence to the parent:",
