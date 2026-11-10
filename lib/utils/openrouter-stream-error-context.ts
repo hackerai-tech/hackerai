@@ -64,6 +64,7 @@ const bodyFailures = new WeakMap<
   { response: object | null; context: BodyFailureContext }
 >();
 
+/** Bind observations to one response token; reuse across responses stays ambiguous. */
 export function recordOpenRouterBodyFailureContext(
   error: object,
   response: object,
