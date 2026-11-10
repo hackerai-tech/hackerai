@@ -64,3 +64,30 @@ it("accepts an authoritative missing-PID command exit", async () => {
     true,
   );
 });
+
+it.each([
+  { exitCode: -1, stdout: "", stderr: "" },
+  { exitCode: 127, stdout: "", stderr: "ps: not found" },
+  { exitCode: 1, stdout: "", stderr: "ps: permission denied" },
+])("does not confirm a resolved failed query: %j", async (result) => {
+  const { run, sandbox } = fixture();
+  run.mockResolvedValue(result);
+  await expect(verifyProcessTerminated(sandbox, 4321, 1, 0)).resolves.toBe(
+    false,
+  );
+});
+
+it("retains the process when an exit error contains its PID", async () => {
+  const { run, sandbox } = fixture();
+  run.mockRejectedValue(
+    new CommandExitError({
+      exitCode: 1,
+      stdout: "PID CMD\n4321 sleep\n",
+      stderr: "",
+      error: "command exited",
+    }),
+  );
+  await expect(verifyProcessTerminated(sandbox, 4321, 1, 0)).resolves.toBe(
+    false,
+  );
+});

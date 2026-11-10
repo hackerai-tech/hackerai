@@ -10,7 +10,7 @@ import { isE2BSandbox } from "./sandbox-types";
  * @param pid - Process ID to check
  * @param maxAttempts - Number of verification attempts (default: 3)
  * @param delayMs - Delay between attempts in milliseconds (default: 100)
- * @returns Promise<boolean> - true if process is terminated, false if still running
+ * @returns Promise<boolean> - true if exit is confirmed, false if still running or unconfirmed
  */
 export async function verifyProcessTerminated(
   sandbox: AnySandbox,
@@ -25,7 +25,11 @@ export async function verifyProcessTerminated(
       // Process is still running if PID appears in output
       const isRunning = result.stdout.includes(pid.toString());
 
-      if (!isRunning) {
+      if (
+        !isRunning &&
+        (result.exitCode === 0 || result.exitCode === 1) &&
+        result.stderr.trim() === ""
+      ) {
         return true; // Process successfully terminated
       }
     } catch (error) {
