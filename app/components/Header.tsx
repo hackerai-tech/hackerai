@@ -183,7 +183,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
           aria-label="HackerAI home"
         >
           <HackerAISVG theme="dark" scale={0.12} />
-          <span className="text-foreground text-lg font-semibold">
+          <span className="text-foreground text-lg font-semibold max-[359px]:hidden">
             HackerAI
           </span>
         </Link>

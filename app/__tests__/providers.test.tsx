@@ -5,6 +5,10 @@ import {
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
 } from "@/lib/analytics/identity";
 
+jest.mock("next/navigation", () => ({
+  usePathname: () => window.location.pathname,
+}));
+
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: jest.fn(),
 }));
@@ -968,5 +972,98 @@ describe("X referral consent and identity continuity", () => {
       posthog.capture.mock.invocationCallOrder[0],
     );
     expect(posthog.identify).not.toHaveBeenCalled();
+  });
+});
+
+describe("abuse reporting replay privacy", () => {
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+    window.sessionStorage.clear();
+  });
+  it("stops paid replay on entry and rejects delayed URL-less snapshots after exit and reload", async () => {
+    window.history.replaceState({}, "", "/");
+    window.sessionStorage.clear();
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: "paid-fixture",
+        email: "fixture@example.test",
+        locale: "en-US",
+      },
+    });
+    mockUseGlobalState.mockReturnValue({ subscription: "pro" });
+    const posthog = {
+      __loaded: true,
+      set_config: jest.fn(),
+      init: jest.fn(),
+      get_property: jest.fn(),
+      has_opted_out_capturing: () => false,
+      identify: jest.fn(),
+      sessionRecordingStarted: () => false,
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockGetPostHogClient.mockReturnValue(posthog);
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>
+        <div>ordinary page</div>
+      </PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1),
+    );
+    const before = posthog.set_config.mock.calls.at(-1)![0] as {
+      before_send: (event: unknown) => unknown;
+    };
+    window.history.pushState({}, "", "/abuse");
+    view.rerender(
+      <PostHogProvider analyticsAllowed>
+        <div className="ph-no-capture">receipt and private evidence</div>
+      </PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(posthog.stopSessionRecording).toHaveBeenCalled(),
+    );
+    expect(posthog.set_config).toHaveBeenCalledWith(
+      expect.objectContaining({
+        disable_session_recording: true,
+        capture_exceptions: false,
+      }),
+    );
+    window.history.pushState({}, "", "/");
+    view.rerender(
+      <PostHogProvider analyticsAllowed>
+        <div>ordinary page again</div>
+      </PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(posthog.set_config.mock.calls.at(-1)![0]).toHaveProperty(
+        "capture_exceptions.capture_unhandled_errors",
+        true,
+      ),
+    );
+    const delayed = {
+      event: "$snapshot",
+      properties: { $snapshot_data: ["synthetic buffered recording"] },
+    };
+    expect(before.before_send(delayed)).toBeNull();
+    expect(
+      (posthog.set_config.mock.calls.at(-1)![0] as typeof before).before_send(
+        delayed,
+      ),
+    ).toBeNull();
+    expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
+    view.unmount();
+    render(
+      <PostHogProvider analyticsAllowed>
+        <div>new document in same tab</div>
+      </PostHogProvider>,
+    );
+    await waitFor(() =>
+      expect(posthog.stopSessionRecording.mock.calls.length).toBeGreaterThan(1),
+    );
+    expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
   });
 });

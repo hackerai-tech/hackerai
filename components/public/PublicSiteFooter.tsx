@@ -20,6 +20,7 @@ const columns: ReadonlyArray<{ title: string; links: readonly FooterLink[] }> =
       title: "Company",
       links: [
         { href: "/trust", label: "Security & Trust" },
+        { href: "/abuse", label: "Report abuse" },
         { href: "/privacy-policy", label: "Privacy Policy" },
         { href: "/terms-of-service", label: "Terms of Service" },
       ],

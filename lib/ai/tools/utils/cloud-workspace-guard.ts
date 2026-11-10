@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { Sandbox } from "@e2b/code-interpreter";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 
 export type RecoveredWorkspace = {
   version: 1;
@@ -467,6 +468,7 @@ export async function assertCloudWorkspaceAvailable(
   sandboxId?: string,
   region?: TriggerRunRegion,
 ): Promise<void> {
+  await assertUserCanMakeCostIncurringRequest(userId);
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production") {
@@ -522,11 +524,21 @@ export async function assertCloudWorkspaceAvailable(
 export async function claimCloudWorkspaceCleanup(
   userId: string,
   permanent: boolean,
+  containment?: { token: string; sandboxId: string; region: TriggerRunRegion },
 ) {
   const observed = await readCloudWorkspaceState(userId);
+  const resuming = Boolean(
+    containment &&
+    !permanent &&
+    observed?.phase === "cleanup" &&
+    observed.token === containment.token &&
+    observed.migration?.destinationId === containment.sandboxId &&
+    observed.migration.region === containment.region,
+  );
   if (
     observed &&
     observed.phase !== "e2b" &&
+    !resuming &&
     !(observed.phase === "provisioning" && observed.step === "reserved") &&
     !(permanent && observed.phase === "deleted")
   )
@@ -534,9 +546,18 @@ export async function claimCloudWorkspaceCleanup(
   const migration =
     observed?.phase === "e2b"
       ? observed
-      : observed?.phase === "deleted"
+      : observed?.phase === "deleted" ||
+          (resuming && observed?.phase === "cleanup")
         ? observed.migration
         : undefined;
+  if (
+    containment &&
+    (permanent ||
+      !migration ||
+      migration.destinationId !== containment.sandboxId ||
+      migration.region !== containment.region)
+  )
+    throw new CloudWorkspaceUnavailableError("claim_conflict");
   // Unresolved recovery may involve files outside E2B. Do not claim complete
   // account cleanup or remove its persistent record without operator recovery.
   if (migration?.recoveryPending !== undefined)
@@ -550,7 +571,7 @@ export async function claimCloudWorkspaceCleanup(
   const state: CleanupState = {
     version: 1,
     phase: "cleanup",
-    token: randomUUID(),
+    token: containment?.token ?? randomUUID(),
     ...(migration && { migration }),
   };
   const serialized = JSON.stringify(state);
@@ -607,7 +628,7 @@ export async function claimCloudWorkspaceCleanup(
           })
         : success || !observed
           ? ""
-          : JSON.stringify(observed);
+          : JSON.stringify(resuming ? migration : observed);
       try {
         const finished = await redis.eval(
           `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end return 1`,
