@@ -301,6 +301,19 @@ const Header: React.FC<HeaderProps> = ({
                 );
               })}
             </ul>
+            {publicRedesign && !user && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-6 w-full rounded-[10px]"
+                onClick={() => {
+                  closeMenu();
+                  navigateToAuth("/login");
+                }}
+              >
+                Sign in
+              </Button>
+            )}
           </nav>
         </div>
       )}
