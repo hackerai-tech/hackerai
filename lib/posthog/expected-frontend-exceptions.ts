@@ -497,6 +497,15 @@ function nearbyDispatchGroup(
       )
         return "stackless_unexpected_token_syntaxerror";
     }
+    if (
+      exception.type === "Error" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      // Coarse UTF-16 units, never an exact stored-byte or frame-source match.
+      exception.value.length > 256 &&
+      exception.value.length <= 4096
+    )
+      return "long_generic_error";
   } catch {
     /* Optional attribution cannot change the retained exception. */
   }
