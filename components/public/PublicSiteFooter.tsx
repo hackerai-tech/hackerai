@@ -38,12 +38,18 @@ const columns: ReadonlyArray<{ title: string; links: readonly FooterLink[] }> =
 const linkClassName =
   "inline-flex items-center gap-1.5 rounded-sm text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
 
-export function PublicSiteFooter() {
+export function PublicSiteFooter({ redesign = false }: { redesign?: boolean }) {
   const year = new Date().getFullYear();
 
   return (
     <footer className="border-t border-border/80">
-      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <div
+        className={
+          redesign
+            ? "mx-auto max-w-[1280px] px-4 py-14 sm:px-6 lg:px-10"
+            : "mx-auto max-w-6xl px-4 py-12 sm:px-6"
+        }
+      >
         <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
           <div>
             <Link
@@ -56,6 +62,12 @@ export function PublicSiteFooter() {
                 HackerAI
               </span>
             </Link>
+            {redesign ? (
+              <p className="mt-4 max-w-52 text-sm leading-6 text-muted-foreground">
+                The AI agent for penetration testing. Source code is public on
+                GitHub.
+              </p>
+            ) : null}
           </div>
           {columns.map((column) => (
             <nav key={column.title} aria-label={column.title}>

@@ -15,20 +15,9 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
-import { useTypingAnimation } from "../hooks/useTypingAnimation";
 import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
-
-const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
-const LOGIN_TYPING_TAILS = [
-  "find vulnerabilities in...",
-  "audit the security of...",
-  "test the defenses of...",
-  "review the code of...",
-  "write a pentest report for...",
-  "hunt for bugs in...",
-];
 
 // Simple unauthenticated content that redirects to signup on message send
 const UnauthenticatedContent = () => {
@@ -41,12 +30,6 @@ const UnauthenticatedContent = () => {
     }
     navigateToAuth("/signup", { preferSignInForReturningUser: true });
   };
-
-  const animatedTail = useTypingAnimation({
-    phrases: LOGIN_TYPING_TAILS,
-    enabled: true,
-  });
-  const animatedPlaceholder = `${LOGIN_TYPING_PREFIX}${animatedTail}`;
 
   const handleStop = () => {
     // No-op for unauthenticated users
@@ -69,26 +52,26 @@ const UnauthenticatedContent = () => {
   }, []);
 
   return (
-    <div className="h-full bg-background flex flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <div className="flex-shrink-0">
-        <Header />
+        <Header publicRedesign />
       </div>
 
       <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
         {/* Centered content area */}
-        <div className="flex-1 flex flex-col items-center justify-center-safe px-4 py-6 sm:px-6 sm:py-10 [@media(max-height:500px)]:py-2">
+        <div className="flex flex-1 flex-col items-center justify-center-safe px-2 py-6 sm:px-6 sm:py-10 [@media(max-height:500px)]:py-2">
           {/* Title */}
-          <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
-            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl [@media(max-height:500px)]:text-3xl">
+          <div className="mb-7 flex flex-col items-center px-4 text-center md:mb-9">
+            <h1 className="mb-4 max-w-[900px] text-[clamp(2.65rem,5vw,4.5rem)] font-semibold leading-[1.05] tracking-[-0.055em] text-foreground [@media(max-height:500px)]:text-3xl">
               What will you hack today?
             </h1>
-            <p className="text-muted-foreground text-lg leading-tight md:text-xl [@media(max-height:500px)]:text-base">
+            <p className="text-lg leading-snug text-muted-foreground md:text-xl [@media(max-height:500px)]:text-base">
               Find and fix vulnerabilities by working with AI.
             </p>
           </div>
 
           {/* Input */}
-          <div className="w-full max-w-3xl">
+          <div className="w-full max-w-[800px]">
             <ChatInput
               onSubmit={handleSubmit}
               onStop={handleStop}
@@ -97,7 +80,8 @@ const UnauthenticatedContent = () => {
               isCentered={true}
               isNewChat={true}
               clearDraftOnSubmit={false}
-              placeholder={animatedPlaceholder}
+              placeholder="Ask HackerAI to find vulnerabilities in..."
+              landingAppearance
               autoFocus={false}
               restoreDraftAttachments={false}
               offlineProtection={false}
