@@ -1628,6 +1628,7 @@ export const agentLongTask = task({
   // Right-sized from observed production CPU/memory usage.
   machine: { preset: "small-1x" },
 
+  /** The optional stamp marks app-hook entry, separate from SDK completion. */
   onSuccess: async ({ payload, ctx }) => {
     try {
       const clock = getAgentRunClockContext(ctx.attempt?.number);

@@ -315,6 +315,7 @@ export class AgentLongMemoryTelemetry {
     return this.captureCheckpoint(input);
   }
 
+  /** Stamp a selected checkpoint at its source capture, before export. */
   private captureCheckpoint(
     input: MemoryCheckpointInput,
     periodicSample = false,
