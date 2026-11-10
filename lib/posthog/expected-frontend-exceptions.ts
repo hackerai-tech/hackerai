@@ -453,23 +453,25 @@ function nearbyDispatchGroup(
         !current.username &&
         !current.password &&
         chatDocumentPath.test(current.pathname) &&
-        frames.every((frame) => {
-          // Browser frames use filename; stored source and in_app are not provenance.
-          if (
-            typeof frame?.filename !== "string" ||
-            frame.filename.length > 4096
-          )
-            return false;
-          const source = new URL(frame.filename);
-          return (
-            source.origin === current.origin &&
-            !source.username &&
-            !source.password &&
-            chatDocumentPath.test(source.pathname) &&
-            source.pathname.replace(/\/$/, "") !==
-              current.pathname.replace(/\/$/, "")
-          );
-        })
+        frames.every(
+          /** Interpret filenames transiently; stored source and in_app do not prove authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              chatDocumentPath.test(source.pathname) &&
+              source.pathname.replace(/\/$/, "") !==
+                current.pathname.replace(/\/$/, "")
+            );
+          },
+        )
       )
         return "chat_document_short_error";
     }
