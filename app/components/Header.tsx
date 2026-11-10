@@ -215,9 +215,9 @@ const Header: React.FC<HeaderProps> = ({
             HackerAI
           </span>
         </Link>
-        {!loading && !user && (
+        {!loading && (!user || publicRedesign) && (
           <div className="flex items-center gap-2">
-            {!publicRedesign && (
+            {!user && !publicRedesign && (
               <Button
                 data-testid="sign-in-button-mobile"
                 onClick={() => navigateToAuth("/login")}
@@ -228,19 +228,21 @@ const Header: React.FC<HeaderProps> = ({
                 Sign in
               </Button>
             )}
-            <Button
-              data-testid="sign-up-button-mobile"
-              onClick={() =>
-                navigateToAuth("/signup", {
-                  preferSignInForReturningUser: true,
-                })
-              }
-              variant={publicRedesign ? "default" : "outline"}
-              size="sm"
-              className="rounded-[10px]"
-            >
-              Get started
-            </Button>
+            {!user && (
+              <Button
+                data-testid="sign-up-button-mobile"
+                onClick={() =>
+                  navigateToAuth("/signup", {
+                    preferSignInForReturningUser: true,
+                  })
+                }
+                variant={publicRedesign ? "default" : "outline"}
+                size="sm"
+                className="rounded-[10px]"
+              >
+                Get started
+              </Button>
+            )}
             <Button
               type="button"
               variant="ghost"
