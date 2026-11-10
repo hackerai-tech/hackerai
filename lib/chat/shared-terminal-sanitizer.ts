@@ -24,7 +24,15 @@ const stripSavedOutputPath = (text: string): string =>
     "[$1 saved privately]",
   );
 
+const sanitizeTerminalText = (text: string): string =>
+  text.startsWith("[Terminal: ran '") &&
+  text.endsWith("]") &&
+  text.includes("', exit code ")
+    ? "[Terminal: prior output compacted for storage]"
+    : stripSavedOutputPath(text);
+
 const sanitizeTerminalResult = (value: unknown): unknown => {
+  if (typeof value === "string") return sanitizeTerminalText(value);
   if (!isRecord(value)) return value;
   const sanitized = { ...value };
   let changed = false;
@@ -34,11 +42,13 @@ const sanitizeTerminalResult = (value: unknown): unknown => {
       changed = true;
     }
   }
-  if (typeof sanitized.output === "string") {
-    const output = stripSavedOutputPath(sanitized.output);
-    if (output !== sanitized.output) {
-      sanitized.output = output;
-      changed = true;
+  for (const key of ["output", "stdout"] as const) {
+    if (typeof sanitized[key] === "string") {
+      const output = sanitizeTerminalText(sanitized[key]);
+      if (output !== sanitized[key]) {
+        sanitized[key] = output;
+        changed = true;
+      }
     }
   }
   return changed ? sanitized : value;
@@ -63,9 +73,10 @@ export const sanitizeTerminalPartForShare = (part: any): any => {
         : undefined;
   if (typeof toolName !== "string" || !TERMINAL_TOOLS.has(toolName))
     return part;
-  if (!isRecord(part.output)) return part;
 
-  const output = sanitizeTerminalResult(part.output) as Record<string, unknown>;
+  const output = sanitizeTerminalResult(part.output);
+  if (!isRecord(output))
+    return output === part.output ? part : { ...part, output };
   const result = sanitizeTerminalResult(output.result);
   if (output === part.output && result === output.result) return part;
   return {

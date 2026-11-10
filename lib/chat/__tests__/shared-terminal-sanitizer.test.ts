@@ -56,17 +56,59 @@ describe("sanitizeTerminalPartForShare", () => {
     });
   });
 
+  it("hides paths embedded in compacted terminal placeholders", () => {
+    const placeholder =
+      "[Terminal: ran 'pwd', exit code 0; record /Users/owner/PrivateProject/record.json; output /Users/owner/PrivateProject/output.txt; artifact /Users/owner/PrivateProject/result.txt]";
+    expect(
+      sanitizeTerminalPartForShare({
+        type: "tool-run_terminal_cmd",
+        input: { command: "pwd" },
+        output: placeholder,
+      }),
+    ).toEqual({
+      type: "tool-run_terminal_cmd",
+      input: { command: "pwd" },
+      output: "[Terminal: prior output compacted for storage]",
+    });
+  });
+
+  it("hides saved-output notices retained in partial stdout", () => {
+    expect(
+      sanitizeTerminalPartForShare({
+        type: "tool-run_terminal_cmd",
+        output: {
+          result: {
+            stdout:
+              "ordinary stdout\n[Full output (123 chars) saved to: /Users/owner/PrivateProject/output.txt]",
+          },
+        },
+      }),
+    ).toEqual({
+      type: "tool-run_terminal_cmd",
+      output: {
+        result: {
+          stdout: "ordinary stdout\n[Full output (123 chars) saved privately]",
+        },
+      },
+    });
+  });
+
   it("preserves user-authored paths and unrelated tool outputs", () => {
     const terminal = {
       type: "tool-shell",
       input: { command: "echo /Users/owner/PrivateProject" },
       output: { result: { output: "/Users/owner/PrivateProject" } },
     };
+    const directOutput = {
+      type: "tool-run_terminal_cmd",
+      output: "/Users/owner/PrivateProject",
+    };
     const unrelated = {
       type: "tool-open_url",
       output: { result: { workingDirectory: "http://example.test/path" } },
     };
     expect(sanitizeTerminalPartForShare(terminal)).toBe(terminal);
+    expect(sanitizeTerminalPartForShare(directOutput)).toBe(directOutput);
     expect(sanitizeTerminalPartForShare(unrelated)).toBe(unrelated);
   });
 });
