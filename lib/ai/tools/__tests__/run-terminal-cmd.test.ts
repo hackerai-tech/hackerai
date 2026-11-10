@@ -268,11 +268,11 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
-  test("does not dispatch a terminal command after the CAPTCHA recovery deadline", async () => {
+  test("does not dispatch a terminal command after CAPTCHA vision recovery stops", async () => {
     const { context, sandboxManager } = makeContext({});
     context.guardCaptchaVisionCommand = jest.fn(() => ({
       status: "handoff_required",
-      reason: "vision_budget_exhausted",
+      reason: "vision_recovery_stopped",
     }));
     expect(
       await runTool(createRunTerminalCmd(context), {
@@ -281,7 +281,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ).toMatchObject({
       result: {
         exitCode: 1,
-        browserChallenge: { reason: "vision_budget_exhausted" },
+        browserChallenge: { reason: "vision_recovery_stopped" },
       },
     });
     expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
