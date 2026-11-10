@@ -889,6 +889,142 @@ function nearbyProperties(event: { properties: Record<string, unknown> }) {
   );
 }
 
+const sameDocumentEntry = (path = "/document") => ({
+  type: "Error",
+  value: "xy",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: Array.from({ length: 3 }, () => ({
+      filename: `https://qa.invalid${path}?PRIVATE-frame#PRIVATE-fragment`,
+      in_app: true,
+    })),
+  },
+});
+
+function sameDocumentEvent(exception: unknown = sameDocumentEntry()) {
+  return {
+    event: "$exception",
+    properties: {
+      $current_url:
+        "https://qa.invalid/document?PRIVATE-query#PRIVATE-fragment",
+      $exception_list: [exception],
+    },
+  };
+}
+
+it.each(["/document", "/c/current"])(
+  "retains same-document short Errors on %s with bounded private-safe native context",
+  (path) => {
+    const dispatched = new ErrorEvent("error", {
+      filename: `${location.origin}/PRIVATE-source?token=canary`,
+      message: "PRIVATE native message",
+      error: new Error("PRIVATE error object"),
+      cancelable: true,
+    });
+    window.dispatchEvent(dispatched);
+    const event = sameDocumentEvent(sameDocumentEntry(path));
+    event.properties.$current_url = `https://qa.invalid${path}?PRIVATE-query`;
+    const list = event.properties.$exception_list;
+    expect(shouldDropExpectedFrontendException(event)).toBe(false);
+    const enriched = enrichFrontendExceptionEvent(
+      sanitizeFrontendExceptionUrlProperties(event),
+    );
+    const context = nearbyProperties(enriched);
+    expect(context).toMatchObject({
+      hackerai_nearby_dispatch_group: "same_document_short_error",
+      hackerai_nearby_dispatch_association: "nearby_only",
+      hackerai_nearby_dispatch_error_native_count: 1,
+      hackerai_nearby_dispatch_error_untrusted_count: 1,
+      hackerai_nearby_dispatch_error_trusted_native_count: 0,
+      hackerai_nearby_dispatch_error_latest_source: "same_origin",
+      hackerai_nearby_dispatch_error_latest_object: true,
+    });
+    expect(JSON.stringify(context)).not.toMatch(
+      /PRIVATE|canary|qa\.invalid|\/document|token=|xy/,
+    );
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+    expect(dispatched.defaultPrevented).toBe(false);
+    identity.mockReturnValue("another-owner");
+    expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual(
+      {},
+    );
+  },
+);
+
+it("limits same-document context to the retained short singleton mechanism", () => {
+  const entry = sameDocumentEntry();
+  for (const candidate of [
+    { ...entry, value: "x" },
+    { ...entry, value: "xyz" },
+    { ...entry, type: "TypeError" },
+    { ...entry, mechanism: { ...entry.mechanism, handled: true } },
+    { ...entry, mechanism: { ...entry.mechanism, synthetic: true } },
+    { ...entry, mechanism: { handled: false, type: "generic" } },
+    { ...entry, mechanism: { ...entry.mechanism, type: "other" } },
+    { ...entry, stacktrace: { frames: entry.stacktrace.frames.slice(0, 2) } },
+    {
+      ...entry,
+      stacktrace: {
+        frames: [...entry.stacktrace.frames, entry.stacktrace.frames[0]],
+      },
+    },
+    {
+      ...entry,
+      stacktrace: {
+        frames: entry.stacktrace.frames.map(({ filename }) => ({
+          source: filename,
+        })),
+      },
+    },
+  ])
+    expect(
+      nearbyProperties(
+        enrichFrontendExceptionEvent(sameDocumentEvent(candidate)),
+      ),
+    ).toEqual({});
+  const event = sameDocumentEvent();
+  event.properties.$exception_list.push(entry);
+  expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+});
+
+it.each([
+  "https://other.invalid/document",
+  "https://qa.invalid.other.example/document",
+  "https://qa.invalid:444/document",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  "https://qa.invalid/document/",
+  "https://qa.invalid/other-document",
+  "https://qa.invalid/_next/static/chunks/PRIVATE.js",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+  "<anonymous>",
+])("rejects a mismatched or unsafe same-document filename %s", (filename) => {
+  const entry = sameDocumentEntry();
+  entry.stacktrace.frames[0].filename = filename;
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(sameDocumentEvent(entry))),
+  ).toEqual({});
+});
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+])("rejects an unsafe current document %s", (current) => {
+  const event = sameDocumentEvent();
+  expect(
+    nearbyProperties(
+      enrichFrontendExceptionEvent({
+        ...event,
+        properties: { ...event.properties, $current_url: current },
+      }),
+    ),
+  ).toEqual({});
+});
+
 it("reuses nearby native context for short errors with other chat-document frames", () => {
   window.dispatchEvent(
     new ErrorEvent("error", {

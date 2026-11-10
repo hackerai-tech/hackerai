@@ -365,6 +365,7 @@ export type NearbyDispatchGroup =
   | "wallet_property_typeerror"
   | "synthetic_stackless_error"
   | "chat_document_short_error"
+  | "same_document_short_error"
   | "stackless_dom_exception"
   | "anonymous_missing_identifier_referenceerror"
   | "stackless_end_of_script_syntaxerror"
@@ -418,6 +419,7 @@ export function getNearbyDispatchDiagnostics(
         "wallet_property_typeerror",
         "synthetic_stackless_error",
         "chat_document_short_error",
+        "same_document_short_error",
         "stackless_dom_exception",
         "anonymous_missing_identifier_referenceerror",
         "stackless_end_of_script_syntaxerror",
