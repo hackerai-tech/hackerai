@@ -64,8 +64,6 @@ test("both fixed splits prepare balanced paired requests from actual context and
       assert.equal(left.skip, right.skip);
       assert.notEqual(left.arm, right.arm);
       assert.equal((left.arm === 0 ? left : right).system, baselineSystem());
-      assert.equal((left.arm === 0 ? left : right).outputFormat, "text");
-      assert.equal((left.arm === 1 ? left : right).outputFormat, "object");
     }
     for (const f of fixtures().filter((f) => f.split === split)) {
       const built = buildPredictionSources(f.messages);

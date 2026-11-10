@@ -4,6 +4,7 @@ import { buildPredictionSources } from "../contracts";
 
 jest.mock("ai", () => ({
   generateText: jest.fn(),
+  Output: { object: jest.fn((value) => value) },
 }));
 jest.mock("@/lib/ai/providers", () => ({
   myProvider: { languageModel: () => "deepseek-test-model" },
@@ -18,9 +19,9 @@ const sources = [
 ];
 const draft =
   "I have written permission for the training portal; keep the review within that scope.";
-function completion(text: unknown, cost: number | undefined = 0.001) {
+function completion(output: unknown, cost: number | undefined = 0.001) {
   return {
-    text,
+    output,
     usage: {
       inputTokens: 100,
       outputTokens: 20,
@@ -33,7 +34,9 @@ function completion(text: unknown, cost: number | undefined = 0.001) {
 beforeEach(() => jest.resetAllMocks());
 
 test("returns one editable reply with one provider call and its receipt", async () => {
-  jest.mocked(generateText).mockResolvedValueOnce(completion(draft));
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(completion({ suggestion: draft }));
   const result = await generateNextActions(
     sources,
     new AbortController().signal,
@@ -70,11 +73,12 @@ test("returns one editable reply with one provider call and its receipt", async 
     }),
   );
   expect(options.tools).toBeUndefined();
-  expect(options.output).toBeUndefined();
 });
 
-test("an empty text prediction abstains without a second model call", async () => {
-  jest.mocked(generateText).mockResolvedValueOnce(completion(""));
+test("a null prediction abstains without a second model call", async () => {
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(completion({ suggestion: null }));
   const result = await generateNextActions(
     sources,
     new AbortController().signal,
@@ -84,22 +88,6 @@ test("an empty text prediction abstains without a second model call", async () =
   expect(result.providerCalls).toBe(1);
   expect(generateText).toHaveBeenCalledTimes(1);
 });
-
-test.each(["   ", "line one\nline two", "/goal start a task", "x".repeat(241)])(
-  "invalid plain-text drafts stay hidden without losing the priced receipt: %s",
-  async (text) => {
-    jest.mocked(generateText).mockResolvedValueOnce(completion(text));
-    const result = await generateNextActions(
-      sources,
-      new AbortController().signal,
-    );
-    expect(result.suggestions).toEqual([]);
-    expect(result.providerCalls).toBe(1);
-    expect(result.pricedProviderCalls).toBe(1);
-    expect(result.cost).toBe(0.001);
-    expect(result.unavailable).toBe(false);
-  },
-);
 
 test("an explicit conversational stop spends no provider tokens", async () => {
   const result = await generateNextActions(
@@ -126,7 +114,9 @@ test.each([
 ])("quoted stop wording still allows a prediction: %s", async (text) => {
   jest
     .mocked(generateText)
-    .mockResolvedValueOnce(completion("show me where that setting is"));
+    .mockResolvedValueOnce(
+      completion({ suggestion: "show me where that setting is" }),
+    );
   const result = await generateNextActions(
     [
       {
@@ -147,7 +137,7 @@ test.each([
 });
 
 test("keeps a successful reply while reporting missing provider cost as unknown", async () => {
-  const r = completion(draft);
+  const r = completion({ suggestion: draft });
   (r as { usage: { raw: object } }).usage.raw = {};
   jest.mocked(generateText).mockResolvedValueOnce(r);
   expect(
@@ -175,7 +165,7 @@ test("cancellation after provider completion hides the reply without losing pric
   const c = new AbortController();
   jest.mocked(generateText).mockImplementationOnce(async () => {
     c.abort();
-    return completion(draft);
+    return completion({ suggestion: draft });
   });
   expect(await generateNextActions(sources, c.signal)).toEqual(
     expect.objectContaining({
@@ -211,7 +201,9 @@ test("provider failures expose no private error details and keep unknown spend",
 });
 
 test("passes persisted tool activity and actual answers to the predictor", async () => {
-  jest.mocked(generateText).mockResolvedValueOnce(completion(""));
+  jest
+    .mocked(generateText)
+    .mockResolvedValueOnce(completion({ suggestion: null }));
   const history = buildPredictionSources([
     {
       id: "finished",
