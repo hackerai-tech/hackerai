@@ -879,6 +879,13 @@ describe("userDeletion", () => {
       row(tables, "captcha_daily_limits", "captcha-limit-global"),
     ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
+    expect(
+      row(tables, "local_sandbox_heartbeats", "heartbeat-other"),
+    ).toMatchObject({
+      user_id: "user_other",
+      connection_id: "conn-2",
+      last_heartbeat: 2,
+    });
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();
