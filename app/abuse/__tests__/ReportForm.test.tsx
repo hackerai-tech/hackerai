@@ -93,7 +93,9 @@ test("a lost response retains fields and retries the same submission with a new 
     "Synthetic observation for a retry regression test.",
   );
   expect(
-    screen.queryByRole("heading", { name: "Your report was received" }),
+    screen.queryByRole("heading", {
+      name: "Thanks. Your report was received.",
+    }),
   ).not.toBeInTheDocument();
   submit();
   expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -101,8 +103,17 @@ test("a lost response retains fields and retries the same submission with a new 
   verified("renewed-challenge");
   submit();
   expect(
-    await screen.findByRole("heading", { name: "Your report was received" }),
+    await screen.findByRole("heading", {
+      name: "Thanks. Your report was received.",
+    }),
   ).toHaveFocus();
+  expect(
+    screen.getByText("We may contact you if we need more information."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/^AB-[a-f0-9-]{36}$/)).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Copy reference" }),
+  ).not.toBeInTheDocument();
   const first = fetchMock.mock.calls[0][1],
     retry = fetchMock.mock.calls[1][1];
   expect(retry.body).toBe(first.body);
@@ -211,7 +222,9 @@ test("an expired delivery window retains fields but starts a fresh submission af
   verified("fresh-challenge");
   submit();
   expect(
-    await screen.findByRole("heading", { name: "Your report was received" }),
+    await screen.findByRole("heading", {
+      name: "Thanks. Your report was received.",
+    }),
   ).toBeInTheDocument();
   expect(JSON.parse(fetchMock.mock.calls[1][1].body).submissionId).not.toBe(
     JSON.parse(fetchMock.mock.calls[0][1].body).submissionId,
