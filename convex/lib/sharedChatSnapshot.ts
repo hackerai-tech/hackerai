@@ -4,6 +4,7 @@ import { v } from "convex/values";
 
 import type { DataModel, Doc } from "../_generated/dataModel";
 import { stripOpenRouterReasoningMetadataFromParts } from "../../lib/chat/provider-metadata-sanitizer";
+import { sanitizeTerminalPartForShare } from "../../lib/chat/shared-terminal-sanitizer";
 import { isUserBlockedFromChatHistory } from "./suspensionGuards";
 
 type SharedChatReaderCtx = {
@@ -104,7 +105,7 @@ export const listVisibleSharedMessages = async (
           };
         }
 
-        return part;
+        return sanitizeTerminalPartForShare(part);
       }),
     }));
 };

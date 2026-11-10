@@ -1,0 +1,72 @@
+import { describe, expect, it } from "@jest/globals";
+import { sanitizeTerminalPartForShare } from "../shared-terminal-sanitizer";
+
+describe("sanitizeTerminalPartForShare", () => {
+  it("removes hidden host paths while preserving terminal results and inputs", () => {
+    const part = {
+      type: "dynamic-tool",
+      toolName: "run_terminal_cmd",
+      input: { command: "cat /project/README.md" },
+      output: {
+        workingDirectory: "/Users/owner/PrivateProject",
+        result: {
+          output:
+            "ordinary stdout\n[Full output (123 chars) saved to: /Users/owner/PrivateProject/output.txt]",
+          exitCode: 0,
+          workingDirectory: "/Users/owner/PrivateProject",
+          recordPath: "/Users/owner/PrivateProject/record.json",
+          outputPath: "/Users/owner/PrivateProject/output.txt",
+          artifactPaths: ["/Users/owner/PrivateProject/output.txt"],
+        },
+      },
+    };
+
+    expect(sanitizeTerminalPartForShare(part)).toEqual({
+      type: "dynamic-tool",
+      toolName: "run_terminal_cmd",
+      input: { command: "cat /project/README.md" },
+      output: {
+        result: {
+          output: "ordinary stdout\n[Full output (123 chars) saved privately]",
+          exitCode: 0,
+        },
+      },
+    });
+    expect(part.output.result.workingDirectory).toBe(
+      "/Users/owner/PrivateProject",
+    );
+  });
+
+  it("hides the generated saved-output path in streamed terminal parts", () => {
+    expect(
+      sanitizeTerminalPartForShare({
+        type: "data-terminal",
+        data: {
+          terminal:
+            "[Output too large - first 100 chars saved to: /Users/owner/PrivateProject/output.txt]\n",
+          toolCallId: "tool-1",
+        },
+      }),
+    ).toEqual({
+      type: "data-terminal",
+      data: {
+        terminal: "[Output too large - first 100 chars saved privately]\n",
+        toolCallId: "tool-1",
+      },
+    });
+  });
+
+  it("preserves user-authored paths and unrelated tool outputs", () => {
+    const terminal = {
+      type: "tool-shell",
+      input: { command: "echo /Users/owner/PrivateProject" },
+      output: { result: { output: "/Users/owner/PrivateProject" } },
+    };
+    const unrelated = {
+      type: "tool-open_url",
+      output: { result: { workingDirectory: "http://example.test/path" } },
+    };
+    expect(sanitizeTerminalPartForShare(terminal)).toBe(terminal);
+    expect(sanitizeTerminalPartForShare(unrelated)).toBe(unrelated);
+  });
+});
