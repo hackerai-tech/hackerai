@@ -11,6 +11,7 @@ function transportFailure(
   code: unknown = 1006,
   mode = "frame",
   failOutput = false,
+  error: unknown = "PRIVATE",
 ) {
   const listeners = new Map<string, (value?: unknown) => void>();
   const timers = new Map<number, () => void>();
@@ -27,6 +28,7 @@ function transportFailure(
     },
     process: {
       argv: ["node", "1234", mode],
+      versions: { node: "22.23.3" },
       stdin: {
         setEncoding() {},
         on: (name: string, listener: () => void) => stdin.set(name, listener),
@@ -53,12 +55,43 @@ function transportFailure(
     listeners.get("message")!({
       data: JSON.stringify({ type: "PRIVATE_NON_FRAME", data: "PRIVATE" }),
     });
-  listeners.get(event)!({ code, reason: "PRIVATE reason", error: "PRIVATE" });
+  listeners.get(event)!({ code, reason: "PRIVATE reason", error });
   // Both events can arrive for one failure; only the first may produce a receipt.
   listeners.get(event === "error" ? "close" : "error")!({ code: 1000 });
   for (const callback of timers.values()) callback();
   return { exitCode, output, receipt: output ? JSON.parse(output) : null };
 }
+
+it("reports a closed WebSocket protocol reason after an earlier non-frame message", () => {
+  const result = transportFailure(
+    "error",
+    "message_received",
+    1006,
+    "frame",
+    false,
+    new Error("Frame cannot be masked"),
+  );
+  expect(result.exitCode).toBe(6);
+  expect(result.receipt).toEqual({
+    bridge_failure: [
+      2,
+      "error",
+      "message_received",
+      "none",
+      "protocol_masked",
+      22,
+    ],
+  });
+  expect(
+    browserBridgeFailureContext({ exitCode: 6, stdout: result.output }),
+  ).toMatchObject({
+    capture_bridge_diagnostic_version: 2,
+    capture_bridge_error_reason: "protocol_masked",
+    capture_bridge_node_major: 22,
+  });
+  expect(result.output.length).toBeLessThanOrEqual(128);
+  expect(result.output).not.toMatch(/PRIVATE|Frame cannot/);
+});
 
 it.each([
   ["error", "connecting", 1006, "none"],
@@ -76,10 +109,11 @@ it.each([
     expect(result.exitCode).toBe(6);
     expect(result.receipt).toEqual({
       bridge_failure: [
-        1,
+        event === "error" ? 2 : 1,
         event === "error" ? "error" : "early_close",
         phase,
         expected,
+        ...(event === "error" ? ["other", 22] : []),
       ],
     });
     expect(result.output.length).toBeLessThanOrEqual(128);
@@ -205,4 +239,51 @@ it("preserves the producer timestamp so a cached frame does not become fresh", (
     width: 800,
     height: 600,
   });
+});
+
+it.each([
+  [2, "error", "connecting", "none", "PRIVATE", 22],
+  [2, "early_close", "connecting", "none", "other", 22],
+  [2, "error", "connecting", 1006, "other", 22],
+  [2, "error", "connecting", "none", "other", 0],
+  [2, "error", "connecting", "none", "other", 256],
+  [2, "error", "connecting", "none", "other", 22.5],
+  [2, "error", "connecting", "none", "other", "22"],
+  [2, "error", "connecting", "none", "other", 22, "PRIVATE"],
+])("rejects invalid v2 categories or runtime versions (%#)", (tuple) => {
+  expect(
+    browserBridgeFailureContext({
+      exitCode: 6,
+      stdout: JSON.stringify({ bridge_failure: tuple }),
+    }),
+  ).toEqual({});
+});
+
+it("does not invoke error message accessors or export unknown error text", () => {
+  const getter = jest.fn(() => "Frame cannot be masked");
+  const error = Object.defineProperty({}, "message", { get: getter });
+  for (const value of [
+    error,
+    new Error("PRIVATE_URL_TOKEN"),
+    new Error("Frame cannot be masked PRIVATE"),
+  ]) {
+    const result = transportFailure(
+      "error",
+      "awaiting_frame",
+      1006,
+      "frame",
+      false,
+      value,
+    );
+    expect(result.receipt.bridge_failure).toEqual([
+      2,
+      "error",
+      "awaiting_frame",
+      "none",
+      "other",
+      22,
+    ]);
+    expect(result.output).not.toMatch(/PRIVATE|Frame cannot/);
+  }
+  expect(getter).not.toHaveBeenCalled();
 });

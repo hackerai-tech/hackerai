@@ -1380,3 +1380,42 @@ it("isolates a frame-decode observer failure and leaves valid frames free of dia
   ).resolves.toMatchObject({ width: 800, height: 600 });
   expect(observed).not.toHaveBeenCalled();
 });
+
+it("delivers v2 bridge categories through the actual capture helper without changing its rejection", async () => {
+  const sandbox = fixture();
+  const original = new CommandExitError({
+    exitCode: 6,
+    stdout: JSON.stringify({
+      bridge_failure: [
+        2,
+        "error",
+        "message_received",
+        "none",
+        "protocol_masked",
+        22,
+      ],
+    }),
+    stderr: "PRIVATE_FRAME",
+  });
+  sandbox.commands.run.mockRejectedValueOnce(original);
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    ),
+  ).rejects.toBe(original);
+  expect(observe).toHaveBeenCalledWith(
+    expect.objectContaining({
+      capture_stage: "frame_bridge",
+      capture_bridge_diagnostic_version: 2,
+      capture_bridge_error_reason: "protocol_masked",
+      capture_bridge_node_major: 22,
+    }),
+  );
+  expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+});
