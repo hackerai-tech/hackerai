@@ -7,6 +7,10 @@ import {
   hasBalancedCodeFences,
 } from "../skills/runtime-content";
 import { renderSubagentSkillKnowledge } from "../skills/knowledge";
+import {
+  loadSubagentSkills,
+  searchSubagentSkills,
+} from "../../tools/subagent-skill-tools";
 
 const adapted = [
   "custom/dependency_cve_scanning",
@@ -48,6 +52,40 @@ describe("worker skill runtime compatibility", () => {
         );
     },
   );
+  it("keeps dependency analysis searchable and loadable with uncertainty preserved", () => {
+    const id = "custom/dependency_cve_scanning";
+    expect(
+      searchSubagentSkills({ query: "dependency-cve-scanning" }).results,
+    ).toContainEqual(expect.objectContaining({ id }));
+    const loaded = loadSubagentSkills({ skills: [id] });
+    expect(loaded.success).toBe(true);
+    if (!loaded.success) throw new Error(loaded.error);
+    expect(loaded.skills).toEqual([id]);
+    expect(hasUnsupportedWorkerToolReference(loaded.content)).toBe(false);
+    expect(hasBalancedCodeFences(loaded.content)).toBe(true);
+    expect(loaded.content).toContain("incomplete or inconclusive analysis");
+    expect(loaded.content).toContain("unknown");
+    expect(loaded.content).toContain("cannot be inspected");
+    expect(loaded.content).toContain(
+      "all discovered import and affected-symbol call sites",
+    );
+    expect(loaded.content).not.toContain("`reachability_evidence`");
+    expect(loaded.content).not.toContain("blob, a private bundle");
+    expect(loaded.content).not.toContain(
+      "named in the summary as not analyzed",
+    );
+    expect(loaded.content).toContain("Return every advisory-matched candidate");
+    expect(loaded.content).not.toContain("There are three answers and no");
+    expect(loaded.content).not.toContain(
+      "or the only code that could use it cannot be inspected",
+    );
+    expect(loaded.content).toContain("inspect the code of the");
+    expect(loaded.content).toContain(
+      "package one hop above the vulnerable one",
+    );
+    expect(loaded.content).toContain("verdict is per CVE, not per package");
+    expect(loaded.content).toContain("The parent decides what to report");
+  });
   it("rejects an adaptation that would leave a dangling scanner code block", () => {
     const skill = registry.skills.find((s) => s.id === adapted[0])!;
     const source = (raw.contents as Record<string, string>)[skill.id];
