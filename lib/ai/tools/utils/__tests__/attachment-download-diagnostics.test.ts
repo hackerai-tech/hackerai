@@ -173,3 +173,98 @@ it("does not treat a generic PowerShell abort as TLS or scan past the existing b
     attachment_download_reported_http_status: 403,
   });
 });
+
+it.each([
+  ["curl: (28) Resolving timed out after 10000 milliseconds", "resolving"],
+  ["curl: (28) Connection timed out after 30000 milliseconds", "connect"],
+  [
+    "curl: (28) Failed to connect to private.example port 443 after 10000 ms: Timeout was reached",
+    "connect",
+  ],
+  ["curl: (28) SSL connection timeout", "tls_handshake"],
+  ["curl: (28) SSL/TLS connection timeout", "tls_handshake"],
+  [
+    "curl: (28) Operation timed out after 30000 milliseconds with 0 bytes received",
+    "operation",
+  ],
+  [
+    "curl: (28) Resolving timed out after 10000 milliseconds\ncurl: (28) SSL connection timeout",
+    "multiple",
+  ],
+  ["curl: (28) private unrecognized detail", "unclassified"],
+  ["private error mentions Resolving timed out", "unclassified"],
+  ["", "unclassified"],
+])(
+  "keeps only the reported curl28 timeout wording family: %s",
+  (stderr, hint) => {
+    const original = Object.freeze(new Error("private original"));
+    expect(
+      recordAttachmentDownloadFailure(original, {
+        ...input,
+        exitCode: 28,
+        stderr: `${stderr}\nhttps://private.example/secret?token=private`,
+      }),
+    ).toBe(original);
+    const fields = getAttachmentDownloadFailureContext(original);
+    expect(fields).toMatchObject({
+      attachment_download_timeout_version: 1,
+      attachment_download_timeout_hint: hint,
+      attachment_download_exit_code: 28,
+    });
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private|secret|token|milliseconds|Resolving|Connection|SSL/,
+    );
+  },
+);
+
+it.each([
+  ["curl", 7],
+  ["curl", 35],
+  ["curl", 23],
+  ["wget", 28],
+  ["powershell", 28],
+] as const)(
+  "does not assign curl28 wording to selected %s exit%s",
+  (httpClient, exitCode) => {
+    const original = recordAttachmentDownloadFailure(new Error(), {
+      ...input,
+      httpClient,
+      exitCode,
+      stderr: "curl: (28) SSL connection timeout",
+    });
+    const fields = getAttachmentDownloadFailureContext(original);
+    expect(fields).not.toHaveProperty("attachment_download_timeout_version");
+    expect(fields).not.toHaveProperty("attachment_download_timeout_hint");
+  },
+);
+
+it("bounds timeout wording scans and retains it through existing boundary and copy propagation", () => {
+  const original = recordAttachmentDownloadFailure(
+    new Error("private original"),
+    {
+      ...input,
+      exitCode: 28,
+      stderr: "x".repeat(8192) + "\ncurl: (28) Resolving timed out",
+    },
+  );
+  recordAttachmentDownloadBoundary(original, {
+    phase: "failure_diagnostics",
+    attempt: 3,
+    resultState: "nonzero",
+  });
+  const copy = copyAttachmentDownloadFailureContext(
+    original,
+    new Error("private wrapper"),
+  );
+  expect(getAttachmentDownloadFailureContext(copy)).toMatchObject({
+    attachment_download_timeout_version: 1,
+    attachment_download_timeout_hint: "unclassified",
+    attachment_download_stderr_truncated: true,
+    attachment_download_attempt: 3,
+  });
+  const fields = getAttachmentDownloadFailureContext(copy)!;
+  fields.attachment_download_exit_code = 0;
+  expect(
+    getAttachmentDownloadFailureContext(copy)?.attachment_download_exit_code,
+  ).toBe(28);
+});
