@@ -98,6 +98,7 @@ test("a committed frontend edit uses related tests even when the working tree is
   );
   assert.equal(plan.jest, "related");
   assert.equal(plan.typecheck, true);
+  assert.equal(plan.lint, true);
   assert.deepEqual(plan.languages, ["javascript-typescript"]);
   assert.deepEqual(JSON.parse(planOutputs(plan).shards), [1]);
   assert.equal(planOutputs(plan).shard_count, "1");
@@ -172,6 +173,7 @@ test("executable skill tooling is covered while ordinary prose can skip runtime 
     const prose = selectPlan(paths);
     assert.equal(prose.jest, "none");
     assert.equal(prose.typecheck, false);
+    assert.equal(prose.lint, false);
     assert.equal(prose.integrations, false);
     assert.deepEqual(prose.tooling, []);
     assert.deepEqual(prose.languages, []);
@@ -198,6 +200,7 @@ function results(plan) {
   const outputs = planOutputs(plan);
   return {
     changes: { result: "success", outputs },
+    lint: { result: plan.lint ? "success" : "skipped" },
     typecheck: { result: plan.typecheck ? "success" : "skipped" },
     integrations: { result: plan.integrations ? "success" : "skipped" },
     tooling: { result: plan.tooling.length ? "success" : "skipped" },
@@ -219,6 +222,7 @@ test("the actual aggregate command accepts intentional skips and fails closed fo
   assert.equal(gate(results(selectPlan(["README.md"]))).status, 0);
   for (const job of [
     "changes",
+    "lint",
     "typecheck",
     "integrations",
     "tooling",

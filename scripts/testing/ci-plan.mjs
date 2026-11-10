@@ -38,12 +38,18 @@ export function changedSince(base, root = process.cwd()) {
 /** Unknown inputs and shared configuration retain the complete safety pipeline. */
 export function selectPlan(
   paths,
-  { full = false, coverage = false, root = process.cwd() } = {},
+  {
+    full = false,
+    coverage = false,
+    root = process.cwd(),
+    exists = (path) => existsSync(resolve(root, path)),
+  } = {},
 ) {
   const complete = () => ({
     jest: "full",
     typecheck: true,
     integrations: true,
+    lint: true,
     tooling: allTooling,
     languages,
     coverage,
@@ -52,9 +58,11 @@ export function selectPlan(
   let jest = "none";
   let typecheck = false;
   let integrations = false;
+  let lint = false;
   const tooling = new Set();
   const security = new Set();
   for (const path of paths) {
+    if (/\.[cm]?[jt]sx?$/.test(path)) lint = true;
     if (/\.(?:py|go|rs)$/.test(path) && !/^packages\/desktop\//.test(path))
       return complete();
     if (
@@ -102,7 +110,7 @@ export function selectPlan(
       continue;
     }
     if (/^app\//.test(path) && /\.(?:[cm]?[jt]sx?|css|scss)$/.test(path)) {
-      if (!existsSync(resolve(root, path))) return complete();
+      if (!exists(path)) return complete();
       if (jest !== "full") jest = "related";
       typecheck = true;
       security.add("javascript-typescript");
@@ -114,6 +122,7 @@ export function selectPlan(
     jest,
     typecheck,
     integrations,
+    lint,
     tooling: allTooling.filter((name) => tooling.has(name)),
     languages: languages.filter((name) => security.has(name)),
     coverage,
@@ -140,6 +149,7 @@ export function planOutputs(plan) {
     jest: plan.jest,
     typecheck: String(plan.typecheck),
     integrations: String(plan.integrations),
+    lint: String(plan.lint),
     tooling: String(plan.tooling.length > 0),
     tooling_suites: JSON.stringify(plan.tooling),
     security: String(plan.languages.length > 0),
@@ -160,7 +170,13 @@ export function assertGate(needs) {
   if (needs.changes?.result !== "success")
     throw new CIGateError("CI planning did not succeed");
   const outputs = needs.changes.outputs;
-  for (const name of ["typecheck", "integrations", "tooling", "security"]) {
+  for (const name of [
+    "typecheck",
+    "integrations",
+    "tooling",
+    "security",
+    "lint",
+  ]) {
     if (!["true", "false"].includes(outputs?.[name]))
       throw new CIGateError("Invalid CI plan");
   }
@@ -172,6 +188,7 @@ export function assertGate(needs) {
     tooling: outputs.tooling === "true",
     codeql: outputs.security === "true",
     jest: outputs.jest !== "none",
+    lint: outputs.lint === "true",
   };
   for (const [job, required] of Object.entries(expected)) {
     if (needs[job]?.result !== (required ? "success" : "skipped"))
