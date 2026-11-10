@@ -48,7 +48,7 @@ export async function sendAbuseNotification(
     report.evidence || "Not provided",
     "",
     "Keep the report reference for follow-up. Receiving a report does not establish its allegations.",
-    "The encrypted delivery payload is deleted after SMTP acceptance. This mailbox copy and any replies have separate retention.",
+    "Email-only queue payloads are deleted when delivery is recorded as sent or by expiry cleanup; uncertain deliveries retain them until reconciliation or expiry. Mailbox copies and replies have separate retention.",
     "",
   ].join("\n");
   const transport = nodemailer.createTransport({

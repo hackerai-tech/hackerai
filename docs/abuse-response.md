@@ -64,12 +64,15 @@ description and full submitted evidence/links. Empty optional fields are marked.
 Recipients and headers are fixed; no HTML, attachments, challenge tokens, keys or
 internal notes are included.
 
-On SMTP acceptance, the finish transaction immediately removes the queued report
-ciphertext. Only reference, digest, timestamps, delivery status and attempt count
-remain. Unsent encrypted payloads expire after seven days; minimal receipts expire
-after 30 days. A bounded five-minute maintenance sweep deletes expired data even
-while SMTP is disabled. Active sends retain their payload until their two-minute
-lease expires. Rate-limit hashes expire separately after their short window.
+When the finish transaction records SMTP acceptance, it removes the queued report
+ciphertext, leaving reference, digest, timestamps, delivery status and attempt
+count. Lost acknowledgements or interrupted finish transactions can leave delivery
+uncertain, retaining the payload until confirmed-sent reconciliation or expiry
+cleanup. Retained encrypted payloads expire after seven days; minimal receipts
+expire after 30 days. A bounded five-minute maintenance sweep deletes expired data
+even while SMTP is disabled. If an expired payload still has an active two-minute
+send lease, cleanup waits until that lease ends. Rate-limit hashes expire
+separately after their short window.
 These are application-level deletion rules, not guarantees about provider backups
 or platform execution logs. Review those services' retention separately.
 

@@ -54,7 +54,7 @@ test("sends the complete submitted report in plain text with fixed headers and m
   for (const value of Object.values(report))
     expect(message.text).toContain(value);
   expect(message.text).toContain("2026-11-09T16:31:00.000Z");
-  expect(message.text).toContain("deleted after SMTP acceptance");
+  expect(message.text).toContain("deleted when delivery is recorded as sent");
   expect(message.text).not.toContain("/abuse/operations");
   expect(message.subject).toBe(`HackerAI report received: ${reference}`);
   expect(message.from.address).toBe("abuse@hackerai.co");
