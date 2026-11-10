@@ -286,6 +286,11 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  chat_history_access: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.

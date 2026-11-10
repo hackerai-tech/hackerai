@@ -17,6 +17,7 @@ import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as captchaAttempts from "../captchaAttempts.js";
 import type * as captchaReconciliation from "../captchaReconciliation.js";
 import type * as captchaValidators from "../captchaValidators.js";
+import type * as chatHistoryAccess from "../chatHistoryAccess.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
 import type * as cloudNetwork from "../cloudNetwork.js";
@@ -40,6 +41,7 @@ import type * as influencers from "../influencers.js";
 import type * as involuntaryChurn from "../involuntaryChurn.js";
 import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
 import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js";
+import type * as lib_chatHistoryAccess from "../lib/chatHistoryAccess.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
@@ -63,7 +65,6 @@ import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as modelHistory from "../modelHistory.js";
 import type * as nextActions from "../nextActions.js";
-
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
@@ -108,6 +109,7 @@ declare const fullApi: ApiFromModules<{
   captchaAttempts: typeof captchaAttempts;
   captchaReconciliation: typeof captchaReconciliation;
   captchaValidators: typeof captchaValidators;
+  chatHistoryAccess: typeof chatHistoryAccess;
   chatStreams: typeof chatStreams;
   chats: typeof chats;
   cloudNetwork: typeof cloudNetwork;
@@ -131,6 +133,7 @@ declare const fullApi: ApiFromModules<{
   involuntaryChurn: typeof involuntaryChurn;
   "lib/branchedChatTitle": typeof lib_branchedChatTitle;
   "lib/chatAccessSuspensions": typeof lib_chatAccessSuspensions;
+  "lib/chatHistoryAccess": typeof lib_chatHistoryAccess;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
@@ -154,7 +157,6 @@ declare const fullApi: ApiFromModules<{
   messages: typeof messages;
   modelHistory: typeof modelHistory;
   nextActions: typeof nextActions;
-
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;

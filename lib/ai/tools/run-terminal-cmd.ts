@@ -275,7 +275,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     if (!env && !required && !gateOnly) return undefined;
     let sessionEnv: Record<string, string> | undefined;
     try {
-      sessionEnv = await context.browserSessions?.prepare(sandbox);
+      sessionEnv = await context.browserSessions?.prepare(
+        sandbox,
+        gateOnly
+          ? "gate_only"
+          : interactiveShell
+            ? "interactive_shell"
+            : "recognized_browser_command",
+      );
     } catch (error) {
       if (!gateOnly) throw error;
       console.warn("[run-terminal-cmd] browser gate unavailable");
