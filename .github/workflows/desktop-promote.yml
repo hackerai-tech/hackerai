@@ -1,12 +1,10 @@
 name: Promote Desktop Build
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_run_id:
-        description: Successful main Build Desktop App run ID to promote
-        required: true
-        type: string
+  # repository_dispatch always loads this workflow from the default branch.
+  # A workflow_dispatch can instead load branch-controlled release tooling.
+  repository_dispatch:
+    types: [desktop_promote]
 
 concurrency:
   group: desktop-release
@@ -30,7 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
         run: |
           set -euo pipefail
 
@@ -59,7 +57,7 @@ jobs:
             echo "Only main builds can be promoted; got $HEAD_BRANCH" >&2
             exit 1
           fi
-          if [[ "$EVENT" != "push" && "$EVENT" != "workflow_dispatch" ]]; then
+          if [[ "$EVENT" != "push" && "$EVENT" != "workflow_dispatch" && "$EVENT" != "repository_dispatch" && "$EVENT" != "workflow_run" ]]; then
             echo "Unexpected source event: $EVENT" >&2
             exit 1
           fi
@@ -72,7 +70,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ github.event.client_payload.source_run_id }}
           path: artifacts
 
       - name: Determine embedded version
@@ -155,7 +153,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ steps.release.outputs.tag_name }}
           TARGET_SHA: ${{ steps.source.outputs.head_sha }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
         run: |
           set -euo pipefail
 
