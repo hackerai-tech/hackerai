@@ -1436,6 +1436,45 @@ describe("userDeletion", () => {
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
   });
 
+  it("makes progress deleting near-limit chats with stable ownership records", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const { getDocumentSize } = await import("convex/values");
+    const chats = [0, 1].map((i) => {
+      const chat = {
+        _id: `chat${i}`,
+        id: `chat${i}`,
+        user_id: "user_123",
+        title: "",
+      };
+      chat.title = "x".repeat(1024 * 1024 - 16 - getDocumentSize(chat));
+      return chat;
+    });
+    const tables: Tables = {
+      chats,
+      chat_history_access: chats.map((chat) => ({
+        _id: `access-${chat.id}`,
+        chat_id: chat.id,
+        user_id: chat.user_id,
+      })),
+    };
+    const { ctx, readCounter } = createMockCtx(tables);
+    let done = false;
+    for (let pass = 0; pass < 5 && !done; pass++) {
+      const previous = tables.chats.length;
+      readCounter.bytes = 0;
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+      expect(tables.chats.length < previous || !result.hasMore).toBe(true);
+      done = !result.hasMore;
+    }
+    expect(done).toBe(true);
+    expect(tables.chats).toHaveLength(0);
+    expect(tables.chat_history_access).toHaveLength(0);
+  });
+
   it.each(["service", "residue"])(
     "bounds aggregate bytes and finishes large records through %s cleanup",
     async (entry) => {

@@ -414,7 +414,8 @@ async function cleanupUserDataForUser(
     messages.push(message);
   }
 
-  // Reserve summary lookups and the stable ownership record for each chat.
+  // Limit candidates to leave room for dependent lookups; every read also
+  // checks the shared budget.
   const chatLimit = Math.floor((budget.remaining - 1) / 4);
   const chatsBatch = await collectByIndexBatch<Doc<"chats">>(
     ctx,
@@ -427,20 +428,6 @@ async function cleanupUserDataForUser(
   const chats = chatsBatch.docs;
   const { summaries: chatSummaries, incompleteChatIds } =
     await collectChatSummariesForChats(ctx, budget, chats, stats);
-
-  const chatAccess = new Map<string, Doc<"chat_history_access">>();
-  for (const chat of chats) {
-    if (!canReadDocument(budget)) {
-      incompleteChatIds.add(chat.id);
-      continue;
-    }
-    const access = await ctx.db
-      .query("chat_history_access")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-      .unique();
-    chargeRead(budget, access);
-    if (access) chatAccess.set(chat.id, access);
-  }
 
   const projectsBatch = await collectByIndexBatch<Doc<"projects">>(
     ctx,
@@ -617,6 +604,22 @@ async function cleanupUserDataForUser(
   const subagentEvents = subagentEventsBatch.docs;
   const subagentWorkItems = subagentWorkItemsBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
+
+  // Check dependent tables before access reads can consume their scan reserve.
+  // Otherwise near-limit chats can repeatedly block all cleanup progress.
+  const chatAccess = new Map<string, Doc<"chat_history_access">>();
+  for (const chat of chats) {
+    if (!canReadDocument(budget)) {
+      incompleteChatIds.add(chat.id);
+      continue;
+    }
+    const access = await ctx.db
+      .query("chat_history_access")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+      .unique();
+    chargeRead(budget, access);
+    if (access) chatAccess.set(chat.id, access);
+  }
 
   const chatsReadyToDelete =
     messagesBatch.hasMore ||
