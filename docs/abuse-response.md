@@ -1,64 +1,154 @@
-# Abuse reports and scoped containment
+# Abuse email intake
 
-`/abuse` accepts signed-out reports and appeals. `/abuse/operations` is a restricted
-review workflow. A report never automatically changes an account. Submitted links
-remain plain text and are not fetched by the intake or review page.
+`/abuse` accepts signed-out reports and appeals and queues their complete contents
+for plain-text email to `abuse@hackerai.co`. New submissions do not create cases or
+change accounts. The custom `/abuse/operations` UI has been removed. Submitted
+links remain text; the service does not fetch them or generate attachments.
 
-## Configuration and access
+## Configuration
 
-Enable only after a named operator owns intake review, escalation, and preservation
-review. Record those assignments and review dates in the owning internal issue.
-Before enabling intake for real reports, the owner must approve and record the retention policy described below. Proposed periods are not an adopted policy. Configure each environment independently:
+Configure Preview and Production independently. Before enabling public intake,
+assign a mailbox owner and backup, verify delivery and monitoring, and record an
+approved retention policy in the owning internal issue. The technical defaults
+below are not a claim about legally required retention.
 
-- Web: `ABUSE_EVIDENCE_KEYS`, a JSON keyring with `active` key ID and `keys` mapping
-  key IDs to 32-byte hexadecimal keys. Keep keys in the environment secret store.
-  Retain old keys while evidence or idempotent retries still depend on them.
-- Web and Convex: `ABUSE_OPERATOR_USER_IDS`, an explicit comma-separated allowlist
-  of immutable WorkOS user IDs. Ordinary support membership grants no access.
+- Web and Convex: `ABUSE_EVIDENCE_KEYS`, the same environment-specific JSON keyring
+  with `active` key ID and `keys` mapping IDs to 32-byte hexadecimal keys. Retain
+  old keys while queued payloads, receipt retries, or retained historical case
+  evidence and notes depend on them. Before retirement, an authorized backend
+  review must check all those dependencies; queue expiry alone does not prove a
+  historical key is unused. Keep the key if that check is incomplete. Update both
+  consumers together, without copying keys between environments.
 - Web and Convex: `ABUSE_INTAKE_ENABLED=true`. Missing configuration fails closed.
-- Web: `ABUSE_TURNSTILE_SITE_KEY`, `ABUSE_TURNSTILE_SECRET_KEY`, and
-  `ABUSE_TURNSTILE_HOSTNAMES` (comma-separated exact hostnames, without schemes or
-  paths). Use a dedicated Cloudflare **Managed** widget with matching hostnames
-  and no pre-clearance. Keep Preview and Production widgets and secrets separate;
-  a Preview hostname must not enable the Production form. Published dummy keys
-  are rejected. These web settings require a new deployment; they are not needed
-  by Convex or Trigger workers.
-- Web: set `ABUSE_EMAIL_VERIFIED=true` only after separately verifying mailbox
-  delivery and monitoring. Otherwise the page does not display the email address.
+- Convex only: `ABUSE_SMTP_PASSWORD`, a dedicated Proton SMTP token paired with
+  `abuse@hackerai.co`. Use separate tokens for Preview and Production, not a mailbox
+  login password. SMTP uses Proton's fixed host/port, mandatory STARTTLS and
+  certificate verification. Removing this token pauses queued work and rejects
+  new reports. It is not needed in Vercel or Trigger.
+- Web only: `ABUSE_TURNSTILE_SITE_KEY`, `ABUSE_TURNSTILE_SECRET_KEY`, and
+  `ABUSE_TURNSTILE_HOSTNAMES` (comma-separated exact hostnames). Use a dedicated
+  Cloudflare Managed widget with matching hostnames and no pre-clearance.
+  Published dummy keys are rejected. Keep Preview and Production separate.
+- Web only: `ABUSE_EMAIL_VERIFIED=true` displays the mailbox address after delivery
+  and monitoring have been independently verified.
 
-The operator page requires a WorkOS session; the API checks both that identity and
-same-origin requests. Convex requires the existing signed service proof and the
-operator allowlist. Every evidence read and action creates an audit event.
-Do not share session cookies, service credentials, or evidence keys with reviewers.
-Case evidence is encrypted before RPC so validation errors cannot echo report text.
-The reporting and operator routes suppress PostHog events and Intercom startup.
+Web settings require a deployment. The email-only flow does not use
+`ABUSE_NOTIFICATIONS_ENABLED`, `ABUSE_NOTIFICATION_ENVIRONMENT`,
+`ABUSE_NOTIFICATION_REVIEW_URL`, or `ABUSE_OPERATOR_USER_IDS`. The latter remains
+required only by the authorized historical-case backend described below.
 
-### Security check and submission retries
+## Security check and receipts
 
-The public form loads Cloudflare Turnstile. The API validates every challenge with
-Siteverify before writing a case, requiring both the configured request hostname
-and the `abuse_report` action. Missing, expired, previously redeemed, or mismatched
-tokens cannot save a report. Verification has a seven-second timeout and fails
-closed on provider/network errors. Tokens are bounded to 2,048 characters and are
-sent separately from the bounded report body; they never enter stored evidence,
-idempotency fingerprints, logs, or analytics. No report fields are sent to Siteverify.
+The web API validates report fields and Cloudflare Siteverify before enqueueing,
+requiring the configured hostname and `abuse_report` action. Missing, expired,
+reused or mismatched tokens fail closed, including a seven-second provider timeout.
+Tokens never enter encrypted payloads, fingerprints or analytics; report contents
+are not sent to Siteverify. The intake route suppresses product analytics and Intercom startup.
 
-Cloudflare tokens expire after five minutes and can be redeemed only once. The
-widget refreshes expired challenges; the form also renews an old challenge before
-submission and creates a fresh check after every request attempt. Script failures
-offer an in-place retry. All these paths preserve report fields. A lost response
-can be retried with the same report submission ID and a new challenge; the durable
-intake returns the original receipt instead of creating a duplicate. Only a saved
-case reference confirms receipt. See Cloudflare's
-[server-side validation contract](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+The form refreshes expired challenges and preserves fields after errors. A lost
+response can be retried with the same submission ID and a renewed challenge. The
+receipt confirms durable queueing, not delivery or a decision. Matching receipt
+retries do not enqueue duplicates during the 30-day receipt retention window.
+Changed content with the same ID is rejected. An expired unsent payload returns
+410; the form preserves fields and requires an explicit new submission.
+Never disable verification to work around a provider outage.
 
-Do not disable verification to work around a provider outage. Keep the form's
-unavailable/retry messaging and existing Help Center route available. Activating a
-verified mailbox remains a separate operational decision.
+## Delivery and temporary storage
 
-## Review and attribution
+One Convex transaction stores an encrypted report in `abuse_notifications` and
+schedules a Node action. Scheduler arguments contain only its notification ID.
+New intake requires an SMTP token and a keyring containing the envelope's key.
+Decryption and bounded report validation happen before SMTP. Missing keys or
+corrupt ciphertext fail closed without sending.
 
-1. Open the queue or a full `AB-…` reference. Treat submitted fields as allegations.
+The plain-text message includes report/appeal type, reference, receipt time,
+contact email, target, incident time, source IP/port, protocol, related reference,
+description and full submitted evidence/links. Empty optional fields are marked.
+Recipients and headers are fixed; no HTML, attachments, challenge tokens, keys or
+internal notes are included.
+
+When the finish transaction records SMTP acceptance, it removes the queued report
+ciphertext, leaving reference, digest, timestamps, delivery status and attempt
+count. Lost acknowledgements or interrupted finish transactions can leave delivery
+uncertain, retaining the payload until confirmed-sent reconciliation or expiry
+cleanup. Retained encrypted payloads expire after seven days; minimal receipts
+expire after 30 days. A bounded five-minute maintenance sweep deletes expired data
+even while SMTP is disabled. If an expired payload still has an active two-minute
+send lease, cleanup waits until that lease ends. Rate-limit hashes expire
+separately after their short window.
+These are application-level deletion rules, not guarantees about provider backups
+or platform execution logs. Review those services' retention separately.
+
+The abuse mailbox and replies are the working record. Queue deletion does not
+erase delivered emails, quoted copies or forwarded messages; their retention and
+deletion need a separately approved mailbox policy. Historical case evidence is
+not deleted by this queue policy.
+
+## Delivery recovery
+
+Inspect the authorized Convex dashboard's `abuse_notifications` status index.
+`sent` means Proton accepted the message; verify the intended inbox separately.
+Explicit transient rejection and preflight connection failures retry up to five
+attempts with increasing delays. Permanent failure remains `failed`. A five-minute
+sweep resumes paused work and recovers pending actions dropped before claim,
+waiting beyond the longest retry delay. A stable Message-ID helps reconciliation.
+
+Lost acknowledgements after DATA and expired send leases become `uncertain` and
+are never automatically resent. Check the reference in the recipient inbox and
+Proton Sent folder, recording the result internally before either recovery action:
+
+- `abuseNotifications:retryFailed` accepts an exact notification ID and current
+  `expectedAttempts` only for a confirmed failed entry with retained payload.
+- `abuseNotifications:reconcileUncertain` accepts that same fence and a decision
+  of `confirmed_sent` (marks sent and erases payload without sending) or
+  `confirmed_not_sent` (schedules a send only with retained payload and SMTP).
+
+These are internal admin mutations, not public APIs. Expired payloads cannot be
+retried. The automatic attempt budget is not reset by an explicit recovery.
+Monitor failed, uncertain and expired entries before their recovery window ends.
+
+## Pausing and rollback
+
+Disable `ABUSE_INTAKE_ENABLED` in both web and Convex and deploy the web change.
+Removing `ABUSE_SMTP_PASSWORD` pauses sends. Keep the compatible queue schema,
+handlers and five-minute maintenance cron running while intake/delivery is paused,
+so encrypted payloads and receipts can still expire. New notification rows have no
+`caseId`, including receipts retained after a successful send. Before restoring an
+older required-`caseId` schema, an authorized backend inspection must confirm all
+such rows have expired and been removed or have been handled through a separately
+approved migration. Waiting 30 days alone is insufficient evidence of cleanup.
+Until validation can succeed, retain the compatible schema and maintenance; do not
+revert the entire backend or delete unfamiliar rows to force a rollback.
+
+## Verification
+
+Use synthetic data and the designated Preview environment. Verify real mailbox
+arrival, one queue row across receipt retries, no new case, full text without HTML
+or fetched links, and absent ciphertext after acceptance. Exercise missing SMTP,
+corrupt ciphertext, transient/permanent rejection, uncertain acknowledgement,
+failed recovery, expiry and receipt cleanup. Verify the actual form on desktop and
+narrow screens with its dedicated Managed widget; check script failure, expiry,
+field preservation and a lost-response retry. Public launch remains separate from
+code merge and requires the operational ownership and policy decisions above.
+
+## Historical cases and containment
+
+Historical operations require `ABUSE_OPERATOR_USER_IDS` in both web and Convex,
+with the appropriate historical `ABUSE_EVIDENCE_KEYS` retained in their secret
+stores. Ordinary support membership grants no access.
+
+1. Use the retained `POST /api/internal/abuse` endpoint through an approved
+   same-origin operator client with an allowlisted WorkOS session. Its `read`
+   action accepts the full `AB-…` reference and an optional pagination cursor;
+   it checks both operator allowlists and creates an audit event. The server
+   invokes `decryptAbuseEvidence(reference, ciphertext)` for case evidence and
+   each encrypted event, using the environment's keyring from its secret store,
+   then returns readable `case.report` and event `detail` fields. Keep results
+   inside the approved restricted review workspace; never copy keys or evidence
+   into command arguments, logs, analytics, public tickets or unapproved exports.
+   Direct signed `abuseCases.read` calls return ciphertext; `abuseCases.list`
+   returns metadata. Neither should be mistaken for a decrypted evidence view.
+   Treat submitted fields as allegations.
 2. Record verified attribution separately from allegations and decisions. Check the
    source address **and source port**, timezone, protocol, provider records, and the
    exact account, chat, root run, region, and selected sandbox. An IP alone is not
@@ -107,7 +197,7 @@ or record why the scoped case evidence is sufficient and explicitly choose
 Never leave this state described as contained or assume the process stopped.
 
 Each operation has a ten-minute case lock, longer than the API's five-minute hard
-runtime limit. Reload after an interrupted request and inspect the saved state.
+runtime limit. Read the current case state after an interrupted request.
 After the lock expires, retry uses the saved scope and snapshot. Emergency stop also checks the deterministic snapshot name for a capture completed before an interrupted storage response. An unavailable lookup leaves a durable snapshot-review flag; reconcile provider inventory before releasing the evidence hold. A cleanup fence
 can be reclaimed only with the same case token, sandbox ID, and region. Never
 manually clear an unfamiliar Redis fence. A provider error, changed scope, or
@@ -150,7 +240,7 @@ separate restriction and runtime checks are recorded.
 5. After appeal or resolution review, use `userSuspensions.resolveBySource` only
    with the exact recorded user and `abuse-late:` source ID. Verify the selected
    restriction is resolved and independent restrictions remain active, then
-   record the result before resolving the case. The case's normal Resolve action
+   record the result before resolving the case. The case's `abuseCases.resolve` mutation
    does not remove this separately recorded late-report restriction.
 
 ## Resolution and evidence lifecycle
@@ -177,82 +267,19 @@ periods.
 Lawful preservation requirements and active case holds override scheduled deletion;
 record the basis, scope, owner and next review date without placing privileged
 advice in public records. A reviewer must check that basis before releasing a hold.
-The metadata row requires a separately authorized backend procedure because the
-case-evidence button intentionally retains audit metadata. Do not describe that
-button as full account erasure. Track every due review and deletion in the internal
-case workflow and record completion or a justified hold extension.
-After resolution and
-hold release, an operator can delete report and note contents by typing the full
-reference. Deletion runs in bounded batches; repeat while the UI says more remain.
+The metadata row requires a separately authorized backend procedure because
+`abuseCases.eraseEvidence` intentionally retains audit metadata. Do not describe
+it as full account erasure. Track due reviews and deletions in the internal case
+record, including completed work or a justified hold extension. After resolution
+and reviewed hold release, the authorized service client can call
+`abuseCases.eraseEvidence` with the current revision and full reference as
+confirmation. Deletion runs in bounded batches; read the updated revision and
+repeat while the backend reports more remain.
 Audit metadata and containment identifiers remain. Provider snapshots are separate:
 review the exact case/sandbox/region association, obtain the appropriate deletion
 authorization, delete only that snapshot, verify provider absence, and record the
 outcome before deleting the case notes. Releasing a hold by itself deletes nothing.
 
-## Acceptance
-
-Use synthetic reports and disposable, explicitly owned runtimes. Verify anonymous
-and expired-session intake, invalid fields, storage failure without a false receipt,
-retry idempotency including retained-key rotation, and desktop/narrow layouts.
-For Turnstile, check a real Managed widget on the exact Preview hostname, script
-failure and retry with fields retained, slow composition/expiry, rejected tokens,
-and a lost-response retry using a renewed challenge and the same case reference.
-Verify unauthorized operator rejection and audited evidence access. For containment,
-exercise a root with a child and a detached process; prove selected-process stop,
-independent-user continuity, blocked restart/reconnect/Goal continuation, partial
-provider failure, retry after interruption, and resolution with an independent
-billing hold still active. Preserve separate evidence for web, cloud, local, and
-native Desktop paths; never infer one from another.
-
-## Email notifications
-
-The case receipt confirms durable storage, independently of email delivery. On the
-Convex deployment, configure only a dedicated `ABUSE_SMTP_PASSWORD` token paired
-with `abuse@hackerai.co` and `ABUSE_NOTIFICATION_REVIEW_URL` as the exact HTTPS
-web origin for that environment. For HackerAI Production use `https://hackerai.co`;
-for Preview use the verified branch origin. Self-hosted implementations can use
-their own HTTPS origin. Credentials, paths, queries and fragments are rejected.
-Verify the exact origin against the web deployment before saving configuration.
-These two variables belong only in Convex, not Vercel or Trigger. A present,
-nonempty SMTP token enables notifications; remove it to pause delivery.
-Use separate SMTP tokens for Preview and Production. Do not use a mailbox login
-password. SMTP submission uses Proton's fixed host and port with mandatory
-STARTTLS and certificate verification. No sender, recipient, or SMTP endpoint is
-accepted from a report.
-
-The initial case transaction creates one outbox row and schedules delivery;
-receipt retries do not enqueue duplicates. Notifications contain only the case
-reference and restricted operator-page link, without report text, evidence,
-contact email, or submitted targets. Email recipients still need operator access.
-
-Inspect `abuse_notifications` in the authorized Convex dashboard, using its status
-index. `sent` means Proton accepted the message, not that inbox delivery was
-independently verified. Reconcile `failed` and `uncertain` entries during intake
-review. Explicit transient SMTP rejection and preflight connection errors retry
-up to five attempts with increasing delays. Permanent rejection/configuration
-failure remains `failed`. Removing the SMTP token pauses existing queued work;
-a five-minute sweep resumes it after the token is restored. The sweep also recovers
-stale pending work whose scheduled action never claimed it, waiting beyond the
-64-minute maximum retry delay plus five minutes. Recovery uses a bounded index
-query and the same single-claim protection. New reports received without an SMTP
-token do not queue notifications, including subsequent receipt retries after a
-token is added. Lost acknowledgements after DATA and expired send leases become `uncertain`; these are not blindly retried because SMTP has no
-exactly-once delivery guarantee. A stable Message-ID assists reconciliation.
-Before any manually authorized resend, check the recipient inbox and Proton Sent
-folder for the case reference and record the decision in the internal case record.
-Do not mutate an unfamiliar outbox entry to work around delivery uncertainty.
-After correcting configuration, an authorized backend administrator can run the
-internal `abuseNotifications:retryFailed` mutation with the exact `notificationId`
-and its current `expectedAttempts`. It accepts only confirmed `failed` entries
-with retained case evidence and enabled notifications; pending, sent, changed, or
-uncertain entries are rejected. It preserves the attempt count and stable message
-identity. The existing automatic-attempt budget is not reset; after exhaustion
-this permits one explicit send attempt. Verify the result and record recovery
-in the internal case workflow.
-
-Before enabling real notifications, submit a synthetic report through the actual
-web form and independently confirm the matching reference in the intended inbox.
-Verify receipt retries keep one outbox entry, and test transient failure and
-uncertain-send behavior. Confirm mailbox ownership and monitoring separately;
-SMTP acceptance alone does not establish either. `ABUSE_EMAIL_VERIFIED` only
-controls the public email link and does not activate notifications.
+The historical case backend remains available only through authorized service
+access. Its operator allowlist, audit trail, holds and containment guards remain
+in force; new email submissions never invoke these actions.
