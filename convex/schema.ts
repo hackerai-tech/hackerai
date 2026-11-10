@@ -304,6 +304,11 @@ export default defineSchema({
     revision: v.number(),
     policy: v.optional(scopePolicy),
   }).index("by_chat_source", ["chat_id", "source_id"]),
+  chat_history_access: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+
   chats: defineTable({
     user_skill_ids: v.optional(v.array(v.id("user_skills"))),
     next_actions: v.optional(nextActionsStateValidator),

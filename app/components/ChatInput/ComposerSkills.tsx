@@ -452,12 +452,12 @@ export function ComposerSkillSelections() {
   return (
     <div
       aria-label="Skills selected for this chat"
-      className="flex flex-wrap gap-1.5 px-4"
+      className="flex shrink-0 gap-1.5 overflow-x-auto px-4 md:flex-wrap md:overflow-x-visible"
     >
       {skills.selected.map((skill) => (
         <span
           key={skill.id}
-          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 py-0 pl-2 pr-0 text-xs md:py-1 md:pr-1 text-foreground/90 dark:bg-muted"
+          className="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 py-0 pl-2 pr-0 text-xs md:py-1 md:pr-1 text-foreground/90 dark:bg-muted"
           title={`${skill.description || skill.name}. Available for this chat; content loads when relevant.`}
         >
           <BookOpen className="size-3 shrink-0 text-muted-foreground" />
