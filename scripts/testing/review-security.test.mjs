@@ -576,6 +576,16 @@ test("CodeRabbit availability is advisory while selected security evidence remai
     const f = fixture({ checks: [scan, ...reviewChecks] });
     assert.equal((await evaluatePullRequest(f.api, "o/r", 1)).state, "success");
     assert.match(f.writes.at(-1).body.description, /CodeRabbit.*advisory/);
+    const pending = fixture({ checks: reviewChecks });
+    assert.equal(
+      (await evaluatePullRequest(pending.api, "o/r", 1)).state,
+      "pending",
+    );
+    assert.match(
+      pending.writes.at(-1).body.description,
+      /^Waiting for the selected CodeQL jobs/,
+    );
+
     assert.equal(
       (
         await evaluatePullRequest(

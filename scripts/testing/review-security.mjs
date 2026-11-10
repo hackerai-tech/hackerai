@@ -320,14 +320,7 @@ export async function evaluatePullRequest(
       detailsUrl,
       decision.state === "success"
         ? "Selected security scans passed; CodeRabbit is advisory."
-        : (
-            [decision.security, decision.review].find(
-              (item) => item.state === "fail",
-            ) ??
-            [decision.security, decision.review].find(
-              (item) => item.state === "pending",
-            )
-          ).reason,
+        : decision.security.reason,
     );
   return decision;
 }
