@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
 import { isSupportedCaptchaTarget, type CaptchaWidget } from "./detection";
+import { CaptchaUnsolvableError } from "./provider-error";
 
 const providerResponse = z.object({
   errorId: z.number().int(),
@@ -75,10 +76,17 @@ export function createTwoCaptchaSolver(apiKey: string): CaptchaSolver {
           const body = await response.json();
           transient = false;
           const parsed = providerResponse.safeParse(body);
+          if (
+            parsed.success &&
+            parsed.data.errorId === 12 &&
+            method === "getTaskResult"
+          )
+            throw new CaptchaUnsolvableError();
           if (!parsed.success || parsed.data.errorId !== 0) throw new Error();
           return parsed.data;
         } catch (error) {
           deadline.throwIfAborted();
+          if (error instanceof CaptchaUnsolvableError) throw error;
           if (
             method === "getTaskResult" &&
             transient &&
