@@ -327,7 +327,7 @@ export function createBrowserChallengeHandler(
         }
         return respond({
           status: "solve_available",
-          message: `A supported CAPTCHA blocks this session. Decide whether solving is needed for the user's task. To request one paid 2Captcha attempt, call run_terminal_cmd with exactly: hackerai-captcha solve --session ${target.sessionName}. To decline and restore the widget, use hackerai-captcha release --session ${target.sessionName}. These are runtime commands, not installed shell programs. Use foreground, non-interactive mode with no pipes or appended commands. No paid task has been created.`,
+          message: `A supported CAPTCHA is ready for 2Captcha. If verification blocks the authorized task, your NEXT tool call should be run_terminal_cmd with exactly: hackerai-captcha solve --session ${target.sessionName}. Do not first click the checkbox, solve the puzzle by vision, or probe the prepared widget. Respect the user's budget and any explicit vision-only or no-paid-solvers request. If solving is unnecessary or unauthorized, restore the widget with hackerai-captcha release --session ${target.sessionName}. These are runtime commands, not installed shell programs. Use foreground, non-interactive mode with no pipes or appended commands. No paid task has been created.`,
         });
       }
       solveStarted = true; // Includes failures and concurrent calls; no paid retry.
