@@ -43,6 +43,13 @@ async function owner(agentId = "parent") {
     commands: { run },
     files: { read },
   } as unknown as AnySandbox);
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      success: true,
+      data: { connected: true, port: 9223 },
+    }),
+  });
   return { sessions, run, read };
 }
 
@@ -228,7 +235,7 @@ it("caps admission observation across repeated handoffs without capping admissio
   for (let i = 0; i < 4; i++)
     await sessions.waitForHumanHandoff(undefined, true);
   expect(mockMutation).toHaveBeenCalledTimes(4);
-  expect(run).toHaveBeenCalledTimes(3); // preparation and at most two passive probes
+  expect(run).toHaveBeenCalledTimes(5); // preparation and one check per new wait
   expect(
     jest
       .mocked(phLogger.info)

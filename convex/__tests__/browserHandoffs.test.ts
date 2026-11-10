@@ -282,6 +282,41 @@ describe("browser handoff ownership", () => {
     ).not.toBeNull();
   });
 
+  it("reports the completed-takeover receipt even when its private message is unavailable", async () => {
+    const { ctx, rows, register, scope } = fixture();
+    await register();
+    expect(
+      await browser.getForBackend.handler(ctx as never, scope),
+    ).toMatchObject({
+      hasCompletedTakeover: false,
+    });
+    rows.browser_handoffs[0].exit_note_ids = ["removed-note"];
+    expect(
+      await browser.getExitNotesForBackend.handler(ctx as never, scope),
+    ).toEqual([]);
+    expect(
+      await browser.getForBackend.handler(ctx as never, scope),
+    ).toMatchObject({
+      hasCompletedTakeover: true,
+    });
+    const row = rows.browser_handoffs[0];
+    expect(
+      await browser.requestWaitForBackend.handler(ctx as never, {
+        ...scope,
+        expectedUpdatedAt: row.updated_at as number,
+      }),
+    ).toBe(true);
+    expect(row.state).toBe("agent");
+    expect(
+      JSON.stringify(
+        await browser.getForUser.handler(ctx as never, {
+          chatId: "chat",
+          agentId: "parent",
+        }),
+      ),
+    ).not.toContain("hasCompletedTakeover");
+  });
+
   it("rejects replayed and expired control grants while keeping recovery paused", async () => {
     const { ctx, register, scope } = fixture();
     await register();
