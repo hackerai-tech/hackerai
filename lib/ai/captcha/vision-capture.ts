@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { DETECT_CHALLENGES_SCRIPT } from "./detection";
+import type { FocusedChallenge } from "./vision-image";
 
 export type VisionCaptureRequest = {
   path: string;
-  deadline: number;
   prepareScript: string;
   measureScript: string;
 };
@@ -27,6 +27,9 @@ export const visionCaptureResult = z.object({
   devicePixelRatio: z.number().finite().positive(),
 });
 export type VisionCaptureResult = z.infer<typeof visionCaptureResult>;
+/** The original viewport stays authoritative when focusing is unavailable. */
+export type VisionCapture = VisionCaptureResult &
+  ({ focused: FocusedChallenge } | { focusedUnavailable: true });
 
 /** Only this exact viewport capture can replace the model's shell execution. */
 export function visionScreenshotRequest(command: string) {
