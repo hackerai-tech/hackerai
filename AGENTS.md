@@ -120,11 +120,12 @@ changes against the PR base, runs related frontend tests or the full suite for
 shared runtime changes, and falls back to all checks for unknown paths or missing
 history. Main and nightly CI run all checks with coverage. The required `CI` gate
 rejects failed, cancelled, missing, or unexpectedly skipped jobs, including
-server-side lint. The required `Review and security` status verifies an actual
-CodeRabbit review of the current commit and blocks new high/critical findings
-from selected CodeQL scans; inert documentation retains intentional skips.
-After resolving review threads, re-evaluate that status with the `Update review
-and security policy` workflow's PR-number input if no provider event refreshes it.
+server-side lint. The required `Review and security` status blocks new
+high/critical findings from selected CodeQL scans; inert documentation retains
+intentional skips. CodeRabbit is advisory and is not required by that gate.
+Use the `Update review and security policy` workflow's PR-number input to
+re-evaluate after missing scan evidence becomes available. Automatic events use
+main; a maintainer can manually select a policy revision for a policy update.
 Run an explicit
 affected suite when the dependency graph cannot represent the change. Do not rerun
 the full suite locally for every review correction; use `pnpm test` when a local full run is needed.
@@ -245,46 +246,26 @@ the [hackerai-retention-analysis skill](.agents/skills/hackerai-retention-analys
 
 ## Pull Request Review Workflow
 
-When a PR has been pushed and is ready for review, do not send the final
-completion message until CI and CodeRabbit are complete.
+When a PR has been pushed and is ready for review, wait for required CI and
+security checks. CodeRabbit is advisory: do not block completion or merging on
+its availability, quota, skipped review, or review completion.
 
-Use this wait pattern:
+Poll once within 30-60 seconds after PR creation to confirm checks started, then
+every 2-3 minutes while CI, Vercel, or Trigger checks are active. If the user asks
+for status, report briefly and continue unless told to stop.
 
-- Poll once within 30-60 seconds after PR creation to confirm checks started.
-- While CI, Vercel, or Trigger checks are active, poll every 2-3 minutes.
-- When only CodeRabbit remains, poll every 3-5 minutes.
-- Treat 12-15 minutes as normal CodeRabbit runtime before calling it delayed.
-- If the user asks for status, report briefly, then continue waiting unless told
-  to stop.
-
-After CodeRabbit finishes:
-
-1. Check PR checks, CodeRabbit review status, review comments, review threads,
-   and issue comments.
-2. Treat every CodeRabbit suggestion as a hypothesis, not automatically correct.
-3. For each actionable comment:
-   - If valid, fix it with the smallest appropriate change, commit, push, and
-     wait for checks/CodeRabbit again.
-   - If false positive or not applicable, leave a brief PR reply explaining why
-     no change is needed.
-   - If it is a nit, fix it when low-risk and useful; otherwise explain why it
-     was skipped.
-4. Repeat until CodeRabbit is complete and there are no unresolved valid
-   actionable comments.
+Review available bot and human comments as hypotheses. Fix valid actionable
+findings with the smallest appropriate change, or explain why a suggestion does
+not apply. Do not request repeated CodeRabbit reviews to satisfy a merge gate.
 
 Only finish when:
 
-- The PR is not draft.
-- The branch is pushed.
-- The local worktree is clean.
-- Required CI checks are passing.
-- CodeRabbit is complete.
-- Valid CodeRabbit comments are fixed or explicitly answered.
+- The PR is not draft, the branch is pushed, and the local worktree is clean.
+- Required CI and security checks pass.
+- Available valid actionable comments are fixed or explicitly answered.
 - Visual verification is done when the PR has meaningful UI/user-visible impact.
-- Manual verification steps are included when the PR is user-facing, risky,
-  important, or needs human validation.
-- The only remaining blocker is human review, merge approval, or the listed
-  manual verification.
+- Relevant manual verification steps are included.
+- Any remaining human-review or acceptance blocker is stated clearly.
 
 ## Thread Coordination
 
@@ -372,7 +353,7 @@ evidence in the owning Linear issue and keep public PR receipts sanitized.
 
 ## Manual Verification Notes
 
-After checks and CodeRabbit are complete, include short manual verification
+After required checks are complete, include short manual verification
 steps when the PR is user-facing, risky, important, or cannot be fully validated
 by tests.
 
