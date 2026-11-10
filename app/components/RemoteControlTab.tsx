@@ -29,7 +29,6 @@ interface LocalConnection {
     release: string;
     hostname: string;
   };
-  lastSeen: number;
   isDesktop: boolean;
 }
 

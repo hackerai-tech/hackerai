@@ -403,6 +403,20 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },
     ],
+    local_sandbox_heartbeats: [
+      {
+        _id: "heartbeat-user",
+        user_id: userId,
+        connection_id: "conn-1",
+        last_heartbeat: 1,
+      },
+      {
+        _id: "heartbeat-other",
+        user_id: otherUserId,
+        connection_id: "conn-2",
+        last_heartbeat: 2,
+      },
+    ],
     local_sandbox_connections: [
       { _id: "connection-user", user_id: userId, connection_id: "conn-1" },
       {
@@ -865,6 +879,13 @@ describe("userDeletion", () => {
       row(tables, "captcha_daily_limits", "captcha-limit-global"),
     ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
+    expect(
+      row(tables, "local_sandbox_heartbeats", "heartbeat-other"),
+    ).toMatchObject({
+      user_id: "user_other",
+      connection_id: "conn-2",
+      last_heartbeat: 2,
+    });
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
     expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();

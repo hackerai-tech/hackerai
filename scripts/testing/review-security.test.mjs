@@ -268,6 +268,7 @@ function fixture({
   analyses = [analysis()],
   failMetadata = false,
   changeHead = false,
+  changeMerge = false,
   failChecks = false,
   failFinalRead = false,
   headRepo = "o/r",
@@ -291,6 +292,8 @@ function fixture({
     if (path === "/repos/o/r/pulls/1") {
       reads++;
       if (failFinalRead && reads > 1) throw new Error("read unavailable");
+      if (changeMerge && reads > 1)
+        return { ...pr, merge_commit_sha: "d".repeat(40) };
       return changeHead && reads > 1 ? { ...pr, head: { sha: base } } : pr;
     }
     if (path.includes("/check-runs?")) {
@@ -418,6 +421,23 @@ test("fresh pending statuses replace old passes before metadata reads; same-name
   const safeFork = fixture({ headRepo: "fork/r" });
   assert.equal(
     (await evaluatePullRequest(safeFork.api, "o/r", 1)).state,
+    "success",
+  );
+});
+
+test("a changed test merge cannot pass when the PR head and reported base SHA stay unchanged", async () => {
+  const changed = fixture({ changeMerge: true });
+  assert.equal(
+    (await evaluatePullRequest(changed.api, "o/r", 1)).state,
+    "pending",
+  );
+  assert.equal(changed.writes.at(-1).body.state, "pending");
+  const docs = fixture({
+    changeMerge: true,
+    files: [{ filename: "README.md", status: "modified" }],
+  });
+  assert.equal(
+    (await evaluatePullRequest(docs.api, "o/r", 1)).state,
     "success",
   );
 });
