@@ -1,3 +1,6 @@
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: jest.fn(async () => {}),
+}));
 import { getE2BSandboxVersion } from "../e2b-sandbox-version";
 jest.mock("@/lib/cloud-recovery/store", () => ({
   recordResumeFailure: jest.fn(async () => {}),

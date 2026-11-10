@@ -352,6 +352,8 @@ describe("proxy", () => {
   });
 
   it.each([
+    "/abuse",
+    "/api/abuse",
     "/api/analytics-consent",
     "/api/health/connectivity",
     "/api/health/core",
