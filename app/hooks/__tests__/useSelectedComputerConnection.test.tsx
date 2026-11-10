@@ -8,24 +8,22 @@ const mockGlobalState = {
   chatMode: "agent",
   sandboxPreference: "desktop",
   desktopBridgeStatus: "failed",
-  localConnections: [
-    { connectionId: "stale-row", lastSeen: Date.now(), isDesktop: true },
-  ] as
+  localConnections: [{ connectionId: "stale-row", isDesktop: true }] as
     | Array<{
         connectionId: string;
         isDesktop: boolean;
-        lastSeen: number;
         environmentId?: string;
       }>
     | undefined,
 };
 let mockHeartbeatsLoading = false;
+let mockHeartbeats: Array<{ connectionId: string; lastSeen: number }> = [
+  { connectionId: "stale-row", lastSeen: Date.now() },
+];
 const mockHeartbeatQuery = jest.fn((_query: unknown, args: any) =>
   args === "skip" || mockHeartbeatsLoading
     ? undefined
-    : mockGlobalState.localConnections
-        ?.filter((c) => args.connectionIds.includes(c.connectionId))
-        .map((c) => ({ connectionId: c.connectionId, lastSeen: c.lastSeen })),
+    : mockHeartbeats.filter((c) => args.connectionIds.includes(c.connectionId)),
 );
 jest.mock("convex/react", () => ({
   useQuery: (...args: [unknown, any]) => mockHeartbeatQuery(...args),
@@ -61,7 +59,6 @@ describe("selected computer hydration", () => {
       {
         connectionId: "session-one",
         environmentId: "machine-a",
-        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -71,7 +68,6 @@ describe("selected computer hydration", () => {
       {
         connectionId: "other-session",
         environmentId: "machine-b",
-        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -81,7 +77,6 @@ describe("selected computer hydration", () => {
       {
         connectionId: "session-two",
         environmentId: "machine-a",
-        lastSeen: Date.now(),
         isDesktop: false,
       },
     ];
@@ -98,23 +93,23 @@ describe("selected computer hydration", () => {
         connectionId: "old",
         environmentId: "machine-a",
         isDesktop: true,
+      },
+    ];
+    mockHeartbeats = [
+      {
+        connectionId: "old",
         lastSeen: Date.now() - LOCAL_SANDBOX_PRESENCE_GRACE_MS + 1000,
       },
     ];
+    const stableDetails = mockGlobalState.localConnections;
     const { result, rerender } = renderHook(useSelectedComputerConnection);
     expect(result.current.selectedComputerUnavailable).toBe(false);
     act(() => jest.advanceTimersByTime(2000));
     expect(result.current.selectedComputerUnavailable).toBe(true);
     expect(result.current.sendDisabledReason).toContain("Reconnect");
-    mockGlobalState.localConnections = [
-      {
-        connectionId: "new",
-        environmentId: "machine-a",
-        isDesktop: true,
-        lastSeen: Date.now(),
-      },
-    ];
+    mockHeartbeats = [{ connectionId: "old", lastSeen: Date.now() }];
     rerender();
+    expect(mockGlobalState.localConnections).toBe(stableDetails);
     expect(result.current.selectedComputerUnavailable).toBe(false);
     expect(mockGlobalState.sandboxPreference).toBe(
       "desktop-environment:machine-a",
@@ -130,7 +125,6 @@ describe("selected computer hydration", () => {
         connectionId: "cli-session",
         environmentId: "cli-machine",
         isDesktop: false,
-        lastSeen: Date.now() - 30 * 60_000,
       },
     ];
     const { result } = renderHook(useSelectedComputerConnection);
@@ -141,11 +135,13 @@ describe("selected computer hydration", () => {
 
   afterEach(() => {
     jest.useRealTimers();
+    mockHeartbeats = [{ connectionId: "stale-row", lastSeen: Date.now() }];
+    mockHeartbeatsLoading = false;
     mockGlobalState.chatMode = "agent";
     mockGlobalState.sandboxPreference = "desktop";
     mockGlobalState.desktopBridgeStatus = "failed";
     mockGlobalState.localConnections = [
-      { connectionId: "stale-row", lastSeen: Date.now(), isDesktop: true },
+      { connectionId: "stale-row", isDesktop: true },
     ];
     mockIsTauriEnvironment.mockReturnValue(true);
   });
@@ -208,7 +204,7 @@ describe("selected computer hydration", () => {
     expect(result.current.computerConnectionPending).toBe(true);
 
     mockGlobalState.localConnections = [
-      { connectionId: "remote-kali", lastSeen: Date.now(), isDesktop: false },
+      { connectionId: "remote-kali", isDesktop: false },
     ];
     rerender();
 
@@ -224,8 +220,9 @@ it("waits for selected heartbeat loading without asking a healthy computer to re
   mockIsTauriEnvironment.mockReturnValue(false);
   mockGlobalState.sandboxPreference = "desktop";
   mockGlobalState.localConnections = [
-    { connectionId: "fresh", isDesktop: true, lastSeen: Date.now() },
+    { connectionId: "fresh", isDesktop: true },
   ];
+  mockHeartbeats = [{ connectionId: "fresh", lastSeen: Date.now() }];
   mockHeartbeatsLoading = true;
   const { result, rerender } = renderHook(useSelectedComputerConnection);
   expect(result.current.sendDisabledReason).toBe(
