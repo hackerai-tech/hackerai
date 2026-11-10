@@ -101,7 +101,7 @@ const subprocessors: Subprocessor[] = [
     name: "2Captcha",
     purpose: "Solves CAPTCHAs the agent encounters while browsing",
     dataCategories:
-      "Page URL, CAPTCHA site key and challenge parameters, browser user agent",
+      "Page URL and CAPTCHA site key; challenge parameters and browser user agent when applicable",
   },
   {
     name: "E2B",
@@ -305,8 +305,8 @@ function TrustContent() {
               When the agent searches the web or opens a URL, Perplexity
               processes search queries and Jina AI retrieves page content.
               OpenAI screens message content for moderation. When the agent uses
-              CAPTCHA solving, 2Captcha receives the page URL, site key,
-              challenge parameters, and browser user agent needed to solve it.
+              CAPTCHA solving, 2Captcha receives the page URL and site key, plus
+              challenge parameters and the browser user agent when applicable.
             </p>
             <p>
               Each provider processes data under its own terms. Retention and
