@@ -38,6 +38,9 @@ def main():
             cwd=DESKTOP, stdout=subprocess.DEVNULL)
         env = {**os.environ, "TAURI_SIGNING_PRIVATE_KEY_PATH": str(key),
                "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": ""}
+        # Bundling v1-compatible updater ZIPs needs the key's contents; the
+        # signer command below accepts the path. Keep the value in child env.
+        bundle_env = {**env, "TAURI_SIGNING_PRIVATE_KEY": key.read_text().strip()}
         config = work / "tauri.json"
         assets = {}
         for version in ["1.0.0", "1.0.1"]:
@@ -53,7 +56,7 @@ def main():
                 env={**env, "HACKERAI_UPGRADE_FIXTURE_VERSION": version})
             shutil.copy2(TARGET / "examples/windows_update_probe.exe", TARGET / (NAME + ".exe"))
             run([pnpm, "tauri", "bundle", "--debug", "--config", str(config),
-                 "--bundles", "nsis"], cwd=DESKTOP, env=env)
+                 "--bundles", "nsis"], cwd=DESKTOP, env=bundle_env)
             matches = list((TARGET / "bundle/nsis").glob(f"*_{version}_*-setup.exe"))
             if len(matches) != 1:
                 raise RuntimeError(f"Expected one {version} NSIS bundle, got {len(matches)}")
