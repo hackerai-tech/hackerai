@@ -725,7 +725,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       openRouterMetadata?: OpenRouterModelMetadata,
     ) {
       setModelResponse(responseModel, openRouterMetadata);
-      builder.setUsage(usage);
+      builder.setUsage(usage, openRouterMetadata?.openrouter_is_byok);
     },
 
     /**
