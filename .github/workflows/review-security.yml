@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to re-evaluate after review thread resolution
+        description: PR number to re-evaluate using the selected policy revision
         required: true
         type: string
 
@@ -47,10 +47,12 @@ jobs:
       prs: ${{ steps.resolve.outputs.prs }}
       has_prs: ${{ steps.resolve.outputs.has_prs }}
     steps:
-      # Never check out a PR revision, install its packages, or consume its artifacts.
+      # Automatic events always use trusted main, never the triggering PR.
+      # Maintainer-only manual dispatch can validate an explicitly selected policy revision.
+      # No PR packages or artifacts are installed or consumed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.repository.default_branch }}
           persist-credentials: false
       - id: resolve
         env:
@@ -80,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.repository.default_branch }}
           persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
