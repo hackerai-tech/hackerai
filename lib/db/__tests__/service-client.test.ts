@@ -377,6 +377,345 @@ describe("bounded RPC failure diagnostics", () => {
     },
   );
 
+  describe("browser handoff safety-read rejections", () => {
+    const safetyReads = [
+      "browserHandoffs:getForBackend",
+      "browserHandoffs:getExitNotesForBackend",
+    ];
+    const ray = "9abc1234def56789-IAD";
+    const applicationError = (body: Record<string, unknown>, status = 200) =>
+      new Response(JSON.stringify({ status: "error", logLines: [], ...body }), {
+        status,
+        headers: { "cf-ray": ray },
+      });
+    /** Reject response, argument and credential canaries in every warning attempt. */
+    const expectPrivate = () => {
+      const logged = JSON.stringify(warning.mock.calls);
+      for (const canary of [secret, "PRIVATE", deployment])
+        expect(logged).not.toContain(canary);
+    };
+    const readThroughSdk = (name: string) =>
+      createServiceConvexClient(deployment)
+        .query(makeFunctionReference<"query">(name), {
+          serviceKey: secret,
+          target: "PRIVATE_TARGET",
+        })
+        .catch((error: Error) => error);
+
+    it.each(
+      safetyReads.flatMap((name) =>
+        [400, 403, 429].map((status) => [name, status] as const),
+      ),
+    )(
+      "reports one real SDK %s HTTP%s rejection and preserves its error",
+      async (name, status) => {
+        globalThis.fetch = jest.fn(
+          async () =>
+            new Response(`PRIVATE_BODY ${secret} rejected`, {
+              status,
+              headers: { "cf-ray": ray, "set-cookie": "PRIVATE_COOKIE" },
+            }),
+        );
+        const failure = await readThroughSdk(name);
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.name).toBe("Error");
+        expect(failure.message).toBe("PRIVATE_BODY [Redacted] rejected");
+        expect(diagnostics()).toEqual([
+          {
+            event: "convex_service_rpc_failed",
+            browser_handoff_read_diagnostic_version: 1,
+            client_instance_id: expect.stringMatching(/^[a-f0-9-]{36}$/),
+            rpc_kind: "query",
+            function_name: name,
+            stage: "request",
+            reason: "http_4xx",
+            transport_observation: "unavailable",
+            cf_ray: ray,
+            status_code: status,
+            transport_elapsed_ms: expect.any(Number),
+          },
+        ]);
+        expectPrivate();
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(
+      safetyReads.flatMap((name) => [
+        [
+          name,
+          "generic",
+          {
+            errorMessage: `[Request ID: 0123456789abcdef] Server Error PRIVATE_MESSAGE ${secret}`,
+          },
+          {
+            name: "Error",
+            message:
+              "[Request ID: 0123456789abcdef] Server Error PRIVATE_MESSAGE [Redacted]",
+          },
+          { backend_request_id: "0123456789abcdef", error_data_present: false },
+        ] as const,
+        [
+          name,
+          "ConvexError",
+          {
+            errorMessage: `PRIVATE_MESSAGE ${secret}`,
+            errorData: { reason: "PRIVATE_DATA", serviceKey: secret },
+          },
+          {
+            name: "ConvexError",
+            message: "PRIVATE_MESSAGE [Redacted]",
+            data: { reason: "PRIVATE_DATA", serviceKey: "[Redacted]" },
+          },
+          { error_data_present: true },
+        ] as const,
+      ]),
+    )(
+      "reports a real SDK %s HTTP200 %s application error once",
+      async (name, _kind, body, thrown, fields) => {
+        globalThis.fetch = jest.fn(async () => applicationError(body));
+        const failure = await readThroughSdk(name);
+        expect(failure).toMatchObject(thrown);
+        if (thrown.name === "Error") expect(failure).not.toHaveProperty("data");
+        expect(diagnostics()).toEqual([
+          {
+            event: "convex_service_rpc_failed",
+            browser_handoff_read_diagnostic_version: 1,
+            client_instance_id: expect.stringMatching(/^[a-f0-9-]{36}$/),
+            rpc_kind: "query",
+            function_name: name,
+            stage: "response_body",
+            reason: "application_error",
+            transport_observation: "unavailable",
+            cf_ray: ray,
+            status_code: 200,
+            transport_elapsed_ms: expect.any(Number),
+            ...fields,
+          },
+        ]);
+        expectPrivate();
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(safetyReads)(
+      "keeps a successful real SDK %s read quiet and unchanged",
+      async (name) => {
+        globalThis.fetch = jest.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                status: "success",
+                value: { state: "PRIVATE_STATE", notes: [] },
+                logLines: [],
+              }),
+            ),
+        );
+        await expect(readThroughSdk(name)).resolves.toEqual({
+          state: "PRIVATE_STATE",
+          notes: [],
+        });
+        expect(warning).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["[Request ID: 0123456789abcdef] Server Error", "0123456789abcdef"],
+      [
+        `[Request ID: fedcba9876543210]${"PRIVATE".repeat(5000)}`,
+        "fedcba9876543210",
+      ],
+      ["[Request ID: 0123456789ABCDEF] Server Error", undefined],
+      ["[Request ID: 0123456789abcde] Server Error", undefined],
+      ["[Request ID: 0123456789abcdef0] Server Error", undefined],
+      [" [Request ID: 0123456789abcdef] Server Error", undefined],
+      ["[request id: 0123456789abcdef] Server Error", undefined],
+      ["[Request ID: 0123456789abcdef\n] PRIVATE", undefined],
+      ["[Request ID: PRIVATE_LABEL_01] Server Error", undefined],
+      ["PRIVATE_MESSAGE [Request ID: 0123456789abcdef]", undefined],
+      [`${"x".repeat(300)}[Request ID: 0123456789abcdef]`, undefined],
+      [{ requestId: "0123456789abcdef", detail: "PRIVATE_MESSAGE" }, undefined],
+      [42, undefined],
+    ])(
+      "keeps only an anchored public request receipt (%#)",
+      async (errorMessage, receipt) => {
+        const response = await createServiceFetch(
+          deployment,
+          jest.fn().mockResolvedValue(applicationError({ errorMessage })),
+        )(`${deployment}/api/query`, request(safetyReads[0]));
+        expect(response.status).toBe(200);
+        expect(JSON.parse(await response.text()).status).toBe("error");
+        expect(diagnostics()).toHaveLength(1);
+        if (receipt) expect(diagnostics()[0].backend_request_id).toBe(receipt);
+        else expect(diagnostics()[0]).not.toHaveProperty("backend_request_id");
+        expectPrivate();
+      },
+    );
+
+    it("rejects a request receipt that contains the service credential", async () => {
+      const credential = "0123456789abcdef";
+      await createServiceFetch(
+        deployment,
+        jest.fn().mockResolvedValue(
+          applicationError({
+            errorMessage: `[Request ID: ${credential}] Server Error`,
+          }),
+        ),
+      )(`${deployment}/api/query`, {
+        method: "POST",
+        body: JSON.stringify({
+          path: safetyReads[1],
+          format: "convex_encoded_json",
+          args: [{ serviceKey: credential }],
+        }),
+      });
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({ reason: "application_error" }),
+      ]);
+      expect(diagnostics()[0]).not.toHaveProperty("backend_request_id");
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(credential);
+    });
+
+    it.each([
+      [undefined, false],
+      [null, true],
+      ["PRIVATE_DATA", true],
+      [{ nested: ["PRIVATE_DATA"] }, true],
+    ])(
+      "reports only whether application error data %p was present",
+      async (errorData, present) => {
+        await createServiceFetch(
+          deployment,
+          jest
+            .fn()
+            .mockResolvedValue(
+              applicationError({ errorMessage: "PRIVATE_MESSAGE", errorData }),
+            ),
+        )(`${deployment}/api/query`, request(safetyReads[0]));
+        expect(diagnostics()).toEqual([
+          expect.objectContaining({ error_data_present: present }),
+        ]);
+        expectPrivate();
+      },
+    );
+
+    it.each([
+      ["query", "browserHandoffs:getForBackend", true],
+      ["query_at_ts", "browserHandoffs:getExitNotesForBackend", true],
+      ["query", "browserHandoffs:getForBackendExtra", false],
+      ["query", "browserHandoffs:getExitNotesForBackend_v2", false],
+      ["query", "xbrowserHandoffs:getForBackend", false],
+      ["query", "BrowserHandoffs:getForBackend", false],
+      ["query", "agentGoals:getForBackend", false],
+      ["query", "settlementReceipts:getForBackend", false],
+      ["mutation", "browserHandoffs:getForBackend", false],
+      ["action", "browserHandoffs:getExitNotesForBackend", false],
+    ])(
+      "limits new rejection diagnostics to exact safety queries (%s %s)",
+      async (kind, name, reported) => {
+        for (const response of [
+          new Response(`PRIVATE_BODY ${secret}`, { status: 400 }),
+          applicationError({
+            errorMessage: "[Request ID: 0123456789abcdef] PRIVATE_MESSAGE",
+          }),
+        ]) {
+          warning.mockClear();
+          const result = await createServiceFetch(
+            deployment,
+            jest.fn().mockResolvedValue(response),
+          )(`${deployment}/api/${kind}`, request(name));
+          expect(result.status).toBe(response.status);
+          expect(await result.text()).not.toContain(secret);
+          expect(diagnostics()).toEqual(
+            reported
+              ? [
+                  expect.objectContaining({
+                    rpc_kind: "query",
+                    function_name: name,
+                    reason:
+                      response.status === 400
+                        ? "http_4xx"
+                        : "application_error",
+                  }),
+                ]
+              : [],
+          );
+          expectPrivate();
+        }
+      },
+    );
+
+    it("keeps an HTTP 560 application error as one 5xx diagnostic", async () => {
+      const response = await createServiceFetch(
+        deployment,
+        jest.fn().mockResolvedValue(
+          applicationError(
+            {
+              errorMessage: "[Request ID: 0123456789abcdef] PRIVATE_MESSAGE",
+              errorData: "PRIVATE_DATA",
+            },
+            560,
+          ),
+        ),
+      )(`${deployment}/api/query`, request(safetyReads[0]));
+      expect(response.status).toBe(560);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({
+          browser_handoff_read_diagnostic_version: 1,
+          reason: "http_5xx",
+          status_code: 560,
+        }),
+      ]);
+      expect(diagnostics()[0]).not.toHaveProperty("backend_request_id");
+      expect(diagnostics()[0]).not.toHaveProperty("error_data_present");
+    });
+
+    it("keeps a 4xx body-read failure as one diagnostic and preserves the error", async () => {
+      const failure = Object.assign(new Error("PRIVATE_BODY_FAILURE"), {
+        code: "ECONNRESET",
+      });
+      const response = new Response("unused", { status: 403 });
+      jest.spyOn(response, "text").mockRejectedValue(failure);
+      const transport = jest.fn().mockResolvedValue(response);
+      await expect(
+        createServiceFetch(deployment, transport)(
+          `${deployment}/api/query`,
+          request(safetyReads[1]),
+        ),
+      ).rejects.toBe(failure);
+      expect(diagnostics()).toEqual([
+        expect.objectContaining({
+          reason: "http_4xx",
+          stage: "request",
+          status_code: 403,
+        }),
+      ]);
+      expect(transport).toHaveBeenCalledTimes(1);
+      expectPrivate();
+    });
+
+    it.each([
+      () => new Response(`PRIVATE_BODY ${secret}`, { status: 400 }),
+      () =>
+        applicationError({
+          errorMessage: "[Request ID: 0123456789abcdef] PRIVATE_MESSAGE",
+        }),
+    ])(
+      "preserves the real SDK rejection when the diagnostic logger throws (%#)",
+      async (respond) => {
+        warning.mockImplementation(() => {
+          throw new Error("logger unavailable");
+        });
+        globalThis.fetch = jest.fn(async () => respond());
+        const failure = await readThroughSdk(safetyReads[0]);
+        expect(failure.message).toMatch(/PRIVATE_(BODY|MESSAGE)/);
+        expect(failure.message).not.toContain("logger unavailable");
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   describe("pending RPC diagnostics", () => {
     const pending = () => diagnostics("convex_service_rpc_pending");
     const deferred = <T>() => {
