@@ -249,7 +249,7 @@ function LatestAssessment({
             {environment ? ` · ${environment}` : null}
           </span>
         </div>
-        <p className="pl-5 text-sm leading-6 text-foreground">
+        <p className="text-sm leading-6 text-foreground @min-[520px]:pl-5">
           {summaryOf(retest)}
         </p>
       </div>
@@ -300,7 +300,7 @@ function LatestAssessment({
 
       {limitations.length > 0 ? (
         <CardSection title="Limitations">
-          <ul className="space-y-1 text-[13px] leading-5 text-foreground/80">
+          <ul className="list-disc space-y-1.5 pl-4 text-[13px] leading-5 text-foreground/80">
             {limitations.map((limitation, index) => (
               <li key={index} className="break-words">
                 {limitation}
