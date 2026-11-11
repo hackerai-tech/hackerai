@@ -100,6 +100,10 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("mock-jwt-token"),
 }));
 
+jest.mock("@/lib/desktop/authorized-operation", () => ({
+  authorizeDesktopOperation: jest.fn().mockResolvedValue("a".repeat(64)),
+}));
+
 jest.mock("@/lib/centrifugo/types", () => ({
   ...jest.requireActual("@/lib/centrifugo/types"),
   sandboxConnectionChannel: jest.fn(

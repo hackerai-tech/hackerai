@@ -3,6 +3,7 @@ import { presenceHasConnectionId } from "./presence";
 import { sandboxConnectionChannel } from "./types";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 import { LocalCommandRelayUnsubscribedError } from "@/lib/ai/tools/utils/local-sandbox-errors";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 
 /** Publication completed, but the client's readiness reply was not observed. */
 export class RelayOperationReadinessTimeout extends Error {
@@ -29,6 +30,7 @@ export async function dispatchIsolatedOperation(
   reply: Subscription,
   onBeforePublish?: () => void,
   onPhase?: (phase: IsolatedOperationPhase) => void,
+  desktop = false,
 ): Promise<void> {
   const observe = (phase: IsolatedOperationPhase) => {
     try {
@@ -70,8 +72,12 @@ export async function dispatchIsolatedOperation(
     if (!presenceHasConnectionId(presence, connectionId))
       throw new LocalCommandRelayUnsubscribedError(connectionId);
     observe("publish");
+    const authorizationId = desktop
+      ? await authorizeDesktopOperation(userId, connectionId, request)
+      : undefined;
     for (const fragment of fragmentCentrifugoMessage({
       ...request,
+      ...(authorizationId ? { authorizationId } : {}),
       operationChannel: true,
     })) {
       if (!isActive())

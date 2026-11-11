@@ -68,25 +68,94 @@ let mockInvokeHandler: (
   cmd: string,
   args?: Record<string, unknown>,
 ) => Promise<unknown>;
+let mockUseAuthorizedNative = false;
 let capturedChannel: { onmessage?: (event: unknown) => void } | null = null;
 const originalFetch = global.fetch;
 
-jest.mock("@tauri-apps/api/core", () => ({
-  invoke: jest.fn((...args: unknown[]) => {
-    const [cmd, invokeArgs] = args as [
-      string,
-      Record<string, unknown> | undefined,
-    ];
-    return mockInvokeHandler(cmd, invokeArgs);
-  }),
-  Channel: jest.fn().mockImplementation(() => {
-    const ch = {
-      onmessage: undefined as ((event: unknown) => void) | undefined,
-    };
-    capturedChannel = ch;
-    return ch;
-  }),
-}));
+jest.mock("@tauri-apps/api/core", () => {
+  const invoke = jest.fn(
+    (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+      if (!mockUseAuthorizedNative) {
+        if (cmd === "probe_desktop_file_bridge") {
+          return invoke("desktop_file_request", {
+            request: { type: "file_stat", path: "." },
+          });
+        }
+        const message = args?.message as Record<string, unknown> | undefined;
+        if (cmd === "authorized_desktop_file_request" && message) {
+          const range = message.range as [number, number] | undefined;
+          return invoke("desktop_file_request", {
+            request: {
+              type: message.type,
+              path: message.path,
+              ...(message.type === "file_read"
+                ? {
+                    range_start: range?.[0],
+                    range_end: range?.[1],
+                    max_full_bytes: message.maxFullBytes,
+                    max_result_bytes: message.maxResultBytes,
+                  }
+                : {}),
+              ...(message.type === "file_write" ||
+              message.type === "file_append"
+                ? {
+                    content: message.content,
+                    is_base64: Boolean(message.isBase64),
+                    allowed_root: message.allowedRoot,
+                  }
+                : {}),
+            },
+          });
+        }
+        if (cmd === "execute_authorized_stream_command" && message) {
+          return invoke("execute_stream_command", {
+            commandId: message.commandId,
+            command: message.command,
+            cwd: message.cwd,
+            env: message.env,
+            ...(message.stdin !== undefined
+              ? {
+                  stdin: message.stdin,
+                  stdinEncoding: message.stdinEncoding ?? "utf8",
+                }
+              : {}),
+            timeoutMs: message.timeout ?? 30_000,
+            onEvent: args?.onEvent,
+          });
+        }
+        const ptyCommands: Record<string, string> = {
+          execute_authorized_pty_create: "execute_pty_create",
+          execute_authorized_pty_input: "execute_pty_input",
+          execute_authorized_pty_resize: "execute_pty_resize",
+          execute_authorized_pty_kill: "execute_pty_kill",
+        };
+        if (ptyCommands[cmd] && message) {
+          return invoke(ptyCommands[cmd], {
+            sessionId: message.sessionId,
+            command: message.command,
+            data: message.data,
+            cols: message.cols ?? 80,
+            rows: message.rows ?? 24,
+            cwd: message.cwd,
+            env: message.env,
+            onData: args?.onData,
+          });
+        }
+      }
+      return mockInvokeHandler(cmd, args);
+    },
+  );
+  return {
+    invoke,
+    Channel: jest.fn().mockImplementation(() => {
+      const ch = {
+        onmessage: undefined as ((event: unknown) => void) | undefined,
+      };
+      capturedChannel = ch;
+      return ch;
+    }),
+  };
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -141,6 +210,7 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockUseAuthorizedNative = false;
   capturedChannel = null;
   mockClientEndpoint = null;
   mockClientOptions = null;
@@ -1125,6 +1195,75 @@ describe("heartbeat backpressure", () => {
 // ── targetConnectionId filtering ──────────────────────────────────────
 
 describe("targetConnectionId filtering", () => {
+  it("sends a server-authorized command to the native broker", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockUseAuthorizedNative = true;
+    mockInvokeHandler = async (cmd) => {
+      if (cmd !== "execute_authorized_stream_command") {
+        throw new Error(`Unexpected native command: ${cmd}`);
+      }
+      capturedChannel?.onmessage?.({ type: "exit", exitCode: 0 });
+    };
+    const authorizationId = "a".repeat(64);
+    getPublicationHandler()({
+      data: {
+        type: "command",
+        commandId: "authorized-command",
+        command: "printf safe",
+        authorizationId,
+        targetConnectionId: "conn-123",
+      },
+    });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith(
+        "execute_authorized_stream_command",
+        expect.objectContaining({ authorizationId }),
+      ),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.anything(),
+    );
+    await bridge.stop();
+  });
+
+  it("preserves PTY input order across authorization round trips", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockUseAuthorizedNative = true;
+    let releaseFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const observed: string[] = [];
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd !== "execute_authorized_pty_input")
+        throw new Error(`Unexpected native command: ${cmd}`);
+      const data = (args?.message as { data: string }).data;
+      observed.push(data);
+      if (data === "first") await firstPending;
+    };
+
+    const handler = getPublicationHandler();
+    for (const data of ["first", "second"]) {
+      handler({
+        data: {
+          type: "pty_input",
+          sessionId: "ordered-pty",
+          data,
+          authorizationId: data === "first" ? "a".repeat(64) : "b".repeat(64),
+          targetConnectionId: "conn-123",
+        },
+      });
+    }
+    await waitFor(() => expect(observed).toEqual(["first"]));
+    releaseFirst();
+    await waitFor(() => expect(observed).toEqual(["first", "second"]));
+    await bridge.stop();
+  });
+
   it("passes stdin as native IPC data without adding it to the command", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const bridge = new DesktopSandboxBridge(buildConfig());
@@ -1466,7 +1605,7 @@ describe("native desktop file relay", () => {
         content: "once",
       },
     });
-    await Promise.resolve();
+    await waitFor(() => expect(finish).toBeDefined());
     await bridge.stop();
     finish({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
