@@ -39,8 +39,8 @@ const BRIDGE_ERROR_REASONS = [
 ] as const;
 
 export type BrowserBridgeFailureContext = {
-  capture_bridge_diagnostic_version?: 1 | 2;
-  capture_bridge_failure?: "error" | "early_close";
+  capture_bridge_diagnostic_version?: 1 | 2 | 3;
+  capture_bridge_failure?: "error" | "early_close" | "deadline";
   capture_bridge_phase?: (typeof BRIDGE_PHASES)[number];
   capture_bridge_close_code?:
     (typeof BRIDGE_CLOSE_CODES)[number] | "none" | "other";
@@ -48,21 +48,34 @@ export type BrowserBridgeFailureContext = {
   capture_bridge_node_major?: number | "other";
 };
 
-/** Read only a bounded exit-6 packet; never successful frames, stderr or getters. */
+/** Read bounded packets tied to their failure exit; never frames, stderr or getters. */
 export function browserBridgeFailureContext(
   result: unknown,
 ): BrowserBridgeFailureContext {
   try {
-    if (
-      !result ||
-      typeof result !== "object" ||
-      Object.getOwnPropertyDescriptor(result, "exitCode")?.value !== 6
-    )
-      return {};
+    if (!result || typeof result !== "object") return {};
+    const exitCode = Object.getOwnPropertyDescriptor(result, "exitCode")?.value;
+    if (exitCode !== 3 && exitCode !== 6) return {};
     const stdout = Object.getOwnPropertyDescriptor(result, "stdout")?.value;
     if (typeof stdout !== "string" || stdout.length > 128) return {};
     const tuple = JSON.parse(stdout)?.bridge_failure;
     if (!Array.isArray(tuple)) return {};
+    if (exitCode === 3) {
+      if (
+        tuple.length === 4 &&
+        tuple[0] === 3 &&
+        tuple[1] === "deadline" &&
+        BRIDGE_PHASES.includes(tuple[2]) &&
+        tuple[3] === "none"
+      )
+        return {
+          capture_bridge_diagnostic_version: 3,
+          capture_bridge_failure: "deadline",
+          capture_bridge_phase: tuple[2],
+          capture_bridge_close_code: "none",
+        };
+      return {};
+    }
     const legacy = tuple.length === 4 && tuple[0] === 1;
     const reasonPacket =
       tuple.length === 6 &&
@@ -117,14 +130,15 @@ const finish = (code, value) => {
   done = true;
   clearTimeout(timer);
   if (value !== undefined) {
-    if (code === 6) {
+    if (code === 3 || code === 6) {
       try { process.stdout.write(JSON.stringify(value)); } catch {}
     } else process.stdout.write(JSON.stringify(value));
   }
   try { socket.close(); } catch {}
   setTimeout(() => process.exit(code), 20);
 };
-const timer = setTimeout(() => finish(3), 6500);
+const timer = setTimeout(() => finish(3, mode === 'frame'
+  ? { bridge_failure: [3, 'deadline', phase, 'none'] } : undefined), 6500);
 let payload = '';
 let socket;
 if (mode === 'input') {

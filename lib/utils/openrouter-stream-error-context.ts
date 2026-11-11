@@ -47,3 +47,52 @@ export function recordOpenRouterStreamErrorContext(
       : { call, context: Object.freeze(context) },
   );
 }
+
+export type OpenRouterBodyFailurePhase =
+  "read_body" | "finish_stream" | "observe_chunk" | "forward_chunk";
+
+type BodyFailureContext = Readonly<{
+  association: "same_response" | "ambiguous";
+  status?: number;
+  phase?: OpenRouterBodyFailurePhase;
+}>;
+
+// Independent from SDK call ownership: a Response body can reject without an
+// SDK error part. Do not retain a Response, headers, or body contents here.
+const bodyFailures = new WeakMap<
+  object,
+  { response: object | null; context: BodyFailureContext }
+>();
+
+/** Bind observations to one response token; reuse across responses stays ambiguous. */
+export function recordOpenRouterBodyFailureContext(
+  error: object,
+  response: object,
+  status: number,
+  phase: OpenRouterBodyFailurePhase,
+): void {
+  const previous = bodyFailures.get(error);
+  bodyFailures.set(error, {
+    response: previous && previous.response !== response ? null : response,
+    context: Object.freeze(
+      previous && previous.response !== response
+        ? { association: "ambiguous" }
+        : {
+            association: "same_response",
+            ...(Number.isInteger(status) && status >= 100 && status <= 599
+              ? { status }
+              : {}),
+            phase,
+          },
+    ),
+  });
+}
+
+/** Read at serialization time so later reuse cannot leave a stale snapshot. */
+export function getOpenRouterBodyFailureContext(
+  error: unknown,
+): BodyFailureContext | undefined {
+  return error !== null && typeof error === "object"
+    ? bodyFailures.get(error)?.context
+    : undefined;
+}

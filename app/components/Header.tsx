@@ -35,9 +35,15 @@ interface HeaderProps {
   chatTitle?: string;
   /** Path of the public page rendering the header, used to mark the current link. */
   currentPath?: PublicNavigationPath;
+  /** Paper public-page treatment; Product stays on the current header pending review. */
+  publicRedesign?: boolean;
 }
 
-const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
+const Header: React.FC<HeaderProps> = ({
+  chatTitle,
+  currentPath,
+  publicRedesign = false,
+}) => {
   const { user, loading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRef = useRef<HTMLElement | null>(null);
@@ -75,23 +81,39 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
     <header
       ref={headerRef}
       className={cn(
-        "w-full px-6 max-sm:px-4 flex-shrink-0 bg-background",
+        "w-full flex-shrink-0 bg-background",
+        publicRedesign ? "px-4 sm:px-6 lg:px-10" : "px-6 max-sm:px-4",
         menuOpen && "relative z-[70]",
       )}
     >
       {/* Desktop header */}
-      <div className="py-[10px] flex gap-10 items-center justify-between max-md:hidden">
+      <div
+        className={cn(
+          "flex items-center justify-between max-md:hidden",
+          publicRedesign ? "h-16 gap-6" : "gap-10 py-[10px]",
+        )}
+      >
         <Link
           href="/"
           className="flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
           aria-label="HackerAI home"
         >
-          <HackerAISVG theme="dark" scale={0.15} />
-          <span className="text-foreground text-xl font-semibold">
+          <HackerAISVG theme="dark" scale={publicRedesign ? 0.12 : 0.15} />
+          <span
+            className={cn(
+              "text-foreground font-semibold",
+              publicRedesign ? "text-lg" : "text-xl",
+            )}
+          >
             HackerAI
           </span>
         </Link>
-        <div className="flex flex-1 gap-2 justify-between items-center">
+        <div
+          className={cn(
+            "flex flex-1 justify-between items-center",
+            publicRedesign ? "gap-4" : "gap-2",
+          )}
+        >
           {chatTitle && (
             <div className="flex-1 text-center">
               <span className="text-foreground text-lg font-medium truncate">
@@ -111,6 +133,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
                     variant="ghost"
                     size="sm"
                     className={cn(
+                      publicRedesign && "rounded-lg",
                       isCurrent
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:text-foreground",
@@ -151,7 +174,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
               <Button
                 data-testid="sign-in-button"
                 onClick={() => navigateToAuth("/login")}
-                variant="default"
+                variant={publicRedesign ? "outline" : "default"}
                 size="default"
                 className="min-w-[74px] rounded-[10px]"
               >
@@ -164,7 +187,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
                     preferSignInForReturningUser: true,
                   })
                 }
-                variant="outline"
+                variant={publicRedesign ? "default" : "outline"}
                 size="default"
                 className="min-w-16 rounded-[10px]"
               >
@@ -176,7 +199,12 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
       </div>
 
       {/* Mobile header */}
-      <div className="py-3 flex items-center justify-between md:hidden">
+      <div
+        className={cn(
+          "flex items-center justify-between md:hidden",
+          publicRedesign ? "h-16" : "py-3",
+        )}
+      >
         <Link
           href="/"
           className="flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -187,30 +215,34 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
             HackerAI
           </span>
         </Link>
-        {!loading && !user && (
+        {!loading && (!user || publicRedesign) && (
           <div className="flex items-center gap-2">
-            <Button
-              data-testid="sign-in-button-mobile"
-              onClick={() => navigateToAuth("/login")}
-              variant="default"
-              size="sm"
-              className="rounded-[10px]"
-            >
-              Sign in
-            </Button>
-            <Button
-              data-testid="sign-up-button-mobile"
-              onClick={() =>
-                navigateToAuth("/signup", {
-                  preferSignInForReturningUser: true,
-                })
-              }
-              variant="outline"
-              size="sm"
-              className="rounded-[10px]"
-            >
-              Get started
-            </Button>
+            {!user && !publicRedesign && (
+              <Button
+                data-testid="sign-in-button-mobile"
+                onClick={() => navigateToAuth("/login")}
+                variant="default"
+                size="sm"
+                className="rounded-[10px]"
+              >
+                Sign in
+              </Button>
+            )}
+            {!user && (
+              <Button
+                data-testid="sign-up-button-mobile"
+                onClick={() =>
+                  navigateToAuth("/signup", {
+                    preferSignInForReturningUser: true,
+                  })
+                }
+                variant={publicRedesign ? "default" : "outline"}
+                size="sm"
+                className="rounded-[10px]"
+              >
+                Get started
+              </Button>
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -269,6 +301,19 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, currentPath }) => {
                 );
               })}
             </ul>
+            {publicRedesign && !user && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-6 w-full rounded-[10px]"
+                onClick={() => {
+                  closeMenu();
+                  navigateToAuth("/login");
+                }}
+              >
+                Sign in
+              </Button>
+            )}
           </nav>
         </div>
       )}

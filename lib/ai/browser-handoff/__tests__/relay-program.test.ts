@@ -33,6 +33,7 @@ import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
   RELAY_STOP_PROGRAM,
+  RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
 } from "../relay-program";
 
@@ -135,22 +136,43 @@ it("does not shorten the relay lease when a delayed renewal arrives after a newe
 });
 
 it("rejects a missing relay instead of reporting a successful renewal", async () => {
-  expect(await renewLease(Date.now() + 25_000, join(root, "missing"))).not.toBe(
-    0,
+  expect(await renewLease(Date.now() + 25_000, join(root, "missing"))).toBe(
+    RELAY_RENEW_FAILURE_CODES.missing_path,
   );
 });
 
 it.each(["revoked", "closed", "expired"])(
   "does not revive a %s relay",
   async (state) => {
-    if (state === "expired")
-      await writeFile(join(directory, "lease"), String(Date.now() - 1));
-    else await writeFile(join(directory, state), "1");
-    const previous = await readFile(join(directory, "lease"), "utf8");
-    expect(await renewLease(Date.now() + 25_000)).not.toBe(0);
-    expect(await readFile(join(directory, "lease"), "utf8")).toBe(previous);
+    // The running relay writes its own closed marker after expiry. Isolate
+    // the renewal command so each case tests only its intended rejection.
+    const renewalDirectory = join(root, "renewal");
+    await mkdir(renewalDirectory);
+    const leaseFile = join(renewalDirectory, "lease");
+    const previous = String(Date.now() + (state === "expired" ? -1 : 40_000));
+    await writeFile(leaseFile, previous);
+    if (state !== "expired")
+      await writeFile(join(renewalDirectory, state), "1");
+    expect(await renewLease(Date.now() + 25_000, renewalDirectory)).toBe(
+      state === "expired"
+        ? RELAY_RENEW_FAILURE_CODES.expired_or_invalid_lease
+        : RELAY_RENEW_FAILURE_CODES.revoked_or_closed,
+    );
+    expect(await readFile(leaseFile, "utf8")).toBe(previous);
   },
 );
+
+it("distinguishes a rejected deadline from lock contention without changing the lease", async () => {
+  const previous = await readFile(join(directory, "lease"), "utf8");
+  expect(await renewLease(Date.now() - 1)).toBe(
+    RELAY_RENEW_FAILURE_CODES.invalid_deadline,
+  );
+  await mkdir(join(directory, "lease.lock"));
+  expect(await renewLease(Date.now() + 25_000)).toBe(
+    RELAY_RENEW_FAILURE_CODES.lock_busy,
+  );
+  expect(await readFile(join(directory, "lease"), "utf8")).toBe(previous);
+});
 
 it("serializes concurrent renewals without losing the later deadline", async () => {
   const deadline = Date.now() + 40_000;

@@ -164,32 +164,50 @@ export function browserRelayProgram() {
   );
 }
 
+export const RELAY_RENEW_FAILURE_CODES = {
+  invalid_deadline: 41,
+  lock_busy: 42,
+  revoked_or_closed: 43,
+  expired_or_invalid_lease: 44,
+  missing_path: 45,
+  permission: 46,
+  filesystem_error: 47,
+} as const;
+
 // Requests can finish out of order, including after an HTTP timeout. Serialize
 // the read/max/replace so an older deadline cannot undo a successful renewal.
 export const RELAY_RENEW_PROGRAM = String.raw`
 const fs = require('node:fs');
 const d = process.argv[1], deadline = Number(process.argv[2]);
 (async () => {
-  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Invalid lease');
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) return ${RELAY_RENEW_FAILURE_CODES.invalid_deadline};
   let locked = false;
   for (let i = 0; i < 100; i++) {
     try { fs.mkdirSync(d + '/lease.lock', {mode: 0o700}); locked = true; break; }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  if (!locked) throw new Error('Renewal busy');
+  if (!locked) return ${RELAY_RENEW_FAILURE_CODES.lock_busy};
   const next = d + '/lease.next-' + process.pid;
   try {
-    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) throw new Error('Revoked');
+    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) return ${RELAY_RENEW_FAILURE_CODES.revoked_or_closed};
     const previous = Number(fs.readFileSync(d + '/lease', 'utf8'));
-    if (!Number.isFinite(previous) || previous <= Date.now()) throw new Error('Expired');
+    if (!Number.isFinite(previous) || previous <= Date.now()) return ${RELAY_RENEW_FAILURE_CODES.expired_or_invalid_lease};
     fs.writeFileSync(next, String(Math.max(previous, deadline)), {mode: 0o600});
     fs.renameSync(next, d + '/lease');
   } finally {
     fs.rmSync(next, {force: true});
     fs.rmdirSync(d + '/lease.lock');
   }
-})().catch(() => { process.exitCode = 1; });
+})().then(code => {
+  if (code !== undefined) process.exitCode = code;
+}, error => {
+  process.exitCode = error.code === 'ENOENT'
+    ? ${RELAY_RENEW_FAILURE_CODES.missing_path}
+    : error.code === 'EACCES' || error.code === 'EPERM'
+      ? ${RELAY_RENEW_FAILURE_CODES.permission}
+      : ${RELAY_RENEW_FAILURE_CODES.filesystem_error};
+});
 `;
 
 export const RELAY_START_PROGRAM = String.raw`
