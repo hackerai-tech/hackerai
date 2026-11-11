@@ -3,13 +3,43 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..e1536c85fc788919bb698ef8fd5137e1c0d17afb
 --- /dev/null
 +++ b/dist/esm/entryPoints/child-completion-probe.js
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,95 @@
 +// Bounded public child-side evidence. IPC return is not a receiver acknowledgement.
 +// Diagnostic faults must never change the existing completion protocol or lifecycle.
++const quiet = (fn) => { try { return fn(); } catch {} };
++// A parent FLUSH carries no run, attempt or origin and also follows suspension, so this
++// receipt proves only command entry in the current child context, never a completion ACK.
++// It retains bounded primitives and the parent context captured at probe creation only.
++function createParentFlushReceipt(tracer, parent, resultOk, attempt) {
++    let phase = "packet_pending";
++    let pending = true;
++    return {
++        advance(next) { phase = next; },
++        failed() { phase = phase === "packet_pending" ? "packet_error" : "invocation_error"; },
++        received(live) {
++            if (!pending) return;
++            // Consume before optional tracer work: repeated or concurrent FLUSH emits at most once.
++            pending = false;
++            quiet(() => {
++                const attributes = {
++                    "hackerai.child_completion.version": 1,
++                    "hackerai.child_completion.association": "current_child_context",
++                    "hackerai.child_completion.phase": phase,
++                    "hackerai.child_completion.disable_context": live.disableContext === true,
++                    "hackerai.child_completion.worker_running": live.isRunning === true,
++                    "hackerai.child_completion.worker_cancelled": live.isCancelled === true,
++                    "hackerai.child_completion.process_connected": live.connected === true,
++                    "hackerai.child_completion.result_ok": resultOk,
++                };
++                if (attempt !== undefined) attributes["hackerai.child_completion.attempt"] = attempt;
++                tracer.startSpan("parent flush request received", { attributes }, parent).end();
++            });
++        },
++    };
++}
 +export function createChildCompletionProbe({ tracer, getParentContext, execution, result, isRunning, isCancelled, connected }) {
 +    let packetSpan;
 +    let ipcSpan;
-+    const quiet = (fn) => { try { return fn(); } catch {} };
 +    const finish = (span, outcome) => {
 +        quiet(() => span?.setAttribute("hackerai.child_completion.outcome", outcome));
 +        quiet(() => span?.end());
@@ -29,10 +59,14 @@ index 0000000000000000000000000000000000000000..e1536c85fc788919bb698ef8fd5137e1
 +        if (Number.isSafeInteger(attempt) && attempt >= 1 && attempt <= 1000000) {
 +            attributes["hackerai.child_completion.attempt"] = attempt;
 +        }
++        const parentFlush = createParentFlushReceipt(tracer, parent,
++            attributes["hackerai.child_completion.result_ok"], attributes["hackerai.child_completion.attempt"]);
 +        const start = (name) => quiet(() => tracer.startSpan(name, { attributes }, parent));
 +        packetSpan = start("child completion packet");
 +        return {
++            parentFlush,
 +            packetReady(packet) {
++                parentFlush.advance("packet_ready");
 +                finish(packetSpan, "packet_ready");
 +                packetSpan = undefined;
 +                ipcSpan = start("child completion IPC");
@@ -43,17 +77,20 @@ index 0000000000000000000000000000000000000000..e1536c85fc788919bb698ef8fd5137e1
 +                // Observe the original Promise without returning a replacement or awaiting it.
 +                // ZodIpcConnection may silently drop a disconnected send; fulfillment is not ACK.
 +                quiet(() => Promise.prototype.then.call(promise,
-+                    () => finish(span, "returned_unacknowledged"),
-+                    () => finish(span, "rejected")));
++                    () => { parentFlush.advance("returned_unacknowledged"); finish(span, "returned_unacknowledged"); },
++                    () => { parentFlush.advance("rejected"); finish(span, "rejected"); }));
 +                ipcSpan = undefined;
 +            },
 +            skipped(isRunningNow, isCancelledNow) {
++                const outcome = isCancelledNow === true ? "cancelled_guard" : "not_running_guard";
++                parentFlush.advance(outcome);
 +                quiet(() => packetSpan?.setAttribute("hackerai.child_completion.worker_running", isRunningNow === true));
 +                quiet(() => packetSpan?.setAttribute("hackerai.child_completion.worker_cancelled", isCancelledNow === true));
-+                finish(packetSpan, isCancelledNow === true ? "cancelled_guard" : "not_running_guard");
++                finish(packetSpan, outcome);
 +                packetSpan = undefined;
 +            },
 +            failed() {
++                parentFlush.failed();
 +                finish(packetSpan, "packet_error");
 +                finish(ipcSpan, "invocation_error");
 +                packetSpan = undefined;
@@ -74,7 +111,18 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
  sourceMapSupport.install({
      handleUncaughtExceptions: false,
      environment: "node",
-@@ -389,6 +390,7 @@ const zodIpc = new ZodIpcConnection({
+@@ -193,7 +194,10 @@ let _executionMeasurement;
+ let _cancelController = new AbortController();
+ let _lastFlushPromise;
+ let _sharedWorkerRuntime;
++// Latest Agent completion probe's FLUSH receipt; cleared before each EXECUTE resets context.
++let _parentFlushReceipt;
+ function resetExecutionEnvironment() {
++    _parentFlushReceipt = undefined;
+     _execution = undefined;
+     _isRunning = false;
+     _isCancelled = false;
+@@ -389,6 +393,7 @@ const zodIpc = new ZodIpcConnection({
                      isWarmStart,
                      executionCount: _executionCount,
                  });
@@ -82,7 +130,7 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                  try {
                      _execution = execution;
                      _isRunning = true;
-@@ -403,9 +405,14 @@ const zodIpc = new ZodIpcConnection({
+@@ -403,9 +408,16 @@ const zodIpc = new ZodIpcConnection({
                      // Cleared in the surrounding finally below.
                      resourceCatalog.setCurrentFileContext(NO_FILE_CONTEXT, NO_FILE_CONTEXT);
                      const { result } = await executor.execute(execution, ctx, signal);
@@ -91,6 +139,8 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
 +                        execution, result, isRunning: _isRunning, isCancelled: _isCancelled,
 +                        connected: process.connected,
 +                    });
++                    // A replaced execution's late completion must not register under a newer EXECUTE.
++                    if (_execution === execution) _parentFlushReceipt = completionProbe.parentFlush;
                      if (_isRunning && !_isCancelled) {
                          const usageSample = usage.stop(_executionMeasurement);
 -                        return sender.send("TASK_RUN_COMPLETED", {
@@ -98,7 +148,7 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                              execution,
                              result: {
                                  ...result,
-@@ -414,8 +421,15 @@ const zodIpc = new ZodIpcConnection({
+@@ -414,8 +426,15 @@ const zodIpc = new ZodIpcConnection({
                                  },
                                  flushedMetadata: await runMetadataManager.stopAndReturnLastFlush(),
                              },
@@ -115,3 +165,12 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                  }
                  finally {
                      standardHeartbeatsManager.stopHeartbeat();
+@@ -456,6 +475,8 @@ const zodIpc = new ZodIpcConnection({
+             await flushAll(timeoutInMs);
+         },
+         FLUSH: async ({ timeoutInMs, disableContext }) => {
++            // Optional Agent-only receipt of live state, ended before the existing flush exports it.
++            _parentFlushReceipt?.received({ disableContext, isRunning: _isRunning, isCancelled: _isCancelled, connected: process.connected });
+             await flushAll(timeoutInMs);
+             if (disableContext) {
+                 taskContext.disable();

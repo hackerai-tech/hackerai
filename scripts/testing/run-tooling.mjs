@@ -36,6 +36,7 @@ export const suites = [
     files: [
       "scripts/trigger-runtime/completion-ack.test.mjs",
       "scripts/trigger-runtime/child-completion.test.mjs",
+      "scripts/trigger-runtime/child-flush.test.mjs",
     ],
   },
 ];

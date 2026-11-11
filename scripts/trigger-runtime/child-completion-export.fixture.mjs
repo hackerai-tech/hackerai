@@ -36,8 +36,12 @@ const snapshot = (s) => ({
     {
       "child completion packet": "completion-packet",
       "child completion IPC": "completion-ipc",
+      "parent flush request received": "parent-flush",
     }[s.name] ?? s.attributes["harness.phase"],
   outcome: s.attributes["hackerai.child_completion.outcome"],
+  association: s.attributes["hackerai.child_completion.association"],
+  completionPhase: s.attributes["hackerai.child_completion.phase"],
+  disableContext: s.attributes["hackerai.child_completion.disable_context"],
   probeVersion: s.attributes["hackerai.child_completion.version"],
   resultOk: s.attributes["hackerai.child_completion.result_ok"],
   workerRunning: s.attributes["hackerai.child_completion.worker_running"],
@@ -107,6 +111,7 @@ const tracer = new TriggerTracer({
   logger: sdk.getLogger("trigger-dev-worker", "4.7.7"),
 });
 const cases = [];
+let flushReceipts = 0;
 const definitions = [
   ["normal-cold", false],
   ["external-warm", true],
@@ -202,9 +207,38 @@ try {
     probe.observeReturn(originalPromise);
     await originalPromise;
     await Promise.resolve();
+    // The worker's FLUSH handler ends this receipt synchronously before its one
+    // existing SDK flush below; no additional forceFlush is issued for it.
+    probe.parentFlush.received({
+      disableContext: true,
+      isRunning: false,
+      isCancelled: false,
+      connected: true,
+    });
     await sdk.flush();
     const ns = native.filter((s) => s.runId === runId),
       es = external.filter((s) => s.runId === runId);
+    const flushNative = ns.filter((s) => s.probePhase === "parent-flush"),
+      flushExternal = es.filter((s) => s.probePhase === "parent-flush");
+    assert.equal(flushNative.length, 2, `${name} receipt native partial+final`);
+    const flushFinal = flushNative.find((s) => !s.partial);
+    assert.equal(
+      flushNative.find((s) => s.partial).partialFor,
+      flushFinal.spanId,
+    );
+    assert.equal(flushFinal.traceId, internalTraceId);
+    assert.equal(flushFinal.parentSpanId, internalParent);
+    assert.equal(typeof flushFinal.probeVersion, "number");
+    assert.equal(flushFinal.probeVersion, 1);
+    assert.equal(flushFinal.probeAttempt, 1);
+    assert.equal(flushFinal.association, "current_child_context");
+    assert.equal(flushFinal.completionPhase, "returned_unacknowledged");
+    assert.equal(flushFinal.disableContext, true);
+    assert.equal(flushFinal.workerRunning, false);
+    assert.equal(flushFinal.outcome, undefined);
+    assert.equal(flushExternal.length, 1, "external receipt has final only");
+    if (isExternal) assert.equal(flushExternal[0].traceId, externalTraceId);
+    flushReceipts++;
     for (const phase of ["completion-packet", "completion-ipc"]) {
       const n = ns.filter((s) => s.probePhase === phase),
         e = es.filter((s) => s.probePhase === phase);
@@ -357,6 +391,7 @@ try {
       pass: true,
       mode: out.mode,
       cases: cases.length,
+      flushReceipts,
       nativeSpans: native.length,
       externalSpans: external.length,
     }),
