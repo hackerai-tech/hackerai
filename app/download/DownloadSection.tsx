@@ -1,17 +1,9 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Button } from "@/components/ui/button";
 import { useIsStandalone } from "@/hooks/use-is-standalone";
 import { downloadLinks } from "./constants";
-import {
-  AppleIcon,
-  WindowsIcon,
-  LinuxIcon,
-  AndroidIcon,
-  DeviceIcon,
-  DownloadIcon,
-} from "./icons";
+import { DownloadIcon } from "./icons";
 
 type Platform = "macos" | "windows" | "linux" | "ios" | "android" | "unknown";
 type LinuxArch = "x64" | "arm64";
@@ -123,49 +115,16 @@ export function useDetectedPlatform(): DetectedPlatform | null {
   return useSyncExternalStore(subscribe, getClientSnapshot, getServerSnapshot);
 }
 
-export function DownloadSection() {
-  const detected = useDetectedPlatform();
-
-  if (!detected) {
-    return (
-      <div className="rounded-md border bg-card p-8 text-center shadow-lg">
-        <div className="h-20 animate-pulse rounded bg-muted" />
-      </div>
-    );
-  }
-
-  if (detected.platform === "ios" || detected.platform === "android") {
-    return <MobileInstallCard detected={detected} />;
-  }
-
-  return (
-    <div className="rounded-md border bg-card p-8 text-center shadow-lg">
-      <div className="mb-6">
-        <PlatformIcon platform={detected.platform} />
-      </div>
-
-      <Button asChild size="lg" className="mb-4 text-lg">
-        <a href={detected.downloadUrl}>
-          <DownloadIcon />
-          Download for {detected.displayName}
-        </a>
-      </Button>
-
-      {detected.platform === "unknown" && (
-        <p className="mt-4 text-sm text-muted-foreground">
-          Can&apos;t detect your OS? Choose from the options below.
-        </p>
-      )}
-    </div>
-  );
-}
-
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
-function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
+export function MobileInstallPanel({
+  detected,
+}: {
+  detected: DetectedPlatform;
+}) {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
@@ -210,11 +169,8 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
 
   if (isStandalone) {
     return (
-      <div className="rounded-md border bg-card p-8 text-center shadow-lg">
-        <MobilePlatformIcon platform={detected.platform} />
-        <h2 className="mt-4 text-2xl font-semibold text-card-foreground">
-          HackerAI is installed
-        </h2>
+      <div className="mt-9 border-t border-border pt-5">
+        <h2 className="text-lg font-semibold">HackerAI is installed</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           You&apos;re already running HackerAI as an installed app.
         </p>
@@ -223,34 +179,36 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
   }
 
   return (
-    <div className="rounded-md border bg-card p-8 shadow-lg">
-      <div className="mb-6 text-center">
-        <MobilePlatformIcon platform={detected.platform} />
-        <h2 className="mt-4 text-2xl font-semibold text-card-foreground">
-          Install Mobile App
+    <div className="mt-9">
+      <div className="flex items-baseline justify-between gap-3 border-b border-border pb-4">
+        <h2 className="text-lg font-semibold">
+          {detected.platform === "ios" ? "On iPhone or iPad" : "On Android"}
         </h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Install HackerAI on your {detected.displayName} device
-        </p>
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[#b9b7ff]">
+          Your device
+        </span>
       </div>
 
       {installed && (
-        <div className="mb-4 rounded-md border border-green-500/30 bg-green-500/10 p-4 text-center text-sm text-green-600 dark:text-green-400">
-          Installed! Open HackerAI from your home screen.
-        </div>
+        <p
+          role="status"
+          className="mt-5 rounded-lg border border-border bg-card px-4 py-3 text-sm"
+        >
+          Installed. Open HackerAI from your home screen.
+        </p>
       )}
 
       {!installed && deferredPrompt && (
         <>
-          <Button
-            size="lg"
-            className="mb-4 w-full text-lg"
+          <button
+            type="button"
+            className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-[10px] bg-foreground px-5 font-medium text-background hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={handleInstallClick}
           >
-            <DownloadIcon />
+            <DownloadIcon className="size-5" aria-hidden="true" />
             Install HackerAI
-          </Button>
-          <div className="mb-4 flex items-center gap-3 text-xs text-muted-foreground">
+          </button>
+          <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
             <div className="h-px flex-1 bg-border" />
             <span>Or install manually</span>
             <div className="h-px flex-1 bg-border" />
@@ -259,6 +217,24 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
       )}
 
       {!installed && <InstallInstructions platform={detected.platform} />}
+      {!installed && (
+        <p className="mt-5 text-sm leading-6 text-muted-foreground">
+          {detected.platform === "ios" ? (
+            <>
+              <span className="font-medium text-foreground">On Android?</span>{" "}
+              Open the browser menu (⋮) and tap Install app or Add to Home
+              screen.
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-foreground">
+                On iPhone or iPad?
+              </span>{" "}
+              Use Safari&apos;s Share menu, then Add to Home Screen.
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }
@@ -269,9 +245,8 @@ function InstallInstructions({ platform }: { platform: Platform }) {
       <StepsList
         steps={[
           <>
-            Tap the <strong>Share</strong> button (the square with an arrow
-            pointing up). You may need to tap the three dots (⋯) menu first to
-            reveal it.
+            Tap <strong>Share</strong>, the square with an arrow. You may need
+            to tap the ⋯ menu first.
           </>,
           <>
             Scroll down and tap <strong>Add to Home Screen</strong>.
@@ -288,14 +263,14 @@ function InstallInstructions({ platform }: { platform: Platform }) {
     <StepsList
       steps={[
         <>
-          Tap the <strong>menu</strong> button (three dots in the top right)
+          Tap the <strong>menu</strong> button (three dots in the top right).
         </>,
         <>
           Tap <strong>Install app</strong> or{" "}
           <strong>Add to Home screen</strong>
         </>,
         <>
-          Tap <strong>Install</strong> to confirm
+          Tap <strong>Install</strong> to confirm.
         </>,
       ]}
     />
@@ -304,43 +279,20 @@ function InstallInstructions({ platform }: { platform: Platform }) {
 
 function StepsList({ steps }: { steps: React.ReactNode[] }) {
   return (
-    <ol className="space-y-3">
+    <ol className="divide-y divide-border border-b border-border">
       {steps.map((step, i) => (
-        <li key={i} className="flex gap-3 text-sm text-card-foreground">
-          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+        <li
+          key={i}
+          className="flex gap-4 py-3.5 text-sm leading-6 text-muted-foreground"
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground text-xs font-semibold text-background">
             {i + 1}
           </span>
-          <span className="pt-0.5">{step}</span>
+          <span className="pt-0.5 [&_strong]:font-medium [&_strong]:text-foreground">
+            {step}
+          </span>
         </li>
       ))}
     </ol>
   );
-}
-
-function PlatformIcon({ platform }: { platform: Platform }) {
-  const className = "mx-auto h-16 w-16 text-muted-foreground";
-
-  switch (platform) {
-    case "macos":
-      return <AppleIcon className={className} />;
-    case "windows":
-      return <WindowsIcon className={className} />;
-    case "linux":
-      return <LinuxIcon className={className} />;
-    default:
-      return <DeviceIcon className={className} />;
-  }
-}
-
-function MobilePlatformIcon({ platform }: { platform: Platform }) {
-  const className = "mx-auto h-16 w-16 text-muted-foreground";
-
-  switch (platform) {
-    case "ios":
-      return <AppleIcon className={className} />;
-    case "android":
-      return <AndroidIcon className={className} />;
-    default:
-      return <DeviceIcon className={className} />;
-  }
 }

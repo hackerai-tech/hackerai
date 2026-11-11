@@ -1623,17 +1623,36 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           try {
             if (/^\s*hackerai-captcha\b/.test(input.command)) {
               const request = parseCaptchaRuntimeCommand(input.command);
+              const {
+                requestBrowserChallenge,
+                reportBrowserChallengeProgress,
+              } = context;
               if (
                 !request ||
                 input.is_background ||
                 input.interactive ||
-                !context.requestBrowserChallenge
+                !(request.action === "progress"
+                  ? reportBrowserChallengeProgress
+                  : requestBrowserChallenge)
               )
                 return {
                   result: {
                     exitCode: 1,
                     output:
                       "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
+                  },
+                };
+              // Progress only records observed vision feedback: no shell,
+              // provider work or paid-solve activity indicator.
+              if (request.action === "progress")
+                return {
+                  result: {
+                    exitCode: 0,
+                    browserChallenge: await reportBrowserChallengeProgress!(
+                      request.sessionName,
+                      request.report,
+                      options.abortSignal,
+                    ),
                   },
                 };
               if (request.action === "solve") {
@@ -1652,7 +1671,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return {
                 result: {
                   exitCode: 0,
-                  browserChallenge: await context.requestBrowserChallenge(
+                  browserChallenge: await requestBrowserChallenge!(
                     request.action,
                     request.sessionName,
                     options.abortSignal,

@@ -102,6 +102,7 @@ export async function resolvePullRequests(api, repo, eventName, event) {
     if (check && ![CODE_RABBIT_APP, 57789].includes(check.app?.id)) return [];
     const run = eventName === "workflow_run" ? event.workflow_run : check;
     if (!run) return [];
+    if (eventName === "workflow_run" && run.event === "merge_group") return [];
     if (
       eventName === "workflow_run" &&
       run.path !== ".github/workflows/test.yml"
@@ -120,6 +121,80 @@ export async function resolvePullRequests(api, repo, eventName, event) {
   if (candidates.some((number) => !validNumber(number)))
     throw new Error("Invalid PR number");
   return [...new Set(candidates.map(Number))];
+}
+
+const queueLanguages = [
+  "actions",
+  "go",
+  "javascript-typescript",
+  "python",
+  "rust",
+];
+const queueBranch = /^gh-readonly-queue\/main\/pr-[\w-]+$/;
+
+/** The queue head is the latest combined tree; this status is attached to that SHA. */
+export async function evaluateMergeGroup(
+  api,
+  repo,
+  run,
+  { publish = true, detailsUrl = "https://github.com" } = {},
+) {
+  const root = `/repos/${repo}`;
+  if (
+    run?.event !== "merge_group" ||
+    run.path !== ".github/workflows/test.yml" ||
+    run.repository?.full_name !== repo ||
+    !queueBranch.test(run.head_branch ?? "") ||
+    !/^[a-f0-9]{40}$/.test(run.head_sha ?? "")
+  )
+    throw new Error("Invalid merge-group CI run");
+  const head = run.head_sha;
+  const ref = encodeURIComponent(`refs/heads/${run.head_branch}`);
+  let decision;
+  if (run.status !== "completed" || run.conclusion !== "success") {
+    decision = {
+      state: run.status === "completed" ? "failure" : "pending",
+      reason: "Merge-group CI did not pass.",
+    };
+  } else {
+    const [analyses, alerts, baseline] = await Promise.all([
+      pages(api, `${root}/code-scanning/analyses?ref=${ref}&tool_name=CodeQL`),
+      pages(
+        api,
+        `${root}/code-scanning/alerts?ref=${ref}&state=open&tool_name=CodeQL`,
+      ),
+      pages(
+        api,
+        `${root}/code-scanning/alerts?ref=${encodeURIComponent("refs/heads/main")}&state=open&tool_name=CodeQL`,
+      ),
+    ]);
+    const security = securityResult(
+      head,
+      queueLanguages,
+      analyses,
+      alerts,
+      baseline,
+    );
+    decision = {
+      state:
+        security.state === "pass"
+          ? "success"
+          : security.state === "fail"
+            ? "failure"
+            : "pending",
+      reason: security.reason,
+    };
+  }
+  if (publish)
+    await publishStatus(
+      api,
+      root,
+      head,
+      decision.state,
+      detailsUrl,
+      decision.reason,
+    );
+  return decision;
 }
 
 /** Commit statuses cannot be forged by naming a read-only PR Actions job. */
@@ -338,6 +413,61 @@ export async function main(action, env = process.env) {
     }).trim();
   if (!token) throw new Error("Missing GitHub authentication");
   const api = githubClient(token);
+  if (action === "queue-pending") {
+    if (env.GITHUB_EVENT_NAME !== "merge_group")
+      throw new Error("Invalid merge-group event");
+    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
+    const group = event.merge_group;
+    if (
+      group?.base_ref !== "refs/heads/main" ||
+      !queueBranch.test(group.head_ref?.replace(/^refs\/heads\//, "") ?? "") ||
+      !/^[a-f0-9]{40}$/.test(group.head_sha ?? "")
+    )
+      throw new Error("Invalid merge-group identity");
+    await publishStatus(
+      api,
+      `/repos/${repo}`,
+      group.head_sha,
+      "pending",
+      `https://github.com/${repo}/actions/runs/${env.GITHUB_RUN_ID ?? ""}`,
+      "Waiting for current merge-group CI and CodeQL analysis.",
+    );
+    return 0;
+  }
+  if (action === "queue-evaluate") {
+    if (env.GITHUB_EVENT_NAME !== "workflow_run")
+      throw new Error("Invalid merge-group CI event");
+    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
+    let decision;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      decision = await evaluateMergeGroup(api, repo, event.workflow_run, {
+        publish: false,
+      });
+      if (
+        decision.state !== "pending" ||
+        event.workflow_run?.status !== "completed"
+      )
+        break;
+      if (attempt < 9)
+        await new Promise((resolve) => setTimeout(resolve, 30000));
+    }
+    if (decision.state === "pending")
+      decision = {
+        state: "failure",
+        reason:
+          "Merge-group scan reports were not available within five minutes.",
+      };
+    await publishStatus(
+      api,
+      `/repos/${repo}`,
+      event.workflow_run.head_sha,
+      decision.state,
+      `https://github.com/${repo}/actions/runs/${env.GITHUB_RUN_ID ?? ""}`,
+      decision.reason,
+    );
+    console.log(JSON.stringify(decision));
+    return decision.state === "success" ? 0 : 1;
+  }
   if (action === "resolve") {
     const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
     const numbers = await resolvePullRequests(

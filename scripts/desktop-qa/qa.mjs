@@ -84,13 +84,11 @@ export function validateConfig(input) {
     "QA only supports local or Preview environments",
   );
   const frontend = url(input.frontend).origin;
+  // Hosted deployments (including Vercel Preview) can show deployment protection
+  // inside the native WebView, so native QA always loads a local frontend.
   check(
-    input.environment === "local"
-      ? loopback(frontend)
-      : loopback(frontend) ||
-          (new URL(frontend).protocol === "https:" &&
-            new URL(frontend).hostname.endsWith(".vercel.app")),
-    "Frontend does not match the selected QA environment",
+    loopback(frontend),
+    "Native QA requires a loopback frontend (localhost, 127.0.0.1 or [::1]). Build and serve this worktree's frontend locally, pointed at the verified backend/worker/relay; use hosted Vercel Preview only for web-only browser QA.",
   );
   keys(input.backend, ["account", "project", "deployment", "url"]);
   const backend = {

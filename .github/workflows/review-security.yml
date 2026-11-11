@@ -17,6 +17,8 @@ on:
   workflow_run:
     workflows: [Run Tests]
     types: [completed]
+  merge_group:
+    types: [checks_requested]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -40,7 +42,10 @@ jobs:
       (github.event_name != 'issue_comment' ||
        (github.event.issue.pull_request &&
         (github.event.action != 'edited' ||
-         github.event.comment.user.login == 'coderabbitai[bot]')))
+         github.event.comment.user.login == 'coderabbitai[bot]'))) &&
+      (github.event_name != 'merge_group') &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.event != 'merge_group')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -88,3 +93,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr }}
         run: node scripts/testing/review-security.mjs evaluate
+
+  queue_pending:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/testing/review-security.mjs queue-pending
+
+  queue_evaluate:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      statuses: write
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/testing/review-security.mjs queue-evaluate

@@ -28,6 +28,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/abuse",
   "/api/abuse",
   "/api/analytics-consent",
+  "/api/desktop/authorized-operation",
   "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",

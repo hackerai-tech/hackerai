@@ -1200,6 +1200,9 @@ describe("E2B sandbox lease lifecycle", () => {
           e2b_workspace_identity_requested_cluster: "us",
         });
         expect(error.diagnostics).not.toHaveProperty("e2b_http_status");
+        expect(error.diagnostics).not.toHaveProperty(
+          "e2b_workspace_identity_get_info_context_version",
+        );
         const native = JSON.parse(String(errorLog.mock.calls[0][0]));
         expect(native).toMatchObject({
           ...error.diagnostics,
@@ -1228,6 +1231,120 @@ describe("E2B sandbox lease lifecycle", () => {
     },
   );
 
+  it.each(["transport cause", "accessor cause", "native timeout"] as const)(
+    "retains only finite pinned get_info context for %s",
+    async (source) => {
+      const errorLog = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const readCause = jest.fn(() => {
+        throw new Error("private-accessor-text");
+      });
+      const reported = new TypeError("fetch failed", {
+        cause: Object.assign(new Error("private-original-cause"), {
+          code: "ECONNRESET",
+        }),
+      });
+      Object.assign(reported, { statusCode: 502 });
+      const unreadable = new TypeError("private-error-text");
+      Object.defineProperty(unreadable, "cause", { get: readCause });
+      const original =
+        source === "transport cause"
+          ? reported
+          : source === "accessor cause"
+            ? unreadable
+            : new DOMException("private-timeout-text", "TimeoutError");
+      const expected = {
+        e2b_workspace_identity_get_info_context_version: 1,
+        e2b_workspace_identity_get_info_error_kind:
+          source === "native timeout" ? "dom_timeout" : "other_error",
+        e2b_workspace_identity_get_info_reported_status:
+          source === "transport cause" ? 502 : "none",
+        ...(source !== "native timeout" && {
+          e2b_workspace_identity_get_info_type_error_signal:
+            source === "transport cause" ? "fetch_failed" : "other_type_error",
+          e2b_workspace_identity_get_info_transport_code:
+            source === "transport cause" ? "ECONNRESET" : "unreadable",
+        }),
+      };
+      sandboxApi.getInfo.mockRejectedValueOnce(original);
+      const signal = new AbortController().signal;
+      const setSandbox = jest.fn();
+      try {
+        const error = await ensureSandboxConnection(
+          { userID: "user-1", setSandbox },
+          {
+            destinationId: "private-workspace-fixture",
+            triggerRegion: "us-east-1",
+            acquisitionId: "acq-1",
+            triggerRunId: "run-1",
+            signal,
+          },
+        ).catch((failure) => failure);
+        expect(error.name).toBe("E2BAcquisitionError");
+        expect(error.diagnostics).toMatchObject({
+          e2b_phase: "connect",
+          e2b_error_category: "unknown",
+          e2b_workspace_identity_operation: "get_info",
+          e2b_workspace_identity_error_kind: "other_error",
+          e2b_workspace_identity_requested_target_fingerprint:
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+          e2b_workspace_identity_requested_cluster: "us",
+          ...expected,
+        });
+        if (source === "transport cause")
+          expect(error.diagnostics.e2b_http_status).toBe(502);
+        else expect(error.diagnostics).not.toHaveProperty("e2b_http_status");
+        expect(errorLog).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+          event: "e2b_sandbox_acquisition_failed",
+          acquisition_id: "acq-1",
+          ...expected,
+        });
+        expect(
+          JSON.stringify([error.diagnostics, errorLog.mock.calls]),
+        ).not.toMatch(/private-(?:workspace|original|accessor|error|timeout)/);
+        expect(readCause).not.toHaveBeenCalled();
+        expect(sandboxApi.getInfo).toHaveBeenCalledTimes(1);
+        expect(sandboxApi.getInfo).toHaveBeenCalledWith(
+          "private-workspace-fixture",
+          expect.objectContaining({ requestTimeoutMs: 10_000, signal }),
+        );
+        expect(sandboxApi.connect).not.toHaveBeenCalled();
+        expect(sandboxApi.create).not.toHaveBeenCalled();
+        expect(sandboxApi.kill).not.toHaveBeenCalled();
+        expect(recordResumeFailure).not.toHaveBeenCalled();
+        expect(setSandbox).not.toHaveBeenCalled();
+      } finally {
+        errorLog.mockRestore();
+      }
+    },
+  );
+
+  it("preserves caller abort without projecting a pinned get_info rejection", async () => {
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    const controller = new AbortController();
+    const reason = new DOMException("fixture caller stop", "AbortError");
+    sandboxApi.getInfo.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw new TypeError("fetch failed");
+    });
+    try {
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          { destinationId: "fixture-workspace", signal: controller.signal },
+        ),
+      ).rejects.toBe(reason);
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(sandboxApi.getInfo).toHaveBeenCalledTimes(1);
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("identifies a rejected identity as validation, not an SDK or connect failure", async () => {
     const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
     sandboxApi.getInfo.mockResolvedValueOnce({
@@ -1249,6 +1366,9 @@ describe("E2B sandbox lease lifecycle", () => {
       });
       expect(sandboxApi.connect).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(JSON.parse(String(errorLog.mock.calls[0][0]))).not.toHaveProperty(
+        "e2b_workspace_identity_get_info_context_version",
+      );
       expect(JSON.stringify(errorLog.mock.calls)).not.toMatch(
         /private-workspace-id|private-other-workspace|private-owner/,
       );

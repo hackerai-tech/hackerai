@@ -23,6 +23,7 @@ import {
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
@@ -48,6 +49,11 @@ const sessionReadFailures = new WeakMap<
   ReturnType<typeof checkpointCloudErrorContext>
 >();
 
+const returnedRelayRenewExits = new WeakMap<
+  BrowserPreviewUnavailable,
+  number
+>();
+
 /** Read closed SDK classes and own numeric exit data, never command output. */
 export function browserRelayRenewFailureContext(error: unknown) {
   let kind:
@@ -55,14 +61,22 @@ export function browserRelayRenewFailureContext(error: unknown) {
     "thrown_value";
   let exitCode: number | "none" | "other" = "none";
   try {
-    if (error instanceof CommandExitError) {
+    const returnedExit =
+      error instanceof BrowserPreviewUnavailable
+        ? returnedRelayRenewExits.get(error)
+        : undefined;
+    const isSdkExit = error instanceof CommandExitError;
+    if (isSdkExit || returnedExit !== undefined) {
       kind = "command_exit";
       exitCode = "other";
-      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const result = isSdkExit
+        ? Object.getOwnPropertyDescriptor(error, "result")?.value
+        : undefined;
       const value =
-        result && typeof result === "object"
+        returnedExit ??
+        (result && typeof result === "object"
           ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
-          : undefined;
+          : undefined);
       if (
         typeof value === "number" &&
         Number.isInteger(value) &&
@@ -79,10 +93,14 @@ export function browserRelayRenewFailureContext(error: unknown) {
     kind = "unreadable";
     exitCode = "other";
   }
+  const reason = Object.entries(RELAY_RENEW_FAILURE_CODES).find(
+    ([, code]) => code === exitCode,
+  )?.[0];
   return {
-    relay_renew_diagnostic_version: 1,
+    relay_renew_diagnostic_version: 2,
     relay_renew_error_kind: kind,
     relay_renew_command_exit_code: exitCode,
+    ...(reason === undefined ? {} : { relay_renew_failure_reason: reason }),
   };
 }
 
@@ -254,6 +272,10 @@ export async function startBrowserRelay(
   return `https://${sandbox.getHost(relayPort)}`;
 }
 
+/**
+ * Renew an existing relay lease. The route keeps its recovery response for
+ * every rejection, while diagnostics can read the inline command's exit code.
+ */
 export async function renewBrowserRelay(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
@@ -269,8 +291,11 @@ export async function renewBrowserRelay(
       timeoutMs: 5000,
     },
   );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  if (result.exitCode !== 0) {
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    returnedRelayRenewExits.set(unavailable, result.exitCode);
+    throw unavailable;
+  }
 }
 
 export async function stopBrowserRelays(
@@ -879,32 +904,96 @@ export async function resizeBrowserViewport(
   return { ...frame, width, height };
 }
 
+export type BrowserInputFailureContext = {
+  input_diagnostic_version: 1;
+  input_stage:
+    | "read_stream_port"
+    | "start_bridge"
+    | "send_stdin"
+    | "close_stdin"
+    | "wait_bridge"
+    | "bridge_result";
+  input_error_kind: string;
+  input_http_status: number | "none" | "other";
+  input_command_exit_code: number | "none" | "other";
+  input_type_error_signal?: "fetch_failed" | "other_type_error" | "unreadable";
+  input_transport_code?: string;
+};
+
+/** Preserve the input operation while optionally reporting only its failed await. */
 export async function sendBrowserInput(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
   streamPort?: number,
+  onFailure?: (context: BrowserInputFailureContext) => void,
 ) {
-  const port =
-    streamPort ??
-    (await getPrivateStreamPort(sandbox, session, browserSessionName));
-  const handle = await sandbox.commands.run(
-    browserBridgeCommand(port, "input"),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      background: true,
-      stdin: true,
-      timeoutMs: 8_000,
-    },
-  );
-  // Text, including passwords, is sent only through protected process stdin.
-  // It is never interpolated into a command, logged, or persisted.
-  await handle.sendStdin(JSON.stringify(events));
-  await handle.closeStdin();
-  const result = await handle.wait();
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  let stage: BrowserInputFailureContext["input_stage"] = "read_stream_port";
+  let exitCode: BrowserInputFailureContext["input_command_exit_code"] = "none";
+  try {
+    const port =
+      streamPort ??
+      (await getPrivateStreamPort(sandbox, session, browserSessionName));
+    stage = "start_bridge";
+    const handle = await sandbox.commands.run(
+      browserBridgeCommand(port, "input"),
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        background: true,
+        stdin: true,
+        timeoutMs: 8_000,
+      },
+    );
+    // Text, including passwords, remains only in protected process stdin.
+    stage = "send_stdin";
+    await handle.sendStdin(JSON.stringify(events));
+    stage = "close_stdin";
+    await handle.closeStdin();
+    stage = "wait_bridge";
+    const result = await handle.wait();
+    stage = "bridge_result";
+    const resultCode = result.exitCode;
+    if (resultCode !== 0) {
+      exitCode =
+        Number.isInteger(resultCode) && resultCode >= 0 && resultCode <= 255
+          ? resultCode
+          : "other";
+      throw new BrowserPreviewUnavailable("disconnected");
+    }
+  } catch (error) {
+    if (onFailure) {
+      try {
+        const cloud = checkpointCloudErrorContext(error);
+        const command = browserRelayRenewFailureContext(error);
+        onFailure({
+          input_diagnostic_version: 1,
+          input_stage: stage,
+          input_error_kind:
+            command.relay_renew_error_kind === "command_exit" ||
+            command.relay_renew_error_kind === "timeout"
+              ? command.relay_renew_error_kind
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : cloud.cloud_error_kind,
+          input_http_status: cloud.cloud_http_status,
+          input_command_exit_code:
+            exitCode === "none"
+              ? command.relay_renew_command_exit_code
+              : exitCode,
+          ...(cloud.cloud_type_error_signal === undefined
+            ? {}
+            : {
+                input_type_error_signal: cloud.cloud_type_error_signal,
+                input_transport_code: cloud.cloud_transport_code,
+              }),
+        });
+      } catch {
+        // Optional observers cannot replace the original error or retry input.
+      }
+    }
+    throw error;
+  }
 }
 
 export async function setAgentBrowserPaused(

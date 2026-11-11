@@ -1,21 +1,5 @@
 import type { Metadata } from "next";
-import {
-  Activity,
-  BadgeCheck,
-  Bot,
-  Bug,
-  Code,
-  CreditCard,
-  Database,
-  ExternalLink as ExternalLinkIcon,
-  FileText,
-  Globe,
-  KeyRound,
-  Network,
-  ShieldCheck,
-  Terminal,
-  Trash2,
-} from "lucide-react";
+import { ExternalLink as ExternalLinkIcon, FileText } from "lucide-react";
 import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
 import {
@@ -25,6 +9,7 @@ import {
   canonicalMetadata,
   formatPublicPageDate,
 } from "@/lib/seo/site";
+import { TrustSection as Section } from "./TrustSection";
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/trust"),
@@ -56,11 +41,31 @@ interface Subprocessor {
   dataCategories: string;
 }
 
+const MODEL_REQUEST_DATA =
+  "Prompts, conversation context, file content and images, tool output";
+
 const subprocessors: Subprocessor[] = [
   {
     name: "OpenRouter",
-    purpose: "Routes task requests to third-party AI model providers",
-    dataCategories: "Prompts, conversation context, file content, tool output",
+    purpose: "Routes most model requests to an upstream model host",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Upstream model hosts (via OpenRouter)",
+    purpose:
+      "Generate responses for models routed through OpenRouter; the host can differ from the model's author",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Inference.net",
+    purpose: "Serves some security-tuned models directly, without OpenRouter",
+    dataCategories: MODEL_REQUEST_DATA,
+  },
+  {
+    name: "Abliteration.ai",
+    purpose:
+      "Serves abliterated models directly, without OpenRouter, and handles some fallback requests",
+    dataCategories: MODEL_REQUEST_DATA,
   },
   {
     name: "OpenAI",
@@ -76,6 +81,12 @@ const subprocessors: Subprocessor[] = [
     name: "Jina AI",
     purpose: "Webpage content retrieval for the agent",
     dataCategories: "URLs and retrieved page content",
+  },
+  {
+    name: "2Captcha",
+    purpose: "Solves CAPTCHAs the agent encounters while browsing",
+    dataCategories:
+      "Page URL and CAPTCHA site key; challenge parameters and browser user agent when applicable",
   },
   {
     name: "E2B",
@@ -110,8 +121,20 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "PostHog",
-    purpose: "Product analytics and error tracking",
-    dataCategories: "Usage events and diagnostic data",
+    purpose: "Product analytics, eligible session replay, and error tracking",
+    dataCategories:
+      "Usage events, diagnostic data, and interface recordings where enabled",
+  },
+  {
+    name: "Intercom",
+    purpose: "Customer support messaging",
+    dataCategories:
+      "Account identifier, email, name, and support messages and attachments you send",
+  },
+  {
+    name: "Cloudflare Turnstile",
+    purpose: "Bot verification on the abuse report form",
+    dataCategories: "Browser and device signals, verification token",
   },
   {
     name: "Trigger.dev",
@@ -126,31 +149,21 @@ const subprocessors: Subprocessor[] = [
   },
 ];
 
-interface SectionProps {
-  id?: string;
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  children: React.ReactNode;
-}
-
-const Section = ({ id, icon: Icon, title, children }: SectionProps) => (
-  <section
-    id={id}
-    className="rounded-xl border border-border bg-card p-6 sm:p-8"
-  >
-    <div className="mb-4 flex items-center gap-3">
-      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted">
-        <Icon className="size-4.5 text-foreground" />
-      </div>
-      <h2 className="text-lg font-semibold text-card-foreground sm:text-xl">
-        {title}
-      </h2>
-    </div>
-    <div className="space-y-3 text-[15px] leading-relaxed text-muted-foreground">
-      {children}
-    </div>
-  </section>
-);
+const contents = [
+  ["data-we-process", "Data we process"],
+  ["ai-model-providers", "AI model providers"],
+  ["model-training", "Model training and data licensing"],
+  ["execution-environments", "Execution environments"],
+  ["account-security", "Account security"],
+  ["data-regions", "Where your data is processed"],
+  ["billing", "Billing"],
+  ["data-deletion", "Data deletion"],
+  ["subprocessors", "Subprocessors"],
+  ["responsible-disclosure", "Responsible disclosure"],
+  ["incident-communication", "Incident communication"],
+  ["source-code", "Source code"],
+  ["compliance", "Compliance"],
+] as const;
 
 const InlineLink = ({
   href,
@@ -170,10 +183,10 @@ const InlineLink = ({
 );
 
 const CheckList = ({ items }: { items: React.ReactNode[] }) => (
-  <ul className="space-y-2.5">
+  <ul className="space-y-2">
     {items.map((item, index) => (
       <li key={index} className="flex items-start gap-2.5">
-        <ShieldCheck className="mt-1 size-4 shrink-0 text-foreground" />
+        <span aria-hidden="true">—</span>
         <span>{item}</span>
       </li>
     ))}
@@ -182,261 +195,407 @@ const CheckList = ({ items }: { items: React.ReactNode[] }) => (
 
 function TrustContent() {
   return (
-    <main className="bg-background px-4 py-14 sm:px-6 sm:py-20">
-      <div className="mx-auto max-w-4xl">
-        {/* Hero */}
-        <header className="mb-12 text-center">
-          <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
-            <ShieldCheck
-              className="size-7 text-foreground"
-              aria-hidden="true"
-            />
+    <main className="bg-background px-4 pb-20 pt-14 sm:px-6 md:pt-20 lg:px-10">
+      <div className="mx-auto max-w-[1200px]">
+        <header className="grid gap-5 border-b border-border pb-10 md:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)] md:items-end md:gap-12">
+          <div>
+            <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+              Last updated ·{" "}
+              <time dateTime={PUBLIC_PAGE_LAST_MODIFIED.trust}>
+                {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.trust)}
+              </time>
+            </p>
+            <h1 className="mt-4 text-[clamp(2.65rem,5vw,4.5rem)] font-semibold leading-[1.05] tracking-[-0.055em]">
+              Security &amp; Trust
+            </h1>
           </div>
-          <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-6xl">
-            Security &amp; Trust
-          </h1>
-          <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
+          <p className="max-w-[420px] text-base leading-7 text-muted-foreground">
             HackerAI is an AI agent for penetration testing and security work.
             This page describes the data we process, where agent code runs, and
             the services we rely on to operate.
           </p>
-          <p className="mt-6 inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
-            Last updated{" "}
-            <time className="ml-1" dateTime={PUBLIC_PAGE_LAST_MODIFIED.trust}>
-              {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.trust)}
-            </time>
-          </p>
         </header>
 
-        <div className="space-y-6">
-          <Section icon={Database} title="Data we process">
-            <p>Depending on how you use HackerAI, the service processes:</p>
-            <CheckList
-              items={[
-                "Prompts and task messages you send to the agent",
-                "Files you upload (PDF, CSV, JSON, TXT, Markdown, DOC/DOCX, and PNG/JPEG/WebP/GIF images), including text extracted from them",
-                "URLs and search queries used when the agent browses or searches the web",
-                "Terminal commands and their output from agent sandbox sessions",
-                "Browser screenshots captured inside the agent sandbox",
-                "Notes and custom instructions you save",
-                "Account information such as your email address and name",
-                "Usage analytics and error diagnostics",
-              ]}
-            />
-          </Section>
-
-          <Section icon={Bot} title="AI model providers">
-            <p>
-              Task requests are routed through OpenRouter to the provider behind
-              the model you select, such as Anthropic, Google, DeepSeek,
-              Moonshot AI, or xAI. Your prompt, relevant conversation context,
-              and tool results are sent to that provider to generate a response.
-            </p>
-            <p>
-              When the agent searches the web or opens a URL, search queries are
-              processed by Perplexity and page content is retrieved through Jina
-              AI. Message content is screened by OpenAI for content moderation.
-            </p>
-            <p>
-              Each provider processes data under its own terms. Whether data is
-              used for model training varies by provider, so we don&apos;t make
-              a blanket guarantee on this point &mdash; refer to the policies of
-              the providers listed below.
-            </p>
-          </Section>
-
-          <Section icon={FileText} title="Model improvement and data licensing">
-            <p>
-              A future program may use eligible task content to train and
-              evaluate AI models, including paid licensing to AI partners.
-              Partner data collection is not active. Improve the model for
-              everyone is on by default and can be turned off in Settings &gt;
-              Data controls. See our{" "}
-              <InlineLink href="/privacy-policy#data-contributions">
-                Privacy Policy
-              </InlineLink>{" "}
-              for eligibility, notice, and privacy choices.
-            </p>
-          </Section>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <Section icon={Terminal} title="Execution environments">
-              <p>
-                By default, terminal and browser actions run in an isolated E2B
-                cloud sandbox. You can delete your sandboxes at any time from
-                Settings &rarr; Data controls.
+        <div className="md:grid md:grid-cols-[200px_minmax(0,1fr)] md:gap-10 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-16">
+          <aside className="hidden md:block" aria-label="On this page">
+            <nav className="sticky top-8 py-8">
+              <p className="mb-4 font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                On this page
               </p>
-              <p>
-                A local execution mode is also available. It runs commands
-                directly on your machine with your user&apos;s privileges and{" "}
-                <strong className="text-foreground">no isolation</strong>, so we
-                recommend it only on machines dedicated to testing.
-              </p>
-            </Section>
-
-            <Section icon={KeyRound} title="Account security">
-              <CheckList
-                items={[
-                  "Authentication is handled by WorkOS AuthKit; we don't operate our own password database",
-                  <>
-                    Multi-factor authentication (TOTP) is available in Settings
-                    &rarr; Security
-                  </>,
-                  <>
-                    Sessions can be revoked per device or across all devices
-                    from Settings &rarr; Security
-                  </>,
-                ]}
-              />
-            </Section>
-          </div>
-
-          <Section icon={Globe} title="Where your data is processed">
-            <p>
-              Your connection&apos;s IP address normally determines the initial
-              region of a new cloud workspace: Europe uses our EU region
-              (Frankfurt, eu-central-1), and other connections use a US region.
-              Once a cloud workspace exists, Cloud Agent runs use its saved
-              region even when your IP address changes. If you have existing
-              workspaces in both the US and Europe, you may need to choose one
-              or contact support.
-            </p>
-            <p>
-              New file uploads from the app normally follow your current
-              connection location. Downloadable file copies uploaded by Agent
-              runs normally follow that run&apos;s region. Uploads can use a US
-              fallback location when regional placement is unavailable. Files
-              that stay inside a Local or Desktop workspace remain on your
-              connected computer. Changing your IP address through a VPN or
-              travel does not move existing workspaces or stored files.
-            </p>
-            <p>
-              The primary database, AI model providers, web search, content
-              moderation, authentication, billing, and analytics are not
-              regional. See the{" "}
-              <InlineLink href="/privacy-policy">Privacy Policy</InlineLink> for
-              international processing.
-            </p>
-          </Section>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <Section icon={CreditCard} title="Billing">
-              <p>
-                Payments are processed by Stripe; card details never reach our
-                servers. Subscriptions can be managed or canceled through the
-                billing portal in your account settings, and deleting your
-                account cancels any active subscription.
-              </p>
-            </Section>
-
-            <Section icon={Trash2} title="Data deletion">
-              <CheckList
-                items={[
-                  "Delete individual tasks, or all tasks at once",
-                  "Delete your terminal sandboxes",
-                  "Revoke links to tasks you have shared",
-                  "Delete your account, which removes database records, cancels your Stripe subscription, and deletes your authentication record",
-                  "Deleting and recreating an account does not reset usage limits or referral eligibility",
-                ]}
-              />
-            </Section>
-          </div>
-
-          <Section icon={Network} title="Subprocessors">
-            <p>The following services process data on our behalf:</p>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/60 text-left">
-                    <th className="px-4 py-3 font-semibold text-foreground">
-                      Provider
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-foreground">
-                      Purpose
-                    </th>
-                    <th className="px-4 py-3 font-semibold text-foreground">
-                      Data categories
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {subprocessors.map((subprocessor, index) => (
-                    <tr
-                      key={subprocessor.name}
-                      className={
-                        index < subprocessors.length - 1
-                          ? "border-b border-border align-top"
-                          : "align-top"
-                      }
+              <ol className="space-y-2 border-l border-border pl-3">
+                {contents.map(([id, label]) => (
+                  <li key={id}>
+                    <a
+                      href={`#${id}`}
+                      className="block text-xs leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <td className="whitespace-nowrap px-4 py-3 font-medium text-foreground">
-                        {subprocessor.name}
-                      </td>
-                      <td className="px-4 py-3">{subprocessor.purpose}</td>
-                      <td className="px-4 py-3">
-                        {subprocessor.dataCategories}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
+                      {label}
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            </nav>
+          </aside>
 
-          <div className="grid gap-6 md:grid-cols-2">
+          <div>
+            <details className="border-b border-border py-4 md:hidden">
+              <summary className="cursor-pointer font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                On this page · {contents.length} sections
+              </summary>
+              <nav aria-label="On this page" className="mt-4 grid gap-2 pb-2">
+                {contents.map(([id, label]) => (
+                  <a
+                    key={id}
+                    href={`#${id}`}
+                    className="text-sm text-foreground underline-offset-4 hover:underline"
+                  >
+                    {label}
+                  </a>
+                ))}
+              </nav>
+            </details>
             <Section
-              id="responsible-disclosure"
-              icon={Bug}
-              title="Responsible disclosure"
+              id="data-we-process"
+              number="01"
+              title="Data we process"
+              summary="8 categories, from prompts to diagnostics"
+            >
+              <p>Depending on how you use HackerAI, the service processes:</p>
+              <CheckList
+                items={[
+                  "Prompts and task messages you send to the agent",
+                  "Files you upload (PDF, CSV, JSON, TXT, Markdown, DOC/DOCX, and PNG/JPEG/WebP/GIF images), including text extracted from them",
+                  "URLs and search queries used when the agent browses or searches the web",
+                  "Terminal commands and their output from agent sandbox sessions",
+                  "Browser screenshots captured inside the agent sandbox",
+                  "Notes and custom instructions you save",
+                  "Account information such as your email address and name",
+                  "Usage analytics and error diagnostics",
+                ]}
+              />
+            </Section>
+
+            <Section
+              id="ai-model-providers"
+              number="02"
+              title="AI model providers"
+              initiallyOpen
             >
               <p>
-                Found a security vulnerability in HackerAI? Report it through
-                the <InlineLink href={HELP_CENTER_URL}>help center</InlineLink>.
-                We review all good-faith reports. We don&apos;t run a paid bug
-                bounty program at this time.
-              </p>
-            </Section>
-
-            <Section icon={Activity} title="Incident communication">
-              <p>
-                For availability updates and scheduled maintenance, check the{" "}
-                <InlineLink href={STATUS_PAGE_URL}>
-                  public status page
-                </InlineLink>
-                . If an incident affects your data, we notify affected users
-                through the service and the help center.
-              </p>
-            </Section>
-          </div>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <Section icon={Code} title="Source code">
-              <p>
-                HackerAI is developed in the open. The full application source
-                code is public on{" "}
-                <InlineLink href="https://github.com/hackerai-tech/hackerai">
-                  GitHub
-                </InlineLink>
-                , including every change we ship. You can review how prompts,
-                files, and sandbox sessions are handled directly in the code
-                rather than relying on this page alone.
-              </p>
-            </Section>
-
-            <Section icon={BadgeCheck} title="Compliance">
-              <p>
-                HackerAI doesn&apos;t currently hold SOC 2, ISO 27001, or other
-                third-party certifications. The service is offered in beta, as
-                described in our{" "}
-                <InlineLink href="/privacy-policy">Privacy Policy</InlineLink>{" "}
+                HackerAI sends your prompt, relevant conversation context, file
+                content, images, and tool results to the company serving the
+                model. Most model requests go through OpenRouter and an upstream
+                model host. The host may be the model&apos;s developer, such as
+                xAI, DeepSeek, Moonshot AI, Z.ai, or MiniMax, or another company
+                serving the same model. See the{" "}
+                <InlineLink href="https://openrouter.ai/privacy">
+                  OpenRouter privacy policy
+                </InlineLink>{" "}
                 and{" "}
-                <InlineLink href="/terms-of-service">
-                  Terms of Service
+                <InlineLink href="https://openrouter.ai/docs/guides/privacy/provider-logging">
+                  upstream host data policies
                 </InlineLink>
-                . We&apos;ll update this page as our compliance program
-                develops.
+                .
+              </p>
+              <p>
+                Some security-tuned models are served directly by Inference.net,
+                and abliterated models are served directly by Abliteration.ai,
+                without passing through OpenRouter. See the{" "}
+                <InlineLink href="https://inference.net/privacy-policy/">
+                  Inference.net privacy policy
+                </InlineLink>{" "}
+                and{" "}
+                <InlineLink href="https://abliteration.ai/privacy-policy">
+                  Abliteration.ai privacy policy
+                </InlineLink>
+                .
+              </p>
+              <p>
+                More than one provider can process a request. If a model fails
+                or is unavailable, HackerAI may use a fallback on a different
+                route; for example, Inference.net can fall back to
+                Abliteration.ai. Uploaded images and browser screenshots may
+                also be processed by a separate image model. The selected model
+                does not identify every company that may receive relevant task
+                content.
+              </p>
+              <p>
+                When the agent searches the web or opens a URL, Perplexity
+                processes search queries and Jina AI retrieves page content.
+                OpenAI screens message content for moderation. When the agent
+                uses CAPTCHA solving, 2Captcha receives the page URL and site
+                key, plus challenge parameters and the browser user agent when
+                applicable.
+              </p>
+              <p>
+                Each provider processes data under its own terms. Retention and
+                model training policies vary by provider, so we do not make a
+                blanket no-training or zero-retention guarantee. Refer to the
+                provider policies linked above.
               </p>
             </Section>
+
+            <Section
+              id="model-training"
+              number="03"
+              title="Model training and data licensing"
+              initiallyOpen
+            >
+              <p>
+                A future program may use eligible task content to train and
+                evaluate AI models, including paid licensing to AI partners.
+                This program is not active, and partner data collection has not
+                started. See our{" "}
+                <InlineLink href="/privacy-policy#data-contributions">
+                  Privacy Policy
+                </InlineLink>{" "}
+                for the notice and consent requirements that would apply before
+                any collection.
+              </p>
+            </Section>
+
+            <div>
+              <Section
+                id="execution-environments"
+                number="04"
+                title="Execution environments"
+                initiallyOpen
+              >
+                <p>
+                  By default, terminal and browser actions run in an isolated
+                  E2B cloud sandbox. You can delete your sandboxes at any time
+                  from Settings &rarr; Data controls.
+                </p>
+                <p>
+                  Local and Desktop modes run commands directly on your machine
+                  with your user&apos;s privileges and{" "}
+                  <strong className="text-foreground">no E2B isolation</strong>,
+                  so we recommend them only on machines dedicated to testing.
+                  They are not offline: relevant commands, output, file content,
+                  and screenshots are still sent to HackerAI and the model
+                  providers above.
+                </p>
+              </Section>
+
+              <Section
+                id="account-security"
+                number="05"
+                title="Account security"
+                summary="WorkOS AuthKit, TOTP MFA, session revocation"
+              >
+                <CheckList
+                  items={[
+                    "Authentication is handled by WorkOS AuthKit; we don't operate our own password database",
+                    <>
+                      Multi-factor authentication (TOTP) is available in
+                      Settings &rarr; Security
+                    </>,
+                    <>
+                      Sessions can be revoked per device or across all devices
+                      from Settings &rarr; Security
+                    </>,
+                  ]}
+                />
+              </Section>
+            </div>
+
+            <Section
+              id="data-regions"
+              number="06"
+              title="Where your data is processed"
+              initiallyOpen
+            >
+              <p>
+                Your connection&apos;s IP address normally determines the
+                initial region of a new cloud workspace: Europe uses our EU
+                region (Frankfurt, eu-central-1), and other connections use a US
+                region. Once a cloud workspace exists, Cloud Agent runs use its
+                saved region even when your IP address changes. If you have
+                existing workspaces in both the US and Europe, you may need to
+                choose one or contact support.
+              </p>
+              <p>
+                New file uploads from the app normally follow your current
+                connection location. Downloadable file copies uploaded by Agent
+                runs normally follow that run&apos;s region. Uploads can use a
+                US fallback location when regional placement is unavailable.
+                Files that stay inside a Local or Desktop workspace remain on
+                your connected computer. Changing your IP address through a VPN
+                or travel does not move existing workspaces or stored files.
+              </p>
+              <p>
+                The primary database, AI model providers, web search, content
+                moderation, authentication, billing, and analytics are not
+                regional. See the{" "}
+                <InlineLink href="/privacy-policy">Privacy Policy</InlineLink>{" "}
+                for international processing.
+              </p>
+            </Section>
+
+            <div>
+              <Section
+                id="billing"
+                number="07"
+                title="Billing"
+                summary="Stripe; card details never reach our servers"
+              >
+                <p>
+                  Payments are processed by Stripe; card details never reach our
+                  servers. Subscriptions can be managed or canceled through the
+                  billing portal in your account settings, and deleting your
+                  account cancels any active subscription.
+                </p>
+              </Section>
+
+              <Section
+                id="data-deletion"
+                number="08"
+                title="Data deletion"
+                summary="Tasks, sandboxes, shared links, account"
+              >
+                <CheckList
+                  items={[
+                    "Delete individual tasks, or all tasks at once",
+                    "Delete your terminal sandboxes",
+                    "Revoke links to tasks you have shared",
+                    "Delete your account, which removes database records, cancels your Stripe subscription, and deletes your authentication record",
+                    "Deleting and recreating an account does not reset usage limits or referral eligibility",
+                  ]}
+                />
+              </Section>
+            </div>
+
+            <Section
+              id="subprocessors"
+              number="09"
+              title="Subprocessors"
+              summary="19 providers"
+            >
+              <p>The following services process data on our behalf:</p>
+              <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/60 text-left">
+                      <th className="px-4 py-3 font-semibold text-foreground">
+                        Provider
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-foreground">
+                        Purpose
+                      </th>
+                      <th className="px-4 py-3 font-semibold text-foreground">
+                        Data categories
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {subprocessors.map((subprocessor, index) => (
+                      <tr
+                        key={subprocessor.name}
+                        className={
+                          index < subprocessors.length - 1
+                            ? "border-b border-border align-top"
+                            : "align-top"
+                        }
+                      >
+                        <td className="whitespace-nowrap px-4 py-3 font-medium text-foreground">
+                          {subprocessor.name}
+                        </td>
+                        <td className="px-4 py-3">{subprocessor.purpose}</td>
+                        <td className="px-4 py-3">
+                          {subprocessor.dataCategories}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <dl className="divide-y divide-border rounded-lg border border-border md:hidden">
+                {subprocessors.map((subprocessor) => (
+                  <div key={subprocessor.name} className="space-y-2 p-4">
+                    <dt className="font-semibold text-foreground">
+                      {subprocessor.name}
+                    </dt>
+                    <dd>{subprocessor.purpose}</dd>
+                    <dd className="text-sm">
+                      Data: {subprocessor.dataCategories}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </Section>
+
+            <div>
+              <Section
+                id="responsible-disclosure"
+                number="10"
+                title="Responsible disclosure"
+                summary="Report via help center; no paid bug bounty"
+              >
+                <p>
+                  Found a security vulnerability in HackerAI? Report it through
+                  the{" "}
+                  <InlineLink href={HELP_CENTER_URL}>help center</InlineLink>.
+                  We review all good-faith reports. We don&apos;t run a paid bug
+                  bounty program at this time.
+                </p>
+              </Section>
+
+              <Section
+                id="incident-communication"
+                number="11"
+                title="Incident communication"
+                summary="Status page, in-service and help center notice"
+              >
+                <p>
+                  For availability updates and scheduled maintenance, check the{" "}
+                  <InlineLink href={STATUS_PAGE_URL}>
+                    public status page
+                  </InlineLink>
+                  . If an incident affects your data, we notify affected users
+                  through the service and the help center.
+                </p>
+              </Section>
+            </div>
+
+            <div>
+              <Section
+                id="source-code"
+                number="12"
+                title="Source code"
+                summary="Full application source is public on GitHub"
+              >
+                <p>
+                  HackerAI is developed in the open. The full application source
+                  code is public on{" "}
+                  <InlineLink href="https://github.com/hackerai-tech/hackerai">
+                    GitHub
+                  </InlineLink>
+                  , including every change we ship. You can review how prompts,
+                  files, and sandbox sessions are handled directly in the code
+                  rather than relying on this page alone.
+                </p>
+              </Section>
+
+              <Section
+                id="compliance"
+                number="13"
+                title="Compliance"
+                initiallyOpen
+              >
+                <p>
+                  HackerAI doesn&apos;t currently hold SOC 2, ISO 27001, or
+                  other third-party certifications. The service is offered in
+                  beta, as described in our{" "}
+                  <InlineLink href="/privacy-policy">Privacy Policy</InlineLink>{" "}
+                  and{" "}
+                  <InlineLink href="/terms-of-service">
+                    Terms of Service
+                  </InlineLink>
+                  . We&apos;ll update this page as our compliance program
+                  develops.
+                </p>
+              </Section>
+            </div>
           </div>
         </div>
 
@@ -487,9 +646,9 @@ function TrustContent() {
 export default function TrustPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <Header currentPath="/trust" />
+      <Header currentPath="/trust" publicRedesign />
       <TrustContent />
-      <PublicSiteFooter />
+      <PublicSiteFooter redesign />
     </div>
   );
 }

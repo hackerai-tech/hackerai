@@ -8,32 +8,85 @@ const BRIDGE_PHASES = [
   "message_received",
 ] as const;
 
+// Public Node/Undici reasons only; unknown error messages never leave the helper.
+const BRIDGE_ERROR_REASON_LABELS = {
+  "Received network error or non-101 status code.": "network_or_handshake",
+  "Connection was closed before it was established.": "network_or_handshake",
+  "Server did not respond with sent protocols.": "handshake_headers",
+  'Server did not set Upgrade header to "websocket".': "handshake_headers",
+  'Server did not set Connection header to "upgrade".': "handshake_headers",
+  "Incorrect hash received in Sec-WebSocket-Accept header.":
+    "handshake_headers",
+  "Sec-WebSocket-Extensions header does not match.": "handshake_headers",
+  "Protocol was not set in the opening handshake.": "handshake_headers",
+  "Invalid opcode received": "protocol_opcode",
+  "Frame cannot be masked": "protocol_masked",
+  "Expected RSV1 to be clear.": "protocol_reserved_bits",
+  "RSV1, RSV2, RSV3 must be clear": "protocol_reserved_bits",
+  "Invalid frame type was fragmented.": "protocol_fragmentation",
+  "Expected continuation frame": "protocol_fragmentation",
+  "Fragmented frame exceeded 125 bytes.": "protocol_fragmentation",
+  "Control frame either too large or fragmented": "protocol_fragmentation",
+  "Unexpected continuation frame": "protocol_fragmentation",
+  "Received payload length > 2^31 bytes.": "protocol_payload",
+  "Received invalid UTF-8 in text frame.": "protocol_utf8",
+  "Received close frame with a 1-byte body.": "protocol_close",
+} as const;
+const BRIDGE_ERROR_REASONS = [
+  ...new Set(Object.values(BRIDGE_ERROR_REASON_LABELS)),
+  "other",
+  "unreadable",
+] as const;
+
 export type BrowserBridgeFailureContext = {
-  capture_bridge_diagnostic_version?: 1;
-  capture_bridge_failure?: "error" | "early_close";
+  capture_bridge_diagnostic_version?: 1 | 2 | 3;
+  capture_bridge_failure?: "error" | "early_close" | "deadline";
   capture_bridge_phase?: (typeof BRIDGE_PHASES)[number];
   capture_bridge_close_code?:
     (typeof BRIDGE_CLOSE_CODES)[number] | "none" | "other";
+  capture_bridge_error_reason?: (typeof BRIDGE_ERROR_REASONS)[number];
+  capture_bridge_node_major?: number | "other";
 };
 
-/** Read only a bounded exit-6 packet; never successful frames, stderr or getters. */
+/** Read bounded packets tied to their failure exit; never frames, stderr or getters. */
 export function browserBridgeFailureContext(
   result: unknown,
 ): BrowserBridgeFailureContext {
   try {
-    if (
-      !result ||
-      typeof result !== "object" ||
-      Object.getOwnPropertyDescriptor(result, "exitCode")?.value !== 6
-    )
-      return {};
+    if (!result || typeof result !== "object") return {};
+    const exitCode = Object.getOwnPropertyDescriptor(result, "exitCode")?.value;
+    if (exitCode !== 3 && exitCode !== 6) return {};
     const stdout = Object.getOwnPropertyDescriptor(result, "stdout")?.value;
     if (typeof stdout !== "string" || stdout.length > 128) return {};
     const tuple = JSON.parse(stdout)?.bridge_failure;
+    if (!Array.isArray(tuple)) return {};
+    if (exitCode === 3) {
+      if (
+        tuple.length === 4 &&
+        tuple[0] === 3 &&
+        tuple[1] === "deadline" &&
+        BRIDGE_PHASES.includes(tuple[2]) &&
+        tuple[3] === "none"
+      )
+        return {
+          capture_bridge_diagnostic_version: 3,
+          capture_bridge_failure: "deadline",
+          capture_bridge_phase: tuple[2],
+          capture_bridge_close_code: "none",
+        };
+      return {};
+    }
+    const legacy = tuple.length === 4 && tuple[0] === 1;
+    const reasonPacket =
+      tuple.length === 6 &&
+      tuple[0] === 2 &&
+      tuple[1] === "error" &&
+      tuple[3] === "none" &&
+      BRIDGE_ERROR_REASONS.includes(tuple[4]) &&
+      (tuple[5] === "other" ||
+        (Number.isInteger(tuple[5]) && tuple[5] >= 1 && tuple[5] <= 255));
     if (
-      Array.isArray(tuple) &&
-      tuple.length === 4 &&
-      tuple[0] === 1 &&
+      (legacy || reasonPacket) &&
       (tuple[1] === "error" || tuple[1] === "early_close") &&
       BRIDGE_PHASES.includes(tuple[2]) &&
       (tuple[1] === "error"
@@ -41,10 +94,16 @@ export function browserBridgeFailureContext(
         : tuple[3] === "other" || BRIDGE_CLOSE_CODES.includes(tuple[3]))
     )
       return {
-        capture_bridge_diagnostic_version: 1,
+        capture_bridge_diagnostic_version: legacy ? 1 : 2,
         capture_bridge_failure: tuple[1],
         capture_bridge_phase: tuple[2],
         capture_bridge_close_code: tuple[3],
+        ...(reasonPacket
+          ? {
+              capture_bridge_error_reason: tuple[4],
+              capture_bridge_node_major: tuple[5],
+            }
+          : {}),
       };
   } catch {
     // Optional diagnostics cannot replace the original capture failure.
@@ -65,19 +124,21 @@ if (!Number.isInteger(port) || port < 1 || port > 65535 ||
 let done = false;
 let phase = 'connecting';
 const closeCodes = ${JSON.stringify(BRIDGE_CLOSE_CODES)};
+const errorReasons = ${JSON.stringify(BRIDGE_ERROR_REASON_LABELS)};
 const finish = (code, value) => {
   if (done) return;
   done = true;
   clearTimeout(timer);
   if (value !== undefined) {
-    if (code === 6) {
+    if (code === 3 || code === 6) {
       try { process.stdout.write(JSON.stringify(value)); } catch {}
     } else process.stdout.write(JSON.stringify(value));
   }
   try { socket.close(); } catch {}
   setTimeout(() => process.exit(code), 20);
 };
-const timer = setTimeout(() => finish(3), 6500);
+const timer = setTimeout(() => finish(3, mode === 'frame'
+  ? { bridge_failure: [3, 'deadline', phase, 'none'] } : undefined), 6500);
 let payload = '';
 let socket;
 if (mode === 'input') {
@@ -126,8 +187,28 @@ function connect() {
       });
     } catch { finish(5); }
   });
-  socket.addEventListener('error', () => finish(6, mode === 'frame'
-    ? { bridge_failure: [1, 'error', phase, 'none'] } : undefined));
+  socket.addEventListener('error', event => {
+    if (done) return;
+    if (mode !== 'frame') { finish(6); return; }
+    let reason = 'other';
+    let nodeMajor = 'other';
+    try {
+      const error = event.error;
+      const message = error && typeof error === 'object'
+        ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
+      if (typeof message === 'string' && message.length <= 256 &&
+          Object.prototype.hasOwnProperty.call(errorReasons, message)) {
+        reason = errorReasons[message];
+      }
+    } catch { reason = 'unreadable'; }
+    try {
+      const version = process.versions?.node;
+      const major = typeof version === 'string' && /^\d{1,3}\./.test(version)
+        ? Number(version.split('.')[0]) : 0;
+      if (major >= 1 && major <= 255) nodeMajor = major;
+    } catch {}
+    finish(6, { bridge_failure: [2, 'error', phase, 'none', reason, nodeMajor] });
+  });
   socket.addEventListener('close', event => {
     if (done) return;
     let code = 'other';

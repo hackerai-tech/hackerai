@@ -18,6 +18,7 @@
 
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -172,6 +173,7 @@ export async function createCentrifugoPtyHandle(
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
   const isolated = sandbox.supportsOperationChannels();
+  const desktop = sandbox.getConnectionInfo().isDesktop === true;
   const channel = isolated
     ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
     : sandboxConnectionChannel(userId, connectionId);
@@ -237,7 +239,17 @@ export async function createCentrifugoPtyHandle(
   const publish = async (payload: PtyOutgoingPayload): Promise<void> => {
     if (!subscription) throw new Error(`${LOG_PREFIX} subscription not ready`);
     try {
-      await subscription.publish(payload);
+      const authorizationId = desktop
+        ? await authorizeDesktopOperation(
+            userId,
+            connectionId,
+            payload as unknown as Record<string, unknown>,
+          )
+        : undefined;
+      await subscription.publish({
+        ...payload,
+        ...(authorizationId ? { authorizationId } : {}),
+      });
     } catch (err) {
       if (err instanceof Error) throw err;
       const msg =
@@ -445,8 +457,11 @@ export async function createCentrifugoPtyHandle(
             createPayload as unknown as Record<string, unknown>,
             () => !cleanedUp,
             subscription!,
+            undefined,
+            undefined,
+            desktop,
           )
-        : subscription!.publish(createPayload);
+        : publish(createPayload);
       dispatch.catch((err: unknown) => {
         failTransport(
           `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,

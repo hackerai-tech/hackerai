@@ -104,6 +104,35 @@ const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
+function nativeCommandMissing(error: unknown, command: string): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes(command) &&
+    /not found|not registered|unknown command/i.test(message)
+  );
+}
+
+/** New binaries verify the exact server operation; older installed binaries keep their old path. */
+async function invokeAuthorizedDesktopOperation<T>(
+  message: { authorizationId?: string },
+  authorizedCommand: string,
+  legacyCommand: string,
+  legacyArgs: Record<string, unknown>,
+  channelArgs: Record<string, unknown> = {},
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<T>(authorizedCommand, {
+      authorizationId: message.authorizationId ?? "",
+      message,
+      ...channelArgs,
+    });
+  } catch (error) {
+    if (!nativeCommandMissing(error, authorizedCommand)) throw error;
+    return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
+  }
+}
+
 /** Recognize browser transport failures without swallowing native filesystem errors. */
 function isFileTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -314,6 +343,7 @@ export class DesktopSandboxBridge {
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
   private operationRouter: OperationChannelRouter<Subscription> | null = null;
+  private ptyControlQueues = new Map<string, Promise<void>>();
   private nativeFileIpcAvailable: boolean | null = null;
   private nativeFileIpcFailure: DesktopFileFailure | undefined;
   private nativeAppVersion = "unknown";
@@ -861,13 +891,15 @@ export class DesktopSandboxBridge {
           break;
 
         case "pty_input":
-          this.handlePtyInput(message as PtyInputMessage).catch((err) => {
-            console.error("[DesktopSandboxBridge] PTY input failed:", err);
-          });
+          this.enqueuePtyControl((message as PtyInputMessage).sessionId, () =>
+            this.handlePtyInput(message as PtyInputMessage),
+          );
           break;
 
         case "pty_resize":
-          this.handlePtyResize(message as PtyResizeMessage).catch(() => {});
+          this.enqueuePtyControl((message as PtyResizeMessage).sessionId, () =>
+            this.handlePtyResize(message as PtyResizeMessage),
+          );
           break;
 
         case "pty_kill":
@@ -1003,6 +1035,20 @@ export class DesktopSandboxBridge {
   > {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      try {
+        const native = await invoke<{
+          platform: string;
+          arch: string;
+          release: string;
+          hostname: string;
+        }>("get_desktop_os_info");
+        return {
+          ...native,
+          platform: normalizeSandboxPlatform(native.platform),
+        };
+      } catch (error) {
+        if (!nativeCommandMissing(error, "get_desktop_os_info")) throw error;
+      }
       const result = await invoke<{
         stdout: string;
         stderr: string;
@@ -1112,18 +1158,23 @@ export class DesktopSandboxBridge {
           terminalExitCode = 130;
           stream.append({ type: "exit", exitCode: 130 });
         } else {
-          await invoke("execute_stream_command", {
-            commandId: command.commandId,
-            command: command.command,
-            cwd: command.cwd,
-            env: command.env,
-            ...(command.stdin !== undefined && {
-              stdin: command.stdin,
-              stdinEncoding: command.stdinEncoding ?? "utf8",
-            }),
-            timeoutMs: command.timeout ?? 30_000,
-            onEvent: channel,
-          });
+          await invokeAuthorizedDesktopOperation(
+            command,
+            "execute_authorized_stream_command",
+            "execute_stream_command",
+            {
+              commandId: command.commandId,
+              command: command.command,
+              cwd: command.cwd,
+              env: command.env,
+              ...(command.stdin !== undefined && {
+                stdin: command.stdin,
+                stdinEncoding: command.stdinEncoding ?? "utf8",
+              }),
+              timeoutMs: command.timeout ?? 30_000,
+            },
+            { onEvent: channel },
+          );
         }
       } catch (error) {
         stream.append({
@@ -1390,18 +1441,23 @@ export class DesktopSandboxBridge {
         if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
           channel.onmessage({ type: "exit", exitCode: 130 });
         } else {
-          await invoke("execute_stream_command", {
-            commandId,
-            command: command.command,
-            cwd: command.cwd,
-            env: command.env,
-            ...(command.stdin !== undefined && {
-              stdin: command.stdin,
-              stdinEncoding: command.stdinEncoding ?? "utf8",
-            }),
-            timeoutMs: command.timeout ?? 30000,
-            onEvent: channel,
-          });
+          await invokeAuthorizedDesktopOperation(
+            command,
+            "execute_authorized_stream_command",
+            "execute_stream_command",
+            {
+              commandId,
+              command: command.command,
+              cwd: command.cwd,
+              env: command.env,
+              ...(command.stdin !== undefined && {
+                stdin: command.stdin,
+                stdinEncoding: command.stdinEncoding ?? "utf8",
+              }),
+              timeoutMs: command.timeout ?? 30000,
+            },
+            { onEvent: channel },
+          );
         }
       } finally {
         // Delivery can outlive the process. A later Stop must still acknowledge
@@ -1694,13 +1750,30 @@ export class DesktopSandboxBridge {
       | "file_list",
     legacyRoute: string,
     body: Record<string, unknown>,
+    message?: { authorizationId?: string },
   ): Promise<T> {
     if (this.nativeFileIpcAvailable !== false) {
       const { invoke } = await import("@tauri-apps/api/core");
       try {
-        const payload = await invoke<T>("desktop_file_request", {
-          request: { ...body, type: requestType },
-        });
+        const request = { ...body, type: requestType };
+        let payload: T;
+        if (message) {
+          payload = await invokeAuthorizedDesktopOperation<T>(
+            message,
+            "authorized_desktop_file_request",
+            "desktop_file_request",
+            { request },
+          );
+        } else {
+          try {
+            payload = await invoke<T>("probe_desktop_file_bridge");
+          } catch (error) {
+            if (!nativeCommandMissing(error, "probe_desktop_file_bridge")) {
+              throw error;
+            }
+            payload = await invoke<T>("desktop_file_request", { request });
+          }
+        }
         this.nativeFileIpcAvailable = true;
         this.nativeFileIpcFailure = undefined;
         return payload;
@@ -1842,7 +1915,7 @@ export class DesktopSandboxBridge {
         kind: "file" | "not_file" | "missing";
         path: string;
         sizeBytes?: number;
-      }>("file_stat", "/files/stat", { path });
+      }>("file_stat", "/files/stat", { path }, message);
       if (
         typeof payload.path !== "string" ||
         (payload.kind !== "file" &&
@@ -1886,6 +1959,7 @@ export class DesktopSandboxBridge {
           max_full_bytes: maxFullBytes,
           max_result_bytes: maxResultBytes,
         },
+        message,
       );
       await reply({
         type: "file_read_result",
@@ -1901,12 +1975,17 @@ export class DesktopSandboxBridge {
     const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
-      await this.callDesktopFileBridge("file_write", "/files/write", {
-        path,
-        content,
-        is_base64: Boolean(isBase64),
-        allowed_root: allowedRoot,
-      });
+      await this.callDesktopFileBridge(
+        "file_write",
+        "/files/write",
+        {
+          path,
+          content,
+          is_base64: Boolean(isBase64),
+          allowed_root: allowedRoot,
+        },
+        message,
+      );
       await reply({ type: "file_ok", requestId });
     } catch (error) {
       await this.publishFileError(requestId, error, reply);
@@ -1917,12 +1996,17 @@ export class DesktopSandboxBridge {
     const reply = this.fileReplyPublisher();
     const { requestId, path, content, isBase64, allowedRoot } = message;
     try {
-      await this.callDesktopFileBridge("file_append", "/files/append", {
-        path,
-        content,
-        is_base64: Boolean(isBase64),
-        allowed_root: allowedRoot,
-      });
+      await this.callDesktopFileBridge(
+        "file_append",
+        "/files/append",
+        {
+          path,
+          content,
+          is_base64: Boolean(isBase64),
+          allowed_root: allowedRoot,
+        },
+        message,
+      );
       await reply({ type: "file_ok", requestId });
     } catch (error) {
       await this.publishFileError(requestId, error, reply);
@@ -1933,9 +2017,14 @@ export class DesktopSandboxBridge {
     const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
     try {
-      await this.callDesktopFileBridge("file_remove", "/files/remove", {
-        path,
-      });
+      await this.callDesktopFileBridge(
+        "file_remove",
+        "/files/remove",
+        {
+          path,
+        },
+        message,
+      );
       await reply({ type: "file_ok", requestId });
     } catch (error) {
       await this.publishFileError(requestId, error, reply);
@@ -1950,6 +2039,7 @@ export class DesktopSandboxBridge {
         "file_list",
         "/files/list",
         { path },
+        message,
       );
       await reply({
         type: "file_list_result",
@@ -2439,15 +2529,23 @@ export class DesktopSandboxBridge {
         } else forwardPtyChunk(chunk);
       };
 
-      const result = (await invoke("execute_pty_create", {
-        sessionId,
-        command,
-        cols: cols ?? DEFAULT_PTY_COLS,
-        rows: rows ?? DEFAULT_PTY_ROWS,
-        cwd,
-        env,
-        onData: channel,
-      })) as { pid: number | null; session_id: string };
+      const result = await invokeAuthorizedDesktopOperation<{
+        pid: number | null;
+        session_id: string;
+      }>(
+        msg,
+        "execute_authorized_pty_create",
+        "execute_pty_create",
+        {
+          sessionId,
+          command,
+          cols: cols ?? DEFAULT_PTY_COLS,
+          rows: rows ?? DEFAULT_PTY_ROWS,
+          cwd,
+          env,
+        },
+        { onData: channel },
+      );
 
       if (
         failed ||
@@ -2495,7 +2593,12 @@ export class DesktopSandboxBridge {
     const { sessionId, data } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("execute_pty_input", { sessionId, data });
+      await invokeAuthorizedDesktopOperation(
+        msg,
+        "execute_authorized_pty_input",
+        "execute_pty_input",
+        { sessionId, data },
+      );
     } catch (err) {
       const message =
         err instanceof Error
@@ -2512,11 +2615,39 @@ export class DesktopSandboxBridge {
     }
   }
 
+  private enqueuePtyControl(
+    sessionId: string,
+    operation: () => Promise<void>,
+  ): void {
+    const generation = this.startupGeneration;
+    const prior = this.ptyControlQueues.get(sessionId) ?? Promise.resolve();
+    const current = prior
+      .catch(() => {})
+      .then(async () => {
+        if (this.isStoppingOrStopped || generation !== this.startupGeneration)
+          return;
+        await operation();
+      })
+      .catch(() => {
+        console.error("[DesktopSandboxBridge] PTY control operation failed");
+      });
+    this.ptyControlQueues.set(sessionId, current);
+    void current.then(() => {
+      if (this.ptyControlQueues.get(sessionId) === current)
+        this.ptyControlQueues.delete(sessionId);
+    });
+  }
+
   private async handlePtyResize(msg: PtyResizeMessage): Promise<void> {
     const { sessionId, cols, rows } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("execute_pty_resize", { sessionId, cols, rows });
+      await invokeAuthorizedDesktopOperation(
+        msg,
+        "execute_authorized_pty_resize",
+        "execute_pty_resize",
+        { sessionId, cols, rows },
+      );
     } catch (err) {
       console.warn(
         `[DesktopSandboxBridge] pty_resize failed sessionId=${sessionId}:`,
@@ -2529,7 +2660,12 @@ export class DesktopSandboxBridge {
     const { sessionId } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("execute_pty_kill", { sessionId });
+      await invokeAuthorizedDesktopOperation(
+        msg,
+        "execute_authorized_pty_kill",
+        "execute_pty_kill",
+        { sessionId },
+      );
     } catch (err) {
       const message =
         err instanceof Error
@@ -2570,6 +2706,7 @@ export class DesktopSandboxBridge {
     this.publishQueue = null;
     this.operationRouter?.stop();
     this.operationRouter = null;
+    this.ptyControlQueues.clear();
     const connectionId = this.connectionId;
     this.connectionId = null;
 

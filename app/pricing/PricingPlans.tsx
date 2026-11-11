@@ -5,7 +5,6 @@ import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
 
 import BillingFrequencySelector from "@/app/components/BillingFrequencySelector";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   PLAN_HEADERS,
@@ -18,6 +17,7 @@ import {
 } from "@/lib/pricing/features";
 
 type BillingFrequency = "monthly" | "yearly";
+type PaidPlanKey = keyof typeof PRICING;
 
 const plans = [
   {
@@ -50,97 +50,121 @@ const plans = [
   },
 ] as const;
 
-/** Mirrors the plan highlighted in the in-app pricing dialog. */
 const RECOMMENDED_PLAN = "pro-plus";
 
-function billingNote(frequency: BillingFrequency) {
-  return frequency === "yearly" ? "Per month, billed yearly" : "Billed monthly";
+function billingDetail(plan: PaidPlanKey, frequency: BillingFrequency) {
+  return frequency === "yearly"
+    ? `$${PRICING[plan].yearly * 12} billed yearly · $${PRICING[plan].monthly}/month if billed monthly`
+    : `Billed monthly · $${PRICING[plan].yearly}/month if billed yearly`;
 }
+
+const ctaClassName =
+  "inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border px-4 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export function PricingPlans() {
   const [frequency, setFrequency] = useState<BillingFrequency>("monthly");
 
   return (
     <>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-6 border-t border-border pt-8 md:flex-row md:items-end md:justify-between">
         <div>
-          <h2 className="text-2xl font-semibold">Individual plans</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Prices in USD. Paid plans&apos; included usage refills every month,
-            whether you pay monthly or yearly. Change or cancel your plan any
-            time from account settings.
+          <h2 className="text-2xl font-semibold tracking-tight">
+            Individual plans
+          </h2>
+          <p className="mt-2 max-w-[640px] text-sm leading-6 text-muted-foreground">
+            Paid plans&apos; included usage refills every month, whether you pay
+            monthly or yearly. Change or cancel your plan any time from account
+            settings.
           </p>
         </div>
-        <BillingFrequencySelector value={frequency} onChange={setFrequency} />
+        <div className="flex flex-col items-start gap-2 md:items-end">
+          <BillingFrequencySelector value={frequency} onChange={setFrequency} />
+          <p className="text-xs text-muted-foreground">All prices in USD</p>
+        </div>
       </div>
 
-      <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-7 grid gap-px overflow-hidden rounded-2xl border border-border bg-border md:grid-cols-2 xl:grid-cols-4">
         {plans.map((plan) => {
-          const price = plan.key === "free" ? 0 : PRICING[plan.key][frequency];
           const recommended = plan.key === RECOMMENDED_PLAN;
+          const price = plan.key === "free" ? 0 : PRICING[plan.key][frequency];
 
           return (
             <article
               key={plan.key}
               aria-label={`${plan.name} plan`}
               className={cn(
-                "flex flex-col bg-background p-6",
-                recommended && "ring-1 ring-inset ring-foreground/30",
+                "relative flex flex-col bg-background p-5 sm:p-6",
+                recommended && "bg-[#1a1a1a] ring-1 ring-inset ring-[#b9b7ff]",
               )}
             >
-              <div className="flex h-6 items-center justify-between gap-2">
-                <h3 className="text-lg font-semibold">{plan.name}</h3>
-                {recommended ? (
-                  <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium text-foreground">
-                    Recommended
-                  </span>
-                ) : null}
+              <div className="sm:flex sm:items-start sm:justify-between sm:gap-4 md:block">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-lg font-semibold">{plan.name}</h3>
+                    {recommended ? (
+                      <span className="font-mono text-[10px] font-medium uppercase tracking-widest text-[#b9b7ff] md:hidden xl:inline">
+                        Recommended
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                    {plan.description}
+                  </p>
+                </div>
+                <div className="mt-4 sm:mt-0 sm:shrink-0 sm:text-right md:mt-8 md:text-left">
+                  <div className="flex items-baseline gap-1 sm:justify-end md:justify-start">
+                    <span className="text-4xl font-semibold tracking-tight">
+                      ${price}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      /month
+                    </span>
+                  </div>
+                  <p className="mt-1 max-w-[230px] text-xs leading-5 text-muted-foreground">
+                    {plan.key === "free"
+                      ? "Free usage and availability vary by location."
+                      : billingDetail(plan.key, frequency)}
+                  </p>
+                </div>
               </div>
-              <p className="mt-2 min-h-10 text-sm leading-5 text-muted-foreground">
-                {plan.description}
-              </p>
-              <div className="mt-5 flex h-12 items-end gap-1">
-                <span className="text-4xl font-semibold">${price}</span>
-                <span className="pb-1 text-sm text-muted-foreground">
-                  / month
-                </span>
-              </div>
-              <p className="mt-2 min-h-5 text-xs leading-5 text-muted-foreground">
-                {plan.key === "free"
-                  ? "No payment method required"
-                  : billingNote(frequency)}
-              </p>
-              <Button
-                asChild
-                className="mt-5 w-full"
-                variant={recommended ? "default" : "outline"}
-              >
-                <Link href="/signup">
-                  {plan.key === "free" ? "Start free" : `Choose ${plan.name}`}
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-              {plan.featureHeader ? (
-                <p className="mt-6 text-sm font-medium">{plan.featureHeader}</p>
-              ) : null}
-              <ul
+
+              <Link
+                href="/signup"
                 className={cn(
-                  "space-y-3 text-sm",
-                  plan.featureHeader ? "mt-3" : "mt-6",
+                  ctaClassName,
+                  "order-3 mt-5 w-full sm:order-2",
+                  recommended
+                    ? "border-white bg-white text-black hover:bg-white/90"
+                    : "border-border text-foreground hover:bg-accent",
                 )}
               >
-                {plan.features.map((feature) => (
-                  <li key={feature.text} className="flex items-start gap-2.5">
-                    <Check
-                      className="mt-0.5 size-4 shrink-0"
-                      aria-hidden="true"
-                    />
-                    <span className="text-muted-foreground">
-                      {feature.text}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+                {plan.key === "free" ? "Create account" : `Choose ${plan.name}`}
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
+
+              <div className="order-2 mt-5 flex-1 sm:order-3 sm:mt-7">
+                {plan.featureHeader ? (
+                  <p className="text-sm font-medium">{plan.featureHeader}</p>
+                ) : null}
+                <ul
+                  className={cn(
+                    "space-y-3 text-sm",
+                    plan.featureHeader && "mt-3",
+                  )}
+                >
+                  {plan.features.map((feature) => (
+                    <li key={feature.text} className="flex items-start gap-2.5">
+                      <Check
+                        className="mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span className="text-muted-foreground">
+                        {feature.text}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </article>
           );
         })}
@@ -148,42 +172,47 @@ export function PricingPlans() {
 
       <section
         aria-label="Team plan"
-        className="mt-8 grid gap-6 rounded-lg border border-border p-6 sm:p-8 lg:grid-cols-[1fr_auto] lg:items-center"
+        className="mt-7 rounded-2xl border border-border p-6 sm:p-8"
       >
-        <div>
-          <h2 className="text-2xl font-semibold">Team</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Everything in Pro for every seat, plus shared billing and seat
-            management for a group of practitioners.
-          </p>
-          <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
-            {teamFeatures.map((feature) => (
-              <li key={feature.text} className="flex items-center gap-2">
-                <Check className="size-4" aria-hidden="true" />
-                {feature.text}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="flex flex-wrap items-center gap-5 lg:justify-end">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
           <div>
-            <span className="text-3xl font-semibold">
-              ${PRICING.team[frequency]}
-            </span>
-            <span className="text-sm text-muted-foreground">
-              {" "}
-              / seat / month
-            </span>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {billingNote(frequency)}
+            <h2 className="text-2xl font-semibold">Team</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Everything in Pro for every seat, plus shared billing and seat
+              management for a group of practitioners.
             </p>
+            <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground">
+              {teamFeatures.map((feature) => (
+                <li key={feature.text} className="flex items-center gap-2">
+                  <Check className="size-4" aria-hidden="true" />
+                  {feature.text}
+                </li>
+              ))}
+            </ul>
           </div>
-          <Button asChild>
-            <Link href="/signup">
-              Choose Team
-              <ArrowRight className="size-4" />
+          <div className="flex flex-wrap items-center gap-6 lg:justify-end">
+            <div>
+              <span className="text-3xl font-semibold">
+                ${PRICING.team[frequency]}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                {" "}
+                /seat/month
+              </span>
+              <p className="mt-1 max-w-[240px] text-xs leading-5 text-muted-foreground">
+                {billingDetail("team", frequency)}
+              </p>
+            </div>
+            <Link
+              href="/signup"
+              className={cn(
+                ctaClassName,
+                "border-border text-foreground hover:bg-accent",
+              )}
+            >
+              Choose Team <ArrowRight className="size-4" aria-hidden="true" />
             </Link>
-          </Button>
+          </div>
         </div>
       </section>
     </>

@@ -36,6 +36,9 @@ tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
+os_info = "3.14"
+gethostname = "1.1"
+sha2 = "0.10"
 portable-pty = "0.8"
 cap-std = "3.4.5"
 cap-fs-ext = "3.4.5"

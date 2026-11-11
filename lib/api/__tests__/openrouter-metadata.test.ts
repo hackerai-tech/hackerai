@@ -236,6 +236,8 @@ describe("OpenRouter metadata extraction", () => {
           request_id: "req-generation-record",
           upstream_id: "upstream-generation-record",
           router: "openrouter/auto",
+          is_byok: true,
+          total_cost: 0.00015,
           model: "deepseek/deepseek-v4-flash-0731",
         },
       }),
@@ -254,6 +256,8 @@ describe("OpenRouter metadata extraction", () => {
       openrouter_generation_id: "gen-stream-failure",
       openrouter_request_id: "req-generation-record",
       openrouter_router: "openrouter/auto",
+      openrouter_is_byok: true,
+      openrouter_charged_cost: 0.00015,
       openrouter_upstream_id: "upstream-generation-record",
       openrouter_selected_model: "deepseek/deepseek-v4-flash-0731",
     });
