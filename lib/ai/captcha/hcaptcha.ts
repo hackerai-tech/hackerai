@@ -95,8 +95,48 @@ export function buildDeliverRenderedHcaptchaScript(
       (!compatibilityField || (compatibilityField.parentElement === element &&
         compatibilityField.id === 'g-recaptcha-response-' + widgetId &&
         compatibilityField.name === 'g-recaptcha-response' && compatibilityField.value === token));
+    // The SDK default is its first-rendered widget, which DOM order cannot
+    // establish. Answer ID-less reads only while this is the page's sole widget.
+    const soleWidget = () => {
+      const frames = [...document.querySelectorAll('iframe')].flatMap(candidate => {
+        let url;
+        try { url = new URL(candidate.src); } catch { return []; }
+        return url.hostname === 'hcaptcha.com' || url.hostname.endsWith('.hcaptcha.com')
+          ? [{candidate, parameters:new URLSearchParams(url.hash.slice(1))}] : [];
+      });
+      const checkboxes = frames.filter(({parameters}) => parameters.getAll('frame').includes('checkbox'));
+      return checkboxes.length === 1 && checkboxes[0].candidate === frame &&
+        frames.every(({parameters}) => parameters.getAll('id').join() === widgetId) &&
+        [...document.querySelectorAll('[name="h-captcha-response"],[name="g-recaptcha-response"]')]
+          .every(candidate => candidate === field || candidate === compatibilityField) &&
+        [...document.querySelectorAll('.h-captcha,[data-hcaptcha-widget-id]')]
+          // The SDK marks its checkbox iframe too; it is not another widget.
+          .every(candidate => candidate === element || (candidate === frame &&
+            !candidate.matches('.h-captcha') &&
+            candidate.getAttribute('data-hcaptcha-widget-id') === widgetId)) &&
+        (!element.hasAttribute('data-hcaptcha-widget-id') ||
+          element.getAttribute('data-hcaptcha-widget-id') === widgetId);
+    };
+    // Revocation is one-way: another widget may since have become the default.
+    let defaultLive = soleWidget();
+    const foreignAddition = records => records.some(record => [...record.addedNodes].some(node =>
+      node.nodeType === 1 && [node, ...node.querySelectorAll(
+        '.h-captcha,[data-hcaptcha-widget-id],[name="h-captcha-response"],[name="g-recaptcha-response"],iframe',
+      )].some(candidate => {
+        if ([element, frame, field, compatibilityField].includes(candidate)) return false;
+        if (candidate.matches('.h-captcha,[data-hcaptcha-widget-id],[name="h-captcha-response"],[name="g-recaptcha-response"]'))
+          return true;
+        if (!candidate.matches('iframe')) return false;
+        try {
+          const url = new URL(candidate.src);
+          if (!(url.hostname === 'hcaptcha.com' || url.hostname.endsWith('.hcaptcha.com'))) return false;
+          const parameters = new URLSearchParams(url.hash.slice(1));
+          return parameters.get('frame') !== 'challenge' || parameters.getAll('id').join() !== widgetId;
+        } catch { return false; }
+      })));
     const restore = () => {
       live = false;
+      defaultLive = false;
       clearTimeout(expiryTimer);
       observer?.disconnect();
       try { if (api.getResponse === getResponse) api.getResponse = originalGetResponse; } catch {}
@@ -106,12 +146,24 @@ export function buildDeliverRenderedHcaptchaScript(
       if (compatibilityField?.value === token) compatibilityField.value = '';
     };
     // Use the public getter contract, never SDK internals or fake checkbox UI.
-    // Only this explicitly addressed widget receives the external response.
-    // A no-argument getter keeps its native default-widget semantics; DOM order
-    // cannot establish which SDK widget is the default. Retention is not acceptance.
+    // Only this widget receives the external response: when addressed by ID, or
+    // by an ID-less read while it is the sole widget and the native default and
+    // addressed responses are empty. Native errors and responses pass through
+    // unchanged. Retention is not acceptance.
     function getResponse(id) {
       if (!isCurrent()) restore();
       else if (id === widgetId) return token;
+      else if (id == null && defaultLive) {
+        if (observer && foreignAddition(observer.takeRecords())) defaultLive = false;
+        if (!defaultLive) return originalGetResponse.apply(this, arguments);
+        const native = originalGetResponse.apply(this, arguments);
+        let addressed;
+        if (native === '' && soleWidget())
+          try { addressed = originalGetResponse.call(this, widgetId); } catch {}
+        if (addressed === '') return token;
+        defaultLive = false;
+        return native;
+      }
       return originalGetResponse.apply(this, arguments);
     }
     function reset(id) {
@@ -135,19 +187,40 @@ export function buildDeliverRenderedHcaptchaScript(
       field.value = token;
       if (compatibilityField) compatibilityField.value = token;
       expiryTimer = setTimeout(restore, 120000);
-      observer = new MutationObserver(() => { if (!isCurrent()) restore(); });
+      observer = new MutationObserver(records => {
+        if (!isCurrent()) restore();
+        else if (defaultLive && (!soleWidget() || foreignAddition(records))) defaultLive = false;
+      });
       observer.observe(document, {childList:true, subtree:true, attributes:true,
-        attributeFilter:['src','id','name']});
+        attributeFilter:['src','id','name','class','data-hcaptcha-widget-id']});
       for (const responseField of [field, compatibilityField].filter(Boolean)) {
         responseField.dispatchEvent(new Event('input', {bubbles:true}));
         responseField.dispatchEvent(new Event('change', {bubbles:true}));
       }
-      const retained = isCurrent();
-      if (!retained) restore();
-      return {status:'token_delivered', websiteAccepted:false, responseRetained:retained};
     } catch {
       restore();
       return {status:'page_changed'};
     }
+    // A synchronous field listener may reset or replace the widget. Do not
+    // submit through its callback after the response has already been lost.
+    if (!isCurrent()) {
+      restore();
+      return {status:'token_delivered', websiteAccepted:false, responseRetained:false};
+    }
+    // Explicit render() callbacks are private SDK configuration. A normal
+    // widget's declarative callback is public; call it once, as the SDK would.
+    // Its errors escape like the field-only path: delivery has already happened.
+    const callbackName = element.matches('.h-captcha') &&
+      element.getAttribute('data-sitekey') === widget.siteKey && element.getAttribute('data-callback');
+    if (callbackName && /^[A-Za-z_$][\\w$]*(\\.[A-Za-z_$][\\w$]*)*$/.test(callbackName)) {
+      const parts = callbackName.split('.');
+      let parent = window;
+      for (const part of parts.slice(0, -1)) parent = parent?.[part];
+      const callback = parent?.[parts.at(-1)];
+      if (typeof callback === 'function') callback.call(parent, token);
+    }
+    const retained = isCurrent();
+    if (!retained) restore();
+    return {status:'token_delivered', websiteAccepted:false, responseRetained:retained};
   })(${JSON.stringify({ url: observation.url, documentId: observation.documentId })}, ${JSON.stringify(widget)}, ${JSON.stringify(token)})`;
 }

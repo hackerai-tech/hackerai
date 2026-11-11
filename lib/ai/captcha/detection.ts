@@ -93,6 +93,14 @@ export function isSupportedCaptchaTarget(
  */
 export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
   const widgets = [];
+  const rendered = ${RENDERED_HCAPTCHA_WIDGETS};
+  const addRendered = (sdk, invisible) => {
+    const {element, frame, field, compatibilityField, source, container} = sdk;
+    const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+    element[Symbol.for('hackerai.captchaObservation')] = {observationId, frame, field, compatibilityField, source, container};
+    widgets.push({kind:'hcaptcha', siteKey:sdk.siteKey, observationId,
+      hcaptchaWidgetId:sdk.widgetId, tokenPresent:sdk.tokenPresent, invisible:sdk.invisible || invisible});
+  };
   const managed = window[Symbol.for('hackerai.cloudflareChallenge')];
   const init = window[Symbol.for('hackerai.cloudflareInit')];
   if (managed && !managed.delivered) widgets.push({kind:'turnstile', siteKey:managed.siteKey,
@@ -105,6 +113,15 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
         : element.matches(".cf-turnstile") ? "turnstile" : null;
     const siteKey = element.getAttribute("data-sitekey");
     if (!kind || !siteKey || siteKey.length > 256) continue;
+    const invisible = element.getAttribute("data-size") === "invisible";
+    // Form readers may use the SDK getter instead of the hidden field. When the
+    // container directly owns its SDK widget, deliver through the addressed adapter.
+    const sdk = kind === "hcaptcha" &&
+      rendered.find(candidate => candidate.element === element && candidate.siteKey === siteKey);
+    if (sdk) {
+      addRendered(sdk, invisible);
+      continue;
+    }
     const container = element.closest("form") ?? element.parentElement ?? element;
     const field = container.querySelector(
       kind === "recaptcha_v2" ? '[name="g-recaptcha-response"]'
@@ -115,18 +132,12 @@ export const DETECT_CHALLENGES_SCRIPT = String.raw`(() => {
     // response field too, so a re-render cannot receive an earlier solve.
     const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
     element[Symbol.for('hackerai.captchaObservation')] = {observationId, field};
-    widgets.push({kind, siteKey, observationId, tokenPresent: !!field?.value,
-      invisible: element.getAttribute("data-size") === "invisible"});
+    widgets.push({kind, siteKey, observationId, tokenPresent: !!field?.value, invisible});
   }
-  for (const rendered of ${RENDERED_HCAPTCHA_WIDGETS}) {
+  for (const sdk of rendered) {
     if (widgets.length === 10) break;
     // A normal data-sitekey widget already owns this frame and its callback.
-    if (rendered.frame.closest('.h-captcha[data-sitekey]')) continue;
-    const {element, frame, field, compatibilityField, source, container} = rendered;
-    const observationId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-    element[Symbol.for('hackerai.captchaObservation')] = {observationId, frame, field, compatibilityField, source, container};
-    widgets.push({kind:'hcaptcha', siteKey:rendered.siteKey, observationId,
-      hcaptchaWidgetId:rendered.widgetId, tokenPresent:rendered.tokenPresent, invisible:rendered.invisible});
+    if (!sdk.frame.closest('.h-captcha[data-sitekey]')) addRendered(sdk, false);
   }
   return {
     url: managed ? ${CLOUDFLARE_PAGE_URL_SCRIPT} : location.href,
