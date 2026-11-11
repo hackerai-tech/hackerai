@@ -79,6 +79,35 @@ export interface FindingDetailRecord extends FindingSummary {
   updated_at: number;
 }
 
+/** One Agent retest assessment. `interrupted` runs ended without a result. */
+export type FindingAgentRetestView = {
+  retest_id: string;
+  chat_id: string;
+  assistant_message_id: string;
+  status: "running" | "finished";
+  started_at: number;
+  finished_at?: number;
+  outcome?: import("@/lib/findings/agent-retest").AgentRetestOutcome;
+  interrupted?: boolean;
+  summary?: string;
+  reproduction_steps?: string[];
+  expected_result?: string;
+  observed_result?: string;
+  evidence_refs?: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+  limitations?: string[];
+  environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
+};
+
+/** Response of GET /api/finding-retests. */
+export type FindingRetestState =
+  | { enabled: false }
+  | {
+      enabled: true;
+      chat_title: string;
+      retests: FindingAgentRetestView[];
+    };
+
 export interface FindingSourceChat {
   chat_id: string;
   chat_title: string;

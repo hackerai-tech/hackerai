@@ -333,6 +333,58 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         latest_finding_at: 1,
       },
     ],
+    finding_agent_retest_runs: [
+      {
+        _id: "agent-retest-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: "message-user",
+        started_at: 1,
+      },
+      {
+        _id: "agent-retest-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+      },
+    ],
+    finding_retest_recipes: [
+      {
+        _id: "retest-recipe-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        version: 1,
+      },
+      {
+        _id: "retest-recipe-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        version: 1,
+      },
+    ],
+    finding_retest_runs: [
+      {
+        _id: "retest-run-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        request_id: "request-user",
+        started_at: 1,
+      },
+      {
+        _id: "retest-run-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        request_id: "request-other",
+        started_at: 1,
+      },
+    ],
     user_customization: [
       { _id: "custom-user", user_id: userId, updated_at: 1 },
       { _id: "custom-other", user_id: otherUserId, updated_at: 1 },

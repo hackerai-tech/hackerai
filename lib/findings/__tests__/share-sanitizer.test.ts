@@ -12,6 +12,37 @@ const privateInput = {
 };
 
 describe("public finding sanitizer", () => {
+  it("removes retest observations from shared chats and forks in every tool state", () => {
+    const parts = [
+      "get_finding_retests",
+      "start_finding_retest",
+      "complete_finding_retest",
+      "get_http_retest_recipe",
+      "save_http_retest_recipe",
+    ].flatMap((toolName) =>
+      [
+        "input-streaming",
+        "input-available",
+        "output-available",
+        "output-error",
+      ].flatMap((state) => [
+        {
+          type: `tool-${toolName}`,
+          state,
+          input: privateInput,
+          output: privateInput,
+        },
+        {
+          type: "dynamic-tool",
+          toolName,
+          state,
+          input: privateInput,
+          output: privateInput,
+        },
+      ]),
+    );
+    expect(sanitizeFindingPartsForShare(parts)).toEqual([]);
+  });
   it("replaces a successful tool part with compact safe metadata", () => {
     const [part] = sanitizeFindingPartsForShare([
       {

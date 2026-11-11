@@ -56,6 +56,10 @@ import {
 } from "./FindingEvidenceBadge";
 import { FindingExportMenu } from "./FindingExportMenu";
 import { FindingFollowupActions } from "./FindingFollowupActions";
+import {
+  FindingAgentRetests,
+  useFindingRetestState,
+} from "./FindingAgentRetests";
 import { FindingDiscoveredAt } from "./FindingTime";
 
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
@@ -253,6 +257,11 @@ export function FindingDetail({
   >();
   const persistedFinding =
     suppliedFinding !== undefined ? suppliedFinding : queriedFinding;
+  const retestState = useFindingRetestState(
+    persistedFinding && !(persistedFinding instanceof Error)
+      ? persistedFinding.finding_id
+      : undefined,
+  );
 
   const observed = useRef<string | null>(null);
   useEffect(() => {
@@ -473,7 +482,11 @@ export function FindingDetail({
 
           <div className="flex flex-wrap items-center gap-2">
             <FindingExportMenu getFindings={async () => [finding]} />
-            <FindingFollowupActions finding={finding} />
+            {/* One retest CTA: the retest section owns it when shown. */}
+            <FindingFollowupActions
+              finding={finding}
+              showRetest={retestState?.enabled === false}
+            />
           </div>
 
           <dl className="grid gap-x-8 gap-y-6 border-t border-border pt-6 @min-[520px]:grid-cols-2 @min-[880px]:grid-cols-4">
@@ -595,6 +608,9 @@ export function FindingDetail({
 
         <div className="pt-9">
           <div className="min-w-0 max-w-4xl space-y-10 @min-[760px]:space-y-12">
+            {retestState?.enabled ? (
+              <FindingAgentRetests finding={finding} state={retestState} />
+            ) : null}
             <section
               id={sectionId("overview")}
               className="scroll-mt-8 space-y-4 border-b border-border pb-10"

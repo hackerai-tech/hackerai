@@ -9,6 +9,8 @@ import { goalTimingForState } from "../lib/goals/timing";
 import { deleteScopeBatch } from "./lib/legacyEngagementScope";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
+import { deleteFindingRetestsForChatBatch } from "./findingRetests";
+import { deleteFindingAgentRetestsForChatBatch } from "./findingAgentRetests";
 import { query, mutation, internalMutation } from "./lib/serviceFunctions";
 import type { MutationCtx } from "./lib/serviceFunctions";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -415,7 +417,11 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     .unique();
   if (goal) await ctx.db.delete(goal._id);
 
-  if (await deleteFindingsForChatBatch(ctx, chat)) {
+  if (
+    (await deleteFindingAgentRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
+    (await deleteFindingRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
+    (await deleteFindingsForChatBatch(ctx, chat))
+  ) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
     return;
   }
@@ -497,7 +503,11 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     .unique();
   if (goal) await ctx.db.delete(goal._id);
 
-  if (await deleteFindingsForChatBatch(ctx, chat)) {
+  if (
+    (await deleteFindingAgentRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
+    (await deleteFindingRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
+    (await deleteFindingsForChatBatch(ctx, chat))
+  ) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
   }

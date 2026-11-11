@@ -37,8 +37,14 @@ it("prepares an editable scoped request without submitting or replacing an exist
   fireEvent.click(screen.getByRole("button", { name: "Retest", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "Add below draft" }));
   expect(getDraftContentById("chat-1")).toMatch(/^My existing draft\n\nRetest/);
+  expect(getDraftContentById("chat-1")).not.toContain("start_finding_retest");
   expect(push).toHaveBeenCalledWith("/c/chat-1");
   expect(setChatMode).toHaveBeenCalledWith("agent");
+});
+it("leaves retest to the retest section when it is shown", () => {
+  render(<FindingFollowupActions finding={finding} showRetest={false} />);
+  expect(screen.getByRole("button", { name: "Verify" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: /Retest/ })).toBeNull();
 });
 it("prepares verification in the original source chat", () => {
   render(<FindingFollowupActions finding={finding} />);

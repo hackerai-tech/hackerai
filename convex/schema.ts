@@ -30,6 +30,18 @@ import {
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
+  httpRetestEnvironmentValidator,
+  httpRetestOutcomeValidator,
+  httpRetestReasonValidator,
+  httpRetestRecipeValidator,
+  httpRetestStepValidator,
+} from "./findingRetestValidators";
+import {
+  agentRetestEnvironmentValidator,
+  agentRetestEvidenceVerificationValidator,
+  agentRetestOutcomeValidator,
+} from "./findingAgentRetestValidators";
+import {
   researchCohortReportValidator,
   researchCoverageValidator,
   researchRunStatusValidator,
@@ -809,6 +821,78 @@ export default defineSchema({
   })
     .index("by_user_and_latest", ["user_id", "latest_finding_at"])
     .index("by_user_chat", ["user_id", "chat_id"]),
+
+  // One Agent retest attempt for a finding. Provenance (message, run, stream)
+  // is server-supplied; the result is the Agent's own assessment and is
+  // immutable once finished. A record never changes the finding itself.
+  finding_agent_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this retest: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(agentRetestOutcomeValidator),
+    interrupted: v.optional(v.boolean()),
+    summary: v.optional(v.string()),
+    reproduction_steps: v.optional(v.array(v.string())),
+    expected_result: v.optional(v.string()),
+    observed_result: v.optional(v.string()),
+    evidence_refs: v.optional(v.array(v.string())),
+    evidence_verification: v.optional(agentRetestEvidenceVerificationValidator),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(agentRetestEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
+  // Legacy executable HTTP retest data from Preview. Hidden and read-only:
+  // retained only so existing rows validate and are removed by deletion.
+  finding_retest_recipes: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    source: v.union(v.literal("user"), v.literal("agent")),
+    created_at: v.number(),
+  })
+    .index("by_finding_and_version", ["finding_id", "version"])
+    .index("by_user_and_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+
+  finding_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    request_id: v.string(),
+    recipe_version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    status: v.union(v.literal("running"), v.literal("finished")),
+    started_at: v.number(),
+    lease_expires_at: v.number(),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(httpRetestOutcomeValidator),
+    reason: v.optional(httpRetestReasonValidator),
+    steps: v.optional(v.array(httpRetestStepValidator)),
+    environment: v.optional(httpRetestEnvironmentValidator),
+    evidence_sha256: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_status", ["finding_id", "status"])
+    .index("by_user_and_request", ["user_id", "request_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
 
   files: defineTable({
     s3_key: v.optional(v.string()),

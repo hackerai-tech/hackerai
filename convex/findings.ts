@@ -927,6 +927,15 @@ export const deleteFinding = mutation({
     }
 
     await ctx.db.delete(finding._id);
+    await ctx.scheduler.runAfter(0, internal.findingRetests.deleteForFinding, {
+      findingId: finding.finding_id,
+      userId: identity.subject,
+    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.findingAgentRetests.deleteForFinding,
+      { findingId: finding.finding_id, userId: identity.subject },
+    );
 
     const source = await getFindingSource(
       ctx,

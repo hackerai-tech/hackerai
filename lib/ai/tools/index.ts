@@ -29,6 +29,11 @@ import {
   createGetReport,
   createUpdateVulnerabilityReport,
 } from "./findings";
+import {
+  createCompleteFindingRetest,
+  createGetFindingRetests,
+  createStartFindingRetest,
+} from "./finding-retests";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -91,6 +96,10 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  /** Expose Agent retest history tools only when the caller has already
+   * evaluated the finding retest rollout for this user. The tools re-check
+   * the flag and fail closed on every call. */
+  findingRetestToolsEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -412,6 +421,14 @@ export const createTools = (
         context,
         () => sandbox,
       ),
+      ...(runtimePolicy.findingRetestToolsEnabled && {
+        get_finding_retests: createGetFindingRetests(context),
+        start_finding_retest: createStartFindingRetest(context),
+        complete_finding_retest: createCompleteFindingRetest(
+          context,
+          () => sandbox,
+        ),
+      }),
       ...(notesEnabled && {
         create_note: createCreateNote(context),
         list_notes: createListNotes(context),
