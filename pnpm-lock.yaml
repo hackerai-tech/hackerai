@@ -100,7 +100,7 @@ patchedDependencies:
     hash: 10637d9574b54edf9e3632eb1e4bfad1f106af41b3a8227a04a2d3d81a204995
     path: patches/resumable-stream@2.2.13.patch
   trigger.dev@4.7.7:
-    hash: e4ccde515f21531eda293d93d0055cd46c838301b5f66a964543fb2f7f91943b
+    hash: 8cd3456a2fac0bad846592ad7cf829e71ee26b40bda1c68704bb65423122fe8b
     path: patches/trigger.dev@4.7.7.patch
   use-stick-to-bottom@1.1.6:
     hash: b91f49736d3b118a1ce39e00718b2ad0a25b6de15cdcf2569bf85f8148ae4f1c
@@ -491,7 +491,7 @@ importers:
         version: 4.3.3
       trigger.dev:
         specifier: 4.7.7
-        version: 4.7.7(patch_hash=e4ccde515f21531eda293d93d0055cd46c838301b5f66a964543fb2f7f91943b)(@cfworker/json-schema@4.1.1)(@sinclair/typebox@0.34.41)(rxjs@7.8.2)(typescript@6.0.3)(valibot@1.4.2(typescript@6.0.3))
+        version: 4.7.7(patch_hash=8cd3456a2fac0bad846592ad7cf829e71ee26b40bda1c68704bb65423122fe8b)(@cfworker/json-schema@4.1.1)(@sinclair/typebox@0.34.41)(rxjs@7.8.2)(typescript@6.0.3)(valibot@1.4.2(typescript@6.0.3))
       ts-node:
         specifier: ^10.9.2
         version: 10.9.2(@types/node@25.9.3)(typescript@6.0.3)
@@ -16723,7 +16723,7 @@ snapshots:
 
   tree-kill@1.2.2: {}
 
-  trigger.dev@4.7.7(patch_hash=e4ccde515f21531eda293d93d0055cd46c838301b5f66a964543fb2f7f91943b)(@cfworker/json-schema@4.1.1)(@sinclair/typebox@0.34.41)(rxjs@7.8.2)(typescript@6.0.3)(valibot@1.4.2(typescript@6.0.3)):
+  trigger.dev@4.7.7(patch_hash=8cd3456a2fac0bad846592ad7cf829e71ee26b40bda1c68704bb65423122fe8b)(@cfworker/json-schema@4.1.1)(@sinclair/typebox@0.34.41)(rxjs@7.8.2)(typescript@6.0.3)(valibot@1.4.2(typescript@6.0.3)):
     dependencies:
       '@babel/parser': 7.29.7
       '@clack/prompts': 0.11.0

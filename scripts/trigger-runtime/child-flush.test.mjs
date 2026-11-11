@@ -54,11 +54,19 @@ const part = (key) => {
 const { createChildCompletionProbe } = await import(
   pathToFileURL(join(cli, "dist/esm/entryPoints/child-completion-probe.js"))
 );
+// The real S2 uncaught probe registers in the completion block; older sources lack it.
+const { createS2UncaughtProbe } = part("completion").includes(
+  "createS2UncaughtProbe",
+)
+  ? await import(
+      pathToFileURL(join(cli, "dist/esm/entryPoints/s2-uncaught-diagnostic.js"))
+    )
+  : {};
 const instantiate = new Function(
   "h",
   `
- const { standardLocalsManager, standardLifecycleHooksManager, standardRunTimelineMetricsManager, usage, timeout, runMetadataManager, waitUntilManager, standardRealtimeStreamsManager, standardInputStreamManager, standardSessionStreamManager, durableClock, taskContext, standardTraceContextManager, standardHeartbeatsManager, resetIdempotencyKeyCatalog, waitUntil, promiseWithResolvers, setTimeout, resourceCatalog, NO_FILE_CONTEXT, getNumberEnvVar, tracer, process, console, createChildCompletionProbe } = h;
- let _execution, _isRunning = false, _isCancelled = false, _tracingSDK = h.tracingSDK, _executionMeasurement, _cancelController = new AbortController(), _lastFlushPromise, _sharedWorkerRuntime, _parentFlushReceipt;
+ const { standardLocalsManager, standardLifecycleHooksManager, standardRunTimelineMetricsManager, usage, timeout, runMetadataManager, waitUntilManager, standardRealtimeStreamsManager, standardInputStreamManager, standardSessionStreamManager, durableClock, taskContext, standardTraceContextManager, standardHeartbeatsManager, resetIdempotencyKeyCatalog, waitUntil, promiseWithResolvers, setTimeout, resourceCatalog, NO_FILE_CONTEXT, getNumberEnvVar, tracer, process, console, createChildCompletionProbe, createS2UncaughtProbe } = h;
+ let _execution, _isRunning = false, _isCancelled = false, _tracingSDK = h.tracingSDK, _executionMeasurement, _cancelController = new AbortController(), _lastFlushPromise, _sharedWorkerRuntime, _parentFlushReceipt, _s2UncaughtProbe;
  ${functions.map(part).join("\n")}
  const FLUSH = ${part("FLUSH")};
  async function complete(execution, executor, ctx, sender) {
@@ -158,6 +166,7 @@ function worker() {
     process: { connected: true },
     console: { log() {}, error() {} },
     createChildCompletionProbe,
+    createS2UncaughtProbe,
     tracer: {
       startSpan(name, { attributes }, context) {
         if (name === RECEIPT) {

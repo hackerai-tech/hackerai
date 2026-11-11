@@ -100,29 +100,60 @@ index 0000000000000000000000000000000000000000..e1536c85fc788919bb698ef8fd5137e1
 +    }) ?? inert;
 +}
 diff --git a/dist/esm/entryPoints/managed-run-worker.js b/dist/esm/entryPoints/managed-run-worker.js
-index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b68fe7f93d 100644
+index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..921acfcbb794211b55fb3bfe96eac9e3c6fdc875 100644
 --- a/dist/esm/entryPoints/managed-run-worker.js
 +++ b/dist/esm/entryPoints/managed-run-worker.js
-@@ -9,6 +9,7 @@ import sourceMapSupport from "source-map-support";
+@@ -9,6 +9,8 @@ import sourceMapSupport from "source-map-support";
  import { env } from "std-env";
  import { normalizeImportPath } from "../utilities/normalizeImportPath.js";
  import { VERSION } from "../version.js";
 +import { createChildCompletionProbe } from "./child-completion-probe.js";
++import { annotateS2Uncaught, createS2UncaughtProbe } from "./s2-uncaught-diagnostic.js";
  sourceMapSupport.install({
      handleUncaughtExceptions: false,
      environment: "node",
-@@ -193,7 +194,10 @@ let _executionMeasurement;
+@@ -25,15 +27,18 @@ function safeSend(message) {
+         // swallow: a throw here would re-enter this handler and busy-loop the worker
+     }
+ }
++// Current Agent execution's one-shot S2 uncaught diagnostic; declared before its handler reads it.
++let _s2UncaughtProbe;
+ process.on("uncaughtException", function (error, origin) {
+     console.error("Uncaught exception", { error, origin });
+     if (error instanceof Error) {
+         safeSend({
+             type: "EVENT",
+             message: {
+                 type: "UNCAUGHT_EXCEPTION",
+                 payload: {
+-                    error: { name: error.name, message: error.message, stack: error.stack },
++                    // Same single reads; only an eligible current S2Error gets an additive stack copy.
++                    error: annotateS2Uncaught(_s2UncaughtProbe, { name: error.name, message: error.message, stack: error.stack }, error, origin),
+                     origin,
+                 },
+                 version: "v1",
+@@ -193,7 +198,11 @@ let _executionMeasurement;
  let _cancelController = new AbortController();
  let _lastFlushPromise;
  let _sharedWorkerRuntime;
 +// Latest Agent completion probe's FLUSH receipt; cleared before each EXECUTE resets context.
 +let _parentFlushReceipt;
  function resetExecutionEnvironment() {
++    _s2UncaughtProbe = undefined;
 +    _parentFlushReceipt = undefined;
      _execution = undefined;
      _isRunning = false;
      _isCancelled = false;
-@@ -389,6 +393,7 @@ const zodIpc = new ZodIpcConnection({
+@@ -230,6 +239,8 @@ const zodIpc = new ZodIpcConnection({
+     process,
+     handlers: {
+         EXECUTE_TASK_RUN: async ({ execution, traceContext, metadata, metrics, env, isWarmStart }, sender) => {
++            // Fence any earlier S2 uncaught context before this EXECUTE's first await.
++            _s2UncaughtProbe = undefined;
+             if (env) {
+                 populateEnv(env, {
+                     override: true,
+@@ -389,6 +400,7 @@ const zodIpc = new ZodIpcConnection({
                      isWarmStart,
                      executionCount: _executionCount,
                  });
@@ -130,10 +161,18 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                  try {
                      _execution = execution;
                      _isRunning = true;
-@@ -403,9 +408,16 @@ const zodIpc = new ZodIpcConnection({
+@@ -403,9 +415,24 @@ const zodIpc = new ZodIpcConnection({
                      // Cleared in the surrounding finally below.
                      resourceCatalog.setCurrentFileContext(NO_FILE_CONTEXT, NO_FILE_CONTEXT);
++                    // Optional Agent-only S2 uncaught context; the helper fences it to this live execution.
++                    const s2UncaughtProbe = createS2UncaughtProbe({
++                        execution,
++                        live: () => ({ execution: _execution, isRunning: _isRunning, isCancelled: _isCancelled,
++                            contextEnabled: taskContext.isRunDisabled === false, connected: process.connected }),
++                    });
++                    _s2UncaughtProbe = s2UncaughtProbe;
                      const { result } = await executor.execute(execution, ctx, signal);
++                    s2UncaughtProbe.completionBoundary();
 +                    completionProbe = createChildCompletionProbe({
 +                        tracer, getParentContext: () => standardTraceContextManager.extractContext(),
 +                        execution, result, isRunning: _isRunning, isCancelled: _isCancelled,
@@ -148,7 +187,7 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                              execution,
                              result: {
                                  ...result,
-@@ -414,8 +426,15 @@ const zodIpc = new ZodIpcConnection({
+@@ -414,8 +441,15 @@ const zodIpc = new ZodIpcConnection({
                                  },
                                  flushedMetadata: await runMetadataManager.stopAndReturnLastFlush(),
                              },
@@ -165,7 +204,7 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
                  }
                  finally {
                      standardHeartbeatsManager.stopHeartbeat();
-@@ -456,6 +475,8 @@ const zodIpc = new ZodIpcConnection({
+@@ -456,6 +490,8 @@ const zodIpc = new ZodIpcConnection({
              await flushAll(timeoutInMs);
          },
          FLUSH: async ({ timeoutInMs, disableContext }) => {
@@ -174,3 +213,136 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b6
              await flushAll(timeoutInMs);
              if (disableContext) {
                  taskContext.disable();
+diff --git a/dist/esm/entryPoints/s2-uncaught-diagnostic.js b/dist/esm/entryPoints/s2-uncaught-diagnostic.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a5e032d993ef9cd3718c96e1654956a90c92d4f
+--- /dev/null
++++ b/dist/esm/entryPoints/s2-uncaught-diagnostic.js
+@@ -0,0 +1,127 @@
++// HackerAI S2 global-uncaught diagnostic on the existing UNCAUGHT_EXCEPTION error.stack string.
++// It decorates only a copy of the worker's already-read { name, message, stack }; the original
++// Error, console output, IPC keys, terminal code/message, propagation and process lifetime are
++// unchanged, and any diagnostic fault returns the original serialized payload.
++/**
++ * Fixed versioned NONFRAME marker. An annotated stack is the complete original stack, "\n",
++ * this marker, one space and compact closed-schema JSON as its last line. Plain stack text
++ * cannot authenticate its writer: diagnostic context only, never authorization, provider
++ * truth or proof of the physical cause.
++ */
++export const S2_UNCAUGHT_MARKER = "[hackerai.s2_uncaught.v1]";
++const MARKER_TOKEN = "hackerai.s2_uncaught";
++const S2_FRAME = "@s2-dev/streamstore";
++// Core sanitizeError/truncateStack caps lines at 1024 characters and keeps 50 lines from the
++// first frame. Skip rather than clip so every original byte and the trailer survive it.
++const MAX_STACK_BYTES = 16 * 1024;
++const MAX_LINE_CHARS = 1024;
++const MAX_FRAME_LINES = 50;
++const MAX_TRAILER_BYTES = 1024;
++const MAX_ATTEMPTS = /^Max attempts \(\d{1,7}\) exhausted: /;
++// Literal codes in @s2-dev/streamstore 0.25 sources, including the Node/undici connection codes
++// it classifies. Any other value, including arbitrary server codes, becomes other_or_absent.
++const CODES = new Set([
++    "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "ECONNRESET", "EPIPE",
++    "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
++    "NETWORK_ERROR", "connection_failed", "REQUEST_TIMEOUT", "TIMEOUT", "CONNECTION_TIMEOUT",
++    "STREAM_CLOSED_PREMATURELY", "BAD_GATEWAY", "SESSION_CLOSED", "INVALID_RESPONSE",
++    "INVALID_ARGUMENT", "UNSAFE_INTEGER", "APPEND_CONDITION_FAILED", "INTERNAL_ERROR",
++    "INTERNAL_SDK_ERROR", "ABORTED", "rate_limited", "hot_server",
++]);
++const PROPERTY_ORIGINS = new Set(["server", "sdk"]);
++const NODE_ORIGINS = new Set(["uncaughtException", "unhandledRejection"]);
++const inert = Object.freeze({ completionBoundary() { }, consume() { return undefined; } });
++// Own DATA descriptor only: never runs getters, reads inherited values or coerces. A Proxy
++// descriptor trap may throw; annotateS2Uncaught then returns the original payload.
++function ownData(error, key) {
++    const descriptor = Object.getOwnPropertyDescriptor(error, key);
++    return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
++}
++// Eligibility reads only the handler's already-read values, never the Error again.
++function eligible({ name, message, stack }) {
++    if (name !== "S2Error" || typeof message !== "string" || typeof stack !== "string") return false;
++    if (stack.includes("\0") || stack.includes(MARKER_TOKEN) || message.includes(MARKER_TOKEN)) return false;
++    if (Buffer.byteLength(stack, "utf8") > MAX_STACK_BYTES) return false;
++    let frameLines = 0;
++    let s2Frame = false;
++    for (const line of stack.split("\n")) {
++        if (line.length > MAX_LINE_CHARS) return false;
++        const frame = line.trimStart().startsWith("at ");
++        if (frame || frameLines > 0) frameLines++;
++        if (frame && line.includes(S2_FRAME)) s2Frame = true;
++    }
++    // The appended line is one more line after the first frame.
++    return s2Frame && frameLines < MAX_FRAME_LINES;
++}
++/**
++ * Create one EXECUTE's one-shot S2 uncaught diagnostic. Register it in the worker slot after
++ * bootstrap, immediately before executor.execute, and clear that slot at every EXECUTE and
++ * reset. Non-Agent executions and creation faults return an inert probe. `live()` returns the
++ * worker's current { execution, isRunning, isCancelled, contextEnabled, connected } and runs
++ * only after the latch is consumed. Phase is execution_active, completion_boundary (executor
++ * returned, cleanup pending) or other; no provider stage is inferred.
++ * association=current_child_context names the child context current when the handler ran;
++ * it does not establish which execution originated a latent error.
++ */
++export function createS2UncaughtProbe({ execution, live }) {
++    try {
++        if (execution.task.id !== "agent-long") return inert;
++        const number = execution.attempt.number;
++        const attempt = Number.isSafeInteger(number) && number >= 1 && number <= 1000000 ? number : undefined;
++        let boundary = false;
++        let pending = true;
++        return {
++            completionBoundary() { boundary = true; },
++            consume(serialized, error, origin) {
++                if (!pending) return undefined;
++                // Consume before introspection: repeated or reentrant events add nothing.
++                pending = false;
++                const state = live();
++                if (state.execution !== execution || state.contextEnabled !== true || !eligible(serialized)) return undefined;
++                const fields = {
++                    version: 1,
++                    association: "current_child_context",
++                    phase: boundary ? "completion_boundary" : state.isRunning === true ? "execution_active" : "other",
++                    node_origin: NODE_ORIGINS.has(origin) ? origin : "other_or_absent",
++                };
++                const status = ownData(error, "status");
++                if (Number.isInteger(status) && (status === 0 || (status >= 100 && status <= 599))) fields.status = status;
++                const code = ownData(error, "code");
++                fields.code = CODES.has(code) ? code : "other_or_absent";
++                const propertyOrigin = ownData(error, "origin");
++                fields.property_origin = PROPERTY_ORIGINS.has(propertyOrigin) ? propertyOrigin : "other_or_absent";
++                fields.max_attempt_exhausted = MAX_ATTEMPTS.test(serialized.message);
++                fields.worker_running = state.isRunning === true;
++                fields.worker_cancelled = state.isCancelled === true;
++                fields.process_connected = state.connected === true;
++                if (attempt !== undefined) fields.attempt = attempt;
++                const trailer = `\n${S2_UNCAUGHT_MARKER} ${JSON.stringify(fields)}`;
++                return Buffer.byteLength(trailer, "utf8") <= MAX_TRAILER_BYTES ? trailer : undefined;
++            },
++        };
++    }
++    catch {
++        return inert;
++    }
++}
++/**
++ * Return the handler's already-read { name, message, stack } exactly or, for the first
++ * uncaught event of a current context-enabled Agent execution whose snapshot is an S2Error
++ * with an @s2-dev/streamstore frame within sanitizer bounds (no NUL or existing marker,
++ * <=16KiB UTF-8, lines <=1024 characters, <50 lines from the first frame), a copy whose
++ * stack appends one marker line of <=1024 bytes. Never re-reads error name/message/stack or
++ * mutates the error; status/code/origin come only from own data descriptors. Fields: status
++ * integer 0 or 100..599 (else omitted); code and property_origin closed sets (else
++ * other_or_absent); node_origin from the handler argument; strict booleans; attempt
++ * 1..1000000 (else omitted). S2's max-attempt wrapper copies status/code but not origin, so
++ * property_origin "sdk" there is the constructor default, not proof of a local cause.
++ */
++export function annotateS2Uncaught(probe, serialized, error, origin) {
++    try {
++        const trailer = probe?.consume(serialized, error, origin);
++        return typeof trailer === "string" ? { ...serialized, stack: serialized.stack + trailer } : serialized;
++    }
++    catch {
++        return serialized;
++    }
++}
