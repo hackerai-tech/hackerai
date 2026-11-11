@@ -4,6 +4,8 @@ name: Desktop PR Builds
 on:
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -28,8 +30,8 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
