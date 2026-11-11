@@ -165,10 +165,10 @@ function AllDownloads({ mobileDevice }: { mobileDevice: boolean }) {
     return (
       <section
         id="all-downloads"
-        className="mt-10 border-t border-border lg:mt-0"
+        className="-mt-2 border-t border-border lg:mt-0"
       >
         <details open className="group">
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-5 group-open:border-b group-open:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
             <span>
               <span className="block text-base font-semibold">
                 Desktop downloads
