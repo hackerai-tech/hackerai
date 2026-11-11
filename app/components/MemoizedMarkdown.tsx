@@ -1,8 +1,18 @@
 import { memo } from "react";
-import { Streamdown, type Components } from "streamdown";
+import {
+  Streamdown,
+  defaultRemarkPlugins,
+  type Components,
+  type StreamdownProps,
+} from "streamdown";
 import { CodeHighlight } from "./CodeHighlight";
 import { MarkdownTable } from "./MarkdownTable";
+import { SandboxAttachmentLink } from "./SandboxAttachmentLink";
 import { isTauriEnvironment, revealFileInDir } from "@/app/hooks/useTauri";
+import {
+  SANDBOX_ATTACHMENT_HREF_PREFIX,
+  remarkSandboxAttachmentLinks,
+} from "@/lib/chat/sandbox-attachment-links";
 import {
   Tooltip,
   TooltipTrigger,
@@ -21,6 +31,11 @@ interface MemoizedMarkdownProps {
 }
 
 const MarkdownLink: NonNullable<Components["a"]> = ({ children, href }) => {
+  if (href?.startsWith(SANDBOX_ATTACHMENT_HREF_PREFIX)) {
+    return (
+      <SandboxAttachmentLink href={href}>{children}</SandboxAttachmentLink>
+    );
+  }
   // Local file paths: clickable in Tauri, plain text on web
   if (isLocalFilePath(href)) {
     const decodedPath = decodeURIComponent(href!);
@@ -64,10 +79,22 @@ const MARKDOWN_COMPONENTS: Components = {
   a: MarkdownLink,
 };
 
+// Passing remarkPlugins replaces Streamdown's defaults, so keep them first.
+// The sandbox rewrite runs before the default rehype sanitize/harden plugins,
+// which still check every resulting URL.
+const MARKDOWN_REMARK_PLUGINS: NonNullable<StreamdownProps["remarkPlugins"]> = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkSandboxAttachmentLinks,
+];
+
 export const MemoizedMarkdown = memo(
   ({ content, isAnimating = false }: MemoizedMarkdownProps) => {
     return (
-      <Streamdown components={MARKDOWN_COMPONENTS} isAnimating={isAnimating}>
+      <Streamdown
+        components={MARKDOWN_COMPONENTS}
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        isAnimating={isAnimating}
+      >
         {content}
       </Streamdown>
     );

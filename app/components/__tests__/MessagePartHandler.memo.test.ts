@@ -99,4 +99,81 @@ describe("MessagePartHandler memoization", () => {
 
     expect(areMessagePartHandlerPropsEqual(firstTool, secondTool)).toBe(false);
   });
+
+  describe("text with sandbox download links", () => {
+    const linkText = {
+      type: "text",
+      text: "Saved [report.txt](sandbox:/home/user/report.txt).",
+    };
+    const plainText = { type: "text", text: "Saved the report." };
+    const delivery = {
+      type: "tool-get_terminal_files",
+      state: "output-available",
+      output: {
+        deliveryReceipts: [
+          {
+            fileId: "file-1",
+            sourcePath: "/home/user/report.txt",
+            storageStatus: "stored",
+          },
+        ],
+      },
+    };
+    const textProps = (
+      part: Record<string, unknown>,
+      parts: Record<string, unknown>[],
+      sharedFileDetails?: unknown[],
+    ) => ({
+      ...props(part),
+      message: { id: "message-1", role: "assistant", parts },
+      sharedFileDetails,
+    });
+
+    it("re-renders unchanged link text when file metadata arrives", () => {
+      const before = textProps(linkText, [delivery, linkText]);
+      const after = textProps(
+        linkText,
+        [delivery, linkText],
+        [{ fileId: "file-1", name: "report.txt" }],
+      );
+
+      expect(areMessagePartHandlerPropsEqual(before, after)).toBe(false);
+    });
+
+    it("re-renders unchanged link text when a delivery receipt arrives", () => {
+      const fileDetails = [{ fileId: "file-1", name: "report.txt" }];
+      const pending = {
+        ...delivery,
+        state: "input-available",
+        output: undefined,
+      };
+      const before = textProps(linkText, [pending, linkText], fileDetails);
+      const after = textProps(linkText, [delivery, linkText], fileDetails);
+
+      expect(areMessagePartHandlerPropsEqual(before, after)).toBe(false);
+    });
+
+    it("keeps ordinary streamed text memoized when file metadata changes", () => {
+      const before = textProps(plainText, [delivery, plainText]);
+      const after = textProps(
+        plainText,
+        [delivery, plainText],
+        [{ fileId: "file-1", name: "report.txt" }],
+      );
+
+      expect(areMessagePartHandlerPropsEqual(before, after)).toBe(true);
+    });
+
+    it("keeps link text memoized when unrelated message parts change", () => {
+      const fileDetails = [{ fileId: "file-1", name: "report.txt" }];
+      const before = textProps(linkText, [delivery, linkText], fileDetails);
+      const after = textProps(
+        linkText,
+        [delivery, linkText, { type: "reasoning", text: "Done" }],
+        fileDetails,
+      );
+
+      expect(areMessagePartHandlerPropsEqual(before, after)).toBe(true);
+    });
+  });
 });
