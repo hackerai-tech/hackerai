@@ -67,15 +67,23 @@ export function createServiceFetch(
       (!secret || !clientInstanceId.includes(secret))
         ? clientInstanceId
         : undefined;
+    // Browser safety reads also report rejections the SDK only surfaces as a
+    // generic Error. Every other RPC keeps the 5xx/transport-only contract.
+    const browserHandoffRead =
+      type === "query" &&
+      (functionName === "browserHandoffs:getForBackend" ||
+        functionName === "browserHandoffs:getExitNotesForBackend");
     const startedAt = Date.now();
     const observation = observeServiceTransport(url);
     let stage: "request" | "response_body" = "request";
     let statusCode: number | undefined;
     let cfRay: string | undefined;
     let reported = false;
+    /** Emit one bounded failure receipt per RPC without replacing its result. */
     const reportFailure = (
-      reason: "http_5xx" | "transport_error",
+      reason: "http_4xx" | "http_5xx" | "application_error" | "transport_error",
       error?: unknown,
+      applicationError?: { errorMessage?: unknown; errorData?: unknown },
     ) => {
       if (reported) return;
       reported = true;
@@ -91,9 +99,20 @@ export function createServiceFetch(
           error instanceof Error && error.cause instanceof Error
             ? (error.cause as NodeJS.ErrnoException).syscall
             : (error as NodeJS.ErrnoException | undefined)?.syscall;
+        // Only Convex's public receipt prefix; the remaining message can carry
+        // application content.
+        const requestId =
+          typeof applicationError?.errorMessage === "string"
+            ? /^\[Request ID: ([a-f0-9]{16})\]/.exec(
+                applicationError.errorMessage.slice(0, 256),
+              )?.[1]
+            : undefined;
         console.warn(
           JSON.stringify({
             event: "convex_service_rpc_failed",
+            ...(browserHandoffRead
+              ? { browser_handoff_read_diagnostic_version: 1 }
+              : {}),
             ...(clientId ? { client_instance_id: clientId } : {}),
             rpc_kind: type,
             ...(functionName ? { function_name: functionName } : {}),
@@ -117,6 +136,12 @@ export function createServiceFetch(
               "UND_ERR_SOCKET",
             ].includes(code ?? "")
               ? { transport_code: code }
+              : {}),
+            ...(requestId && (!secret || !requestId.includes(secret))
+              ? { backend_request_id: requestId }
+              : {}),
+            ...(applicationError
+              ? { error_data_present: applicationError.errorData !== undefined }
               : {}),
             transport_elapsed_ms: Math.max(0, Date.now() - startedAt),
           }),
@@ -178,6 +203,8 @@ export function createServiceFetch(
         /* Optional diagnostics must not interrupt body consumption. */
       }
       if (statusCode >= 500 && statusCode <= 599) reportFailure("http_5xx");
+      else if (browserHandoffRead && statusCode >= 400 && statusCode <= 499)
+        reportFailure("http_4xx");
       stage = "response_body";
       const text = await response.text();
       return { response, text };
@@ -291,8 +318,11 @@ export function createServiceFetch(
         }
         return value;
       };
-      if (result.status === "error") result = scrub(result);
-      else result.logLines = scrub(result.logLines);
+      if (result.status === "error") {
+        if (browserHandoffRead && response.status === 200)
+          reportFailure("application_error", undefined, result);
+        result = scrub(result);
+      } else result.logLines = scrub(result.logLines);
       return new Response(JSON.stringify(result), { status: response.status });
     }
     return new Response(text, { status: response.status });
