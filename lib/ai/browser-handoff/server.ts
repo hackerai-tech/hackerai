@@ -23,6 +23,7 @@ import {
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
@@ -48,6 +49,11 @@ const sessionReadFailures = new WeakMap<
   ReturnType<typeof checkpointCloudErrorContext>
 >();
 
+const returnedRelayRenewExits = new WeakMap<
+  BrowserPreviewUnavailable,
+  number
+>();
+
 /** Read closed SDK classes and own numeric exit data, never command output. */
 export function browserRelayRenewFailureContext(error: unknown) {
   let kind:
@@ -55,14 +61,22 @@ export function browserRelayRenewFailureContext(error: unknown) {
     "thrown_value";
   let exitCode: number | "none" | "other" = "none";
   try {
-    if (error instanceof CommandExitError) {
+    const returnedExit =
+      error instanceof BrowserPreviewUnavailable
+        ? returnedRelayRenewExits.get(error)
+        : undefined;
+    const isSdkExit = error instanceof CommandExitError;
+    if (isSdkExit || returnedExit !== undefined) {
       kind = "command_exit";
       exitCode = "other";
-      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const result = isSdkExit
+        ? Object.getOwnPropertyDescriptor(error, "result")?.value
+        : undefined;
       const value =
-        result && typeof result === "object"
+        returnedExit ??
+        (result && typeof result === "object"
           ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
-          : undefined;
+          : undefined);
       if (
         typeof value === "number" &&
         Number.isInteger(value) &&
@@ -79,10 +93,14 @@ export function browserRelayRenewFailureContext(error: unknown) {
     kind = "unreadable";
     exitCode = "other";
   }
+  const reason = Object.entries(RELAY_RENEW_FAILURE_CODES).find(
+    ([, code]) => code === exitCode,
+  )?.[0];
   return {
-    relay_renew_diagnostic_version: 1,
+    relay_renew_diagnostic_version: 2,
     relay_renew_error_kind: kind,
     relay_renew_command_exit_code: exitCode,
+    ...(reason === undefined ? {} : { relay_renew_failure_reason: reason }),
   };
 }
 
@@ -269,8 +287,11 @@ export async function renewBrowserRelay(
       timeoutMs: 5000,
     },
   );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  if (result.exitCode !== 0) {
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    returnedRelayRenewExits.set(unavailable, result.exitCode);
+    throw unavailable;
+  }
 }
 
 export async function stopBrowserRelays(
