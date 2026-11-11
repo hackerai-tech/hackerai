@@ -249,6 +249,18 @@ export function buildGoalCompletionEvidence(
   };
 }
 
+/** A model verdict cannot pause a Goal unless the Agent actually requested input. */
+function hasUserFacingInputRequest(text: string): boolean {
+  const prose = text.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
+  return (
+    prose.includes("?") ||
+    /\b(?:please|kindly)\s+(?:provide|confirm|choose|select|share|tell|send|clarify|approve)\b/i.test(
+      prose,
+    ) ||
+    /\b(?:i|we)\s+(?:need|require)\s+(?:your|you to)\b/i.test(prose)
+  );
+}
+
 /** Independent, bounded check. Evidence is data and never authorizes a tool action. */
 export async function judgeGoalCompletion(
   goal: Doc<"agent_goals">,
@@ -466,6 +478,9 @@ export async function judgeGoalCompletion(
       const invalidCompletion =
         decision.verdict === "done" &&
         (!gatePassed || (!responseEvidence && missingCriteria > 0));
+      const invalidInputRequest =
+        decision.verdict === "needs_input" &&
+        !hasUserFacingInputRequest(finalText);
       // Repair an inconsistent verdict locally before paying for another Agent
       // run. Ordinary partial-progress turns do not need a second model call.
       const recheck =
@@ -479,7 +494,10 @@ export async function judgeGoalCompletion(
         run_id: runId,
         check,
         model_verdict: decision.verdict,
-        resolved_verdict: invalidCompletion ? "continue" : decision.verdict,
+        resolved_verdict:
+          invalidCompletion || invalidInputRequest
+            ? "continue"
+            : decision.verdict,
         verification_gate_passed: gatePassed,
         missing_criteria_count: missingCriteria,
         rejected_reference_count: decision.evidence.length - verified.length,
@@ -497,6 +515,13 @@ export async function judgeGoalCompletion(
           verdict: "continue",
           reason:
             "Completion still requires verified tool evidence for every criterion and the verification command.",
+          evidence: verified,
+        };
+      }
+      if (invalidInputRequest) {
+        return {
+          verdict: "continue",
+          reason: "The Agent did not ask for input, so work can continue.",
           evidence: verified,
         };
       }

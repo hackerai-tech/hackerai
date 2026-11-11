@@ -216,7 +216,21 @@ describe("independent goal completion check", () => {
         }),
         usage: {},
       }));
-      const result = await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+      const questionMessages = [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "Which scope should I use?" },
+          ],
+        },
+      ] as UIMessage[];
+      const result = await judgeGoalCompletion(
+        goal,
+        questionMessages,
+        "r1",
+        jest.fn(),
+      );
       expect(result).toMatchObject({
         verdict: "needs_input",
         reason: "Choose the next scope",
@@ -226,6 +240,65 @@ describe("independent goal completion check", () => {
       expect(generate).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("does not pause for input when the assistant made no user-facing request", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Need input",
+        responseOnly: false,
+        questions: null,
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "The marker is ready." },
+          ],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+    expect(result?.verdict).toBe("continue");
+    expect(result).not.toHaveProperty("questions");
+  });
+
+  it("keeps a direct request for input even without a question mark", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Waiting for scope",
+        responseOnly: false,
+        questions: null,
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "Please choose the scope." },
+          ],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+    expect(result?.verdict).toBe("needs_input");
+  });
 
   it.each(["continue", "uncited_done"])(
     "rechecks %s against the completed updated goal before dispatching more work",
