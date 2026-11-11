@@ -336,6 +336,7 @@ import {
   shouldRetryAgentLongWithFallback,
 } from "@/lib/chat/agent-long-provider-retry";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
+import { getProviderRequestSizeRecoveryDiagnostics } from "@/lib/chat/provider-request-size-recovery";
 import {
   ProviderTerminalError,
   getProviderDisconnectIgnoredSlugs,
@@ -5165,6 +5166,10 @@ export const agentLongTask = task({
                           provider_generation_id:
                             failure.openrouterGenerationId,
                           retry_already_used: isRetryWithFallback,
+                          ...getProviderRequestSizeRecoveryDiagnostics(
+                            state.requestSizeRecovery,
+                            failure.statusCode,
+                          ),
                           user_cancelled: userStopSignal.signal.aborted,
                           stream_aborted: isAborted,
                           terminal_empty_response: terminalEmptyResponse,

@@ -178,6 +178,7 @@ import {
 import {
   withProviderRequestSizeRecovery,
   type ProviderRequestRetryParams,
+  type ProviderRequestSizeRecoveryState,
 } from "@/lib/chat/provider-request-size-recovery";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -453,7 +454,7 @@ export type AgentStreamState = {
   lastStepInputTokens: number;
   /** One actual context-budget exposure across retries in this run. */
   agentContextBudgetExposed?: boolean;
-  requestSizeRecovery?: { attempted: boolean };
+  requestSizeRecovery?: ProviderRequestSizeRecoveryState;
   browserHandoffRecovery?: { attempted?: boolean };
   providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
