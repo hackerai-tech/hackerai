@@ -723,8 +723,14 @@ export const createAgentTriggerPost = ({
 
       diagnosticContext.chatId = chatId.slice(0, 128);
       stage = "authenticate";
-      const { userId, subscription, organizationId, freeQuotaSubject } =
-        await getUserIDAndPro(req);
+      const {
+        userId,
+        subscription,
+        organizationId,
+        freeQuotaSubject: legacyQuotaSubject,
+        freeUsageQuotaSubject,
+      } = await getUserIDAndPro(req);
+      const freeQuotaSubject = freeUsageQuotaSubject ?? legacyQuotaSubject;
       diagnosticContext.userId = userId.slice(0, 128);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
