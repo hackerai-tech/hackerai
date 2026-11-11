@@ -16,6 +16,7 @@ import {
   githubClient,
   pages,
   mergeAliases,
+  evaluateMergeGroup,
 } from "./review-security.mjs";
 
 const head = "a".repeat(40),
@@ -52,6 +53,70 @@ const alert = (number, severity, commit = merge) => ({
   state: "open",
   rule: { id: "js/command-line-injection", security_severity_level: severity },
   most_recent_instance: { commit_sha: commit },
+});
+
+test("merge queue checks the current combined CodeQL analysis before publishing the gate", async () => {
+  const run = {
+    event: "merge_group",
+    path: ".github/workflows/test.yml",
+    repository: { full_name: "o/r" },
+    head_branch: "gh-readonly-queue/main/pr-123-abcd",
+    head_sha: merge,
+    status: "completed",
+    conclusion: "success",
+  };
+  const languages = [
+    "actions",
+    "go",
+    "javascript-typescript",
+    "python",
+    "rust",
+  ];
+  const evaluate = (analyses, alerts = [], baseline = []) =>
+    evaluateMergeGroup(
+      async (path) => {
+        if (path.includes("/analyses?")) return analyses;
+        if (path.includes("gh-readonly-queue") && path.includes("/alerts?"))
+          return alerts;
+        if (path.includes("/alerts?")) return baseline;
+        throw new Error("Unexpected API request");
+      },
+      "o/r",
+      run,
+      { publish: false },
+    );
+  assert.equal((await evaluate(languages.map(analysis))).state, "success");
+  assert.equal(
+    (await evaluate(languages.slice(1).map(analysis))).state,
+    "pending",
+  );
+  assert.equal(
+    (await evaluate(languages.map(analysis), [alert(42, "high")])).state,
+    "failure",
+  );
+  assert.equal(
+    (
+      await evaluate(
+        languages.map(analysis),
+        [alert(42, "high")],
+        [alert(42, "high", base)],
+      )
+    ).state,
+    "success",
+  );
+  assert.equal(
+    (
+      await evaluateMergeGroup(
+        async () => {
+          throw new Error("Unexpected API request");
+        },
+        "o/r",
+        { ...run, conclusion: "failure" },
+        { publish: false },
+      )
+    ).state,
+    "failure",
+  );
 });
 
 test("only authenticated current-code reviews pass, including the provider's check-only integration", () => {

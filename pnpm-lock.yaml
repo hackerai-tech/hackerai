@@ -84,6 +84,9 @@ patchedDependencies:
   '@shikijs/engine-oniguruma@4.6.0':
     hash: 405eea4d267869a09aaff7b7b99e558eac414c3c873740a099121b19c4cb9b53
     path: patches/@shikijs__engine-oniguruma@4.6.0.patch
+  '@trigger.dev/core@4.7.7':
+    hash: 165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8
+    path: patches/@trigger.dev__core@4.7.7.patch
   '@workos-inc/authkit-nextjs@4.3.2':
     hash: 10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378
     path: patches/@workos-inc__authkit-nextjs@4.3.2.patch
@@ -11599,7 +11602,7 @@ snapshots:
   '@trigger.dev/build@4.7.7(magicast@0.3.5)(supports-color@10.2.2)(typescript@6.0.3)(zod@4.6.7)':
     dependencies:
       '@prisma/config': 6.19.3(magicast@0.3.5)
-      '@trigger.dev/core': 4.7.7(supports-color@10.2.2)(zod@4.6.7)
+      '@trigger.dev/core': 4.7.7(patch_hash=165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8)(supports-color@10.2.2)(zod@4.6.7)
       mlly: 1.8.0
       pkg-types: 1.3.1
       tinyglobby: 0.2.15
@@ -11613,7 +11616,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@trigger.dev/core@4.7.7(supports-color@10.2.2)(zod@4.6.7)':
+  '@trigger.dev/core@4.7.7(patch_hash=165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8)(supports-color@10.2.2)(zod@4.6.7)':
     dependencies:
       '@bugsnag/cuid': 3.2.2
       '@electric-sql/client': 1.0.14
@@ -11704,7 +11707,7 @@ snapshots:
   '@trigger.dev/schema-to-json@4.7.7(@sinclair/typebox@0.34.41)(supports-color@10.2.2)(valibot@1.4.2(typescript@6.0.3))(zod@4.6.7)':
     dependencies:
       '@sodaru/yup-to-json-schema': 2.0.1
-      '@trigger.dev/core': 4.7.7(supports-color@10.2.2)(zod@4.6.7)
+      '@trigger.dev/core': 4.7.7(patch_hash=165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8)(supports-color@10.2.2)(zod@4.6.7)
       effect: 3.21.0
       zod: 4.6.7
       zod-to-json-schema: 3.25.2(zod@4.6.7)
@@ -11720,7 +11723,7 @@ snapshots:
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/semantic-conventions': 1.41.1
-      '@trigger.dev/core': 4.7.7(supports-color@10.2.2)(zod@4.6.7)
+      '@trigger.dev/core': 4.7.7(patch_hash=165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8)(supports-color@10.2.2)(zod@4.6.7)
       uncrypto: 0.1.3
       zod: 4.6.7
     optionalDependencies:
@@ -16728,7 +16731,7 @@ snapshots:
       '@opentelemetry/instrumentation': 0.219.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2)
       '@s2-dev/streamstore': 0.25.1(supports-color@10.2.2)
       '@trigger.dev/build': 4.7.7(magicast@0.3.5)(supports-color@10.2.2)(typescript@6.0.3)(zod@4.6.7)
-      '@trigger.dev/core': 4.7.7(supports-color@10.2.2)(zod@4.6.7)
+      '@trigger.dev/core': 4.7.7(patch_hash=165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8)(supports-color@10.2.2)(zod@4.6.7)
       '@trigger.dev/schema-to-json': 4.7.7(@sinclair/typebox@0.34.41)(supports-color@10.2.2)(valibot@1.4.2(typescript@6.0.3))(zod@4.6.7)
       ansi-escapes: 7.3.0
       braces: 3.0.3

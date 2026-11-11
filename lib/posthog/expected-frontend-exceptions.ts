@@ -1,5 +1,6 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
+import { getRecentMessageTimestampDiagnostics } from "./message-time-diagnostics";
 import {
   getUnhandledRejectionDiagnostics,
   getNearbyDispatchDiagnostics,
@@ -581,6 +582,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   for (const key of Object.keys(properties)) {
     if (
       key.startsWith("hackerai_recent_rejection_") ||
+      key.startsWith("hackerai_recent_formatter_") ||
       key.startsWith("hackerai_nearby_dispatch_")
     )
       delete properties[key];
@@ -596,6 +598,9 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
+    ...(category === "stack_overflow"
+      ? getRecentMessageTimestampDiagnostics()
+      : {}),
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()
       : {}),

@@ -844,6 +844,8 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 () => {
                   requestPublicationStarted = true;
                 },
+                undefined,
+                this.connectionInfo.isDesktop === true,
               );
             } else {
               await subscription.publish(request);
@@ -1655,6 +1657,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                     commandPublicationStarted = true;
                   },
                   diagnostics.dispatchPhase,
+                  this.connectionInfo.isDesktop === true,
                 );
               } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do

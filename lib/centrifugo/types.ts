@@ -3,6 +3,7 @@ export const DESKTOP_COMMAND_DELIVERY_GRACE_MS = 30_000;
 
 export interface CommandMessage {
   type: "command";
+  authorizationId?: string;
   /** Opt-in; old clients ignore this and retain legacy stream behavior. */
   outputProtocol?: "ack-v1";
   commandId: string;
@@ -69,6 +70,7 @@ export interface ErrorMessage {
 
 export interface FileStatMessage {
   type: "file_stat";
+  authorizationId?: string;
   requestId: string;
   path: string;
   targetConnectionId: string;
@@ -76,6 +78,7 @@ export interface FileStatMessage {
 
 export interface FileReadMessage {
   type: "file_read";
+  authorizationId?: string;
   requestId: string;
   path: string;
   range?: [number, number];
@@ -86,6 +89,7 @@ export interface FileReadMessage {
 
 export interface FileWriteMessage {
   type: "file_write";
+  authorizationId?: string;
   requestId: string;
   path: string;
   content: string;
@@ -96,6 +100,7 @@ export interface FileWriteMessage {
 
 export interface FileAppendMessage {
   type: "file_append";
+  authorizationId?: string;
   requestId: string;
   path: string;
   content: string;
@@ -106,6 +111,7 @@ export interface FileAppendMessage {
 
 export interface FileRemoveMessage {
   type: "file_remove";
+  authorizationId?: string;
   requestId: string;
   path: string;
   targetConnectionId: string;
@@ -113,6 +119,7 @@ export interface FileRemoveMessage {
 
 export interface FileListMessage {
   type: "file_list";
+  authorizationId?: string;
   requestId: string;
   path: string;
   targetConnectionId: string;
@@ -163,6 +170,7 @@ export interface FileListResultMessage {
 
 export interface PtyCreateMessage {
   type: "pty_create";
+  authorizationId?: string;
   sessionId: string;
   command: string;
   cols?: number;
@@ -174,6 +182,7 @@ export interface PtyCreateMessage {
 
 export interface PtyInputMessage {
   type: "pty_input";
+  authorizationId?: string;
   sessionId: string;
   data: string;
   targetConnectionId: string;
@@ -181,6 +190,7 @@ export interface PtyInputMessage {
 
 export interface PtyResizeMessage {
   type: "pty_resize";
+  authorizationId?: string;
   sessionId: string;
   cols: number;
   rows: number;
@@ -189,6 +199,7 @@ export interface PtyResizeMessage {
 
 export interface PtyKillMessage {
   type: "pty_kill";
+  authorizationId?: string;
   sessionId: string;
   targetConnectionId: string;
 }

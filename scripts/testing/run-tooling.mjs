@@ -31,6 +31,10 @@ export const suites = [
       .filter((file) => file.endsWith(".test.mjs"))
       .map((file) => `scripts/testing/${file}`),
   },
+  {
+    name: "trigger-runtime",
+    files: ["scripts/trigger-runtime/completion-ack.test.mjs"],
+  },
 ];
 
 /** Read every staged, unstaged and untracked dependency path; Git errors throw. */

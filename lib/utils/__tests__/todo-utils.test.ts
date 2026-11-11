@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   mergeTodos,
+  isTodoSnapshotForCancellation,
   applyTodoWriteUpdate,
   dedupeNewAssistantTodosByContent,
   TodoUpdateError,
@@ -19,6 +20,62 @@ import {
 import type { Todo } from "@/types";
 
 describe("todo-utils", () => {
+  describe("cancellation snapshots", () => {
+    const complete = {
+      id: "task-1",
+      content: "Keep stored progress",
+      status: "completed" as const,
+    };
+
+    it("accepts complete and explicitly empty snapshots without changing them", () => {
+      const snapshot = Object.freeze([
+        Object.freeze({ ...complete, sourceMessageId: "assistant-1" }),
+        Object.freeze({
+          ...complete,
+          id: "task-2",
+          sourceMessageId: undefined,
+        }),
+      ]);
+      expect(isTodoSnapshotForCancellation(snapshot)).toBe(true);
+      expect(isTodoSnapshotForCancellation([])).toBe(true);
+    });
+
+    it.each([
+      { id: "task-2", status: "pending" },
+      { content: "Missing ID", status: "pending" },
+      { ...complete, status: "unknown" },
+      { ...complete, sourceMessageId: 123 },
+      { ...complete, extra: "Unsupported wire field" },
+      null,
+      "not an item",
+    ])(
+      "rejects the entire snapshot when any item cannot be persisted",
+      (item) => {
+        expect(isTodoSnapshotForCancellation([complete, item])).toBe(false);
+      },
+    );
+
+    it.each([undefined, null, {}, new Array(1)])(
+      "omits absent, non-array and sparse snapshots rather than clearing the plan",
+      (snapshot) => {
+        expect(isTodoSnapshotForCancellation(snapshot)).toBe(false);
+      },
+    );
+
+    it("rejects an accessor before optional metadata can execute it", () => {
+      let read = false;
+      const item = {
+        ...complete,
+        get content() {
+          read = true;
+          throw new Error("Synthetic getter failure");
+        },
+      };
+      expect(isTodoSnapshotForCancellation([item])).toBe(false);
+      expect(read).toBe(false);
+    });
+  });
+
   describe("dedupeNewAssistantTodosByContent", () => {
     it("skips only exact normalized new duplicates and preserves manual content", () => {
       const result = dedupeNewAssistantTodosByContent(

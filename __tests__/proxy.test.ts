@@ -514,6 +514,20 @@ describe("proxy", () => {
     },
   );
 
+  it("passes a cookie-free native operation redemption to its one-time route", async () => {
+    const { default: proxy } = await import("../proxy");
+    const response = await proxy(
+      createRequest({
+        pathname: "/api/desktop/authorized-operation",
+        method: "POST",
+        hasSession: false,
+      }),
+    );
+    expect(response).toMatchObject({ kind: "next" });
+    expect(mockAuthkit).not.toHaveBeenCalled();
+    expect(mockNextResponseNext).toHaveBeenCalledWith();
+  });
+
   it.each([
     "/api/internal/user-research",
     "/api/internal/influencers/partners",

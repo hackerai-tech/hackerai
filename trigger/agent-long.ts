@@ -354,6 +354,7 @@ import {
   drainBackgroundWork,
 } from "@/lib/chat/background-work-drain";
 import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry";
+import { readAgentCgroupMemory } from "@/lib/chat/agent-cgroup-memory";
 import {
   createCancelAgentTool,
   createContinueAgentTool,
@@ -1633,8 +1634,23 @@ export const agentLongTask = task({
   onSuccess: async ({ payload, ctx }) => {
     try {
       const clock = getAgentRunClockContext(ctx.attempt?.number);
-      if (clock)
-        trace.getActiveSpan()?.setAttributes({
+      const span = clock ? trace.getActiveSpan() : undefined;
+      if (clock && span) {
+        let memoryAttributes = {};
+        try {
+          // The last periodic checkpoint can precede successful return. Reuse
+          // this span to observe capture-time self-membership after body cleanup,
+          // not physical kill-time pressure or the later supervisor ACK.
+          memoryAttributes = Object.fromEntries(
+            Object.entries(readAgentCgroupMemory()).map(([key, value]) => [
+              `hackerai.app_on_success_entry.${key}`,
+              value,
+            ]),
+          );
+        } catch {
+          // An optional kernel read must preserve the existing clock stamp.
+        }
+        span.setAttributes({
           "hackerai.app_on_success_entry.run_clock_version":
             clock.run_clock_version,
           "hackerai.app_on_success_entry.run_clock_process_instance":
@@ -1643,7 +1659,9 @@ export const agentLongTask = task({
             clock.run_clock_uptime_ms,
           "hackerai.app_on_success_entry.run_clock_attempt":
             clock.run_clock_attempt,
+          ...memoryAttributes,
         });
+      }
     } catch {
       // App-hook entry is not SDK completion; telemetry must not block continuation.
     }
