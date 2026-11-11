@@ -53,7 +53,11 @@ describe("self cgroup memory", () => {
     expect(JSON.stringify(fields)).not.toContain(ROOT);
   });
 
-  it.each(["private-group", "user.slice/user@1000.service"])(
+  it.each([
+    "private-group",
+    "user.slice/user@1000.service",
+    String.raw`system.slice/worker@tenant\x2d1.service`,
+  ])(
     "rejects an ancestor root and reads only the verified nested self group: %s",
     (membership) => {
       const leaf = ROOT + "/" + membership;

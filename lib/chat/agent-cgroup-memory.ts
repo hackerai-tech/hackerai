@@ -83,7 +83,9 @@ export function readAgentCgroupMemory(
         .split("/")
         .some((part) =>
           part
-            ? !/^[A-Za-z0-9_.:@-]+$/.test(part) || part === "." || part === ".."
+            ? !/^(?:[A-Za-z0-9_.:@-]|\\x[0-9a-fA-F]{2})+$/.test(part) ||
+              part === "." ||
+              part === ".."
             : false,
         )
     )
