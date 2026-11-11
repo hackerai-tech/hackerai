@@ -292,6 +292,127 @@ it("publishes native file replies only on the requested operation channel", asyn
 // ── desktop capability registration ───────────────────────────────────
 
 describe("desktop capability registration", () => {
+  it.each(["0.0.59", "0.0.72"])(
+    "keeps published %s native commands usable without invoking commands outside its ACL",
+    async (version) => {
+      // Release-mode Tauri rejects commands absent from the installed binary's
+      // manifest with this ACL error, rather than the debug 'not found' error.
+      mockUseAuthorizedNative = true;
+      const original = mockInvokeHandler;
+      const invoked: string[] = [];
+      mockInvokeHandler = async (cmd, args) => {
+        invoked.push(cmd);
+        if (cmd === "plugin:app|version") return version;
+        if (
+          cmd === "desktop_file_request" &&
+          (args?.request as { path?: string })?.path === "/tmp/legacy-stat-qa"
+        ) {
+          return { kind: "file", path: "/tmp/legacy-stat-qa", sizeBytes: 7 };
+        }
+        if (
+          cmd === "probe_desktop_file_bridge" ||
+          cmd === "get_desktop_os_info" ||
+          cmd.includes("authorized_")
+        ) {
+          throw new Error(`Command ${cmd} not allowed by ACL`);
+        }
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await bridge.start();
+        expect(config.connectDesktop).toHaveBeenCalledWith(
+          expect.objectContaining({
+            capabilities: expect.objectContaining({ files: true }),
+          }),
+        );
+        getPublicationHandler()({
+          data: {
+            type: "file_stat",
+            requestId: "published-native-stat",
+            path: "/tmp/legacy-stat-qa",
+            targetConnectionId: "conn-123",
+          },
+        });
+        await waitFor(() => {
+          expect(mockSubscription.publish).toHaveBeenCalledWith({
+            type: "file_stat_result",
+            requestId: "published-native-stat",
+            kind: "file",
+            path: "/tmp/legacy-stat-qa",
+            sizeBytes: 7,
+          });
+        });
+        expect(invoked).toContain("desktop_file_request");
+        const { invoke } = await import("@tauri-apps/api/core");
+        expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+          request: { type: "file_stat", path: "/tmp/legacy-stat-qa" },
+        });
+        expect(invoked).not.toContain("probe_desktop_file_bridge");
+        expect(invoked).not.toContain("authorized_desktop_file_request");
+        expect(invoked).not.toContain("get_desktop_os_info");
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
+  it.each(["0.0.0", "0.0.73", "unknown"])(
+    "does not downgrade a native authorization denial for %s",
+    async (version) => {
+      mockUseAuthorizedNative = true;
+      const original = mockInvokeHandler;
+      const invoked: string[] = [];
+      mockInvokeHandler = async (cmd, args) => {
+        invoked.push(cmd);
+        if (cmd === "plugin:app|version") return version;
+        if (cmd === "get_desktop_os_info")
+          return {
+            platform: "darwin",
+            arch: "arm64",
+            release: "qa",
+            hostname: "qa",
+          };
+        if (cmd === "probe_desktop_file_bridge")
+          return { kind: "not_file", path: "." };
+        if (cmd === "authorized_desktop_file_request") {
+          // Debug ACL errors can also contain 'Command not found'. That must
+          // never turn a permission denial into a legacy command invocation.
+          throw new Error(
+            "authorized_desktop_file_request not allowed. Command not found",
+          );
+        }
+        return original(cmd, args);
+      };
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      try {
+        await bridge.start();
+        getPublicationHandler()({
+          data: {
+            type: "file_stat",
+            requestId: "native-denied-stat",
+            path: ".",
+            targetConnectionId: "conn-123",
+            authorizationId: "test-authorization",
+          },
+        });
+        await waitFor(() => {
+          expect(mockSubscription.publish).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "file_error",
+              requestId: "native-denied-stat",
+            }),
+          );
+        });
+        expect(invoked).toContain("authorized_desktop_file_request");
+        expect(invoked).not.toContain("desktop_file_request");
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
   it.each([
     "Command get_environment_id not allowed by ACL",
     "Command get_environment_id not found",
