@@ -7,62 +7,57 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 describe("terminal sidebar output", () => {
-  it("keeps CAPTCHA progress when resolving the live sidebar and freezes recorded timing after reload", () => {
+  it("rebuilds a saved retired CAPTCHA command as ordinary terminal history", () => {
     const tool = {
       type: "tool-run_terminal_cmd",
       toolCallId: "captcha-1",
-      state: "input-available",
       input: { command: "hackerai-captcha solve --session owned" },
     };
-    const startedAt = Date.parse("2026-11-08T12:00:00Z");
-    const message = {
-      role: "assistant",
-      parts: [
-        tool,
-        {
-          type: "data-terminal",
-          data: {
-            toolCallId: tool.toolCallId,
-            terminal: "",
-            captchaStartedAt: startedAt,
-          },
-        },
-      ],
+    // Old chats persisted a start marker and runtime-only result metadata.
+    const startMarker = {
+      type: "data-terminal",
+      data: {
+        toolCallId: tool.toolCallId,
+        terminal: "",
+        captchaStartedAt: Date.parse("2026-11-08T12:00:00Z"),
+      },
     };
-    const [live] = extractSidebarContentFromMessage(message, true);
-    expect(live).toMatchObject({ captcha: { state: "solving", startedAt } });
-    const [stopped] = extractSidebarContentFromMessage(message, false);
-    expect(stopped).toMatchObject({ captcha: { state: "stopped" } });
-    const [historical] = extractAllSidebarContent(
-      [message, { role: "assistant", parts: [] }],
-      true,
-    );
-    expect(historical).toMatchObject({ captcha: { state: "stopped" } });
-    const [saved] = extractSidebarContentFromMessage({
-      role: "assistant",
-      parts: [
-        {
-          ...tool,
-          state: "output-available",
-          output: {
-            result: {
-              browserChallenge: { status: "token_delivered" },
-              callTiming: {
-                startedAt: "2026-11-08T12:00:00Z",
-                elapsedMs: 27000,
+    const [saved] = extractAllSidebarContent([
+      {
+        role: "assistant",
+        parts: [
+          {
+            ...tool,
+            state: "output-available",
+            output: {
+              result: {
+                exitCode: 0,
+                browserChallenge: { status: "token_delivered" },
+                callTiming: { elapsedMs: 27000 },
               },
             },
           },
-        },
-      ],
-    });
-    expect(saved).toMatchObject({
-      captcha: {
-        state: "response_delivered",
-        startedAt,
-        elapsedMs: 27000,
+          startMarker,
+        ],
       },
+    ]);
+    expect(saved).toMatchObject({
+      command: "hackerai-captcha solve --session owned",
+      isExecuting: false,
+      executionPhase: "completed",
+      exitCode: 0,
+      toolCallId: "captcha-1",
     });
+    expect(saved).not.toHaveProperty("captcha");
+    const [interrupted] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [{ ...tool, state: "input-available" }, startMarker],
+    });
+    expect(interrupted).toMatchObject({
+      command: "hackerai-captcha solve --session owned",
+      executionPhase: "executing",
+    });
+    expect(interrupted).not.toHaveProperty("captcha");
   });
   it.each([
     [

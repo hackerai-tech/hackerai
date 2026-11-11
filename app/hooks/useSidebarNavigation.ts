@@ -8,7 +8,6 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 interface UseSidebarNavigationProps {
-  isRunActive?: boolean;
   messages: Message[];
   sidebarContent: SidebarContent | null;
   onNavigate?: (
@@ -18,14 +17,13 @@ interface UseSidebarNavigationProps {
 }
 
 export const useSidebarNavigation = ({
-  isRunActive = false,
   messages,
   sidebarContent,
   onNavigate,
 }: UseSidebarNavigationProps) => {
   const toolExecutions = useMemo(
-    () => extractAllSidebarContent(messages, isRunActive),
-    [messages, isRunActive],
+    () => extractAllSidebarContent(messages),
+    [messages],
   );
 
   const currentIndex = useMemo(() => {

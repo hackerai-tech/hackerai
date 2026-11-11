@@ -2320,46 +2320,6 @@ describe("createAgentStream repeated compaction", () => {
     expect(later.system).not.toContain("Saved access: No internet");
   });
 
-  it("refreshes a CAPTCHA receipt after tool work even when history contains an older cost", async () => {
-    const getCaptchaReceiptPrompt = jest.fn(() => "");
-    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
-      usedTokens: 1000,
-      maxTokens: 128000,
-    });
-    const stream = (await createAgentStream(
-      "test-model",
-      createTestStreamContext({
-        getCaptchaReceiptPrompt,
-        usageTracker: {},
-        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-      }) as any,
-      state,
-    )) as any;
-    expect(stream.system).not.toContain("captcha_runtime_receipt");
-    getCaptchaReceiptPrompt.mockReturnValue(
-      "\n<captcha_runtime_receipt>2Captcha; creation confirmed; cost unknown</captcha_runtime_receipt>\n",
-    );
-    const pending = await stream.prepareStep({
-      steps: [],
-      stepNumber: 0,
-      messages: [
-        { role: "user", content: "Older summary claims no paid task" },
-      ],
-    });
-    expect(pending.system).toContain("creation confirmed; cost unknown");
-    getCaptchaReceiptPrompt.mockReturnValue(
-      "\n<captcha_runtime_receipt>2Captcha; one task; 0.00145 USD</captcha_runtime_receipt>\n",
-    );
-    const ready = await stream.prepareStep({
-      steps: [],
-      stepNumber: 1,
-      messages: pending.messages,
-    });
-    expect(ready.system).toContain("one task; 0.00145 USD");
-    expect(ready.system).not.toContain("cost unknown");
-    expect(ready.system.match(/<captcha_runtime_receipt>/g)).toHaveLength(1);
-  });
-
   it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
     const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
