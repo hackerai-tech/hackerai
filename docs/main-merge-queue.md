@@ -4,9 +4,10 @@ Merge reviewed pull requests directly after their required PR checks pass.
 The repository does not require a merge queue or a second queue validation run.
 
 The `main` ruleset requires `CI`, `Desktop PR builds`, and `Review and security`.
-Strict status checks require the PR branch to be up to date with `main`. If
-another PR lands first, update the branch and let the affected checks finish
-before merging. Do not bypass the checks or use an administrator override.
+These checks must pass on the PR's current commit. A newer `main` commit alone
+does not require updating the branch and repeating its checks. Resolve actual
+merge conflicts and validate any new commits before merging. Do not bypass the
+required checks or use an administrator override.
 
 PR CI selects validation from the changed paths. Desktop packaging runs when the
 change affects Desktop. The review/security gate checks the applicable processed

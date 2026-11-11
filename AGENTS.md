@@ -252,8 +252,9 @@ its availability, quota, skipped review, or review completion.
 
 For `main`, use the direct PR-check and squash-merge policy in
 [Main merge policy](docs/main-merge-queue.md). There is no required merge queue.
-Keep the branch up to date with `main` and wait for its current required checks
-before merging; investigate failed checks or conflicts instead of bypassing them.
+Wait for the PR's current required checks before merging. A newer `main` commit
+alone does not require updating the branch; investigate failed checks or actual
+merge conflicts instead of bypassing them.
 
 Poll once within 30-60 seconds after PR creation to confirm checks started, then
 every 2-3 minutes while CI, Vercel, or Trigger checks are active. If the user asks
