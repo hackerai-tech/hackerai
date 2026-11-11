@@ -6,7 +6,6 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./lib/serviceFunctions";
-import { validateServiceKey } from "./lib/utils";
 import {
   abuseCase,
   abuseContainment,
@@ -14,6 +13,11 @@ import {
   abuseStatus,
   abuseTransport,
 } from "./lib/abuseValidators";
+import {
+  assertAbuseOperator as operator,
+  boundedAbuseCiphertext as boundedCiphertext,
+  releaseLocalAccess,
+} from "./lib/abuseResponse";
 import type { Doc } from "./_generated/dataModel";
 import { MAX_SUBAGENTS_PER_PARENT_RUN } from "../lib/ai/subagents/contracts";
 
@@ -23,25 +27,6 @@ const revisionArgs = { ...caseArgs, expectedRevision: v.number() };
 // The HTTP operation has a five-minute hard runtime limit. A longer lease lets
 // an interrupted operation be retried without overlapping its previous owner.
 const OPERATION_LEASE_MS = 10 * 60_000;
-
-function operator(serviceKey: string, actor: string) {
-  validateServiceKey(serviceKey);
-  const allowed = (process.env.ABUSE_OPERATOR_USER_IDS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-  if (!allowed.includes(actor)) throw new Error("Abuse operator access denied");
-}
-function boundedCiphertext(value: string) {
-  if (
-    !/^v1\.[a-zA-Z0-9_-]{1,32}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(
-      value,
-    ) ||
-    value.length > 128 * 1024
-  ) {
-    throw new Error("Invalid encrypted evidence");
-  }
-}
 async function findCase(ctx: QueryCtx | MutationCtx, reference: string) {
   const row = await ctx.db
     .query("abuse_cases")
@@ -228,13 +213,20 @@ export const beginContainment = mutation({
       .first();
     if (!verified)
       throw new Error("Record verified attribution facts before containment");
+    // A late-report response on this same case already owns the account; other
+    // cases still cannot start competing containment.
+    if (
+      row.activeContainmentUserId &&
+      row.activeContainmentUserId !== args.userId
+    )
+      throw new Error("Containment scope cannot change");
     const competingCase = await ctx.db
       .query("abuse_cases")
       .withIndex("by_active_containment_user", (q) =>
         q.eq("activeContainmentUserId", args.userId),
       )
       .first();
-    if (competingCase)
+    if (competingCase && competingCase._id !== row._id)
       throw new Error(
         "Review the existing active containment case for this account",
       );
@@ -402,6 +394,12 @@ export const resolve = mutation({
       throw new Error(
         "Finish workspace recovery before resolving the restriction",
       );
+    const response = await ctx.db
+      .query("abuse_responses")
+      .withIndex("by_caseId", (q) => q.eq("caseId", row._id))
+      .unique();
+    if (response && (response.operationExpiresAt ?? 0) > Date.now())
+      throw new Error("Late-report response is still in progress");
     if (row.containment) {
       const suspension = await ctx.db
         .query("user_suspensions")
@@ -422,6 +420,27 @@ export const resolve = mutation({
           updated_at: Date.now(),
         });
     }
+    if (response) {
+      // Release only the exact restriction this case recorded or adopted.
+      const late = await ctx.db.get(response.suspensionId);
+      if (
+        late?.user_id === response.userId &&
+        late.source_id === response.sourceId &&
+        late.category === "security_abuse" &&
+        late.source === "support" &&
+        late.status === "active"
+      )
+        await ctx.db.patch(late._id, {
+          status: "resolved",
+          resolved_at: Date.now(),
+          resolved_reason: "case_review_completed",
+          updated_at: Date.now(),
+        });
+    }
+    // A containment-only case can hold the last security restriction that kept
+    // an earlier late-report case's local-access block in place.
+    const owner = response?.userId ?? row.containment?.userId;
+    if (owner) await releaseLocalAccess(ctx, owner);
     await event(ctx, row, args.actor, "resolved", args.decision);
     await ctx.db.patch(row._id, {
       status: "resolved",

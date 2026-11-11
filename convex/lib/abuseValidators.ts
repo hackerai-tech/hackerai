@@ -83,3 +83,114 @@ export const abuseEvent = v.object({
   _creationTime: v.number(),
   ...abuseEventFields,
 });
+
+// Late-report response: account restriction plus cancellation requests for
+// server-recorded active work. Trigger states are requests/observations, never
+// process-stop evidence.
+export const abuseResponseTargetState = v.union(
+  v.literal("pending"),
+  v.literal("cancel_requested"),
+  v.literal("terminal"),
+  v.literal("identity_mismatch"),
+  v.literal("unknown"),
+);
+export const abuseResponseTarget = v.object({
+  runId: v.string(),
+  kind: v.union(v.literal("root"), v.literal("child")),
+  chatId: v.string(),
+  subagentId: v.optional(v.string()),
+  approvalSessionId: v.optional(v.string()),
+  state: abuseResponseTargetState,
+  triggerStatus: v.optional(v.string()),
+  attempts: v.number(),
+  updatedAt: v.number(),
+});
+export const abuseResponseDiscovery = v.union(
+  v.literal("roots"),
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("finalizing"),
+  v.literal("done"),
+);
+export const abuseResponseTokenResult = v.union(
+  v.literal("revoked"),
+  v.literal("already_revoked"),
+  v.literal("none_issued"),
+);
+export const abuseResponseFields = {
+  caseId: v.id("abuse_cases"),
+  requestId: v.string(),
+  requestDigest: v.string(),
+  planDigest: v.string(),
+  actor: v.string(),
+  reviewer: v.string(),
+  reviewDate: v.string(),
+  retentionReviewDate: v.string(),
+  userId: v.string(),
+  chatId: v.string(),
+  runId: v.optional(v.string()),
+  transport: abuseTransport,
+  environmentId: v.optional(v.string()),
+  sourceId: v.string(),
+  suspensionId: v.id("user_suspensions"),
+  restriction: v.union(v.literal("created"), v.literal("adopted")),
+  localToken: abuseResponseTokenResult,
+  connectionsDisconnected: v.number(),
+  connectionsRemaining: v.boolean(),
+  discoveryPhase: abuseResponseDiscovery,
+  discoveryCursor: v.optional(v.string()),
+  targetOverflow: v.boolean(),
+  targets: v.array(abuseResponseTarget),
+  operationToken: v.optional(v.string()),
+  operationExpiresAt: v.optional(v.number()),
+  appliedAt: v.number(),
+  updatedAt: v.number(),
+};
+export const abuseResponseSummary = v.object({
+  reference: v.string(),
+  requestId: v.string(),
+  sourceId: v.string(),
+  userId: v.string(),
+  chatId: v.string(),
+  runId: v.optional(v.string()),
+  transport: abuseTransport,
+  environmentId: v.optional(v.string()),
+  actor: v.string(),
+  reviewer: v.string(),
+  reviewDate: v.string(),
+  retentionReviewDate: v.string(),
+  appliedAt: v.number(),
+  caseStatus: abuseStatus,
+  restriction: v.object({
+    result: v.union(v.literal("created"), v.literal("adopted")),
+    status: v.union(
+      v.literal("active"),
+      v.literal("resolved"),
+      v.literal("missing"),
+    ),
+  }),
+  localToken: abuseResponseTokenResult,
+  localConnections: v.object({
+    disconnected: v.number(),
+    remaining: v.boolean(),
+  }),
+  discovery: v.object({ phase: abuseResponseDiscovery, overflow: v.boolean() }),
+  cancellations: v.array(
+    v.object({
+      runId: v.string(),
+      kind: v.union(v.literal("root"), v.literal("child")),
+      chatId: v.string(),
+      state: abuseResponseTargetState,
+      triggerStatus: v.optional(v.string()),
+      attempts: v.number(),
+    }),
+  ),
+  cloudProvider: v.union(
+    v.literal("not_attempted"),
+    v.literal("not_applicable"),
+  ),
+  processStop: v.literal("unconfirmed"),
+  contained: v.literal(false),
+  inProgress: v.boolean(),
+  outstanding: v.array(v.string()),
+});
