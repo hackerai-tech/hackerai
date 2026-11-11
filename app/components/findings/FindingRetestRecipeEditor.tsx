@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -177,6 +177,24 @@ const toRequest = (form: RequestForm) => ({
 });
 
 export function recipeFromForm(form: RecipeForm) {
+  const invalidCheck = [...form.baselines, form.probe]
+    .flatMap((request) => request.predicate.checks)
+    .find((check) => {
+      if (!check.json_path.trim()) return false;
+      const value = check.value.trim();
+      return check.type === "number"
+        ? value === "" || !Number.isFinite(Number(value))
+        : check.type === "boolean" && value !== "true" && value !== "false";
+    });
+  if (invalidCheck) {
+    return {
+      success: false as const,
+      message:
+        invalidCheck.type === "number"
+          ? "Enter a valid number for every JSON identity check."
+          : "Boolean JSON identity checks must be true or false.",
+    };
+  }
   return parseHttpRetestRecipe({
     version: HTTP_RETEST_RECIPE_VERSION,
     title: form.title,
@@ -387,6 +405,7 @@ export function FindingRetestRecipeEditor({
   finding,
   current,
   onSaved,
+  onConflict,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -394,9 +413,13 @@ export function FindingRetestRecipeEditor({
   finding: { title: string; target: string };
   current: { version: number; recipe: HttpRetestRecipe } | null;
   onSaved: () => void;
+  onConflict: () => void;
 }) {
   const [form, setForm] = useState(() =>
     initialRecipeForm(current?.recipe ?? null, finding),
+  );
+  const credentialReferenceNames = useRef(
+    form.credentials.map((credential) => credential.name),
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -423,6 +446,7 @@ export function FindingRetestRecipeEditor({
         message?: string;
       } | null;
       if (!response.ok) {
+        if (response.status === 409) onConflict();
         setError(
           response.status === 409
             ? "Someone saved a newer recipe. Close this editor and reopen it to edit the latest version."
@@ -439,15 +463,35 @@ export function FindingRetestRecipeEditor({
     }
   };
 
-  const setCredential = (index: number, patch: Partial<CredentialForm>) =>
-    setForm((prev) => ({
-      ...prev,
-      credentials: prev.credentials.map((credential, i) =>
-        i === index
-          ? ({ ...credential, ...patch } as CredentialForm)
-          : credential,
-      ),
-    }));
+  const setCredential = (index: number, patch: Partial<CredentialForm>) => {
+    const previousName = form.credentials[index]?.name;
+    const nextName = patch.name;
+    const referenceName =
+      previousName || credentialReferenceNames.current[index];
+    const replaceReference = (credential: string) =>
+      referenceName && nextName && credential === referenceName
+        ? nextName
+        : credential;
+    if (nextName) credentialReferenceNames.current[index] = nextName;
+    setForm((prev) => {
+      return {
+        ...prev,
+        credentials: prev.credentials.map((credential, i) =>
+          i === index
+            ? ({ ...credential, ...patch } as CredentialForm)
+            : credential,
+        ),
+        baselines: prev.baselines.map((baseline) => ({
+          ...baseline,
+          credential: replaceReference(baseline.credential),
+        })),
+        probe: {
+          ...prev.probe,
+          credential: replaceReference(prev.probe.credential),
+        },
+      };
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
@@ -561,14 +605,30 @@ export function FindingRetestRecipeEditor({
                   variant="ghost"
                   size="icon"
                   aria-label={`Remove credential ${credential.name}`}
-                  onClick={() =>
-                    setForm({
-                      ...form,
-                      credentials: form.credentials.filter(
-                        (_, i) => i !== index,
-                      ),
-                    })
-                  }
+                  onClick={() => {
+                    const removedName =
+                      form.credentials[index]?.name ||
+                      credentialReferenceNames.current[index];
+                    credentialReferenceNames.current.splice(index, 1);
+                    setForm((prev) => {
+                      const clearReference = (credential: string) =>
+                        credential === removedName ? "" : credential;
+                      return {
+                        ...prev,
+                        credentials: prev.credentials.filter(
+                          (_, i) => i !== index,
+                        ),
+                        baselines: prev.baselines.map((baseline) => ({
+                          ...baseline,
+                          credential: clearReference(baseline.credential),
+                        })),
+                        probe: {
+                          ...prev.probe,
+                          credential: clearReference(prev.probe.credential),
+                        },
+                      };
+                    });
+                  }}
                 >
                   <Trash2 className="size-4" aria-hidden="true" />
                 </Button>

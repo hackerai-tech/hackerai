@@ -127,17 +127,26 @@ function StepRow({
                       : "Could not connect",
         }
       : kind === "baseline"
-        ? step.matched
+        ? step.status === 401 || step.status === 403
           ? {
-              tag: "PASS",
-              tone: "text-emerald-500",
-              text: "Matched the expected baseline response",
-            }
-          : {
-              tag: "FAIL",
+              tag: "AUTH",
               tone: "text-amber-500",
-              text: "Did not match the expected baseline response",
+              text:
+                step.status === 401
+                  ? "Rejected as unauthenticated"
+                  : "Rejected as unauthorized",
             }
+          : step.matched
+            ? {
+                tag: "PASS",
+                tone: "text-emerald-500",
+                text: "Matched the expected baseline response",
+              }
+            : {
+                tag: "FAIL",
+                tone: "text-amber-500",
+                text: "Did not match the expected baseline response",
+              }
         : step.matched
           ? {
               tag: "MATCH",
@@ -668,6 +677,7 @@ export function FindingHttpRetests({
             toast.success("Recipe saved");
             void load();
           }}
+          onConflict={() => void load()}
         />
       ) : null}
       {runReview ? (

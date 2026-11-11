@@ -165,7 +165,7 @@ export function FindingRetestRunDialog({
               {requests.map((request, index) => (
                 <li
                   key={index}
-                  className="flex min-w-0 items-center gap-3 px-3 py-2 text-xs"
+                  className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs"
                 >
                   <span className="w-3 shrink-0 font-mono text-muted-foreground">
                     {index + 1}
@@ -176,7 +176,7 @@ export function FindingRetestRunDialog({
                   >
                     <span className="font-semibold">GET</span> {request.path}
                   </span>
-                  <span className="max-w-[40%] break-words text-right text-muted-foreground">
+                  <span className="w-full break-words pl-6 text-left text-muted-foreground sm:w-auto sm:max-w-[40%] sm:pl-0 sm:text-right">
                     {request.label}
                   </span>
                 </li>
@@ -256,7 +256,7 @@ export function FindingRetestRunDialog({
             </p>
           ) : null}
 
-          <DialogFooter>
+          <DialogFooter className="sticky bottom-0 z-10 -mx-4 -mb-4 border-t border-border bg-background p-4 sm:static sm:m-0 sm:border-0 sm:bg-transparent sm:p-0">
             <Button
               type="button"
               variant="outline"
