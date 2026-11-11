@@ -107,30 +107,19 @@ const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 function nativeCommandMissing(error: unknown, command: string): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
+    !/not allowed|denied/i.test(message) &&
     message.includes(command) &&
     /not found|not registered|unknown command/i.test(message)
   );
 }
 
-/** New binaries verify the exact server operation; older installed binaries keep their old path. */
-async function invokeAuthorizedDesktopOperation<T>(
-  message: { authorizationId?: string },
-  authorizedCommand: string,
-  legacyCommand: string,
-  legacyArgs: Record<string, unknown>,
-  channelArgs: Record<string, unknown> = {},
-): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    return await invoke<T>(authorizedCommand, {
-      authorizationId: message.authorizationId ?? "",
-      message,
-      ...channelArgs,
-    });
-  } catch (error) {
-    if (!nativeCommandMissing(error, authorizedCommand)) throw error;
-    return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
-  }
+/** Native authorization commands were introduced after desktop-v0.0.72. */
+function usesPublishedLegacyDesktopCommands(version: string): boolean {
+  const match = /^0\.0\.(\d{1,5})$/.exec(version);
+  if (!match) return false;
+  const patch = Number(match[1]);
+  // 0.0.0 is an unversioned development build, not a published legacy binary.
+  return patch >= 1 && patch <= 72;
 }
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -601,12 +590,10 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    const [osInfo, nativeAppVersion] = await Promise.all([
-      this.getOsInfo(),
-      this.getNativeAppVersion(),
-    ]);
+    this.nativeAppVersion = await this.getNativeAppVersion();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
-    this.nativeAppVersion = nativeAppVersion;
+    const osInfo = await this.getOsInfo();
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const platform =
       osInfo?.platform === "win32" ? "windows" : osInfo?.platform;
     this.nativePlatform = ["darwin", "linux", "windows"].includes(
@@ -987,6 +974,30 @@ export class DesktopSandboxBridge {
     return payload.sub;
   }
 
+  /** Select the installed binary's command set; a native denial never downgrades it. */
+  private async invokeAuthorizedDesktopOperation<T>(
+    message: { authorizationId?: string },
+    authorizedCommand: string,
+    legacyCommand: string,
+    legacyArgs: Record<string, unknown>,
+    channelArgs: Record<string, unknown> = {},
+  ): Promise<T> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
+      return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
+    }
+    try {
+      return await invoke<T>(authorizedCommand, {
+        authorizationId: message.authorizationId ?? "",
+        message,
+        ...channelArgs,
+      });
+    } catch (error) {
+      if (!nativeCommandMissing(error, authorizedCommand)) throw error;
+      return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
+    }
+  }
+
   private async getNativeAppVersion(): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -1035,19 +1046,21 @@ export class DesktopSandboxBridge {
   > {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      try {
-        const native = await invoke<{
-          platform: string;
-          arch: string;
-          release: string;
-          hostname: string;
-        }>("get_desktop_os_info");
-        return {
-          ...native,
-          platform: normalizeSandboxPlatform(native.platform),
-        };
-      } catch (error) {
-        if (!nativeCommandMissing(error, "get_desktop_os_info")) throw error;
+      if (!usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
+        try {
+          const native = await invoke<{
+            platform: string;
+            arch: string;
+            release: string;
+            hostname: string;
+          }>("get_desktop_os_info");
+          return {
+            ...native,
+            platform: normalizeSandboxPlatform(native.platform),
+          };
+        } catch (error) {
+          if (!nativeCommandMissing(error, "get_desktop_os_info")) throw error;
+        }
       }
       const result = await invoke<{
         stdout: string;
@@ -1158,7 +1171,7 @@ export class DesktopSandboxBridge {
           terminalExitCode = 130;
           stream.append({ type: "exit", exitCode: 130 });
         } else {
-          await invokeAuthorizedDesktopOperation(
+          await this.invokeAuthorizedDesktopOperation(
             command,
             "execute_authorized_stream_command",
             "execute_stream_command",
@@ -1441,7 +1454,7 @@ export class DesktopSandboxBridge {
         if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
           channel.onmessage({ type: "exit", exitCode: 130 });
         } else {
-          await invokeAuthorizedDesktopOperation(
+          await this.invokeAuthorizedDesktopOperation(
             command,
             "execute_authorized_stream_command",
             "execute_stream_command",
@@ -1758,12 +1771,14 @@ export class DesktopSandboxBridge {
         const request = { ...body, type: requestType };
         let payload: T;
         if (message) {
-          payload = await invokeAuthorizedDesktopOperation<T>(
+          payload = await this.invokeAuthorizedDesktopOperation<T>(
             message,
             "authorized_desktop_file_request",
             "desktop_file_request",
             { request },
           );
+        } else if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
+          payload = await invoke<T>("desktop_file_request", { request });
         } else {
           try {
             payload = await invoke<T>("probe_desktop_file_bridge");
@@ -2529,7 +2544,7 @@ export class DesktopSandboxBridge {
         } else forwardPtyChunk(chunk);
       };
 
-      const result = await invokeAuthorizedDesktopOperation<{
+      const result = await this.invokeAuthorizedDesktopOperation<{
         pid: number | null;
         session_id: string;
       }>(
@@ -2593,7 +2608,7 @@ export class DesktopSandboxBridge {
     const { sessionId, data } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invokeAuthorizedDesktopOperation(
+      await this.invokeAuthorizedDesktopOperation(
         msg,
         "execute_authorized_pty_input",
         "execute_pty_input",
@@ -2642,7 +2657,7 @@ export class DesktopSandboxBridge {
     const { sessionId, cols, rows } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invokeAuthorizedDesktopOperation(
+      await this.invokeAuthorizedDesktopOperation(
         msg,
         "execute_authorized_pty_resize",
         "execute_pty_resize",
@@ -2660,7 +2675,7 @@ export class DesktopSandboxBridge {
     const { sessionId } = msg;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invokeAuthorizedDesktopOperation(
+      await this.invokeAuthorizedDesktopOperation(
         msg,
         "execute_authorized_pty_kill",
         "execute_pty_kill",
