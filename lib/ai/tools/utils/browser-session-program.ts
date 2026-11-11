@@ -82,7 +82,7 @@ if action == 'prepare':
         init_script = sys.argv[6]
         # This optional adapter requires agent-browser's native init-script and
         # user-agent actions. Legacy workspaces keep ordinary browsing intact.
-        cli_at_prepare = [1, 4]  # Existing optional command failed.
+        cli_at_prepare = [1, 4]  # Existing optional version check failed.
         try:
             import re
             version = subprocess.run(['agent-browser','--version'],capture_output=True,text=True,timeout=5,check=True)

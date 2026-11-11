@@ -121,7 +121,7 @@ it.each([
   [[1, 1, 39003], "measured", [0, 39, 3]],
   [[1, 2], "not_checked", undefined],
   [[1, 3], "unparsed", undefined],
-  [[1, 4], "command_failed", undefined],
+  [[1, 4], "check_failed", undefined],
   [[1, 1, -1], undefined, undefined],
   [[1, 1, 1000000000], undefined, undefined],
   [[1, 2, "PRIVATE"], undefined, undefined],

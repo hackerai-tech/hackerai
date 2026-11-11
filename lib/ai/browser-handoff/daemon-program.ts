@@ -41,7 +41,7 @@ export const BROWSER_CLI_AT_PREPARE_STATUSES = [
   "measured",
   "not_checked",
   "unparsed",
-  "command_failed",
+  "check_failed",
 ] as const;
 
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
