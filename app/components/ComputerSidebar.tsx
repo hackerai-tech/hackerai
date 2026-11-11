@@ -389,6 +389,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     canGoPrev,
     canGoNext,
   } = useSidebarNavigation({
+    // Shared views have no status, so their run state stays unknown.
+    isRunActive:
+      status === undefined
+        ? undefined
+        : status === "streaming" || status === "submitted",
     messages,
     sidebarContent,
     onNavigate: onNavigate ? navigateManually : undefined,

@@ -59,9 +59,14 @@ const getWebSearchQuery = (input: unknown): string => {
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
+ *
+ * `isRunActive` is whether the run that owns this message is still going. When
+ * it is known to be false, terminal calls that never received a result are
+ * interrupted rather than executing. Leave it undefined when run state is unknown.
  */
 export function extractSidebarContentFromMessage(
   message: Message,
+  isRunActive?: boolean,
 ): SidebarContent[] {
   const contentList: SidebarContent[] = [];
   if (message.role !== "assistant" || !message.parts) return contentList;
@@ -185,6 +190,7 @@ export function extractSidebarContentFromMessage(
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
+        isRunActive,
       });
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;
@@ -285,6 +291,7 @@ export function extractSidebarContentFromMessage(
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
+        isRunActive,
       });
 
       // Skip if no command/brief available yet
@@ -984,11 +991,21 @@ export function extractSidebarContentFromMessage(
   return contentList;
 }
 
+/**
+ * Only the last message can belong to an active run, so earlier messages are
+ * treated as ended whenever run state is known.
+ */
 export function extractAllSidebarContent(
   messages: Message[],
+  isRunActive?: boolean,
 ): SidebarContent[] {
-  return messages.flatMap((message) =>
-    extractSidebarContentFromMessage(message),
+  return messages.flatMap((message, index) =>
+    extractSidebarContentFromMessage(
+      message,
+      isRunActive === undefined
+        ? undefined
+        : isRunActive && index === messages.length - 1,
+    ),
   );
 }
 

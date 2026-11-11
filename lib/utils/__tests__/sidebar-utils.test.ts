@@ -49,15 +49,107 @@ describe("terminal sidebar output", () => {
       toolCallId: "captcha-1",
     });
     expect(saved).not.toHaveProperty("captcha");
-    const [interrupted] = extractSidebarContentFromMessage({
-      role: "assistant",
-      parts: [{ ...tool, state: "input-available" }, startMarker],
-    });
+    const [interrupted] = extractAllSidebarContent(
+      [
+        {
+          role: "assistant",
+          parts: [{ ...tool, state: "input-available" }, startMarker],
+        },
+      ],
+      false,
+    );
     expect(interrupted).toMatchObject({
       command: "hackerai-captcha solve --session owned",
-      executionPhase: "executing",
+      executionPhase: "interrupted",
+      isExecuting: false,
     });
     expect(interrupted).not.toHaveProperty("captcha");
+  });
+
+  describe("terminal calls saved without a result", () => {
+    const pendingCalls: Array<[string, string, Record<string, unknown>]> = [
+      ["legacy command", "tool-run_terminal_cmd", { command: "sleep 60" }],
+      [
+        "legacy interactive command",
+        "tool-run_terminal_cmd",
+        { command: "bash", interactive: true },
+      ],
+      [
+        "terminal session wait",
+        "tool-interact_terminal_session",
+        { action: "wait", session: "qa" },
+      ],
+      ["shell exec", "tool-shell", { action: "exec", command: "sleep 60" }],
+      [
+        "shell send",
+        "tool-shell",
+        { action: "send", session: "qa", input: "y\n", brief: "Confirm" },
+      ],
+    ];
+    const pendingMessage = (type: string, input: Record<string, unknown>) => ({
+      role: "assistant",
+      parts: [{ type, toolCallId: "pending", state: "input-available", input }],
+    });
+
+    it.each(pendingCalls)(
+      "shows a %s interrupted once its run has ended",
+      (_label, type, input) => {
+        expect(
+          extractAllSidebarContent([pendingMessage(type, input)], false),
+        ).toEqual([
+          expect.objectContaining({
+            toolCallId: "pending",
+            executionPhase: "interrupted",
+            isExecuting: false,
+          }),
+        ]);
+      },
+    );
+
+    it.each(pendingCalls)(
+      "keeps a %s executing while its run is active or run state is unknown",
+      (_label, type, input) => {
+        const executing = expect.objectContaining({
+          executionPhase: "executing",
+          isExecuting: true,
+        });
+        const message = pendingMessage(type, input);
+        expect(extractAllSidebarContent([message], true)).toEqual([executing]);
+        expect(extractAllSidebarContent([message])).toEqual([executing]);
+      },
+    );
+
+    it("keeps an earlier unfinished call interrupted while a newer response streams", () => {
+      const [earlier, current] = extractAllSidebarContent(
+        [
+          pendingMessage("tool-run_terminal_cmd", { command: "sleep 60" }),
+          { role: "user", parts: [{ type: "text", text: "try again" }] },
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-shell",
+                toolCallId: "current",
+                state: "input-available",
+                input: { action: "exec", command: "id" },
+              },
+            ],
+          },
+        ],
+        true,
+      );
+
+      expect(earlier).toMatchObject({
+        toolCallId: "pending",
+        executionPhase: "interrupted",
+        isExecuting: false,
+      });
+      expect(current).toMatchObject({
+        toolCallId: "current",
+        executionPhase: "executing",
+        isExecuting: true,
+      });
+    });
   });
   it.each([
     [
