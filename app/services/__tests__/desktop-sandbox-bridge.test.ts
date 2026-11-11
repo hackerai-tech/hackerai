@@ -304,6 +304,12 @@ describe("desktop capability registration", () => {
         invoked.push(cmd);
         if (cmd === "plugin:app|version") return version;
         if (
+          cmd === "desktop_file_request" &&
+          (args?.request as { path?: string })?.path === "/tmp/legacy-stat-qa"
+        ) {
+          return { kind: "file", path: "/tmp/legacy-stat-qa", sizeBytes: 7 };
+        }
+        if (
           cmd === "probe_desktop_file_bridge" ||
           cmd === "get_desktop_os_info" ||
           cmd.includes("authorized_")
@@ -325,20 +331,24 @@ describe("desktop capability registration", () => {
           data: {
             type: "file_stat",
             requestId: "published-native-stat",
-            path: ".",
+            path: "/tmp/legacy-stat-qa",
             targetConnectionId: "conn-123",
           },
         });
         await waitFor(() => {
-          expect(mockSubscription.publish).toHaveBeenCalledWith(
-            expect.objectContaining({
-              type: "file_stat_result",
-              requestId: "published-native-stat",
-              kind: "not_file",
-            }),
-          );
+          expect(mockSubscription.publish).toHaveBeenCalledWith({
+            type: "file_stat_result",
+            requestId: "published-native-stat",
+            kind: "file",
+            path: "/tmp/legacy-stat-qa",
+            sizeBytes: 7,
+          });
         });
         expect(invoked).toContain("desktop_file_request");
+        const { invoke } = await import("@tauri-apps/api/core");
+        expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+          request: { type: "file_stat", path: "/tmp/legacy-stat-qa" },
+        });
         expect(invoked).not.toContain("probe_desktop_file_bridge");
         expect(invoked).not.toContain("authorized_desktop_file_request");
         expect(invoked).not.toContain("get_desktop_os_info");

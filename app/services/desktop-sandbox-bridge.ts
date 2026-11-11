@@ -104,6 +104,7 @@ const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_BRIDGE_RECONNECT_TIMEOUT_MS = 30_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
+/** An ACL denial does not establish that a command registration is missing. */
 function nativeCommandMissing(error: unknown, command: string): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
