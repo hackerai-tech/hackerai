@@ -24,6 +24,7 @@ import {
   retryResponse,
   type TriggerRun,
 } from "../response";
+import { startTriggerOperation } from "../trigger-response";
 
 // Synthetic identities only. Convex handlers run against indexed in-memory
 // storage; Trigger is faked at its network boundary.
@@ -239,6 +240,7 @@ test("partial cancellation failure stays retryable and never reports containment
   expect(h.trigger.closeApprovalSession).toHaveBeenCalledWith(
     "session_a",
     "reviewed_security_abuse",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
 
   // Evidence is stored encrypted before any cancellation and is readable by the keyring.
@@ -324,7 +326,9 @@ test("approval closure is attempted independently of cancellation, and a termina
   expect(state(applied, "run_done")).toBe("unknown");
   expect(state(applied, "run_live")).toBe("unknown");
   // A terminal run is never canceled again; a failed cancel still closes its session.
-  expect(h.trigger.cancelRun.mock.calls).toEqual([["run_live"]]);
+  expect(h.trigger.cancelRun.mock.calls.map(([runId]) => runId)).toEqual([
+    "run_live",
+  ]);
   expect(
     h.trigger.closeApprovalSession.mock.calls.map(([id]) => id).sort(),
   ).toEqual(["session_done", "session_live"]);
@@ -344,8 +348,11 @@ test("approval closure is attempted independently of cancellation, and a termina
   expect(h.trigger.closeApprovalSession).toHaveBeenCalledWith(
     "session_done",
     "reviewed_security_abuse",
+    expect.anything(),
   );
-  expect(h.trigger.cancelRun.mock.calls).toEqual([["run_live"]]);
+  expect(h.trigger.cancelRun.mock.calls.map(([runId]) => runId)).toEqual([
+    "run_live",
+  ]);
 });
 
 test("a lost apply response is resumed by rerunning the same input, without duplicate evidence or cancellation overlap", async () => {
@@ -515,6 +522,18 @@ test("imports are idempotent for identical receipts and conflict when content ch
     code: "credential_in_note",
     fields: ["report.evidence"],
   });
+  const credentialSource = "AKIAABCDEFGHIJKLMNOP";
+  const error = await importReport(h.deps, {
+    ...importFile,
+    reference: "AB-123e4567-e89b-42d3-a456-426614174009",
+    report: { ...importFile.report, sourceIp: credentialSource },
+  }).catch((caught) => caught);
+  expect(error).toMatchObject({
+    code: "credential_in_note",
+    fields: ["report.sourceIp"],
+  });
+  expect(JSON.stringify(error)).not.toContain(credentialSource);
+  expect(h.ctx.tables.abuse_cases).toHaveLength(1);
 });
 
 test.each([
@@ -548,9 +567,129 @@ test.each([
         state: "pending",
       },
       "subject",
+      async () => startTriggerOperation(),
     ),
   ).resolves.toMatchObject({ state });
   expect(h.trigger.cancelRun).not.toHaveBeenCalled();
+});
+
+// The first observation of run_a is held open; meanwhile the operator's
+// authority ends. Its next step must not cancel or close anything.
+async function deferredObservation(h: ReturnType<typeof harness>) {
+  await seedAccount(h);
+  await h.ctx.db.insert("chats", {
+    id: "a",
+    user_id: "subject",
+    active_trigger_run_id: "run_a",
+    active_agent_approval_session_id: "session_a",
+  });
+  h.runs.run_a = root("a");
+  const { planDigest } = await planResponse(h.deps, caseFile);
+  let release!: () => void;
+  let started!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const observing = new Promise<void>((resolve) => (started = resolve));
+  let deferred = true;
+  const observe = h.trigger.retrieveRun.getMockImplementation()!;
+  h.trigger.retrieveRun.mockImplementation(async (runId, operation) => {
+    if (runId === "run_a" && deferred) {
+      deferred = false;
+      started();
+      await held;
+    }
+    return observe(runId, operation);
+  });
+  const first = applyResponse(
+    h.deps,
+    applyInput(planDigest),
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  );
+  await observing;
+  return { first, release };
+}
+
+test.each([
+  [
+    "its lease expired",
+    () => clock.mockReturnValue(NOW + 6 * 60_000),
+    "ABUSE_RESPONSE_LEASE_LOST",
+  ],
+  [
+    "its restriction was lifted",
+    (h: ReturnType<typeof harness>) => {
+      h.ctx.tables.user_suspensions.find(
+        (row: any) => row.source_id === `abuse-late:${reference}`,
+      ).status = "resolved";
+    },
+    "ABUSE_RESTRICTION_CONFLICT",
+  ],
+])(
+  "an operator whose authority ended because %s during a pending observation sends no Trigger mutation",
+  async (_label, interrupt, expected) => {
+    const h = harness();
+    const { first, release } = await deferredObservation(h);
+    interrupt(h);
+    release();
+    await expect(first).rejects.toMatchObject({ data: { code: expected } });
+    expect(h.trigger.cancelRun).not.toHaveBeenCalled();
+    expect(h.trigger.closeApprovalSession).not.toHaveBeenCalled();
+  },
+);
+
+test("a superseded operator cannot repeat effects after the new operator completes", async () => {
+  const h = harness();
+  const { first, release } = await deferredObservation(h);
+  clock.mockReturnValue(NOW + 6 * 60_000);
+  const second = await retryResponse(
+    h.deps,
+    caseFile,
+    "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  );
+  expect(second.outcome).toBe("resumed");
+  expect(h.trigger.cancelRun).toHaveBeenCalledTimes(1);
+  expect(h.trigger.closeApprovalSession).toHaveBeenCalledTimes(1);
+  release();
+  await expect(first).rejects.toMatchObject({
+    data: { code: "ABUSE_RESPONSE_LEASE_LOST" },
+  });
+  expect(h.trigger.cancelRun).toHaveBeenCalledTimes(1);
+  expect(h.trigger.closeApprovalSession).toHaveBeenCalledTimes(1);
+  // The stale operator's lease release cannot clear another owner's state.
+  await expect(responseStatus(h.deps, caseFile)).resolves.toMatchObject({
+    inProgress: false,
+  });
+});
+
+test("each cancellation and approval closure is dispatched only after a fresh server checkpoint", async () => {
+  const h = harness();
+  await seedAccount(h);
+  await h.ctx.db.insert("chats", {
+    id: "a",
+    user_id: "subject",
+    active_trigger_run_id: "run_a",
+    active_agent_approval_session_id: "session_a",
+  });
+  h.runs.run_a = root("a");
+  const { planDigest } = await planResponse(h.deps, caseFile);
+  const order: string[] = [];
+  h.convex.mutation.mockImplementation(async (fn: any, args: any) => {
+    order.push(getFunctionName(fn));
+    const [, name] = getFunctionName(fn).split(":");
+    return (abuseResponse as any)[name].handler(h.ctx, args);
+  });
+  h.trigger.cancelRun.mockImplementation(async () => {
+    order.push("trigger:cancel");
+  });
+  h.trigger.closeApprovalSession.mockImplementation(async () => {
+    order.push("trigger:close");
+  });
+  await applyResponse(
+    h.deps,
+    applyInput(planDigest),
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  );
+  for (const effect of ["trigger:cancel", "trigger:close"])
+    expect(order[order.indexOf(effect) - 1]).toBe("abuseResponse:checkpoint");
 });
 
 test("credential screening flags raw credentials but accepts ordinary review prose", () => {

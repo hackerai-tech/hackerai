@@ -232,7 +232,8 @@ corepack pnpm exec tsx scripts/abuse-response.ts <import|plan|apply|status|retry
     proof, never the key, as the RPC argument.
   - `ABUSE_EVIDENCE_KEYS` (`import`, `apply`): the same keyring as Convex.
   - `TRIGGER_SECRET_KEY` (`plan`, `apply`, `retry`): its prefix must match
-    `--expect-trigger-env`.
+    `--expect-trigger-env`. Preview also requires `TRIGGER_PREVIEW_BRANCH`;
+    `TRIGGER_API_URL` is optional.
 
   A mismatch stops the command before it reads input or calls any service.
 
@@ -246,7 +247,9 @@ corepack pnpm exec tsx scripts/abuse-response.ts <import|plan|apply|status|retry
 1. **Import** the emailed receipt with `operator`, `reference`, `kind`,
    `receivedAt` and a `report` object (`contact`, `target`, `occurredAt`,
    `description`, `sourceIp`, `sourcePort`, `protocol`, `evidence`). Copy only
-   the necessary content; fields that look like raw credentials are rejected. This creates an operator-only case with an
+   the necessary content. Every report field, including source address and
+   port, is screened; fields that look like raw credentials are rejected by
+   name, without echoing the value. This creates an operator-only case with an
    evidence hold and no restriction. An identical retry returns `existing`;
    changed content conflicts. `intakeReceipt: "found"` means a queue receipt
    for that reference still exists; content is not compared. For an email
@@ -298,6 +301,16 @@ corepack pnpm exec tsx scripts/abuse-response.ts <import|plan|apply|status|retry
    status and any approval session is closed; otherwise the target stays
    retryable.
 
+   Trigger calls use strict adapters: no rejection status counts as success,
+   unlike the general cleanup helper. Each request attempt has a 15-second
+   abortable timeout, with at most two attempts. Before each Trigger
+   observation, cancellation or closure, a server checkpoint rechecks the case,
+   the active restriction and this operator's lease, then renews the lease.
+   The request must be dispatched within one minute of that checkpoint, far
+   inside the five-minute lease. An operator whose lease expired, whose
+   restriction was lifted, or who was superseded by a retry stops before its
+   next Trigger effect.
+
 4. **Status** prints the receipts and an `outstanding` list. **Retry**, or
    rerunning apply with the same file after a lost response, resumes the same
    response after its five-minute lease. It reapplies local invalidation,
@@ -326,11 +339,15 @@ Limits:
   reviewed security restriction on the account is lifted. Disconnected clients
   report a regenerated token, the existing reason, so client protocols are
   unchanged. `abuseCases.resolve` releases exactly the recorded case
-  restriction. It lifts the local-access block only when no other active
-  security restriction remains. Otherwise, resolving the last remaining
-  security restriction with `userSuspensions.resolveBySource` lifts it. Billing
-  and other restrictions do not affect the block. The user must then issue a
-  new token. Resolution is refused while a response lease is active.
+  restriction, for late-report and containment-only cases alike. It lifts the
+  local-access block only when no other active security restriction remains.
+  Otherwise, resolving the last remaining security restriction with
+  `userSuspensions.resolveBySource` lifts it. Billing and other restrictions do
+  not affect the block. The user must then issue a new token. Case resolution is
+  refused while a response lease is active. `resolveBySource` refuses an
+  `abuse-late:` or `abuse:` source while that case's operator lease is live or
+  its containment is in progress. Resolving a case restriction any other way
+  stops further leased steps; only `finish` can release the lease.
 
 ## Resolution and evidence lifecycle
 

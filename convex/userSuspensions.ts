@@ -2,7 +2,10 @@ import { mutation, query } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { getActiveChatAccessBlockingSuspension } from "./lib/chatAccessSuspensions";
-import { releaseLocalAccess } from "./lib/abuseResponse";
+import {
+  assertNoLiveAbuseOperation,
+  releaseLocalAccess,
+} from "./lib/abuseResponse";
 
 const suspensionCategoryValidator = v.union(
   v.literal("early_fraud_warning"),
@@ -145,6 +148,7 @@ export const resolveBySource = mutation({
       .first();
 
     if (!suspension) return { resolved: false };
+    await assertNoLiveAbuseOperation(ctx, args.userId, args.sourceId);
 
     const now = Date.now();
     await ctx.db.patch(suspension._id, {

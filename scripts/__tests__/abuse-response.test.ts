@@ -1,9 +1,4 @@
 /** @jest-environment node */
-jest.mock("@trigger.dev/sdk", () => ({ runs: { retrieve: jest.fn() } }));
-jest.mock("../../lib/api/agent-approval-session", () => ({
-  cancelAgentTriggerRun: jest.fn(),
-  closeAgentApprovalSession: jest.fn(),
-}));
 const mockCreateServiceClient = jest.fn();
 jest.mock("../../lib/db/service-client", () => ({
   createServiceConvexClient: (...args: unknown[]) =>
@@ -16,6 +11,10 @@ import {
   main,
   type CliFactories,
 } from "../abuse-response";
+import {
+  startTriggerOperation,
+  TriggerRequestError,
+} from "../../lib/abuse/trigger-response";
 
 // Synthetic credentials only; the CLI must never echo them.
 const SERVICE_KEY = "synthetic-service-credential-value";
@@ -48,11 +47,11 @@ function setup(input: unknown = { operator: "operator", reference }) {
   };
   const factories: CliFactories = {
     createConvex: jest.fn(() => convex as any),
-    trigger: {
+    createTrigger: jest.fn(() => ({
       retrieveRun: jest.fn(),
       cancelRun: jest.fn(),
       closeApprovalSession: jest.fn(),
-    },
+    })),
     newOperationToken: () => "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
   };
   return { out, err, convex, io, factories };
@@ -79,6 +78,11 @@ test.each([
     ["retry", "--expect-convex-url", URL],
     env,
   ],
+  [
+    "a preview key without its branch",
+    ["plan", "--expect-convex-url", URL, "--expect-trigger-env", "preview"],
+    { ...env, TRIGGER_SECRET_KEY: "tr_preview_syntheticvalue" },
+  ],
   ["an unsupported command", ["contain", "--expect-convex-url", URL], env],
 ])(
   "%s stops before reading input or calling any service",
@@ -87,9 +91,48 @@ test.each([
     expect(await main(argv, environment, io, factories)).toBe(1);
     expect(io.readInput).not.toHaveBeenCalled();
     expect(factories.createConvex).not.toHaveBeenCalled();
+    expect(factories.createTrigger).not.toHaveBeenCalled();
     expect(err.join("\n")).not.toContain(SERVICE_KEY);
   },
 );
+
+test("Trigger commands use the strict adapters with the asserted environment's credentials", async () => {
+  const { io, factories, err } = setup();
+  await main(
+    ["retry", "--expect-convex-url", URL, "--expect-trigger-env", "preview"],
+    {
+      ...env,
+      TRIGGER_SECRET_KEY: "tr_preview_syntheticvalue",
+      TRIGGER_PREVIEW_BRANCH: "synthetic-branch",
+    },
+    io,
+    factories,
+  );
+  expect(factories.createTrigger).toHaveBeenCalledWith({
+    baseUrl: "https://api.trigger.dev",
+    secretKey: "tr_preview_syntheticvalue",
+    branch: "synthetic-branch",
+  });
+  expect(err.join("\n")).not.toContain("tr_preview_syntheticvalue");
+
+  // The default wiring rejects a 4xx instead of treating it as cleanup success.
+  const fetch = jest.fn(
+    async () => new Response("{}", { status: 404 }),
+  ) as unknown as typeof globalThis.fetch;
+  const adapters = defaultFactories().createTrigger({
+    baseUrl: "https://trigger.example.test",
+    secretKey: "tr_dev_syntheticvalue",
+    fetch,
+  });
+  const operation = startTriggerOperation();
+  try {
+    await expect(
+      adapters.cancelRun("run_synthetic", operation),
+    ).rejects.toBeInstanceOf(TriggerRequestError);
+  } finally {
+    operation.dispose();
+  }
+});
 
 test("import and apply require the evidence keyring before any call", async () => {
   delete process.env.ABUSE_EVIDENCE_KEYS;

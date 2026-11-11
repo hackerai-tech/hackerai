@@ -436,8 +436,11 @@ export const resolve = mutation({
           resolved_reason: "case_review_completed",
           updated_at: Date.now(),
         });
-      await releaseLocalAccess(ctx, response.userId);
     }
+    // A containment-only case can hold the last security restriction that kept
+    // an earlier late-report case's local-access block in place.
+    const owner = response?.userId ?? row.containment?.userId;
+    if (owner) await releaseLocalAccess(ctx, owner);
     await event(ctx, row, args.actor, "resolved", args.decision);
     await ctx.db.patch(row._id, {
       status: "resolved",

@@ -102,7 +102,11 @@ async function summary(ctx: MutationCtx, caseId: Id<"abuse_cases">) {
   return summarizeResponse(ctx, row, (await responseFor(ctx, caseId))!);
 }
 
-/** Every recorded step renews the caller's exclusive lease. */
+/**
+ * Every recorded step renews the caller's exclusive lease. Steps that can lead
+ * to further Trigger effects also require the recorded restriction to remain
+ * active; only `finish` may release a lease after it was lifted.
+ */
 async function leased(
   ctx: MutationCtx,
   args: {
@@ -111,6 +115,7 @@ async function leased(
     reference: string;
     operationToken: string;
   },
+  requireActiveRestriction = true,
 ) {
   assertAbuseOperator(args.serviceKey, args.actor);
   const row = await findCase(ctx, args.reference);
@@ -122,6 +127,15 @@ async function leased(
     (response.operationExpiresAt ?? 0) <= Date.now()
   )
     throw abuseResponseError("ABUSE_RESPONSE_LEASE_LOST");
+  if (requireActiveRestriction) {
+    const suspension = await ctx.db.get(response.suspensionId);
+    if (
+      suspension?.status !== "active" ||
+      suspension.user_id !== response.userId ||
+      suspension.source_id !== response.sourceId
+    )
+      throw abuseResponseError("ABUSE_RESTRICTION_CONFLICT");
+  }
   return { row, response };
 }
 
@@ -551,11 +565,29 @@ export const recordTarget = mutation({
   },
 });
 
+/**
+ * Verify ownership immediately before an external Trigger effect and renew the
+ * lease. The CLI dispatches only within its short budget after this succeeds.
+ */
+export const checkpoint = mutation({
+  args: leaseArgs,
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { response } = await leased(ctx, args);
+    const now = Date.now();
+    await ctx.db.patch(response._id, {
+      operationExpiresAt: now + ABUSE_RESPONSE_LEASE_MS,
+      updatedAt: now,
+    });
+    return null;
+  },
+});
+
 export const finish = mutation({
   args: leaseArgs,
   returns: abuseResponseSummary,
   handler: async (ctx, args) => {
-    const { row, response } = await leased(ctx, args);
+    const { row, response } = await leased(ctx, args, false);
     const now = Date.now();
     await ctx.db.patch(response._id, {
       operationToken: undefined,

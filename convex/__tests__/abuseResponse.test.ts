@@ -12,6 +12,7 @@ jest.mock("../lib/utils", () => ({
 import * as response from "../abuseResponse";
 import * as cases from "../abuseCases";
 import * as local from "../localSandbox";
+import * as suspensions from "../userSuspensions";
 import { database } from "../../__mocks__/abuse-database";
 
 // Synthetic identifiers only. The token value stands in for a credential that
@@ -632,6 +633,170 @@ test("the active-root containment guard is unchanged and competing cases remain 
     runId: "run_live",
   });
   expect(contained.status).toBe("containing");
+});
+
+const resolveSource = (ctx: any, sourceId: string) =>
+  run(suspensions.resolveBySource, ctx, {
+    serviceKey: "test-service",
+    userId: "subject",
+    sourceId,
+    resolvedReason: "support_review",
+  });
+
+test("a case-owned restriction cannot be released under a live lease, and leased steps stop once it is lifted", async () => {
+  const ctx = context();
+  await seed(ctx);
+  const { planDigest } = await plan(ctx);
+  const { operationToken } = await run(
+    response.apply,
+    ctx,
+    applyArgs(planDigest),
+  );
+  const lease = { ...base, operationToken };
+  await expect(
+    resolveSource(ctx, `abuse-late:${reference}`),
+  ).rejects.toMatchObject(code("ABUSE_RESPONSE_BUSY"));
+  // Independent holds keep their generic resolution behavior.
+  await expect(resolveSource(ctx, "independent")).resolves.toEqual({
+    resolved: true,
+  });
+  expect(ctx.tables.local_sandbox_tokens[0].revoked_at).toBe(NOW);
+
+  // An out-of-band change to the stored restriction stops every leased step
+  // that can lead to a Trigger effect; only lease release remains possible.
+  const late = ctx.tables.user_suspensions.find(
+    (row: any) => row.source_id === `abuse-late:${reference}`,
+  );
+  late.status = "resolved";
+  for (const step of [
+    response.checkpoint,
+    response.discover,
+    response.recordTarget,
+  ])
+    await expect(
+      run(step, ctx, { ...lease, runId: "run_x", state: "terminal" }),
+    ).rejects.toMatchObject(code("ABUSE_RESTRICTION_CONFLICT"));
+  await expect(run(response.finish, ctx, lease)).resolves.toMatchObject({
+    inProgress: false,
+    restriction: { status: "resolved" },
+  });
+  await expect(
+    run(response.retry, ctx, {
+      ...base,
+      operationToken: "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    }),
+  ).rejects.toMatchObject(code("ABUSE_RESTRICTION_CONFLICT"));
+});
+
+test("releasing a case restriction after its lease ends restores local access only when no security hold remains", async () => {
+  const ctx = context();
+  await seed(ctx, { independent: false });
+  const { planDigest } = await plan(ctx);
+  const { operationToken } = await run(
+    response.apply,
+    ctx,
+    applyArgs(planDigest),
+  );
+  await run(response.finish, ctx, { ...base, operationToken });
+  await expect(resolveSource(ctx, `abuse-late:${reference}`)).resolves.toEqual({
+    resolved: true,
+  });
+  expect(
+    ctx.tables.local_sandbox_tokens.filter(
+      (row: any) => row.user_id === "subject",
+    ),
+  ).toEqual([]);
+});
+
+test("final resolution of a containment-only case releases a marker left by an earlier late-report case", async () => {
+  const ctx = context();
+  await seed(ctx);
+  await ctx.db.insert("chats", {
+    id: "live",
+    user_id: "subject",
+    active_trigger_run_id: "run_live",
+  });
+  await ctx.db.insert("local_sandbox_tokens", {
+    user_id: "other",
+    token: "revoked_synthetic_other",
+    token_created_at: NOW,
+    updated_at: NOW,
+    revoked_at: NOW,
+  });
+  const { planDigest } = await plan(ctx);
+  const { operationToken } = await run(
+    response.apply,
+    ctx,
+    applyArgs(planDigest),
+  );
+  await run(response.finish, ctx, { ...base, operationToken });
+  await run(cases.resolve, ctx, {
+    ...base,
+    expectedRevision: ctx.tables.abuse_cases[0].revision,
+    decision: ciphertext,
+  });
+  const marker = () =>
+    ctx.tables.local_sandbox_tokens.filter(
+      (row: any) => row.revoked_at !== undefined,
+    );
+  // The independent hold keeps the block after the late case resolves.
+  expect(marker().map((row: any) => row.user_id)).toEqual(["subject", "other"]);
+
+  await ctx.db.insert("abuse_cases", {
+    reference: otherReference,
+    digest: "2".repeat(64),
+    kind: "abuse",
+    ciphertext,
+    status: "reviewing",
+    revision: 0,
+    evidenceHold: false,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  const second = { ...base, reference: otherReference };
+  await run(cases.annotate, ctx, {
+    ...second,
+    expectedRevision: 0,
+    kind: "verified_fact",
+    ciphertext,
+  });
+  const contained = await run(cases.beginContainment, ctx, {
+    ...second,
+    expectedRevision: 1,
+    userId: "subject",
+    chatId: "live",
+    runId: "run_live",
+    transport: "local",
+    preserveSnapshot: false,
+    decision: ciphertext,
+    operationToken: "owner",
+  });
+  await expect(
+    resolveSource(ctx, `abuse:${otherReference}`),
+  ).rejects.toMatchObject(code("ABUSE_RESPONSE_BUSY"));
+  // The containment hold now keeps the block after the independent hold ends.
+  await resolveSource(ctx, "independent");
+  expect(marker()).toHaveLength(2);
+  await run(cases.recordContainment, ctx, {
+    ...second,
+    operationToken: "owner",
+    containment: { ...contained.containment, triggerState: "stopped" },
+    finished: true,
+  });
+  await run(cases.resolve, ctx, {
+    ...second,
+    expectedRevision: ctx.tables.abuse_cases[1].revision,
+    decision: ciphertext,
+  });
+  expect(marker().map((row: any) => row.user_id)).toEqual(["other"]);
+  expect(
+    ctx.tables.user_suspensions.map((row: any) => [row.source_id, row.status]),
+  ).toEqual([
+    ["billing", "active"],
+    ["independent", "resolved"],
+    [`abuse-late:${reference}`, "resolved"],
+    [`abuse:${otherReference}`, "resolved"],
+  ]);
 });
 
 test("an emailed receipt imports idempotently into an operator-only case without restricting anyone", async () => {

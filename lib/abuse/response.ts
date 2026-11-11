@@ -12,6 +12,11 @@ import {
   redactSensitiveErrorMessage,
   stripControlSequencesFromErrorMessage,
 } from "@/lib/utils/error-redaction";
+import {
+  assertOperationLive,
+  startTriggerOperation,
+  type TriggerOperation,
+} from "@/lib/abuse/trigger-response";
 
 // Operator workflow for confirmed reports, including reports received after
 // the historical run completed. No server-only imports: the CLI runs in Node.
@@ -27,11 +32,23 @@ export type AbuseResponseDeps = {
   serviceKey: string;
   convexUrl: string;
 };
+/** Each call is bounded and aborted by its operation's signal and deadline. */
 export type AbuseTriggerDeps = {
-  retrieveRun: (runId: string) => Promise<TriggerRun>;
-  cancelRun: (runId: string) => Promise<unknown>;
-  closeApprovalSession: (sessionId: string, reason: string) => Promise<unknown>;
+  retrieveRun: (
+    runId: string,
+    operation: TriggerOperation,
+  ) => Promise<TriggerRun>;
+  cancelRun: (runId: string, operation: TriggerOperation) => Promise<unknown>;
+  closeApprovalSession: (
+    sessionId: string,
+    reason: string,
+    operation: TriggerOperation,
+  ) => Promise<unknown>;
 };
+/** A server-verified, renewed lease, and the bounded budget it grants. */
+export type ResponseCheckpoint = () => Promise<
+  TriggerOperation & { dispose: () => void }
+>;
 
 /** Fixed codes plus schema field paths only; never input values. */
 export class AbuseResponseInputError extends Error {
@@ -219,10 +236,13 @@ export async function verifyHistoricalRun(
 ) {
   if (!scope.runId) return { verified: false as const };
   let run: TriggerRun;
+  const operation = startTriggerOperation();
   try {
-    run = await deps.retrieveRun(scope.runId);
+    run = await deps.retrieveRun(scope.runId, operation);
   } catch {
     throw new AbuseResponseInputError("historical_run_unavailable");
+  } finally {
+    operation.dispose();
   }
   const payload = (run.payload ?? {}) as Record<string, unknown>;
   const preference =
@@ -256,13 +276,15 @@ export async function verifyHistoricalRun(
 export async function importReport(deps: AbuseResponseDeps, raw: unknown) {
   const input = parse(abuseImportInput, raw);
   const { report } = input;
-  screen({
-    "report.target": report.target,
-    "report.occurredAt": report.occurredAt,
-    "report.description": report.description,
-    "report.protocol": report.protocol,
-    "report.evidence": report.evidence,
-  });
+  // Every retained report field is screened, including source address/port.
+  screen(
+    Object.fromEntries(
+      Object.entries(report).map(([field, value]) => [
+        `report.${field}`,
+        value,
+      ]),
+    ),
+  );
   const record = {
     kind: input.kind,
     receivedAt: input.receivedAt,
@@ -313,64 +335,90 @@ type TargetOutcome = {
 /**
  * Cancel only a run whose Trigger payload matches the server-recorded owner.
  * Unknown outcomes stay retryable; a Trigger status never proves process stop.
+ *
+ * Every Trigger call runs under a fresh server checkpoint, which verifies the
+ * case, restriction and lease after the preceding await. A failed checkpoint
+ * throws, so an expired, resolved or superseded operator sends nothing more.
  */
 export async function requestCancellation(
   deps: AbuseResponseDeps & AbuseTriggerDeps,
   target: Target,
   userId: string,
+  checkpoint: ResponseCheckpoint,
 ): Promise<TargetOutcome> {
   const observed = (run: TriggerRun) =>
     boundedStatus(run.status)
       ? { triggerStatus: boundedStatus(run.status) }
       : {};
-  let run: TriggerRun;
-  try {
-    run = await deps.retrieveRun(target.runId);
-  } catch {
-    return { state: "unknown" };
-  }
-  const payload = (run.payload ?? {}) as Record<string, unknown>;
-  const owned =
-    (payload.convexUrl === undefined || payload.convexUrl === deps.convexUrl) &&
-    (target.kind === "root"
-      ? run.taskIdentifier === "agent-long" &&
-        payload.userId === userId &&
-        payload.chatId === target.chatId
-      : run.taskIdentifier === "hackerai-subagent" &&
-        target.subagentId !== undefined &&
-        payload.subagentId === target.subagentId);
-  if (!owned) return { state: "identity_mismatch", ...observed(run) };
-  const attempt = async (step: () => Promise<unknown>) => {
+  const operations: Array<{ dispose: () => void }> = [];
+  const verified = async () => {
+    const operation = await checkpoint();
+    operations.push(operation);
+    return operation;
+  };
+  const attempt = async (
+    operation: TriggerOperation,
+    step: (operation: TriggerOperation) => Promise<unknown>,
+  ) => {
     try {
-      await step();
+      assertOperationLive(operation);
+      await step(operation);
       return true;
     } catch {
       return false;
     }
   };
-  // Cancellation and approval closure are attempted independently. A terminal
-  // receipt is final, so it is recorded only after both are confirmed.
-  const alreadyTerminal = TERMINAL.has(run.status);
-  const canceled =
-    alreadyTerminal || (await attempt(() => deps.cancelRun(target.runId)));
-  const closed =
-    !target.approvalSessionId ||
-    (await attempt(() =>
-      deps.closeApprovalSession(
-        target.approvalSessionId!,
-        "reviewed_security_abuse",
-      ),
-    ));
-  if (!canceled || !closed) return { state: "unknown", ...observed(run) };
-  if (alreadyTerminal) return { state: "terminal", ...observed(run) };
   try {
-    const after = await deps.retrieveRun(target.runId);
-    return {
-      state: TERMINAL.has(after.status) ? "terminal" : "cancel_requested",
-      ...observed(after),
-    };
-  } catch {
-    return { state: "cancel_requested" };
+    let operation = await verified();
+    let run: TriggerRun;
+    try {
+      run = await deps.retrieveRun(target.runId, operation);
+    } catch {
+      return { state: "unknown" };
+    }
+    const payload = (run.payload ?? {}) as Record<string, unknown>;
+    const owned =
+      (payload.convexUrl === undefined ||
+        payload.convexUrl === deps.convexUrl) &&
+      (target.kind === "root"
+        ? run.taskIdentifier === "agent-long" &&
+          payload.userId === userId &&
+          payload.chatId === target.chatId
+        : run.taskIdentifier === "hackerai-subagent" &&
+          target.subagentId !== undefined &&
+          payload.subagentId === target.subagentId);
+    if (!owned) return { state: "identity_mismatch", ...observed(run) };
+    // Cancellation and approval closure are attempted independently. A terminal
+    // receipt is final, so it is recorded only after both are confirmed.
+    const alreadyTerminal = TERMINAL.has(run.status);
+    let canceled = alreadyTerminal;
+    if (!alreadyTerminal) {
+      operation = await verified();
+      canceled = await attempt(operation, (live) =>
+        deps.cancelRun(target.runId, live),
+      );
+    }
+    let closed = !target.approvalSessionId;
+    if (target.approvalSessionId) {
+      const sessionId = target.approvalSessionId;
+      operation = await verified();
+      closed = await attempt(operation, (live) =>
+        deps.closeApprovalSession(sessionId, "reviewed_security_abuse", live),
+      );
+    }
+    if (!canceled || !closed) return { state: "unknown", ...observed(run) };
+    if (alreadyTerminal) return { state: "terminal", ...observed(run) };
+    try {
+      const after = await deps.retrieveRun(target.runId, operation);
+      return {
+        state: TERMINAL.has(after.status) ? "terminal" : "cancel_requested",
+        ...observed(after),
+      };
+    } catch {
+      return { state: "cancel_requested" };
+    }
+  } finally {
+    for (const operation of operations) operation.dispose();
   }
 }
 
@@ -385,6 +433,10 @@ async function continueResponse(
     actor,
     reference: referenceId,
     operationToken,
+  };
+  const checkpoint: ResponseCheckpoint = async () => {
+    await deps.convex.mutation(api.abuseResponse.checkpoint, lease);
+    return startTriggerOperation();
   };
   try {
     let discovered = await deps.convex.mutation(
@@ -406,6 +458,7 @@ async function continueResponse(
         deps,
         target,
         discovered.userId,
+        checkpoint,
       );
       await deps.convex.mutation(api.abuseResponse.recordTarget, {
         ...lease,

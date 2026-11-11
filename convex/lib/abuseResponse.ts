@@ -259,6 +259,38 @@ export async function invalidateLocalAccess(
 }
 
 /**
+ * A case-owned restriction cannot be released while that case's operator holds
+ * a live lease (late-report response or active-root containment). One indexed
+ * case lookup by the reference embedded in the source ID; other sources pass.
+ */
+export async function assertNoLiveAbuseOperation(
+  ctx: MutationCtx,
+  userId: string,
+  sourceId: string,
+) {
+  const match = /^abuse(-late)?:(AB-[a-f0-9-]{36})$/.exec(sourceId);
+  if (!match) return;
+  const row = await ctx.db
+    .query("abuse_cases")
+    .withIndex("by_reference", (q) => q.eq("reference", match[2]))
+    .unique();
+  if (!row) return;
+  const now = Date.now();
+  if (match[1]) {
+    const response = await ctx.db
+      .query("abuse_responses")
+      .withIndex("by_caseId", (q) => q.eq("caseId", row._id))
+      .unique();
+    if (response?.userId === userId && (response.operationExpiresAt ?? 0) > now)
+      throw abuseResponseError("ABUSE_RESPONSE_BUSY");
+  } else if (
+    row.containment?.userId === userId &&
+    (row.status === "containing" || (row.operationExpiresAt ?? 0) > now)
+  )
+    throw abuseResponseError("ABUSE_RESPONSE_BUSY");
+}
+
+/**
  * Lift the local-access block only once no security restriction remains; any
  * case may have created the marker. The user must then issue a new token.
  */

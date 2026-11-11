@@ -4,13 +4,12 @@ import { fstatSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import { ConvexError } from "convex/values";
-import { runs } from "@trigger.dev/sdk";
 import { createServiceConvexClient } from "../lib/db/service-client";
-import {
-  cancelAgentTriggerRun,
-  closeAgentApprovalSession,
-} from "../lib/api/agent-approval-session";
 import { abuseEvidenceKeyring } from "../lib/abuse/keyring";
+import {
+  createTriggerResponseAdapters,
+  type TriggerConnection,
+} from "../lib/abuse/trigger-response";
 import {
   AbuseResponseInputError,
   applyResponse,
@@ -39,7 +38,8 @@ const USAGE = `Usage: tsx scripts/abuse-response.ts <import|plan|apply|status|re
 
 Reads one JSON object from stdin: a pipe, or a regular file readable only by its owner (chmod 600).
 Environment: NEXT_PUBLIC_CONVEX_URL, CONVEX_SERVICE_ROLE_KEY; ABUSE_EVIDENCE_KEYS for import/apply;
-TRIGGER_SECRET_KEY plus --expect-trigger-env for plan/apply/retry. See docs/abuse-response.md.`;
+TRIGGER_SECRET_KEY plus --expect-trigger-env for plan/apply/retry (TRIGGER_PREVIEW_BRANCH for preview,
+optional TRIGGER_API_URL). See docs/abuse-response.md.`;
 
 const MESSAGES: Record<string, string> = {
   usage: USAGE,
@@ -78,6 +78,12 @@ const MESSAGES: Record<string, string> = {
   ABUSE_IMPORT_CONFLICT:
     "A case with this reference already exists with different content.",
 };
+// Trigger is never reached for these commands.
+const NO_TRIGGER: AbuseTriggerDeps = {
+  retrieveRun: () => Promise.reject(new Error("Trigger unavailable")),
+  cancelRun: () => Promise.reject(new Error("Trigger unavailable")),
+  closeApprovalSession: () => Promise.reject(new Error("Trigger unavailable")),
+};
 const NOT_CONFIRMED =
   "The command was not confirmed. Run status to inspect recorded progress; restrictions remain until explicitly resolved.";
 
@@ -94,7 +100,7 @@ export type CliIo = {
 };
 export type CliFactories = {
   createConvex: (url: string) => ResponseConvex;
-  trigger: AbuseTriggerDeps;
+  createTrigger: (connection: TriggerConnection) => AbuseTriggerDeps;
   newOperationToken: () => string;
 };
 
@@ -172,13 +178,22 @@ export async function main(
     const serviceKey = env.CONVEX_SERVICE_ROLE_KEY;
     if (!convexUrl || !serviceKey || convexUrl !== values["expect-convex-url"])
       throw new CliError("environment_mismatch");
+    let trigger = NO_TRIGGER;
     if (TRIGGER_COMMANDS.has(command)) {
       const expected = values["expect-trigger-env"] ?? "";
+      const secretKey = env.TRIGGER_SECRET_KEY;
+      const branch = env.TRIGGER_PREVIEW_BRANCH;
       if (
         !TRIGGER_ENVIRONMENTS.includes(expected) ||
-        !env.TRIGGER_SECRET_KEY?.startsWith(`tr_${expected}_`)
+        !secretKey?.startsWith(`tr_${expected}_`) ||
+        (expected === "preview" && !branch)
       )
         throw new CliError("environment_mismatch");
+      trigger = factories.createTrigger({
+        baseUrl: env.TRIGGER_API_URL || "https://api.trigger.dev",
+        secretKey,
+        ...(branch ? { branch } : {}),
+      });
     }
     if (KEYRING_COMMANDS.has(command)) {
       try {
@@ -192,7 +207,7 @@ export async function main(
       convex: factories.createConvex(convexUrl),
       serviceKey,
       convexUrl,
-      ...factories.trigger,
+      ...trigger,
     };
     const result =
       command === "import"
@@ -216,11 +231,8 @@ export function defaultFactories(): CliFactories {
   return {
     // The service client signs each RPC; the reusable key never leaves this process.
     createConvex: (url) => createServiceConvexClient(url),
-    trigger: {
-      retrieveRun: (runId) => runs.retrieve(runId),
-      cancelRun: cancelAgentTriggerRun,
-      closeApprovalSession: closeAgentApprovalSession,
-    },
+    // Strict, abortable adapters; never the permissive general cleanup helper.
+    createTrigger: createTriggerResponseAdapters,
     newOperationToken: randomUUID,
   };
 }
