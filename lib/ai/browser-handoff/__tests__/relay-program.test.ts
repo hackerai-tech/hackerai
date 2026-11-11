@@ -144,16 +144,21 @@ it("rejects a missing relay instead of reporting a successful renewal", async ()
 it.each(["revoked", "closed", "expired"])(
   "does not revive a %s relay",
   async (state) => {
-    if (state === "expired")
-      await writeFile(join(directory, "lease"), String(Date.now() - 1));
-    else await writeFile(join(directory, state), "1");
-    const previous = await readFile(join(directory, "lease"), "utf8");
-    expect(await renewLease(Date.now() + 25_000)).toBe(
+    // The running relay writes its own closed marker after expiry. Isolate
+    // the renewal command so each case tests only its intended rejection.
+    const renewalDirectory = join(root, "renewal");
+    await mkdir(renewalDirectory);
+    const leaseFile = join(renewalDirectory, "lease");
+    const previous = String(Date.now() + (state === "expired" ? -1 : 40_000));
+    await writeFile(leaseFile, previous);
+    if (state !== "expired")
+      await writeFile(join(renewalDirectory, state), "1");
+    expect(await renewLease(Date.now() + 25_000, renewalDirectory)).toBe(
       state === "expired"
         ? RELAY_RENEW_FAILURE_CODES.expired_or_invalid_lease
         : RELAY_RENEW_FAILURE_CODES.revoked_or_closed,
     );
-    expect(await readFile(join(directory, "lease"), "utf8")).toBe(previous);
+    expect(await readFile(leaseFile, "utf8")).toBe(previous);
   },
 );
 
