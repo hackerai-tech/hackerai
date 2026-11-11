@@ -8,7 +8,7 @@ export function createBrowserHandoff(
 ) {
   return tool({
     description:
-      "Request human input in the open Cloud browser and pause the Agent. Use when the user must complete a login, verification, or other step requiring their interaction, or explicitly asks to take control. A CAPTCHA alone is not a reason: first take a standalone foreground snapshot and follow the on-demand CAPTCHA instructions; request takeover only if human input is still needed. Never use this tool to wait for a page, inspect a submission result, or finish ordinary browsing: verify those with the browser tools. The UI shows a prominent Take control prompt only while waiting for input; normal browser access is through its tool output in the Computer sidebar. Call this tool alone after opening the page and explaining exactly what the user needs to do. You MUST call it before ending a response that asks the user to interact with this browser; saying you are waiting without calling it closes the browser session. It keeps the Agent waiting until the user clicks Send and continue. Do not use shell sleep or polling commands to wait for a human. After it returns, read the private handoff context and take a fresh browser snapshot.",
+      "Request human input in the open Cloud browser and pause the Agent. Use when the user must complete a login, verification, or other step requiring their interaction, or explicitly asks to take control. Never use this tool to wait for a page, inspect a submission result, or finish ordinary browsing: verify those with the browser tools. The UI shows a prominent Take control prompt only while waiting for input; normal browser access is through its tool output in the Computer sidebar. Call this tool alone after opening the page and explaining exactly what the user needs to do. You MUST call it before ending a response that asks the user to interact with this browser; saying you are waiting without calling it closes the browser session. It keeps the Agent waiting until the user clicks Send and continue. Do not use shell sleep or polling commands to wait for a human. After it returns, read the private handoff context and take a fresh browser snapshot.",
     inputSchema: z.object({
       reason: z
         .string()
@@ -16,7 +16,7 @@ export function createBrowserHandoff(
         .min(1)
         .max(500)
         .describe(
-          "The specific human-only action needed now, or the user's explicit request to take control. Explain it to the user before calling. Website loading, a completed CAPTCHA, and checking form acceptance are Agent work, not reasons to pause. Do not include credentials or tokens.",
+          "The specific human-only action needed now, or the user's explicit request to take control. Explain it to the user before calling. Website loading and checking form acceptance are Agent work, not reasons to pause. Do not include credentials or tokens.",
         ),
       requestAnotherTakeover: z
         .boolean()

@@ -77,33 +77,7 @@ if action == 'prepare':
     (root / 'sockets').mkdir(mode=0o700)
     (root / 'state').mkdir(mode=0o700)
     (root / 'config.json').write_text('{}')
-    cli_at_prepare = [1, 2]  # Version1, not checked; never a daemon version.
-    if len(sys.argv) > 6 and sys.argv[6]:
-        init_script = sys.argv[6]
-        # This optional adapter requires agent-browser's native init-script and
-        # user-agent actions. Legacy workspaces keep ordinary browsing intact.
-        cli_at_prepare = [1, 4]  # Existing optional version check failed.
-        try:
-            import re
-            version = subprocess.run(['agent-browser','--version'],capture_output=True,text=True,timeout=5,check=True)
-            match = re.search(r'agent-browser (\d+)\.(\d+)\.(\d+)',version.stdout)
-            supported = match and tuple(map(int,match.groups())) >= (0,39,3)
-        except Exception:
-            supported = False
-        else:
-            # Keep the existing feature decision above independent from diagnostics.
-            cli_at_prepare = [1, 3]
-            try:
-                strict = re.fullmatch(r'agent-browser (0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})', version.stdout.strip()) if len(version.stdout) <= 128 else None
-                if strict:
-                    major, minor, patch = map(int, strict.groups())
-                    cli_at_prepare = [1, 1, major * 1000000 + minor * 1000 + patch]
-            except Exception:
-                pass
-        if len(init_script) <= 16384 and supported:
-            (root / 'cloudflare.js').write_text(init_script)
-            (root / 'config.json').write_text(json.dumps({'initScripts':[str(root / 'cloudflare.js')]}))
-    write_cli_at_prepare_receipt(cli_at_prepare)
+    write_cli_at_prepare_receipt([1, 2])  # Version1, not checked; never a daemon version.
     if len(sys.argv) > 5 and sys.argv[5] == 'gate':
         real = shutil.which('agent-browser')
         if not real:
@@ -244,10 +218,9 @@ def record_wrapper(phase, status=None, executed=False):
 
 record_wrapper('started')
 verify = root / 'verify-required'
-# Keep the last successful terminal environment. Server inspections use a
-# narrower launch environment and must not replace the handoff baseline.
+# Keep the last successful terminal environment as the handoff baseline.
 # Session names are normalized above; checkpoint encryption does not route the
-# browser and is omitted by the server's inspection calls.
+# browser.
 environment = {key: value for key, value in os.environ.items()
                if key.startswith('AGENT_BROWSER_') and key not in
                ('AGENT_BROWSER_SESSION', 'AGENT_BROWSER_ENCRYPTION_KEY')}
@@ -273,7 +246,7 @@ if verify.exists():
     record_wrapper('completed', result.returncode, True)
     sys.exit(result.returncode)
 result = __import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True)
-if result.returncode == 0 and os.environ.get('HACKERAI_BROWSER_INSPECTION') != '1':
+if result.returncode == 0:
     environment_path.write_text(environment_digest)
     environment_path.chmod(0o600)
 record_wrapper('completed', result.returncode, True)
@@ -356,159 +329,6 @@ elif action == 'status':
                 # Optional metadata must not push a valid status past its existing cap.
                 if len(observed) + 1 <= 65536: output = observed
             print(output)
-elif action == 'cloudflare':
-    validate()
-    request = json.loads(sys.stdin.read(65537))
-    deadline = float(sys.argv[3])
-    if time.time() >= deadline:
-        raise RuntimeError('Browser ownership expired')
-    ua = request['userAgent']
-    original_ua = request['originalUserAgent']
-    script = request['script']
-    if not isinstance(original_ua,str) or not 1 <= len(original_ua) <= 1024 or any(ord(c) < 32 or ord(c) > 126 for c in original_ua) or not isinstance(script,str) or len(script) > 32768:
-        raise RuntimeError('Invalid managed delivery')
-    import signal
-    def cancel(signum, frame):
-        raise InterruptedError('Managed delivery cancelled')
-    signal.signal(signal.SIGTERM, cancel)
-    if not isinstance(ua, str) or not 1 <= len(ua) <= 1024 or any(ord(c) < 32 or ord(c) > 126 for c in ua):
-        raise RuntimeError('Invalid browser user agent')
-    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    try:
-        if (root / 'paused').exists() or (root / 'verify-required').exists() or time.time() >= deadline:
-            raise RuntimeError('Browser is unavailable')
-        name = (root / 'active-session').read_text().strip()
-        if name != request['sessionName'] or not name or len(name) > 80 or any(c in name for c in '/\x00\r\n'):
-            raise RuntimeError('Browser identity changed')
-        path = root / 'sockets' / (name + '.sock')
-        info = path.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-            raise RuntimeError('Browser unavailable')
-        def call(command):
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(5)
-                connection.connect(str(path))
-                connection.sendall((json.dumps(command) + '\n').encode())
-                with connection.makefile('rb') as response:
-                    line = response.readline(32769)
-                    if not line or len(line) > 32768:
-                        raise RuntimeError('Invalid browser response')
-                    result = json.loads(line)
-                    if result.get('success') is not True:
-                        raise RuntimeError('Browser operation failed')
-                    return result.get('data', {})
-        expected = json.dumps({'url':request['url'], 'documentId':request['documentId']})
-        script = '(e => {const u=new URL(location.href); return !u.username && !u.password && !u.hash && [...u.searchParams.keys()].every(k=>/^__cf_chl_[A-Za-z0-9_]+$/.test(k)) && u.origin+u.pathname === e.url && String(performance.timeOrigin) === e.documentId})(' + expected + ')'
-        if call({'id':'captcha-identity', 'action':'evaluate', 'script':script}).get('result') is not True:
-            raise RuntimeError('Browser page changed')
-        delivered = False
-        try:
-            call({'id':'captcha-useragent', 'action':'useragent', 'userAgent':ua})
-            result = call({'id':'captcha-deliver', 'action':'evaluate', 'script':request['script']}).get('result')
-            if not isinstance(result,dict) or result.get('status') not in ('page_changed','token_delivered'):
-                raise RuntimeError('Invalid managed delivery result')
-            delivered = result['status'] == 'token_delivered'
-            print(json.dumps({'result':result}))
-        finally:
-            if not delivered:
-                try:
-                    call({'id':'captcha-restore-useragent','action':'useragent','userAgent':original_ua})
-                except Exception:
-                    pass  # Ownership cleanup still closes this run's browser.
-
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-elif action == 'vision':
-    validate()
-    import re, signal, struct
-    request = json.loads(sys.stdin.read(65537))
-    deadline = min(float(sys.argv[3]), float(request['deadline']) / 1000, time.time() + 8)
-    output_path = request['path']
-    if not isinstance(output_path, str) or not re.fullmatch(r'/tmp/[A-Za-z0-9_.-]{1,160}\.png', output_path):
-        raise RuntimeError('Invalid capture path')
-    for key in ('prepareScript','measureScript'):
-        if not isinstance(request.get(key), str) or len(request[key]) > 32768:
-            raise RuntimeError('Invalid capture script')
-    def cancel_capture(signum, frame):
-        raise InterruptedError('Capture cancelled')
-    signal.signal(signal.SIGTERM, cancel_capture)
-    fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
-    temporary = pathlib.Path('/tmp/hackerai-vision-' + os.urandom(16).hex() + '.png')
-    try:
-        while True:
-            if time.time() >= deadline: raise RuntimeError('Capture expired')
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError: time.sleep(0.025)
-        name = (root / 'active-session').read_text().strip()
-        if name != request['sessionName'] or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', name):
-            raise RuntimeError('Browser identity changed')
-        socket_path = root / 'sockets' / (name + '.sock')
-        info = socket_path.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-            raise RuntimeError('Browser unavailable')
-        def call_capture(command):
-            if time.time() >= deadline or (root / 'paused').exists() or (root / 'verify-required').exists() or (root / 'active-session').read_text().strip() != name:
-                raise RuntimeError('Capture ownership ended')
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(max(0.01, min(2, deadline - time.time())))
-                connection.connect(str(socket_path))
-                connection.sendall((json.dumps(command) + '\n').encode())
-                with connection.makefile('rb') as response:
-                    line = response.readline(32769)
-                    if not line or len(line) > 32768: raise RuntimeError('Invalid capture response')
-                    reply = json.loads(line)
-                    if reply.get('success') is not True: raise RuntimeError('Capture operation failed')
-                    return reply.get('data', {})
-        def measure(scroll=False):
-            value = call_capture({'id':'captcha-capture-geometry','action':'evaluate','script':request['prepareScript' if scroll else 'measureScript']}).get('result')
-            if not isinstance(value,dict) or value.get('status') not in ('measured','not_visible'):
-                raise RuntimeError('Challenge frame unavailable')
-            return value
-        visible_until = min(deadline, time.time() + 2)
-        before = measure()
-        while before.get('status') == 'not_visible':
-            if time.time() >= visible_until: raise RuntimeError('Challenge frame is not ready')
-            time.sleep(0.05)
-            before = measure()
-        before = measure(True)
-        if before.get('needsViewport'):
-            width = max(before['viewport']['width'], before['frame']['width'] + 48, 1024)
-            height = max(before['viewport']['height'], before['frame']['height'] + 48, 1024)
-            if width > 1920 or height > 1600: raise RuntimeError('Challenge exceeds capture bounds')
-            call_capture({'id':'captcha-capture-viewport','action':'viewport','width':int(width),'height':int(height)})
-            before = measure(True)
-        # Wait on stable public geometry, not an arbitrary screenshot/sleep loop.
-        stable_until = min(deadline, time.time() + 1)
-        while True:
-            after = measure()
-            if after.get('fullyVisible') and after == before: break
-            if time.time() >= stable_until: raise RuntimeError('Challenge remains clipped or unstable')
-            before = after
-            time.sleep(0.05)
-        file_fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(file_fd)
-        call_capture({'id':'captcha-capture-image','action':'screenshot','path':str(temporary),'fullPage':False,'annotate':False,'format':'png'})
-        if measure() != after: raise RuntimeError('Challenge moved during capture')
-        if temporary.stat().st_size > 10000000: raise RuntimeError('Capture image too large')
-        with temporary.open('rb') as image: header = image.read(24)
-        if len(header) != 24 or header[:8] != b'\x89PNG\r\n\x1a\n':
-            raise RuntimeError('Invalid capture image')
-        width,height = struct.unpack('>II',header[16:24])
-        dpr = after['devicePixelRatio']
-        if not 0 < dpr <= 3 or abs(width-after['viewport']['width']*dpr) > 1 or abs(height-after['viewport']['height']*dpr) > 1:
-            raise RuntimeError('Capture coordinate scale changed')
-        if time.time() >= deadline: raise RuntimeError('Capture expired')
-        os.replace(temporary, output_path)
-        print(json.dumps({'path':output_path,'viewport':after['viewport'],'frame':after['frame'],
-          'devicePixelRatio':dpr,'image':{'width':width,'height':height}}))
-    finally:
-        temporary.unlink(missing_ok=True)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 elif action in ('pause', 'resume'):
     validate()
     fd = os.open(str(root / 'gate.lock'), os.O_CREAT | os.O_RDWR, 0o600)
@@ -539,25 +359,15 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
-  action:
-    | "prepare"
-    | "cleanup"
-    | "pause"
-    | "resume"
-    | "status"
-    | "cloudflare"
-    | "vision",
+  action: "prepare" | "cleanup" | "pause" | "resume" | "status",
   directory: string,
   expiresAt: number,
   gate = false,
-  initScript?: string,
 ): string {
   const args = [BROWSER_SESSION_PROGRAM, action, directory];
   if (action === "prepare") {
     args.push(String(expiresAt / 1000), BROWSER_SESSION_PROGRAM);
-    args.push(gate ? "gate" : "", initScript ?? "");
+    args.push(gate ? "gate" : "");
   }
-  if (action === "cloudflare" || action === "vision")
-    args.push(String(expiresAt / 1000));
   return `python3 -c ${args.map(quote).join(" ")}`;
 }

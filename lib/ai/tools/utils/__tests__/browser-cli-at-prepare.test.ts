@@ -11,13 +11,7 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 /** Run the actual prepare branch and filesystem writes, replacing only CLI/watchdog boundaries. */
-function prepare(
-  stdout: string,
-  init = "// controlled adapter",
-  fail = false,
-  writeFault = false,
-  symlink = false,
-) {
+function prepare(writeFault = false, symlink = false) {
   return JSON.parse(
     execFileSync(
       "python3",
@@ -30,13 +24,11 @@ root=pathlib.Path(x['directory'])/'hackerai-browser-owned'
 shim_root=pathlib.Path(x['directory'])/'owned-shim'
 directory=str(root)
 action='prepare'
-sys.argv=['program','prepare',directory,str(time.time()+60),'NO_WATCHDOG','gate',x['init']]
+sys.argv=['program','prepare',directory,str(time.time()+60),'NO_WATCHDOG','gate']
 calls=[]
 def run(command,**kwargs):
-    optional=command==['agent-browser','--version']
-    calls.append('optional' if optional else 'bootstrap')
-    if optional and x['fail']: raise subprocess.CalledProcessError(37,command,stderr='PRIVATE')
-    return types.SimpleNamespace(stdout=x['stdout'],returncode=0)
+    calls.append('bootstrap')
+    return types.SimpleNamespace(stdout='',returncode=0)
 subprocess.run=run
 subprocess.Popen=lambda *a,**k: None
 shutil.which=lambda name: '/usr/bin/true'
@@ -64,9 +56,6 @@ print(json.dumps(result))
       {
         input: JSON.stringify({
           directory,
-          stdout,
-          init,
-          fail,
           writeFault,
           symlink,
           program: BROWSER_SESSION_PROGRAM,
@@ -77,32 +66,8 @@ print(json.dumps(result))
   );
 }
 
-it.each([
-  ["agent-browser 0.39.3\n", [1, 1, 39003], true],
-  ["agent-browser 0.38.2\n", [1, 1, 38002], false],
-  ["agent-browser 999.999.999\n", [1, 1, 999999999], true],
-  ["agent-browser 0.39.3\nPRIVATE", [1, 3], true],
-  ["agent-browser 1000.39.3\n", [1, 3], true],
-  ["agent-browser 0.39.3-rc1\n", [1, 3], true],
-  ["PRIVATE".repeat(30), [1, 3], false],
-  ["agent-browser 0.39.3 " + "PRIVATE".repeat(30), [1, 3], true],
-])(
-  "records only strict bounded version context while retaining the feature decision (%#)",
-  (stdout, cv, configured) => {
-    const result = prepare(stdout as string);
-    expect(result).toEqual({
-      cv,
-      mode: 0o600,
-      calls: ["optional", "bootstrap"],
-      init_configured: configured,
-      leftovers: 0,
-    });
-    expect(JSON.stringify(result)).not.toContain("PRIVATE");
-  },
-);
-
 it("marks the optional check as unmeasured and keeps the single existing bootstrap command", () => {
-  expect(prepare("PRIVATE", "")).toEqual({
+  expect(prepare()).toEqual({
     cv: [1, 2],
     mode: 0o600,
     calls: ["bootstrap"],
@@ -111,34 +76,22 @@ it("marks the optional check as unmeasured and keeps the single existing bootstr
   });
 });
 
-it("retains ordinary preparation when the existing optional version command fails", () => {
-  expect(prepare("PRIVATE", "// adapter", true)).toEqual({
-    cv: [1, 4],
-    mode: 0o600,
-    calls: ["optional", "bootstrap"],
+it("isolates receipt write failure and cleans only its temporary receipt", () => {
+  expect(prepare(true)).toEqual({
+    cv: null,
+    mode: null,
+    calls: ["bootstrap"],
     init_configured: false,
     leftovers: 0,
   });
 });
 
-it("isolates receipt write failure and cleans only its temporary receipt", () => {
-  expect(prepare("agent-browser 0.39.3\n", "// adapter", false, true)).toEqual({
-    cv: null,
-    mode: null,
-    calls: ["optional", "bootstrap"],
-    init_configured: true,
-    leftovers: 0,
-  });
-});
-
 it("atomically replaces an owned receipt symlink without writing its target", () => {
-  expect(
-    prepare("agent-browser 0.39.3\n", "// adapter", false, false, true),
-  ).toEqual({
-    cv: [1, 1, 39003],
+  expect(prepare(false, true)).toEqual({
+    cv: [1, 2],
     mode: 0o600,
-    calls: ["optional", "bootstrap"],
-    init_configured: true,
+    calls: ["bootstrap"],
+    init_configured: false,
     leftovers: 0,
     victim_preserved: true,
   });

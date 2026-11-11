@@ -15,8 +15,6 @@ import {
   type ShellToolOutput,
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
-import { CaptchaSolverActivity } from "./CaptchaSolverActivity";
-import { getCaptchaStartedAt } from "./captcha-tool-utils";
 import {
   getAgentAutoReviewDisplayState,
   getStreamedAgentAutoReviewLifecycle,
@@ -123,15 +121,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   });
   const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
-  const captchaStartedAt = useMemo(
-    () =>
-      getCaptchaStartedAt(
-        message.parts,
-        effectiveToolCallId,
-        terminalInput?.command,
-      ),
-    [message.parts, effectiveToolCallId, terminalInput?.command],
-  );
 
   const { blockAction, blockTarget, sidebarContent } = useMemo(
     () =>
@@ -152,8 +141,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           : undefined,
         legacyCommand: !isShellTool ? terminalInput?.command : undefined,
         executionPhase,
-        captchaStartedAt,
-        isRunActive: status === "streaming" || status === "submitted",
       }),
     [
       isShellTool,
@@ -168,8 +155,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       terminalInput?.is_background,
       terminalInput?.command,
       executionPhase,
-      captchaStartedAt,
-      status,
     ],
   );
 
@@ -181,21 +166,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
 
   const shellAction = (input as { action?: string })?.action;
   const isStoppedByUser = isUserStoppedToolError(errorText);
-
-  if (
-    sidebarContent?.captcha &&
-    state !== "approval-requested" &&
-    state !== "input-streaming"
-  )
-    return (
-      <CaptchaSolverActivity
-        key={toolCallId}
-        activity={sidebarContent.captcha}
-        compact
-        onClick={handleOpenInSidebar}
-        onKeyDown={handleKeyDown}
-      />
-    );
 
   switch (state) {
     case "input-streaming": {

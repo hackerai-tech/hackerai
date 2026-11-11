@@ -17,19 +17,14 @@ const connected = JSON.stringify({
 });
 
 /** Register a gate-only owner without launching a browser. */
-async function owner(managedCapture = false) {
-  const sessions = new BrowserSessions(
-    {
-      userId: "owner",
-      chatId: "chat",
-      runId: "run",
-      agentId: "parent",
-      serviceKey: "test-key",
-    },
-    undefined,
-    undefined,
-    managedCapture ? { enabled: async () => true } : undefined,
-  );
+async function owner() {
+  const sessions = new BrowserSessions({
+    userId: "owner",
+    chatId: "chat",
+    runId: "run",
+    agentId: "parent",
+    serviceKey: "test-key",
+  });
   const run = jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" }));
   await sessions.prepare(
     {
@@ -162,14 +157,12 @@ it("does not revalidate a handoff that is already waiting", async () => {
   expect(mockMutation).toHaveBeenCalledTimes(1);
 });
 
-it("rejects a missing browser before managed-page evaluation", async () => {
-  const { sessions, run } = await owner(true);
-  const capture = jest.spyOn(sessions, "captureChallengeTarget");
+it("rejects a missing browser before requesting takeover", async () => {
+  const { sessions, run } = await owner();
   run.mockResolvedValue({ exitCode: 1, stdout: "" });
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     /Open the required page/,
   );
-  expect(capture).not.toHaveBeenCalled();
   expect(mockMutation).not.toHaveBeenCalled();
 });
 

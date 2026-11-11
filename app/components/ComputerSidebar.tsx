@@ -13,7 +13,6 @@ import {
   Maximize2,
   Minimize2,
   Terminal,
-  Puzzle,
   Play,
   SkipBack,
   SkipForward,
@@ -390,8 +389,12 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     canGoPrev,
     canGoNext,
   } = useSidebarNavigation({
+    // Shared views have no status, so their run state stays unknown.
+    isRunActive:
+      status === undefined
+        ? undefined
+        : status === "streaming" || status === "submitted",
     messages,
-    isRunActive: status === "streaming" || status === "submitted",
     sidebarContent,
     onNavigate: onNavigate ? navigateManually : undefined,
   });
@@ -801,12 +804,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Proxy
                     </div>
-                  ) : isTerminal && resolvedTerminal?.captcha ? (
-                    <Puzzle
-                      size={14}
-                      aria-hidden="true"
-                      className="text-muted-foreground"
-                    />
                   ) : isTerminal ? (
                     <Terminal
                       size={14}
@@ -847,18 +844,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 <div
                   className={`flex items-center ${isTerminal && browserPreviewVisible ? "max-sm:min-w-0 max-sm:flex-wrap max-sm:justify-end max-sm:[&>div]:flex-wrap" : ""}`}
                 >
-                  {isTerminal &&
-                    resolvedTerminal &&
-                    !resolvedTerminal.captcha &&
-                    browserPreviewVisible && (
-                      <ExpandedTerminalButton
-                        key={resolvedTerminal.toolCallId}
-                        terminal={resolvedTerminal}
-                        onExpand={() => setIsFollowingLive(false)}
-                      />
-                    )}
+                  {isTerminal && resolvedTerminal && browserPreviewVisible && (
+                    <ExpandedTerminalButton
+                      key={resolvedTerminal.toolCallId}
+                      terminal={resolvedTerminal}
+                      onExpand={() => setIsFollowingLive(false)}
+                    />
+                  )}
                   {!isWebSearch &&
-                    !(isTerminal && resolvedTerminal?.captcha) &&
                     !isNotes &&
                     !isFinding &&
                     !isToolError &&
@@ -961,7 +954,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       )}
                       {isTerminal && resolvedTerminal && (
                         <TerminalCodeBlock
-                          captcha={resolvedTerminal.captcha}
                           command={resolvedTerminal.command}
                           output={resolvedTerminal.output}
                           isExecuting={resolvedTerminal.isExecuting}

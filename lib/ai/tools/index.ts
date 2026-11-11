@@ -1,9 +1,6 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
-import { createBrowserChallengeHandler } from "../captcha/browser-challenge";
-import { createCaptchaJournal } from "../captcha/journal";
-import { isCaptchaEligible, CAPTCHA_SOLVER_FLAG } from "../captcha/policy";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -65,10 +62,7 @@ import {
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
-import {
-  phLogger,
-  getPostHogBooleanFlagDecisionForUser,
-} from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -274,41 +268,6 @@ export const createTools = (
     triggerRunId,
   });
 
-  // Pin preparation for this run so a rollout change cannot switch an existing
-  // connected browser into a different namespace. Paid requests recheck the flag.
-  let captchaPreparationDecision: Promise<boolean> | undefined;
-  const captchaPreparationEnabled = (): Promise<boolean> => {
-    if (
-      !serviceKey ||
-      requestToolApproval ||
-      (runtimePolicy.browserAgentId ?? "parent") !== "parent" ||
-      !isCaptchaEligible(runtimePolicy.environment)
-    )
-      return Promise.resolve(false);
-    return (captchaPreparationDecision ??= (async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return (
-          (await Promise.race([
-            getPostHogBooleanFlagDecisionForUser(
-              CAPTCHA_SOLVER_FLAG,
-              userID,
-              undefined,
-              { sendFeatureFlagEvents: false },
-            ),
-            new Promise<false>((resolve) => {
-              timer = setTimeout(() => resolve(false), 1000);
-            }),
-          ])) === true
-        );
-      } catch {
-        return false;
-      } finally {
-        clearTimeout(timer);
-      }
-    })());
-  };
-
   const browserSessions = triggerRunId
     ? new BrowserSessions(
         serviceKey
@@ -322,13 +281,6 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
-        captchaPreparationEnabled,
-        {
-          enabled: async () =>
-            runtimePolicy.environment === "PREVIEW" &&
-            !!process.env.TWOCAPTCHA_API_KEY &&
-            (await captchaPreparationEnabled()),
-        },
       )
     : undefined;
   const context: ToolContext = {
@@ -361,37 +313,6 @@ export const createTools = (
     onSandboxResourceMetrics,
     auxiliaryVision,
   };
-
-  // Keep attempt accounting across model fallback/schema rebuilds in this run.
-  const checkBrowserChallenge =
-    browserSessions &&
-    serviceKey &&
-    triggerRunId &&
-    !requestToolApproval &&
-    (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
-    isCaptchaEligible(runtimePolicy.environment)
-      ? createBrowserChallengeHandler(
-          context,
-          runtimePolicy.environment,
-          runtimePolicy.signal,
-          undefined,
-          createCaptchaJournal({
-            serviceKey,
-            userId: userID,
-            chatId,
-            runId: triggerRunId,
-          }),
-        )
-      : undefined;
-  context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
-  context.requestBrowserChallenge = checkBrowserChallenge?.request;
-  context.reportBrowserChallengeProgress =
-    checkBrowserChallenge?.reportProgress;
-  context.captureCaptchaVisionCommand =
-    checkBrowserChallenge?.captureVisionCommand;
-  context.guardCaptchaVisionCommand = checkBrowserChallenge?.guardVisionCommand;
-  context.finishCaptchaVisionCommand =
-    checkBrowserChallenge?.finishVisionCommand;
 
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
@@ -568,8 +489,6 @@ export const createTools = (
   };
 
   return {
-    getCaptchaReceiptPrompt: () =>
-      checkBrowserChallenge?.getReceiptPrompt() ?? "",
     cloudNetworkPrompt: createCloudNetworkPrompt(
       userID,
       () =>
