@@ -98,9 +98,10 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
   browserRelayRenewFailureContext: () => ({
-    relay_renew_diagnostic_version: 1,
-    relay_renew_error_kind: "other_error",
-    relay_renew_command_exit_code: "none",
+    relay_renew_diagnostic_version: 2,
+    relay_renew_error_kind: "command_exit",
+    relay_renew_command_exit_code: 42,
+    relay_renew_failure_reason: "lock_busy",
   }),
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
@@ -981,11 +982,18 @@ it.each([
                 "relay_renew_diagnostic_version",
                 "relay_renew_error_kind",
                 "relay_renew_command_exit_code",
+                "relay_renew_failure_reason",
               ]
             : [],
         )
         .sort(),
     );
+    if (failure === "renew") {
+      expect(fields).toMatchObject({
+        relay_renew_diagnostic_version: 2,
+        relay_renew_failure_reason: "lock_busy",
+      });
+    }
     expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
   },
 );
