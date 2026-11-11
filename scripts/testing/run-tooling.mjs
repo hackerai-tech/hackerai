@@ -33,7 +33,10 @@ export const suites = [
   },
   {
     name: "trigger-runtime",
-    files: ["scripts/trigger-runtime/completion-ack.test.mjs"],
+    files: [
+      "scripts/trigger-runtime/completion-ack.test.mjs",
+      "scripts/trigger-runtime/child-completion.test.mjs",
+    ],
   },
 ];
 

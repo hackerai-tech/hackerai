@@ -19,6 +19,7 @@ import {
   BROWSER_WRAPPER_AGES,
   BROWSER_OPEN_IDLE_ENV_VALUES,
   BROWSER_DAEMON_DEADLINE_PHASES,
+  BROWSER_CLI_AT_PREPARE_STATUSES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -400,6 +401,11 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
     "missing" | "permission" | "not_directory" | "other";
   capture_deadline_diagnostic_version?: 1;
   capture_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
+  capture_cli_at_prepare_diagnostic_version?: 1;
+  capture_cli_at_prepare_status?: (typeof BROWSER_CLI_AT_PREPARE_STATUSES)[number];
+  capture_cli_at_prepare_major?: number;
+  capture_cli_at_prepare_minor?: number;
+  capture_cli_at_prepare_patch?: number;
   capture_wrapper_receipt_version?: 1;
   capture_wrapper_action?: (typeof BROWSER_WRAPPER_ACTIONS)[number];
   capture_wrapper_phase?: "started" | "completed";
@@ -594,6 +600,11 @@ export async function captureBrowserFrame(
         | "capture_wrapper_option_prefix_completed"
         | "capture_deadline_diagnostic_version"
         | "capture_deadline_phase"
+        | "capture_cli_at_prepare_diagnostic_version"
+        | "capture_cli_at_prepare_status"
+        | "capture_cli_at_prepare_major"
+        | "capture_cli_at_prepare_minor"
+        | "capture_cli_at_prepare_patch"
         | "capture_open_receipt_version"
         | "capture_open_receipt_status"
         | "capture_open_phase"
@@ -639,12 +650,38 @@ export async function captureBrowserFrame(
           ) {
             // This daemon parser never sees successful images or bridge output;
             // bridge exit-6 packets have a separate strict parser below.
-            // Existing <=512-byte context plus the fixed compact process tuple.
+            // Existing context plus compact process/CLI tuples retain the 544-byte cap.
             const stdout =
               result &&
               Object.getOwnPropertyDescriptor(result, "stdout")?.value;
             if (typeof stdout === "string" && stdout.length <= 544) {
               const parsed = JSON.parse(stdout);
+              const cli = parsed?.cv;
+              if (
+                Array.isArray(cli) &&
+                cli[0] === 1 &&
+                Number.isInteger(cli[1]) &&
+                cli[1] >= 0 &&
+                cli[1] < BROWSER_CLI_AT_PREPARE_STATUSES.length &&
+                (cli[1] === 1
+                  ? cli.length === 3 &&
+                    Number.isInteger(cli[2]) &&
+                    cli[2] >= 0 &&
+                    cli[2] <= 999999999
+                  : cli.length === 2)
+              ) {
+                precondition.capture_cli_at_prepare_diagnostic_version = 1;
+                precondition.capture_cli_at_prepare_status =
+                  BROWSER_CLI_AT_PREPARE_STATUSES[cli[1]];
+                if (cli[1] === 1) {
+                  precondition.capture_cli_at_prepare_major = Math.floor(
+                    cli[2] / 1000000,
+                  );
+                  precondition.capture_cli_at_prepare_minor =
+                    Math.floor(cli[2] / 1000) % 1000;
+                  precondition.capture_cli_at_prepare_patch = cli[2] % 1000;
+                }
+              }
               const deadline = parsed?.deadline;
               if (
                 code === 3 &&
