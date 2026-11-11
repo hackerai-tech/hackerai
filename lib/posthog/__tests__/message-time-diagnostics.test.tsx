@@ -135,7 +135,7 @@ it("removes stale attached facts on reprocessing and retains the original except
   expect(shouldDropExpectedFrontendException(reprocessed)).toBe(false);
 });
 
-it("does not annotate non-stack errors or emit a separate event", () => {
+it("keeps formatter context off unrelated exceptions and preserves their event type", () => {
   recordMessageTimestampFailure("day_compare");
   const result = enrichFrontendExceptionEvent({
     event: "$exception",

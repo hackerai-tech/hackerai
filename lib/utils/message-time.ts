@@ -15,6 +15,7 @@ export const MESSAGE_TIMESTAMP_PHASES = [
 ] as const;
 export type MessageTimestampPhase = (typeof MESSAGE_TIMESTAMP_PHASES)[number];
 
+/** Format display time; an optional phase observer never changes the original thrown value. */
 export function formatMessageActionTimestamp(
   timestamp: number | undefined,
   now: Date = new Date(),
