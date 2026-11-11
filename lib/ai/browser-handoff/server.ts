@@ -272,6 +272,10 @@ export async function startBrowserRelay(
   return `https://${sandbox.getHost(relayPort)}`;
 }
 
+/**
+ * Renew an existing relay lease. The route keeps its recovery response for
+ * every rejection, while diagnostics can read the inline command's exit code.
+ */
 export async function renewBrowserRelay(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
