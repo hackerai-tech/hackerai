@@ -8,22 +8,6 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
-import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./agent-browser-runtime";
-import { ConnectedChallengeBrowser } from "../../captcha/connected-browser";
-import {
-  cloudflareInitScript,
-  cloudflareReleaseScript,
-} from "../../captcha/cloudflare";
-import {
-  visionCaptureResult,
-  type VisionCapture,
-  type VisionCaptureRequest,
-  type VisionCaptureResult,
-} from "../../captcha/vision-capture";
-import {
-  renderFocusedChallenge,
-  type FocusedChallenge,
-} from "../../captcha/vision-image";
 import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -35,7 +19,6 @@ type BrowserSession = {
   directory: string;
   ready: Promise<string | undefined>;
   registered: boolean;
-  managedCaptureEnabled: boolean;
   registration?: Promise<void>;
   preparationReason: BrowserPreparationReason;
   preparationReported?: boolean;
@@ -80,12 +63,6 @@ export class BrowserSessions {
   private readonly expiresAt = Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS;
   private readonly sessions = new Map<string, BrowserSession>();
   private readonly failedSessions = new Set<BrowserSession>();
-  private readonly connectedBrowsers = new Map<
-    string,
-    ConnectedChallengeBrowser
-  >();
-  private activeConnectedBrowser?: ConnectedChallengeBrowser;
-  private connectedTargetSelected = false;
   private closed = false;
   private cleanupPromise?: Promise<void>;
   private admissionProbeCount = 0;
@@ -97,11 +74,6 @@ export class BrowserSessions {
   constructor(
     private readonly handoffScope?: BrowserHandoffScope,
     private readonly onOwnershipLost?: () => void,
-    private readonly connectedChallengesEnabled: () => Promise<boolean> = async () =>
-      false,
-    private readonly cloudflare?: {
-      enabled: () => Promise<boolean>;
-    },
   ) {}
 
   private async observeRead<T>(
@@ -157,320 +129,6 @@ export class BrowserSessions {
 
   hasHandoffScope(): boolean {
     return !!this.handoffScope;
-  }
-
-  async hasConnectedChallengeScope(): Promise<boolean> {
-    return (
-      !this.closed &&
-      (await this.connectedChallengesEnabled().catch(() => false))
-    );
-  }
-
-  /** Resolve a flagless Cloud snapshot before dispatch, while retaining its sticky session. */
-  async captureChallengeTarget(
-    sandbox: AnySandbox,
-    sessionName?: string,
-    runtimeDefault = "default",
-  ) {
-    // Optional setup can be unavailable while ordinary browsing still works.
-    // Skip automatic inspection then; later ownership/name failures still throw.
-    if (isE2BSandbox(sandbox)) {
-      if (!this.sessions.get(sandbox.sandboxId)?.registered) return undefined;
-    } else if (
-      !(await this.hasConnectedChallengeScope()) ||
-      !sandbox.supportsCommandStdin() ||
-      runtimeDefault === "default"
-    )
-      return undefined;
-    let name = sessionName ?? runtimeDefault;
-    if (
-      sessionName === undefined &&
-      isE2BSandbox(sandbox) &&
-      runtimeDefault === "default"
-    ) {
-      const session = this.sessions.get(sandbox.sandboxId);
-      if (!session || this.closed) throw new Error("Browser ownership ended.");
-      name = (
-        await sandbox.files.read(`${session.directory}/active-session`, {
-          user: "root",
-          requestTimeoutMs: 8000,
-        })
-      ).trim();
-    }
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(name))
-      throw new Error("Browser session identity is unavailable.");
-    return { sandbox, sessionName: name };
-  }
-
-  /** Pin a CAPTCHA operation to an already-open browser owned by this run.
-   * JavaScript (including any solver response) goes over stdin, never argv,
-   * terminal streaming, checkpoint files or the model's tool result.
-   */
-  async getChallengeBrowser(
-    signal: AbortSignal,
-    target?: { sandbox: AnySandbox; sessionName: string },
-  ): Promise<{
-    identity: string;
-    evaluate: (script: string) => Promise<unknown>;
-    captureVision?: (request: VisionCaptureRequest) => Promise<VisionCapture>;
-    deliverCloudflare?: (
-      userAgent: string,
-      page: { url: string; documentId: string; originalUserAgent: string },
-      script: string,
-    ) => Promise<unknown>;
-  }> {
-    signal.throwIfAborted();
-    if (this.closed) throw new Error("Browser session ownership has ended.");
-    if (target ? !isE2BSandbox(target.sandbox) : this.connectedTargetSelected) {
-      const connected =
-        target && !isE2BSandbox(target.sandbox)
-          ? this.connectedBrowsers.get(
-              target.sandbox.getConnectionInfo().connectionId,
-            )
-          : this.activeConnectedBrowser;
-      if (!connected) throw new Error("Open an owned connected browser first.");
-      return connected.getBrowser(signal, target?.sessionName);
-    }
-    const scope = this.handoffScope;
-    const session =
-      target && isE2BSandbox(target.sandbox)
-        ? this.sessions.get(target.sandbox.sandboxId)
-        : [...this.sessions.values()].findLast((s) => s.registered);
-    if (
-      !scope ||
-      !session?.registered ||
-      !isE2BSandbox(session.sandbox) ||
-      this.closed
-    )
-      throw new Error(
-        "Open an owned Cloud browser before inspecting challenges.",
-      );
-    const sandbox = session.sandbox;
-    const name = (
-      await withCancellation(
-        sandbox.files.read(`${session.directory}/active-session`, {
-          user: "root",
-          requestTimeoutMs: 8000,
-          signal,
-        }),
-        signal,
-      )
-    ).trim();
-    if (!name || name.length > 80 || /[/\x00\r\n]/.test(name))
-      throw new Error("Browser session identity is unavailable.");
-    if (target && name !== target.sessionName)
-      throw new Error("The snapshot browser session changed.");
-    const assertOwned = async () => {
-      signal.throwIfAborted();
-      if (this.closed || Date.now() >= this.expiresAt)
-        throw new Error("Browser session ownership has ended.");
-      const state = await withCancellation(
-        getConvexClient().query(api.browserHandoffs.getForBackend, {
-          serviceKey: scope.serviceKey,
-          userId: scope.userId,
-          sessionId: session.sessionId,
-        }),
-        signal,
-      );
-      if (!state?.runActive || state.state !== "agent")
-        throw new Error("Browser is unavailable or waiting for human control.");
-      const currentName = (
-        await withCancellation(
-          sandbox.files.read(`${session.directory}/active-session`, {
-            user: "root",
-            requestTimeoutMs: 8000,
-            signal,
-          }),
-          signal,
-        )
-      ).trim();
-      if (currentName !== name)
-        throw new Error("The active browser session changed.");
-    };
-    await assertOwned();
-    return {
-      identity: `${session.sessionId}:${name}`,
-      deliverCloudflare: async (userAgent, page, script) => {
-        await assertOwned();
-        const handle = await sandbox.commands.run(
-          browserSessionCommand(
-            "cloudflare",
-            session.directory,
-            this.expiresAt,
-          ),
-          {
-            ...buildSandboxCommandOptions(sandbox),
-            stdin: true,
-            background: true,
-            timeoutMs: 10000,
-          },
-        );
-        try {
-          await assertOwned();
-          await withCancellation(
-            handle.sendStdin(
-              JSON.stringify({ userAgent, ...page, script, sessionName: name }),
-            ),
-            signal,
-          );
-          await withCancellation(handle.closeStdin(), signal);
-          const result = await withCancellation(handle.wait(), signal);
-          if (
-            result.exitCode !== 0 ||
-            result.stdout.length > 1024 ||
-            JSON.parse(result.stdout).result === undefined
-          )
-            throw new Error();
-          return JSON.parse(result.stdout).result;
-        } catch {
-          await handle.kill().catch(() => false);
-          signal.throwIfAborted();
-          throw new Error("Managed browser challenge delivery failed.");
-        }
-      },
-      captureVision: async (request) => {
-        await assertOwned();
-        const handle = await sandbox.commands.run(
-          browserSessionCommand("vision", session.directory, this.expiresAt),
-          {
-            ...buildSandboxCommandOptions(sandbox),
-            stdin: true,
-            background: true,
-            timeoutMs: 10_000,
-          },
-        );
-        let capture: VisionCaptureResult;
-        try {
-          await assertOwned();
-          await withCancellation(
-            handle.sendStdin(
-              JSON.stringify({
-                ...request,
-                // Per-operation bound for the daemon calls, not a recovery budget.
-                deadline: Date.now() + 8_000,
-                sessionName: name,
-              }),
-            ),
-            signal,
-          );
-          await withCancellation(handle.closeStdin(), signal);
-          const result = await withCancellation(handle.wait(), signal);
-          await assertOwned();
-          if (result.exitCode !== 0 || result.stdout.length > 4096)
-            throw new Error();
-          capture = visionCaptureResult.parse(JSON.parse(result.stdout));
-          if (capture.path !== request.path) throw new Error();
-        } catch {
-          await handle.kill().catch(() => false);
-          signal.throwIfAborted();
-          throw new Error("Challenge capture could not be qualified.");
-        }
-        // Small puzzles are unreadable at viewport scale. Enlarge the exact
-        // qualified bytes; any failure keeps the validated original usable.
-        const focus = async (): Promise<FocusedChallenge> => {
-          const original = await withCancellation(
-            sandbox.files.read(capture.path, {
-              format: "bytes",
-              user: "root",
-              requestTimeoutMs: 8000,
-              signal,
-            }),
-            signal,
-          );
-          const { bytes, ...geometry } = await renderFocusedChallenge(
-            original,
-            capture,
-            signal,
-          );
-          await assertOwned();
-          // The existing owner cleanup/watchdog erases this session's shim
-          // directory. Retain the original screenshot at the requested path.
-          // A unique focused path is advertised only after its write completes.
-          const imageDirectory = session.directory.replace(
-            "/dev/shm/",
-            "/tmp/",
-          );
-          const path = `${imageDirectory}/challenge-${randomBytes(12).toString("hex")}.png`;
-          await withCancellation(
-            sandbox.files.write(
-              path,
-              bytes.buffer.slice(
-                bytes.byteOffset,
-                bytes.byteOffset + bytes.byteLength,
-              ),
-              { user: "root", requestTimeoutMs: 8000, signal },
-            ),
-            signal,
-          );
-          return { path, ...geometry };
-        };
-        let focused: FocusedChallenge | undefined;
-        try {
-          focused = await focus();
-        } catch {
-          signal.throwIfAborted();
-        }
-        await assertOwned();
-        return focused
-          ? { ...capture, focused }
-          : { ...capture, focusedUnavailable: true };
-      },
-      evaluate: async (script) => {
-        await assertOwned();
-        // A status probe never starts a daemon. Refuse eval after idle shutdown.
-        const status = await withCancellation(
-          sandbox.commands.run(
-            browserSessionCommand("status", session.directory, this.expiresAt),
-            { ...buildSandboxCommandOptions(sandbox), timeoutMs: 5000 },
-          ),
-          signal,
-        );
-        const probe = JSON.parse(status.stdout);
-        if (
-          status.exitCode !== 0 ||
-          probe.success !== true ||
-          (probe.data ?? probe).connected !== true
-        )
-          throw new Error("The owned browser is no longer connected.");
-        const env = await this.prepare(sandbox);
-        signal.throwIfAborted();
-        const gateBin = `/tmp/${session.directory.split("/").at(-1)}/bin`;
-        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        const handle = await sandbox.commands.run(
-          `${gateBin}/agent-browser --session ${quote(name)} eval --stdin --json`,
-          {
-            ...buildSandboxCommandOptions(sandbox, undefined, {
-              AGENT_BROWSER_SOCKET_DIR: env.AGENT_BROWSER_SOCKET_DIR,
-              AGENT_BROWSER_CONFIG: env.AGENT_BROWSER_CONFIG,
-              AGENT_BROWSER_SESSION: name,
-              // Per-command bookkeeping marker, never a deployment setting.
-              HACKERAI_BROWSER_INSPECTION: "1",
-              AGENT_BROWSER_IDLE_TIMEOUT_MS: String(
-                AGENT_BROWSER_IDLE_TIMEOUT_MS,
-              ),
-            }),
-            stdin: true,
-            background: true,
-            timeoutMs: 10_000,
-          },
-        );
-        try {
-          await assertOwned();
-          await withCancellation(handle.sendStdin(script), signal);
-          await withCancellation(handle.closeStdin(), signal);
-          const result = await withCancellation(handle.wait(), signal);
-          signal.throwIfAborted();
-          if (result.stdout.length > 32768) throw new Error();
-          const parsed = JSON.parse(result.stdout);
-          if (parsed.success !== true) throw new Error();
-          return parsed.data?.result;
-        } catch {
-          await handle.kill().catch(() => false);
-          signal.throwIfAborted();
-          throw new Error("Browser challenge inspection or delivery failed.");
-        }
-      },
-    };
   }
 
   /** A completion repair may only wait on this owner's already-live browser. */
@@ -532,33 +190,8 @@ export class BrowserSessions {
         "Browser session ownership has ended. Start a new Agent run.",
       );
     }
-    this.connectedTargetSelected = !isE2BSandbox(sandbox);
-    if (!isE2BSandbox(sandbox)) {
-      if (
-        !(await this.hasConnectedChallengeScope()) ||
-        !sandbox.supportsCommandStdin()
-      ) {
-        this.activeConnectedBrowser = undefined;
-        return {};
-      }
-      if (this.closed) throw new Error("Browser session ownership has ended.");
-      const connectionId = sandbox.getConnectionInfo().connectionId;
-      let browser = this.connectedBrowsers.get(connectionId);
-      if (!browser) {
-        browser = new ConnectedChallengeBrowser(
-          sandbox,
-          this.expiresAt,
-          this.cloudflare,
-        );
-        this.connectedBrowsers.set(connectionId, browser);
-      } else browser.reconnect(sandbox);
-      this.activeConnectedBrowser = browser;
-      // An optional solver must not prevent ordinary terminal commands on
-      // hosts without Node or with incompatible browser configuration. The
-      // failed owner remains unavailable to challenge operations for this run.
-      return browser.prepare().catch(() => ({}));
-    }
-    this.activeConnectedBrowser = undefined;
+    // Only Cloud sandboxes have a private, gated browser namespace.
+    if (!isE2BSandbox(sandbox)) return {};
     if (Date.now() >= this.expiresAt)
       throw new Error(
         "Browser session ownership has ended. Start a new Agent run.",
@@ -569,32 +202,18 @@ export class BrowserSessions {
     const gate = this.hasHandoffScope();
     let session = this.sessions.get(sandboxId);
     if (!session) {
-      // Publish the preparation promise before awaiting rollout I/O, so two
+      // Publish the preparation promise before awaiting sandbox I/O, so two
       // commands preparing the same sandbox retain one owner and namespace.
       const directory = `/dev/shm/hackerai-browser-${randomBytes(12).toString("hex")}`;
       const ready = (async () => {
-        const captureManaged =
-          this.cloudflare &&
-          (await this.cloudflare?.enabled().catch(() => false));
-        if (this.closed)
-          throw new Error("Browser session ownership has ended.");
         const result = await sandbox.commands.run(
-          browserSessionCommand(
-            "prepare",
-            directory,
-            this.expiresAt,
-            gate,
-            captureManaged ? cloudflareInitScript() : undefined,
-          ),
+          browserSessionCommand("prepare", directory, this.expiresAt, gate),
           { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20000 },
         );
         if (result.exitCode !== 0)
           throw new Error("Could not prepare private browser sessions.");
         if (gate && !result.stdout?.trim())
           throw new Error("Browser command gate is unavailable.");
-        const owner = this.sessions.get(sandboxId);
-        if (owner?.directory === directory)
-          owner.managedCaptureEnabled = captureManaged === true;
         return gate ? result.stdout.trim() : undefined;
       })();
       session = {
@@ -603,7 +222,6 @@ export class BrowserSessions {
         directory,
         ready,
         registered: false,
-        managedCaptureEnabled: false,
         preparationReason: [
           "gate_only",
           "recognized_browser_command",
@@ -878,50 +496,6 @@ export class BrowserSessions {
           : "Open the required page in the owned Cloud browser before requesting human input. No handoff was requested.",
       );
     }
-    if (
-      current.state.state === "agent" &&
-      current.session.managedCaptureEnabled
-    ) {
-      // Bound optional preparation, but never admit takeover after its outcome
-      // becomes unknown: killing a CLI client may not cancel daemon-side JS.
-      const releaseStop = new AbortController();
-      const releaseSignal = signal
-        ? AbortSignal.any([signal, releaseStop.signal])
-        : releaseStop.signal;
-      const releaseTimer = setTimeout(
-        () => releaseStop.abort(new Error("Browser restoration timed out.")),
-        5_000,
-      );
-      try {
-        await withCancellation(
-          (async () => {
-            const target = await this.captureChallengeTarget(
-              current.session.sandbox,
-            );
-            if (!target)
-              throw new Error("Browser session ownership has ended.");
-            const browser = await this.getChallengeBrowser(
-              releaseSignal,
-              target,
-            );
-            await browser.evaluate(cloudflareReleaseScript());
-          })(),
-          releaseSignal,
-        );
-      } catch {
-        // Optional widget recovery must not prevent control of the browser.
-        // Admission below still checks ownership; this does not promise that
-        // the current CAPTCHA is usable or that manual verification can pass.
-        signal?.throwIfAborted();
-        if (releaseStop.signal.aborted)
-          throw new Error(
-            "Browser restoration did not finish. No handoff was requested. Inspect the browser state before requesting takeover again.",
-          );
-      } finally {
-        clearTimeout(releaseTimer);
-      }
-      signal?.throwIfAborted();
-    }
     const accepted = await withCancellation(
       getConvexClient().mutation(api.browserHandoffs.requestWaitForBackend, {
         serviceKey: scope.serviceKey,
@@ -1071,11 +645,6 @@ export class BrowserSessions {
 
   /** Drain in-flight setup before erasing active and failed directories. */
   private async cleanupAll(): Promise<void> {
-    await Promise.allSettled(
-      [...this.connectedBrowsers.values()].map((browser) => browser.close()),
-    );
-    this.connectedBrowsers.clear();
-    this.activeConnectedBrowser = undefined;
     const results = await Promise.allSettled(
       [...this.sessions.values(), ...this.failedSessions].map(
         async (session) => {

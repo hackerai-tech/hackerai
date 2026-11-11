@@ -8,7 +8,6 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
 import { isWebAssemblyAvailable } from "@/lib/utils/shiki";
 import type { SidebarTerminal } from "@/types/chat";
-import { CaptchaSolverActivity } from "./tools/CaptchaSolverActivity";
 
 const XtermRenderer = dynamic(
   () => import("./XtermRenderer").then((m) => m.XtermRenderer),
@@ -16,7 +15,6 @@ const XtermRenderer = dynamic(
 );
 
 interface TerminalCodeBlockProps {
-  captcha?: SidebarTerminal["captcha"];
   command: string;
   output?: string;
   isExecuting?: boolean;
@@ -243,7 +241,6 @@ export const TerminalCodeBlock = ({
   shellAction,
   rawBytes,
   executionPhase,
-  captcha,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -251,8 +248,6 @@ export const TerminalCodeBlock = ({
   useEffect(() => {
     setIsWrapped(wrap);
   }, [wrap]);
-
-  if (captcha) return <CaptchaSolverActivity activity={captcha} />;
 
   const isInteractiveAction = isInteractiveShellAction(shellAction);
   const commandPrefix = shellAction === "send" ? ">" : "$";

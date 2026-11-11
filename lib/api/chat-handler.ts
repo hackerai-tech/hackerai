@@ -961,7 +961,6 @@ export const createChatHandler = () => {
 
             const {
               cloudNetworkPrompt,
-              getCaptchaReceiptPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -1761,7 +1760,6 @@ export const createChatHandler = () => {
               trackedProvider,
               currentSystemPrompt,
               cloudNetworkPrompt,
-              getCaptchaReceiptPrompt,
               tools,
               mode,
               endpoint,

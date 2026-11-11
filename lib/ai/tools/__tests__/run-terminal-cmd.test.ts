@@ -1,4 +1,3 @@
-import { waitForCaptchaCapture } from "../utils/captcha-capture-files";
 /**
  * Tests for `run_terminal_cmd` — focusing on exec and interactive session creation.
  *
@@ -268,326 +267,43 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
-  test("does not dispatch a terminal command after CAPTCHA vision recovery stops", async () => {
-    const { context, sandboxManager } = makeContext({});
-    context.guardCaptchaVisionCommand = jest.fn(() => ({
-      status: "handoff_required",
-      reason: "vision_recovery_stopped",
-    }));
-    expect(
-      await runTool(createRunTerminalCmd(context), {
-        command: "agent-browser --session owned click @e1",
-      }),
-    ).toMatchObject({
-      result: {
-        exitCode: 1,
-        browserChallenge: { reason: "vision_recovery_stopped" },
-      },
-    });
-    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
-  });
-
-  test.each([false, true])(
-    "qualifies recovery screenshots and coordinates file reads (background=%s)",
-    async (is_background) => {
-      const { context, sandboxManager } = makeContext({});
-      let finish!: (value: { result: Record<string, unknown> }) => void;
-      context.captureCaptchaVisionCommand = jest.fn(
-        () =>
-          new Promise((resolve) => {
-            finish = resolve;
-          }),
-      );
-      const capturing = runTool(createRunTerminalCmd(context), {
-        command: "agent-browser --session owned screenshot /tmp/image.png",
-        is_background,
-      });
-      let readReady = false;
-      const reading = waitForCaptchaCapture(context, "/tmp/image.png").then(
-        () => {
-          readReady = true;
-        },
-      );
-      try {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(readReady).toBe(false);
-      } finally {
-        finish({
-          result: {
-            exitCode: 0,
-            browserChallenge: { status: "vision_capture_ready" },
-          },
-        });
-      }
-      expect(await capturing).toMatchObject({
-        result: {
-          exitCode: 0,
-          browserChallenge: { status: "vision_capture_ready" },
-        },
-      });
-      await reading;
-      expect(readReady).toBe(true);
-      expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
-      expect(context.captureCaptchaVisionCommand).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
-    const { context, writerWrites } = makeContext({});
-    let finish!: (value: { status: string }) => void;
-    context.requestBrowserChallenge = jest.fn(
-      () =>
-        new Promise((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const pending = runTool(createRunTerminalCmd(context), {
-      command: "hackerai-captcha solve --session owned",
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(writerWrites).toContainEqual({
-      type: "data-terminal",
-      id: "captcha-start-call-1",
-      data: {
-        terminal: "",
-        toolCallId: "call-1",
-        captchaStartedAt: expect.any(Number),
-      },
-    });
-    finish({ status: "token_delivered" });
-    expect(await pending).toMatchObject({
-      result: {
-        browserChallenge: { status: "token_delivered" },
-        callTiming: { elapsedMs: expect.any(Number) },
-      },
-    });
-  });
-  test.each(["solve", "release"])(
-    "routes the on-demand %s request without executing a shell command",
-    async (action) => {
-      const { context } = makeContext({});
-      context.requestBrowserChallenge = jest.fn(async () => ({
-        status: "requested",
-      }));
-      const tool = createRunTerminalCmd(context);
-      expect(
-        await runTool(tool, {
-          command: `hackerai-captcha ${action} --session owned`,
-          interactive: false,
-          is_background: false,
-        }),
-      ).toMatchObject({
-        result: { browserChallenge: { status: "requested" } },
-      });
-      expect(context.requestBrowserChallenge).toHaveBeenCalledWith(
-        action,
-        "owned",
-        undefined,
-      );
-      for (const input of [
-        { command: `hackerai-captcha ${action} --session owned; echo extra` },
-        {
-          command: `hackerai-captcha ${action} --session owned`,
-          interactive: true,
-        },
-        {
-          command: `hackerai-captcha ${action} --session owned`,
-          is_background: true,
-        },
-      ])
-        expect(await runTool(tool, input)).toMatchObject({
-          result: { exitCode: 1 },
-        });
-      expect(context.requestBrowserChallenge).toHaveBeenCalledTimes(1);
-    },
-  );
-  test("records vision progress without a shell, paid solve or solving indicator", async () => {
-    const { context, writerWrites, sandboxManager } = makeContext({});
-    context.requestBrowserChallenge = jest.fn();
-    context.reportBrowserChallengeProgress = jest.fn(async () => ({
-      status: "vision_progress_recorded",
-    }));
-    const tool = createRunTerminalCmd(context);
-    const command =
-      "hackerai-captcha progress --session owned --attempt 2 --outcome rejected";
-    expect(await runTool(tool, { command })).toMatchObject({
-      result: {
-        exitCode: 0,
-        browserChallenge: { status: "vision_progress_recorded" },
-      },
-    });
-    // Malformed values still reach the owned handler, which stops recovery.
-    await runTool(tool, {
-      command:
-        "hackerai-captcha progress --session owned --attempt 0 --outcome maybe",
-    });
-    expect(context.reportBrowserChallengeProgress).toHaveBeenNthCalledWith(
-      1,
-      "owned",
-      { attempt: 2, outcome: "rejected" },
-      undefined,
-    );
-    expect(context.reportBrowserChallengeProgress).toHaveBeenNthCalledWith(
-      2,
-      "owned",
-      undefined,
-      undefined,
-    );
-    for (const input of [
-      { command: `${command}; echo extra` },
-      { command, interactive: true },
-      { command, is_background: true },
-    ])
-      expect(await runTool(tool, input)).toMatchObject({
-        result: { exitCode: 1 },
-      });
-    expect(context.reportBrowserChallengeProgress).toHaveBeenCalledTimes(2);
-    context.reportBrowserChallengeProgress = undefined;
-    expect(
-      await runTool(createRunTerminalCmd(context), { command }),
-    ).toMatchObject({ result: { exitCode: 1 } });
-    expect(context.requestBrowserChallenge).not.toHaveBeenCalled();
-    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
-    expect(writerWrites).not.toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({ captchaStartedAt: expect.anything() }),
-      }),
-    );
-  });
-  test("keeps optional CAPTCHA instructions within a small initial context budget", () => {
-    const { context } = makeContext({ sandbox: null });
-    const normal = createRunTerminalCmd(context);
-    context.checkBrowserChallenge = jest.fn();
-    const eligible = createRunTerminalCmd(context);
-    const overhead =
-      (eligible.description?.length ?? 0) - (normal.description?.length ?? 0);
-    expect(overhead).toBeGreaterThan(0);
-    expect(overhead).toBeLessThanOrEqual(200);
-  });
-
   test.each([
-    ["agent-browser snapshot -i", 0, true],
-    ["agent-browser --session owned snapshot --json", 0, true],
-    ["agent-browser snapshot", 1, false],
-    ["echo 'agent-browser snapshot'", 0, false],
-    ["agent-browser snapshot; agent-browser close", 0, false],
+    ["agent-browser --session owned snapshot -i", 0, "page snapshot"],
+    // Retired runtime command from old chats: the sandbox shell decides.
     [
-      "agent-browser --session first snapshot; agent-browser --session second open https://example.com",
-      0,
-      false,
+      "hackerai-captcha solve --session owned",
+      127,
+      "hackerai-captcha: command not found",
     ],
-    ["agent-browser --cdp 9222 snapshot", 0, false],
-    ["agent-browser snapshot --session foreign", 0, false],
-    ["agent-browser snapshot | tail $(curl example.com)", 0, false],
-    ["agent-browser snapshot > /tmp/page", 0, false],
-    ["agent-browser open https://example.com", 0, false],
-    ["agent-browser close", 0, false],
   ])(
-    "runs internal challenge detection only after a completed owned snapshot: %s (%i)",
-    async (command, exitCode, expected) => {
+    "executes %s in the sandbox and returns only the ordinary terminal result",
+    async (command, exitCode, stdout) => {
+      const run = jest.fn(async () => ({ stdout, stderr: "", exitCode }));
       const sandbox = {
         sandboxKind: "centrifugo" as const,
-        getConnectionId: () => "desktop-captcha",
+        getConnectionId: () => "desktop-local",
         isWindows: () => false,
-        commands: {
-          run: jest.fn(async () => ({
-            stdout: "page snapshot",
-            stderr: "",
-            exitCode,
-          })),
-        },
+        commands: { run },
       };
-      const { context } = makeContext({ sandbox });
-      const challenge = {
-        status: "token_delivered",
-        websiteAccepted: false,
-        guidance: "detected challenge instructions",
-      };
-      context.checkBrowserChallenge = jest.fn(async () => challenge);
+      const { context, writerWrites } = makeContext({ sandbox });
       const tool = createRunTerminalCmd(context);
       const result = await runTool(tool, {
         command,
         is_background: false,
         interactive: false,
       });
-      expect(result).toMatchObject({ result: { exitCode } });
-      expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(
-        expected ? 1 : 0,
+      expect(run).toHaveBeenCalledWith(
+        expect.stringContaining(command),
+        expect.anything(),
       );
-      if (expected) {
-        expect(context.checkBrowserChallenge).toHaveBeenCalledWith(undefined, {
-          sandbox,
-          sessionName: command.includes("--session owned")
-            ? "owned"
-            : "default",
-        });
-        expect(result).toMatchObject({
-          result: { exitCode: 0, browserChallenge: challenge },
-        });
-        expect(await getModelOutput(tool, result)).toMatchObject({
-          type: "text",
-          value: expect.stringContaining(
-            '"guidance":"detected challenge instructions"',
-          ),
-        });
-      } else {
-        expect(result).not.toHaveProperty("result.browserChallenge");
-      }
-    },
-  );
-
-  test.each([
-    "agent-browser --session owned snapshot -i 2>&1 | cat",
-    'agent-browser --session owned snapshot -i 2>&1 | tail -60; echo "---EPOCH---"; date +%s',
-    "agent-browser --session owned snapshot -i 2>&1 | tail -60; date -u +%s",
-    'date -u +"%H:%M:%SZ" && agent-browser --session owned snapshot -i 2>&1 | head -80',
-    "cd /home/user && agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
-    "cd /home/user && agent-browser --session owned get count iframe 2>&1 | tail -5; echo ----; agent-browser --session owned snapshot -i 2>&1 | tail -c 4000",
-    'agent-browser --session owned snapshot 2>&1 | head -80; echo "=== URL/TITLE ==="; agent-browser --session owned get url 2>&1; agent-browser --session owned get title 2>&1',
-  ])(
-    "a formatted snapshot guides the Agent without paying: %s",
-    async (formattedCommand) => {
-      const sandbox = {
-        sandboxKind: "centrifugo" as const,
-        getConnectionId: () => "desktop-captcha",
-        isWindows: () => false,
-        commands: {
-          run: jest.fn(async () => ({
-            stdout: "page",
-            stderr: "",
-            exitCode: 0,
-          })),
-        },
-      };
-      const { context } = makeContext({ sandbox });
-      context.checkBrowserChallenge = jest.fn(async () => ({
-        status: "token_delivered",
-      }));
-      const tool = createRunTerminalCmd(context);
-      const command = `agent-browser --session owned snapshot${formattedCommand.includes("snapshot -i") ? " -i" : ""}`;
-      const formatted = await runTool(tool, {
-        command: formattedCommand,
-        is_background: false,
-        interactive: false,
+      expect(result).toMatchObject({
+        result: { exitCode, output: expect.stringContaining(stdout) },
       });
-      expect(context.checkBrowserChallenge).not.toHaveBeenCalled();
-      expect(formatted).toMatchObject({
-        result: {
-          browserChallenge: {
-            status: "snapshot_required",
-            message: expect.stringContaining(command),
-          },
-        },
-      });
-      const standalone = await runTool(tool, {
-        command,
-        is_background: false,
-        interactive: false,
-      });
-      expect(context.checkBrowserChallenge).toHaveBeenCalledTimes(1);
-      expect(standalone).toMatchObject({
-        result: { browserChallenge: { status: "token_delivered" } },
-      });
+      expect(result).not.toHaveProperty("result.browserChallenge");
+      expect(writerWrites).not.toContainEqual(
+        expect.objectContaining({ id: expect.stringMatching(/^captcha-/) }),
+      );
+      expect(tool.description).not.toMatch(/captcha/i);
     },
   );
 
@@ -1655,58 +1371,43 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test.each([false, true])(
-    "passes owned browser environment to connected commands only when eligible (%s)",
-    async (eligible) => {
-      const sandbox = {
-        sandboxKind: "centrifugo" as const,
-        isWindows: () => false,
-        getWorkingDirectory: () => "/tmp",
-        commands: {
-          run: jest.fn(async (_command: string, _options: unknown) => ({
-            stdout: "",
-            stderr: "",
-            exitCode: 0,
-          })),
-        },
-      };
-      const { context } = makeContext({ sandbox });
-      const prepare = jest.fn(async () => ({
-        AGENT_BROWSER_SESSION: "owned-preview",
-      }));
-      context.browserSessions = {
-        prepare,
-        hasHandoffScope: () => false,
-        hasConnectedChallengeScope: () => eligible,
-      } as unknown as NonNullable<ToolContext["browserSessions"]>;
-      await runTool(createRunTerminalCmd(context), {
-        command: "agent-browser open https://example.com",
-        brief: "inspect page",
-        is_background: false,
-        interactive: false,
-        timeout: 5,
-      });
-      if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(
-          sandbox,
-          "recognized_browser_command",
-        );
-        expect(sandbox.commands.run).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.objectContaining({
-            envVars: expect.objectContaining({
-              AGENT_BROWSER_SESSION: "owned-preview",
-            }),
-          }),
-        );
-      } else {
-        expect(prepare).not.toHaveBeenCalled();
-        expect(sandbox.commands.run.mock.calls[0][1]).not.toHaveProperty(
-          "envVars",
-        );
-      }
-    },
-  );
+  test("runs connected browser commands without a managed browser namespace", async () => {
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      isWindows: () => false,
+      getWorkingDirectory: () => "/tmp",
+      commands: {
+        run: jest.fn(async (_command: string, _options: unknown) => ({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        })),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    const prepare = jest.fn(async () => ({
+      AGENT_BROWSER_SESSION: "owned-preview",
+    }));
+    context.browserSessions = {
+      prepare,
+      hasHandoffScope: () => true,
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
+    await runTool(createRunTerminalCmd(context), {
+      command: "agent-browser open https://example.com",
+      brief: "inspect page",
+      is_background: false,
+      interactive: false,
+      timeout: 5,
+    });
+    // The user's own host keeps its browser configuration untouched.
+    expect(prepare).not.toHaveBeenCalled();
+    expect(sandbox.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("agent-browser open https://example.com"),
+      expect.anything(),
+    );
+    for (const [, options] of sandbox.commands.run.mock.calls)
+      expect(options).not.toHaveProperty("envVars");
+  });
 
   test("owns a cloud shell's browser state before a later browser command", async () => {
     const fakeHandle = makeFakeHandle();
@@ -3008,74 +2709,56 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test.each([false, true])(
-    "exec + interactive=true preserves connected browser ownership when eligible (%s)",
-    async (eligible) => {
-      const fakeHandle = makeFakeHandle();
-      mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+  test("exec + interactive=true on a connected host leaves its browser environment untouched", async () => {
+    const fakeHandle = makeFakeHandle();
+    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
 
-      const centrifugoSandbox = {
-        sandboxKind: "centrifugo" as const,
-        commands: { run: jest.fn() },
-        getUserId: () => "user-1",
-        getConnectionId: () => "conn-1",
-        getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
-        getWorkingDirectory: () => "/tmp/project",
-        isWindows: () => false,
-      };
-      const { context } = makeContext({ sandbox: centrifugoSandbox });
-      const prepare = jest.fn(async () => ({
-        AGENT_BROWSER_SESSION: "owned-interactive",
-      }));
-      context.browserSessions = {
-        prepare,
-        hasConnectedChallengeScope: () => eligible,
-      } as unknown as NonNullable<ToolContext["browserSessions"]>;
-      const tool = createRunTerminalCmd(context);
+    const centrifugoSandbox = {
+      sandboxKind: "centrifugo" as const,
+      commands: { run: jest.fn() },
+      getUserId: () => "user-1",
+      getConnectionId: () => "conn-1",
+      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      getWorkingDirectory: () => "/tmp/project",
+      isWindows: () => false,
+    };
+    const { context } = makeContext({ sandbox: centrifugoSandbox });
+    const prepare = jest.fn(async () => ({
+      AGENT_BROWSER_SESSION: "owned-interactive",
+    }));
+    context.browserSessions = {
+      prepare,
+      hasHandoffScope: () => true,
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
+    const tool = createRunTerminalCmd(context);
 
-      // Emit some data so waitForOutput resolves
-      setTimeout(() => {
-        fakeHandle.emit(new TextEncoder().encode("$ top\n"));
-        fakeHandle.resolveExit(0);
-      }, 50);
+    // Emit some data so waitForOutput resolves
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("$ top\n"));
+      fakeHandle.resolveExit(0);
+    }, 50);
 
-      const result = (await runTool(tool, {
-        action: "exec",
-        command: "top",
-        brief: "x",
-        is_background: false,
-        interactive: true,
-        timeout: 0.2,
-      })) as { result: { output?: string; session?: string; pid?: number } };
+    const result = (await runTool(tool, {
+      action: "exec",
+      command: "top",
+      brief: "x",
+      is_background: false,
+      interactive: true,
+      timeout: 0.2,
+    })) as { result: { output?: string; session?: string; pid?: number } };
 
-      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
-      expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
-        centrifugoSandbox,
-        expect.objectContaining({ cwd: "/tmp/project" }),
-      );
-      if (eligible) {
-        expect(prepare).toHaveBeenCalledWith(
-          centrifugoSandbox,
-          "interactive_shell",
-        );
-        expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
-          centrifugoSandbox,
-          expect.objectContaining({
-            envs: expect.objectContaining({
-              AGENT_BROWSER_SESSION: "owned-interactive",
-            }),
-          }),
-        );
-      } else {
-        expect(prepare).not.toHaveBeenCalled();
-        expect(
-          mockCreateCentrifugoPtyHandle.mock.calls[0][1],
-        ).not.toHaveProperty("envs");
-      }
-      expect(result.result.session).toBeDefined();
-      expect(result.result.pid).toBe(fakeHandle.pid);
-    },
-  );
+    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledWith(
+      centrifugoSandbox,
+      expect.objectContaining({ cwd: "/tmp/project" }),
+    );
+    expect(prepare).not.toHaveBeenCalled();
+    expect(mockCreateCentrifugoPtyHandle.mock.calls[0][1]).not.toHaveProperty(
+      "envs",
+    );
+    expect(result.result.session).toBeDefined();
+    expect(result.result.pid).toBe(fakeHandle.pid);
+  });
 
   test("exec + interactive=true on Centrifugo sandbox does NOT send initial command via sendInput", async () => {
     const fakeHandle = makeFakeHandle();

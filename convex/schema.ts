@@ -7,7 +7,6 @@ import {
 } from "./lib/settlementReceiptValidators";
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
-import { captchaKind, captchaAttemptState } from "./captchaValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -445,14 +444,26 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
-  // Provider expense audit, not a customer wallet ledger. No URLs, widget keys,
-  // cookies, API credentials or solutions are retained here.
+  // Historical provider expense audit for the retired CAPTCHA solver, not a
+  // customer wallet ledger. Retained for audit and account deletion;
+  // no new attempts are admitted. No URLs, widget keys, cookies, API
+  // credentials or solutions are retained here.
   captcha_attempts: defineTable({
     user_id: v.string(),
     chat_id: v.string(),
     run_id: v.string(),
-    kind: captchaKind,
-    state: captchaAttemptState,
+    kind: v.union(
+      v.literal("recaptcha_v2"),
+      v.literal("hcaptcha"),
+      v.literal("turnstile"),
+    ),
+    state: v.union(
+      v.literal("creating"),
+      v.literal("processing"),
+      v.literal("ready"),
+      v.literal("unsolvable"),
+      v.literal("unknown"),
+    ),
     task_id: v.optional(v.number()),
     cost_dollars: v.optional(v.number()),
     created_at: v.number(),

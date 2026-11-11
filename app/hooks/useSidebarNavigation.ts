@@ -8,6 +8,7 @@ import {
 import type { SidebarContent } from "@/types/chat";
 
 interface UseSidebarNavigationProps {
+  /** Undefined when the caller does not know whether the run is active. */
   isRunActive?: boolean;
   messages: Message[];
   sidebarContent: SidebarContent | null;
@@ -18,7 +19,7 @@ interface UseSidebarNavigationProps {
 }
 
 export const useSidebarNavigation = ({
-  isRunActive = false,
+  isRunActive,
   messages,
   sidebarContent,
   onNavigate,
