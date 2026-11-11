@@ -30,8 +30,9 @@ import {
   createUpdateVulnerabilityReport,
 } from "./findings";
 import {
-  createGetHttpRetestRecipe,
-  createSaveHttpRetestRecipe,
+  createCompleteFindingRetest,
+  createGetFindingRetests,
+  createStartFindingRetest,
 } from "./finding-retests";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
@@ -95,10 +96,10 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
-  /** Expose recipe save/read tools only when the caller has already
-   * evaluated the http_finding_retests_v1 rollout for this user. The tools
-   * re-check the flag and fail closed on every call. */
-  httpRetestToolsEnabled?: boolean;
+  /** Expose Agent retest history tools only when the caller has already
+   * evaluated the finding retest rollout for this user. The tools re-check
+   * the flag and fail closed on every call. */
+  findingRetestToolsEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -418,9 +419,13 @@ export const createTools = (
         context,
         () => sandbox,
       ),
-      ...(runtimePolicy.httpRetestToolsEnabled && {
-        get_http_retest_recipe: createGetHttpRetestRecipe(context),
-        save_http_retest_recipe: createSaveHttpRetestRecipe(context),
+      ...(runtimePolicy.findingRetestToolsEnabled && {
+        get_finding_retests: createGetFindingRetests(context),
+        start_finding_retest: createStartFindingRetest(context),
+        complete_finding_retest: createCompleteFindingRetest(
+          context,
+          () => sandbox,
+        ),
       }),
       ...(notesEnabled && {
         create_note: createCreateNote(context),

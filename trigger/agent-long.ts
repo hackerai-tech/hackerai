@@ -1,5 +1,5 @@
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
-import { isHttpFindingRetestsEnabled } from "@/lib/findings/http-retest-policy";
+import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
@@ -2369,7 +2369,7 @@ export const agentLongTask = task({
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
-      const httpRetestAssignment = isHttpFindingRetestsEnabled(userId);
+      const findingRetestAssignment = isFindingRetestsEnabled(userId);
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -3148,7 +3148,7 @@ export const agentLongTask = task({
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 environment: ctx.environment.type,
-                httpRetestToolsEnabled: await httpRetestAssignment,
+                findingRetestToolsEnabled: await findingRetestAssignment,
                 signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>

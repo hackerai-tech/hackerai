@@ -79,26 +79,24 @@ export interface FindingDetailRecord extends FindingSummary {
   updated_at: number;
 }
 
-export type FindingRetestRunView = {
-  run_id: string;
-  request_id: string;
+/** One Agent retest assessment. `interrupted` runs ended without a result. */
+export type FindingAgentRetestView = {
+  retest_id: string;
+  chat_id: string;
+  assistant_message_id: string;
   status: "running" | "finished";
-  recipe_version: number;
-  recipe: import("@/lib/findings/http-retest").HttpRetestRecipe;
   started_at: number;
   finished_at?: number;
-  outcome?: import("@/lib/findings/http-retest").HttpRetestOutcome;
-  reason?: import("@/lib/findings/http-retest").HttpRetestReason;
-  steps?: import("@/lib/findings/http-retest").HttpRetestStep[];
+  outcome?: import("@/lib/findings/agent-retest").AgentRetestOutcome;
+  interrupted?: boolean;
+  summary?: string;
+  reproduction_steps?: string[];
+  expected_result?: string;
+  observed_result?: string;
+  evidence_refs?: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+  limitations?: string[];
   environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
-  evidence_sha256?: string;
-};
-
-export type FindingRetestRecipeView = {
-  version: number;
-  recipe: import("@/lib/findings/http-retest").HttpRetestRecipe;
-  source: "user" | "agent";
-  created_at: number;
 };
 
 /** Response of GET /api/finding-retests. */
@@ -106,11 +104,8 @@ export type FindingRetestState =
   | { enabled: false }
   | {
       enabled: true;
-      finding: { finding_id: string; chat_title: string; target: string };
-      environment: { kind: "cloud" | "local"; revision: string };
-      recipe: FindingRetestRecipeView | null;
-      runs: FindingRetestRunView[];
-      server_time: number;
+      chat_title: string;
+      retests: FindingAgentRetestView[];
     };
 
 export interface FindingSourceChat {

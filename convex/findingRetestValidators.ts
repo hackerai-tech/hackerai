@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 
-// Storage shapes for executable HTTP retests. Semantic validation (origins,
-// paths, header policy, credential references) lives in
-// lib/findings/http-retest.ts and runs before every write.
+// Legacy storage shapes for executable HTTP retest rows created in Preview.
+// Nothing writes or reads these tables any more; the shapes stay so existing
+// rows still validate until deletion cleanup removes them.
 
 const identityPredicate = v.object({
   status: v.number(),
@@ -96,26 +96,4 @@ export const httpRetestStepValidator = v.object({
 export const httpRetestEnvironmentValidator = v.object({
   kind: v.union(v.literal("cloud"), v.literal("local"), v.literal("desktop")),
   name: v.optional(v.string()),
-});
-
-export const httpRetestRunViewValidator = v.object({
-  run_id: v.string(),
-  request_id: v.string(),
-  status: v.union(v.literal("running"), v.literal("finished")),
-  recipe_version: v.number(),
-  recipe: httpRetestRecipeValidator,
-  started_at: v.number(),
-  finished_at: v.optional(v.number()),
-  outcome: v.optional(httpRetestOutcomeValidator),
-  reason: v.optional(httpRetestReasonValidator),
-  steps: v.optional(v.array(httpRetestStepValidator)),
-  environment: v.optional(httpRetestEnvironmentValidator),
-  evidence_sha256: v.optional(v.string()),
-});
-
-export const httpRetestRecipeViewValidator = v.object({
-  version: v.number(),
-  recipe: httpRetestRecipeValidator,
-  source: v.union(v.literal("user"), v.literal("agent")),
-  created_at: v.number(),
 });

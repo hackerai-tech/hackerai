@@ -10,6 +10,10 @@ import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { ReportToolHandler } from "./tools/ReportToolHandler";
 import { FindingToolHandler } from "./tools/FindingToolHandler";
+import {
+  FindingRetestToolHandler,
+  type FindingRetestToolName,
+} from "./tools/FindingRetestToolHandler";
 import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
 import { FindingCard } from "./findings/FindingCard";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
@@ -428,6 +432,16 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
     case "tool-create_vulnerability_report":
       return <FindingToolHandler part={part} status={status} />;
+    case "tool-get_finding_retests":
+    case "tool-start_finding_retest":
+    case "tool-complete_finding_retest":
+      return (
+        <FindingRetestToolHandler
+          part={part}
+          status={status}
+          toolName={part.type.slice("tool-".length) as FindingRetestToolName}
+        />
+      );
 
     case "data-shared-finding":
       return part.data ? (

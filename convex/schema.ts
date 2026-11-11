@@ -33,6 +33,11 @@ import {
   httpRetestStepValidator,
 } from "./findingRetestValidators";
 import {
+  agentRetestEnvironmentValidator,
+  agentRetestEvidenceVerificationValidator,
+  agentRetestOutcomeValidator,
+} from "./findingAgentRetestValidators";
+import {
   researchCohortReportValidator,
   researchCoverageValidator,
   researchRunStatusValidator,
@@ -809,8 +814,42 @@ export default defineSchema({
     .index("by_user_and_latest", ["user_id", "latest_finding_at"])
     .index("by_user_chat", ["user_id", "chat_id"]),
 
-  // Immutable executable-retest recipe versions. Recipes name runtime
-  // credential bindings only; credential values are never stored.
+  // One Agent retest attempt for a finding. Provenance (message, run, stream)
+  // is server-supplied; the result is the Agent's own assessment and is
+  // immutable once finished. A record never changes the finding itself.
+  finding_agent_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this retest: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(agentRetestOutcomeValidator),
+    interrupted: v.optional(v.boolean()),
+    summary: v.optional(v.string()),
+    reproduction_steps: v.optional(v.array(v.string())),
+    expected_result: v.optional(v.string()),
+    observed_result: v.optional(v.string()),
+    evidence_refs: v.optional(v.array(v.string())),
+    evidence_verification: v.optional(agentRetestEvidenceVerificationValidator),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(agentRetestEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
+  // Legacy executable HTTP retest data from Preview. Hidden and read-only:
+  // retained only so existing rows validate and are removed by deletion.
   finding_retest_recipes: defineTable({
     user_id: v.string(),
     chat_id: v.string(),
@@ -824,8 +863,6 @@ export default defineSchema({
     .index("by_user_and_chat", ["user_id", "chat_id"])
     .index("by_user", ["user_id"]),
 
-  // One row per retest execution. A run is finalized once and then never
-  // changes; it keeps the recipe snapshot and controlled observations only.
   finding_retest_runs: defineTable({
     user_id: v.string(),
     chat_id: v.string(),

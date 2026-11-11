@@ -333,6 +333,24 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         latest_finding_at: 1,
       },
     ],
+    finding_agent_retest_runs: [
+      {
+        _id: "agent-retest-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: "message-user",
+        started_at: 1,
+      },
+      {
+        _id: "agent-retest-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+      },
+    ],
     finding_retest_recipes: [
       {
         _id: "retest-recipe-user",

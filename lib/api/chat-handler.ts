@@ -1,5 +1,5 @@
 import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
-import { isHttpFindingRetestsEnabled } from "@/lib/findings/http-retest-policy";
+import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -676,8 +676,8 @@ export const createChatHandler = () => {
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
-      const httpRetestAssignment = isAgentMode(mode)
-        ? isHttpFindingRetestsEnabled(userId)
+      const findingRetestAssignment = isAgentMode(mode)
+        ? isFindingRetestsEnabled(userId)
         : Promise.resolve(false);
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
@@ -1002,7 +1002,7 @@ export const createChatHandler = () => {
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
-                httpRetestToolsEnabled: await httpRetestAssignment,
+                findingRetestToolsEnabled: await findingRetestAssignment,
                 signal: userStopSignal.signal,
               },
             );

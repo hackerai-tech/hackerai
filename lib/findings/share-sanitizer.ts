@@ -14,6 +14,13 @@ type SharedFindingPart = {
 };
 
 const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
+const PRIVATE_RETEST_TOOLS = new Set([
+  "get_finding_retests",
+  "start_finding_retest",
+  "complete_finding_retest",
+  "get_http_retest_recipe",
+  "save_http_retest_recipe",
+]);
 
 const sanitizeFindingToolPart = (part: any): SharedFindingPart | null => {
   const output = part?.output?.result ?? part?.output;
@@ -52,6 +59,13 @@ const sanitizeFindingToolPart = (part: any): SharedFindingPart | null => {
 
 export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
   parts.flatMap((part) => {
+    if (
+      (part?.type === "dynamic-tool" &&
+        PRIVATE_RETEST_TOOLS.has(part?.toolName)) ||
+      (typeof part?.type === "string" &&
+        PRIVATE_RETEST_TOOLS.has(part.type.replace(/^tool-/, "")))
+    )
+      return [];
     if (
       part?.type === "dynamic-tool" &&
       [
