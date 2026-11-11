@@ -75,16 +75,20 @@ it("waits for Convex authentication before exposing skills or requesting access"
   ).toBeVisible();
 });
 
-it("requires review and explicit save for conversation text", async () => {
-  render(<MySkills conversationText="Private draft methodology" />);
-  fireEvent.click(await screen.findByRole("button", { name: "Save as skill" }));
-  expect(screen.getByLabelText("Methodology (Markdown)")).toHaveValue(
-    "Private draft methodology",
-  );
-  expect(mockSave).not.toHaveBeenCalled();
+it("saves a new skill only on explicit save, without sending its text to analytics", async () => {
+  render(<MySkills />);
+  fireEvent.click(await screen.findByRole("button", { name: "Manage skills" }));
+  fireEvent.keyDown(screen.getByRole("button", { name: "Add", exact: true }), {
+    key: "Enter",
+  });
+  fireEvent.click(screen.getByRole("menuitem", { name: "New skill" }));
   fireEvent.change(screen.getByLabelText("Name"), {
     target: { value: "Reviewed workflow" },
   });
+  fireEvent.change(screen.getByLabelText("Methodology (Markdown)"), {
+    target: { value: "Private draft methodology" },
+  });
+  expect(mockSave).not.toHaveBeenCalled();
   fireEvent.click(
     screen.getByRole("button", { name: "Save skill", exact: true }),
   );
@@ -95,12 +99,14 @@ it("requires review and explicit save for conversation text", async () => {
       content: "Private draft methodology",
     }),
   );
-  expect(JSON.stringify(mockCapture.mock.calls)).not.toContain(
-    "Private draft methodology",
+  await waitFor(() =>
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "user_skill_saved" }),
+    ),
   );
-  expect(JSON.stringify(mockCapture.mock.calls)).not.toContain(
-    "Reviewed workflow",
-  );
+  const analytics = JSON.stringify(mockCapture.mock.calls);
+  expect(analytics).not.toContain("Private draft methodology");
+  expect(analytics).not.toContain("Reviewed workflow");
 });
 
 it("manages new-chat defaults separately from the composer's selection", async () => {

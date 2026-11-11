@@ -121,7 +121,7 @@ export default function AbusePage() {
                 What happens next
               </h2>
               <ol className="list-decimal space-y-4 pl-5 text-sm leading-6 marker:text-muted-foreground">
-                <li>We save your report and show you a case reference.</li>
+                <li>We receive your report for review.</li>
                 <li>
                   A report on its own does not suspend an account. Any action
                   requires review.

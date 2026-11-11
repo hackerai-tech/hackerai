@@ -7,7 +7,11 @@ import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
-import { browserBridgeCommand } from "./bridge-program";
+import {
+  browserBridgeCommand,
+  browserBridgeFailureContext,
+  type BrowserBridgeFailureContext,
+} from "./bridge-program";
 import {
   browserDaemonCommand,
   BROWSER_DAEMON_PRECONDITION_REASONS,
@@ -19,6 +23,7 @@ import {
 import {
   browserRelayProgram,
   RELAY_START_PROGRAM,
+  RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
 } from "./relay-program";
@@ -44,6 +49,11 @@ const sessionReadFailures = new WeakMap<
   ReturnType<typeof checkpointCloudErrorContext>
 >();
 
+const returnedRelayRenewExits = new WeakMap<
+  BrowserPreviewUnavailable,
+  number
+>();
+
 /** Read closed SDK classes and own numeric exit data, never command output. */
 export function browserRelayRenewFailureContext(error: unknown) {
   let kind:
@@ -51,14 +61,22 @@ export function browserRelayRenewFailureContext(error: unknown) {
     "thrown_value";
   let exitCode: number | "none" | "other" = "none";
   try {
-    if (error instanceof CommandExitError) {
+    const returnedExit =
+      error instanceof BrowserPreviewUnavailable
+        ? returnedRelayRenewExits.get(error)
+        : undefined;
+    const isSdkExit = error instanceof CommandExitError;
+    if (isSdkExit || returnedExit !== undefined) {
       kind = "command_exit";
       exitCode = "other";
-      const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+      const result = isSdkExit
+        ? Object.getOwnPropertyDescriptor(error, "result")?.value
+        : undefined;
       const value =
-        result && typeof result === "object"
+        returnedExit ??
+        (result && typeof result === "object"
           ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
-          : undefined;
+          : undefined);
       if (
         typeof value === "number" &&
         Number.isInteger(value) &&
@@ -75,10 +93,14 @@ export function browserRelayRenewFailureContext(error: unknown) {
     kind = "unreadable";
     exitCode = "other";
   }
+  const reason = Object.entries(RELAY_RENEW_FAILURE_CODES).find(
+    ([, code]) => code === exitCode,
+  )?.[0];
   return {
-    relay_renew_diagnostic_version: 1,
+    relay_renew_diagnostic_version: 2,
     relay_renew_error_kind: kind,
     relay_renew_command_exit_code: exitCode,
+    ...(reason === undefined ? {} : { relay_renew_failure_reason: reason }),
   };
 }
 
@@ -250,6 +272,10 @@ export async function startBrowserRelay(
   return `https://${sandbox.getHost(relayPort)}`;
 }
 
+/**
+ * Renew an existing relay lease. The route keeps its recovery response for
+ * every rejection, while diagnostics can read the inline command's exit code.
+ */
 export async function renewBrowserRelay(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
@@ -265,8 +291,11 @@ export async function renewBrowserRelay(
       timeoutMs: 5000,
     },
   );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  if (result.exitCode !== 0) {
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    returnedRelayRenewExits.set(unavailable, result.exitCode);
+    throw unavailable;
+  }
 }
 
 export async function stopBrowserRelays(
@@ -345,7 +374,10 @@ function frameDecodeDiagnostic(
   };
 }
 
-export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
+type FrameCaptureDiagnostic = FrameDecodeDiagnostic &
+  BrowserBridgeFailureContext;
+
+export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_stage:
     | "stream_status"
     | "frame_bridge"
@@ -407,7 +439,6 @@ export type BrowserCaptureFailureContext = FrameDecodeDiagnostic & {
   capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
 };
-
 /**
  * Capture a validated frame, requesting a separate screenshot when freshness is required.
  * The optional failure observer receives only bounded context; observer failures
@@ -423,6 +454,7 @@ export async function captureBrowserFrame(
 ) {
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
+  let returnedBridgeFailure: unknown;
   try {
     const port =
       streamPort ??
@@ -435,8 +467,10 @@ export async function captureBrowserFrame(
         timeoutMs: 8_000,
       },
     );
-    if (result.exitCode !== 0)
+    if (result.exitCode !== 0) {
+      returnedBridgeFailure = result;
       throw new BrowserPreviewUnavailable("disconnected");
+    }
     let frame: {
       data: string;
       width: number;
@@ -603,8 +637,8 @@ export async function captureBrowserFrame(
             code >= 2 &&
             code <= 6
           ) {
-            // Only this controlled helper's bounded failure JSON is eligible;
-            // never inspect successful image responses or bridge command output.
+            // This daemon parser never sees successful images or bridge output;
+            // bridge exit-6 packets have a separate strict parser below.
             // Existing <=512-byte context plus the fixed compact process tuple.
             const stdout =
               result &&
@@ -803,6 +837,17 @@ export async function captureBrowserFrame(
       } catch {
         /* Preserve the original failure if optional context is unreadable. */
       }
+      let bridgeDiagnostic: BrowserBridgeFailureContext = {};
+      try {
+        if (stage === "frame_bridge")
+          bridgeDiagnostic = browserBridgeFailureContext(
+            error instanceof CommandExitError
+              ? Object.getOwnPropertyDescriptor(error, "result")?.value
+              : returnedBridgeFailure,
+          );
+      } catch {
+        /* Optional transport metadata cannot replace the original rejection. */
+      }
       try {
         onFailure({
           capture_stage: stage,
@@ -810,6 +855,7 @@ export async function captureBrowserFrame(
           capture_command_exit_code: code,
           ...precondition,
           ...decodeDiagnostic,
+          ...bridgeDiagnostic,
         });
       } catch {
         /* Observers cannot change capture behavior. */
@@ -858,32 +904,96 @@ export async function resizeBrowserViewport(
   return { ...frame, width, height };
 }
 
+export type BrowserInputFailureContext = {
+  input_diagnostic_version: 1;
+  input_stage:
+    | "read_stream_port"
+    | "start_bridge"
+    | "send_stdin"
+    | "close_stdin"
+    | "wait_bridge"
+    | "bridge_result";
+  input_error_kind: string;
+  input_http_status: number | "none" | "other";
+  input_command_exit_code: number | "none" | "other";
+  input_type_error_signal?: "fetch_failed" | "other_type_error" | "unreadable";
+  input_transport_code?: string;
+};
+
+/** Preserve the input operation while optionally reporting only its failed await. */
 export async function sendBrowserInput(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
   events: ReadonlyArray<Record<string, unknown>>,
   streamPort?: number,
+  onFailure?: (context: BrowserInputFailureContext) => void,
 ) {
-  const port =
-    streamPort ??
-    (await getPrivateStreamPort(sandbox, session, browserSessionName));
-  const handle = await sandbox.commands.run(
-    browserBridgeCommand(port, "input"),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      background: true,
-      stdin: true,
-      timeoutMs: 8_000,
-    },
-  );
-  // Text, including passwords, is sent only through protected process stdin.
-  // It is never interpolated into a command, logged, or persisted.
-  await handle.sendStdin(JSON.stringify(events));
-  await handle.closeStdin();
-  const result = await handle.wait();
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  let stage: BrowserInputFailureContext["input_stage"] = "read_stream_port";
+  let exitCode: BrowserInputFailureContext["input_command_exit_code"] = "none";
+  try {
+    const port =
+      streamPort ??
+      (await getPrivateStreamPort(sandbox, session, browserSessionName));
+    stage = "start_bridge";
+    const handle = await sandbox.commands.run(
+      browserBridgeCommand(port, "input"),
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        background: true,
+        stdin: true,
+        timeoutMs: 8_000,
+      },
+    );
+    // Text, including passwords, remains only in protected process stdin.
+    stage = "send_stdin";
+    await handle.sendStdin(JSON.stringify(events));
+    stage = "close_stdin";
+    await handle.closeStdin();
+    stage = "wait_bridge";
+    const result = await handle.wait();
+    stage = "bridge_result";
+    const resultCode = result.exitCode;
+    if (resultCode !== 0) {
+      exitCode =
+        Number.isInteger(resultCode) && resultCode >= 0 && resultCode <= 255
+          ? resultCode
+          : "other";
+      throw new BrowserPreviewUnavailable("disconnected");
+    }
+  } catch (error) {
+    if (onFailure) {
+      try {
+        const cloud = checkpointCloudErrorContext(error);
+        const command = browserRelayRenewFailureContext(error);
+        onFailure({
+          input_diagnostic_version: 1,
+          input_stage: stage,
+          input_error_kind:
+            command.relay_renew_error_kind === "command_exit" ||
+            command.relay_renew_error_kind === "timeout"
+              ? command.relay_renew_error_kind
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : cloud.cloud_error_kind,
+          input_http_status: cloud.cloud_http_status,
+          input_command_exit_code:
+            exitCode === "none"
+              ? command.relay_renew_command_exit_code
+              : exitCode,
+          ...(cloud.cloud_type_error_signal === undefined
+            ? {}
+            : {
+                input_type_error_signal: cloud.cloud_type_error_signal,
+                input_transport_code: cloud.cloud_transport_code,
+              }),
+        });
+      } catch {
+        // Optional observers cannot replace the original error or retry input.
+      }
+    }
+    throw error;
+  }
 }
 
 export async function setAgentBrowserPaused(

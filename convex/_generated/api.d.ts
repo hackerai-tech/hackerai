@@ -9,6 +9,7 @@
  */
 
 import type * as abuseCases from "../abuseCases.js";
+import type * as abuseIntake from "../abuseIntake.js";
 import type * as abuseNotificationActions from "../abuseNotificationActions.js";
 import type * as abuseNotifications from "../abuseNotifications.js";
 import type * as accountIdentities from "../accountIdentities.js";
@@ -42,6 +43,7 @@ import type * as influencerAnalytics from "../influencerAnalytics.js";
 import type * as influencerValidators from "../influencerValidators.js";
 import type * as influencers from "../influencers.js";
 import type * as involuntaryChurn from "../involuntaryChurn.js";
+import type * as lib_abuseQueue from "../lib/abuseQueue.js";
 import type * as lib_abuseValidators from "../lib/abuseValidators.js";
 import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
 import type * as lib_browserHandoffState from "../lib/browserHandoffState.js";
@@ -54,6 +56,7 @@ import type * as lib_goalInputTiming from "../lib/goalInputTiming.js";
 import type * as lib_goalValidators from "../lib/goalValidators.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
 import type * as lib_legacyEngagementScope from "../lib/legacyEngagementScope.js";
+import type * as lib_localSandboxHeartbeat from "../lib/localSandboxHeartbeat.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_nextActionsState from "../lib/nextActionsState.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
@@ -110,6 +113,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   abuseCases: typeof abuseCases;
+  abuseIntake: typeof abuseIntake;
   abuseNotificationActions: typeof abuseNotificationActions;
   abuseNotifications: typeof abuseNotifications;
   accountIdentities: typeof accountIdentities;
@@ -143,6 +147,7 @@ declare const fullApi: ApiFromModules<{
   influencerValidators: typeof influencerValidators;
   influencers: typeof influencers;
   involuntaryChurn: typeof involuntaryChurn;
+  "lib/abuseQueue": typeof lib_abuseQueue;
   "lib/abuseValidators": typeof lib_abuseValidators;
   "lib/branchedChatTitle": typeof lib_branchedChatTitle;
   "lib/browserHandoffState": typeof lib_browserHandoffState;
@@ -155,6 +160,7 @@ declare const fullApi: ApiFromModules<{
   "lib/goalValidators": typeof lib_goalValidators;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
   "lib/legacyEngagementScope": typeof lib_legacyEngagementScope;
+  "lib/localSandboxHeartbeat": typeof lib_localSandboxHeartbeat;
   "lib/logger": typeof lib_logger;
   "lib/nextActionsState": typeof lib_nextActionsState;
   "lib/retainedTail": typeof lib_retainedTail;

@@ -376,6 +376,13 @@ export const createTools = (
       : undefined;
   context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
   context.requestBrowserChallenge = checkBrowserChallenge?.request;
+  context.reportBrowserChallengeProgress =
+    checkBrowserChallenge?.reportProgress;
+  context.captureCaptchaVisionCommand =
+    checkBrowserChallenge?.captureVisionCommand;
+  context.guardCaptchaVisionCommand = checkBrowserChallenge?.guardVisionCommand;
+  context.finishCaptchaVisionCommand =
+    checkBrowserChallenge?.finishVisionCommand;
 
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a

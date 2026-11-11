@@ -352,6 +352,137 @@ describe("proxy", () => {
   });
 
   it.each([
+    ["/", "GET", "root"],
+    ["/login?secret=private-query-marker", "GET", "login"],
+    ["/c/private-chat-marker", "POST", "chat_page"],
+    ["/api/private-path-marker", "PRIVATE-METHOD-MARKER", "api"],
+    ["/private-path-marker", "GET", "other_page"],
+  ])(
+    "observes unexpected AuthKit failure without private contents: %s",
+    async (pathname, method, routeKind) => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const oldBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+      const oldEnvironment = process.env.VERCEL_ENV;
+      process.env.VERCEL_GIT_COMMIT_SHA = "A".repeat(40);
+      process.env.VERCEL_ENV = "production";
+      const error = Object.assign(new Error("private-error-marker"), {
+        name: "private-name-marker",
+        status: 503,
+        code: "private-code-marker",
+        cause: Object.assign(new TypeError("private-cause-marker"), {
+          code: "ECONNRESET",
+        }),
+      });
+      try {
+        mockAuthkit.mockRejectedValueOnce(error);
+        const { default: proxy } = await import("../proxy");
+        await expect(
+          proxy(
+            createRequest({
+              pathname,
+              method,
+              cookieValues: { unrelated: "private-cookie-marker" },
+              headers: {
+                "x-vercel-id": "arn1::gtrbx-1794282623256-a92d4497977c",
+                authorization: "private-token-marker",
+              },
+            }),
+          ),
+        ).rejects.toBe(error);
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+        expect(warning).toHaveBeenCalledTimes(1);
+        const encoded = warning.mock.calls[0][0] as string;
+        expect(encoded).not.toContain("private-");
+        expect(JSON.parse(encoded)).toMatchObject({
+          event: "proxy_authkit_failure_context",
+          diagnostic_version: 1,
+          boundary: "proxy",
+          phase: "unexpected_initial_authkit",
+          route_kind: routeKind,
+          request_method: method === "PRIVATE-METHOD-MARKER" ? "OTHER" : method,
+          vercel_request_id: "arn1::gtrbx-1794282623256-a92d4497977c",
+          web_build_commit: "a".repeat(40),
+          environment: "production",
+          auth_refresh_error_kind: "other_error",
+          auth_refresh_error_status: 503,
+          auth_refresh_error_code: "other",
+          auth_refresh_cause_kind: "TypeError",
+          auth_refresh_cause_code: "ECONNRESET",
+        });
+      } finally {
+        warning.mockRestore();
+        if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+        else process.env.VERCEL_GIT_COMMIT_SHA = oldBuild;
+        if (oldEnvironment === undefined) delete process.env.VERCEL_ENV;
+        else process.env.VERCEL_ENV = oldEnvironment;
+      }
+    },
+  );
+
+  it("drops malformed correlation fields and preserves unreadable diagnostic errors", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const oldBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+    const oldEnvironment = process.env.VERCEL_ENV;
+    process.env.VERCEL_GIT_COMMIT_SHA = "private-build-marker";
+    process.env.VERCEL_ENV = "private-environment-marker";
+    const error = Object.defineProperty(
+      new Error("private-error-marker"),
+      "code",
+      {
+        get() {
+          throw new Error("private-getter-marker");
+        },
+      },
+    );
+    try {
+      mockAuthkit.mockRejectedValueOnce(error);
+      const { default: proxy } = await import("../proxy");
+      await expect(
+        proxy(
+          createRequest({
+            pathname: "/login",
+            headers: { "x-vercel-id": "private-header-marker" },
+          }),
+        ),
+      ).rejects.toBe(error);
+      expect(warning).toHaveBeenCalledTimes(1);
+      const encoded = warning.mock.calls[0][0] as string;
+      expect(encoded).not.toContain("private-");
+      const fields = JSON.parse(encoded);
+      expect(fields).toMatchObject({
+        environment: "unknown",
+        auth_refresh_error_kind: "unreadable_error",
+      });
+      expect(fields).not.toHaveProperty("vercel_request_id");
+      expect(fields).not.toHaveProperty("web_build_commit");
+    } finally {
+      warning.mockRestore();
+      if (oldBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+      else process.env.VERCEL_GIT_COMMIT_SHA = oldBuild;
+      if (oldEnvironment === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = oldEnvironment;
+    }
+  });
+
+  it("preserves the original unexpected AuthKit error if the diagnostic logger fails", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {
+      throw new Error("logger unavailable");
+    });
+    const error = new Error("original unexpected failure");
+    try {
+      mockAuthkit.mockRejectedValueOnce(error);
+      const { default: proxy } = await import("../proxy");
+      await expect(proxy(createRequest({ pathname: "/login" }))).rejects.toBe(
+        error,
+      );
+      expect(mockAuthkit).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it.each([
     "/abuse",
     "/api/abuse",
     "/api/analytics-consent",
@@ -853,7 +984,7 @@ describe("proxy", () => {
           event: "auth.session_refresh_failed",
           error: "Refresh failed",
           is_transient: isTransient,
-          auth_refresh_diagnostic_version: 1,
+          auth_refresh_diagnostic_version: 2,
           auth_refresh_error_kind: "Error",
           auth_refresh_error_status: null,
           auth_refresh_error_status_shape: "non_numeric",
@@ -1197,6 +1328,9 @@ describe("proxy", () => {
           ).rejects.toBe(recoveryError);
           expect(mockAuthkit).toHaveBeenCalledTimes(2);
           expect(mockNextResponseNext).not.toHaveBeenCalled();
+          expect(warning).toHaveBeenLastCalledWith(
+            expect.stringContaining('"phase":"anonymous_context_retry"'),
+          );
         } finally {
           warning.mockRestore();
         }

@@ -149,20 +149,18 @@ const emptyDraft: SkillDraft = { name: "", description: "", content: "" };
 type Editor = {
   id?: Id<"user_skills">;
   draft: SkillDraft;
-  source: "manual" | "upload" | "conversation" | "edit";
+  source: "manual" | "upload" | "edit";
 };
 
 export function MySkills({
   disabled = false,
   open,
   onOpenChange,
-  conversationText,
 }: {
   chatId?: string;
   disabled?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  conversationText?: string;
 }) {
   const enabled = useSkillsAccess();
   return enabled ? (
@@ -170,7 +168,6 @@ export function MySkills({
       disabled={disabled}
       open={open}
       onOpenChange={onOpenChange}
-      conversationText={conversationText}
     />
   ) : null;
 }
@@ -178,13 +175,10 @@ function SkillsControl({
   disabled,
   open: controlledOpen,
   onOpenChange,
-  conversationText,
 }: {
-  chatId?: string;
   disabled: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  conversationText?: string;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
@@ -216,21 +210,9 @@ function SkillsControl({
       setBusy(false);
     }
   }
-  function begin() {
-    setError("");
-    setOpen(true);
-    if (conversationText !== undefined)
-      setEditor({
-        source: "conversation",
-        draft: { ...emptyDraft, content: conversationText },
-      });
-  }
   useEffect(() => {
-    if (open)
-      capture("user_skills_exposed", {
-        surface: conversationText === undefined ? "library" : "conversation",
-      });
-  }, [open, conversationText]);
+    if (open) capture("user_skills_exposed", { surface: "library" });
+  }, [open]);
   const visibleSkills =
     library === undefined
       ? undefined
@@ -251,19 +233,15 @@ function SkillsControl({
           variant="ghost"
           size="sm"
           className="shrink-0"
-          onClick={begin}
+          onClick={() => {
+            setError("");
+            setOpen(true);
+          }}
           disabled={disabled}
-          aria-label={
-            conversationText === undefined ? "Manage skills" : "Save as skill"
-          }
           title="Manage private skills"
         >
           <BookOpen className="size-4" />
-          {conversationText === undefined ? (
-            <span>Manage skills</span>
-          ) : (
-            <span className="sr-only">Save as skill</span>
-          )}
+          <span>Manage skills</span>
         </Button>
       )}
       <Dialog

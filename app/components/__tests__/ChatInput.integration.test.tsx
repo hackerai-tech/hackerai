@@ -1210,7 +1210,10 @@ describe("ChatInput - Integration Tests", () => {
           name: string;
         }> = [];
         mockUseQuery.mockImplementation((query) =>
-          getFunctionName(query) === "localSandbox:listConnections"
+          [
+            "localSandbox:listConnectionDetails",
+            "localSandbox:getConnectionHeartbeats",
+          ].includes(getFunctionName(query))
             ? connections
             : undefined,
         );
@@ -1289,7 +1292,10 @@ describe("ChatInput - Integration Tests", () => {
         window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
         window.localStorage.setItem("sandbox-preference", "desktop");
         mockUseQuery.mockImplementation((query) =>
-          getFunctionName(query) === "localSandbox:listConnections"
+          [
+            "localSandbox:listConnectionDetails",
+            "localSandbox:getConnectionHeartbeats",
+          ].includes(getFunctionName(query))
             ? []
             : undefined,
         );
@@ -1360,7 +1366,10 @@ describe("ChatInput - Integration Tests", () => {
       } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
       mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
+        [
+          "localSandbox:listConnectionDetails",
+          "localSandbox:getConnectionHeartbeats",
+        ].includes(getFunctionName(query))
           ? [
               {
                 connectionId: "local-sandbox",
@@ -1571,7 +1580,10 @@ describe("ChatInput - Integration Tests", () => {
       } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
       mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
+        [
+          "localSandbox:listConnectionDetails",
+          "localSandbox:getConnectionHeartbeats",
+        ].includes(getFunctionName(query))
           ? [
               {
                 connectionId: "local-sandbox",
@@ -1700,7 +1712,10 @@ describe("ChatInput - Integration Tests", () => {
         } as ReturnType<typeof useAuth>);
         window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
         mockUseQuery.mockImplementation((query) =>
-          getFunctionName(query) === "localSandbox:listConnections"
+          [
+            "localSandbox:listConnectionDetails",
+            "localSandbox:getConnectionHeartbeats",
+          ].includes(getFunctionName(query))
             ? [
                 {
                   connectionId: "local-sandbox",
@@ -1760,7 +1775,10 @@ describe("ChatInput - Integration Tests", () => {
       } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
       mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
+        [
+          "localSandbox:listConnectionDetails",
+          "localSandbox:getConnectionHeartbeats",
+        ].includes(getFunctionName(query))
           ? [
               {
                 connectionId: "local-sandbox",

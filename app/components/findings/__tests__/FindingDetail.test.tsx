@@ -1,4 +1,8 @@
 import "@testing-library/jest-dom";
+import userEvent from "@testing-library/user-event";
+jest.mock("../FindingFollowupActions", () => ({
+  FindingFollowupActions: () => null,
+}));
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import {
   fireEvent,
@@ -340,12 +344,14 @@ describe("FindingDetail", () => {
   });
 });
 
-it("downloads the saved report in the sidebar without another investigation", () => {
+it("downloads the saved report in the sidebar without another investigation", async () => {
   render(<FindingDetail finding={finding} surface="computer_sidebar" />);
-  fireEvent.click(screen.getByRole("button", { name: "Download report" }));
+  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: /Markdown/ }));
+  await waitFor(() => expect(downloadFile).toHaveBeenCalled());
   expect(downloadFile).toHaveBeenCalledWith({
     filename: "finding-finding-1.md",
-    content: renderFindingMarkdown(finding),
+    content: expect.stringContaining(renderFindingMarkdown(finding)),
     mimeType: "text/markdown;charset=utf-8",
   });
 });
@@ -391,7 +397,7 @@ it("shows and exports saved verification gaps without calling them checked", () 
   expect(renderFindingMarkdown(saved)).toContain("/tmp/exploit.http");
 });
 
-it("shows assessment limits and includes them in the downloaded report", () => {
+it("shows assessment limits and includes them in the downloaded report", async () => {
   const saved = {
     ...finding,
     confidence: "medium" as const,
@@ -402,7 +408,9 @@ it("shows assessment limits and includes them in the downloaded report", () => {
   expect(screen.getByText(saved.counterevidence)).toBeVisible();
   expect(screen.getByText(saved.severity_change_conditions)).toBeVisible();
   expect(screen.getByText("medium", { exact: true })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Download report" }));
+  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: /Markdown/ }));
+  await waitFor(() => expect(downloadFile).toHaveBeenCalled());
   expect(downloadFile).toHaveBeenLastCalledWith(
     expect.objectContaining({
       content: expect.stringContaining(saved.counterevidence),
@@ -412,7 +420,7 @@ it("shows assessment limits and includes them in the downloaded report", () => {
 
 it("does not infer confidence for an older saved report", () => {
   render(<FindingDetail finding={finding} />);
-  expect(screen.getByText("Not recorded")).toBeVisible();
+  expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
   expect(renderFindingMarkdown(finding)).toContain(
     "Assessment confidence: Not recorded",
   );

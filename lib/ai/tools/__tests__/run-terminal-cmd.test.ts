@@ -1,3 +1,4 @@
+import { waitForCaptchaCapture } from "../utils/captcha-capture-files";
 /**
  * Tests for `run_terminal_cmd` — focusing on exec and interactive session creation.
  *
@@ -267,6 +268,70 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("does not dispatch a terminal command after CAPTCHA vision recovery stops", async () => {
+    const { context, sandboxManager } = makeContext({});
+    context.guardCaptchaVisionCommand = jest.fn(() => ({
+      status: "handoff_required",
+      reason: "vision_recovery_stopped",
+    }));
+    expect(
+      await runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned click @e1",
+      }),
+    ).toMatchObject({
+      result: {
+        exitCode: 1,
+        browserChallenge: { reason: "vision_recovery_stopped" },
+      },
+    });
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    "qualifies recovery screenshots and coordinates file reads (background=%s)",
+    async (is_background) => {
+      const { context, sandboxManager } = makeContext({});
+      let finish!: (value: { result: Record<string, unknown> }) => void;
+      context.captureCaptchaVisionCommand = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const capturing = runTool(createRunTerminalCmd(context), {
+        command: "agent-browser --session owned screenshot /tmp/image.png",
+        is_background,
+      });
+      let readReady = false;
+      const reading = waitForCaptchaCapture(context, "/tmp/image.png").then(
+        () => {
+          readReady = true;
+        },
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(readReady).toBe(false);
+      } finally {
+        finish({
+          result: {
+            exitCode: 0,
+            browserChallenge: { status: "vision_capture_ready" },
+          },
+        });
+      }
+      expect(await capturing).toMatchObject({
+        result: {
+          exitCode: 0,
+          browserChallenge: { status: "vision_capture_ready" },
+        },
+      });
+      await reading;
+      expect(readReady).toBe(true);
+      expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+      expect(context.captureCaptchaVisionCommand).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("starts live CAPTCHA progress before the provider finishes without exposing challenge data", async () => {
     const { context, writerWrites } = makeContext({});
     let finish!: (value: { status: string }) => void;
@@ -336,6 +401,59 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       expect(context.requestBrowserChallenge).toHaveBeenCalledTimes(1);
     },
   );
+  test("records vision progress without a shell, paid solve or solving indicator", async () => {
+    const { context, writerWrites, sandboxManager } = makeContext({});
+    context.requestBrowserChallenge = jest.fn();
+    context.reportBrowserChallengeProgress = jest.fn(async () => ({
+      status: "vision_progress_recorded",
+    }));
+    const tool = createRunTerminalCmd(context);
+    const command =
+      "hackerai-captcha progress --session owned --attempt 2 --outcome rejected";
+    expect(await runTool(tool, { command })).toMatchObject({
+      result: {
+        exitCode: 0,
+        browserChallenge: { status: "vision_progress_recorded" },
+      },
+    });
+    // Malformed values still reach the owned handler, which stops recovery.
+    await runTool(tool, {
+      command:
+        "hackerai-captcha progress --session owned --attempt 0 --outcome maybe",
+    });
+    expect(context.reportBrowserChallengeProgress).toHaveBeenNthCalledWith(
+      1,
+      "owned",
+      { attempt: 2, outcome: "rejected" },
+      undefined,
+    );
+    expect(context.reportBrowserChallengeProgress).toHaveBeenNthCalledWith(
+      2,
+      "owned",
+      undefined,
+      undefined,
+    );
+    for (const input of [
+      { command: `${command}; echo extra` },
+      { command, interactive: true },
+      { command, is_background: true },
+    ])
+      expect(await runTool(tool, input)).toMatchObject({
+        result: { exitCode: 1 },
+      });
+    expect(context.reportBrowserChallengeProgress).toHaveBeenCalledTimes(2);
+    context.reportBrowserChallengeProgress = undefined;
+    expect(
+      await runTool(createRunTerminalCmd(context), { command }),
+    ).toMatchObject({ result: { exitCode: 1 } });
+    expect(context.requestBrowserChallenge).not.toHaveBeenCalled();
+    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
+    expect(writerWrites).not.toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ captchaStartedAt: expect.anything() }),
+      }),
+    );
+  });
   test("keeps optional CAPTCHA instructions within a small initial context budget", () => {
     const { context } = makeContext({ sandbox: null });
     const normal = createRunTerminalCmd(context);

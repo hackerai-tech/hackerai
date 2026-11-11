@@ -16,7 +16,6 @@ import {
 } from "./lib/abuseValidators";
 import type { Doc } from "./_generated/dataModel";
 import { MAX_SUBAGENTS_PER_PARENT_RUN } from "../lib/ai/subagents/contracts";
-import { internal } from "./_generated/api";
 
 const operatorArgs = { serviceKey: v.string(), actor: v.string() };
 const caseArgs = { ...operatorArgs, reference: v.string() };
@@ -72,118 +71,9 @@ async function event(
   });
 }
 
-export const receive = mutation({
-  args: {
-    serviceKey: v.string(),
-    reference: v.string(),
-    digests: v.array(v.string()),
-    kind: v.union(v.literal("abuse"), v.literal("appeal")),
-    ciphertext: v.string(),
-    sourceHashes: v.array(v.string()),
-    emailHashes: v.array(v.string()),
-  },
-  returns: v.object({
-    outcome: v.union(
-      v.literal("received"),
-      v.literal("rate_limited"),
-      v.literal("conflict"),
-    ),
-    reference: v.optional(v.string()),
-  }),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-    if (process.env.ABUSE_INTAKE_ENABLED !== "true")
-      throw new Error("Abuse intake unavailable");
-    if (
-      !/^AB-[a-f0-9-]{36}$/.test(args.reference) ||
-      ![args.digests, args.sourceHashes, args.emailHashes].every(
-        (values) =>
-          values.length >= 1 &&
-          values.length <= 5 &&
-          values.every((value) => /^[a-f0-9]{64}$/.test(value)),
-      )
-    )
-      throw new Error("Invalid intake metadata");
-    boundedCiphertext(args.ciphertext);
-    const existing = await ctx.db
-      .query("abuse_cases")
-      .withIndex("by_reference", (q) => q.eq("reference", args.reference))
-      .unique();
-    if (existing)
-      return args.digests.includes(existing.digest)
-        ? { outcome: "received" as const, reference: existing.reference }
-        : { outcome: "conflict" as const };
-    const now = Date.now();
-    const hour = Math.floor(now / 3_600_000);
-    const buckets = [
-      ...args.sourceHashes.map(
-        (hash) => [`source:${hash}:${hour}`, 5] as const,
-      ),
-      ...args.emailHashes.map((hash) => [`email:${hash}:${hour}`, 3] as const),
-    ] as const;
-    const limits = await Promise.all(
-      buckets.map(async ([bucket, maximum]) => ({
-        bucket,
-        maximum,
-        row: await ctx.db
-          .query("abuse_rate_limits")
-          .withIndex("by_bucket", (q) => q.eq("bucket", bucket))
-          .unique(),
-      })),
-    );
-    if (limits.some(({ row, maximum }) => row && row.count >= maximum))
-      return { outcome: "rate_limited" as const };
-    for (const { bucket, row } of limits) {
-      if (row) await ctx.db.patch(row._id, { count: row.count + 1 });
-      else
-        await ctx.db.insert("abuse_rate_limits", {
-          bucket,
-          count: 1,
-          expiresAt: (hour + 2) * 3_600_000,
-        });
-    }
-    // Only transient limiter hashes expire; case evidence has no automatic purge.
-    const expired = await ctx.db
-      .query("abuse_rate_limits")
-      .withIndex("by_expiresAt", (q) => q.lt("expiresAt", now))
-      .take(20);
-    for (const row of expired) await ctx.db.delete(row._id);
-    const caseId = await ctx.db.insert("abuse_cases", {
-      reference: args.reference,
-      digest: args.digests[0],
-      kind: args.kind,
-      ciphertext: args.ciphertext,
-      status: "new",
-      revision: 0,
-      evidenceHold: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.insert("abuse_events", {
-      caseId,
-      actor: "public_intake",
-      kind: "received",
-      createdAt: now,
-    });
-    // Enqueue atomically with the first receipt, never on idempotent retries.
-    // This is also an activation gate: reports received while off are not
-    // retroactively emailed. Only work already queued can pause and resume.
-    if (process.env.ABUSE_SMTP_PASSWORD) {
-      const notificationId = await ctx.db.insert("abuse_notifications", {
-        caseId,
-        status: "pending",
-        attempts: 0,
-        updatedAt: now,
-      });
-      await ctx.scheduler.runAfter(
-        0,
-        internal.abuseNotificationActions.deliver,
-        { notificationId },
-      );
-    }
-    return { outcome: "received" as const, reference: args.reference };
-  },
-});
+// Older web deployments use this name while the new intake rolls out.
+// Both paths queue email; neither creates another case.
+export { receive } from "./abuseIntake";
 
 export const list = query({
   args: {

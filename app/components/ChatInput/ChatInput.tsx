@@ -104,6 +104,7 @@ interface ChatInputProps {
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
+  landingAppearance?: boolean;
   hasMessages?: boolean;
   hideStop?: boolean;
   isNewChat?: boolean;
@@ -306,6 +307,7 @@ const ChatInputContent = ({
   onSendNow,
   status,
   isCentered = false,
+  landingAppearance = false,
   hasMessages = false,
   hideStop = false,
   isNewChat = false,
@@ -1597,7 +1599,7 @@ const ChatInputContent = ({
               />
             )}
             <div
-              className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+              className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 transition-colors dark:border-border ${landingAppearance ? "min-h-[130px] shadow-[0_18px_55px_rgba(0,0,0,0.24)]" : "min-h-[96px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)]"} ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
               data-testid="chat-input-surface"
               data-panels-joined={hasJoinedComposerPanels || undefined}
               onPointerDownCapture={holdComposerFocusForPointer}
@@ -1639,7 +1641,6 @@ const ChatInputContent = ({
                 onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
                 onPredictionExposed={nextActions.exposed}
                 onPredictionTyping={nextActions.recordTyping}
-                composerFocused={composerFocused}
                 onDismissPrediction={nextActions.dismiss}
                 composerRef={composerTextareaRef}
                 draftId={draftId}

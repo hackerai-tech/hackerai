@@ -1,12 +1,15 @@
 import {
+  BrowserPreviewUnavailable,
   browserSessionReadFailureContext,
   browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
+  renewBrowserRelay,
   resizeBrowserViewport,
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
+import { RELAY_RENEW_FAILURE_CODES } from "../relay-program";
 
 jest.mock("server-only", () => ({}));
 jest.mock("@e2b/code-interpreter", () => ({
@@ -36,6 +39,43 @@ const location = {
 };
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
+
+it.each([true, false])(
+  "adds only the controlled bridge-failure tuple while preserving rejection (SDK throws: %s)",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 6,
+      stdout: JSON.stringify({
+        bridge_failure: [1, "early_close", "awaiting_frame", 1006],
+        private: "PRIVATE",
+      }),
+      stderr: "PRIVATE",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValue(original);
+    else sandbox.commands.run.mockResolvedValue(result);
+    const observe = jest.fn();
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else await expect(capture).rejects.toThrow();
+    expect(observe.mock.calls[0][0]).toMatchObject({
+      capture_stage: "frame_bridge",
+      capture_bridge_diagnostic_version: 1,
+      capture_bridge_failure: "early_close",
+      capture_bridge_phase: "awaiting_frame",
+      capture_bridge_close_code: 1006,
+    });
+    expect(JSON.stringify(observe.mock.calls[0][0])).not.toContain("PRIVATE");
+  },
+);
 
 it.each([
   [undefined, false],
@@ -1108,11 +1148,42 @@ it.each([
   (_label, createError, kind, exitCode) => {
     const fields = browserRelayRenewFailureContext(createError());
     expect(fields).toEqual({
-      relay_renew_diagnostic_version: 1,
+      relay_renew_diagnostic_version: 2,
       relay_renew_error_kind: kind,
       relay_renew_command_exit_code: exitCode,
     });
     expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([true, false])(
+  "retains a bounded renewal reason when the SDK throws: %s",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: RELAY_RENEW_FAILURE_CODES.lock_busy,
+      stdout: "PRIVATE",
+      stderr: "PRIVATE",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+
+    const failure = await renewBrowserRelay(
+      sandbox as unknown as Sandbox,
+      location,
+      "PRIVATE",
+      Date.now() + 25_000,
+    ).catch((error: unknown) => error);
+
+    if (throws) expect(failure).toBe(original);
+    else expect(failure).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect(browserRelayRenewFailureContext(failure)).toEqual({
+      relay_renew_diagnostic_version: 2,
+      relay_renew_error_kind: "command_exit",
+      relay_renew_command_exit_code: RELAY_RENEW_FAILURE_CODES.lock_busy,
+      relay_renew_failure_reason: "lock_busy",
+    });
   },
 );
 
@@ -1136,7 +1207,7 @@ it.each(["accessor", "unbounded", "unreadable"] as const)(
     Object.defineProperty(error, "result", { value: result });
     const fields = browserRelayRenewFailureContext(error);
     expect(fields).toEqual({
-      relay_renew_diagnostic_version: 1,
+      relay_renew_diagnostic_version: 2,
       relay_renew_error_kind:
         shape === "unreadable" ? "unreadable" : "command_exit",
       relay_renew_command_exit_code: "other",
@@ -1343,3 +1414,83 @@ it("isolates a frame-decode observer failure and leaves valid frames free of dia
   ).resolves.toMatchObject({ width: 800, height: 600 });
   expect(observed).not.toHaveBeenCalled();
 });
+
+it("delivers v2 bridge categories through the actual capture helper without changing its rejection", async () => {
+  const sandbox = fixture();
+  const original = new CommandExitError({
+    exitCode: 6,
+    stdout: JSON.stringify({
+      bridge_failure: [
+        2,
+        "error",
+        "message_received",
+        "none",
+        "protocol_masked",
+        22,
+      ],
+    }),
+    stderr: "PRIVATE_FRAME",
+  });
+  sandbox.commands.run.mockRejectedValueOnce(original);
+  const observe = jest.fn();
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    ),
+  ).rejects.toBe(original);
+  expect(observe).toHaveBeenCalledWith(
+    expect.objectContaining({
+      capture_stage: "frame_bridge",
+      capture_bridge_diagnostic_version: 2,
+      capture_bridge_error_reason: "protocol_masked",
+      capture_bridge_node_major: 22,
+    }),
+  );
+  expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+});
+
+it.each([true, false])(
+  "forwards a frame watchdog receipt through the actual capture observer (SDK throws: %s)",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 3,
+      stdout: JSON.stringify({
+        bridge_failure: [3, "deadline", "awaiting_frame", "none"],
+      }),
+      stderr: "PRIVATE_FRAME",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn();
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else await expect(capture).rejects.toThrow();
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capture_stage: "frame_bridge",
+        capture_error_kind: throws ? "command_exit" : "preview_unavailable",
+        capture_command_exit_code: throws ? 3 : "none",
+        capture_bridge_diagnostic_version: 3,
+        capture_bridge_failure: "deadline",
+        capture_bridge_phase: "awaiting_frame",
+        capture_bridge_close_code: "none",
+      }),
+    );
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  },
+);

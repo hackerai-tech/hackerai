@@ -2853,6 +2853,51 @@ describe("createChatLogger OpenRouter metadata", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("logs OpenRouter's charged cost for non-BYOK usage", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_non_byok_provider_cost",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({ mode: "ask", isRegenerate: false });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          notesEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        {
+          inputTokens: 5264,
+          outputTokens: 18,
+          raw: {
+            cost: 0.0015,
+            cost_details: { upstream_inference_cost: 0.0012 },
+          },
+        },
+        { openrouter_is_byok: false },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.usage.total_cost).toBeCloseTo(0.0015);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });
 
 describe("createChatLogger provider stream timeout", () => {

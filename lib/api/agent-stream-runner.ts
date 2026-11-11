@@ -182,6 +182,7 @@ import {
 import {
   withProviderRequestSizeRecovery,
   type ProviderRequestRetryParams,
+  type ProviderRequestSizeRecoveryState,
 } from "@/lib/chat/provider-request-size-recovery";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -457,7 +458,7 @@ export type AgentStreamState = {
   lastStepInputTokens: number;
   /** One actual context-budget exposure across retries in this run. */
   agentContextBudgetExposed?: boolean;
-  requestSizeRecovery?: { attempted: boolean };
+  requestSizeRecovery?: ProviderRequestSizeRecoveryState;
   browserHandoffRecovery?: { attempted?: boolean };
   providerRecoveryContext?: ProviderRecoveryContext;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
@@ -3273,6 +3274,10 @@ export async function createAgentStream(
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndex,
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
+        {
+          isByok: stepOpenRouterMetadata.openrouter_is_byok,
+          chargedCost: stepOpenRouterMetadata.openrouter_charged_cost,
+        },
       );
 
       const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
@@ -3430,6 +3435,10 @@ export async function createAgentStream(
         ctx.usageTracker.setAuthoritativeModelCostForStep(
           stepUsageCostIndexes[index],
           metadata.openrouter_upstream_inference_cost,
+          {
+            isByok: metadata.openrouter_is_byok,
+            chargedCost: metadata.openrouter_charged_cost,
+          },
         );
       }
       const finishOpenRouterMetadata = extractOpenRouterMetadata({
@@ -3448,6 +3457,10 @@ export async function createAgentStream(
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndexes.at(-1),
         openRouterMetadata.openrouter_upstream_inference_cost,
+        {
+          isByok: openRouterMetadata.openrouter_is_byok,
+          chargedCost: openRouterMetadata.openrouter_charged_cost,
+        },
       );
 
       const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {

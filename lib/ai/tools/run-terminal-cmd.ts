@@ -1,3 +1,5 @@
+import { visionScreenshotRequest } from "../captcha/vision-capture";
+import { trackCaptchaCapture } from "./utils/captcha-capture-files";
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
 import { parseCaptchaRuntimeCommand } from "../captcha/runtime-command";
@@ -1620,17 +1622,36 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           try {
             if (/^\s*hackerai-captcha\b/.test(input.command)) {
               const request = parseCaptchaRuntimeCommand(input.command);
+              const {
+                requestBrowserChallenge,
+                reportBrowserChallengeProgress,
+              } = context;
               if (
                 !request ||
                 input.is_background ||
                 input.interactive ||
-                !context.requestBrowserChallenge
+                !(request.action === "progress"
+                  ? reportBrowserChallengeProgress
+                  : requestBrowserChallenge)
               )
                 return {
                   result: {
                     exitCode: 1,
                     output:
                       "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
+                  },
+                };
+              // Progress only records observed vision feedback: no shell,
+              // provider work or paid-solve activity indicator.
+              if (request.action === "progress")
+                return {
+                  result: {
+                    exitCode: 0,
+                    browserChallenge: await reportBrowserChallengeProgress!(
+                      request.sessionName,
+                      request.report,
+                      options.abortSignal,
+                    ),
                   },
                 };
               if (request.action === "solve") {
@@ -1649,7 +1670,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               return {
                 result: {
                   exitCode: 0,
-                  browserChallenge: await context.requestBrowserChallenge(
+                  browserChallenge: await requestBrowserChallenge!(
                     request.action,
                     request.sessionName,
                     options.abortSignal,
@@ -1657,9 +1678,41 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 },
               };
             }
+            const visionLimit = context.guardCaptchaVisionCommand?.(
+              input.command,
+            );
+            if (visionLimit)
+              return {
+                result: {
+                  exitCode: 1,
+                  output: "",
+                  browserChallenge: visionLimit,
+                },
+              };
+            // Qualified recovery captures finish here, even when requested in the
+            // background, so no unqualified shell screenshot can race file view.
+            if (!input.interactive) {
+              const captureOperation = context.captureCaptchaVisionCommand;
+              const request = visionScreenshotRequest(input.command);
+              const executeCapture = async () =>
+                captureOperation?.(input.command, options.abortSignal);
+              const capture =
+                request && captureOperation
+                  ? await trackCaptchaCapture(
+                      context,
+                      request.path,
+                      executeCapture,
+                    )
+                  : await executeCapture();
+              if (capture) return capture;
+            }
             const output = (await terminalTool.execute!(input, options)) as {
               result: Record<string, unknown>;
             };
+            context.finishCaptchaVisionCommand?.(
+              input.command,
+              output.result.exitCode === 0,
+            );
             captureAgentBrowserOpenFailure({
               context,
               command: input.command,

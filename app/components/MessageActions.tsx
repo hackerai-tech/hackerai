@@ -1,4 +1,3 @@
-import { MySkills } from "./MySkills";
 import { SourceIcon } from "./SourceIcon";
 import {
   Copy,
@@ -250,10 +249,6 @@ export const MessageActions = ({
               side="bottom"
               delayDuration={300}
             />
-
-            {!isUser && messageText && (
-              <MySkills conversationText={messageText} />
-            )}
 
             {/* Only the latest user-authored message can be edited. */}
             {isUser && canEdit && (

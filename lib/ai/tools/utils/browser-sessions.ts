@@ -14,6 +14,16 @@ import {
   cloudflareInitScript,
   cloudflareReleaseScript,
 } from "../../captcha/cloudflare";
+import {
+  visionCaptureResult,
+  type VisionCapture,
+  type VisionCaptureRequest,
+  type VisionCaptureResult,
+} from "../../captcha/vision-capture";
+import {
+  renderFocusedChallenge,
+  type FocusedChallenge,
+} from "../../captcha/vision-image";
 import { phLogger } from "@/lib/posthog/server";
 
 import { BROWSER_SESSION_MAX_LIFETIME_MS } from "@/lib/ai/browser-handoff/constants";
@@ -202,6 +212,7 @@ export class BrowserSessions {
   ): Promise<{
     identity: string;
     evaluate: (script: string) => Promise<unknown>;
+    captureVision?: (request: VisionCaptureRequest) => Promise<VisionCapture>;
     deliverCloudflare?: (
       userAgent: string,
       page: { url: string; documentId: string; originalUserAgent: string },
@@ -316,6 +327,93 @@ export class BrowserSessions {
           signal.throwIfAborted();
           throw new Error("Managed browser challenge delivery failed.");
         }
+      },
+      captureVision: async (request) => {
+        await assertOwned();
+        const handle = await sandbox.commands.run(
+          browserSessionCommand("vision", session.directory, this.expiresAt),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            stdin: true,
+            background: true,
+            timeoutMs: 10_000,
+          },
+        );
+        let capture: VisionCaptureResult;
+        try {
+          await assertOwned();
+          await withCancellation(
+            handle.sendStdin(
+              JSON.stringify({
+                ...request,
+                // Per-operation bound for the daemon calls, not a recovery budget.
+                deadline: Date.now() + 8_000,
+                sessionName: name,
+              }),
+            ),
+            signal,
+          );
+          await withCancellation(handle.closeStdin(), signal);
+          const result = await withCancellation(handle.wait(), signal);
+          await assertOwned();
+          if (result.exitCode !== 0 || result.stdout.length > 4096)
+            throw new Error();
+          capture = visionCaptureResult.parse(JSON.parse(result.stdout));
+          if (capture.path !== request.path) throw new Error();
+        } catch {
+          await handle.kill().catch(() => false);
+          signal.throwIfAborted();
+          throw new Error("Challenge capture could not be qualified.");
+        }
+        // Small puzzles are unreadable at viewport scale. Enlarge the exact
+        // qualified bytes; any failure keeps the validated original usable.
+        const focus = async (): Promise<FocusedChallenge> => {
+          const original = await withCancellation(
+            sandbox.files.read(capture.path, {
+              format: "bytes",
+              user: "root",
+              requestTimeoutMs: 8000,
+              signal,
+            }),
+            signal,
+          );
+          const { bytes, ...geometry } = await renderFocusedChallenge(
+            original,
+            capture,
+            signal,
+          );
+          await assertOwned();
+          // The existing owner cleanup/watchdog erases this session's shim
+          // directory. Retain the original screenshot at the requested path.
+          // A unique focused path is advertised only after its write completes.
+          const imageDirectory = session.directory.replace(
+            "/dev/shm/",
+            "/tmp/",
+          );
+          const path = `${imageDirectory}/challenge-${randomBytes(12).toString("hex")}.png`;
+          await withCancellation(
+            sandbox.files.write(
+              path,
+              bytes.buffer.slice(
+                bytes.byteOffset,
+                bytes.byteOffset + bytes.byteLength,
+              ),
+              { user: "root", requestTimeoutMs: 8000, signal },
+            ),
+            signal,
+          );
+          return { path, ...geometry };
+        };
+        let focused: FocusedChallenge | undefined;
+        try {
+          focused = await focus();
+        } catch {
+          signal.throwIfAborted();
+        }
+        await assertOwned();
+        return focused
+          ? { ...capture, focused }
+          : { ...capture, focusedUnavailable: true };
       },
       evaluate: async (script) => {
         await assertOwned();
@@ -591,13 +689,11 @@ export class BrowserSessions {
     };
   }
 
-  /** Observe existing daemon liveness without opening it or gating admission. */
-  private async observeHandoffAdmission(
+  /** Query the owned daemon without launching it; each check has its own deadline. */
+  private async probeHandoffBrowser(
     session: BrowserSession,
     signal?: AbortSignal,
   ) {
-    if (this.admissionProbeCount >= 2) return;
-    const attempt = ++this.admissionProbeCount;
     const remaining = this.expiresAt - Date.now();
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(), 3_000);
@@ -680,7 +776,6 @@ export class BrowserSessions {
     }
     return {
       admission_probe_result: result,
-      admission_probe_attempt: attempt,
       // Ambient command environment only; launch flags can override the daemon.
       admission_env_idle_timeout: envIdleTimeout,
       admission_owner_remaining:
@@ -692,6 +787,37 @@ export class BrowserSessions {
               ? "lt_10m"
               : "gte_10m",
     };
+  }
+
+  /** Cap optional telemetry independently of required availability checks. */
+  private reportHandoffAdmission(
+    session: BrowserSession,
+    observation: Awaited<ReturnType<BrowserSessions["probeHandoffBrowser"]>>,
+    accepted: boolean,
+    beforeWait: boolean,
+    requestAnotherTakeover: boolean,
+  ): void {
+    const scope = this.handoffScope;
+    if (!scope || this.admissionProbeCount >= 2) return;
+    const attempt = ++this.admissionProbeCount;
+    try {
+      phLogger.info("browser_handoff_admission_diagnostics", {
+        diagnostic_version: beforeWait ? 4 : 3,
+        ...observation,
+        admission_probe_attempt: attempt,
+        admission_request_accepted: accepted,
+        admission_observation_phase: beforeWait
+          ? "before_wait_request"
+          : "after_accepted_wait_request",
+        admission_state_before: "agent",
+        admission_request_another: requestAnotherTakeover,
+        browser_session_id: diagnosticId(session.sessionId, scope.serviceKey),
+        trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
+        agent_id: diagnosticId(scope.agentId, scope.serviceKey),
+      });
+    } catch {
+      // Optional delivery cannot change admission or control ownership.
+    }
   }
 
   /** Park a requested handoff without occupying a foreground wait process. */
@@ -725,6 +851,33 @@ export class BrowserSessions {
       throw new Error(
         "Open a browser in this Cloud Agent run before requesting handoff.",
       );
+    // Older backends omit the receipt flag. Preserve their admission contract
+    // during deploy skew; only explicit repeat requests are certainly new then.
+    // A completed takeover remains fulfilled even after its browser closes.
+    const needsBrowser =
+      current.state.state === "agent" &&
+      (requestAnotherTakeover || current.state.hasCompletedTakeover === false);
+    const readiness = needsBrowser
+      ? await this.probeHandoffBrowser(current.session, signal)
+      : undefined;
+    signal?.throwIfAborted();
+    if (this.closed || Date.now() >= this.expiresAt)
+      throw new Error("Browser session ownership has ended.");
+    if (readiness && readiness.admission_probe_result !== "connected") {
+      this.reportHandoffAdmission(
+        current.session,
+        readiness,
+        false,
+        true,
+        requestAnotherTakeover,
+      );
+      throw new Error(
+        readiness.admission_probe_result === "deadline" ||
+          readiness.admission_probe_result === "transport_error"
+          ? "Browser availability could not be confirmed. Inspect the owned Cloud browser and retry. No handoff was requested."
+          : "Open the required page in the owned Cloud browser before requesting human input. No handoff was requested.",
+      );
+    }
     if (
       current.state.state === "agent" &&
       current.session.managedCaptureEnabled
@@ -784,35 +937,23 @@ export class BrowserSessions {
       throw new Error(
         "Browser ownership changed. Read the handoff context and inspect the current browser before deciding what to do next.",
       );
-    // Probe only after the unchanged authoritative admission read/write. This
-    // cannot delay its CAS or turn a diagnostic into an ownership decision.
+    // The readiness check cannot authorize control: the unchanged CAS above
+    // rejects ownership changes while it ran. Keep legacy/fulfilled observations
+    // after admission, and never mislabel a pre-wait measurement as post-wait.
     const observation =
-      current.state.state === "agent"
-        ? await this.observeHandoffAdmission(current.session, signal)
-        : undefined;
+      readiness ??
+      (current.state.state === "agent" && this.admissionProbeCount < 2
+        ? await this.probeHandoffBrowser(current.session, signal)
+        : undefined);
     signal?.throwIfAborted();
     if (observation) {
-      try {
-        phLogger.info("browser_handoff_admission_diagnostics", {
-          // v2 grouped SDK nonzero command exits with transport failures.
-          diagnostic_version: 3,
-          ...observation,
-          // true can also mean a previously completed takeover was fulfilled.
-          // Correlate the later waiting/capture evidence; never infer a transition.
-          admission_request_accepted: true,
-          admission_observation_phase: "after_accepted_wait_request",
-          admission_state_before: "agent",
-          admission_request_another: requestAnotherTakeover,
-          browser_session_id: diagnosticId(
-            current.session.sessionId,
-            scope.serviceKey,
-          ),
-          trigger_run_id: diagnosticId(scope.runId, scope.serviceKey),
-          agent_id: diagnosticId(scope.agentId, scope.serviceKey),
-        });
-      } catch {
-        // Optional delivery must never change admission or control ownership.
-      }
+      this.reportHandoffAdmission(
+        current.session,
+        observation,
+        true,
+        readiness !== undefined,
+        requestAnotherTakeover,
+      );
     }
     // Uses the same cancellation, ownership and recovery gate as every other
     // tool. Resume only admits work after the private note and browser gate

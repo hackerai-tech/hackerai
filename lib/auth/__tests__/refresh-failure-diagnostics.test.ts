@@ -1,5 +1,58 @@
 import { getRefreshFailureDiagnostics } from "../refresh-failure-diagnostics";
 
+it("identifies a stable JOSE code even when the error class name is bundled", () => {
+  expect(
+    getRefreshFailureDiagnostics({
+      name: "a",
+      code: "ERR_JWE_INVALID",
+      message: "private-session-material",
+    }),
+  ).toMatchObject({
+    auth_refresh_diagnostic_version: 2,
+    auth_refresh_error_kind: "other_error",
+    auth_refresh_error_code: "ERR_JWE_INVALID",
+    auth_refresh_error_status: null,
+  });
+});
+
+it("distinguishes the AuthKit wrapper from its public JOSE cause without contents", () => {
+  const fields = getRefreshFailureDiagnostics({
+    name: "AuthKitError",
+    message: "private-session-material",
+    data: { token: "private-token" },
+    cause: {
+      name: "JWKSTimeout",
+      code: "ERR_JWKS_TIMEOUT",
+      message: "private-provider-material",
+    },
+  });
+  expect(fields).toMatchObject({
+    auth_refresh_error_kind: "AuthKitError",
+    auth_refresh_error_code: "none",
+    auth_refresh_cause_kind: "JWKSTimeout",
+    auth_refresh_cause_code: "ERR_JWKS_TIMEOUT",
+  });
+  expect(JSON.stringify(fields)).not.toContain("private-");
+});
+
+it("does not treat a private suffix or a public-looking prefix as an allowed code", () => {
+  const fields = getRefreshFailureDiagnostics({
+    name: "JWEInvalid-private-name",
+    code: "ERR_JWE_INVALID-private-token",
+    cause: {
+      name: "AuthKitError-private-name",
+      code: "ERR_JOSE_private-token",
+    },
+  });
+  expect(fields).toMatchObject({
+    auth_refresh_error_kind: "other_error",
+    auth_refresh_error_code: "other",
+    auth_refresh_cause_kind: "other_error",
+    auth_refresh_cause_code: "other",
+  });
+  expect(JSON.stringify(fields)).not.toContain("private-");
+});
+
 it("keeps root and cause status distinct and excludes private error material", () => {
   const fields = getRefreshFailureDiagnostics({
     name: "OauthException",
@@ -16,7 +69,7 @@ it("keeps root and cause status distinct and excludes private error material", (
     },
   });
   expect(fields).toMatchObject({
-    auth_refresh_diagnostic_version: 1,
+    auth_refresh_diagnostic_version: 2,
     auth_refresh_error_kind: "OauthException",
     auth_refresh_error_status: 400,
     auth_refresh_error_code: "invalid_client",

@@ -9,7 +9,12 @@ import {
   DEEPSEEK_1017_CANONICAL_SLUG,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { customProvider } from "ai";
+import { withOpenRouterStreamErrorContext } from "./openrouter-stream-error-context";
 import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
+import {
+  recordOpenRouterBodyFailureContext,
+  type OpenRouterBodyFailurePhase,
+} from "@/lib/utils/openrouter-stream-error-context";
 import {
   abliteration,
   ABLITERATION_LARGE_FLASH_MODEL_ID,
@@ -1056,23 +1061,41 @@ export const attachOpenRouterStreamErrorMetadata = (
   let cancelled = false;
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());
+  const responseStatus = response.status;
+  const responseIdentity = {};
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      let phase: OpenRouterBodyFailurePhase = "read_body";
       try {
         const chunk = await reader.read();
         if (cancelled) return;
         if (chunk.done) {
+          phase = "finish_stream";
           options.signal?.throwIfAborted();
           observer?.finish();
           controller.close();
           return;
         }
+        phase = "observe_chunk";
         observer?.feed(chunk.value);
+        phase = "forward_chunk";
         controller.enqueue(chunk.value);
       } catch (error) {
         observer?.reset();
-        if (!cancelled)
-          controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+        if (!cancelled) {
+          const enriched = enrichOpenRouterStreamError(error, responseHeaders);
+          try {
+            recordOpenRouterBodyFailureContext(
+              enriched,
+              responseIdentity,
+              responseStatus,
+              phase,
+            );
+          } catch {
+            // Optional diagnostics must not replace the original stream failure.
+          }
+          controller.error(enriched);
+        }
       }
     },
     cancel(reason) {
@@ -1083,7 +1106,7 @@ export const attachOpenRouterStreamErrorMetadata = (
   });
 
   return new Response(body, {
-    status: response.status,
+    status: responseStatus,
     statusText: response.statusText,
     headers: response.headers,
   });
@@ -1320,13 +1343,15 @@ export const getOpenRouterProviderRoutingForModel = (
 };
 
 const buildProviderMap = (
-  or: OpenRouterInstance,
+  provider: OpenRouterInstance,
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
-) =>
-  ({
+) => {
+  const or = (id: Parameters<OpenRouterInstance>[0]) =>
+    withOpenRouterStreamErrorContext(provider(id));
+  return {
     [DEEPSEEK_1017_MODEL_KEY]: or(DEEPSEEK_1017_SLUG),
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
@@ -1362,7 +1387,8 @@ const buildProviderMap = (
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
-  }) as Record<string, any>;
+  } as Record<string, any>;
+};
 
 const baseProviders: ReturnType<typeof buildProviderMap> &
   Record<typeof INFERENCE_CYBER_MODEL_KEY, ReturnType<typeof inference>> = {

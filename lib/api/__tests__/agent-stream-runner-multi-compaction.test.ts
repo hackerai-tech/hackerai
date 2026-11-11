@@ -167,6 +167,7 @@ jest.mock("@/lib/api/openrouter-metadata", () => ({
   mergeOpenRouterMetadata: () => ({}),
 }));
 jest.mock("@/lib/provider-usage-cost", () => ({
+  ...jest.requireActual("@/lib/provider-usage-cost"),
   getOpenRouterUpstreamInferenceCostFromUsageRaw: () => undefined,
 }));
 jest.mock("@/lib/utils/error-utils", () => ({

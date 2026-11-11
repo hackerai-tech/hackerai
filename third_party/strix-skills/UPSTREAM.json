@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "06015506625a78b981ae0b34be40239fc1b389be",
+  "sourceCommit": "e05948080bdccd2af47c922f70503005c17747b4",
   "license": "Apache-2.0",
   "markdownFileCount": 63,
   "selectableSkillCount": 52,
@@ -18,7 +18,7 @@
     "coordination/root_agent.md": "fe5ba2d54a231e563ff925f1f0389238096cc688cef3715df2ab6769f79f26aa",
     "coordination/source_aware_whitebox.md": "6a61ad6fd8722bb281ea103bedfb0f07b5cbe5ef2e3b0656188dab2aa153efe0",
     "custom/api_spec_testing.md": "bc16c8b64d35cae9b3aa703f32d40f33e280617f1c0cdf8c05358fec98dd09bf",
-    "custom/dependency_cve_scanning.md": "49a94cda76b22f1882e24d353be3b14bcac6496a40d25123d165b73ec291b613",
+    "custom/dependency_cve_scanning.md": "6cb4cd828172dda4f8fe89282e53b5f1e52bb4738af74876c7b74fa51f2dfdbe",
     "custom/npx_confusion.md": "a024221c836dda755369d5bc8c51fc6dd5735a2b89044d94e446bd6615cc1b61",
     "custom/source_aware_sast.md": "771a0a54471fe23b91049d84593270061d9ff880a7e311b19539e2f8dad7b931",
     "frameworks/django.md": "b3e1dd7ded9ba34c36f7b7be4647a3cd32f9d9ef82316b8801e33445f5a479f0",

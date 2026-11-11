@@ -1,5 +1,9 @@
 import type { LanguageModel, LanguageModelMiddleware } from "ai";
-import { withProviderRequestSizeRecovery } from "../provider-request-size-recovery";
+import {
+  getProviderRequestSizeRecoveryDiagnostics,
+  withProviderRequestSizeRecovery,
+  type ProviderRequestSizeRecoveryState,
+} from "../provider-request-size-recovery";
 
 type Params = Parameters<
   NonNullable<LanguageModelMiddleware["wrapStream"]>
@@ -19,7 +23,7 @@ const rejection = (statusCode = 413, message = "Request body too large") =>
   Object.assign(new Error(message), { statusCode });
 const setup = () => {
   const controller = new AbortController();
-  const state = { attempted: false };
+  const state: ProviderRequestSizeRecoveryState = { attempted: false };
   const result = {
     stream: new ReadableStream({
       start(c) {
@@ -80,6 +84,13 @@ describe("provider request size recovery", () => {
       ]);
       expect(h.commit).toHaveBeenCalledTimes(1);
       expect(h.doStream).toHaveBeenCalledTimes(2);
+      expect(
+        getProviderRequestSizeRecoveryDiagnostics(h.state, status),
+      ).toEqual({
+        request_size_recovery_diagnostic_version: 1,
+        request_size_last_stream_boundary: "stream_returned",
+        request_size_first_attempt_stage: "retry_stream_returned",
+      });
     },
   );
 
@@ -91,11 +102,20 @@ describe("provider request size recovery", () => {
     await expect(h.wrap().doStream(params)).rejects.toBe(error);
     expect(h.compact).toHaveBeenCalledTimes(1);
     expect(h.doStream).toHaveBeenCalledTimes(3);
+    expect(
+      getProviderRequestSizeRecoveryDiagnostics(h.state, 413),
+    ).toMatchObject({
+      request_size_last_stream_boundary: "do_stream_rejected",
+      request_size_first_attempt_stage: "retry_rejected",
+    });
   });
 
-  it.each([undefined, "larger ".repeat(1000)])(
-    "does not retry or commit a missing/ineffective summary",
-    async (summary) => {
+  it.each([
+    [undefined, "no_summary"],
+    ["larger ".repeat(1000), "summary_not_smaller"],
+  ])(
+    "reports a missing or nonshrinking summary without retry or commit",
+    async (summary, stage) => {
       const h = setup();
       const error = rejection();
       h.doStream.mockRejectedValue(error);
@@ -103,8 +123,31 @@ describe("provider request size recovery", () => {
       await expect(h.wrap().doStream(params)).rejects.toBe(error);
       expect(h.doStream).toHaveBeenCalledTimes(1);
       expect(h.commit).not.toHaveBeenCalled();
+      expect(
+        getProviderRequestSizeRecoveryDiagnostics(h.state, 413),
+      ).toMatchObject({
+        request_size_last_stream_boundary: "do_stream_rejected",
+        request_size_first_attempt_stage: stage,
+      });
     },
   );
+
+  it("preserves the compaction failure without projecting its contents or retrying", async () => {
+    const h = setup();
+    const error = new Error("PRIVATE compaction contents");
+    h.doStream.mockRejectedValueOnce(rejection(400, "context length exceeded"));
+    h.compact.mockRejectedValueOnce(error);
+    await expect(h.wrap().doStream(params)).rejects.toBe(error);
+    expect(h.doStream).toHaveBeenCalledTimes(1);
+    expect(h.commit).not.toHaveBeenCalled();
+    expect(
+      getProviderRequestSizeRecoveryDiagnostics(h.state, undefined),
+    ).toEqual({
+      request_size_recovery_diagnostic_version: 1,
+      request_size_last_stream_boundary: "do_stream_rejected",
+      request_size_first_attempt_stage: "compaction_rejected",
+    });
+  });
 
   it("honors cancellation during compaction before committing or retrying", async () => {
     const h = setup();
@@ -118,6 +161,11 @@ describe("provider request size recovery", () => {
     });
     expect(h.doStream).toHaveBeenCalledTimes(1);
     expect(h.commit).not.toHaveBeenCalled();
+    expect(
+      getProviderRequestSizeRecoveryDiagnostics(h.state, undefined),
+    ).toMatchObject({
+      request_size_first_attempt_stage: "cancelled_before_retry",
+    });
   });
 
   it.each([
@@ -136,6 +184,15 @@ describe("provider request size recovery", () => {
       h.doStream.mockRejectedValue(error);
       await expect(h.wrap().doStream(params)).rejects.toBe(error);
       expect(h.compact).not.toHaveBeenCalled();
+      expect(
+        getProviderRequestSizeRecoveryDiagnostics(h.state, 400),
+      ).toMatchObject({
+        request_size_last_stream_boundary: "do_stream_rejected",
+        request_size_first_attempt_stage: "no_attempt",
+      });
+      expect(
+        getProviderRequestSizeRecoveryDiagnostics(h.state, 429),
+      ).toBeUndefined();
     },
   );
 
@@ -157,5 +214,10 @@ describe("provider request size recovery", () => {
     expect((await reader.read()).value).toMatchObject({ type: "error" });
     expect(h.compact).not.toHaveBeenCalled();
     expect(h.doStream).toHaveBeenCalledTimes(1);
+    expect(getProviderRequestSizeRecoveryDiagnostics(h.state, 413)).toEqual({
+      request_size_recovery_diagnostic_version: 1,
+      request_size_last_stream_boundary: "stream_returned",
+      request_size_first_attempt_stage: "no_attempt",
+    });
   });
 });

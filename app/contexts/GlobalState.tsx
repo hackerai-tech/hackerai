@@ -240,7 +240,6 @@ interface LocalSandboxConnection {
     release: string;
     hostname: string;
   };
-  lastSeen: number;
   isDesktop: boolean;
   capabilities: {
     commands: boolean;
@@ -552,7 +551,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   // Check for available local sandbox connections
   const localConnections = useQuery(
-    api.localSandbox.listConnections,
+    api.localSandbox.listConnectionDetails,
     user ? undefined : "skip",
   );
   const hasLocalSandbox = useMemo(

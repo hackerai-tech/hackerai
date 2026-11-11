@@ -106,6 +106,32 @@ async fn save_file_with_dialog(
     filename: String,
     content: String,
 ) -> Result<Option<String>, String> {
+    save_report_with_dialog(app, window, filename, content.into_bytes()).await
+}
+
+#[tauri::command]
+async fn save_binary_file_with_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    content_base64: String,
+) -> Result<Option<String>, String> {
+    use base64::Engine;
+    if content_base64.len() > 24 * 1024 * 1024 {
+        return Err("Report is too large".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64)
+        .map_err(|_| "Invalid report encoding".to_string())?;
+    save_report_with_dialog(app, window, filename, bytes).await
+}
+
+async fn save_report_with_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    content: Vec<u8>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     tokio::task::spawn_blocking(move || {
@@ -126,7 +152,7 @@ async fn save_file_with_dialog(
             return Ok(None);
         };
         let path = selected.into_path().map_err(|error| error.to_string())?;
-        file_save::save_text(&path, &content).map_err(|error| error.to_string())?;
+        file_save::save_bytes(&path, &content).map_err(|error| error.to_string())?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
@@ -2382,6 +2408,7 @@ pub fn run() {
             prepare_desktop_auth_state,
             get_cmd_server_info,
             save_file_with_dialog,
+            save_binary_file_with_dialog,
             desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,

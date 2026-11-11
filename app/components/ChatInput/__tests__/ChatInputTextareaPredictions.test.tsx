@@ -68,7 +68,6 @@ function Harness({
         onAcceptPrediction={() => controller.accept(0, "keyboard")}
         onPredictionExposed={controller.exposed}
         onPredictionTyping={controller.recordTyping}
-        composerFocused
         onDismissPrediction={controller.dismiss}
       />
       <button type="button">Next control</button>
@@ -80,6 +79,7 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   jest.clearAllMocks();
+  observedPrediction = undefined;
   global.fetch = jest.fn().mockResolvedValue({
     ok: true,
     status: 200,
@@ -94,12 +94,15 @@ beforeEach(() => {
     constructor(callback: IntersectionObserverCallback) {
       visibilityCallback = callback;
     }
-    observe() {}
+    observe(target: Element) {
+      observedPrediction = target;
+    }
     disconnect() {}
     unobserve() {}
   } as unknown as typeof IntersectionObserver;
 });
 let visibilityCallback: IntersectionObserverCallback;
+let observedPrediction: Element | undefined;
 afterEach(() => jest.useRealTimers());
 async function setup(blocked = false, reply = false) {
   render(
@@ -169,7 +172,9 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
     screen.queryByRole("group", { name: "Suggested next messages" }),
   ).toBeNull();
   expect(screen.queryByText(suggestions[1])).toBeNull();
-  expect(screen.getByText("Tab")).toHaveAttribute("aria-hidden", "true");
+  expect(
+    screen.getByText("⇥ Tab").closest('[aria-hidden="true"]'),
+  ).toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "Use suggested message" }),
   ).toBeNull();
@@ -192,7 +197,7 @@ test("Tab only accepts into the empty focused composer; explicit Enter sends", a
 test("an ineligible composer keeps its normal placeholder and Tab navigation", async () => {
   const textarea = await setup(true);
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
-  expect(screen.queryByText("Tab")).toBeNull();
+  expect(screen.queryByText("⇥ Tab")).toBeNull();
   expect(
     screen.queryByRole("button", { name: "Use suggested message" }),
   ).toBeNull();
@@ -208,7 +213,7 @@ test("Escape restores the ordinary placeholder and preserves composer focus", as
   textarea.focus();
   fireEvent.keyDown(textarea, { key: "Escape" });
   expect(textarea).toHaveFocus();
-  expect(screen.queryByText("Tab")).toBeNull();
+  expect(screen.queryByText("⇥ Tab")).toBeNull();
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   expect(send).not.toHaveBeenCalled();
 });
@@ -216,13 +221,13 @@ test("Escape restores the ordinary placeholder and preserves composer focus", as
 test("Escape dismisses permanently without sending", async () => {
   const textarea = await setup();
   fireEvent.keyDown(textarea, { key: "Escape" });
-  expect(screen.queryByText("Tab")).not.toBeInTheDocument();
+  expect(screen.queryByText("⇥ Tab")).not.toBeInTheDocument();
   fireEvent.change(textarea, { target: { value: "x" } });
   fireEvent.change(textarea, { target: { value: "" } });
   await act(async () => {
     await jest.advanceTimersByTimeAsync(2000);
   });
-  expect(screen.queryByText("Tab")).not.toBeInTheDocument();
+  expect(screen.queryByText("⇥ Tab")).not.toBeInTheDocument();
   expect(send).not.toHaveBeenCalled();
 });
 
@@ -233,7 +238,7 @@ test("typing hides the suggestion and clearing the draft restores it", async () 
   expect(textarea).toHaveAttribute("placeholder", "Ask, learn, brainstorm");
   fireEvent.change(textarea, { target: { value: "" } });
   expect(textarea).toHaveAttribute("placeholder", suggestions[0]);
-  expect(screen.getByText("Tab")).toBeInTheDocument();
+  expect(screen.getByText("⇥ Tab")).toBeInTheDocument();
   expect(
     jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST"),
   ).toHaveLength(1);
@@ -245,8 +250,10 @@ test("typing hides the suggestion and clearing the draft restores it", async () 
   expect(send).not.toHaveBeenCalled();
 });
 
-test("exposure waits for the inline placeholder to be visible and is deduplicated", async () => {
+test("exposure waits for the full suggestion and key hint to be visible and is deduplicated", async () => {
   await setup();
+  expect(observedPrediction).toHaveTextContent(suggestions[0]);
+  expect(observedPrediction).toContainElement(screen.getByText("⇥ Tab"));
   const observe = (ratio: number) =>
     act(() =>
       visibilityCallback(

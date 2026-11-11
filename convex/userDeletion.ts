@@ -34,6 +34,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
+    "local_sandbox_heartbeats",
     "cancellation_reason_details",
     "current_cancellation_reasons",
     "research_run_members",
@@ -503,6 +504,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "local_sandbox_connections", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const localSandboxHeartbeatsBatch = await collectByIndexBatch<
+    Doc<"local_sandbox_heartbeats">
+  >(ctx, budget, "local_sandbox_heartbeats", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const extraUsageBatch = await collectByIndexBatch<Doc<"extra_usage">>(
     ctx,
     budget,
@@ -588,6 +594,7 @@ async function cleanupUserDataForUser(
     messagesBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
+    localSandboxHeartbeatsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
     subscriptionPausesBatch,
@@ -735,6 +742,13 @@ async function cleanupUserDataForUser(
     stats,
     "local_sandbox_connections",
     localSandboxConnections,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "local_sandbox_heartbeats",
+    localSandboxHeartbeatsBatch.docs,
     mode,
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);

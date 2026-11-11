@@ -8,6 +8,34 @@ type DownloadInput = {
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
 
+/** Public curl error-buffer wording only, not a proven network phase or the
+ * final inner retry. Conflicting observed families stay explicit. */
+function curlTimeoutHint(stderr: string) {
+  const hints = new Set<
+    "resolving" | "connect" | "tls_handshake" | "operation"
+  >();
+  for (const line of stderr.split(/\r?\n/)) {
+    const detail = /^\s*curl:\s*\(28\)\s*(.*)$/i.exec(line)?.[1];
+    if (!detail) continue;
+    if (/^Resolving timed out\b/i.test(detail)) hints.add("resolving");
+    else if (
+      /^Connection timed out\b/i.test(detail) ||
+      /^Failed to connect\b.*\b(?:timed out|timeout)\b/i.test(detail)
+    )
+      hints.add("connect");
+    else if (
+      /^SSL(?:\/TLS)? (?:connection timeout|connect timeout|handshake (?:timed out|timeout))\b/i.test(
+        detail,
+      )
+    )
+      hints.add("tls_handshake");
+    else if (/^Operation timed out\b/i.test(detail)) hints.add("operation");
+  }
+  return hints.size > 1
+    ? "multiple"
+    : (hints.values().next().value ?? "unclassified");
+}
+
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
 function summarize(input: DownloadInput) {
@@ -59,6 +87,12 @@ function summarize(input: DownloadInput) {
     attachment_download_stderr_signal: signal,
     attachment_download_reported_http_status: status ? Number(status[1]) : null,
     attachment_download_stderr_truncated: input.stderr.length > 8192,
+    ...(input.httpClient === "curl" && input.exitCode === 28
+      ? {
+          attachment_download_timeout_version: 1 as const,
+          attachment_download_timeout_hint: curlTimeoutHint(stderr),
+        }
+      : {}),
   };
 }
 

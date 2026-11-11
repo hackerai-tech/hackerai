@@ -1,3 +1,4 @@
+import { waitForCaptchaCapture } from "./utils/captcha-capture-files";
 import { tool, type InferToolInput, type InferToolOutput } from "ai";
 import { createHash } from "crypto";
 import type {
@@ -1358,7 +1359,7 @@ export const createFile = (
           ReturnType<typeof createFileEditToolSchema>
         >["edits"];
       },
-      { toolCallId },
+      { toolCallId, abortSignal },
     ) => {
       try {
         // These calls cannot perform a file operation. Reject them before
@@ -1431,6 +1432,7 @@ export const createFile = (
 
         switch (action) {
           case "view": {
+            await waitForCaptchaCapture(context, path, abortSignal);
             const viewStartedAt = Date.now();
 
             if (!canReturnMultimodalFiles()) {

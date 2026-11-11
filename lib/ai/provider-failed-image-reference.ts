@@ -94,7 +94,7 @@ export function getProviderFailedImageReferenceDiagnostics(
     const inspectMessage = (value: unknown) => {
       if (typeof value !== "string" || !consume(value)) return;
       if (
-        !/\b(?:fetch(?:ing)?|download(?:ing)?)\b[\s\S]{0,80}\bimage\b|\bimage\b[\s\S]{0,80}\b(?:fetch|download)/i.test(
+        !/\b(?:fetch(?:ing)?|download(?:ing|ed)?)\b[\s\S]{0,80}\bimage\b|\bimage\b[\s\S]{0,80}\b(?:fetch|download)/i.test(
           value,
         )
       )
@@ -136,7 +136,9 @@ export function getProviderFailedImageReferenceDiagnostics(
         try {
           const parsed: unknown = JSON.parse(raw);
           inspectMessage(
-            own(own(parsed, "error"), "message") ?? own(parsed, "message"),
+            own(own(parsed, "error"), "message") ??
+              own(parsed, "message") ??
+              own(parsed, "error"),
           );
         } catch {
           inspectMessage(raw);

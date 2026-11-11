@@ -1,4 +1,5 @@
 import { createTwoCaptchaSolver } from "../solver";
+import { CaptchaUnsolvableError } from "../provider-error";
 import type { CaptchaWidget } from "../detection";
 
 const widget: CaptchaWidget = {
@@ -660,3 +661,40 @@ it.each(["rejected", "slow", "stop", "deadline"])(
     }
   },
 );
+
+it.each([12, 10, 23])(
+  "classifies only terminal result error 12 for vision recovery: %s",
+  async (errorId) => {
+    mockFetch.mockResolvedValueOnce(reply({ errorId: 0, taskId: 123 }));
+    mockFetch.mockResolvedValueOnce(
+      reply({ errorId, errorDescription: "private-provider-detail" }),
+    );
+    const registered = jest.fn();
+    const pending = createTwoCaptchaSolver("private-key").solve(
+      demo,
+      widget,
+      new AbortController().signal,
+      registered,
+    );
+    const checked =
+      errorId === 12
+        ? expect(pending).rejects.toBeInstanceOf(CaptchaUnsolvableError)
+        : expect(pending).rejects.not.toBeInstanceOf(CaptchaUnsolvableError);
+    await jest.advanceTimersByTimeAsync(5000);
+    await checked;
+    expect(registered).toHaveBeenCalledWith(123);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("does not treat error 12 during creation as a terminal known task", async () => {
+  mockFetch.mockResolvedValueOnce(reply({ errorId: 12 }));
+  await expect(
+    createTwoCaptchaSolver("key").solve(
+      demo,
+      widget,
+      new AbortController().signal,
+    ),
+  ).rejects.not.toBeInstanceOf(CaptchaUnsolvableError);
+  expect(mockFetch).toHaveBeenCalledTimes(1);
+});

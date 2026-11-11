@@ -126,7 +126,7 @@ export default function SecurityCheck({
         className="text-[13px] leading-5 text-muted-foreground"
       >
         {state === "verified"
-          ? "Security check complete. Your report is sent only when a case reference appears."
+          ? "Security check complete. Submit your report to send it for review."
           : state === "failed"
             ? "The security check could not finish. Your report is still here."
             : state === "expired"

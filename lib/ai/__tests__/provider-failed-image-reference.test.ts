@@ -108,6 +108,74 @@ it("reads a structured provider raw message before redaction without returning i
   });
 });
 
+it.each([
+  {
+    responseBody: JSON.stringify({
+      error: { message: "The data could not be downloaded as an image." },
+    }),
+  },
+  {
+    responseBody: JSON.stringify({
+      error: {
+        message: "Provider returned error",
+        metadata: {
+          raw: JSON.stringify({
+            code: "invalid_argument",
+            error: "Unable to fetch image",
+          }),
+        },
+      },
+    }),
+  },
+  {
+    data: {
+      error: {
+        message: "Provider returned error",
+        metadata: {
+          raw: JSON.stringify({
+            code: "invalid_argument",
+            error: "The data could not be downloaded as an image.",
+          }),
+        },
+      },
+    },
+  },
+])(
+  "reports an unavailable failed reference for a download rejection without a URL (%#)",
+  (e) => {
+    const before = JSON.stringify(e);
+    expect(diagnose(e, request, source, now)).toEqual({
+      diagnostic_version: 1,
+      status: "unavailable",
+      candidate_count: "none",
+    });
+    expect(JSON.stringify(e)).toBe(before);
+  },
+);
+
+it("matches only an explicit URL in a provider raw error string without exporting it", () => {
+  const e = {
+    responseBody: JSON.stringify({
+      error: {
+        message: "Provider returned error",
+        metadata: {
+          raw: JSON.stringify({
+            code: "invalid_argument",
+            error: `Could not download image '${later}'`,
+          }),
+        },
+      },
+    }),
+  };
+  const d = diagnose(e, request, source, now);
+  expect(d).toMatchObject({
+    status: "matched",
+    candidate_count: "one",
+    matches: { image_parts: 1, tool_image_parts: 1, user_image_parts: 0 },
+  });
+  expect(JSON.stringify(d)).not.toMatch(/PRIVATE|private|https|X-Amz/);
+});
+
 it("deduplicates candidate occurrences but counts every matching input role", () => {
   const e = { errors: [failure(expired), failure(expired)] };
   const messages: ModelMessage[] = [

@@ -185,7 +185,8 @@ export function securityResult(
 }
 
 export function policyResult(review, security) {
-  const states = [review.state, security.state];
+  // CodeRabbit is advisory; only selected security evidence blocks merging.
+  const states = [security.state];
   return {
     state: states.includes("fail")
       ? "failure"
@@ -195,4 +196,14 @@ export function policyResult(review, security) {
     review,
     security,
   };
+}
+
+/** GitHub may regenerate a test merge's timestamp without changing scanned code. */
+export function sameTestMerge(pr, first, second) {
+  const valid = (commit) =>
+    /^[a-f0-9]{40}$/.test(commit?.tree?.sha ?? "") &&
+    commit.parents?.length === 2 &&
+    commit.parents[0].sha === pr.base.sha &&
+    commit.parents[1].sha === pr.head.sha;
+  return valid(first) && valid(second) && first.tree.sha === second.tree.sha;
 }

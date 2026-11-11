@@ -34,7 +34,6 @@ export interface ChatInputTextareaProps {
   onAcceptPrediction?: () => boolean;
   onPredictionExposed?: () => void;
   onPredictionTyping?: () => void;
-  composerFocused?: boolean;
   onDismissPrediction?: () => void;
   composerRef?: React.RefObject<HTMLTextAreaElement | null>;
   draftId: string;
@@ -58,7 +57,6 @@ export function ChatInputTextarea({
   onAcceptPrediction,
   onPredictionExposed,
   onPredictionTyping,
-  composerFocused = false,
   onDismissPrediction,
   composerRef,
   draftId,
@@ -86,6 +84,7 @@ export function ChatInputTextarea({
     useFileUpload(chatMode);
   const localTextareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = composerRef ?? localTextareaRef;
+  const predictionRef = useRef<HTMLDivElement>(null);
   const exposed = useCommittedRef(onPredictionExposed);
   const activePrediction = input === "" && !disabled ? prediction : undefined;
   const defaultPlaceholder =
@@ -98,7 +97,7 @@ export function ChatInputTextarea({
   });
 
   useEffect(() => {
-    if (!activePrediction || !textareaRef.current) return;
+    if (!activePrediction || !predictionRef.current) return;
     let visible = false;
     const record = () => {
       if (visible && document.visibilityState === "visible")
@@ -111,13 +110,13 @@ export function ChatInputTextarea({
       },
       { threshold: 1 },
     );
-    observer.observe(textareaRef.current);
+    observer.observe(predictionRef.current);
     document.addEventListener("visibilitychange", record);
     return () => {
       observer.disconnect();
       document.removeEventListener("visibilitychange", record);
     };
-  }, [activePrediction, exposed, textareaRef]);
+  }, [activePrediction, exposed]);
 
   const acceptPrediction = () => {
     if (!onAcceptPrediction?.()) return false;
@@ -281,7 +280,7 @@ export function ChatInputTextarea({
     <>
       <ComposerSkillSelections />
       <div className="overflow-y-auto pl-4 pr-2">
-        <div className="relative">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)]">
           <TextareaAutosize
             ref={textareaRef}
             maxLength={
@@ -315,7 +314,7 @@ export function ChatInputTextarea({
               (activePrediction ? predictionDescriptionId : undefined)
             }
             placeholder={activePrediction ?? defaultPlaceholder}
-            className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "pr-14 ph-no-capture ph-mask" : ""}`}
+            className={`col-start-1 row-start-1 flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "placeholder:opacity-0 ph-no-capture ph-mask" : ""}`}
             minRows={minRows}
             onFocus={onFocus}
             onPointerDown={onPointerDown}
@@ -361,12 +360,18 @@ export function ChatInputTextarea({
             }}
           />
           {activePrediction && (
-            <kbd
+            // The T3-style inline key (MIT; third_party/t3code/LICENSE) shares
+            // the grid row so wrapped suggestions reserve room above the toolbar.
+            <div
+              ref={predictionRef}
               aria-hidden="true"
-              className={`pointer-events-none absolute right-0 top-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground ${composerFocused ? "inline-flex" : "hidden"}`}
+              className="pointer-events-none col-start-1 row-start-1 min-w-0 whitespace-pre-wrap break-words pt-[1px] text-base text-muted-foreground ph-no-capture ph-mask"
             >
-              Tab
-            </kbd>
+              {activePrediction}
+              <kbd className="ml-2 inline-flex h-5 select-none items-center whitespace-nowrap rounded border border-b-2 border-border px-1 align-[1px] font-sans text-[11px] font-medium leading-none text-muted-foreground">
+                ⇥ Tab
+              </kbd>
+            </div>
           )}
         </div>
         {activePrediction && (
