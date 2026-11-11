@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { GITHUB_URL, HELP_CENTER_URL, STATUS_PAGE_URL } from "@/lib/seo/site";
+import { cn } from "@/lib/utils";
 
 type FooterLink = { href: string; label: string; external?: boolean };
 
@@ -50,8 +51,17 @@ export function PublicSiteFooter({ redesign = false }: { redesign?: boolean }) {
             : "mx-auto max-w-6xl px-4 py-12 sm:px-6"
         }
       >
-        <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
-          <div>
+        <div
+          className={cn(
+            "grid md:grid-cols-[1.4fr_1fr_1fr_1fr]",
+            redesign
+              ? "grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 md:gap-10"
+              : "gap-10",
+          )}
+        >
+          <div
+            className={cn(redesign && "col-span-2 sm:col-span-3 md:col-span-1")}
+          >
             <Link
               href="/"
               className="inline-flex items-center gap-2 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -63,14 +73,24 @@ export function PublicSiteFooter({ redesign = false }: { redesign?: boolean }) {
               </span>
             </Link>
             {redesign ? (
-              <p className="mt-4 max-w-52 text-sm leading-6 text-muted-foreground">
+              <p className="mt-4 max-w-xs text-sm leading-6 text-muted-foreground md:max-w-52">
                 The AI agent for penetration testing. Source code is public on
                 GitHub.
               </p>
             ) : null}
           </div>
           {columns.map((column) => (
-            <nav key={column.title} aria-label={column.title}>
+            <nav
+              key={column.title}
+              aria-label={column.title}
+              // On phones the longer Company list spans two rows so Resources
+              // stacks directly under Product in the first column.
+              className={cn(
+                redesign &&
+                  column.title === "Company" &&
+                  "row-span-2 sm:row-span-1",
+              )}
+            >
               <h2 className="text-sm font-medium text-foreground">
                 {column.title}
               </h2>
