@@ -28,7 +28,7 @@ export const AGENT_RETEST_LIMITS = {
 const REDACTED = String.raw`(?!\[?redacted|<redacted|\*{3})`;
 const SECRET_PATTERNS = [
   new RegExp(
-    String.raw`\b(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key)\s*:\s*${REDACTED}\S{8,}`,
+    String.raw`\b(?:cookie|set-cookie|x-api-key|api-key)\s*:\s*${REDACTED}\S{8,}`,
     "i",
   ),
   new RegExp(String.raw`\bbearer\s+${REDACTED}[A-Za-z0-9\-._~+/]{20,}`, "i"),
@@ -36,8 +36,23 @@ const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 ];
 
-export const containsLikelySecret = (value: string) =>
-  SECRET_PATTERNS.some((pattern) => pattern.test(value));
+export const containsLikelySecret = (value: string) => {
+  for (const match of value.matchAll(
+    /\b(?:authorization|proxy-authorization)[ \t]*:[ \t]*([^\r\n]+)/gi,
+  )) {
+    // Check the credential after its scheme, so Basic/Token are protected and
+    // long scheme names cannot turn a labelled redaction into a false alarm.
+    const credential = match[1]
+      .replace(/^[A-Za-z][A-Za-z0-9_-]*[ \t]+/, "")
+      .trim();
+    if (
+      !/^(?:\[?redacted|<redacted|\*{3})/i.test(credential) &&
+      /\S{8,}/.test(credential)
+    )
+      return true;
+  }
+  return SECRET_PATTERNS.some((pattern) => pattern.test(value));
+};
 
 const text = (max: number) => z.string().trim().min(1).max(max);
 const list = (maxItem: number, maxItems: number) =>

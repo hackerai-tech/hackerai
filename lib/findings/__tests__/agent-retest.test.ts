@@ -31,6 +31,11 @@ describe("Agent retest result rules", () => {
   it("rejects unredacted credentials anywhere but allows labelled redactions", () => {
     const secrets = [
       "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123",
+      "Authorization: Basic dGVzdDpzeW50aGV0aWM=",
+      "Proxy-Authorization: Basic dGVzdDpzeW50aGV0aWM=",
+      "Authorization: Token synthetic-credential-value",
+      'Authorization: Digest username="synthetic-user", response="synthetic-response"',
+      "Authorization: ApiKey synthetic-credential-value",
       "Cookie: session=4f9a8b7c6d5e4f3a2b1c",
       "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlLXZhbHVl",
       "-----BEGIN RSA PRIVATE KEY-----",
@@ -52,6 +57,15 @@ describe("Agent retest result rules", () => {
         }),
       ),
     ).toMatchObject({ success: true });
+    for (const scheme of ["Basic", "Token", "Digest", "Negotiate"]) {
+      expect(
+        parseAgentRetestResult(
+          result({
+            observed_result: `Sent Authorization: ${scheme} [REDACTED]`,
+          }),
+        ),
+      ).toMatchObject({ success: true });
+    }
   });
 
   it("bounds field sizes and rejects unknown fields", () => {
