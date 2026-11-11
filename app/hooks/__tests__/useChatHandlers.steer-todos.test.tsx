@@ -67,6 +67,7 @@ const todos: Todo[] = [
     sourceMessageId: "assistant-1",
   },
 ];
+let mockCurrentTodos: unknown = todos;
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -104,7 +105,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     chatMode: mockChatMode,
     clearInput: mockClearInput,
     clearUploadedFiles: mockClearUploadedFiles,
-    todos,
+    todos: mockCurrentTodos,
     setTodos: mockSetTodos,
     isUploadingFiles: false,
     subscription: "pro",
@@ -172,6 +173,7 @@ describe("useChatHandlers steer todo handoff", () => {
     mockQueueMessage.mockReset();
     mockQueueMessage.mockReturnValue("queued-1");
     mockInput = "";
+    mockCurrentTodos = todos;
     mockUploadedFiles = [];
     mockSandboxPreference = "e2b";
     mockChatMode = "agent";
@@ -2247,6 +2249,77 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
   });
+
+  it.each(["stop", "send_now", "stop_and_send"])(
+    "cancels through %s without replacing stored todos with a malformed snapshot",
+    async (action) => {
+      mockCurrentTodos = [
+        ...Array.from({ length: 20 }, (_, index) => ({
+          id: `todo-${index}`,
+          content: "Synthetic task",
+          status: "pending",
+        })),
+        { id: "incomplete-todo", status: "in_progress" },
+      ];
+      mockCancelStream.mockImplementationOnce(async (...args: unknown[]) => {
+        if (Object.hasOwn(args[0] as object, "todos")) {
+          throw new Error("Synthetic invalid optional todo snapshot");
+        }
+        return null;
+      });
+      if (action === "stop_and_send") {
+        mockQueueBehavior = "stop-and-send";
+        mockInput = "Change direction";
+      }
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "streaming",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef: { current: "run-1" },
+        }),
+      );
+      try {
+        await act(async () => {
+          if (action === "stop") await result.current.handleStop();
+          else if (action === "send_now")
+            await result.current.handleSendNow("queued-1");
+          else
+            await result.current.handleSubmit({
+              preventDefault: jest.fn(),
+            } as any);
+        });
+      } finally {
+        errorSpy.mockRestore();
+      }
+      expect(mockCancelStream).toHaveBeenCalledWith({
+        chatId: "chat-1",
+        skipSave: undefined,
+      });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/api/agent/cancel",
+        expect.objectContaining({ method: "POST" }),
+      );
+      if (action !== "stop") {
+        expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        expect(mockCancelStream.mock.invocationCallOrder[0]).toBeLessThan(
+          (globalThis.fetch as jest.Mock).mock.invocationCallOrder[0],
+        );
+      }
+      if (action === "send_now")
+        expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+    },
+  );
 
   it("keeps the queued message when the todo snapshot cannot be persisted", async () => {
     mockCancelStream.mockRejectedValueOnce(new Error("write failed"));

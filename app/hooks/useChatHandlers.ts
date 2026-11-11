@@ -37,7 +37,10 @@ import {
 } from "@/lib/token-limits";
 import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
-import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
+import {
+  isTodoSnapshotForCancellation,
+  removeTodosBySourceMessages,
+} from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
 import { getOnlineStatusSnapshot } from "@/app/hooks/useOnlineStatus";
 import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
@@ -632,7 +635,9 @@ export const useChatHandlers = ({
     const cancelPromise = cancelStreamMutation({
       chatId,
       skipSave: options?.skipSave || undefined,
-      todos,
+      // Omit the entire malformed snapshot, preserving the stored plan. A
+      // filtered subset or an invented empty list would overwrite progress.
+      ...(isTodoSnapshotForCancellation(todos) ? { todos } : {}),
     });
     await Promise.all([
       options?.requireCancelSuccess
