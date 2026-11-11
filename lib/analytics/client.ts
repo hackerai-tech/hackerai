@@ -87,6 +87,7 @@ function getReadyPostHogClient() {
   return posthogClient?.__loaded ? posthogClient : null;
 }
 
+/** Preserve capture semantics while attributing selected native diagnostics to their loaded bundle. */
 function captureWithPostHogClient(
   posthog: PostHogClient,
   event: string,
