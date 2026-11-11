@@ -133,6 +133,33 @@ describe("cancelStreamFromClient", () => {
     const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(update).not.toHaveProperty("last_run_finished_at");
   });
+
+  it("preserves the stored plan when cancellation omits the optional snapshot", async () => {
+    const { cancelStreamFromClient } = await import("../chatStreams");
+    const { ctx, patch, runAfter } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_stream_id: "stream-1",
+      todos,
+    });
+
+    await cancelStreamFromClient.handler(ctx, { chatId: "chat-1" });
+
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_stream_id: undefined,
+        canceled_at: expect.any(Number),
+      }),
+    );
+    expect(patch.mock.calls[0]?.[1]).not.toHaveProperty("todos");
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.redisPubsub.publishCancellation",
+      { chatId: "chat-1", skipSave: undefined },
+    );
+  });
 });
 
 describe("prepareForNewStream", () => {
