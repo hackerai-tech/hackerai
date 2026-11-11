@@ -662,8 +662,8 @@ test("the strict reader rejects malformed, repeated, interior and oversized mark
   assert.equal(parseS2UncaughtTrailer(prefix).kind, "absent");
   assert.equal(parseS2UncaughtTrailer(undefined).kind, "absent");
   const invalid = [
-    line(json.replace("{", '{"version":1,')),
-    line(json.replace("}", ',"extra":true}')),
+    line(`{"version":1,${json.slice(1)}`),
+    line(`${json.slice(0, -1)},"extra":true}`),
     line(json.replace(',"attempt":1', ',"PRIVATE_KEY":1')),
     line(json.replace('"version":1,', "")),
     line(json.replace('"version":1', '"version":"1"')),
