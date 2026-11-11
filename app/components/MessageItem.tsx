@@ -145,6 +145,9 @@ function areMessageItemPropsEqual(
     const prevLastPart = prev.message.parts[prev.message.parts.length - 1];
     const nextLastPart = next.message.parts[next.message.parts.length - 1];
     if (prevLastPart !== nextLastPart) return false;
+    // Persisted file metadata can arrive with unchanged parts; file cards and
+    // inline sandbox download links both depend on it.
+    if (prev.message.fileDetails !== next.message.fileDetails) return false;
     // generationTimeMs arrives in message-metadata after the last text-delta;
     // parts may be unchanged but metadata needs to trigger a re-render so the
     // "Worked for X" pill shows the duration.

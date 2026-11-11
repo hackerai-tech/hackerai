@@ -26,6 +26,12 @@ export const suites = [
       .map((file) => `scripts/diagnostics/${file}`),
   },
   {
+    name: "markdown",
+    files: readdirSync(resolve(root, "scripts/markdown"))
+      .filter((file) => file.endsWith(".test.mjs"))
+      .map((file) => `scripts/markdown/${file}`),
+  },
+  {
     name: "testing",
     files: readdirSync(resolve(root, "scripts/testing"))
       .filter((file) => file.endsWith(".test.mjs"))
@@ -64,6 +70,18 @@ export function changedFiles(cwd = root) {
   ];
 }
 
+// The markdown suite bundles application modules into a real Streamdown render.
+// Select it for the renderer owners; other application files keep the generic
+// rule below and CI runs every suite.
+const markdownRendererPaths = new Set([
+  "app/components/MemoizedMarkdown.tsx",
+  "app/components/SandboxAttachmentLink.tsx",
+  "app/components/CodeHighlight.tsx",
+  "app/components/MarkdownTable.tsx",
+  "app/hooks/useAttachmentDownload.ts",
+  "lib/chat/sandbox-attachment-links.ts",
+]);
+
 /** Select inspected tooling dependencies, falling back to all for unknown paths. */
 export function selectSuites(paths) {
   const selected = new Set(["testing"]);
@@ -83,6 +101,11 @@ export function selectSuites(paths) {
       path === "docs/safe-local-diagnostics.md"
     )
       selected.add("diagnostics");
+    else if (
+      path.startsWith("scripts/markdown/") ||
+      markdownRendererPaths.has(path)
+    )
+      selected.add("markdown");
     // These tooling suites use isolated fixtures and do not import application
     // modules. Unknown paths (including configs, lockfiles and new tooling) run
     // everything; expand this allowlist only after inspecting dependencies.
