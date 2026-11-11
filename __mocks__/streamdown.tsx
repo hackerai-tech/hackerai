@@ -2,6 +2,9 @@ import React from "react";
 
 export const useIsCodeFenceIncomplete = () => false;
 
+// The stub ignores plugins; real Markdown runs in scripts/markdown tests.
+export const defaultRemarkPlugins = {};
+
 // Simple mock for streamdown
 export const Streamdown = ({
   children,

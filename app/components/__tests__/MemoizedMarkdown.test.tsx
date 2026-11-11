@@ -5,6 +5,7 @@ import { MemoizedMarkdown } from "../MemoizedMarkdown";
 const mockComponentMaps: unknown[] = [];
 
 jest.mock("streamdown", () => ({
+  defaultRemarkPlugins: {},
   Streamdown: ({
     children,
     components,

@@ -29,6 +29,14 @@ test("application changes skip isolated tooling but tooling dependencies and unk
     "testing",
   ]);
   for (const path of [
+    "scripts/markdown/sandbox-download.fixture.tsx",
+    "app/components/MemoizedMarkdown.tsx",
+    "lib/chat/sandbox-attachment-links.ts",
+  ]) {
+    assert.deepEqual(names([path]), ["markdown", "testing"], path);
+  }
+  assert.deepEqual(names(["app/components/MessageItem.tsx"]), ["testing"]);
+  for (const path of [
     "package.json",
     "pnpm-lock.yaml",
     "jest.setup.js",

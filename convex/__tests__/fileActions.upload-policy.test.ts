@@ -48,6 +48,9 @@ jest.mock("../_generated/api", () => ({
 
 jest.mock("../s3Utils", () => ({
   generateS3DownloadUrl: jest.fn(),
+  getS3ObjectMetadataFailure: (
+    jest.requireActual("../s3Utils") as typeof import("../s3Utils")
+  ).getS3ObjectMetadataFailure,
   getS3ObjectSizeBytes: jest.fn(),
   getStoredS3Location: jest.fn(),
 }));
@@ -561,12 +564,18 @@ describe("saveSandboxGeneratedFile storage verification", () => {
         .mocked(getS3ObjectSizeBytes)
         .mockRejectedValueOnce(new Error(message));
       const ctx = makeCtx();
+      // Errors not produced by the S3 wrapper carry no storage diagnostic.
       await expect(
         saveSandboxGeneratedFile.handler(ctx as any, args),
       ).rejects.toMatchObject({
-        data: expect.objectContaining({
+        data: {
           code: "GENERATED_FILE_VERIFICATION_FAILED",
-        }),
+          message:
+            "The uploaded file could not be verified in storage. Retry delivery before sharing it.",
+          generated_file_verification_diagnostic_version: 1,
+          storage_failure_reason: "unknown",
+          storage_http_status: null,
+        },
       });
       expect(ctx.runMutation).not.toHaveBeenCalled();
       expect(generateS3DownloadUrl).not.toHaveBeenCalled();

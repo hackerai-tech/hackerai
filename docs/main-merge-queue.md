@@ -1,21 +1,23 @@
-# Main merge queue
+# Main merge policy
 
-GitHub's merge queue validates a pull request against the current `main` tree
-before it lands. Enqueue a ready PR after its required PR checks pass. A newer
-`main` commit alone does not require updating the PR branch.
+Merge reviewed pull requests directly after their required PR checks pass.
+The repository does not require a merge queue or a second queue validation run.
 
-The queue requires `CI`, `Desktop PR builds`, and `Review and security` on its
-temporary merge-group commit. CI runs the complete test and CodeQL plan. Desktop
-packaging runs when the queued change affects Desktop. The security policy checks
-the queue commit's processed CodeQL reports against `main` and rejects new high
-or critical findings. The queue merges one PR at a time using squash commits.
+The `main` ruleset requires `CI`, `Desktop PR builds`, and `Review and security`.
+These checks must pass on the PR's current commit. A newer `main` commit alone
+does not require updating the branch and repeating its checks. Resolve actual
+merge conflicts and validate any new commits before merging. Do not bypass the
+required checks or use an administrator override.
 
-If a PR leaves the queue, inspect the checks on its merge-group commit and the
-queue event in the PR timeline. Fix a failed check or conflict before enqueuing
-again. If a required status remains expected, verify that its workflow handled
-the `merge_group` event; do not bypass the gate or repeatedly update the PR
-branch to make the missing status disappear.
+PR CI selects validation from the changed paths. Desktop packaging runs when the
+change affects Desktop. The review/security gate checks the applicable processed
+CodeQL analysis. AI review and unresolved comments are advisory in this gate;
+review available feedback separately and address valid findings. Main and nightly
+validation retain the complete test and security plan.
 
-To recover from a queue outage, first remove the queue rule while retaining the
-three required checks and strict latest-code validation. Restore the queue only
-after its workflows report on a fresh merge-group commit.
+Use the normal squash merge once the current checks and required acceptance are
+complete. A passing PR check does not establish Preview, Production, or native
+runtime acceptance; follow the verification rules for the affected journey.
+
+If a required check remains expected, inspect its workflow and the PR's current
+head before retrying. Do not remove a required check to make a merge pass.
