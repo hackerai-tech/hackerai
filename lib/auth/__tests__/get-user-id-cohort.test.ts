@@ -1,5 +1,6 @@
 import { getUserIDAndPro } from "../get-user-id";
 import { ChatSDKError } from "@/lib/errors";
+import { createFreeQuotaSubject } from "../free-quota-subject";
 
 const authkit = jest.fn();
 jest.mock("@workos-inc/authkit-nextjs", () => ({
@@ -33,6 +34,70 @@ it("does not classify a missing authenticated user", async () => {
   authkit.mockResolvedValue({ session: null });
   await expect(getUserIDAndPro({} as never)).rejects.toMatchObject({
     type: "unauthorized",
+  });
+});
+
+describe("future Gmail quota identity from authenticated account metadata", () => {
+  const originalCutoff = process.env.FREE_QUOTA_GMAIL_NEW_USERS_FROM;
+  const originalSecret = process.env.ACCOUNT_IDENTITY_HMAC_SECRET;
+  beforeEach(() => {
+    process.env.FREE_QUOTA_GMAIL_NEW_USERS_FROM = "2027-01-01T00:00:00.000Z";
+    process.env.ACCOUNT_IDENTITY_HMAC_SECRET = "synthetic-quota-secret";
+  });
+  afterEach(() => {
+    if (originalCutoff === undefined)
+      delete process.env.FREE_QUOTA_GMAIL_NEW_USERS_FROM;
+    else process.env.FREE_QUOTA_GMAIL_NEW_USERS_FROM = originalCutoff;
+    if (originalSecret === undefined)
+      delete process.env.ACCOUNT_IDENTITY_HMAC_SECRET;
+    else process.env.ACCOUNT_IDENTITY_HMAC_SECRET = originalSecret;
+  });
+
+  it("shares future usage while retaining exact account identity and ignores request creation time", async () => {
+    const results = [];
+    for (const email of ["first@gmail.com", "f.irst+two@googlemail.com"]) {
+      authkit.mockResolvedValueOnce({
+        session: {
+          user: {
+            id: "synthetic",
+            email,
+            emailVerified: true,
+            createdAt: "2027-01-01T00:00:00.000Z",
+          },
+          entitlements: [],
+        },
+      });
+      const result = await getUserIDAndPro({
+        createdAt: "2020-01-01T00:00:00Z",
+      } as never);
+      expect(result.freeQuotaSubject).toBe(createFreeQuotaSubject(email));
+      expect(result.freeUsageQuotaSubject).toMatch(/^free_quota:v2:/);
+      results.push(result);
+    }
+    expect(results[0].freeUsageQuotaSubject).toBe(
+      results[1].freeUsageQuotaSubject,
+    );
+    expect(results[0].freeQuotaSubject).not.toBe(results[1].freeQuotaSubject);
+  });
+
+  it("retains old free quotas and does not select shared free quotas for paid users", async () => {
+    for (const [createdAt, entitlements] of [
+      ["2026-12-31T23:59:59.999Z", []],
+      ["2027-01-01T00:00:00.000Z", ["pro-plan"]],
+    ] as const) {
+      const email = "f.irst+one@gmail.com";
+      authkit.mockResolvedValueOnce({
+        session: {
+          user: { id: "synthetic", email, emailVerified: true, createdAt },
+          entitlements,
+        },
+      });
+      const result = await getUserIDAndPro({} as never);
+      expect(result.freeQuotaSubject).toBe(createFreeQuotaSubject(email));
+      expect(result.freeUsageQuotaSubject).toBe(
+        entitlements.length ? undefined : result.freeQuotaSubject,
+      );
+    }
   });
 });
 
