@@ -315,6 +315,23 @@ it("keeps field-only delivery for a normal widget whose SDK cannot be adapted", 
   expect(api.getResponse).toBe(getResponse);
 });
 
+it("does not invoke a declarative callback after a field listener resets delivery", () => {
+  const { api, field } = renderDeclarative("onCaptcha");
+  page.onCaptcha = jest.fn();
+  field.addEventListener("input", () => api.reset(id));
+  try {
+    expect(deliver()).toMatchObject({
+      status: "token_delivered",
+      responseRetained: false,
+      websiteAccepted: false,
+    });
+    expect(page.onCaptcha).not.toHaveBeenCalled();
+    expect(api.getResponse()).toBe("");
+  } finally {
+    delete page.onCaptcha;
+  }
+});
+
 it.each([
   "another container",
   "another response field",
@@ -392,6 +409,22 @@ it.each(["second widget", "second response field"])(
     // The explicitly addressed response keeps its other-widget semantics.
     expect(api.getResponse(id)).toBe(token);
     expect(field.value).toBe(token);
+  },
+);
+
+it.each(["observer", "synchronous getter"])(
+  "revokes after a transient second widget through the %s",
+  async (read) => {
+    const { api } = renderDeclarative();
+    deliver();
+    expect(api.getResponse()).toBe(token);
+    const other = document.createElement("iframe");
+    other.src = `https://newassets.hcaptcha.com/captcha/v1/version/static/hcaptcha.html#frame=checkbox&id=other_widget&sitekey=${siteKey}`;
+    document.body.append(other);
+    other.remove();
+    if (read === "observer") await Promise.resolve();
+    expect(api.getResponse()).toBe("");
+    expect(api.getResponse(id)).toBe(token);
   },
 );
 

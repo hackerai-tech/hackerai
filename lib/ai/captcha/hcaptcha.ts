@@ -119,6 +119,21 @@ export function buildDeliverRenderedHcaptchaScript(
     };
     // Revocation is one-way: another widget may since have become the default.
     let defaultLive = soleWidget();
+    const foreignAddition = records => records.some(record => [...record.addedNodes].some(node =>
+      node.nodeType === 1 && [node, ...node.querySelectorAll(
+        '.h-captcha,[data-hcaptcha-widget-id],[name="h-captcha-response"],[name="g-recaptcha-response"],iframe',
+      )].some(candidate => {
+        if ([element, frame, field, compatibilityField].includes(candidate)) return false;
+        if (candidate.matches('.h-captcha,[data-hcaptcha-widget-id],[name="h-captcha-response"],[name="g-recaptcha-response"]'))
+          return true;
+        if (!candidate.matches('iframe')) return false;
+        try {
+          const url = new URL(candidate.src);
+          if (!(url.hostname === 'hcaptcha.com' || url.hostname.endsWith('.hcaptcha.com'))) return false;
+          const parameters = new URLSearchParams(url.hash.slice(1));
+          return parameters.get('frame') !== 'challenge' || parameters.getAll('id').join() !== widgetId;
+        } catch { return false; }
+      })));
     const restore = () => {
       live = false;
       defaultLive = false;
@@ -139,6 +154,8 @@ export function buildDeliverRenderedHcaptchaScript(
       if (!isCurrent()) restore();
       else if (id === widgetId) return token;
       else if (id == null && defaultLive) {
+        if (observer && foreignAddition(observer.takeRecords())) defaultLive = false;
+        if (!defaultLive) return originalGetResponse.apply(this, arguments);
         const native = originalGetResponse.apply(this, arguments);
         let addressed;
         if (native === '' && soleWidget())
@@ -170,9 +187,9 @@ export function buildDeliverRenderedHcaptchaScript(
       field.value = token;
       if (compatibilityField) compatibilityField.value = token;
       expiryTimer = setTimeout(restore, 120000);
-      observer = new MutationObserver(() => {
+      observer = new MutationObserver(records => {
         if (!isCurrent()) restore();
-        else if (defaultLive && !soleWidget()) defaultLive = false;
+        else if (defaultLive && (!soleWidget() || foreignAddition(records))) defaultLive = false;
       });
       observer.observe(document, {childList:true, subtree:true, attributes:true,
         attributeFilter:['src','id','name','class','data-hcaptcha-widget-id']});
@@ -183,6 +200,12 @@ export function buildDeliverRenderedHcaptchaScript(
     } catch {
       restore();
       return {status:'page_changed'};
+    }
+    // A synchronous field listener may reset or replace the widget. Do not
+    // submit through its callback after the response has already been lost.
+    if (!isCurrent()) {
+      restore();
+      return {status:'token_delivered', websiteAccepted:false, responseRetained:false};
     }
     // Explicit render() callbacks are private SDK configuration. A normal
     // widget's declarative callback is public; call it once, as the SDK would.
