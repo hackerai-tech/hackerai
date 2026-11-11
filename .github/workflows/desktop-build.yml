@@ -196,7 +196,9 @@ jobs:
 
       - name: Install dependencies (Ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu')
+        timeout-minutes: 15
         run: |
+          bash .github/scripts/prefer-ubuntu-apt-mirror.sh
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
