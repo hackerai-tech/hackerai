@@ -376,6 +376,7 @@ for (const mode of ["0", "1"])
     const receipt = JSON.parse(stdout.trim().split("\n").at(-1));
     assert.equal(receipt.pass, true);
     assert.equal(receipt.cases, 4);
+    assert.equal(receipt.flushReceipts, 4);
   });
 
 test("guard reason reflects cancellation during optional probe setup", async () => {
