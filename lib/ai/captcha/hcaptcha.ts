@@ -110,7 +110,10 @@ export function buildDeliverRenderedHcaptchaScript(
         [...document.querySelectorAll('[name="h-captcha-response"],[name="g-recaptcha-response"]')]
           .every(candidate => candidate === field || candidate === compatibilityField) &&
         [...document.querySelectorAll('.h-captcha,[data-hcaptcha-widget-id]')]
-          .every(candidate => candidate === element) &&
+          // The SDK marks its checkbox iframe too; it is not another widget.
+          .every(candidate => candidate === element || (candidate === frame &&
+            !candidate.matches('.h-captcha') &&
+            candidate.getAttribute('data-hcaptcha-widget-id') === widgetId)) &&
         (!element.hasAttribute('data-hcaptcha-widget-id') ||
           element.getAttribute('data-hcaptcha-widget-id') === widgetId);
     };

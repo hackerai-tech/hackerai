@@ -252,7 +252,7 @@ function renderDeclarative(callback?: string) {
   const element = sdk.frame.parentElement!;
   element.className = "h-captcha";
   element.setAttribute("data-sitekey", siteKey);
-  element.setAttribute("data-hcaptcha-widget-id", id);
+  sdk.frame.setAttribute("data-hcaptcha-widget-id", id);
   if (callback) element.setAttribute("data-callback", callback);
   const form = document.createElement("form");
   document.body.append(form);
@@ -321,11 +321,12 @@ it.each([
   "another checkbox frame",
   "another widget's challenge",
   "mismatched container ID",
+  "mismatched frame marker",
   "native default response",
   "native addressed response",
   "failing default getter",
 ])("never infers the SDK default widget with %s", (change) => {
-  const { api, element, getResponse } = renderDeclarative();
+  const { api, element, frame, getResponse } = renderDeclarative();
   if (change === "another container")
     document.body.insertAdjacentHTML(
       "beforeend",
@@ -346,6 +347,8 @@ it.each([
     );
   if (change === "mismatched container ID")
     element.setAttribute("data-hcaptcha-widget-id", "other_widget");
+  if (change === "mismatched frame marker")
+    frame.setAttribute("data-hcaptcha-widget-id", "other_widget");
   expect(deliver()).toMatchObject({ status: "token_delivered" });
   if (change === "native default response")
     getResponse.mockImplementation((widgetId?: string) =>
