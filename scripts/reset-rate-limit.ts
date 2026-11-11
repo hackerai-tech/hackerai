@@ -30,7 +30,7 @@ import {
   isFreeQuotaSubjectRateLimitKey,
   isUserRateLimitKey,
 } from "../lib/rate-limit/key-cleanup";
-import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
+import { createFreeUsageQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
 import { getTestUserEmails } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -61,7 +61,7 @@ async function scanRedisKeys(redis: Redis, pattern: string): Promise<string[]> {
   return keys;
 }
 
-async function getUserId(email: string): Promise<string | null> {
+async function getUser(email: string) {
   const workos = new WorkOS(process.env.WORKOS_API_KEY, {
     clientId: process.env.WORKOS_CLIENT_ID,
   });
@@ -69,7 +69,7 @@ async function getUserId(email: string): Promise<string | null> {
   try {
     const usersList = await workos.userManagement.listUsers({ email });
     if (usersList.data.length > 0) {
-      return usersList.data[0].id;
+      return usersList.data[0];
     }
     return null;
   } catch (error) {
@@ -94,13 +94,15 @@ async function resetRateLimitForUser(
 
   console.log(`\n🔍 Looking up user ID for ${userEmail}...`);
 
-  const userId = await getUserId(userEmail);
-  if (!userId) {
+  const account = await getUser(userEmail);
+  if (!account) {
     console.error(`❌ Error: User ${userEmail} not found`);
     console.log("\n💡 Tip: Run the following to create test users:");
     console.log("   pnpm test:e2e:users:create");
     process.exit(1);
   }
+
+  const userId = account.id;
 
   console.log(`✅ Found user ID: ${userId}`);
 
@@ -120,8 +122,11 @@ async function resetRateLimitForUser(
     const userKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
-    const freeQuotaSubject = createFreeQuotaSubjectWithSecret(
+    // Future Gmail QA accounts share a mailbox pool; old accounts retain v1.
+    const freeQuotaSubject = createFreeUsageQuotaSubjectWithSecret(
       userEmail,
+      account.createdAt,
+      process.env.FREE_QUOTA_GMAIL_NEW_USERS_FROM,
       process.env.ACCOUNT_IDENTITY_HMAC_SECRET,
     );
     const identityKeys = freeQuotaSubject

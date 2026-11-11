@@ -67,8 +67,9 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  const { userId, subscription, freeQuotaSubject } = await getUserIDAndPro(req);
-  const freeUsageSubject = freeQuotaSubject ?? userId;
+  const { userId, subscription, freeQuotaSubject, freeUsageQuotaSubject } =
+    await getUserIDAndPro(req);
+  const freeUsageSubject = freeUsageQuotaSubject ?? freeQuotaSubject ?? userId;
   if (subscription !== "free") {
     const response = NextResponse.json({
       attributed: false,

@@ -363,6 +363,28 @@ describe("web request correlation at Agent dispatch", () => {
     );
   });
 
+  it.each(["full_access", "ask_approval"])(
+    "persists the authenticated shared usage subject for %s Agent runs",
+    async (mode) => {
+      mockGetUserIDAndPro.mockResolvedValueOnce({
+        userId: "user-1",
+        subscription: "free",
+        freeQuotaSubject: "legacy-account-identity",
+        freeUsageQuotaSubject: "new-shared-mailbox-quota",
+      });
+      const response = await start("/api/agent", mode, requestId, {
+        freeQuotaSubject: "untrusted-request-identity",
+        sandboxPreference: "desktop",
+      });
+      expect(response.status).toBe(200);
+      const payload =
+        mode === "full_access"
+          ? mockTriggerTask.mock.calls[0][1]
+          : sessions.start.mock.calls[0][0].triggerConfig.basePayload;
+      expect(payload.freeQuotaSubject).toBe("new-shared-mailbox-quota");
+    },
+  );
+
   it.each(dispatchPaths)(
     "routes %s %s to the existing workspace before dispatch",
     async (endpoint, mode) => {
