@@ -46,13 +46,15 @@ describe("free monthly cost limit", () => {
 
   it("checks the default $0.25 monthly free cost cap", async () => {
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
-    mockGet.mockResolvedValue(1250);
+    mockEval.mockResolvedValue(1250);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
     const snapshot = await checkFreeMonthlyCostLimit("user-123");
 
-    expect(mockGet).toHaveBeenCalledWith(
-      expect.stringMatching(/^free_monthly_cost:user-123:\d{4}-\d{2}$/),
+    expect(mockEval).toHaveBeenCalledWith(
+      expect.any(String),
+      [expect.stringMatching(/^free_monthly_cost:user-123:\d{4}-\d{2}$/)],
+      [],
     );
     expect(snapshot.monthlyLimitPoints).toBe(2500);
     expect(snapshot.monthlyRemainingAtStart).toBe(1250);
@@ -62,7 +64,7 @@ describe("free monthly cost limit", () => {
 
   it("enforces the permanent regional cap against existing spend without clearing it", async () => {
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
-    mockGet.mockResolvedValue(1000);
+    mockEval.mockResolvedValue(1000);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
     await expect(
       checkFreeMonthlyCostLimit(
@@ -76,14 +78,13 @@ describe("free monthly cost limit", () => {
     ).rejects.toMatchObject({ type: "rate_limit" });
     const control = await checkFreeMonthlyCostLimit("quota");
     expect(control.monthlyRemainingAtStart).toBe(1500);
-    expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
-    expect(mockEval).not.toHaveBeenCalled();
+    expect(mockEval.mock.calls[0]).toEqual(mockEval.mock.calls[1]);
   });
 
   it("throws a rate-limit error when the monthly free cost cap is exhausted", async () => {
     process.env.FREE_MONTHLY_COST_LIMIT_USD = "0.01";
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
-    mockGet.mockResolvedValue(100);
+    mockEval.mockResolvedValue(100);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
 
     await expect(checkFreeMonthlyCostLimit("user-123")).rejects.toMatchObject({
@@ -156,10 +157,14 @@ describe("free monthly cost limit", () => {
     await checkFreeMonthlyCostLimit(subject);
     await recordFreeMonthlyCost(subject, 0.01);
 
-    expect(mockGet).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^free_monthly_cost:free_quota:v1:[a-f0-9]+:\d{4}-\d{2}$/,
-      ),
+    expect(mockEval).toHaveBeenCalledWith(
+      expect.any(String),
+      [
+        expect.stringMatching(
+          /^free_monthly_cost:free_quota:v1:[a-f0-9]+:\d{4}-\d{2}$/,
+        ),
+      ],
+      [],
     );
     expect(mockEval).toHaveBeenCalledWith(
       expect.any(String),

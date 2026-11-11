@@ -1,7 +1,10 @@
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier } from "@/types";
-import { createFreeQuotaSubject } from "@/lib/auth/free-quota-subject";
+import {
+  createFreeQuotaSubject,
+  createFreeUsageQuotaSubject,
+} from "@/lib/auth/free-quota-subject";
 import {
   parseEntitlements,
   resolveSubscriptionTier,
@@ -72,6 +75,7 @@ export const getUserIDAndPro = async (
   analyticsAccountCohort?: AnalyticsAccountCohort;
   organizationId?: string;
   freeQuotaSubject?: string;
+  freeUsageQuotaSubject?: string;
 }> => {
   /** Observe progress without allowing diagnostics to alter authentication. */
   const reportPhase = (phase: AuthSessionPhase) => {
@@ -104,6 +108,9 @@ export const getUserIDAndPro = async (
       ),
       organizationId: (session as any).organizationId as string | undefined,
       freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
+      freeUsageQuotaSubject: createFreeUsageQuotaSubject(
+        getSessionUserEmail(session),
+      ),
     };
   } catch (error) {
     if (error instanceof ChatSDKError) {

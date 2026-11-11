@@ -12,11 +12,14 @@ jest.mock("server-only", () => ({}));
 describe("free quota subject", () => {
   const originalSecret = process.env.ACCOUNT_IDENTITY_HMAC_SECRET;
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalCanonicalization =
+    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
 
   beforeEach(() => {
     jest.resetModules();
     process.env.ACCOUNT_IDENTITY_HMAC_SECRET = "test-account-identity-secret";
     process.env.NODE_ENV = "test";
+    delete process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
   });
 
   afterEach(() => {
@@ -26,6 +29,10 @@ describe("free quota subject", () => {
       process.env.ACCOUNT_IDENTITY_HMAC_SECRET = originalSecret;
     }
     process.env.NODE_ENV = originalNodeEnv;
+    if (originalCanonicalization === undefined)
+      delete process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
+    else
+      process.env.FREE_QUOTA_GMAIL_CANONICALIZATION = originalCanonicalization;
   });
 
   it("normalizes email with trim and lowercase only", async () => {
@@ -59,6 +66,36 @@ describe("free quota subject", () => {
     );
     expect(createFreeQuotaSubject("first@googlemail.com")).not.toBe(
       createFreeQuotaSubject("first@gmail.com"),
+    );
+  });
+
+  it("shares only consumer Gmail usage after cutover without changing persisted account identity", async () => {
+    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION = "true";
+    const { createFreeQuotaSubject, createFreeUsageQuotaSubject } =
+      await import("../free-quota-subject");
+    const base = createFreeUsageQuotaSubject("first@gmail.com");
+    for (const alias of [
+      "f.irst@gmail.com",
+      "FIRST+one@gmail.com",
+      "fi.rst+two@googlemail.com",
+    ]) {
+      expect(createFreeUsageQuotaSubject(alias)).toBe(base);
+      expect(createFreeQuotaSubject(alias)).not.toBe(base);
+    }
+    expect(createFreeUsageQuotaSubject("first+one@company.com")).not.toBe(
+      createFreeUsageQuotaSubject("first@company.com"),
+    );
+    expect(createFreeUsageQuotaSubject("f.irst@company.com")).not.toBe(
+      createFreeUsageQuotaSubject("first@company.com"),
+    );
+    expect(createFreeUsageQuotaSubject("second@gmail.com")).not.toBe(base);
+  });
+
+  it("keeps historical usage selection until the guarded cutover is enabled", async () => {
+    const { createFreeQuotaSubject, createFreeUsageQuotaSubject } =
+      await import("../free-quota-subject");
+    expect(createFreeUsageQuotaSubject("f.irst+one@gmail.com")).toBe(
+      createFreeQuotaSubject("f.irst+one@gmail.com"),
     );
   });
 

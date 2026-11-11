@@ -5,9 +5,13 @@ import {
 } from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
+import {
+  FREE_QUOTA_KEY_REDIRECT_SCRIPT,
+  FREE_QUOTA_ADMISSION_GUARD_SCRIPT,
+} from "./free-quota-migration";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
 
-const RECORD_FREE_MONTHLY_COST_SCRIPT = `
+const RECORD_FREE_MONTHLY_COST_SCRIPT = `${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local key = KEYS[1]
 local points = tonumber(ARGV[1])
 local ttlMs = tonumber(ARGV[2])
@@ -27,7 +31,7 @@ return nextUsed
 // A child can settle during every model step and again during finalization.
 // Keep its cumulative total in Redis so retries only add the new cost, even
 // when the response to an earlier write was lost or the month changes.
-const RECORD_FREE_SUBAGENT_COST_SCRIPT = `
+const RECORD_FREE_SUBAGENT_COST_SCRIPT = `${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local costKey = KEYS[1]
 local runKey = KEYS[2]
 local cumulativePoints = tonumber(ARGV[1])
@@ -122,7 +126,13 @@ export async function checkFreeMonthlyCostLimit(
 
   const usedPoints = Math.max(
     0,
-    Number((await redis.get(freeMonthlyCostKey(quotaSubject, bucket))) ?? 0),
+    Number(
+      (await redis.eval(
+        `${FREE_QUOTA_ADMISSION_GUARD_SCRIPT}\n${FREE_QUOTA_KEY_REDIRECT_SCRIPT}\nreturn redis.call("GET", KEYS[1])`,
+        [freeMonthlyCostKey(quotaSubject, bucket)],
+        [],
+      )) ?? 0,
+    ),
   );
   const remainingPoints = Math.max(0, limitPoints - usedPoints);
 
