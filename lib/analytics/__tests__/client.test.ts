@@ -88,6 +88,25 @@ describe("client analytics", () => {
       },
     );
 
+    it("attributes a Desktop file probe failure without requiring an auth diagnostic", () => {
+      const probe = {
+        transport: "native_ipc",
+        reason: "unavailable",
+        file_failure: "unknown",
+        native_app_version: "0.0.72",
+        native_platform: "macos",
+      };
+
+      expect(
+        captureAuthenticatedEvent("desktop_file_bridge_probe_failed", probe),
+      ).toBe(true);
+      expect(mockCapture).toHaveBeenCalledWith(
+        "desktop_file_bridge_probe_failed",
+        { ...probe, hackerai_frontend_build_commit: "a".repeat(40) },
+      );
+      expect(probe).not.toHaveProperty("hackerai_frontend_build_commit");
+    });
+
     it.each([undefined, "a".repeat(39), "a".repeat(41), "g".repeat(40)])(
       "omits an absent or malformed build without dropping the diagnostic (%s)",
       (build) => {
