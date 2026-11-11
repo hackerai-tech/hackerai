@@ -8,6 +8,7 @@ import {
   PAID_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/paid-deepseek-1017";
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import { localStopAnalyticsProperties } from "@/lib/chat/local-connection-stop";
 import {
   FREE_ASK_DEEPSEEK_1017_KEY,
   FREE_ASK_MODEL_OUTCOME_EVENT,
@@ -1434,6 +1435,8 @@ type AgentCompletionAnalyticsArgs = {
   providerRecoveryAttempts?: number;
   providerRecoveryModels?: readonly string[];
   providerRecoverySucceeded?: boolean;
+  /** First abort reason; only a constructed error contributes closed fields. */
+  localConnectionLostError?: unknown;
 };
 
 export function captureAgentRun({
@@ -1495,6 +1498,7 @@ export function captureAgentRun({
   providerRecoveryAttempts,
   providerRecoveryModels,
   providerRecoverySucceeded,
+  localConnectionLostError,
 }: Omit<
   AgentCompletionAnalyticsArgs,
   | "endpoint"
@@ -1806,6 +1810,7 @@ export function captureAgentRun({
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
+      ...localStopAnalyticsProperties(localConnectionLostError),
       ...getExperimentAnalyticsProperties(experiment),
     },
   });
@@ -2036,6 +2041,7 @@ export function captureAgentCompletionAnalytics(
     providerRecoveryAttempts: args.providerRecoveryAttempts,
     providerRecoveryModels: args.providerRecoveryModels,
     providerRecoverySucceeded: args.providerRecoverySucceeded,
+    localConnectionLostError: args.localConnectionLostError,
   });
 }
 

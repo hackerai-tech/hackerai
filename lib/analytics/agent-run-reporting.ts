@@ -6,6 +6,11 @@ import {
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
+import {
+  getLocalStopDiagnostic,
+  LOCAL_CONNECTION_LOST_FINISH_REASON,
+  localStopAnalyticsProperties,
+} from "@/lib/chat/local-connection-stop";
 
 type RunEvent = "hackerai-agent_run" | "hackerai-usage_cost";
 type FailureStage = "setup" | "preparation" | "model_stream";
@@ -137,6 +142,8 @@ export function createAgentRunReporting(context: {
   let terminalAbortSource: string | undefined;
   let terminalFinishReason: string | undefined;
   let terminalStepLimitReached: boolean | undefined;
+  // Holds only a constructed LocalConnectionLostError from the first abort.
+  let localStop: object | undefined;
 
   function once<T>(event: RunEvent, capture: (args: T) => void, args: T) {
     if (captured.has(event)) return;
@@ -159,6 +166,16 @@ export function createAgentRunReporting(context: {
     },
     setStage(next: FailureStage) {
       stage = next;
+    },
+    /**
+     * Call only with the first abort reason. A stop observed after the first
+     * failure or terminal outcome (e.g. during error cleanup) did not end this
+     * run and cannot attach a cause to that earlier result.
+     */
+    recordLocalStop(firstAbortReason: unknown) {
+      if (localStop || failure || terminalOutcome) return;
+      if (getLocalStopDiagnostic(firstAbortReason))
+        localStop = firstAbortReason as object;
     },
     /** Keep the first failure's signal snapshot even if cleanup cancels later. */
     fail(error: unknown, kind: FailureKind = "error") {
@@ -218,6 +235,7 @@ export function createAgentRunReporting(context: {
             "error",
             "other",
             "unknown",
+            LOCAL_CONNECTION_LOST_FINISH_REASON,
           ].includes(finishReason)
         )
           terminalFinishReason ??= finishReason;
@@ -247,8 +265,15 @@ export function createAgentRunReporting(context: {
       once(
         "hackerai-agent_run",
         capture,
-        agentModelContextVariant
-          ? { ...args, agentModelContextVariant, agentModelContextFlag }
+        agentModelContextVariant || localStop
+          ? {
+              ...args,
+              ...(agentModelContextVariant && {
+                agentModelContextVariant,
+                agentModelContextFlag,
+              }),
+              ...(localStop && { localConnectionLostError: localStop }),
+            }
           : args,
       );
     },
@@ -263,7 +288,10 @@ export function createAgentRunReporting(context: {
       observedAccumulatedCostDollars?: number;
     }) {
       if (!context.posthog) return;
-      const kind = failure?.kind ?? (snapshot.canceled ? "canceled" : "error");
+      // A first local stop ends the run like a cancellation, not a failure.
+      const kind =
+        failure?.kind ??
+        (snapshot.canceled || localStop ? "canceled" : "error");
       const outcome =
         terminalOutcome ?? (kind === "error" ? "error" : "aborted");
       const properties = {
@@ -282,7 +310,8 @@ export function createAgentRunReporting(context: {
         terminal_reporting_source: "run_finally",
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",
-        failure_kind: failure?.kind ?? (snapshot.canceled ? "canceled" : null),
+        failure_kind:
+          failure?.kind ?? (snapshot.canceled || localStop ? "canceled" : null),
         ...selectedComputerDiagnostics,
         ...(failureSignals && {
           failure_signal_context_version: 1,
@@ -293,7 +322,12 @@ export function createAgentRunReporting(context: {
           finalization_trigger_aborted: snapshot.canceled === true,
         }),
         outcome,
-        finish_reason: terminalFinishReason ?? "unknown",
+        // Never relabel an authoritative error as the local stop's finish.
+        finish_reason:
+          terminalFinishReason ??
+          (localStop && outcome === "aborted"
+            ? LOCAL_CONNECTION_LOST_FINISH_REASON
+            : "unknown"),
         step_limit_reached: terminalStepLimitReached ?? null,
         ...(outcome === "aborted" && {
           abort_source:
@@ -302,7 +336,10 @@ export function createAgentRunReporting(context: {
               ? "budget_exhausted"
               : kind === "elapsed_timeout"
                 ? "elapsed_timeout"
-                : "request_cancel"),
+                : // Match resolveAgentAbortSource for a local stop.
+                  localStop && !snapshot.canceled
+                  ? "unknown"
+                  : "request_cancel"),
         }),
         $process_person_profile: false,
       };
@@ -319,6 +356,8 @@ export function createAgentRunReporting(context: {
               event,
               properties: {
                 ...properties,
+                ...(event === "hackerai-agent_run" &&
+                  localStopAnalyticsProperties(localStop)),
                 ...(event === "hackerai-usage_cost"
                   ? {
                       // This is a coverage record, not a billable/full-cost estimate.

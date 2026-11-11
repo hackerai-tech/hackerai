@@ -10,7 +10,10 @@ import {
 } from "centrifuge";
 import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import { watchLocalRunConnection } from "@/lib/centrifugo/watch-local-run-connection";
-import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
+import {
+  LocalConnectionLostError,
+  type LocalStopReason,
+} from "@/lib/chat/local-connection-stop";
 import type {
   AnySandbox,
   SandboxBootInfo,
@@ -340,12 +343,15 @@ async function queryLiveSandboxConnectionIds(
 }
 
 export class HybridSandboxManager implements SandboxManager {
-  private onLocalConnectionLost?: () => void;
+  private onLocalConnectionLost?: (error: LocalConnectionLostError) => void;
   private stopLocalConnectionWatch?: () => void;
   private watchedConnectionId?: string;
-  private localConnectionLost = false;
+  /** The first loss; every later access rethrows it with its original cause. */
+  private localConnectionLost?: LocalConnectionLostError;
 
-  stopOnLocalDisconnect(onLost: () => void): () => void {
+  stopOnLocalDisconnect(
+    onLost: (error: LocalConnectionLostError) => void,
+  ): () => void {
     this.onLocalConnectionLost = onLost;
     if (this.currentConnectionId)
       this.watchRunConnection(this.currentConnectionId);
@@ -355,27 +361,35 @@ export class HybridSandboxManager implements SandboxManager {
     };
   }
 
-  private loseRunConnection(): LocalConnectionLostError {
+  private loseRunConnection(
+    reason: LocalConnectionLostError | LocalStopReason,
+  ): LocalConnectionLostError {
     if (!this.localConnectionLost) {
-      this.localConnectionLost = true;
+      this.localConnectionLost =
+        reason instanceof LocalConnectionLostError
+          ? reason
+          : new LocalConnectionLostError(reason, {
+              connectionId: this.watchedConnectionId,
+            });
       this.sandboxUnavailable = true;
       this.stopLocalConnectionWatch?.();
-      this.onLocalConnectionLost?.();
+      this.onLocalConnectionLost?.(this.localConnectionLost);
     }
-    return new LocalConnectionLostError();
+    return this.localConnectionLost;
   }
 
   private watchRunConnection(connectionId: string): void {
-    if (this.localConnectionLost) throw new LocalConnectionLostError();
+    if (this.localConnectionLost) throw this.localConnectionLost;
     if (!this.onLocalConnectionLost) return;
     if (this.watchedConnectionId === connectionId) return;
-    if (this.watchedConnectionId) throw this.loseRunConnection();
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("watched_connection_replaced");
     this.watchedConnectionId = connectionId;
     this.stopLocalConnectionWatch = watchLocalRunConnection({
       userId: this.userID,
       connectionId,
-      onLost: () => {
-        this.loseRunConnection();
+      onLost: (error) => {
+        this.loseRunConnection(error);
       },
     });
   }
@@ -521,8 +535,9 @@ export class HybridSandboxManager implements SandboxManager {
     connectionId: string,
     reason: "command_relay_unsubscribed",
   ): Promise<{ sandbox: SandboxInstance }> {
-    if (this.localConnectionLost) throw new LocalConnectionLostError();
-    if (this.onLocalConnectionLost) throw this.loseRunConnection();
+    if (this.localConnectionLost) throw this.localConnectionLost;
+    if (this.onLocalConnectionLost)
+      throw this.loseRunConnection("local_recovery_requested");
     if (
       !this.sandbox ||
       !isCentrifugoSandbox(this.sandbox) ||
@@ -882,7 +897,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    if (this.localConnectionLost) throw new LocalConnectionLostError();
+    if (this.localConnectionLost) throw this.localConnectionLost;
     const generation = this.localAcquisitionGeneration;
     if (this.requiredConnectionIdAfterQuarantine) {
       throw new Error(
@@ -947,7 +962,8 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
-    if (this.watchedConnectionId) throw this.loseRunConnection();
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("selected_connection_unavailable");
     // Legacy session IDs and the Desktop alias select a computer just as
     // persistent environment IDs do. Fail before acquiring a different host
     // so all offline selections reach the reconnect-required recovery path.
@@ -1148,7 +1164,7 @@ export class HybridSandboxManager implements SandboxManager {
 
   async resetSandbox(reason?: string): Promise<void> {
     if (this.onLocalConnectionLost && this.watchedConnectionId) {
-      throw this.loseRunConnection();
+      throw this.loseRunConnection("local_reset_requested");
     }
     const generation = ++this.localAcquisitionGeneration;
     // Settle acquisition before clearing its result; never destroy the VM.
@@ -1214,7 +1230,8 @@ export class HybridSandboxManager implements SandboxManager {
       return this.buildSandboxContext(preferredConnection);
     }
 
-    if (this.watchedConnectionId) throw this.loseRunConnection();
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("selected_connection_unavailable");
     throw selectedComputerOfflineError(
       this.selectedComputerLookup(connections),
       "prompt_context",
