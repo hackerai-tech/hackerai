@@ -87,6 +87,7 @@ function getReadyPostHogClient() {
   return posthogClient?.__loaded ? posthogClient : null;
 }
 
+/** Preserve capture semantics while attributing selected native diagnostics to their loaded bundle. */
 function captureWithPostHogClient(
   posthog: PostHogClient,
   event: string,
@@ -96,13 +97,14 @@ function captureWithPostHogClient(
   try {
     const buildCommit = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
     if (
-      (event === "sandbox_connection_terminated" ||
-        event === "desktop_bridge_relay_state_changed") &&
-      properties.native_auth_diagnostic_version === 1 &&
+      (event === "desktop_file_bridge_probe_failed" ||
+        ((event === "sandbox_connection_terminated" ||
+          event === "desktop_bridge_relay_state_changed") &&
+          properties.native_auth_diagnostic_version === 1)) &&
       buildCommit &&
       /^[a-f0-9]{40}$/i.test(buildCommit)
     ) {
-      // The auth policy marker does not identify the loaded frontend bundle.
+      // A native version or auth policy marker does not identify the loaded bundle.
       // This build-time commit describes that bundle, not the native binary.
       properties = {
         ...properties,
