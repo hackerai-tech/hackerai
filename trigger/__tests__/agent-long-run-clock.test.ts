@@ -5,6 +5,7 @@ import { AgentLongMemoryTelemetry } from "@/lib/chat/agent-long-memory-telemetry
 
 /** Run the actual app hook without importing its worker/network registration. */
 function successHook(dependencies: Record<string, unknown>) {
+  dependencies = { readAgentCgroupMemory: () => ({}), ...dependencies };
   const source = ts.createSourceFile(
     "agent-long.ts",
     fs.readFileSync(path.resolve(__dirname, "../agent-long.ts"), "utf8"),
@@ -205,5 +206,94 @@ it("does not swallow the original goal-continuation failure", async () => {
       ctx: { run: { id: "run_owned" }, attempt: { number: 1 } },
     }),
   ).rejects.toBe(original);
+  expect(continuation).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  {
+    cgroup_memory_version: 1,
+    cgroup_memory_status: "available",
+    cgroup_memory_scope: "self_membership",
+    cgroup_memory_current_bytes: 236412928,
+    cgroup_memory_peak_bytes: 237572096,
+    cgroup_memory_limit_kind: "bounded",
+    cgroup_memory_limit_bytes: 589996032,
+    cgroup_lifetime_high_events: 0,
+    cgroup_lifetime_max_events: 0,
+    cgroup_lifetime_oom_events: 0,
+    cgroup_lifetime_oom_kill_events: 0,
+  },
+  { cgroup_memory_version: 1, cgroup_memory_status: "unavailable" },
+  { cgroup_memory_version: 1, cgroup_memory_status: "self_unverified" },
+])(
+  "adds final application-boundary cgroup state to the existing success span: %j",
+  async (fields) => {
+    const attributes = jest.fn();
+    const continuation = jest.fn(async () => undefined);
+    const read = jest.fn(() => fields);
+    const hook = successHook({
+      scheduleGoalContinuation: continuation,
+      trace: { getActiveSpan: () => ({ setAttributes: attributes }) },
+      getAgentRunClockContext: () => ({
+        run_clock_version: 1,
+        run_clock_process_instance: "0123456789abcdef",
+        run_clock_uptime_ms: 2250,
+        run_clock_attempt: 1,
+      }),
+      readAgentCgroupMemory: read,
+    });
+    await hook({
+      payload: {},
+      ctx: { run: { id: "run_owned" }, attempt: { number: 1 } },
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(attributes).toHaveBeenCalledTimes(1);
+    expect(attributes.mock.calls[0][0]).toMatchObject(
+      Object.fromEntries(
+        Object.entries(fields).map(([key, value]) => [
+          `hackerai.app_on_success_entry.${key}`,
+          value,
+        ]),
+      ),
+    );
+    expect(attributes.mock.calls[0][0]).toHaveProperty(
+      ["hackerai.app_on_success_entry.run_clock_process_instance"],
+      "0123456789abcdef",
+    );
+    expect(read.mock.invocationCallOrder[0]).toBeLessThan(
+      continuation.mock.invocationCallOrder[0],
+    );
+    expect(continuation).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("retains the original success clock and continuation if the optional cgroup read throws", async () => {
+  const attributes = jest.fn();
+  const continuation = jest.fn(async () => undefined);
+  const hook = successHook({
+    scheduleGoalContinuation: continuation,
+    trace: { getActiveSpan: () => ({ setAttributes: attributes }) },
+    getAgentRunClockContext: () => ({
+      run_clock_version: 1,
+      run_clock_process_instance: "0123456789abcdef",
+      run_clock_uptime_ms: 2250,
+      run_clock_attempt: 1,
+    }),
+    readAgentCgroupMemory: () => {
+      throw new Error("PRIVATE_PATH_CANARY");
+    },
+  });
+  await hook({
+    payload: {},
+    ctx: { run: { id: "run_owned" }, attempt: { number: 1 } },
+  });
+  expect(attributes).toHaveBeenCalledTimes(1);
+  expect(attributes.mock.calls[0][0]).toHaveProperty(
+    ["hackerai.app_on_success_entry.run_clock_version"],
+    1,
+  );
+  expect(JSON.stringify(attributes.mock.calls)).not.toContain(
+    "PRIVATE_PATH_CANARY",
+  );
   expect(continuation).toHaveBeenCalledTimes(1);
 });
