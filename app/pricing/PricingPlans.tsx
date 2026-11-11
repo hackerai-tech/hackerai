@@ -97,8 +97,8 @@ export function PricingPlans() {
                 recommended && "bg-[#1a1a1a] ring-1 ring-inset ring-[#b9b7ff]",
               )}
             >
-              <div className="flex items-start justify-between gap-4 md:block">
-                <div>
+              <div className="sm:flex sm:items-start sm:justify-between sm:gap-4 md:block">
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="text-lg font-semibold">{plan.name}</h3>
                     {recommended ? (
@@ -111,8 +111,8 @@ export function PricingPlans() {
                     {plan.description}
                   </p>
                 </div>
-                <div className="shrink-0 text-right md:mt-8 md:text-left">
-                  <div className="flex items-baseline justify-end gap-1 md:justify-start">
+                <div className="mt-4 sm:mt-0 sm:shrink-0 sm:text-right md:mt-8 md:text-left">
+                  <div className="flex items-baseline gap-1 sm:justify-end md:justify-start">
                     <span className="text-4xl font-semibold tracking-tight">
                       ${price}
                     </span>
