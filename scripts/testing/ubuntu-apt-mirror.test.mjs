@@ -17,6 +17,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const script = resolve(root, ".github/scripts/prefer-ubuntu-apt-mirror.sh");
 const mirrorSource = "mirror+file:/etc/apt/apt-mirrors.txt";
 const ubuntuKeyring = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
+// The independent HTTPS replica comes first; Canonical hosts stay as fallbacks.
+const x64Mirrors = [
+  "https://packages.hetzner.com/ubuntu/packages/",
+  "https://archive.ubuntu.com/ubuntu/",
+  "http://azure.archive.ubuntu.com/ubuntu/",
+  "https://security.ubuntu.com/ubuntu/",
+];
+const arm64Mirrors = [
+  "https://packages.hetzner.com/ubuntu-ports/packages/",
+  "http://ports.ubuntu.com/ubuntu-ports/",
+];
 
 function fixture(t, files) {
   const dir = mkdtempSync(join(tmpdir(), "ubuntu-apt-mirror-"));
@@ -74,18 +85,6 @@ function mirrors(files) {
     .map(({ url }) => url);
 }
 
-function assertIndependentFirst(files, expected) {
-  const [preferred, ...fallbacks] = mirrors(files);
-  assert.equal(preferred, expected);
-  assert.equal(new URL(preferred).protocol, "https:");
-  assert.doesNotMatch(new URL(preferred).hostname, /(^|\.)ubuntu\.com$/);
-  assert.ok(
-    fallbacks.some((url) => new URL(url).hostname.endsWith(".ubuntu.com")),
-    "Canonical fallbacks remain available",
-  );
-  return fallbacks;
-}
-
 test("x64 legacy runner sources prefer the HTTPS replica before Canonical", (t) => {
   const sources = [
     `deb ${mirrorSource} jammy main restricted`,
@@ -110,16 +109,7 @@ test("x64 legacy runner sources prefer the HTTPS replica before Canonical", (t) 
 
   const files = prefer(dir, "X64");
 
-  const fallbacks = assertIndependentFirst(
-    files,
-    "https://packages.hetzner.com/ubuntu/packages/",
-  );
-  for (const url of [
-    "http://azure.archive.ubuntu.com/ubuntu/",
-    "https://archive.ubuntu.com/ubuntu/",
-    "https://security.ubuntu.com/ubuntu/",
-  ])
-    assert.ok(fallbacks.includes(url), url);
+  assert.deepEqual(mirrors(files), x64Mirrors);
   assert.equal(files["etc/apt/sources.list"], sources);
   assert.equal(files["etc/apt/sources.list.d/git-core.list"], ppa);
 });
@@ -141,26 +131,44 @@ test("x64 Deb822 sources route Canonical URIs through the mirror list with signa
     "Signed-By: /etc/apt/keyrings/docker.asc",
     "",
   ].join("\n");
+  // Deb822 lets a field's values continue on indented lines, starting on the
+  // line after an empty "URIs:". Canonical URIs collapse into one mirror entry.
+  const continued = (uris) =>
+    [
+      "Types: deb deb-src",
+      "URIs:",
+      ...uris,
+      "Suites: noble-proposed",
+      "Components: main",
+      `Signed-By: ${ubuntuKeyring}`,
+    ].join("\n");
   const dir = fixture(t, {
     "etc/apt/sources.list.d/ubuntu.sources": `${stanza(
       "http://azure.archive.ubuntu.com/ubuntu/",
       "noble noble-updates noble-backports",
-    )}\n\n${stanza("http://security.ubuntu.com/ubuntu/", "noble-security")}\n`,
+    )}\n\n${stanza(
+      "http://security.ubuntu.com/ubuntu/",
+      "noble-security",
+    )}\n\n${continued([
+      "  http://archive.ubuntu.com/ubuntu/",
+      "\thttps://mirror.example.net/ubuntu/ http://security.ubuntu.com/ubuntu",
+      "  http://azure.archive.ubuntu.com/ubuntu/",
+    ])}\n`,
     "etc/apt/sources.list.d/docker.sources": docker,
   });
 
   const files = prefer(dir, "X64");
 
-  assertIndependentFirst(
-    files,
-    "https://packages.hetzner.com/ubuntu/packages/",
-  );
+  assert.deepEqual(mirrors(files), x64Mirrors);
   assert.equal(
     files["etc/apt/sources.list.d/ubuntu.sources"],
     `${stanza(mirrorSource, "noble noble-updates noble-backports")}\n\n${stanza(
       mirrorSource,
       "noble-security",
-    )}\n`,
+    )}\n\n${continued([
+      `  ${mirrorSource}`,
+      "\thttps://mirror.example.net/ubuntu/",
+    ])}\n`,
   );
   assert.equal(files["etc/apt/sources.list.d/docker.sources"], docker);
   assert.deepEqual(prefer(dir, "X64"), files, "second run changes nothing");
@@ -180,11 +188,7 @@ test("ARM64 legacy ports sources gain the independent ports replica", (t) => {
 
   const files = prefer(dir, "ARM64");
 
-  const fallbacks = assertIndependentFirst(
-    files,
-    "https://packages.hetzner.com/ubuntu-ports/packages/",
-  );
-  assert.ok(fallbacks.includes("http://ports.ubuntu.com/ubuntu-ports/"));
+  assert.deepEqual(mirrors(files), arm64Mirrors);
   assert.equal(
     files["etc/apt/sources.list"],
     [

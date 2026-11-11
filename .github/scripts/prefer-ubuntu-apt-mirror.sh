@@ -41,29 +41,47 @@ as_root() {
   fi
 }
 
-# Rewrites the URI of legacy one-line entries or Deb822 URIs fields when it
-# names this architecture's Canonical archive. Exits 10 when nothing changed.
+# Rewrites the URI of legacy one-line entries or Deb822 URIs fields, including
+# indented continuation lines, when it names this architecture's Canonical
+# archive. Exits 10 when nothing changed.
 # shellcheck disable=SC2016
 rewrite_program='
 function ubuntu(uri) { return tolower(uri) ~ pattern }
+# Sets result to the field tokens with Canonical URIs replaced and duplicates
+# within the field removed; returns whether the line needs rewriting.
+function rewrite_uris(tokens,   n, uris, j, found) {
+  n = split(tokens, uris, /[ \t]+/)
+  result = ""; found = 0
+  for (j = 1; j <= n; j++) {
+    if (uris[j] == "") continue
+    if (ubuntu(uris[j])) { uris[j] = mirror; found = 1 }
+    if (uris[j] in seen) { if (uris[j] == mirror) found = 1; continue }
+    seen[uris[j]] = 1
+    result = result (result == "" ? "" : " ") uris[j]
+  }
+  if (found) changed = 1
+  return found
+}
 format == "list" && $1 ~ /^deb(-src)?$/ {
   i = 2
   if ($2 ~ /^\[/) { while (i < NF && $i !~ /\]$/) i++; i++ }
   if (i <= NF && ubuntu($i)) { $i = mirror; changed = 1 }
 }
 format == "sources" && tolower($0) ~ /^uris:/ {
-  n = split(substr($0, 6), uris, /[ \t]+/)
-  line = ""; found = 0
-  split("", seen)
-  for (j = 1; j <= n; j++) {
-    if (uris[j] == "") continue
-    if (ubuntu(uris[j])) { uris[j] = mirror; found = 1 }
-    if (uris[j] in seen) continue
-    seen[uris[j]] = 1
-    line = line " " uris[j]
-  }
-  if (found) { $0 = substr($0, 1, 5) line; changed = 1 }
+  in_uris = 1; split("", seen)
+  if (rewrite_uris(substr($0, 6))) $0 = substr($0, 1, 5) " " result
+  print; next
 }
+format == "sources" && in_uris && /^[ \t]+[^ \t]/ {
+  match($0, /^[ \t]+/); indent = substr($0, 1, RLENGTH)
+  if (rewrite_uris(substr($0, RLENGTH + 1))) {
+    # A continuation holding only duplicates is dropped, never left blank.
+    if (result == "") next
+    $0 = indent result
+  }
+  print; next
+}
+format == "sources" && !/^#/ { in_uris = 0 }
 { print }
 END { if (!changed) exit 10 }
 '
