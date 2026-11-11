@@ -26,9 +26,6 @@ interface AttachmentDownloadRequest {
 export function useAttachmentDownload() {
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
-  // Read the cache through a ref so callback identity survives cache updates.
-  const fileUrlCacheRef = useRef(fileUrlCache);
-  fileUrlCacheRef.current = fileUrlCache;
   const inFlightRef = useRef(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -73,16 +70,16 @@ export function useAttachmentDownload() {
       inFlightRef.current = true;
       setIsDownloading(true);
       try {
-        const cache = fileUrlCacheRef.current;
         // Recheck expiry on every click; component state can outlive a signed URL.
-        const cachedUrl = fileId && cache ? cache.getCachedUrl(fileId) : null;
+        const cachedUrl =
+          fileId && fileUrlCache ? fileUrlCache.getCachedUrl(fileId) : null;
         if (cachedUrl) return await downloadFromUrl(cachedUrl, fileName);
 
         let url: string | null = null;
         try {
           if (fileId) {
             url = await getFileUrlAction({ fileId });
-            if (url && cache) cache.setCachedUrl(fileId, url);
+            if (url && fileUrlCache) fileUrlCache.setCachedUrl(fileId, url);
           } else if (directUrl) {
             url = directUrl;
           }
@@ -110,7 +107,7 @@ export function useAttachmentDownload() {
         setIsDownloading(false);
       }
     },
-    [downloadFromUrl, getFileUrlAction],
+    [downloadFromUrl, fileUrlCache, getFileUrlAction],
   );
 
   return { downloadAttachment, isDownloading };
