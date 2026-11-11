@@ -22,7 +22,11 @@ import {
   payoutFields,
 } from "./influencerValidators";
 import { v } from "convex/values";
-import { abuseCaseFields, abuseEventFields } from "./lib/abuseValidators";
+import {
+  abuseCaseFields,
+  abuseEventFields,
+  abuseResponseFields,
+} from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
@@ -236,6 +240,10 @@ export default defineSchema({
   abuse_events: defineTable(abuseEventFields)
     .index("by_caseId", ["caseId"])
     .index("by_caseId_and_kind", ["caseId", "kind"]),
+  // At most one reviewed late-report response per case; no evidence text.
+  abuse_responses: defineTable(abuseResponseFields).index("by_caseId", [
+    "caseId",
+  ]),
   abuse_rate_limits: defineTable({
     bucket: v.string(),
     count: v.number(),
@@ -1456,6 +1464,10 @@ export default defineSchema({
     token: v.string(),
     token_created_at: v.number(),
     updated_at: v.number(),
+    // A reviewed abuse restriction replaces the token with an unreturned value
+    // and blocks reissue/Desktop connection until its case is resolved.
+    revoked_at: v.optional(v.number()),
+    revoked_source_id: v.optional(v.string()),
   })
     .index("by_user_id", ["user_id"])
     .index("by_token", ["token"]),

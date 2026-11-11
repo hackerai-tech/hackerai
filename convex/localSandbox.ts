@@ -1,7 +1,7 @@
 import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { DatabaseReader } from "./lib/serviceFunctions";
+import { DatabaseReader, type MutationCtx } from "./lib/serviceFunctions";
 import {
   findHeartbeat,
   lastHeartbeat,
@@ -118,6 +118,43 @@ function generateToken(): string {
   return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+// A reviewed abuse restriction revokes local access until its case is
+// resolved. Neither token reissue nor a Desktop session may bypass it.
+function localAccessRevoked(): never {
+  throw new ConvexError({
+    code: "LOCAL_SANDBOX_ACCESS_REVOKED",
+    message: "Local sandbox access is unavailable for this account.",
+  });
+}
+
+async function isLocalAccessRevoked(db: DatabaseReader, userId: string) {
+  const record = await db
+    .query("local_sandbox_tokens")
+    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+    .first();
+  return record?.revoked_at !== undefined;
+}
+
+/**
+ * The restriction disconnects sessions in bounded batches. A Desktop session
+ * outside that batch is disconnected on its next refresh or heartbeat instead
+ * of being renewed. The existing reason keeps current clients compatible.
+ */
+async function disconnectIfRevoked(
+  ctx: MutationCtx,
+  connection: Doc<"local_sandbox_connections">,
+): Promise<Doc<"local_sandbox_connections">> {
+  if (!(await isLocalAccessRevoked(ctx.db, connection.user_id)))
+    return connection;
+  const disconnected = {
+    status: "disconnected" as const,
+    disconnected_at: Date.now(),
+    disconnect_reason: "token_regenerated" as const,
+  };
+  await ctx.db.patch(connection._id, disconnected);
+  return { ...connection, ...disconnected };
+}
+
 // CENTRIFUGO JWT GENERATION
 // ============================================================================
 
@@ -151,7 +188,7 @@ async function validateToken(
     .withIndex("by_token", (q) => q.eq("token", token))
     .first();
 
-  if (!tokenRecord) {
+  if (!tokenRecord || tokenRecord.revoked_at !== undefined) {
     return { valid: false };
   }
 
@@ -200,6 +237,7 @@ export const getToken = mutation({
       .withIndex("by_user_id", (q) => q.eq("user_id", userId))
       .first();
 
+    if (existing?.revoked_at !== undefined) localAccessRevoked();
     if (existing) {
       return { token: existing.token };
     }
@@ -239,6 +277,7 @@ export const regenerateToken = mutation({
       .withIndex("by_user_id", (q) => q.eq("user_id", userId))
       .first();
 
+    if (existing?.revoked_at !== undefined) localAccessRevoked();
     if (existing) {
       await ctx.db.patch(existing._id, {
         token: token,
@@ -317,7 +356,7 @@ export const connect = mutation({
       .withIndex("by_token", (q) => q.eq("token", args.token))
       .first();
 
-    if (!tokenRecord) {
+    if (!tokenRecord || tokenRecord.revoked_at !== undefined) {
       return { success: false, error: "Invalid token" };
     }
 
@@ -582,6 +621,7 @@ export const connectDesktop = mutation({
 
     const userId = identity.subject;
     validateEnvironmentId(args.environmentId);
+    if (await isLocalAccessRevoked(ctx.db, userId)) localAccessRevoked();
 
     // Disconnect stale desktop connections for this user (page reload, etc.)
     const existingDesktop = await ctx.db
@@ -665,14 +705,15 @@ export const refreshCentrifugoTokenDesktop = mutation({
       return terminatedResult("ownership_mismatch", connectionId, null);
     }
 
-    if (connection.status !== "connected") {
+    const current = await disconnectIfRevoked(ctx, connection);
+    if (current.status !== "connected") {
       return terminatedResult("connection_inactive", connectionId, {
-        ...connection,
-        last_heartbeat: await lastHeartbeat(ctx.db, connection),
+        ...current,
+        last_heartbeat: await lastHeartbeat(ctx.db, current),
       });
     }
 
-    await recordHeartbeat(ctx, connection);
+    await recordHeartbeat(ctx, current);
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { ok: true as const, centrifugoToken };
@@ -704,7 +745,8 @@ export const heartbeatDesktop = mutation({
       !connection ||
       connection.user_id !== identity.subject ||
       connection.client_version !== "desktop" ||
-      connection.status !== "connected"
+      connection.status !== "connected" ||
+      (await disconnectIfRevoked(ctx, connection)).status !== "connected"
     ) {
       return { success: false };
     }

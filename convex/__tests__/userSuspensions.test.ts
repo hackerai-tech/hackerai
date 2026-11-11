@@ -51,18 +51,31 @@ type SuspensionRow = {
   resolved_reason?: string;
 };
 
-function makeMockCtx(initialRows: SuspensionRow[] = []) {
+type TokenRow = {
+  _id: string;
+  user_id: string;
+  token: string;
+  revoked_at?: number;
+};
+
+function makeMockCtx(
+  initialRows: SuspensionRow[] = [],
+  initialTokens: TokenRow[] = [],
+) {
   const rows = [...initialRows];
+  const tokens = [...initialTokens];
+  const tables: Record<string, any[]> = {
+    user_suspensions: rows,
+    local_sandbox_tokens: tokens,
+  };
 
-  const matchesFilters = (
-    row: SuspensionRow,
-    filters: Record<string, unknown>,
-  ) =>
-    Object.entries(filters).every(
-      ([field, value]) => row[field as keyof SuspensionRow] === value,
-    );
+  const matchesFilters = (row: any, filters: Record<string, unknown>) =>
+    Object.entries(filters).every(([field, value]) => row[field] === value);
 
-  const withIndex = jest.fn((_indexName: string, predicate: any) => {
+  // Records index use; the table-specific reader below applies the filters.
+  const withIndex = jest.fn((_indexName: string, _predicate: any) => {});
+  const indexed = (table: string) => (indexName: string, predicate: any) => {
+    withIndex(indexName, predicate);
     const filters: Record<string, unknown> = {};
     const q = {
       eq: jest.fn((field: string, value: unknown) => {
@@ -73,7 +86,7 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
     predicate(q);
 
     const filteredRows = () =>
-      rows.filter((row) => matchesFilters(row, filters));
+      tables[table].filter((row) => matchesFilters(row, filters));
 
     return {
       order: jest.fn((direction: "asc" | "desc") => ({
@@ -93,15 +106,22 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
         },
       })),
       first: async () => filteredRows()[0] ?? null,
+      take: async (count: number) => filteredRows().slice(0, count),
     };
-  });
+  };
 
   const ctx: any = {
     __withIndex: withIndex,
     db: {
-      query: jest.fn(() => ({
-        withIndex,
+      query: jest.fn((table: string) => ({
+        withIndex: indexed(table),
       })),
+      delete: jest.fn(async (id: string) => {
+        for (const list of Object.values(tables)) {
+          const index = list.findIndex((row) => row._id === id);
+          if (index >= 0) list.splice(index, 1);
+        }
+      }),
       insert: jest.fn(
         async (_table: string, doc: Omit<SuspensionRow, "_id">) => {
           const row: SuspensionRow = { _id: `id-${rows.length + 1}`, ...doc };
@@ -117,7 +137,7 @@ function makeMockCtx(initialRows: SuspensionRow[] = []) {
     },
   };
 
-  return { ctx, rows };
+  return { ctx, rows, tokens };
 }
 
 const baseArgs = {
@@ -446,5 +466,90 @@ describe("userSuspensions", () => {
       userId: "user_123",
     });
     expect(active).toBeNull();
+  });
+
+  describe("abuse local-access revocation", () => {
+    const suspension = (
+      source_id: string,
+      category: SuspensionRow["category"],
+      status: SuspensionRow["status"] = "active",
+    ): SuspensionRow => ({
+      _id: source_id,
+      user_id: "user_123",
+      status,
+      category,
+      source: category === "security_abuse" ? "support" : "stripe",
+      source_id,
+      created_at: 1_000,
+      updated_at: 1_000,
+    });
+    const markers = (): TokenRow[] => [
+      {
+        _id: "marker",
+        user_id: "user_123",
+        token: "revoked_synthetic",
+        revoked_at: 2_000,
+      },
+      {
+        _id: "other-marker",
+        user_id: "other_user",
+        token: "revoked_synthetic_other",
+        revoked_at: 2_000,
+      },
+    ];
+    const resolve = async (ctx: any, sourceId: string) => {
+      const { resolveBySource } = await import("../userSuspensions");
+      return (resolveBySource as any).handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        userId: "user_123",
+        sourceId,
+        resolvedReason: "support_review",
+      });
+    };
+
+    it("lifts the block when the last independent security restriction outlived the case", async () => {
+      // The case already released its own restriction but kept the marker.
+      const { ctx, rows, tokens } = makeMockCtx(
+        [
+          suspension("abuse-late:case", "security_abuse", "resolved"),
+          suspension("independent", "security_abuse"),
+          suspension("billing", "dispute_billing_hold"),
+        ],
+        markers(),
+      );
+
+      await resolve(ctx, "independent");
+
+      expect(tokens.map((row) => row._id)).toEqual(["other-marker"]);
+      expect(rows.map((row) => [row.source_id, row.status])).toEqual([
+        ["abuse-late:case", "resolved"],
+        ["independent", "resolved"],
+        ["billing", "active"],
+      ]);
+    });
+
+    it.each([
+      ["another security restriction remains", "independent", true],
+      ["a billing restriction is resolved", "billing", false],
+    ])(
+      "keeps the block when %s",
+      async (_label, resolvedSource, secondSecurity) => {
+        const { ctx, tokens } = makeMockCtx(
+          [
+            suspension("independent", "security_abuse"),
+            ...(secondSecurity ? [suspension("second", "security_abuse")] : []),
+            suspension("billing", "dispute_billing_hold"),
+          ],
+          markers(),
+        );
+
+        await resolve(ctx, resolvedSource);
+
+        expect(tokens.map((row) => row._id)).toEqual([
+          "marker",
+          "other-marker",
+        ]);
+      },
+    );
   });
 });

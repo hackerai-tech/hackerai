@@ -35,7 +35,7 @@ below are not a claim about legally required retention.
 Web settings require a deployment. The email-only flow does not use
 `ABUSE_NOTIFICATIONS_ENABLED`, `ABUSE_NOTIFICATION_ENVIRONMENT`,
 `ABUSE_NOTIFICATION_REVIEW_URL`, or `ABUSE_OPERATOR_USER_IDS`. The latter remains
-required only by the authorized historical-case backend described below.
+required in Convex by the authorized case backend and operator CLI described below.
 
 ## Security check and receipts
 
@@ -165,8 +165,8 @@ stores. Ordinary support membership grants no access.
 The operator's containment action requires the selected root to remain the chat's
 active run. It deliberately rejects a completed or replaced root; do not remove
 that guard or attach an old run to bypass it. A report may arrive after completion
-while a detached cloud process is still running. In that case use the late-report
-procedure below.
+while a detached cloud process is still running. In that case use the operator
+CLI described below.
 
 The reviewed action adds a support `security_abuse` suspension owned by the case.
 It blocks new cost-incurring work, reconnects, root/child attachment and existing
@@ -210,38 +210,127 @@ including detached child processes and ongoing network activity. Record the
 verification method, scope, timestamp, and evidence before choosing the manual
 process-stop confirmation. Cloud tests do not establish local or native acceptance.
 
-### Reports received after a run finishes
+### Reports received by email, including after a run finishes
 
-This path requires an authorized operator with service access; it is not exposed
-as an automatic case action. Keep the case in review or follow-up until the
-separate restriction and runtime checks are recorded.
+`scripts/abuse-response.ts` is the operator entrypoint for a confirmed emailed
+report. It works whether or not the reported run is still active. Public intake
+cannot reach it. There is no UI. Every call requires service access and an
+allowlisted operator. Nothing in the report text selects the account: the operator
+supplies identifiers verified from server records, and the backend checks them.
 
-1. Record a verified-fact note tying the report to the historical root, account,
-   chat, provider sandbox and region, and a decision naming the reviewer and
-   reason for restriction. Recheck the current workspace selection; the old run's
-   sandbox must not be inferred to be the user's current sandbox.
-2. Using the existing signed `userSuspensions.upsertActive` mutation, set only
-   that verified user's `support` / `security_abuse` restriction with a unique
-   case-specific source ID such as `abuse-late:<full AB reference>`. Record the
-   exact source ID and read back the active restriction in the case. Preserve all
-   other sources. This blocks new work; it does not prove existing processes stop.
-3. Independently inspect the historical sandbox at the recorded provider/region.
-   Verify its provider ownership and the current workspace state before any
-   destructive action. Preserve the minimum necessary evidence first. If it still
-   exists, terminate only the verified sandbox through the authorized provider
-   procedure, preserving or recovering only its matching workspace cleanup fence.
-   Do not clear an unfamiliar fence or terminate a replacement workspace by guess.
-   Unknown ownership or selection requires escalation while the restriction stays
-   active. Cancel any separately verified active root/children in that workspace.
-4. Record provider absence, Trigger terminal state, and any workspace-fence
-   release separately, with timestamps and the verification method. For a local
-   or Desktop process, require machine-level verification. A restriction or a
-   completed historical run alone is never process-stop evidence.
-5. After appeal or resolution review, use `userSuspensions.resolveBySource` only
-   with the exact recorded user and `abuse-late:` source ID. Verify the selected
-   restriction is resolved and independent restrictions remain active, then
-   record the result before resolving the case. The case's `abuseCases.resolve` mutation
-   does not remove this separately recorded late-report restriction.
+```bash
+corepack pnpm exec tsx scripts/abuse-response.ts <import|plan|apply|status|retry> \
+  --expect-convex-url <deployment URL> \
+  [--expect-trigger-env dev|stg|preview|prod] < case.json
+```
+
+- **Credentials** come only from the process environment, loaded from that
+  environment's secret store:
+  - `NEXT_PUBLIC_CONVEX_URL` must equal `--expect-convex-url` and the URL the
+    web/worker use.
+  - `CONVEX_SERVICE_ROLE_KEY`. The service client sends a short-lived signed
+    proof, never the key, as the RPC argument.
+  - `ABUSE_EVIDENCE_KEYS` (`import`, `apply`): the same keyring as Convex.
+  - `TRIGGER_SECRET_KEY` (`plan`, `apply`, `retry`): its prefix must match
+    `--expect-trigger-env`.
+
+  A mismatch stops the command before it reads input or calls any service.
+
+- **Input** is one JSON object on stdin: a pipe, or a file readable only by its
+  owner (`chmod 600`). Terminals and group-readable files are refused. Do not put
+  case data in arguments or the clipboard.
+- **Output** contains receipts and identifiers only. Errors are fixed messages
+  with field names, never input values or backend text. Keep output in the
+  restricted case record.
+
+1. **Import** the emailed receipt with `operator`, `reference`, `kind`,
+   `receivedAt` and a `report` object (`contact`, `target`, `occurredAt`,
+   `description`, `sourceIp`, `sourcePort`, `protocol`, `evidence`). Copy only
+   the necessary content; fields that look like raw credentials are rejected. This creates an operator-only case with an
+   evidence hold and no restriction. An identical retry returns `existing`;
+   changed content conflicts. `intakeReceipt: "found"` means a queue receipt
+   for that reference still exists; content is not compared. For an email
+   without an `AB-` reference, generate one `AB-<uuid>` once and keep it.
+2. **Plan** with `operator`, `reference` and a `subject` object (`userId`,
+   `chatId`, `transport`, optional `runId` and `environmentId`). The backend
+   checks:
+   - the account owns the chat;
+   - `environmentId` was recorded for that account and transport (it searches
+     the newest 200 connection rows; omit the field for purged environments and
+     describe them in the facts);
+   - no other case owns containment for the account;
+   - any existing `abuse-late:<reference>` restriction is an active support
+     security restriction. It is adopted, never duplicated; otherwise the plan
+     fails.
+
+   An optional `runId` is checked against Trigger's recorded task, account, chat,
+   deployment, transport and environment. It is attribution evidence only and is
+   never a cancellation target. Review the printed `planDigest`, restriction
+   (`create`/`adopt`) and counts.
+
+3. **Apply** with the plan file plus:
+   - `planDigest`;
+   - a `requestId` UUID generated once and kept in the file;
+   - a `review` object: `reviewer`, `reviewDate`, `retentionReviewDate`,
+     `reason`, `verifiedFacts`, and up to five `evidence` items (`source`,
+     `observedAt`, `summary`). The reviewer must be an allowlisted operator. The review date cannot be in the future, and the
+     retention review date must be later;
+   - `acknowledge: {accountRestriction: true, processStopUnconfirmed: true}`.
+
+   One transaction stores encrypted attribution and decision events, then:
+   - creates or adopts `abuse-late:<reference>` for that account only;
+   - replaces its local token with an unreturned value and blocks token reissue
+     and new Desktop sessions;
+   - disconnects connected local/Desktop sessions (100 per transaction, the
+     remainder on retry). Any Desktop session left connected is refused a
+     token refresh or heartbeat and is disconnected at its next attempt;
+   - sets the evidence hold and moves the case to `needs_followup`.
+
+   Other restrictions are untouched. If the case revision, status or
+   restriction changed after planning, apply fails with `ABUSE_PLAN_CHANGED`. Plan
+   again. The command then discovers currently active owned roots and active
+   children (queued/running/finalizing) in pages of 25, up to 100 targets. It
+   cancels a run only when Trigger's recorded task, owner and deployment match the
+   server record. It also closes the root's recorded approval session, even when
+   the run is already terminal or the cancel request fails. Each target gets a
+   durable receipt: `terminal`, `cancel_requested`, `identity_mismatch` or
+   `unknown`. `terminal` is recorded only after Trigger reports a terminal
+   status and any approval session is closed; otherwise the target stays
+   retryable.
+
+4. **Status** prints the receipts and an `outstanding` list. **Retry**, or
+   rerunning apply with the same file after a lost response, resumes the same
+   response after its five-minute lease. It reapplies local invalidation,
+   rescans, and retries every non-terminal target. A different `requestId` or
+   changed content is rejected.
+
+Limits:
+
+- The response never reports containment. `processStop` is always `unconfirmed`
+  and the case stays in follow-up. A Trigger terminal status, a disconnected
+  session or a revoked token is not process-stop evidence. Verify local and
+  Desktop machines at machine level and record the method as a verified fact.
+- `identity_mismatch`, `unknown` and `target_overflow` require investigation. Do
+  not cancel guessed runs manually.
+- This flow never contacts a sandbox provider (`cloudProvider: not_attempted`).
+  For a currently active cloud root, use the verified containment action on the
+  same case; the case's own account is allowed. For a historical cloud
+  sandbox, inspect the recorded provider/region independently. Verify provider
+  ownership and the current workspace selection before any destructive action;
+  the old sandbox must not be inferred to be the current one. Preserve the
+  minimum evidence first. Terminate only the verified sandbox through the
+  authorized provider procedure, recovering only its matching cleanup fence.
+  Record provider absence and fence release separately. Escalate unknown
+  ownership while the restriction stays active.
+- The user cannot issue a new local token or start a Desktop session until every
+  reviewed security restriction on the account is lifted. Disconnected clients
+  report a regenerated token, the existing reason, so client protocols are
+  unchanged. `abuseCases.resolve` releases exactly the recorded case
+  restriction. It lifts the local-access block only when no other active
+  security restriction remains. Otherwise, resolving the last remaining
+  security restriction with `userSuspensions.resolveBySource` lifts it. Billing
+  and other restrictions do not affect the block. The user must then issue a
+  new token. Resolution is refused while a response lease is active.
 
 ## Resolution and evidence lifecycle
 

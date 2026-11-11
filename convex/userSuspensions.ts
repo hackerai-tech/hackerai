@@ -2,6 +2,7 @@ import { mutation, query } from "./lib/serviceFunctions";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { getActiveChatAccessBlockingSuspension } from "./lib/chatAccessSuspensions";
+import { releaseLocalAccess } from "./lib/abuseResponse";
 
 const suspensionCategoryValidator = v.union(
   v.literal("early_fraud_warning"),
@@ -152,6 +153,10 @@ export const resolveBySource = mutation({
       resolved_reason: args.resolvedReason,
       updated_at: now,
     });
+    // An abuse case keeps local access revoked while any security restriction
+    // remains; resolving the last one lifts that block.
+    if (suspension.category === "security_abuse")
+      await releaseLocalAccess(ctx, args.userId);
 
     return { resolved: true };
   },
