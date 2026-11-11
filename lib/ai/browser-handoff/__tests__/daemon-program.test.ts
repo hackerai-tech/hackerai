@@ -5,6 +5,14 @@ import { createHash } from "node:crypto";
 import { BROWSER_DAEMON_PROGRAM } from "../daemon-program";
 
 const directory = "/dev/shm/hackerai-browser-0123456789abcdef";
+/** Preserve the old receipt budget and the existing full parser cap separately. */
+function expectPacketBudgets(text: string) {
+  const { cv: _cliAtPrepare, ...previousContext } = JSON.parse(text);
+  expect(
+    Buffer.byteLength(JSON.stringify(previousContext)),
+  ).toBeLessThanOrEqual(512);
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+}
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
   options: {
@@ -39,6 +47,11 @@ function daemon(
     pidSymlink?: boolean;
     pidSize?: number;
     processVisibility?: "same_uid" | "other_uid" | "missing" | "permission";
+    cliReceipt?: unknown;
+    cliOwner?: number;
+    cliMode?: number;
+    cliSize?: number;
+    cliSymlink?: boolean;
   } = {},
 ) {
   const socketPath = path.join(
@@ -98,16 +111,29 @@ function daemon(
     size: options.pidSize ?? options.pidFile?.length,
     isFile: () => !options.pidSymlink && options.pidFile !== undefined,
   });
+  const cliStat = () => ({
+    uid: options.cliOwner ?? 1000,
+    mode: options.cliMode ?? 0o600,
+    size: options.cliSize ?? JSON.stringify(options.cliReceipt)?.length,
+    isFile: () => options.cliReceipt !== undefined && !options.cliSymlink,
+  });
   const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
     bytes.write(
-      fd === 10
-        ? options.pidFile!
-        : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
+      fd === 11
+        ? JSON.stringify(options.cliReceipt)
+        : fd === 10
+          ? options.pidFile!
+          : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
     ),
   );
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
+    if (file.endsWith("/cli-at-prepare.json")) {
+      if (options.cliReceipt === undefined || options.cliSymlink)
+        throw new Error("PRIVATE unavailable CLI receipt");
+      return 11;
+    }
     if (file.endsWith(".pid")) return 10;
     const open = file.endsWith("/open-receipt.json");
     const close = file.endsWith("/close-receipt.json");
@@ -133,7 +159,11 @@ function daemon(
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
           fstatSync: (fd: number) =>
-            fd === 10 ? pidStat() : receiptStat(fd === 8, fd === 9),
+            fd === 11
+              ? cliStat()
+              : fd === 10
+                ? pidStat()
+                : receiptStat(fd === 8, fd === 9),
           statSync: (file: string) => {
             if (file === "/proc") {
               if (options.procUnavailable)
@@ -159,6 +189,7 @@ function daemon(
           readSync: readReceipt,
           closeSync: closeReceipt,
           lstatSync: (file: string) => {
+            if (file.endsWith("/cli-at-prepare.json")) return cliStat();
             if (file.endsWith(".pid")) {
               if (options.pidFile === undefined)
                 throw Object.assign(new Error("PRIVATE missing PID"), {
@@ -256,7 +287,7 @@ it.each(["unset", "disabled", "lt_15m", "15m", "gt_15m", "unparsed"])(
     expect(d.exit).toHaveBeenCalledWith(2);
     const text = d.output.mock.calls[0][0];
     expect(JSON.parse(text).open_idle).toEqual([1, idle]);
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+    expectPacketBudgets(text);
     expect(text).not.toContain("PRIVATE");
   },
 );
@@ -281,7 +312,7 @@ it.each([
   },
 );
 
-it("keeps the longest open/close/declaration failure below the unchanged 512-byte cap", () => {
+it("keeps previous open/close/declaration context within512 and the full packet within544", () => {
   const longest = { ...receipt, at: Date.now() + 60000, exit: 999 };
   const d = daemon({
     missingPath: directory + "/sockets",
@@ -302,7 +333,7 @@ it("keeps the longest open/close/declaration failure below the unchanged 512-byt
     closeReceipt: { ...longest, action: "close" },
   });
   const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expectPacketBudgets(text);
   expect(JSON.parse(text)).toMatchObject({
     diagnostic_reason: "sockets_stat",
     diagnostic_error: "not_directory",
@@ -328,6 +359,7 @@ it("reports only bounded same-session wrapper context when an owned socket is mi
   expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
     diagnostic_reason: "socket_stat",
     diagnostic_error: "missing",
+    cv: [1, 0],
     wrapper_receipt_version: 1,
     wrapper_action: "close",
     wrapper_phase: "completed",
@@ -469,6 +501,7 @@ it.each(["connecting", "awaiting_response", "partial_response"])(
     expect(d.socket.destroy).toHaveBeenCalled();
     expect(JSON.parse(d.output.mock.calls[0]?.[0] ?? "null")).toEqual({
       deadline: [1, phase],
+      cv: [1, 0],
     });
     expect(JSON.stringify(d.output.mock.calls)).not.toContain("PRIVATE");
   },
@@ -495,7 +528,7 @@ it("preserves maximal wrapper receipts within the parser budget at a response de
   d.socket.emit("connect");
   d.timeout();
   const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expectPacketBudgets(text);
   expect(JSON.parse(text)).toMatchObject({
     deadline: [1, "awaiting_response"],
     h1: 1,
@@ -520,6 +553,7 @@ it("reports a bounded missing-socket precondition while preserving exit2 and no 
   expect(JSON.parse(d.output.mock.calls[0]?.[0] ?? "null")).toEqual({
     diagnostic_reason: "socket_stat",
     diagnostic_error: "missing",
+    cv: [1, 0],
   });
   expect(JSON.stringify(d.output.mock.calls)).not.toMatch(
     /PRIVATE|\/dev\/shm|default/,
@@ -542,7 +576,7 @@ it.each([
   const d = daemon();
   d.reply(response);
   expect(d.exit).toHaveBeenCalledWith(5);
-  expect(d.output).not.toHaveBeenCalled();
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({ cv: [1, 0] });
 });
 
 it.each(["error", "close", "timeout", "malformed", "oversized"])(
@@ -558,8 +592,9 @@ it.each(["error", "close", "timeout", "malformed", "oversized"])(
     if (failure === "timeout")
       expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({
         deadline: [1, "connecting"],
+        cv: [1, 0],
       });
-    else expect(d.output).not.toHaveBeenCalled();
+    else expect(JSON.parse(d.output.mock.calls[0][0])).toEqual({ cv: [1, 0] });
   },
 );
 
@@ -675,7 +710,7 @@ it("bounds the combined receipt below the existing 512-byte parser limit and pre
     },
   });
   const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+  expectPacketBudgets(text);
   expect(JSON.parse(text)).toMatchObject({
     open_receipt_status: "recorded",
     open_phase: "started",
@@ -777,7 +812,7 @@ it.each([
 );
 
 it.each([false, true])(
-  "keeps maximal history/close/open context within512 bytes and censors cross-session order (%s)",
+  "keeps previous history/close/open context within512 and censors cross-session order (%s)",
   (selectedClose) => {
     const longest = {
       ...receipt,
@@ -809,7 +844,7 @@ it.each([false, true])(
       },
     });
     const text = d.output.mock.calls[0][0];
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+    expectPacketBudgets(text);
     expect(JSON.parse(text).close_receipt).toEqual([
       1,
       "recorded",
@@ -910,44 +945,104 @@ it("leaves successful capture and mismatched open observations unprobed", () => 
   ).toBe(true);
 });
 
-it("keeps the combined selected process and maximal existing receipts within one 544-byte packet", () => {
-  const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
+it.each(["sockets", "sockets/default.sock"])(
+  "keeps maximal process, history, close and CLI context within544 bytes (%s)",
+  (missing) => {
+    const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
+    const d = daemon({
+      missingPath: directory + "/" + missing,
+      missingCode: "ENOTDIR",
+      pidFile: "314159",
+      processVisibility: "same_uid",
+      cliReceipt: [1, 1, 999999999],
+      receipt: {
+        ...longest,
+        action: "version",
+        session_key: "a".repeat(64),
+        open_receipt_support: 1,
+        close_receipt_support: 1,
+        history: [1, true, true],
+      },
+      openReceipt: {
+        ...longest,
+        action: "open",
+        exit: 0,
+        idle_env_version: 1,
+        idle_env: "unparsed",
+      },
+      closeReceipt: { ...longest, action: "close", close_all: false },
+    });
+    const text = d.output.mock.calls[0][0];
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+    expect(text.length).toBeLessThanOrEqual(544);
+    expect(JSON.parse(text)).toMatchObject({
+      cv: [1, 1, 999999999],
+      p1: missing === "sockets" ? [1, 2, 0] : [1, 3, 2],
+      h1: 3,
+      open_idle: [1, "unparsed"],
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        "other",
+        "selected_session",
+        "unknown",
+        "same_time",
+      ],
+    });
+  },
+);
+
+it.each([
+  [1, 0],
+  [1, 1, 39003],
+  [1, 2],
+  [1, 3],
+  [1, 4],
+])(
+  "retains bounded CLI-at-prepare context without a wrapper receipt: %j",
+  (...cv) => {
+    const d = daemon({
+      cliReceipt: cv,
+      missingPath: directory + "/sockets/default.sock",
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(JSON.parse(d.output.mock.calls[0][0]).cv).toEqual(cv);
+  },
+);
+
+it.each([
+  {},
+  { cliOwner: 0 },
+  { cliMode: 0o644 },
+  { cliSymlink: true },
+  { cliSize: 513 },
+  { cliReceipt: [1, 1, -1] },
+  { cliReceipt: [1, 1, 1000000000] },
+  { cliReceipt: [1, 2, "PRIVATE"] },
+  { cliReceipt: [2, 1, 39003] },
+  { cliReceipt: [1, 5] },
+])("censors absent, unsafe or malformed CLI receipts (%#)", (override) => {
   const d = daemon({
+    cliReceipt: [1, 1, 39003],
+    ...override,
+    ...(Object.keys(override).length === 0 ? { cliReceipt: undefined } : {}),
     missingPath: directory + "/sockets/default.sock",
-    missingCode: "ENOTDIR",
-    pidFile: "314159",
-    processVisibility: "same_uid",
-    receipt: {
-      ...longest,
-      action: "version",
-      session_key: "a".repeat(64),
-      open_receipt_support: 1,
-      close_receipt_support: 1,
-      history: [1, true, true],
-    },
-    openReceipt: {
-      ...longest,
-      action: "open",
-      exit: 0,
-      idle_env_version: 1,
-      idle_env: "unparsed",
-    },
-    closeReceipt: { ...longest, action: "close", close_all: true },
   });
-  const text = d.output.mock.calls[0][0];
-  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
-  expect(JSON.parse(text)).toMatchObject({
-    p1: [1, 3, 2],
-    h1: 3,
-    open_idle: [1, "unparsed"],
-    close_receipt: [
-      1,
-      "recorded",
-      "completed",
-      "other",
-      "all_sessions",
-      "unknown",
-      "same_time",
-    ],
-  });
+  expect(d.exit).toHaveBeenCalledWith(2);
+  expect(JSON.parse(d.output.mock.calls[0][0]).cv).toEqual([1, 0]);
+  expect(d.output.mock.calls[0][0]).not.toContain("PRIVATE");
+});
+
+it("does not read CLI receipts on a successful daemon response", () => {
+  const d = daemon({ cliReceipt: [1, 1, 39003] });
+  const response = {
+    id: "hackerai-preview",
+    success: true,
+    data: { port: 9223 },
+  };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.openReceipt).not.toHaveBeenCalled();
 });

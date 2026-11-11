@@ -14,6 +14,24 @@ def validate():
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise RuntimeError('Invalid browser session owner')
 
+def write_cli_at_prepare_receipt(value):
+    """Persist only the finite optional-check tuple; diagnostics cannot block prepare."""
+    temporary = None
+    created = False
+    try:
+        temporary = root / ('.cli-at-prepare-' + os.urandom(12).hex())
+        fd = os.open(str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
+        with os.fdopen(fd, 'w') as output:
+            json.dump(value, output, separators=(',', ':'))
+        os.replace(temporary, root / 'cli-at-prepare.json')
+    except Exception:
+        pass
+    finally:
+        if created:
+            try: temporary.unlink()
+            except OSError: pass
+
 def ambient_idle_timeout():
     # Observe only this nonsensitive declaration, not daemon flags or effective state.
     raw = os.environ.get('AGENT_BROWSER_IDLE_TIMEOUT_MS')
@@ -59,10 +77,12 @@ if action == 'prepare':
     (root / 'sockets').mkdir(mode=0o700)
     (root / 'state').mkdir(mode=0o700)
     (root / 'config.json').write_text('{}')
+    cli_at_prepare = [1, 2]  # Version1, not checked; never a daemon version.
     if len(sys.argv) > 6 and sys.argv[6]:
         init_script = sys.argv[6]
         # This optional adapter requires agent-browser's native init-script and
         # user-agent actions. Legacy workspaces keep ordinary browsing intact.
+        cli_at_prepare = [1, 4]  # Existing optional command failed.
         try:
             import re
             version = subprocess.run(['agent-browser','--version'],capture_output=True,text=True,timeout=5,check=True)
@@ -70,9 +90,20 @@ if action == 'prepare':
             supported = match and tuple(map(int,match.groups())) >= (0,39,3)
         except Exception:
             supported = False
+        else:
+            # Keep the existing feature decision above independent from diagnostics.
+            cli_at_prepare = [1, 3]
+            try:
+                strict = re.fullmatch(r'agent-browser (0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})', version.stdout.strip()) if len(version.stdout) <= 128 else None
+                if strict:
+                    major, minor, patch = map(int, strict.groups())
+                    cli_at_prepare = [1, 1, major * 1000000 + minor * 1000 + patch]
+            except Exception:
+                pass
         if len(init_script) <= 16384 and supported:
             (root / 'cloudflare.js').write_text(init_script)
             (root / 'config.json').write_text(json.dumps({'initScripts':[str(root / 'cloudflare.js')]}))
+    write_cli_at_prepare_receipt(cli_at_prepare)
     if len(sys.argv) > 5 and sys.argv[5] == 'gate':
         real = shutil.which('agent-browser')
         if not real:
