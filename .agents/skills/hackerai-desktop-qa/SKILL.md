@@ -13,11 +13,13 @@ The skill is versioned in this repository, not a private credential store.
 
 Read the checkout's AGENTS.md and [Desktop acceptance runbook](../../../docs/desktop-local-acceptance.md).
 Use the actual native app for native commands, sandbox transport, or Save dialogs.
-Prefer a verified Vercel Preview for web-only changes. A local native shell can
-load that Preview when its auth, CSP and remote capabilities support it; keep
-those results distinct from a fully local backend/worker test. If a local
-frontend is needed, finish building it before starting acceptance. Avoid another
-watcher or build just to take screenshots.
+Prefer a verified Vercel Preview for web-only changes tested in a browser. For
+native acceptance, build the app against this worktree's loopback frontend;
+the runner rejects hosted origins to avoid Vercel deployment-protection login
+in the native WebView. That local frontend can use verified
+Preview backend/worker/relay services; keep those results distinct from a fully
+local backend/worker test. Finish building the frontend before starting
+acceptance. Avoid another watcher or build just to take screenshots.
 
 For an explicitly authorized Production demo, use the installed Production app
 and verify the signed-in account first. Preserve existing data. Prefer synthetic
