@@ -6,6 +6,8 @@ jest.mock("@/convex/lib/serviceFunctions", () => ({
 jest.mock("@/convex/s3Utils", () => ({
   generateS3UploadUrl: jest.fn(),
   generateS3DownloadUrl: jest.fn(),
+  getS3ObjectMetadataFailure:
+    jest.requireActual("@/convex/s3Utils").getS3ObjectMetadataFailure,
   getS3ObjectSizeBytes: jest.fn(),
   getStoredS3Location: jest.fn(),
 }));

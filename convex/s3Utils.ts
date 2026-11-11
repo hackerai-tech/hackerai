@@ -221,6 +221,123 @@ export async function deleteS3Object(
   }
 }
 
+export type S3MetadataFailureReason =
+  | "not_found"
+  | "access_denied"
+  | "credentials"
+  | "timeout"
+  | "transport"
+  | "missing_content_length"
+  | "http_4xx"
+  | "http_5xx"
+  | "unknown";
+
+export type S3MetadataFailureDiagnostic = {
+  reason: S3MetadataFailureReason;
+  httpStatus: number | null;
+};
+
+// Only these SDK error names/codes are compared; raw names, codes, messages,
+// request IDs and URLs are never retained.
+const S3_FAILURE_NAME_REASONS: ReadonlyMap<string, S3MetadataFailureReason> =
+  new Map<string, S3MetadataFailureReason>([
+    ["NotFound", "not_found"],
+    ["NoSuchKey", "not_found"],
+    ["NoSuchBucket", "not_found"],
+    ["AccessDenied", "access_denied"],
+    ["Forbidden", "access_denied"],
+    ["AllAccessDisabled", "access_denied"],
+    ["CredentialsProviderError", "credentials"],
+    ["InvalidAccessKeyId", "credentials"],
+    ["SignatureDoesNotMatch", "credentials"],
+    ["ExpiredToken", "credentials"],
+    ["InvalidToken", "credentials"],
+    ["TokenRefreshRequired", "credentials"],
+    ["RequestTimeTooSkewed", "credentials"],
+    ["TimeoutError", "timeout"],
+    ["RequestTimeout", "timeout"],
+    ["RequestTimeoutException", "timeout"],
+    ["ETIMEDOUT", "timeout"],
+    ["ESOCKETTIMEDOUT", "timeout"],
+    ["ECONNRESET", "transport"],
+    ["ECONNREFUSED", "transport"],
+    ["ECONNABORTED", "transport"],
+    ["ENOTFOUND", "transport"],
+    ["EAI_AGAIN", "transport"],
+    ["EPIPE", "transport"],
+    ["EHOSTUNREACH", "transport"],
+    ["ENETUNREACH", "transport"],
+    ["EPROTO", "transport"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "transport"],
+    ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "transport"],
+    ["CERT_HAS_EXPIRED", "transport"],
+  ]);
+
+const UNKNOWN_S3_METADATA_FAILURE: S3MetadataFailureDiagnostic = {
+  reason: "unknown",
+  httpStatus: null,
+};
+
+// Keyed by the thrown wrapper so callers can classify a failure without the
+// wrapper's public name/message changing or the raw SDK error being retained.
+const s3MetadataFailures = new WeakMap<object, S3MetadataFailureDiagnostic>();
+
+function readS3FailureLabel(error: object, field: "name" | "code") {
+  const value = (error as Record<string, unknown>)[field];
+  return typeof value === "string" ? S3_FAILURE_NAME_REASONS.get(value) : null;
+}
+
+function classifyS3MetadataFailure(
+  error: unknown,
+): S3MetadataFailureDiagnostic {
+  try {
+    if (typeof error !== "object" || error === null) {
+      return UNKNOWN_S3_METADATA_FAILURE;
+    }
+    const metadata = (error as { $metadata?: unknown }).$metadata;
+    const status =
+      typeof metadata === "object" && metadata !== null
+        ? (metadata as { httpStatusCode?: unknown }).httpStatusCode
+        : undefined;
+    const httpStatus =
+      typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 599
+        ? status
+        : null;
+    const reason =
+      readS3FailureLabel(error, "code") ??
+      readS3FailureLabel(error, "name") ??
+      (httpStatus === 404
+        ? "not_found"
+        : httpStatus === 403
+          ? "access_denied"
+          : httpStatus !== null && httpStatus >= 500
+            ? "http_5xx"
+            : httpStatus !== null && httpStatus >= 400
+              ? "http_4xx"
+              : "unknown");
+    return { reason, httpStatus };
+  } catch {
+    return UNKNOWN_S3_METADATA_FAILURE;
+  }
+}
+
+/**
+ * Finite storage-failure details recorded for a getS3ObjectSizeBytes error.
+ * Errors not thrown by that function report an unknown reason.
+ */
+export function getS3ObjectMetadataFailure(
+  error: unknown,
+): S3MetadataFailureDiagnostic {
+  const diagnostic =
+    typeof error === "object" && error !== null
+      ? s3MetadataFailures.get(error)
+      : undefined;
+  return { ...(diagnostic ?? UNKNOWN_S3_METADATA_FAILURE) };
+}
+
 /**
  * Get S3 object size in bytes.
  */
@@ -228,6 +345,7 @@ export async function getS3ObjectSizeBytes(
   s3Key: string,
   storageLocation?: S3StorageLocation,
 ): Promise<number> {
+  let missingContentLength: Error | undefined;
   try {
     const location = storageLocation ?? getLegacyS3StorageLocation();
     const s3Client = getS3Client(location);
@@ -239,14 +357,22 @@ export async function getS3ObjectSizeBytes(
 
     const result = await s3Client.send(command);
     if (typeof result.ContentLength !== "number") {
-      throw new Error("S3 object ContentLength is missing");
+      missingContentLength = new Error("S3 object ContentLength is missing");
+      throw missingContentLength;
     }
     return result.ContentLength;
   } catch (error) {
     console.error("Failed to fetch S3 object metadata:", error);
-    throw new Error(
+    const failure = new Error(
       "Failed to fetch S3 object metadata: " +
         (error instanceof Error ? error.message : "Unknown error"),
     );
+    s3MetadataFailures.set(
+      failure,
+      missingContentLength !== undefined && error === missingContentLength
+        ? { reason: "missing_content_length", httpStatus: null }
+        : classifyS3MetadataFailure(error),
+    );
+    throw failure;
   }
 }
