@@ -472,7 +472,8 @@ export function FindingRetestRecipeEditor({
       referenceName && nextName && credential === referenceName
         ? nextName
         : credential;
-    if (nextName) credentialReferenceNames.current[index] = nextName;
+    credentialReferenceNames.current[index] =
+      nextName || previousName || referenceName;
     setForm((prev) => {
       return {
         ...prev,

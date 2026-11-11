@@ -380,4 +380,30 @@ describe("FindingHttpRetests", () => {
         .every((select) => (select as HTMLSelectElement).value === ""),
     ).toBe(true);
   });
+
+  it("tracks request references when a newly added credential is renamed", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue(jsonResponse(enabledState()));
+    render(<FindingHttpRetests finding={finding} />);
+    await user.click(
+      await screen.findByRole("button", { name: /edit recipe/i }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: /add credential/i }),
+    );
+    const addedName = within(dialog)
+      .getAllByRole("textbox")
+      .find(
+        (field) =>
+          field instanceof HTMLInputElement &&
+          field.value === "account_2_token",
+      )!;
+    const baselineCredential =
+      within(dialog).getAllByLabelText("Credential")[0];
+    await user.selectOptions(baselineCredential, "account_2_token");
+    await user.clear(addedName);
+    await user.type(addedName, "renamed_token");
+    expect(baselineCredential).toHaveValue("renamed_token");
+  });
 });
