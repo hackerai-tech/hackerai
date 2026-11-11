@@ -110,7 +110,16 @@ it("keeps invisible frames ineligible and does not double-count standard widgets
   const element = frame.parentElement!;
   element.className = "h-captcha";
   element.setAttribute("data-sitekey", siteKey);
-  expect(inspect().widgets).toHaveLength(1);
+  expect(inspect().widgets).toEqual([
+    expect.objectContaining({ hcaptchaWidgetId: id, invisible: false }),
+  ]);
+  element.setAttribute("data-size", "invisible");
+  expect(inspect().widgets[0].invisible).toBe(true);
+  // A container whose key does not match its SDK frame keeps the field path.
+  element.setAttribute("data-sitekey", "another-public-key");
+  expect(inspect().widgets).toEqual([
+    expect.objectContaining({ siteKey: "another-public-key" }),
+  ]);
   expect(inspect().widgets[0].hcaptchaWidgetId).toBeUndefined();
 });
 
@@ -235,6 +244,172 @@ it("keeps other widgets' reset/remove and later API replacements independent", (
   expect(api.getResponse).toBe(replacement);
   expect(field.value).toBe("");
 });
+
+// Normal data-sitekey markup as created by the public SDK: the container owns
+// the checkbox frame and both ID-addressed response fields.
+function renderDeclarative(callback?: string) {
+  const sdk = render();
+  const element = sdk.frame.parentElement!;
+  element.className = "h-captcha";
+  element.setAttribute("data-sitekey", siteKey);
+  element.setAttribute("data-hcaptcha-widget-id", id);
+  if (callback) element.setAttribute("data-callback", callback);
+  const form = document.createElement("form");
+  document.body.append(form);
+  form.append(element);
+  sdk.getResponse.mockImplementation(() => "");
+  return { ...sdk, element, form };
+}
+
+const deliver = () => {
+  const observation = inspect();
+  return window.eval(
+    buildDeliverCaptchaScript(observation, observation.widgets[0], token),
+  );
+};
+
+it("routes a normal SDK widget once so an ID-less form reader sees the response", () => {
+  const { api, form } = renderDeclarative();
+  let submitted: string | undefined;
+  // Form guards commonly read only the SDK default instead of the hidden field.
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitted = api.getResponse();
+  });
+  expect(inspect().widgets).toEqual([
+    expect.objectContaining({ hcaptchaWidgetId: id, tokenPresent: false }),
+  ]);
+  expect(deliver()).toEqual({
+    status: "token_delivered",
+    websiteAccepted: false,
+    responseRetained: true,
+  });
+  form.requestSubmit();
+  expect(submitted).toBe(token);
+  expect(api.getResponse(undefined)).toBe(token);
+  expect(api.getResponse(null as unknown as string)).toBe(token);
+  expect(api.getResponse("other-widget")).toBe("");
+});
+
+it("invokes a normal declarative callback once after the SDK default is available", () => {
+  const { api, field } = renderDeclarative("onCaptcha");
+  const seen: [string, string | undefined, string][] = [];
+  page.onCaptcha = jest.fn((response: string) =>
+    seen.push([response, api.getResponse(), field.value]),
+  );
+  try {
+    expect(deliver()).toMatchObject({ status: "token_delivered" });
+    expect(page.onCaptcha).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([[token, token, token]]);
+  } finally {
+    delete page.onCaptcha;
+  }
+});
+
+it("keeps field-only delivery for a normal widget whose SDK cannot be adapted", () => {
+  const { api, field, getResponse } = renderDeclarative();
+  Object.freeze(api);
+  expect(inspect().widgets[0].hcaptchaWidgetId).toBeUndefined();
+  expect(deliver()).toMatchObject({ status: "token_delivered" });
+  expect(field.value).toBe(token);
+  expect(api.getResponse).toBe(getResponse);
+});
+
+it.each([
+  "another container",
+  "another response field",
+  "another checkbox frame",
+  "another widget's challenge",
+  "mismatched container ID",
+  "native default response",
+  "native addressed response",
+  "failing default getter",
+])("never infers the SDK default widget with %s", (change) => {
+  const { api, element, getResponse } = renderDeclarative();
+  if (change === "another container")
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<div class="h-captcha" data-sitekey="another-public-key"></div>',
+    );
+  if (change === "another response field")
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<textarea name="h-captcha-response"></textarea>',
+    );
+  if (
+    change === "another checkbox frame" ||
+    change === "another widget's challenge"
+  )
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<iframe src="https://newassets.hcaptcha.com/captcha/v1/version/static/hcaptcha.html#frame=${change === "another checkbox frame" ? "checkbox" : "challenge"}&id=other_widget&sitekey=${siteKey}"></iframe>`,
+    );
+  if (change === "mismatched container ID")
+    element.setAttribute("data-hcaptcha-widget-id", "other_widget");
+  expect(deliver()).toMatchObject({ status: "token_delivered" });
+  if (change === "native default response")
+    getResponse.mockImplementation((widgetId?: string) =>
+      widgetId === id ? "" : "different-native-response",
+    );
+  if (change === "native addressed response")
+    getResponse.mockImplementation((widgetId?: string) =>
+      widgetId === id ? "native-human-response" : "",
+    );
+  if (change === "failing default getter")
+    getResponse.mockImplementation((widgetId?: string) => {
+      if (widgetId == null) throw Error("no default widget");
+      return "";
+    });
+  if (change === "failing default getter")
+    expect(() => api.getResponse()).toThrow("no default widget");
+  else
+    expect(api.getResponse()).toBe(
+      change === "native default response" ? "different-native-response" : "",
+    );
+  expect(api.getResponse(id)).toBe(token);
+});
+
+it.each(["second widget", "second response field"])(
+  "revokes the SDK default when a %s appears, even after it is removed",
+  async (change) => {
+    const { api, field } = renderDeclarative();
+    deliver();
+    expect(api.getResponse()).toBe(token);
+    const other = document.createElement("div");
+    other.innerHTML =
+      change === "second widget"
+        ? `<iframe src="https://newassets.hcaptcha.com/captcha/v1/version/static/hcaptcha.html#frame=checkbox&id=other_widget&sitekey=${siteKey}"></iframe>`
+        : '<textarea name="g-recaptcha-response"></textarea>';
+    document.body.append(other);
+    // The observer must revoke without waiting for a getter call.
+    await Promise.resolve();
+    other.remove();
+    await Promise.resolve();
+    expect(api.getResponse()).toBe("");
+    // The explicitly addressed response keeps its other-widget semantics.
+    expect(api.getResponse(id)).toBe(token);
+    expect(field.value).toBe(token);
+  },
+);
+
+it.each(["reset", "remove", "default reset", "SDK replacement", "expiry"])(
+  "restores the native SDK default after %s",
+  (change) => {
+    jest.useFakeTimers();
+    const { api, field, getResponse } = renderDeclarative();
+    deliver();
+    expect(api.getResponse()).toBe(token);
+    if (change === "reset") api.reset(id);
+    if (change === "remove") api.remove(id);
+    if (change === "default reset") api.reset();
+    if (change === "SDK replacement")
+      page.hcaptcha = { getResponse: jest.fn(() => "") };
+    if (change === "expiry") jest.advanceTimersByTime(120001);
+    expect(api.getResponse()).toBe("");
+    expect(api.getResponse).toBe(getResponse);
+    expect(field.value).toBe("");
+  },
+);
 
 it("reports a lost response if an application listener resets the widget during delivery", () => {
   const { api, field } = render();
