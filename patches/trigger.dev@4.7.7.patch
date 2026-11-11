@@ -1,9 +1,9 @@
 diff --git a/dist/esm/entryPoints/child-completion-probe.js b/dist/esm/entryPoints/child-completion-probe.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f231a963cb512751da8bce0cb8050f707a20c2d
+index 0000000000000000000000000000000000000000..e1536c85fc788919bb698ef8fd5137e1c0d17afb
 --- /dev/null
 +++ b/dist/esm/entryPoints/child-completion-probe.js
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,58 @@
 +// Bounded public child-side evidence. IPC return is not a receiver acknowledgement.
 +// Diagnostic faults must never change the existing completion protocol or lifecycle.
 +export function createChildCompletionProbe({ tracer, getParentContext, execution, result, isRunning, isCancelled, connected }) {
@@ -47,8 +47,10 @@ index 0000000000000000000000000000000000000000..2f231a963cb512751da8bce0cb8050f7
 +                    () => finish(span, "rejected")));
 +                ipcSpan = undefined;
 +            },
-+            skipped() {
-+                finish(packetSpan, isCancelled === true ? "cancelled_guard" : "not_running_guard");
++            skipped(isRunningNow, isCancelledNow) {
++                quiet(() => packetSpan?.setAttribute("hackerai.child_completion.worker_running", isRunningNow === true));
++                quiet(() => packetSpan?.setAttribute("hackerai.child_completion.worker_cancelled", isCancelledNow === true));
++                finish(packetSpan, isCancelledNow === true ? "cancelled_guard" : "not_running_guard");
 +                packetSpan = undefined;
 +            },
 +            failed() {
@@ -61,7 +63,7 @@ index 0000000000000000000000000000000000000000..2f231a963cb512751da8bce0cb8050f7
 +    }) ?? inert;
 +}
 diff --git a/dist/esm/entryPoints/managed-run-worker.js b/dist/esm/entryPoints/managed-run-worker.js
-index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..b5c84fbbca1f4a5fc8785bf274e04d3736bb27b5 100644
+index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..c3d18ee6236f7268e5fd98128d0d98b68fe7f93d 100644
 --- a/dist/esm/entryPoints/managed-run-worker.js
 +++ b/dist/esm/entryPoints/managed-run-worker.js
 @@ -9,6 +9,7 @@ import sourceMapSupport from "source-map-support";
@@ -105,7 +107,7 @@ index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..b5c84fbbca1f4a5fc8785bf274e04d37
 +                        completionProbe.observeReturn(completionPromise);
 +                        return completionPromise;
                      }
-+                    completionProbe.skipped();
++                    completionProbe.skipped(_isRunning, _isCancelled);
 +                }
 +                catch (err) {
 +                    completionProbe?.failed();

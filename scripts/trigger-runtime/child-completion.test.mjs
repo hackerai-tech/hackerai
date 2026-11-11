@@ -70,6 +70,7 @@ function fixture({
   tracerFault = false,
   spanFault = false,
   contextFault = false,
+  cancelOnProbe = false,
   sendThrow,
   executorError,
   attempt = 1,
@@ -149,6 +150,7 @@ function fixture({
     },
     tracer: {
       startSpan(name, { attributes }, context) {
+        if (cancelOnProbe) h.state.setCancelled(true);
         if (tracerFault) throw Error("PRIVATE_TRACER_CANARY");
         assert.equal(context, parent);
         const span = {
@@ -373,3 +375,14 @@ for (const mode of ["0", "1"])
     assert.equal(receipt.pass, true);
     assert.equal(receipt.cases, 4);
   });
+
+test("guard reason reflects cancellation during optional probe setup", async () => {
+  const f = fixture({ cancelOnProbe: true });
+  await f.run();
+  assert.equal(f.packets.length, 0);
+  assert.deepEqual(outcomes(f), ["cancelled_guard"]);
+  assert.equal(
+    f.spans[0].attributes["hackerai.child_completion.worker_cancelled"],
+    true,
+  );
+});
