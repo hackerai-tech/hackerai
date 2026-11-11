@@ -45,6 +45,11 @@ export type CloudSandboxAcquisitionContext = {
   environment?: string;
 };
 
+/**
+ * Acquire only the caller's authorized workspace and publish it after validation.
+ * Failure telemetry records bounded catch-entry context before cleanup mutates it;
+ * the original rejection and request-wide acquisition budget remain authoritative.
+ */
 export async function ensureCloudSandboxConnection(options: {
   reportStage?: ReportCloudAcquisitionStage;
   userId: string;
