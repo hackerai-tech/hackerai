@@ -1,0 +1,115 @@
+diff --git a/dist/esm/entryPoints/child-completion-probe.js b/dist/esm/entryPoints/child-completion-probe.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f231a963cb512751da8bce0cb8050f707a20c2d
+--- /dev/null
++++ b/dist/esm/entryPoints/child-completion-probe.js
+@@ -0,0 +1,56 @@
++// Bounded public child-side evidence. IPC return is not a receiver acknowledgement.
++// Diagnostic faults must never change the existing completion protocol or lifecycle.
++export function createChildCompletionProbe({ tracer, getParentContext, execution, result, isRunning, isCancelled, connected }) {
++    let packetSpan;
++    let ipcSpan;
++    const quiet = (fn) => { try { return fn(); } catch {} };
++    const finish = (span, outcome) => {
++        quiet(() => span?.setAttribute("hackerai.child_completion.outcome", outcome));
++        quiet(() => span?.end());
++    };
++    const inert = { packetReady: (packet) => packet, observeReturn() {}, skipped() {}, failed() {} };
++    return quiet(() => {
++        if (execution.task.id !== "agent-long") return inert;
++        const parent = getParentContext();
++        const attributes = {
++            "hackerai.child_completion.version": 1,
++            "hackerai.child_completion.worker_running": isRunning === true,
++            "hackerai.child_completion.worker_cancelled": isCancelled === true,
++            "hackerai.child_completion.process_connected": connected === true,
++            "hackerai.child_completion.result_ok": result.ok === true,
++        };
++        const attempt = execution.attempt.number;
++        if (Number.isSafeInteger(attempt) && attempt >= 1 && attempt <= 1000000) {
++            attributes["hackerai.child_completion.attempt"] = attempt;
++        }
++        const start = (name) => quiet(() => tracer.startSpan(name, { attributes }, parent));
++        packetSpan = start("child completion packet");
++        return {
++            packetReady(packet) {
++                finish(packetSpan, "packet_ready");
++                packetSpan = undefined;
++                ipcSpan = start("child completion IPC");
++                return packet;
++            },
++            observeReturn(promise) {
++                const span = ipcSpan;
++                // Observe the original Promise without returning a replacement or awaiting it.
++                // ZodIpcConnection may silently drop a disconnected send; fulfillment is not ACK.
++                quiet(() => Promise.prototype.then.call(promise,
++                    () => finish(span, "returned_unacknowledged"),
++                    () => finish(span, "rejected")));
++                ipcSpan = undefined;
++            },
++            skipped() {
++                finish(packetSpan, isCancelled === true ? "cancelled_guard" : "not_running_guard");
++                packetSpan = undefined;
++            },
++            failed() {
++                finish(packetSpan, "packet_error");
++                finish(ipcSpan, "invocation_error");
++                packetSpan = undefined;
++                ipcSpan = undefined;
++            },
++        };
++    }) ?? inert;
++}
+diff --git a/dist/esm/entryPoints/managed-run-worker.js b/dist/esm/entryPoints/managed-run-worker.js
+index e1c45b0ee731a135627f52daa6e4a3ac0d4db212..b5c84fbbca1f4a5fc8785bf274e04d3736bb27b5 100644
+--- a/dist/esm/entryPoints/managed-run-worker.js
++++ b/dist/esm/entryPoints/managed-run-worker.js
+@@ -9,6 +9,7 @@ import sourceMapSupport from "source-map-support";
+ import { env } from "std-env";
+ import { normalizeImportPath } from "../utilities/normalizeImportPath.js";
+ import { VERSION } from "../version.js";
++import { createChildCompletionProbe } from "./child-completion-probe.js";
+ sourceMapSupport.install({
+     handleUncaughtExceptions: false,
+     environment: "node",
+@@ -389,6 +390,7 @@ const zodIpc = new ZodIpcConnection({
+                     isWarmStart,
+                     executionCount: _executionCount,
+                 });
++                let completionProbe;
+                 try {
+                     _execution = execution;
+                     _isRunning = true;
+@@ -403,9 +405,14 @@ const zodIpc = new ZodIpcConnection({
+                     // Cleared in the surrounding finally below.
+                     resourceCatalog.setCurrentFileContext(NO_FILE_CONTEXT, NO_FILE_CONTEXT);
+                     const { result } = await executor.execute(execution, ctx, signal);
++                    completionProbe = createChildCompletionProbe({
++                        tracer, getParentContext: () => standardTraceContextManager.extractContext(),
++                        execution, result, isRunning: _isRunning, isCancelled: _isCancelled,
++                        connected: process.connected,
++                    });
+                     if (_isRunning && !_isCancelled) {
+                         const usageSample = usage.stop(_executionMeasurement);
+-                        return sender.send("TASK_RUN_COMPLETED", {
++                        const completionPromise = sender.send("TASK_RUN_COMPLETED", completionProbe.packetReady({
+                             execution,
+                             result: {
+                                 ...result,
+@@ -414,8 +421,15 @@ const zodIpc = new ZodIpcConnection({
+                                 },
+                                 flushedMetadata: await runMetadataManager.stopAndReturnLastFlush(),
+                             },
+-                        });
++                        }));
++                        completionProbe.observeReturn(completionPromise);
++                        return completionPromise;
+                     }
++                    completionProbe.skipped();
++                }
++                catch (err) {
++                    completionProbe?.failed();
++                    throw err;
+                 }
+                 finally {
+                     standardHeartbeatsManager.stopHeartbeat();
