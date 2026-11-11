@@ -9,9 +9,10 @@ another PR lands first, update the branch and let the affected checks finish
 before merging. Do not bypass the checks or use an administrator override.
 
 PR CI selects validation from the changed paths. Desktop packaging runs when the
-change affects Desktop. The review/security gate retains current-code AI review,
-unresolved-comment checks, and the applicable processed CodeQL analysis. Main and
-nightly validation retain the complete test and security plan.
+change affects Desktop. The review/security gate checks the applicable processed
+CodeQL analysis. AI review and unresolved comments are advisory in this gate;
+review available feedback separately and address valid findings. Main and nightly
+validation retain the complete test and security plan.
 
 Use the normal squash merge once the current checks and required acceptance are
 complete. A passing PR check does not establish Preview, Production, or native
