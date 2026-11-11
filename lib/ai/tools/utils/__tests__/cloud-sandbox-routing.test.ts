@@ -83,7 +83,7 @@ describe("E2B cloud acquisition", () => {
       expect.objectContaining({
         ...diagnostics,
         trigger_run_id: "run-1",
-        cloud_sandbox_acquisition_failed_event_version: 6,
+        cloud_sandbox_acquisition_failed_event_version: 7,
       }),
     );
     expect(setSandbox).not.toHaveBeenCalled();
@@ -389,6 +389,136 @@ describe("E2B cloud acquisition", () => {
       jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
     ).not.toHaveProperty("workspace_guard_reason");
   });
+
+  it("attributes the caller's exact abort reason and forwards resume stage options unchanged", async () => {
+    const controller = new AbortController();
+    const reason = Object.freeze({ private: "PRIVATE_ABORT_REASON" });
+    const resume = { resumingPausedWorkspace: true };
+    const reportStage = jest.fn();
+    ensure.mockImplementationOnce(async (_owner, options) => {
+      options?.reportStage?.("connect", resume);
+      controller.abort(reason);
+      controller.signal.throwIfAborted();
+      throw new Error("Owned abort did not throw");
+    });
+    const publish = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: publish,
+        signal: controller.signal,
+        reportStage,
+      }),
+    ).rejects.toBe(reason);
+    const events = jest
+      .mocked(phLogger.event)
+      .mock.calls.filter(
+        ([name]) => name === "cloud_sandbox_acquisition_failed",
+      );
+    expect(events).toHaveLength(1);
+    expect(events[0][1]).toMatchObject({
+      acquisition_signal_aborted: true,
+      acquisition_error_is_signal_reason: true,
+      acquisition_thrown_kind: "object",
+      acquisition_last_reported_stage: "connect",
+    });
+    expect(reportStage.mock.calls[0]).toEqual(["workspace_lookup"]);
+    expect(reportStage.mock.calls.at(-1)).toEqual(["connect", resume]);
+    expect(reportStage.mock.calls.at(-1)?.[1]).toBe(resume);
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain("PRIVATE_ABORT_REASON");
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("captures abort facts before the failure callback can change the signal", async () => {
+    const controller = new AbortController();
+    const original = Object.freeze(new Error("PRIVATE_PROVIDER_DETAIL"));
+    ensure.mockRejectedValueOnce(original);
+    const onFailure = jest.fn(() => controller.abort(original));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+        signal: controller.signal,
+        context: { onFailure },
+      }),
+    ).rejects.toBe(original);
+    expect(controller.signal.aborted).toBe(true);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.objectContaining({
+        acquisition_signal_aborted: false,
+        acquisition_error_is_signal_reason: false,
+        acquisition_thrown_kind: "error",
+        acquisition_last_reported_stage: "workspace_lookup",
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain("PRIVATE_PROVIDER_DETAIL");
+  });
+
+  it("distinguishes an unrelated rejection while the caller signal is already aborted", async () => {
+    const controller = new AbortController();
+    const reason = "PRIVATE_CALLER_REASON";
+    const original = Object.freeze({ private: "PRIVATE_OTHER_FAILURE" });
+    ensure.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw original;
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(original);
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.objectContaining({
+        acquisition_signal_aborted: true,
+        acquisition_error_is_signal_reason: false,
+        acquisition_thrown_kind: "object",
+      }),
+    );
+    const serialized = JSON.stringify(jest.mocked(phLogger.event).mock.calls);
+    expect(serialized).not.toContain(reason);
+    expect(serialized).not.toContain("PRIVATE_OTHER_FAILURE");
+  });
+
+  it.each([
+    ["PRIVATE_REJECTION", "string"],
+    [null, "null"],
+    [undefined, "undefined"],
+    [13, "number"],
+    [true, "boolean"],
+    [13n, "bigint"],
+    [Symbol("PRIVATE_SYMBOL"), "symbol"],
+  ] as const)(
+    "records only a finite kind for a non-Error rejection: %s",
+    async (original, kind) => {
+      ensure.mockRejectedValueOnce(original);
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toBe(original);
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          acquisition_signal_aborted: false,
+          acquisition_error_is_signal_reason: false,
+          acquisition_thrown_kind: kind,
+        }),
+      );
+      const serialized = JSON.stringify(jest.mocked(phLogger.event).mock.calls);
+      expect(serialized).not.toContain("PRIVATE_REJECTION");
+      expect(serialized).not.toContain("PRIVATE_SYMBOL");
+    },
+  );
 });
 
 it("pins ordinary retries to a failed workspace even if discovery would return empty", async () => {

@@ -2,7 +2,11 @@ import { resolveCloudWorkspaceRegion } from "./cloud-workspace-routing";
 import { DEFAULT_TRIGGER_RUN_REGION } from "@/lib/api/trigger-region";
 import { readFailures } from "@/lib/cloud-recovery/store";
 import { ensureCloudNetwork } from "@/lib/cloud-network/service";
-import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
+import {
+  parseCloudAcquisitionStage,
+  type CloudAcquisitionStage,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
 import type { AnySandbox, SandboxBootInfo, SubscriptionTier } from "@/types";
 import { randomUUID } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
@@ -52,6 +56,11 @@ export async function ensureCloudSandboxConnection(options: {
 }): Promise<{ sandbox: Sandbox; provider: CloudSandboxProvider }> {
   const startedAt = Date.now();
   const acquisitionId = randomUUID();
+  let lastReportedStage: CloudAcquisitionStage = "unknown";
+  const reportStage: ReportCloudAcquisitionStage = (...args) => {
+    lastReportedStage = parseCloudAcquisitionStage(args[0]) ?? "unknown";
+    options.reportStage?.(...args);
+  };
   let bootInfo: SandboxBootInfo | undefined;
   let selectionReason = options.context?.selectionReason ?? "e2b_only";
   let workspaceGuardDiagnostics:
@@ -97,7 +106,7 @@ export async function ensureCloudSandboxConnection(options: {
 
   try {
     options.signal?.throwIfAborted();
-    options.reportStage?.("workspace_lookup");
+    reportStage("workspace_lookup");
     let state = await readCloudWorkspaceState(options.userId);
     options.signal?.throwIfAborted();
     if (state && state.phase !== "e2b" && state.phase !== "provisioning") {
@@ -179,7 +188,7 @@ export async function ensureCloudSandboxConnection(options: {
       },
       {
         signal: options.signal,
-        reportStage: options.reportStage,
+        reportStage,
         initialSandbox:
           options.initialSandbox && isE2BSandbox(options.initialSandbox)
             ? options.initialSandbox
@@ -192,7 +201,7 @@ export async function ensureCloudSandboxConnection(options: {
         workspaceOrigin: state?.phase === "e2b" ? state.origin : undefined,
       },
     );
-    options.reportStage?.("workspace_verification");
+    reportStage("workspace_verification");
     await assertCloudWorkspaceAvailable(
       options.userId,
       result.sandbox.sandboxId,
@@ -204,6 +213,26 @@ export async function ensureCloudSandboxConnection(options: {
     recordOutcome("success");
     return { ...result, provider: "e2b" };
   } catch (error) {
+    // Capture before onFailure: its cleanup may itself abort the signal.
+    // Identity with the abort reason is context, not proof of the failure cause.
+    let failureProvenance: Record<string, string | boolean> = {};
+    try {
+      const aborted = options.signal?.aborted === true;
+      failureProvenance = {
+        acquisition_signal_aborted: aborted,
+        acquisition_error_is_signal_reason:
+          aborted && Object.is(error, options.signal?.reason),
+        acquisition_thrown_kind:
+          error instanceof Error
+            ? "error"
+            : error === null
+              ? "null"
+              : typeof error,
+        acquisition_last_reported_stage: lastReportedStage,
+      };
+    } catch {
+      /* Optional diagnostics cannot mask the original acquisition failure. */
+    }
     try {
       options.context?.onFailure?.();
     } catch {
@@ -227,7 +256,8 @@ export async function ensureCloudSandboxConnection(options: {
       duration_ms: Date.now() - startedAt,
       error_name: error instanceof Error ? error.name : "UnknownError",
       ...(error instanceof E2BAcquisitionError ? error.diagnostics : {}),
-      cloud_sandbox_acquisition_failed_event_version: 6,
+      ...failureProvenance,
+      cloud_sandbox_acquisition_failed_event_version: 7,
       ...workspaceGuardDiagnostics,
     });
     throw error;
