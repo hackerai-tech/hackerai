@@ -19,6 +19,7 @@ describe("self cgroup memory", () => {
     Object.defineProperty(process, "platform", platform);
   });
 
+  /** Model bounded kernel files; unknown paths remain unreadable. */
   function fixture(overrides: Record<string, string | undefined> = {}) {
     const files: Record<string, string | undefined> = {
       "/proc/self/cgroup": "0::/\n",
@@ -52,26 +53,29 @@ describe("self cgroup memory", () => {
     expect(JSON.stringify(fields)).not.toContain(ROOT);
   });
 
-  it("rejects an ancestor root and reads only the verified nested self group", () => {
-    const leaf = ROOT + "/private-group";
-    const read = fixture({
-      "/proc/self/cgroup": "0::/private-group\n",
-      [ROOT + "/cgroup.procs"]: "999999999\n",
-      [ROOT + "/memory.current"]: "999999999\n",
-      [leaf + "/cgroup.procs"]: `${process.pid}\n`,
-      [leaf + "/memory.current"]: "512\n",
-      [leaf + "/memory.max"]: "max\n",
-    });
-    const fields = readAgentCgroupMemory(read);
-    expect(fields).toMatchObject({
-      cgroup_memory_current_bytes: 512,
-      cgroup_memory_limit_kind: "unlimited",
-    });
-    expect(fields).not.toHaveProperty("cgroup_memory_limit_bytes");
-    expect(fields).not.toHaveProperty("cgroup_memory_peak_bytes");
-    expect(read).not.toHaveBeenCalledWith(ROOT + "/memory.current");
-    expect(JSON.stringify(fields)).not.toContain("private-group");
-  });
+  it.each(["private-group", "user.slice/user@1000.service"])(
+    "rejects an ancestor root and reads only the verified nested self group: %s",
+    (membership) => {
+      const leaf = ROOT + "/" + membership;
+      const read = fixture({
+        "/proc/self/cgroup": `0::/${membership}\n`,
+        [ROOT + "/cgroup.procs"]: "999999999\n",
+        [ROOT + "/memory.current"]: "999999999\n",
+        [leaf + "/cgroup.procs"]: `${process.pid}\n`,
+        [leaf + "/memory.current"]: "512\n",
+        [leaf + "/memory.max"]: "max\n",
+      });
+      const fields = readAgentCgroupMemory(read);
+      expect(fields).toMatchObject({
+        cgroup_memory_current_bytes: 512,
+        cgroup_memory_limit_kind: "unlimited",
+      });
+      expect(fields).not.toHaveProperty("cgroup_memory_limit_bytes");
+      expect(fields).not.toHaveProperty("cgroup_memory_peak_bytes");
+      expect(read).not.toHaveBeenCalledWith(ROOT + "/memory.current");
+      expect(JSON.stringify(fields)).not.toContain(membership);
+    },
+  );
 
   it("keeps an unavailable self group separate from an observed zero counter", () => {
     const read = fixture({ [ROOT + "/cgroup.procs"]: "999999999\n" });
