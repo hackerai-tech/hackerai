@@ -70,7 +70,11 @@ async function main() {
             result: encode(await client.sendCommand(parts.map(String))),
           };
         } catch (error) {
-          return { error: String(error) };
+          return {
+            error: String(error).includes("Free quota migration paused")
+              ? "Free quota migration paused"
+              : "Redis command rejected",
+          };
         }
       };
       res.end(
@@ -359,7 +363,9 @@ async function main() {
     await rm(dir, { recursive: true, force: true });
   }
 }
-main().catch((error) => {
-  console.error(error);
+main().catch(() => {
+  console.error(
+    "Gmail quota verification failed; inspect the local fixture assertions.",
+  );
   process.exitCode = 1;
 });
