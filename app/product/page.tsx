@@ -151,7 +151,7 @@ const sectionPadding = "py-20 md:py-24 lg:py-32";
 const eyebrow =
   "font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground";
 const sectionTitle =
-  "text-[clamp(2.1rem,4vw,3.25rem)] font-semibold leading-[1.08] tracking-[-0.045em] text-balance";
+  "text-[clamp(2.1rem,4vw,2.75rem)] font-semibold leading-[1.08] tracking-[-0.045em] text-balance";
 const lead = "text-base leading-7 text-muted-foreground";
 const mono = "font-mono text-xs text-muted-foreground";
 const inlineLink =
@@ -527,11 +527,14 @@ export default function ProductPage() {
         {/* 03 · What to expect */}
         <section className={sectionClassName} aria-labelledby="what-to-expect">
           <div
-            className={`${container} ${sectionPadding} grid gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16`}
+            className={`${container} grid gap-10 py-14 md:py-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-16 lg:py-32`}
           >
             <div>
               <p className={eyebrow}>03 · What to expect</p>
-              <h2 id="what-to-expect" className={`mt-5 ${sectionTitle}`}>
+              <h2
+                id="what-to-expect"
+                className={`mt-5 max-sm:text-[1.6rem] ${sectionTitle}`}
+              >
                 Proof, not promises.
               </h2>
               <p className={`mt-5 max-w-[460px] ${lead}`}>
@@ -563,11 +566,14 @@ export default function ProductPage() {
         {/* 04 · Platforms */}
         <section className={sectionClassName} aria-labelledby="platforms">
           <div
-            className={`${container} grid pt-20 md:grid-cols-[minmax(0,1fr)_296px] md:gap-12 md:pt-24 lg:grid-cols-2 lg:gap-16 lg:pt-28`}
+            className={`${container} grid pt-14 md:grid-cols-[minmax(0,1fr)_296px] md:gap-12 md:pt-24 lg:grid-cols-2 lg:gap-16 lg:pt-28`}
           >
-            <div className="pb-20 md:self-center md:pb-24 lg:pb-28">
+            <div className="pb-14 md:self-center md:pb-24 lg:pb-28">
               <p className={eyebrow}>04 · Platforms</p>
-              <h2 id="platforms" className={`mt-5 ${sectionTitle}`}>
+              <h2
+                id="platforms"
+                className={`mt-5 max-sm:text-[1.6rem] ${sectionTitle}`}
+              >
                 Web, desktop, and mobile.
               </h2>
               <p className={`mt-5 max-w-[520px] ${lead}`}>
@@ -600,11 +606,13 @@ export default function ProductPage() {
 
         {/* Closing CTA */}
         <section aria-labelledby="closing-cta">
-          <div className={`${container} pt-20 pb-14 md:pt-28 lg:pt-32`}>
+          <div
+            className={`${container} pt-14 pb-12 md:pt-28 md:pb-14 lg:pt-32`}
+          >
             <div className="sm:mx-auto sm:max-w-2xl sm:text-center">
               <h2
                 id="closing-cta"
-                className="text-[clamp(2.1rem,4.5vw,3.6rem)] font-semibold leading-[1.05] tracking-[-0.05em] text-balance"
+                className="text-[1.6rem] font-semibold leading-[1.05] tracking-[-0.05em] text-balance sm:text-[clamp(2.1rem,4.5vw,3.6rem)]"
               >
                 Point it at your next target.
               </h2>
