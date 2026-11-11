@@ -418,7 +418,7 @@ function History({ retests }: { retests: FindingAgentRetestView[] }) {
               <span className="col-span-3 row-start-2 min-w-0 truncate text-muted-foreground @min-[640px]:col-span-1 @min-[640px]:row-start-auto">
                 {running ? "Agent is retesting" : summaryOf(retest)}
               </span>
-              <span className="whitespace-nowrap text-right tabular-nums text-foreground/80 @min-[640px]:w-24">
+              <span className="whitespace-nowrap text-right tabular-nums text-foreground/80 @min-[640px]:min-w-24">
                 <FindingRelativeTime timestamp={retest.started_at} />
               </span>
               <Link
