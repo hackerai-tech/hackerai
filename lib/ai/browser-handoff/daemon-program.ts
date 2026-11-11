@@ -34,6 +34,16 @@ export const BROWSER_OPEN_IDLE_ENV_VALUES = [
   "unparsed",
 ] as const;
 
+// Wire status codes correspond to these indexes; version1 measures the optional
+// CLI check at root preparation, not the running daemon or its effective policy.
+export const BROWSER_CLI_AT_PREPARE_STATUSES = [
+  "unavailable",
+  "measured",
+  "not_checked",
+  "unparsed",
+  "check_failed",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -148,7 +158,7 @@ function wrapperReceipt() {
     if (Array.isArray(history) && history.length === 3 && history[0] === 1 &&
         typeof history[1] === 'boolean' && typeof history[2] === 'boolean' &&
         (!history[2] || history[1])) {
-      // Compact version1 history keeps maximal combined context <=512 bytes.
+      // Compact version1 history preserves the existing receipt-context budget.
       // Bit1: other CLI returned; bit2: an option-prefixed CLI returned (implies bit1).
       result.h1 = (history[1] ? 1 : 0) + (history[2] ? 2 : 0);
     }
@@ -166,7 +176,7 @@ function wrapperReceipt() {
         result.open_receipt_status = error?.code === 'ENOENT' ? 'not_observed' : 'unreadable';
       }
     }
-    // Compact internal tuple keeps combined failure JSON below the existing 512-byte cap.
+    // Compact internal tuple leaves room for the process/CLI failure context.
     // [version, status, phase, exit, scope, age, close/open timestamp order].
     result.close_receipt = [1, 'unavailable'];
     if (receipt.close_receipt_support === 1) {
@@ -195,6 +205,18 @@ function wrapperReceipt() {
     return result;
   } catch { return {}; }
 }
+/** Read the finite preparation tuple independently of optional wrapper history. */
+function cliAtPrepare() {
+  try {
+    if (!argumentsValid || !rootInfo?.isDirectory() || rootInfo.uid !== process.getuid() ||
+        (rootInfo.mode & 0o077) !== 0 || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
+        typeof fs.constants.O_NONBLOCK !== 'number') return;
+    const r = readReceipt('cli-at-prepare.json');
+    if (!Array.isArray(r) || r[0] !== 1 || !Number.isInteger(r[1]) || r[1] < 0 || r[1] > 4 ||
+        (r[1] === 1 ? r.length !== 3 || !Number.isInteger(r[2]) || r[2] < 0 || r[2] > 999999999 : r.length !== 2)) throw new Error();
+    return r;
+  } catch { return [1, 0]; }
+}
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
   if (done) return;
@@ -204,6 +226,8 @@ function finish(code, value) {
   if (code !== 0) {
     const receipt = wrapperReceipt();
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
+    const cli = cliAtPrepare();
+    if (cli) value = { ...value, cv: cli };
   }
   if (value !== undefined) {
     if (code === 0) process.stdout.write(JSON.stringify(value));

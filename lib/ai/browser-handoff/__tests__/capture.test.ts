@@ -40,6 +40,134 @@ const location = {
 const cached = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 const fresh = Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9]);
 
+it.each([false, true])(
+  "retains combined failure context within the unchanged parser cap (oversized:%s)",
+  async (oversized) => {
+    const packet = JSON.stringify({
+      diagnostic_reason: "sockets_stat",
+      diagnostic_error: "not_directory",
+      wrapper_receipt_version: 1,
+      wrapper_action: "version",
+      wrapper_phase: "completed",
+      wrapper_exit: "other",
+      wrapper_session_matches: false,
+      wrapper_age: "unknown",
+      open_receipt_version: 1,
+      open_receipt_status: "recorded",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      open_age: "unknown",
+      h1: 3,
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        "other",
+        "selected_session",
+        "unknown",
+        "same_time",
+      ],
+      open_idle: [1, "unparsed"],
+      p1: [1, 2, 0],
+      cv: [1, 1, 999999999],
+    });
+    expect(Buffer.byteLength(packet)).toBeLessThanOrEqual(544);
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: oversized ? packet + " ".repeat(545 - packet.length) : packet,
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    const context = observe.mock.calls[0][0];
+    if (oversized) {
+      expect(context).not.toHaveProperty("capture_cli_at_prepare_status");
+      expect(context).not.toHaveProperty("capture_precondition_reason");
+    } else
+      expect(context).toMatchObject({
+        capture_cli_at_prepare_status: "measured",
+        capture_cli_at_prepare_major: 999,
+        capture_cli_at_prepare_minor: 999,
+        capture_cli_at_prepare_patch: 999,
+        capture_precondition_reason: "sockets_stat",
+        capture_precondition_error: "not_directory",
+        capture_wrapper_session_matches: false,
+        capture_wrapper_other_cli_completed: true,
+        capture_wrapper_option_prefix_completed: true,
+        capture_open_idle_env: "unparsed",
+        capture_close_scope: "selected_session",
+        capture_close_open_order: "same_time",
+        capture_daemon_pid_status: "unreadable",
+      });
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  [[1, 0], "unavailable", undefined],
+  [[1, 1, 999999999], "measured", [999, 999, 999]],
+  [[1, 1, 39003], "measured", [0, 39, 3]],
+  [[1, 2], "not_checked", undefined],
+  [[1, 3], "unparsed", undefined],
+  [[1, 4], "check_failed", undefined],
+  [[1, 1, -1], undefined, undefined],
+  [[1, 1, 1000000000], undefined, undefined],
+  [[1, 2, "PRIVATE"], undefined, undefined],
+  [[2, 1, 39003], undefined, undefined],
+  [[1, 1, 39.3], undefined, undefined],
+])(
+  "projects only strict CLI-at-prepare tuples (%#)",
+  async (cv, status, semver) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 2,
+      stderr: "PRIVATE",
+      stdout: JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        cv,
+        private: "PRIVATE",
+      }),
+    });
+    sandbox.commands.run.mockRejectedValue(error);
+    const observe = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ),
+    ).rejects.toBe(error);
+    const context = observe.mock.calls[0][0];
+    expect(context.capture_cli_at_prepare_diagnostic_version).toBe(
+      status ? 1 : undefined,
+    );
+    expect(context.capture_cli_at_prepare_status).toBe(status);
+    expect([
+      context.capture_cli_at_prepare_major,
+      context.capture_cli_at_prepare_minor,
+      context.capture_cli_at_prepare_patch,
+    ]).toEqual(semver ?? [undefined, undefined, undefined]);
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
 it.each([true, false])(
   "adds only the controlled bridge-failure tuple while preserving rejection (SDK throws: %s)",
   async (throws) => {
