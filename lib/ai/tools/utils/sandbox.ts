@@ -37,6 +37,7 @@ import {
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
+import { checkpointCloudErrorContext } from "./persistence-failure";
 import {
   E2BRegionUnavailableError,
   getE2BClusterRouting,
@@ -59,6 +60,7 @@ export {
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 type E2BAcquisitionPhase = "routing" | "discovery" | "connect" | "create";
+type GetInfoErrorContext = ReturnType<typeof checkpointCloudErrorContext>;
 
 const SAFE_E2B_CODES = new Set([
   "RATE_LIMIT",
@@ -86,6 +88,11 @@ export class E2BAcquisitionError extends Error {
       e2b_workspace_identity_diagnostic_version?: 1;
       e2b_workspace_identity_operation?: "get_info" | "validate";
       e2b_workspace_identity_error_kind?: ReturnType<typeof getE2BErrorKind>;
+      e2b_workspace_identity_get_info_context_version?: 1;
+      e2b_workspace_identity_get_info_error_kind?: GetInfoErrorContext["cloud_error_kind"];
+      e2b_workspace_identity_get_info_reported_status?: GetInfoErrorContext["cloud_http_status"];
+      e2b_workspace_identity_get_info_type_error_signal?: GetInfoErrorContext["cloud_type_error_signal"];
+      e2b_workspace_identity_get_info_transport_code?: GetInfoErrorContext["cloud_transport_code"];
       e2b_workspace_identity_requested_target_fingerprint?: string | null;
       e2b_workspace_identity_requested_cluster?: E2BCluster | null;
     },
@@ -532,7 +539,7 @@ export const ensureSandboxConnection = async (
         ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })
         : {};
     const status = candidate.status ?? candidate.statusCode;
-    const diagnostics = {
+    const diagnostics: E2BAcquisitionError["diagnostics"] = {
       e2b_phase: phase,
       e2b_error_category: classifyE2BError(error),
       ...(identityOperation && {
@@ -556,6 +563,24 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
+    if (
+      diagnostics.e2b_workspace_identity_operation === "get_info" &&
+      diagnostics.e2b_workspace_identity_error_kind === "other_error"
+    ) {
+      const context = checkpointCloudErrorContext(error);
+      diagnostics.e2b_workspace_identity_get_info_context_version = 1;
+      diagnostics.e2b_workspace_identity_get_info_error_kind =
+        context.cloud_error_kind;
+      // This is the error's reported statusCode, not a response observation.
+      diagnostics.e2b_workspace_identity_get_info_reported_status =
+        context.cloud_http_status;
+      if (context.cloud_type_error_signal !== undefined) {
+        diagnostics.e2b_workspace_identity_get_info_type_error_signal =
+          context.cloud_type_error_signal;
+        diagnostics.e2b_workspace_identity_get_info_transport_code =
+          context.cloud_transport_code;
+      }
+    }
     const connectTargetFingerprint =
       phase === "connect"
         ? fingerprintE2BTarget(connectCluster, connectSandboxId)
