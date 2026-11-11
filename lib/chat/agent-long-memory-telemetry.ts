@@ -1,6 +1,10 @@
 import { getHeapStatistics } from "node:v8";
 import { openSync, readSync, closeSync } from "node:fs";
 import {
+  readAgentCgroupMemory,
+  type AgentCgroupMemoryFields,
+} from "./agent-cgroup-memory";
+import {
   getAgentRunClockContext,
   type AgentRunClockContext,
 } from "./agent-run-clock";
@@ -52,6 +56,7 @@ type MemoryCheckpointInput = {
 };
 
 type MemoryCheckpointEvent = V8MemoryFields &
+  AgentCgroupMemoryFields &
   Partial<AgentRunClockContext> & {
     level: "info";
     event: "agent_long_memory_checkpoint";
@@ -118,6 +123,7 @@ type AgentLongMemoryTelemetryOptions = {
   readMemory?: () => MemorySnapshot;
   readHeapLimit?: () => number;
   readV8Memory?: () => V8MemorySnapshot;
+  readCgroupMemory?: () => AgentCgroupMemoryFields;
 };
 
 const finiteNonNegative = (value: number): number =>
@@ -219,6 +225,7 @@ export class AgentLongMemoryTelemetry {
   private readonly readMemory: () => MemorySnapshot;
   private readonly readHeapLimit: () => number;
   private readonly readV8Memory: () => V8MemorySnapshot;
+  private readonly readCgroupMemory: () => AgentCgroupMemoryFields;
   private lastEmittedAt: number | undefined;
   private lastEmittedHeapUsed = 0;
   private lastEmittedRss = 0;
@@ -238,12 +245,14 @@ export class AgentLongMemoryTelemetry {
   private streamToolInputUnits = 0;
   private streamMaxDeltaUnits = 0;
 
+  /** Bind local readers without changing checkpoint selection or sampling cadence. */
   constructor(private readonly options: AgentLongMemoryTelemetryOptions) {
     this.now = options.now ?? Date.now;
     this.readMemory = options.readMemory ?? process.memoryUsage;
     this.readHeapLimit =
       options.readHeapLimit ?? (() => getHeapStatistics().heap_size_limit);
     this.readV8Memory = options.readV8Memory ?? getHeapStatistics;
+    this.readCgroupMemory = options.readCgroupMemory ?? readAgentCgroupMemory;
   }
 
   startPeriodicCheckpoints(): void {
@@ -368,6 +377,12 @@ export class AgentLongMemoryTelemetry {
       const processRssOsHighWater = readProcessRssOsHighWaterBytes();
       const processMemoryConstraint = readProcessMemoryConstraintBytes();
       const processAvailableMemory = readProcessAvailableMemoryBytes();
+      let cgroupMemory: AgentCgroupMemoryFields = {};
+      try {
+        cgroupMemory = this.readCgroupMemory();
+      } catch {
+        // Optional kernel attribution must not drop the original checkpoint.
+      }
       this.options.emit({
         level: "info",
         event: "agent_long_memory_checkpoint",
@@ -430,6 +445,7 @@ export class AgentLongMemoryTelemetry {
         array_buffer_bytes: arrayBuffers,
         ...readV8MemoryFields(this.readV8Memory),
         ...readProcessRssFields(),
+        ...cgroupMemory,
         provider_request: input.providerRequest,
         retention: input.retention,
       });
