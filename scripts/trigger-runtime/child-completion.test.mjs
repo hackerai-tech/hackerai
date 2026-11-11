@@ -48,11 +48,17 @@ const { createChildCompletionProbe } = baseline
   : await import(
       pathToFileURL(join(cli, "dist/esm/entryPoints/child-completion-probe.js"))
     );
+// The real S2 uncaught probe registers inside this block; older baselines lack it.
+const { createS2UncaughtProbe } = completion.includes("createS2UncaughtProbe")
+  ? await import(
+      pathToFileURL(join(cli, "dist/esm/entryPoints/s2-uncaught-diagnostic.js"))
+    )
+  : {};
 const execute = new (Object.getPrototypeOf(async function () {}).constructor)(
   "h",
   `
- const { execution, executor, ctx, standardHeartbeatsManager, runMetadataManager, usage, timeout, _cancelController, resourceCatalog, NO_FILE_CONTEXT, sender, tracer, standardTraceContextManager, process, console, createChildCompletionProbe } = h;
- let _execution, _isRunning=false, _isCancelled=false, _executionMeasurement, completionProbe;
+ const { execution, executor, ctx, standardHeartbeatsManager, runMetadataManager, usage, timeout, _cancelController, resourceCatalog, NO_FILE_CONTEXT, sender, tracer, standardTraceContextManager, process, console, createChildCompletionProbe, createS2UncaughtProbe, taskContext } = h;
+ let _execution, _isRunning=false, _isCancelled=false, _executionMeasurement, completionProbe, _s2UncaughtProbe;
  const getNumberEnvVar = (_name, fallback) => fallback;
  const signalState = { setRunning: (v) => _isRunning=v, setCancelled: (v) => _isCancelled=v };
  h.state=signalState;
@@ -185,6 +191,8 @@ function fixture({
       },
     },
     createChildCompletionProbe,
+    createS2UncaughtProbe,
+    taskContext: { isRunDisabled: false },
   };
   return { h, events, spans, packets, result, run: () => execute(h) };
 }
