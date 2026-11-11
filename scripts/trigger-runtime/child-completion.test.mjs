@@ -24,6 +24,7 @@ const sf = ts.createSourceFile(
   ts.ScriptKind.JS,
 );
 let completion;
+/** Locate the installed worker lifecycle block so tests execute its actual cleanup order. */
 function visit(node) {
   if (
     ts.isTryStatement(node) &&
@@ -60,6 +61,7 @@ const execute = new (Object.getPrototypeOf(async function () {}).constructor)(
 );
 const deferred = () => Promise.withResolvers();
 const tick = () => new Promise(setImmediate);
+/** Control only SDK I/O and tracing faults while retaining the real completion block. */
 function fixture({
   metadata,
   send,

@@ -20,6 +20,7 @@ const { OTLPMetricExporter } = req("@opentelemetry/exporter-metrics-otlp-http");
 const { ExportResultCode } = req("@opentelemetry/core");
 const native = [],
   external = [];
+/** Retain only span linkage and bounded probe fields at the in-memory export boundary. */
 const snapshot = (s) => ({
   name: s.name,
   traceId: s.spanContext().traceId,
