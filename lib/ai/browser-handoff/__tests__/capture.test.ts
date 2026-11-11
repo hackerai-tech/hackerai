@@ -1,12 +1,15 @@
 import {
+  BrowserPreviewUnavailable,
   browserSessionReadFailureContext,
   browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
+  renewBrowserRelay,
   resizeBrowserViewport,
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
+import { RELAY_RENEW_FAILURE_CODES } from "../relay-program";
 
 jest.mock("server-only", () => ({}));
 jest.mock("@e2b/code-interpreter", () => ({
@@ -1145,11 +1148,42 @@ it.each([
   (_label, createError, kind, exitCode) => {
     const fields = browserRelayRenewFailureContext(createError());
     expect(fields).toEqual({
-      relay_renew_diagnostic_version: 1,
+      relay_renew_diagnostic_version: 2,
       relay_renew_error_kind: kind,
       relay_renew_command_exit_code: exitCode,
     });
     expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([true, false])(
+  "retains a bounded renewal reason when the SDK throws: %s",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: RELAY_RENEW_FAILURE_CODES.lock_busy,
+      stdout: "PRIVATE",
+      stderr: "PRIVATE",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+
+    const failure = await renewBrowserRelay(
+      sandbox as unknown as Sandbox,
+      location,
+      "PRIVATE",
+      Date.now() + 25_000,
+    ).catch((error: unknown) => error);
+
+    if (throws) expect(failure).toBe(original);
+    else expect(failure).toBeInstanceOf(BrowserPreviewUnavailable);
+    expect(browserRelayRenewFailureContext(failure)).toEqual({
+      relay_renew_diagnostic_version: 2,
+      relay_renew_error_kind: "command_exit",
+      relay_renew_command_exit_code: RELAY_RENEW_FAILURE_CODES.lock_busy,
+      relay_renew_failure_reason: "lock_busy",
+    });
   },
 );
 
@@ -1173,7 +1207,7 @@ it.each(["accessor", "unbounded", "unreadable"] as const)(
     Object.defineProperty(error, "result", { value: result });
     const fields = browserRelayRenewFailureContext(error);
     expect(fields).toEqual({
-      relay_renew_diagnostic_version: 1,
+      relay_renew_diagnostic_version: 2,
       relay_renew_error_kind:
         shape === "unreadable" ? "unreadable" : "command_exit",
       relay_renew_command_exit_code: "other",

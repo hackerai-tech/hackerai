@@ -702,6 +702,14 @@ export interface ToolContext {
     sessionName: string,
     signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
+  /** Records observed native vision feedback; never runs shell or provider work. */
+  reportBrowserChallengeProgress?: (
+    sessionName: string,
+    report:
+      | import("@/lib/ai/captcha/vision-progress").VisionProgressReport
+      | undefined,
+    signal?: AbortSignal,
+  ) => Promise<Record<string, unknown>>;
   captureCaptchaVisionCommand?: (
     command: string,
     signal?: AbortSignal,

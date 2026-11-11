@@ -104,11 +104,30 @@ test("rejects Production, mixed local targets, credentials and unknown fields", 
     mutate(c);
     assert.throws(() => validateConfig(c));
   }
-  const c = config();
-  c.environment = "preview";
-  c.frontend = "https://hackerai-example.vercel.app";
-  c.worker.environment = "preview";
-  assert.equal(validateConfig(c).environment, "preview");
+});
+
+// An immutable deployment URL loaded in the native WebView opens Vercel's
+// deployment-protection login instead of the app.
+const hostedDeployment = "https://hackerai-k3x9qv2mz-hackerai.vercel.app";
+const localFrontendGuidance =
+  /requires a loopback frontend.*serve this worktree's frontend locally.*Vercel Preview only for web-only browser QA/;
+
+test("rejects hosted frontends for local and Preview native QA with local-frontend guidance", () => {
+  for (const environment of ["local", "preview"])
+    for (const frontend of [
+      hostedDeployment,
+      "https://hackerai-git-qa-branch-hackerai.vercel.app",
+      "https://hackerai.co",
+    ]) {
+      const c = config();
+      c.environment = environment;
+      c.worker.environment =
+        environment === "local" ? "development" : "preview";
+      c.frontend = frontend;
+      assert.throws(() => validateConfig(c), {
+        message: localFrontendGuidance,
+      });
+    }
 });
 
 test("allows a local frontend with verified Preview services without relaxing worker selection", () => {
@@ -118,11 +137,46 @@ test("allows a local frontend with verified Preview services without relaxing wo
   c.backend.url = "https://example.convex.cloud";
   c.relay = "wss://preview-relay.example.test";
   assert.equal(validateConfig(c).frontend, "http://127.0.0.1:3100");
+  for (const frontend of ["http://localhost:3100", "http://[::1]:3100"]) {
+    c.frontend = frontend;
+    assert.equal(validateConfig(c).frontend, frontend);
+  }
+  c.frontend = "http://127.0.0.1:3100";
   c.worker.environment = "production";
   assert.throws(() => validateConfig(c));
   c.worker.environment = "preview";
   c.frontend = "http://192.168.1.10:3100";
   assert.throws(() => validateConfig(c));
+});
+
+test("start rejects a hosted frontend before checking the app, probing services or creating a session", async (t) => {
+  const root = await temp(t);
+  const c = config();
+  c.environment = "preview";
+  c.worker.environment = "preview";
+  c.frontend = hostedDeployment;
+  c.backend.url = "https://example.convex.cloud";
+  c.relay = "wss://preview-relay.example.test";
+  // A valid executable that records its launch, so only validation stops it.
+  const launched = join(root, "launched");
+  const child = `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(launched)}, "");\n`;
+  await mkdir(join(root, "bin"));
+  c.app.executable = "bin/qa-app.cjs";
+  c.app.sha256 = createHash("sha256").update(child).digest("hex");
+  await writeFile(join(root, c.app.executable), child, { mode: 0o700 });
+  await writeFile(join(root, "config.json"), JSON.stringify(c));
+  const fetched = [];
+  t.mock.method(globalThis, "fetch", (url) => {
+    fetched.push(String(url));
+    return Promise.reject(new Error("unexpected network access"));
+  });
+  await assert.rejects(
+    main(["start", "hosted-frontend", join(root, "config.json")], root),
+    { message: localFrontendGuidance },
+  );
+  assert.deepEqual(fetched, []);
+  await assert.rejects(readFile(launched), { code: "ENOENT" });
+  await assert.rejects(readFile(join(root, ".artifacts")), { code: "ENOENT" });
 });
 
 test("serve rejects HTTPS before trying to launch its HTTP server", async (t) => {

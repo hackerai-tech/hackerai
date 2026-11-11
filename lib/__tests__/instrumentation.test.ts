@@ -99,10 +99,15 @@ describe("root request error correlation", () => {
     },
   );
 
-  it.each(["GET", "HEAD"])(
+  it.each([
+    ["GET", "Error"],
+    ["HEAD", "Error"],
+    ["POST", "TokenRefreshError"],
+  ])(
     "correlates shared-chat %s failures with a normalized path",
-    (method) => {
+    (method, errorKind) => {
       const error = Object.assign(new Error("shared render failed"), {
+        name: errorKind,
         digest: "2147368089",
         cause: Object.assign(new TypeError("private transport detail"), {
           code: "ETIMEDOUT",
@@ -121,7 +126,7 @@ describe("root request error correlation", () => {
         },
         {
           routePath: "/share/[shareId]/page",
-          routeType: "render",
+          routeType: method === "POST" ? "action" : "render",
           routerKind: "App Router",
           renderSource: "react-server-components",
           revalidateReason: undefined,
@@ -134,7 +139,7 @@ describe("root request error correlation", () => {
         path: "/share/[shareId]",
         method,
         root_request_error_diagnostic_version: 1,
-        root_error_kind: "Error",
+        root_error_kind: errorKind,
         root_cause_kind: "TypeError",
         root_cause_status: 504,
         root_cause_code: "ETIMEDOUT",
@@ -154,7 +159,11 @@ describe("root request error correlation", () => {
   it.each([
     ["/api/chat", "GET", false],
     ["/share/item/nested", "GET", false],
-    ["/share/item", "POST", false],
+    ["/share/item", "PUT", false],
+    ["/share/item/nested", "POST", false],
+    ["/api/chat", "POST", false],
+    ["/login", "POST", false],
+    ["/share/item", "POST", true],
     ["/", "POST", false],
     ["/login", "GET", true],
   ] as const)(

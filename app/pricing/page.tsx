@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { CreditCard, ExternalLink, ShieldCheck, Undo2 } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 
 import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
 import { JsonLd } from "@/components/seo/JsonLd";
-import { Button } from "@/components/ui/button";
 import {
   CANCELLATION_HELP_URL,
   EXTRA_USAGE_HELP_URL,
@@ -45,32 +44,35 @@ export default function PricingPage() {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <JsonLd data={SOFTWARE_APPLICATION_JSON_LD} />
-      <Header currentPath="/pricing" />
+      <Header currentPath="/pricing" publicRedesign />
       <main>
-        <section className="border-b border-border/80">
-          <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6 sm:py-18">
-            <div className="mx-auto max-w-3xl text-center">
-              <p className="text-sm font-medium text-muted-foreground">Plans</p>
-              <h1 className="mt-3 text-5xl font-medium leading-[1.05] tracking-tight sm:text-6xl">
+        <section>
+          <div className="mx-auto grid max-w-[1280px] gap-8 px-4 pb-12 pt-20 sm:px-6 md:pt-24 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)] lg:items-end lg:gap-14 lg:px-10">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">
                 Pricing
-              </h1>
-              <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
-                Start free with Agent mode on your own machine. Upgrade when you
-                need the best models, higher limits, file uploads, a larger
-                context window, or cloud agents.
               </p>
+              <h1 className="mt-6 max-w-[760px] text-[clamp(2.7rem,5vw,4.7rem)] font-semibold leading-[1.05] tracking-[-0.055em]">
+                Choose the plan that fits your work.
+              </h1>
             </div>
+            <p className="max-w-[460px] text-base leading-7 text-muted-foreground">
+              Compare models, usage, and local or cloud Agent access. Free
+              access has limited usage and may be unavailable in some locations.
+            </p>
           </div>
         </section>
 
         <section>
-          <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
+          <div className="mx-auto max-w-[1280px] px-4 pb-20 sm:px-6 lg:px-10">
             <PricingPlans />
 
-            <div className="mt-8 grid gap-8 rounded-lg border border-border bg-card/30 p-6 sm:p-8 lg:grid-cols-3">
-              <div>
-                <ShieldCheck className="size-5" aria-hidden="true" />
-                <h2 className="mt-4 text-xl font-semibold">
+            <div className="mt-20 grid border-t border-border md:grid-cols-3">
+              <div className="border-b border-border py-8 md:border-b-0 md:pr-8">
+                <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  Execution
+                </p>
+                <h2 className="mt-3 text-xl font-semibold">
                   Local or cloud execution
                 </h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
@@ -78,13 +80,17 @@ export default function PricingPage() {
                   in an isolated sandbox we host. Both are spelled out on the
                   Security &amp; Trust page.
                 </p>
-                <Button asChild variant="outline" className="mt-5">
-                  <Link href="/trust">Read Security &amp; Trust</Link>
-                </Button>
+                <Link href="/trust" className={`mt-5 ${externalLinkClassName}`}>
+                  Read Security &amp; Trust →
+                </Link>
               </div>
-              <div>
-                <CreditCard className="size-5" aria-hidden="true" />
-                <h2 className="mt-4 text-xl font-semibold">Extra Usage</h2>
+              <div className="border-b border-border py-8 md:border-b-0 md:border-l md:px-8">
+                <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  Extra Usage
+                </p>
+                <h2 className="mt-3 text-xl font-semibold">
+                  Keep working past included usage
+                </h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
                   Pro, Pro+, and Ultra can keep working after included monthly
                   usage runs out. Extra Usage draws from a prepaid balance, is
@@ -101,9 +107,11 @@ export default function PricingPage() {
                   <ExternalLink className="size-4" aria-hidden="true" />
                 </a>
               </div>
-              <div>
-                <Undo2 className="size-5" aria-hidden="true" />
-                <h2 className="mt-4 text-xl font-semibold">
+              <div className="py-8 md:border-l md:pl-8">
+                <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+                  Billing
+                </p>
+                <h2 className="mt-3 text-xl font-semibold">
                   Cancellation and refunds
                 </h2>
                 <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
@@ -145,7 +153,7 @@ export default function PricingPage() {
           </div>
         </section>
       </main>
-      <PublicSiteFooter />
+      <PublicSiteFooter redesign />
     </div>
   );
 }
