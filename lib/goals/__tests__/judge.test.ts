@@ -300,6 +300,95 @@ describe("independent goal completion check", () => {
     expect(result?.verdict).toBe("needs_input");
   });
 
+  const judgeInputRequest = (text: string, questions: unknown = null) => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Waiting for the user",
+        responseOnly: false,
+        questions,
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    return judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [...messages[0].parts, { type: "text", text }],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+  };
+
+  it.each([
+    "Provide the target URL.",
+    "Send the required scope before I can proceed.",
+    "Marker checks passed.\n\n- Confirm which host is in scope.",
+  ])("keeps an imperative request for input: %j", async (text) => {
+    const result = await judgeInputRequest(text);
+    expect(result).toMatchObject({
+      verdict: "needs_input",
+      evidence: [expect.objectContaining({ toolCallId: "cmd", runId: "r1" })],
+    });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a request in another language when its question is in the response", async () => {
+    const questions = [
+      {
+        id: "target",
+        header: "Ziel",
+        question: "Nennen Sie die Ziel-URL.",
+        options: [],
+      },
+    ];
+    const result = await judgeInputRequest(
+      "Der Marker existiert.\nNennen Sie die Ziel-URL.",
+      questions,
+    );
+    expect(result).toMatchObject({ verdict: "needs_input", questions });
+  });
+
+  it.each([
+    {
+      name: "invented question",
+      text: "The marker is ready.",
+      question: "Which port should I scan next?",
+    },
+    {
+      name: "question only inside a code example",
+      text: "The marker is ready.\n```\nNennen Sie die Ziel-URL.\n```",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+  ])(
+    "does not pause for an ungrounded structured $name",
+    async ({ text, question }) => {
+      const result = await judgeInputRequest(text, [
+        { id: "q", header: "Input", question, options: [] },
+      ]);
+      expect(result?.verdict).toBe("continue");
+      expect(result).not.toHaveProperty("questions");
+    },
+  );
+
+  it.each([
+    "The marker is ready. Example usage:\n```\nProvide the target URL.\n```",
+    "The marker is ready. Run `Send the scope?` to test the prompt.",
+    "The marker is ready. The README says:\n> Which target URL should I scan?",
+    'The marker is ready. Its help text reads "Which scope should I use?"',
+  ])(
+    "does not pause for code examples or quoted instructions: %j",
+    async (text) => {
+      const result = await judgeInputRequest(text);
+      expect(result?.verdict).toBe("continue");
+    },
+  );
+
   it.each(["continue", "uncited_done"])(
     "rechecks %s against the completed updated goal before dispatching more work",
     async (firstVerdict) => {

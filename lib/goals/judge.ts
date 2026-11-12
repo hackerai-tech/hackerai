@@ -249,15 +249,37 @@ export function buildGoalCompletionEvidence(
   };
 }
 
-/** A model verdict cannot pause a Goal unless the Agent actually requested input. */
-function hasUserFacingInputRequest(text: string): boolean {
-  const prose = text.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
+const normalizeRequestText = (text: string) =>
+  text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * A model verdict cannot pause a Goal unless the Agent actually requested input.
+ * Code, blockquotes and quoted strings are examples, not requests. Structured
+ * questions count in any language only when copied from the remaining prose.
+ */
+function hasUserFacingInputRequest(
+  text: string,
+  questions: readonly { question: string }[] | null,
+): boolean {
+  const prose = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`]*`/g, "")
+    .replace(/^[ \t]*>.*$/gm, "")
+    .replace(/"[^"\n]*"|“[^”\n]*”/g, "");
+  const normalizedProse = normalizeRequestText(prose);
   return (
-    prose.includes("?") ||
+    /[?？؟]/.test(prose) ||
+    !!questions?.some((q) =>
+      normalizedProse.includes(normalizeRequestText(q.question)),
+    ) ||
     /\b(?:please|kindly)\s+(?:provide|confirm|choose|select|share|tell|send|clarify|approve)\b/i.test(
       prose,
     ) ||
-    /\b(?:i|we)\s+(?:need|require)\s+(?:your|you to)\b/i.test(prose)
+    /\b(?:i|we)\s+(?:need|require)\s+(?:your|you to)\b/i.test(prose) ||
+    // Imperative requests open a sentence or list item: "Provide the URL."
+    /(?:^[ \t]*|[.!:]\s+)(?:[-*•]\s+|\d+[.)]\s+)?(?:provide|confirm|choose|select|share|send|specify|clarify|approve|tell me|let me know)\b/im.test(
+      prose,
+    )
   );
 }
 
@@ -481,7 +503,7 @@ export async function judgeGoalCompletion(
         (!gatePassed || (!responseEvidence && missingCriteria > 0));
       const invalidInputRequest =
         decision.verdict === "needs_input" &&
-        !hasUserFacingInputRequest(finalText);
+        !hasUserFacingInputRequest(finalText, decision.questions);
       // Repair an inconsistent verdict locally before paying for another Agent
       // run. Ordinary partial-progress turns do not need a second model call.
       const recheck =
