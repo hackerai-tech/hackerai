@@ -140,6 +140,67 @@ describe("client analytics", () => {
       },
     );
 
+    describe("React boundary failure context", () => {
+      const context = {
+        version: 1,
+        failure_family: "null_remove_child",
+        boundary_scope: "chat_content",
+      };
+
+      it("adds only the validated loaded build without mutating the caller's three fields", () => {
+        expect(
+          captureAuthenticatedEvent("react_boundary_failure_context", context),
+        ).toBe(true);
+        expect(mockCapture).toHaveBeenCalledTimes(1);
+        const [event, sent, options] = mockCapture.mock.calls[0];
+        expect(event).toBe("react_boundary_failure_context");
+        expect(sent).toEqual({
+          ...context,
+          hackerai_frontend_build_commit: "a".repeat(40),
+        });
+        expect(options).toBeUndefined();
+        expect(Object.keys(context).sort()).toEqual([
+          "boundary_scope",
+          "failure_family",
+          "version",
+        ]);
+      });
+
+      it.each([undefined, "a".repeat(39), "a".repeat(41), "g".repeat(40)])(
+        "omits an absent or malformed build without dropping the context (%s)",
+        (build) => {
+          if (build === undefined) {
+            delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+          } else {
+            process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = build;
+          }
+          expect(
+            captureAuthenticatedEvent(
+              "react_boundary_failure_context",
+              context,
+            ),
+          ).toBe(true);
+          expect(mockCapture).toHaveBeenCalledWith(
+            "react_boundary_failure_context",
+            context,
+          );
+        },
+      );
+
+      it.each<[string, Record<string, unknown>]>([
+        ["react_boundary_failure_context", { ...context, version: 2 }],
+        ["react_boundary_failure_context", { ...context, version: "1" }],
+        ["react_boundary_failure_context", { failure_family: "x" }],
+        ["unrelated_event", context],
+      ])(
+        "does not stamp other events or versions (%s)",
+        (event, diagnostic) => {
+          expect(captureAuthenticatedEvent(event, diagnostic)).toBe(true);
+          expect(mockCapture).toHaveBeenCalledWith(event, diagnostic);
+        },
+      );
+    });
+
     it("attributes a queued diagnostic when the identified SDK becomes ready", async () => {
       mockPostHog.__loaded = false;
       expect(

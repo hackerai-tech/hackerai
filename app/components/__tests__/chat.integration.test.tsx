@@ -373,7 +373,11 @@ jest.mock("../DragDropOverlay", () => ({
 }));
 
 jest.mock("../ConvexErrorBoundary", () => ({
-  ConvexErrorBoundary: ({ children }: any) => <div>{children}</div>,
+  ConvexErrorBoundary: ({ children, diagnosticScope }: any) => (
+    <div data-testid={`error-boundary-${diagnosticScope ?? "unscoped"}`}>
+      {children}
+    </div>
+  ),
 }));
 
 jest.mock("@/components/ui/sidebar", () => ({
@@ -3171,6 +3175,24 @@ describe("Chat Component Integration", () => {
       );
 
       expect(screen.getByTestId("sidebar")).toBeInTheDocument();
+    });
+
+    it("scopes failure context to the layout and chat content boundaries", () => {
+      render(
+        <TestWrapper>
+          <ChatLayout>
+            <Chat autoResume={false} />
+          </ChatLayout>
+        </TestWrapper>,
+      );
+
+      const layout = screen.getByTestId("error-boundary-chat_layout");
+      const content = screen.getByTestId("error-boundary-chat_content");
+      expect(screen.queryByTestId("error-boundary-unscoped")).toBeNull();
+      expect(layout).toContainElement(screen.getByTestId("sidebar"));
+      expect(layout).toContainElement(content);
+      expect(content).toContainElement(screen.getByTestId("chat-input"));
+      expect(content).not.toContainElement(screen.getByTestId("sidebar"));
     });
 
     it("uses a bounded split pane for Computer on wide workspaces", async () => {

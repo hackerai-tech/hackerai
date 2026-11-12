@@ -1070,6 +1070,189 @@ it.each([
   ).toEqual({});
 });
 
+const singleFrameSyntaxEntry = (value = "Unexpected identifier 'PRIVATE'") => ({
+  type: "SyntaxError",
+  value,
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: [
+      {
+        filename: "https://qa.invalid/document?PRIVATE-frame#PRIVATE-fragment",
+        in_app: true,
+      },
+    ],
+  },
+});
+
+it("enriches the actual SDK's parsed same-document single-frame SyntaxError without recapturing it", () => {
+  const dispatched = new ErrorEvent("error", {
+    filename: `${location.origin}/PRIVATE-source?token=canary`,
+    message: "PRIVATE native message",
+    error: new SyntaxError("PRIVATE error object"),
+    lineno: 1,
+    colno: 9,
+    cancelable: true,
+  });
+  window.dispatchEvent(dispatched);
+  const error = new SyntaxError("Unexpected identifier 'PRIVATE_canary'");
+  error.stack = [
+    "SyntaxError: Unexpected identifier 'PRIVATE_canary'",
+    "    at https://qa.invalid/document?PRIVATE-frame:1:9",
+  ].join("\n");
+  const properties = buildErrorPropertiesBuilder().buildFromUnknown(error, {
+    mechanism: { handled: false, type: "generic" },
+  });
+  const list = properties.$exception_list;
+  expect(list).toHaveLength(1);
+  expect(list[0].stacktrace?.frames).toHaveLength(1);
+  const event = {
+    event: "$exception",
+    properties: {
+      ...properties,
+      $current_url: "https://qa.invalid/document?PRIVATE-query#PRIVATE-hash",
+    },
+  };
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(
+    sanitizeFrontendExceptionUrlProperties(event),
+  );
+  const context = nearbyProperties(enriched);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_version: 1,
+    hackerai_nearby_dispatch_group: "same_document_singleframe_syntaxerror",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 1,
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+    hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    hackerai_nearby_dispatch_error_latest_object: true,
+  });
+  expect(JSON.stringify(context)).not.toMatch(
+    /PRIVATE|canary|qa\.invalid|\/document|token=|identifier/,
+  );
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(list[0].value).toBe("Unexpected identifier 'PRIVATE_canary'");
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  expect(dispatched.defaultPrevented).toBe(false);
+
+  now += 1000;
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(enriched)),
+  ).toMatchObject({
+    hackerai_nearby_dispatch_group: "same_document_singleframe_syntaxerror",
+    hackerai_nearby_dispatch_error_count: 0,
+    hackerai_nearby_dispatch_error_latest_age: "none",
+  });
+  identity.mockReturnValue("another-owner");
+  expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual({});
+});
+
+it("observes single-frame SyntaxErrors up to 256 code units without requiring stored positions or in_app", () => {
+  const entry = singleFrameSyntaxEntry("x".repeat(256));
+  entry.stacktrace.frames[0] = {
+    filename: "https://qa.invalid/document",
+    in_app: false,
+  };
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(sameDocumentEvent(entry)))
+      .hackerai_nearby_dispatch_group,
+  ).toBe("same_document_singleframe_syntaxerror");
+});
+
+it("limits single-frame SyntaxError context to one retained generic nonsynthetic frame", () => {
+  const entry = singleFrameSyntaxEntry();
+  const [frame] = entry.stacktrace.frames;
+  for (const candidate of [
+    { ...entry, type: "Error" },
+    { ...entry, type: "TypeError" },
+    { ...entry, value: "x".repeat(257) },
+    { ...entry, value: undefined },
+    { ...entry, mechanism: { ...entry.mechanism, handled: true } },
+    { ...entry, mechanism: { ...entry.mechanism, synthetic: true } },
+    { ...entry, mechanism: { handled: false, type: "generic" } },
+    {
+      ...entry,
+      mechanism: { ...entry.mechanism, type: "onunhandledrejection" },
+    },
+    { ...entry, stacktrace: { frames: [] } },
+    { ...entry, stacktrace: { frames: [frame, frame] } },
+    { ...entry, stacktrace: { frames: new Array(1) } },
+    { ...entry, stacktrace: { frames: null } },
+    { ...entry, stacktrace: { frames: [{ source: frame.filename }] } },
+  ])
+    expect(
+      nearbyProperties(
+        enrichFrontendExceptionEvent(sameDocumentEvent(candidate)),
+      ),
+    ).toEqual({});
+  const event = sameDocumentEvent(entry);
+  event.properties.$exception_list.push(entry);
+  expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+});
+
+it.each([
+  "https://other.invalid/document",
+  "https://qa.invalid.other.example/document",
+  "https://qa.invalid:444/document",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  "https://PRIVATE-user:PRIVATE-pass@qa.invalid/document",
+  "https://qa.invalid/document/",
+  "https://qa.invalid/other-document",
+  "https://qa.invalid/_next/static/chunks/PRIVATE.js",
+  `https://qa.invalid/${"x".repeat(4096)}`,
+  "<anonymous>",
+  "",
+])("rejects a single-frame SyntaxError from another source %s", (filename) => {
+  const entry = singleFrameSyntaxEntry();
+  entry.stacktrace.frames[0].filename = filename;
+  const event = sameDocumentEvent(entry);
+  const list = event.properties.$exception_list;
+  const enriched = enrichFrontendExceptionEvent(event);
+  expect(nearbyProperties(enriched)).toEqual({});
+  expect(enriched.properties.$exception_list).toBe(list);
+});
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://qa.invalid/document",
+  "https://PRIVATE-user@qa.invalid/document",
+  "https://qa.invalid/other-document",
+  `https://qa.invalid/document?${"x".repeat(4096)}`,
+])("rejects a single-frame SyntaxError on unsafe document %s", (current) => {
+  const event = sameDocumentEvent(singleFrameSyntaxEntry());
+  expect(
+    nearbyProperties(
+      enrichFrontendExceptionEvent({
+        ...event,
+        properties: { ...event.properties, $current_url: current },
+      }),
+    ),
+  ).toEqual({});
+});
+
+it("keeps the retained single-frame SyntaxError when its frame or value getters are hostile", () => {
+  for (const name of ["filename", "value"] as const) {
+    const entry = singleFrameSyntaxEntry();
+    const target = name === "filename" ? entry.stacktrace.frames[0] : entry;
+    // Non-enumerable, like an accessor the SDK did not serialize.
+    Object.defineProperty(target, name, {
+      enumerable: false,
+      get: () => {
+        throw new Error("PRIVATE getter");
+      },
+    });
+    const event = sameDocumentEvent(entry);
+    const list = event.properties.$exception_list;
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(nearbyProperties(enriched)).toEqual({});
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  }
+});
+
 it.each(["/document", "/c/current"])(
   "retains same-document short Errors on %s with bounded private-safe native context",
   (path) => {
