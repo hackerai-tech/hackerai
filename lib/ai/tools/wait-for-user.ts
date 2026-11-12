@@ -84,6 +84,9 @@ export const createWaitForUserTool = (
 
       let activeTimePaused = false;
       let waitFailed = false;
+      // Timeout and mismatch results abort the run themselves; only a reply
+      // can still be overtaken by a product stop during the release below.
+      let replied = false;
       try {
         // A stop while acquiring must not park; finally releases the slot.
         options.signal?.throwIfAborted();
@@ -142,6 +145,7 @@ export const createWaitForUserTool = (
           chat_id: context.chatId,
           trigger_run_id: runId,
         });
+        replied = true;
         return {
           success: true,
           wait_outcome: "message_arrived",
@@ -166,6 +170,7 @@ export const createWaitForUserTool = (
           } catch {
             if (attempt === 2) {
               if (!waitFailed) {
+                if (replied) options.signal?.throwIfAborted();
                 options.abortRun?.("failed");
                 throw new Error("Could not release the Agent reply wait");
               }
@@ -178,6 +183,7 @@ export const createWaitForUserTool = (
             );
           }
         }
+        if (replied) options.signal?.throwIfAborted();
       }
     },
   });

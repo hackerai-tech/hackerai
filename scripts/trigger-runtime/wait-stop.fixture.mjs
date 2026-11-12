@@ -291,8 +291,8 @@ function loadApp(file) {
       },
       fileName: path,
     });
-    const module = { exports: {} };
-    cache.set(path, module);
+    const moduleRecord = { exports: {} };
+    cache.set(path, moduleRecord);
     const nodeRequire = createRequire(path);
     const require = (specifier) => {
       if (Object.hasOwn(stubs, specifier)) return stubs[specifier];
@@ -304,8 +304,8 @@ function loadApp(file) {
     };
     vm.compileFunction(outputText, ["exports", "require", "module"], {
       filename: path,
-    })(module.exports, require, module);
-    return module.exports;
+    })(moduleRecord.exports, require, moduleRecord);
+    return moduleRecord.exports;
   };
   return loadTs(file);
 }

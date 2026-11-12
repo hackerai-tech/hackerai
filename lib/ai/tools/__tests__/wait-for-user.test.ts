@@ -702,6 +702,57 @@ describe("wait_for_user product stop", () => {
       );
     },
   );
+
+  it("throws a stop that arrives while releasing the slot after a reply", async () => {
+    setActiveWait
+      .mockResolvedValueOnce("acquired")
+      .mockImplementationOnce(async () => {
+        stop.abort(reason);
+        return "released";
+      });
+    const result = execute({}, { signal: stop.signal });
+    await until(() => forToken.mock.calls.length === 1);
+    engine.complete({ ok: true, output: reply });
+    engine.notify();
+    await expect(result).rejects.toBe(reason);
+    expect(setActiveWait).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("throws a stop that arrives while every release retry fails after a reply", async () => {
+    const abortRun = jest.fn();
+    const unavailable = new Error("database unavailable");
+    setActiveWait
+      .mockResolvedValueOnce("acquired")
+      .mockImplementationOnce(async () => {
+        stop.abort(reason);
+        throw unavailable;
+      })
+      .mockRejectedValue(unavailable);
+    const result = execute({}, { signal: stop.signal, abortRun });
+    await until(() => forToken.mock.calls.length === 1);
+    engine.complete({ ok: true, output: reply });
+    engine.notify();
+    await expect(result).rejects.toBe(reason);
+    // The existing three fenced release attempts still run.
+    expect(setActiveWait.mock.calls.slice(1)).toEqual(
+      Array(3).fill([contextToIdentity("tool-1")]),
+    );
+    expect(abortRun).not.toHaveBeenCalled();
+  });
+
+  it("still returns a timeout whose own abort lands before the release", async () => {
+    // As in agent-long, reporting the timeout aborts the same stop signal.
+    const abortRun = jest.fn((_outcome: string) =>
+      stop.abort("wait_for_user_timeout"),
+    );
+    const result = execute({}, { signal: stop.signal, abortRun });
+    await until(() => forToken.mock.calls.length === 1);
+    engine.complete({ ok: false, error: new Error("timed out") });
+    engine.notify();
+    await expect(result).resolves.toMatchObject({ wait_outcome: "timed_out" });
+    expect(abortRun).toHaveBeenCalledWith("timed_out");
+  });
 });
 
 function contextToIdentity(toolCallId: string) {
