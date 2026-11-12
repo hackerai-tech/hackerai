@@ -332,6 +332,10 @@ describe("independent goal completion check", () => {
     "**Provide** the target URL.",
     "Please **provide** the target URL.",
     "Should I scan https://example.com/login?next=/admin?",
+    "1. Set the scope.\n    Provide the target URL.",
+    "- Check the marker.\n    - Provide the target URL.",
+    "The delimiter is a ` character.\n\nProvide the target URL.\n\nThen type ` again.",
+    "Use the ``` marker.\nProvide the target URL.\nSee `x`.",
   ])("keeps an imperative request for input: %j", async (text) => {
     const result = await judgeInputRequest(text);
     expect(result).toMatchObject({
@@ -401,6 +405,11 @@ describe("independent goal completion check", () => {
       question: "Which scope should I use?",
     },
     {
+      name: "question only inside indented code",
+      text: "The marker is ready.\n\n    Nennen Sie die Ziel-URL.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
       name: "code-only question",
       text: "The marker is ready.",
       question: "`scope`",
@@ -431,6 +440,11 @@ describe("independent goal completion check", () => {
     "The marker is ready. Example:\n```\nProvide the target URL.",
     "The report is available at /reports?run=1.",
     "Results: https://example.com/search?q=marker&page=2",
+    "The marker is ready.\n\n    Provide the target URL.",
+    "    Provide the target URL.",
+    "The marker is ready.\n\n\tSend the required scope.",
+    "The marker is ready. Example: `\nProvide the target URL.\n`",
+    "The marker is ready. Example: ``\nProvide the `target` URL.\n``",
   ])(
     "does not pause for code examples, quoted instructions or URLs: %j",
     async (text) => {

@@ -7,6 +7,7 @@ import {
   type UIMessage,
   type LanguageModelUsage,
 } from "ai";
+import { Lexer, type MarkedToken, type Token } from "marked";
 import { z } from "zod";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { api } from "@/convex/_generated/api";
@@ -249,27 +250,51 @@ export function buildGoalCompletionEvidence(
   };
 }
 
-/** Rendered prose without code, blockquotes or emphasis markers. */
+/** Visible Markdown prose without code, blockquotes, HTML or link targets. */
 function requestProse(text: string) {
-  const lines: string[] = [];
-  let fence: { char: string; length: number } | undefined;
-  for (const line of text.split("\n")) {
-    if (fence) {
-      const close = /^ {0,3}(`+|~+)[ \t]*$/.exec(line)?.[1];
-      if (close?.[0] === fence.char && close.length >= fence.length)
-        fence = undefined;
-      continue;
-    }
-    // Backtick info strings cannot contain backticks; "```x```" is inline code.
-    const open = /^ {0,3}(`{3,}(?!.*`)|~{3,})/.exec(line)?.[1];
-    // An unclosed fence runs to the end, so partial code never becomes prose.
-    if (open) fence = { char: open[0], length: open.length };
-    else if (!/^[ \t]*>/.test(line)) lines.push(line);
-  }
-  return lines
-    .join("\n")
-    .replace(/(`+)[^\n]*?\1/g, "")
-    .replace(/\*+|~~|(?<!\w)_+|_+(?!\w)/g, "");
+  const inline = (tokens: readonly Token[] = []): string =>
+    tokens
+      .map((token) => {
+        const t = token as MarkedToken;
+        switch (t.type) {
+          case "text":
+            return t.tokens ? inline(t.tokens) : t.text;
+          case "escape":
+            return t.text;
+          case "strong":
+          case "em":
+          case "del":
+          case "link":
+            return inline(t.tokens);
+          case "br":
+            return "\n";
+          default: // codespan, html, image, checkbox
+            return "";
+        }
+      })
+      .join("");
+  // Each block ends its own line so a request can open the next block.
+  const blocks = (tokens: readonly Token[]): string =>
+    tokens
+      .map((token) => {
+        const t = token as MarkedToken;
+        switch (t.type) {
+          case "paragraph":
+          case "heading":
+          case "text":
+            return `${t.tokens ? inline(t.tokens) : t.text}\n`;
+          case "list":
+            return t.items.map((item) => blocks(item.tokens)).join("");
+          case "table":
+            return [t.header, ...t.rows]
+              .map((row) => `${row.map((c) => inline(c.tokens)).join(" | ")}\n`)
+              .join("");
+          default: // code, blockquote, html, def, hr, space
+            return "";
+        }
+      })
+      .join("");
+  return blocks(Lexer.lex(text));
 }
 
 const withoutQuotes = (text: string) =>
