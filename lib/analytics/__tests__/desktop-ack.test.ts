@@ -17,6 +17,10 @@ import {
   type AcknowledgedCommandSettlement,
 } from "@/lib/centrifugo/acknowledged-command-output";
 import { sanitizeDesktopAckEvent } from "../desktop-ack-privacy";
+import {
+  NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  type NativeAuthorizationDiagnostic,
+} from "../native-authorization-diagnostics";
 
 jest.mock("../client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
@@ -328,6 +332,173 @@ it("carries sender timing through authenticated capture and final SDK filtering 
   } finally {
     jest.useRealTimers();
   }
+});
+
+describe("native authorization send receipt", () => {
+  const group: NativeAuthorizationDiagnostic = {
+    native_authorization_diagnostic_version: 1,
+    native_authorization_send_timeout: false,
+    native_authorization_send_connect: true,
+    native_authorization_send_request: false,
+    native_authorization_send_elapsed_ms: 42,
+    native_authorization_origin_class: "canonical_production",
+    native_app_version: "0.0.80",
+    native_platform: "darwin",
+  };
+  const terminalError = {
+    ...result,
+    terminalType: "error" as const,
+    terminalExitCode: null,
+  };
+  const nativeKeys = (properties: Record<string, unknown> = {}) =>
+    Object.keys(properties).filter((key) =>
+      NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key),
+    );
+  const settle = (
+    settlement: Record<string, unknown>,
+    commandId = "authorization-failure",
+  ) => {
+    capture.mockClear();
+    telemetry.start({ connectionId: "connection", commandId })(
+      settlement as never,
+    );
+    return capture.mock.calls.find(
+      ([event]) => event.event === "desktop_ack_command_settled",
+    )?.[0];
+  };
+  const enrich = (properties: Record<string, unknown>) =>
+    sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: {
+        ...properties,
+        $current_url: "PRIVATE URL",
+        command: "PRIVATE COMMAND",
+        message: "PRIVATE ERROR",
+      },
+      $set: { email: "PRIVATE" },
+      $set_once: { email: "PRIVATE" },
+    });
+
+  it.each<Partial<NativeAuthorizationDiagnostic>>([
+    {},
+    {
+      native_authorization_send_timeout: true,
+      native_authorization_send_connect: true,
+      native_authorization_send_request: true,
+      native_authorization_send_elapsed_ms: 60_000,
+    },
+    {
+      native_authorization_send_connect: false,
+      native_authorization_send_elapsed_ms: 0,
+      native_authorization_origin_class: "localhost",
+    },
+    { native_authorization_origin_class: "other_allowed" },
+    { native_authorization_origin_class: "unknown" },
+    { native_app_version: null, native_platform: null },
+    { native_platform: "windows" },
+  ])("keeps one coherent v1 group on a terminal-error final: %p", (change) => {
+    const expected = { ...group, ...change };
+    const final = settle({
+      ...terminalError,
+      nativeAuthorization: { ...expected, message: "PRIVATE" },
+    });
+    expect(final?.properties).toMatchObject({
+      ...expected,
+      terminalType: "error",
+      telemetry_sample_rate: 1,
+    });
+    const enriched = enrich(final!.properties);
+    expect(enriched.properties).toMatchObject(expected);
+    expect(nativeKeys(enriched.properties)).toHaveLength(8);
+    expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["unsupported version", { native_authorization_diagnostic_version: 2 }],
+    ["string version", { native_authorization_diagnostic_version: "1" }],
+    ["missing version", { native_authorization_diagnostic_version: undefined }],
+    ["string boolean", { native_authorization_send_timeout: "true" }],
+    ["numeric boolean", { native_authorization_send_connect: 1 }],
+    ["missing boolean", { native_authorization_send_request: undefined }],
+    ["negative time", { native_authorization_send_elapsed_ms: -1 }],
+    ["unbounded time", { native_authorization_send_elapsed_ms: 60_001 }],
+    ["fractional time", { native_authorization_send_elapsed_ms: 0.5 }],
+    ["NaN time", { native_authorization_send_elapsed_ms: NaN }],
+    ["string time", { native_authorization_send_elapsed_ms: "42" }],
+    ["hostname", { native_authorization_origin_class: "hackerai.co" }],
+    ["private origin", { native_authorization_origin_class: "PRIVATE" }],
+    ["private app version", { native_app_version: "PRIVATE" }],
+    ["unknown app version", { native_app_version: "unknown" }],
+    ["missing app version", { native_app_version: undefined }],
+    ["unsupported platform", { native_platform: "macos" }],
+    ["missing platform", { native_platform: undefined }],
+  ])("drops every new field for %s", (_case, change) => {
+    const invalid = { ...group, ...change };
+    const final = settle({ ...terminalError, nativeAuthorization: invalid });
+    expect(final?.properties).toMatchObject({ terminalType: "error" });
+    expect(nativeKeys(final!.properties)).toEqual([]);
+    const enriched = enrich({ terminalType: "error", ...invalid });
+    expect(nativeKeys(enriched.properties)).toEqual([]);
+    expect(enriched.properties).toEqual({ terminalType: "error" });
+    expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+  });
+
+  it("does not attach the group to non-error finals, starts or summaries", () => {
+    const exitFinal = settle({
+      ...result,
+      terminalExitCode: 1,
+      nativeAuthorization: group,
+    });
+    expect(exitFinal?.properties).toMatchObject({ terminalExitCode: 1 });
+    expect(nativeKeys(exitFinal!.properties)).toEqual([]);
+    for (const terminalType of ["exit", null, undefined])
+      expect(nativeKeys(enrich({ terminalType, ...group }).properties)).toEqual(
+        [],
+      );
+    for (const event of [
+      "desktop_ack_command_started",
+      "desktop_ack_delivery_summary",
+    ])
+      expect(
+        sanitizeDesktopAckEvent({
+          event,
+          properties: { terminalType: "error", ...group },
+        }).properties,
+      ).toEqual(
+        event === "desktop_ack_command_started"
+          ? { terminalType: "error" }
+          : {},
+      );
+  });
+
+  it("does not let a registered app version stand in for a missing receipt", () => {
+    expect(
+      enrich({
+        terminalType: "error",
+        native_app_version: "0.0.80",
+        native_platform: "darwin",
+      }).properties,
+    ).toEqual({ terminalType: "error" });
+  });
+
+  it("leaves sampling and routine suppression unchanged", () => {
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+    const routine = {
+      ...result,
+      replayAttempts: 0,
+      resumeRequests: 0,
+      nativeAuthorization: group,
+    };
+    expect(settle(routine, "routine")).toBeUndefined();
+    expect(capture).not.toHaveBeenCalled();
+    const final = settle({ ...terminalError, nativeAuthorization: group });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(final?.properties).toMatchObject({
+      ...group,
+      telemetry_sampled: false,
+      telemetry_sample_rate: 1,
+    });
+  });
 });
 
 describe("volume reduction and reliability counters", () => {

@@ -1,3 +1,8 @@
+import {
+  NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  readNativeAuthorizationDiagnostic,
+} from "./native-authorization-diagnostics";
+
 const STOP_SOURCES = [
   "bridge_stop",
   "command_cleanup",
@@ -124,13 +129,21 @@ export function sanitizeDesktopAckEvent<
   )
     return event;
   if (event.properties) {
+    // Native authorization fields survive only as one complete v1 group on a
+    // terminal-error final; any invalid member drops the whole group.
+    const nativeAuthorization =
+      event.event === "desktop_ack_command_settled" &&
+      event.properties.terminalType === "error" &&
+      readNativeAuthorizationDiagnostic(event.properties) !== null;
     event.properties = Object.fromEntries(
       Object.entries(event.properties).filter(
         ([key, value]) =>
-          (event.event === "desktop_ack_delivery_summary"
-            ? SUMMARY_PROPERTIES
-            : ALLOWED_PROPERTIES
-          ).has(key) &&
+          (NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key)
+            ? nativeAuthorization
+            : (event.event === "desktop_ack_delivery_summary"
+                ? SUMMARY_PROPERTIES
+                : ALLOWED_PROPERTIES
+              ).has(key)) &&
           (!AGE_PROPERTIES.has(key) ||
             (event.event === "desktop_ack_command_settled" &&
               isDesktopAckAge(value))) &&
