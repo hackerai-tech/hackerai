@@ -70,6 +70,10 @@ import { ChatSDKError } from "@/lib/errors";
 import { serializeChatSDKErrorForStream } from "@/lib/errors";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
+import {
+  getLocalStopDiagnostic,
+  LocalConnectionLostError,
+} from "@/lib/chat/local-connection-stop";
 import type { PostHog } from "posthog-node";
 import { Centrifuge } from "centrifuge";
 import { EventEmitter } from "node:events";
@@ -1941,6 +1945,119 @@ describe("Agent connection interruption", () => {
       expect.objectContaining({ connectionId: "replacement" }),
     );
     stop();
+  });
+
+  describe("first local stop cause", () => {
+    const FIRST = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    const SUCCESSOR = "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d";
+
+    async function watchedManager() {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        "environment:machine",
+        "key",
+        null,
+        "pro",
+      );
+      const onLost = jest.fn();
+      const dispose = manager.stopOnLocalDisconnect(onLost);
+      const list = jest
+        .spyOn(manager, "listConnections")
+        .mockResolvedValue([
+          makeConnection({ connectionId: FIRST, environmentId: "machine" }),
+        ]);
+      await manager.getSandboxContextForPrompt();
+      return { manager, onLost, dispose, list };
+    }
+
+    /** Every later access must rethrow the first stop, never a new generic one. */
+    async function expectFirstStopReused(
+      manager: HybridSandboxManager,
+      first: unknown,
+    ) {
+      await expect(manager.getSandbox()).rejects.toBe(first);
+      await expect(
+        manager.recoverLocalConnection(FIRST, "command_relay_unsubscribed"),
+      ).rejects.toBe(first);
+      await expect(manager.resetSandbox("retry")).rejects.toBe(first);
+      expect(manager.isSandboxUnavailable()).toBe(true);
+    }
+
+    type Watched = Awaited<ReturnType<typeof watchedManager>>;
+    const invalidations: Array<
+      [string, (watched: Watched) => Promise<unknown>]
+    > = [
+      ["local_reset_requested", ({ manager }) => manager.resetSandbox("retry")],
+      [
+        "local_recovery_requested",
+        ({ manager }) =>
+          manager.recoverLocalConnection(FIRST, "command_relay_unsubscribed"),
+      ],
+      [
+        "selected_connection_unavailable",
+        ({ manager, list }) => {
+          list.mockResolvedValue([]);
+          return manager.getSandbox();
+        },
+      ],
+      [
+        "watched_connection_replaced",
+        ({ manager, list }) => {
+          list.mockResolvedValue([
+            makeConnection({
+              connectionId: SUCCESSOR,
+              environmentId: "machine",
+            }),
+          ]);
+          return manager.getSandbox();
+        },
+      ],
+    ];
+
+    it.each(invalidations)(
+      "passes and rethrows the same %s stop",
+      async (reason, invalidate) => {
+        const watched = await watchedManager();
+        const { manager, onLost, dispose } = watched;
+        const thrown = await invalidate(watched).catch((error) => error);
+        expect(thrown).toBeInstanceOf(LocalConnectionLostError);
+        expect(onLost).toHaveBeenCalledTimes(1);
+        expect(onLost.mock.calls[0][0]).toBe(thrown);
+        expect(getLocalStopDiagnostic(thrown)).toEqual({
+          reason,
+          connectionId: FIRST,
+        });
+        await expectFirstStopReused(manager, thrown);
+        expect(onLost).toHaveBeenCalledTimes(1);
+        dispose();
+      },
+    );
+
+    it("keeps the watcher's first cause through later manager invalidations", async () => {
+      const { manager, onLost, dispose, list } = await watchedManager();
+      const watcherLost = (
+        mockWatchLocalRunConnection.mock.calls.at(-1) as unknown as [
+          { onLost: (error: LocalConnectionLostError) => void },
+        ]
+      )[0].onLost;
+      const observed = new LocalConnectionLostError("observer_reconnecting", {
+        connectionId: FIRST,
+        hadPositivePresence: true,
+        lastPositivePresenceAgeMs: 1_000,
+      });
+      watcherLost(observed);
+      watcherLost(new LocalConnectionLostError("selected_host_left"));
+      expect(onLost.mock.calls).toEqual([[observed]]);
+      list.mockResolvedValue([
+        makeConnection({ connectionId: SUCCESSOR, environmentId: "machine" }),
+      ]);
+      await expect(manager.getSandboxContextForPrompt()).rejects.toBe(observed);
+      await expectFirstStopReused(manager, observed);
+      expect(onLost).toHaveBeenCalledTimes(1);
+      expect(observed.stopReason).toBe("observer_reconnecting");
+      dispose();
+    });
   });
 
   it("does not watch or stop a Cloud run", async () => {

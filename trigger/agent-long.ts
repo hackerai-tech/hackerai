@@ -29,6 +29,7 @@ import {
 } from "@/lib/analytics/agent-run-reporting";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
+  getLocalStopDiagnostic,
   LocalConnectionLostError,
   LOCAL_CONNECTION_LOST_FINISH_REASON,
 } from "@/lib/chat/local-connection-stop";
@@ -2041,6 +2042,15 @@ export const agentLongTask = task({
     let terminalAgentState: AgentStreamState | undefined;
     const stopSignal = createAgentStopSignal({
       onAbort: (source) => {
+        // Only the first abort is observed, so a later local callback cannot
+        // attach its cause to an earlier budget, user or platform stop.
+        if (source === "local_connection_lost") {
+          try {
+            runReporting.recordLocalStop(stopSignal.controller.signal.reason);
+          } catch {
+            // Attribution must not suppress the existing stop log below.
+          }
+        }
         triggerLogger.warn("[agent-long] stop signal aborted", {
           event: "agent_long_stop_signal_aborted",
           run_id: ctx.run.id,
@@ -3266,10 +3276,14 @@ export const agentLongTask = task({
             cleanupBrowserSessions = cleanupToolBrowsers;
             approvalSandboxManager = sandboxManager;
             stopLocalConnectionWatch = sandboxManager.stopOnLocalDisconnect?.(
-              () => {
+              (error) => {
+                // A side-table lookup proves construction without invoking
+                // proxy traps, so an unknown argument cannot block the stop.
                 stopSignal.abort(
                   "local_connection_lost",
-                  new LocalConnectionLostError(),
+                  getLocalStopDiagnostic(error)
+                    ? error
+                    : new LocalConnectionLostError(),
                 );
               },
             );
@@ -6134,7 +6148,7 @@ export const agentLongTask = task({
               error === userStopSignal.signal.reason;
             runReporting.fail(
               error,
-              canceledDuringPreparation
+              canceledDuringPreparation || localConnectionLost()
                 ? agentLongDurationExceeded
                   ? "elapsed_timeout"
                   : "canceled"

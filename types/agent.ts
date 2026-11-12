@@ -11,6 +11,7 @@ import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox"
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
+import type { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 
 // Union type for cloud providers and local CentrifugoSandbox.
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -32,7 +33,9 @@ export interface SandboxInfo {
 
 export interface SandboxManager {
   /** End this run when its local connection is lost; a successor requires a new run. */
-  stopOnLocalDisconnect?(onLost: () => void): () => void;
+  stopOnLocalDisconnect?(
+    onLost: (error: LocalConnectionLostError) => void,
+  ): () => void;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;

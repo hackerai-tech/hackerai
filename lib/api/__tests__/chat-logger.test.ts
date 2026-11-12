@@ -1,5 +1,9 @@
 import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
-import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  agentRunEventUuid,
+  createAgentRunReporting,
+} from "@/lib/analytics/agent-run-reporting";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
 import path from "path";
@@ -750,6 +754,96 @@ describe("captureAgentRun", () => {
         outcome: "aborted",
         abort_source: "user_stop",
       }),
+    );
+  });
+
+  it("adds the first local stop cause to the normal terminal event once, with its run identity", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const connectionId = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_local",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "pro",
+      endpoint: "/api/agent",
+    });
+    reporting.recordLocalStop(
+      new LocalConnectionLostError("subscription_error", {
+        connectionId,
+        hadPositivePresence: false,
+      }),
+    );
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "desktop" },
+      outcome: "aborted",
+      abortSource: "unknown",
+      hasResponseContent: false,
+      chatLogger: undefined,
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      finishReason: "local-connection-lost",
+      triggerRunId: "run_local",
+      abliteratedProviderSummary: undefined,
+    });
+    reporting.finalize({ canceled: false });
+
+    const runs = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0].uuid).toBe(
+      agentRunEventUuid("run_local", "hackerai-agent_run"),
+    );
+    expect(runs[0].properties).toMatchObject({
+      outcome: "aborted",
+      finish_reason: "local-connection-lost",
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "subscription_error",
+      local_stop_connection_id: connectionId,
+      local_stop_had_positive_presence: false,
+    });
+    expect(runs[0].properties).not.toHaveProperty(
+      "local_stop_last_positive_presence_age_ms",
+    );
+  });
+
+  it.each([
+    ["no stop", undefined],
+    ["a generic error", new Error("PRIVATE canary")],
+    [
+      "a forged error",
+      Object.assign(Object.create(LocalConnectionLostError.prototype), {
+        local_stop_reason: "PRIVATE canary",
+      }),
+    ],
+    [
+      "a proxied error",
+      new Proxy(new LocalConnectionLostError("selected_host_left"), {}),
+    ],
+  ])("adds no local stop fields for %s", (_name, localConnectionLostError) => {
+    const capture = jest.fn();
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "aborted",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      localConnectionLostError,
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(
+      /local_stop_|PRIVATE/,
     );
   });
 
