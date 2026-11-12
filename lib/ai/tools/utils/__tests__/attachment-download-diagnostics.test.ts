@@ -29,7 +29,7 @@ it.each([
   const fields = getAttachmentDownloadFailureContext(error);
   expect(fields?.attachment_download_stderr_signal).toBe(hint);
   expect(JSON.stringify(fields)).not.toMatch(
-    /customer|private|unclassified|schannel|certificate/,
+    /customer|private|failure|schannel|certificate/,
   );
   expect(Object.keys(error)).toEqual([]);
 });
@@ -268,3 +268,169 @@ it("bounds timeout wording scans and retains it through existing boundary and co
     getAttachmentDownloadFailureContext(copy)?.attachment_download_exit_code,
   ).toBe(28);
 });
+
+const curl1Protocol =
+  'curl: (1) Protocol "privateproto" not supported or disabled in libcurl';
+
+it.each([
+  [curl1Protocol, true, "protocol_unsupported_or_disabled"],
+  [
+    `progress\r\n${curl1Protocol}\r\n`,
+    true,
+    "protocol_unsupported_or_disabled",
+  ],
+  [
+    'curl: (1) Protocol "h t/tp:" not supported or disabled in libcurl',
+    true,
+    "protocol_unsupported_or_disabled",
+  ],
+  // Other curl versions' or incomplete wording stays unclassified.
+  ['curl: (1) Protocol "privateproto" not supported', true, "unclassified"],
+  [`${curl1Protocol} private suffix`, true, "unclassified"],
+  [
+    'curl: (1) Protocol "private"proto" not supported or disabled in libcurl',
+    true,
+    "unclassified",
+  ],
+  [
+    `curl: (1) Protocol "${"p".repeat(65)}" not supported or disabled in libcurl`,
+    true,
+    "unclassified",
+  ],
+  [
+    'curl: (1) Protocol "" not supported or disabled in libcurl',
+    true,
+    "unclassified",
+  ],
+  ["curl: (1) private unrecognized detail", true, "unclassified"],
+  [curl1Protocol.toUpperCase(), false, "unclassified"],
+  [curl1Protocol.replace("Protocol", "protocol"), true, "unclassified"],
+  [curl1Protocol.slice("curl: (1) ".length), false, "unclassified"],
+  [`private prefix ${curl1Protocol}`, false, "unclassified"],
+  [` ${curl1Protocol}`, false, "unclassified"],
+  [curl1Protocol.replace("(1)", "(10)"), false, "unclassified"],
+  ["curl: option --private: is unknown", false, "unclassified"],
+  [
+    "curl: (26) Failed to open/read local data from private",
+    false,
+    "unclassified",
+  ],
+  ["", false, "unclassified"],
+])(
+  "keeps only the closed public curl1 wording family: %j",
+  (stderr, linePresent, hint) => {
+    const original = Object.freeze(new Error("private original"));
+    expect(
+      recordAttachmentDownloadFailure(original, {
+        ...input,
+        stderr: `${stderr}\nhttps://private.example/secret?token=private`,
+      }),
+    ).toBe(original);
+    const fields = getAttachmentDownloadFailureContext(original);
+    expect(fields).toMatchObject({
+      attachment_download_curl1_version: 1,
+      attachment_download_curl1_line_present: linePresent,
+      attachment_download_curl1_hint: hint,
+      attachment_download_exit_code: 1,
+      attachment_download_stderr_signal: "other",
+    });
+    expect(fields).not.toHaveProperty("attachment_download_timeout_hint");
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private|secret|token|libcurl|Protocol|h t\/tp|ppp/,
+    );
+    expect(Object.keys(original)).toEqual([]);
+  },
+);
+
+it.each([
+  ["curl", 2],
+  ["curl", 26],
+  ["curl", 28],
+  ["curl", 0],
+  ["wget", 1],
+  ["powershell", 1],
+] as const)(
+  "does not assign curl1 wording to selected %s exit%s",
+  (httpClient, exitCode) => {
+    const fields = getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure(new Error(), {
+        ...input,
+        httpClient,
+        exitCode,
+        stderr: curl1Protocol,
+      }),
+    );
+    expect(fields).toHaveProperty("attachment_download_exit_code", exitCode);
+    for (const key of [
+      "attachment_download_curl1_version",
+      "attachment_download_curl1_line_present",
+      "attachment_download_curl1_hint",
+    ])
+      expect(fields).not.toHaveProperty(key);
+  },
+);
+
+it("bounds curl1 wording scans and retains it through existing boundary and copy propagation", () => {
+  const classify = (stderr: string) => {
+    const original = recordAttachmentDownloadFailure(
+      Object.freeze(new Error("private original")),
+      { ...input, stderr },
+    );
+    recordAttachmentDownloadBoundary(original, {
+      phase: "failure_diagnostics",
+      attempt: 3,
+      resultState: "nonzero",
+    });
+    return getAttachmentDownloadFailureContext(
+      copyAttachmentDownloadFailureContext(
+        original,
+        new Error("private wrapper"),
+      ),
+    );
+  };
+  expect(classify(`${"x".repeat(8191)}\n${curl1Protocol}`)).toMatchObject({
+    attachment_download_curl1_line_present: false,
+    attachment_download_curl1_hint: "unclassified",
+    attachment_download_stderr_truncated: true,
+  });
+  // A public line cut by the existing budget is present but unclassified.
+  expect(classify(`${"x".repeat(8150)}\n${curl1Protocol}`)).toMatchObject({
+    attachment_download_curl1_line_present: true,
+    attachment_download_curl1_hint: "unclassified",
+    attachment_download_stderr_truncated: true,
+  });
+  expect(classify(`${"x".repeat(8100)}\n${curl1Protocol}`)).toMatchObject({
+    attachment_download_curl1_version: 1,
+    attachment_download_curl1_line_present: true,
+    attachment_download_curl1_hint: "protocol_unsupported_or_disabled",
+    attachment_download_stderr_truncated: false,
+    attachment_download_attempt: 3,
+    attachment_download_result_context_present: true,
+  });
+});
+
+it.each([
+  // The budget can end exactly after the wording while the line continues.
+  [
+    `${"x".repeat(8192 - curl1Protocol.length - 1)}\n${curl1Protocol} private suffix`,
+    "unclassified",
+  ],
+  // A newline-terminated line before the cut remains complete.
+  [
+    `${"x".repeat(8000)}\n${curl1Protocol}\n${"y".repeat(500)}`,
+    "protocol_unsupported_or_disabled",
+  ],
+])(
+  "classifies curl1 wording only from lines completed before truncation (%#)",
+  (stderr, hint) => {
+    expect(
+      getAttachmentDownloadFailureContext(
+        recordAttachmentDownloadFailure(new Error(), { ...input, stderr }),
+      ),
+    ).toMatchObject({
+      attachment_download_curl1_line_present: true,
+      attachment_download_curl1_hint: hint,
+      attachment_download_stderr_truncated: true,
+    });
+  },
+);
