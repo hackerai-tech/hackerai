@@ -366,6 +366,7 @@ export type NearbyDispatchGroup =
   | "synthetic_stackless_error"
   | "chat_document_short_error"
   | "same_document_short_error"
+  | "chat_root_document_short_error"
   | "same_document_stack_overflow"
   | "stackless_dom_exception"
   | "anonymous_missing_identifier_referenceerror"
@@ -422,6 +423,7 @@ export function getNearbyDispatchDiagnostics(
         "synthetic_stackless_error",
         "chat_document_short_error",
         "same_document_short_error",
+        "chat_root_document_short_error",
         "same_document_stack_overflow",
         "stackless_dom_exception",
         "anonymous_missing_identifier_referenceerror",

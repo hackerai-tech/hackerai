@@ -1513,3 +1513,296 @@ it.each([
     expect(nearbyProperties(enriched)).toEqual({});
   },
 );
+
+const chatRootEntry = () => ({
+  type: "Error",
+  value: "xy",
+  mechanism: { handled: false, synthetic: false, type: "generic" },
+  stacktrace: {
+    frames: Array.from({ length: 3 }, () => ({
+      filename: "https://hackerai.co/",
+      in_app: true,
+      lineno: 199,
+      colno: 338,
+    })),
+  },
+});
+
+function chatRootEvent(exception: unknown = chatRootEntry()) {
+  return {
+    event: "$exception",
+    properties: {
+      $current_url:
+        "https://hackerai.co/c/current?private-query#private-fragment",
+      $exception_list: [exception],
+    },
+  };
+}
+
+it("retains the SDK-parsed chat-root short Error with bounded private-safe nearby context", () => {
+  const dispatched = new ErrorEvent("error", {
+    filename: `${location.origin}/private-source?token=canary`,
+    message: "private native message",
+    error: new Error("private error object"),
+    lineno: 12,
+    colno: 4,
+    cancelable: true,
+  });
+  window.dispatchEvent(dispatched);
+  const error = new Error("xy");
+  error.stack = Array.from(
+    { length: 3 },
+    (_, index) => `ownedFixture@https://hackerai.co/:${index + 199}:338`,
+  ).join("\n");
+  const properties = buildErrorPropertiesBuilder().buildFromUnknown(error, {
+    mechanism: { handled: false, type: "generic" },
+  });
+  const list = properties.$exception_list;
+  const event = {
+    event: "$exception",
+    properties: {
+      ...properties,
+      $current_url:
+        "https://hackerai.co/c/current?private-query#private-fragment",
+    },
+  };
+  expect(shouldDropExpectedFrontendException(event)).toBe(false);
+  const enriched = enrichFrontendExceptionEvent(
+    sanitizeFrontendExceptionUrlProperties(event),
+  );
+  const context = nearbyProperties(enriched);
+  expect(context).toMatchObject({
+    hackerai_nearby_dispatch_version: 1,
+    hackerai_nearby_dispatch_group: "chat_root_document_short_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 1,
+    hackerai_nearby_dispatch_error_native_count: 1,
+    hackerai_nearby_dispatch_error_untrusted_count: 1,
+    hackerai_nearby_dispatch_error_trusted_native_count: 0,
+    hackerai_nearby_dispatch_error_latest_source: "same_origin",
+    hackerai_nearby_dispatch_error_latest_object: true,
+  });
+  expect(
+    Object.values(context).every((value) =>
+      ["string", "number", "boolean"].includes(typeof value),
+    ),
+  ).toBe(true);
+  expect(JSON.stringify(context)).not.toMatch(
+    /private|canary|token|hackerai\.co|\/c\/|current|xy|199|338/,
+  );
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(list).toEqual([
+    expect.objectContaining({
+      type: "Error",
+      value: "xy",
+      mechanism: expect.objectContaining({ handled: false, synthetic: false }),
+    }),
+  ]);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  expect(dispatched.defaultPrevented).toBe(false);
+  // Reprocessing clears stale context for another owner or an ineligible page.
+  identity.mockReturnValue("another-owner");
+  expect(nearbyProperties(enrichFrontendExceptionEvent(enriched))).toEqual({});
+  identity.mockReturnValue("fixture-owner");
+  expect(
+    nearbyProperties(
+      enrichFrontendExceptionEvent({
+        ...enriched,
+        properties: {
+          ...enriched.properties,
+          $current_url: "https://hackerai.co/share/current",
+        },
+      }),
+    ),
+  ).toEqual({});
+});
+
+it("labels the chat-root shape without a native dispatch and keeps the window nearby-only", () => {
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(chatRootEvent())),
+  ).toMatchObject({
+    hackerai_nearby_dispatch_group: "chat_root_document_short_error",
+    hackerai_nearby_dispatch_association: "nearby_only",
+    hackerai_nearby_dispatch_error_count: 0,
+    hackerai_nearby_dispatch_error_native_count: 0,
+    hackerai_nearby_dispatch_rejection_count: 0,
+    hackerai_nearby_dispatch_error_latest_age: "none",
+  });
+  window.dispatchEvent(new ErrorEvent("error", { error: new Error("xy") }));
+  now += 1000;
+  // An expired dispatch is not linked to the retained exception.
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(chatRootEvent())),
+  ).toMatchObject({
+    hackerai_nearby_dispatch_group: "chat_root_document_short_error",
+    hackerai_nearby_dispatch_error_count: 0,
+    hackerai_nearby_dispatch_error_latest_age: "none",
+  });
+});
+
+type ChatRootFixture = ReturnType<typeof chatRootEntry>;
+const withFrames = (entry: ChatRootFixture, frames: unknown[]) => ({
+  ...entry,
+  stacktrace: { frames },
+});
+
+it.each<[string, (entry: ChatRootFixture) => unknown]>([
+  ["a longer error", (entry) => ({ ...entry, value: "xyz" })],
+  ["a one-unit error", (entry) => ({ ...entry, value: "x" })],
+  ["a missing value", (entry) => ({ ...entry, value: undefined })],
+  ["a TypeError", (entry) => ({ ...entry, type: "TypeError" })],
+  [
+    "a handled error",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, handled: true } }),
+  ],
+  [
+    "a synthetic error",
+    (entry) => ({
+      ...entry,
+      mechanism: { ...entry.mechanism, synthetic: true },
+    }),
+  ],
+  [
+    "an unknown synthetic flag",
+    (entry) => ({ ...entry, mechanism: { handled: false, type: "generic" } }),
+  ],
+  [
+    "a different mechanism",
+    (entry) => ({ ...entry, mechanism: { ...entry.mechanism, type: "other" } }),
+  ],
+  [
+    "two frames",
+    (entry) => withFrames(entry, entry.stacktrace.frames.slice(0, 2)),
+  ],
+  [
+    "four frames",
+    (entry) =>
+      withFrames(entry, [
+        ...entry.stacktrace.frames,
+        entry.stacktrace.frames[0],
+      ]),
+  ],
+  ["no frames", (entry) => withFrames(entry, [])],
+  [
+    "a sparse frame",
+    (entry) => {
+      const frames = [...entry.stacktrace.frames];
+      delete frames[1];
+      return withFrames(entry, frames);
+    },
+  ],
+  [
+    "a missing filename",
+    (entry) =>
+      withFrames(entry, [
+        entry.stacktrace.frames[0],
+        { in_app: true },
+        entry.stacktrace.frames[2],
+      ]),
+  ],
+  [
+    "server-normalized source instead of browser filename",
+    (entry) =>
+      withFrames(
+        entry,
+        entry.stacktrace.frames.map(({ filename, ...frame }) => ({
+          ...frame,
+          source: filename,
+        })),
+      ),
+  ],
+  ...[
+    ["a different origin", "https://other.example/"],
+    ["an origin-prefix spoof", "https://hackerai.co.other.example/"],
+    ["a different port", "https://hackerai.co:444/"],
+    ["an insecure origin", "http://hackerai.co/"],
+    ["a username", "https://private-user@hackerai.co/"],
+    ["a credential pair", "https://private-user:private-pass@hackerai.co/"],
+    ["a query", "https://hackerai.co/?private-query"],
+    ["an empty query marker", "https://hackerai.co/?"],
+    ["a fragment", "https://hackerai.co/#private-fragment"],
+    ["an empty fragment marker", "https://hackerai.co/#"],
+    ["a root path suffix", "https://hackerai.co/index.html"],
+    ["a doubled root slash", "https://hackerai.co//"],
+    ["another chat document", "https://hackerai.co/c/private-a"],
+    ["the current chat document", "https://hackerai.co/c/current"],
+    [
+      "a generated script",
+      "https://hackerai.co/_next/static/chunks/private.js",
+    ],
+    ["an oversized filename", `https://hackerai.co/?${"a".repeat(4096)}`],
+    ["an anonymous filename", "<anonymous>"],
+    ["an empty filename", ""],
+  ].map(([label, filename]): [string, (entry: ChatRootFixture) => unknown] => [
+    `one frame from ${label}`,
+    (entry) =>
+      withFrames(entry, [
+        entry.stacktrace.frames[0],
+        { ...entry.stacktrace.frames[1], filename },
+        entry.stacktrace.frames[2],
+      ]),
+  ]),
+])("does not add chat-root context for %s", (_label, change) => {
+  const event = chatRootEvent(change(chatRootEntry()));
+  const list = event.properties.$exception_list;
+  const enriched = enrichFrontendExceptionEvent(event);
+  expect(nearbyProperties(enriched)).toEqual({});
+  expect(enriched.properties.$exception_list).toBe(list);
+  expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+});
+
+it("does not add chat-root context to a multi-exception list", () => {
+  const event = chatRootEvent();
+  event.properties.$exception_list.push(chatRootEntry());
+  expect(nearbyProperties(enrichFrontendExceptionEvent(event))).toEqual({});
+});
+
+it.each([
+  undefined,
+  "not a URL",
+  "http://hackerai.co/c/current",
+  "https://hackerai.co/share/current",
+  "https://hackerai.co/c/",
+  "https://hackerai.co/c/current/extra",
+  "https://other.example/c/current",
+  "https://private-user@hackerai.co/c/current",
+  `https://hackerai.co/c/current?${"a".repeat(4096)}`,
+])(
+  "omits chat-root context on an ineligible current document %s",
+  (current) => {
+    const event = chatRootEvent();
+    const enriched = enrichFrontendExceptionEvent({
+      ...event,
+      properties: { ...event.properties, $current_url: current },
+    });
+    expect(nearbyProperties(enriched)).toEqual({});
+  },
+);
+
+it("keeps root-page root frames in the existing same-document group", () => {
+  const event = chatRootEvent();
+  event.properties.$current_url = "https://hackerai.co/";
+  expect(
+    nearbyProperties(enrichFrontendExceptionEvent(event))
+      .hackerai_nearby_dispatch_group,
+  ).toBe("same_document_short_error");
+});
+
+it("keeps the retained chat-root Error when its frame or value getters are hostile", () => {
+  for (const name of ["filename", "value"] as const) {
+    const entry = chatRootEntry();
+    const target = name === "filename" ? entry.stacktrace.frames[1] : entry;
+    Object.defineProperty(target, name, {
+      enumerable: false,
+      get: () => {
+        throw new Error("private getter");
+      },
+    });
+    const event = chatRootEvent(entry);
+    const list = event.properties.$exception_list;
+    const enriched = enrichFrontendExceptionEvent(event);
+    expect(nearbyProperties(enriched)).toEqual({});
+    expect(enriched.properties.$exception_list).toBe(list);
+    expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+  }
+});
