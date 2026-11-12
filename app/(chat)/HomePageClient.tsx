@@ -15,9 +15,20 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useComposerInput } from "../contexts/ComposerState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
 import { navigateToAuth } from "../hooks/useTauri";
+import { useTypingAnimation } from "../hooks/useTypingAnimation";
 import { upsertDraft } from "@/lib/utils/client-storage";
 import Loading from "@/components/ui/loading";
 import { useHasAuthenticatedBefore } from "../hooks/useHasAuthenticatedBefore";
+
+const LOGIN_TYPING_PREFIX = "Ask HackerAI to ";
+const LOGIN_TYPING_TAILS = [
+  "find vulnerabilities in...",
+  "audit the security of...",
+  "test the defenses of...",
+  "review the code of...",
+  "write a pentest report for...",
+  "hunt for bugs in...",
+];
 
 // Simple unauthenticated content that redirects to signup on message send
 const UnauthenticatedContent = () => {
@@ -34,6 +45,12 @@ const UnauthenticatedContent = () => {
   const handleStop = () => {
     // No-op for unauthenticated users
   };
+
+  const animatedTail = useTypingAnimation({
+    phrases: LOGIN_TYPING_TAILS,
+    enabled: true,
+  });
+  const animatedPlaceholder = `${LOGIN_TYPING_PREFIX}${animatedTail}`;
 
   React.useEffect(() => {
     const checkHash = () => {
@@ -80,7 +97,7 @@ const UnauthenticatedContent = () => {
               isCentered={true}
               isNewChat={true}
               clearDraftOnSubmit={false}
-              placeholder="Ask HackerAI to find vulnerabilities in..."
+              placeholder={animatedPlaceholder}
               landingAppearance
               autoFocus={false}
               restoreDraftAttachments={false}
