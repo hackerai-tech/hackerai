@@ -415,7 +415,7 @@ export const MessageItem = memo(function MessageItem({
     <Fragment>
       <div
         data-testid={isUser ? "user-message" : "assistant-message"}
-        className={`message-row flex flex-col ${isUser ? "items-end" : "items-start"}`}
+        className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >

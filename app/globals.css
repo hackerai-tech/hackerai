@@ -324,11 +324,6 @@
   will-change: height, opacity, transform;
 }
 
-.message-row {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 180px;
-}
-
 @keyframes source-message-arrival {
   0% {
     opacity: 0;
