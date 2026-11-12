@@ -20,6 +20,7 @@ import {
   BROWSER_OPEN_IDLE_ENV_VALUES,
   BROWSER_DAEMON_DEADLINE_PHASES,
   BROWSER_CLI_AT_PREPARE_STATUSES,
+  BROWSER_WRAPPER_PROCESS_VISIBILITIES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -412,6 +413,9 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_wrapper_exit_code?: number | "none" | "other";
   capture_wrapper_session_matches?: boolean;
   capture_wrapper_age?: (typeof BROWSER_WRAPPER_AGES)[number];
+  // Selected-session STARTED wrapper only; visibility is not execution or health.
+  capture_wrapper_process_version?: 1;
+  capture_wrapper_process_visibility?: (typeof BROWSER_WRAPPER_PROCESS_VISIBILITIES)[number];
   capture_wrapper_history_version?: 1;
   capture_wrapper_history_scope?: "handoff_root";
   // Other than a recognized version-only invocation; leading options stay ambiguous.
@@ -594,6 +598,8 @@ export async function captureBrowserFrame(
         | "capture_wrapper_exit_code"
         | "capture_wrapper_session_matches"
         | "capture_wrapper_age"
+        | "capture_wrapper_process_version"
+        | "capture_wrapper_process_visibility"
         | "capture_wrapper_history_version"
         | "capture_wrapper_history_scope"
         | "capture_wrapper_other_cli_completed"
@@ -731,6 +737,18 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_session_matches =
                   parsed.wrapper_session_matches;
                 precondition.capture_wrapper_age = parsed.wrapper_age;
+              }
+              const wrapperProcess = parsed?.w1;
+              if (
+                precondition.capture_wrapper_phase === "started" &&
+                precondition.capture_wrapper_session_matches === true &&
+                Number.isInteger(wrapperProcess) &&
+                wrapperProcess >= 0 &&
+                wrapperProcess < BROWSER_WRAPPER_PROCESS_VISIBILITIES.length
+              ) {
+                precondition.capture_wrapper_process_version = 1;
+                precondition.capture_wrapper_process_visibility =
+                  BROWSER_WRAPPER_PROCESS_VISIBILITIES[wrapperProcess];
               }
               const history = parsed?.h1;
               if (history === 0 || history === 1 || history === 3) {

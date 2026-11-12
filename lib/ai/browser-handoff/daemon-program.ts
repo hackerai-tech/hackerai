@@ -44,6 +44,18 @@ export const BROWSER_CLI_AT_PREPARE_STATUSES = [
   "check_failed",
 ] as const;
 
+// Wire code w1 is the index. Procfs visibility of the started wrapper's exact
+// PID/start-tick incarnation; not execution, daemon identity/health or a cause.
+export const BROWSER_WRAPPER_PROCESS_VISIBILITIES = [
+  "unavailable",
+  "not_found",
+  "incarnation_changed",
+  "same_incarnation_visible",
+  "same_incarnation_zombie",
+  "permission",
+  "other",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -134,6 +146,43 @@ function daemonProcess() {
     return [1, error?.code === 'ENOENT' ? 0 : 2, 0];
   } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
+const uint64 = text => /^(0|[1-9][0-9]{0,19})$/.test(text) && (text.length < 20 || text <= '18446744073709551615');
+/** Compare the started wrapper's private [1, PID, start ticks] with one bounded
+ * procfs stat read; never scan or signal processes or export the PID, ticks or name.
+ */
+function wrapperProcess(identity) {
+  let fd;
+  if (!Array.isArray(identity) || identity.length !== 3 || identity[0] !== 1 ||
+      !Number.isSafeInteger(identity[1]) || identity[1] < 1 || identity[1] > 2147483647 ||
+      typeof identity[2] !== 'string' || !uint64(identity[2])) return 0;
+  // Without a verified procfs view an absent entry cannot establish an exit.
+  try {
+    if (process.platform !== 'linux' || typeof fs.statfsSync !== 'function' ||
+        fs.statfsSync('/proc').type !== 0x9fa0) return 0;
+  } catch { return 0; }
+  try {
+    fd = fs.openSync('/proc/' + identity[1] + '/stat',
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const info = fs.fstatSync(fd);
+    // Only this UID's own regular stat file is read; another user's bytes never are.
+    if (!info.isFile() || info.uid !== process.getuid()) return 6;
+    const bytes = Buffer.alloc(4097);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (size > 4096) return 6;
+    // The command name can contain spaces and parentheses; fields follow the last ')'.
+    const text = bytes.subarray(0, size).toString('latin1');
+    const head = text.indexOf(' (');
+    const close = text.lastIndexOf(')');
+    const fields = close > head ? text.slice(close + 1).trim().split(' ') : [];
+    if (head < 1 || text.slice(0, head) !== String(identity[1]) || fields.length < 20 ||
+        !/^[A-Za-z]$/.test(fields[0]) || !uint64(fields[19])) return 6;
+    if (fields[19] !== identity[2]) return 2;
+    return fields[0] === 'Z' ? 4 : 3;
+  } catch (error) {
+    return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? 1 :
+      error?.code === 'EACCES' || error?.code === 'EPERM' ? 5 : 6;
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
 /** Return finite observations only; session keys and private paths stay local. */
 function wrapperReceipt() {
   try {
@@ -154,6 +203,9 @@ function wrapperReceipt() {
       // Older workers do not write the sticky receipt; absence is not no-open evidence.
       open_receipt_status: receipt.open_receipt_support === 1 ? 'not_observed' : 'unavailable',
     };
+    // Only the selected session's still-STARTED wrapper has a meaningful incarnation.
+    if (receipt.phase === 'started' && receipt.session_key === sessionKey)
+      result.w1 = wrapperProcess(receipt.process);
     const history = receipt.history;
     if (Array.isArray(history) && history.length === 3 && history[0] === 1 &&
         typeof history[1] === 'boolean' && typeof history[2] === 'boolean' &&
@@ -228,6 +280,8 @@ function finish(code, value) {
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
     const cli = cliAtPrepare();
     if (cli) value = { ...value, cv: cli };
+    // The optional incarnation code never displaces existing context at the parser cap.
+    if (value?.w1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.w1;
   }
   if (value !== undefined) {
     if (code === 0) process.stdout.write(JSON.stringify(value));
