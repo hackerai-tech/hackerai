@@ -92,9 +92,10 @@ const complete = () => ({
 });
 
 const noMarketplace = () => ({
+  ...complete(),
   ResultsByTime: complete().ResultsByTime.map((row) => ({
-    TimePeriod: row.TimePeriod,
-    Total: { UnblendedCost: { Amount: "0", Unit: "USD" } },
+    ...row,
+    Groups: [],
   })),
 });
 

@@ -33,15 +33,8 @@ const page = (
   ],
 });
 
-const marketplace = (value = "0") => ({
-  $metadata: {},
-  ResultsByTime: [
-    {
-      TimePeriod: { Start: "2026-11-10", End: "2026-11-11" },
-      Total: { UnblendedCost: { Amount: value, Unit: "USD" } },
-    },
-  ],
-});
+const marketplace = (value = "0") =>
+  page("2026-11-10", "Marketplace vendor", value);
 
 test("collects every page under the explicit account filter and preserves signed fractional charges", async () => {
   const first = {
@@ -69,7 +62,10 @@ test("collects every page under the explicit account filter and preserves signed
       TimePeriod: { Start: "2026-11-10", End: "2026-11-11" },
       Metrics: ["UnblendedCost"],
       Filter: {
-        Dimensions: { Key: "LINKED_ACCOUNT", Values: ["123456789012"] },
+        And: [
+          { Dimensions: { Key: "LINKED_ACCOUNT", Values: ["123456789012"] } },
+          { Dimensions: { Key: "BILLING_ENTITY", Values: ["AWS"] } },
+        ],
       },
     }),
   );
@@ -124,12 +120,12 @@ test("unknown or duplicate costs, missing dates and Marketplace charges cannot r
   ).toThrow("currency");
 });
 
-test("empty groups require an explicit zero total and cannot mask a subsequent charge page", () => {
+test("completed empty groups mean no records and cannot mask a subsequent charge page", () => {
   const empty = page("2026-11-10", "Compute", "3");
   empty.ResultsByTime![0].Groups = [];
-  expect(() =>
-    normalizeAwsCostPages([empty], "2026-11-10", "2026-11-10"),
-  ).toThrow("missing days");
+  expect(normalizeAwsCostPages([empty], "2026-11-10", "2026-11-10")).toEqual([
+    expect.objectContaining({ effectiveCostDollars: 0 }),
+  ]);
   empty.ResultsByTime![0].Total = {
     UnblendedCost: { Amount: "0", Unit: "USD" },
   };
@@ -159,4 +155,25 @@ test("Marketplace costs stop the import before directly collected vendors can be
       { Dimensions: { Key: "BILLING_ENTITY", Values: ["AWS Marketplace"] } },
     ],
   });
+});
+
+test("offsetting Marketplace usage and refunds cannot pass as an unreconciled zero expense", async () => {
+  const first = {
+    ...page("2026-11-10", "Vendor", "10", "Usage"),
+    NextPageToken: "refunds",
+  };
+  const refund = page("2026-11-10", "Vendor", "-10", "Refund");
+  const send = jest
+    .fn()
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce(refund);
+  await expect(
+    fetchAwsCostWindow(
+      { send } as unknown as CostExplorerClient,
+      "123456789012",
+      "2026-11-10",
+      "2026-11-10",
+    ),
+  ).rejects.toThrow("reconciliation");
+  expect(send).toHaveBeenCalledTimes(2);
 });

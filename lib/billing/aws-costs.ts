@@ -63,12 +63,14 @@ export function normalizeAwsCostPages(
       )
         throw new Error("Invalid AWS daily cost period");
       if (!result.Groups.length) {
-        // Empty groups without an explicit zero total are not zero-cost proof.
+        // A completed grouped response explicitly reports no charge records.
+        // Missing dates/groups still fail; an optional total must agree with zero.
         if (
           result.Total?.UnblendedCost &&
-          amount(result.Total.UnblendedCost) === 0
+          amount(result.Total.UnblendedCost) !== 0
         )
-          zeroDays.add(day);
+          throw new Error("AWS empty groups disagree with the total");
+        zeroDays.add(day);
         continue;
       }
       for (const group of result.Groups) {
@@ -132,77 +134,53 @@ export async function fetchAwsCostWindow(
   endDay: string,
 ): Promise<PlatformCostRow[]> {
   if (!/^\d{12}$/.test(accountId)) throw new Error("Invalid AWS account");
-  // Billing entity supports filtering rather than grouping. Inspect it separately
-  // before counting the full account; directly collected vendors may overlap.
   const timePeriod = {
     Start: startDay,
     End: new Date(utcDayTime(endDay) + DAY_MS).toISOString().slice(0, 10),
   };
-  const marketplace = await client.send(
-    new GetCostAndUsageCommand({
-      TimePeriod: timePeriod,
-      Granularity: "DAILY",
-      Metrics: ["UnblendedCost"],
-      Filter: {
-        And: [
-          { Dimensions: { Key: "LINKED_ACCOUNT", Values: [accountId] } },
-          {
-            Dimensions: { Key: "BILLING_ENTITY", Values: ["AWS Marketplace"] },
+  const read = async (billingEntity: "AWS" | "AWS Marketplace") => {
+    const pages: GetCostAndUsageCommandOutput[] = [];
+    const tokens = new Set<string>();
+    let token: string | undefined;
+    do {
+      if (pages.length >= MAX_PAGES)
+        throw new Error("AWS pagination limit reached");
+      const page = await client.send(
+        new GetCostAndUsageCommand({
+          TimePeriod: timePeriod,
+          Granularity: "DAILY",
+          Metrics: ["UnblendedCost"],
+          GroupBy: [
+            { Type: "DIMENSION", Key: "SERVICE" },
+            { Type: "DIMENSION", Key: "RECORD_TYPE" },
+          ],
+          Filter: {
+            And: [
+              { Dimensions: { Key: "LINKED_ACCOUNT", Values: [accountId] } },
+              {
+                Dimensions: { Key: "BILLING_ENTITY", Values: [billingEntity] },
+              },
+            ],
           },
-        ],
-      },
-    }),
-    { abortSignal: AbortSignal.timeout(30_000) },
-  );
-  const marketplaceDays = new Set<string>();
-  if (marketplace.NextPageToken || !Array.isArray(marketplace.ResultsByTime))
-    throw new Error("Incomplete Marketplace reconciliation");
-  for (const result of marketplace.ResultsByTime) {
-    const day = result.TimePeriod?.Start;
-    if (
-      !day ||
-      day < startDay ||
-      day > endDay ||
-      marketplaceDays.has(day) ||
-      result.TimePeriod?.End !==
-        new Date(utcDayTime(day) + DAY_MS).toISOString().slice(0, 10) ||
-      result.Groups?.length ||
-      amount(result.Total?.UnblendedCost) !== 0
-    )
-      throw new Error("AWS Marketplace charges require vendor reconciliation");
-    marketplaceDays.add(day);
-  }
-  if (
-    marketplaceDays.size !==
-    (utcDayTime(endDay) - utcDayTime(startDay)) / DAY_MS + 1
-  )
-    throw new Error("Incomplete Marketplace reconciliation");
-  const pages: GetCostAndUsageCommandOutput[] = [];
-  const tokens = new Set<string>();
-  let token: string | undefined;
-  do {
-    if (pages.length >= MAX_PAGES)
-      throw new Error("AWS pagination limit reached");
-    const page = await client.send(
-      new GetCostAndUsageCommand({
-        TimePeriod: timePeriod,
-        Granularity: "DAILY",
-        Metrics: ["UnblendedCost"],
-        GroupBy: [
-          { Type: "DIMENSION", Key: "SERVICE" },
-          { Type: "DIMENSION", Key: "RECORD_TYPE" },
-        ],
-        Filter: { Dimensions: { Key: "LINKED_ACCOUNT", Values: [accountId] } },
-        ...(token ? { NextPageToken: token } : {}),
-      }),
-      { abortSignal: AbortSignal.timeout(30_000) },
-    );
-    pages.push(page);
-    token = page.NextPageToken;
-    if (token) {
-      if (tokens.has(token)) throw new Error("AWS pagination did not advance");
-      tokens.add(token);
-    }
-  } while (token);
-  return normalizeAwsCostPages(pages, startDay, endDay);
+          ...(token ? { NextPageToken: token } : {}),
+        }),
+        { abortSignal: AbortSignal.timeout(30_000) },
+      );
+      pages.push(page);
+      token = page.NextPageToken;
+      if (token) {
+        if (tokens.has(token))
+          throw new Error("AWS pagination did not advance");
+        tokens.add(token);
+      }
+    } while (token);
+    return normalizeAwsCostPages(pages, startDay, endDay);
+  };
+  // Inspect individual records so charges and refunds cannot cancel to zero.
+  const marketplace = await read("AWS Marketplace");
+  if (marketplace.some((row) => row.effectiveCostDollars !== 0))
+    throw new Error("AWS Marketplace charges require vendor reconciliation");
+  // Filter at the provider, so a later Marketplace correction cannot enter the
+  // AWS-only response between the reconciliation check and this request.
+  return read("AWS");
 }

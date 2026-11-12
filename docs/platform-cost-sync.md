@@ -93,10 +93,12 @@ reconciliation; they are not automatically finalized because AWS's estimated fla
 is false. All pages, expected dates and USD amounts must validate before the
 existing bounded replacement mutation runs. Failure retains previous costs.
 
-A separate ungrouped query checks the same account/date range for Marketplace
-charges. Any nonzero Marketplace amount stops the import for review: some vendors
+A separate paginated query checks individual Marketplace service/charge-type
+records in the same account/date range. Any nonzero record stops the import for
+review, including offsetting usage and refunds: some vendors
 are already collected directly, and unfamiliar charges must not be silently
-discarded or counted twice. Resolve those overlaps explicitly before resuming.
+discarded or counted twice. The later AWS query also filters billing entity to AWS, so Marketplace changes
+between reads cannot enter the import. Resolve those overlaps explicitly before resuming.
 The collector does not change customer pricing, wallets or per-request costs.
 
 ### WorkOS, Upstash and invoice observations
