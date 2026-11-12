@@ -306,6 +306,197 @@ describe("root request error correlation", () => {
   });
 });
 
+describe("desktop authorization request error correlation", () => {
+  const DESKTOP_PATH = "/api/desktop/authorized-operation";
+  const OPERATION_ID = "0d".repeat(32);
+  const OPERATION_DIGEST = "d1".repeat(32);
+  const routeContext: Parameters<typeof onRequestError>[2] = {
+    routePath: "/api/desktop/authorized-operation/route",
+    routeType: "route",
+    routerKind: "App Router",
+    revalidateReason: undefined,
+  };
+  const failedRedemption = () =>
+    Object.assign(new TypeError(`private-redeem ${OPERATION_ID}`), {
+      digest: "2147368089",
+      cause: Object.assign(new Error(`private-store ${OPERATION_DIGEST}`), {
+        code: "ECONNRESET",
+        status: 503,
+      }),
+    });
+  const desktopRequest = (method = "POST", path = DESKTOP_PATH) => ({
+    path: `${path}?id=${OPERATION_ID}#private-fragment`,
+    method,
+    headers: {
+      "x-vercel-id": "iad1::fixture-1794424380724-0123456789ab",
+      cookie: "private-cookie",
+      authorization: "Bearer private-token",
+      "content-type": "application/json",
+      "content-length": "142",
+    },
+  });
+  // Contract tuple for this request; Next's thrown status is not an HTTP status.
+  const expectedTuple = {
+    root_request_error_diagnostic_version: 1,
+    root_error_kind: "TypeError",
+    root_error_status: null,
+    root_error_status_shape: "absent",
+    root_error_code: "none",
+    root_cause_kind: "Error",
+    root_cause_status: 503,
+    root_cause_status_shape: "integer",
+    root_cause_code: "ECONNRESET",
+    root_render_source: "unknown",
+    vercel_request_id: "iad1::fixture-1794424380724-0123456789ab",
+    error_digest: "2147368089",
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.mocked(isEndedSessionRefreshError).mockReturnValue(false);
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.replaceProperty(process, "env", {
+      ...process.env,
+      VERCEL_ENV: "production",
+      VERCEL_GIT_COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567",
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("emits one finite native receipt and augments the existing export for the exact POST", () => {
+    const error = failedRedemption();
+    onRequestError(error, desktopRequest(), routeContext);
+
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    const line = jest.mocked(console.warn).mock.calls[0][0];
+    expect(JSON.parse(line)).toStrictEqual({
+      timestamp: expect.stringMatching(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+      ),
+      level: "warn",
+      event: "root_request_error_context",
+      service: "hackerai-web",
+      environment: "production",
+      web_build_commit: "0123456789abcdef0123456789abcdef01234567",
+      path: DESKTOP_PATH,
+      method: "POST",
+      route_type: "route",
+      ...expectedTuple,
+    });
+    expect(line).not.toMatch(
+      new RegExp(`private|${OPERATION_ID}|${OPERATION_DIGEST}`),
+    );
+
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    expect(phLogger.error).toHaveBeenCalledWith("Next.js request error", {
+      error,
+      path: DESKTOP_PATH,
+      method: "POST",
+      routePath: "/api/desktop/authorized-operation/route",
+      routeType: "route",
+      routerKind: "App Router",
+      ...expectedTuple,
+    });
+  });
+
+  it.each<[string, string, string, Parameters<typeof onRequestError>[2]]>([
+    ["wrong method", "GET", DESKTOP_PATH, routeContext],
+    ["wrong method", "HEAD", DESKTOP_PATH, routeContext],
+    ["wrong method", "PUT", DESKTOP_PATH, routeContext],
+    ["wrong method", "post", DESKTOP_PATH, routeContext],
+    ["trailing slash", "POST", `${DESKTOP_PATH}/`, routeContext],
+    ["nested path", "POST", `${DESKTOP_PATH}/nested`, routeContext],
+    ["lookalike", "POST", `${DESKTOP_PATH}s`, routeContext],
+    ["lookalike", "POST", `${DESKTOP_PATH}.json`, routeContext],
+    ["lookalike", "POST", "/API/desktop/authorized-operation", routeContext],
+    ["prefixed", "POST", `/x${DESKTOP_PATH}`, routeContext],
+    ["parent", "POST", "/api/desktop", routeContext],
+    ["other API", "POST", "/api/chat", routeContext],
+    [
+      "Pages Router",
+      "POST",
+      DESKTOP_PATH,
+      { ...routeContext, routerKind: "Pages Router" },
+    ],
+    ["action", "POST", DESKTOP_PATH, { ...routeContext, routeType: "action" }],
+    ["render", "POST", DESKTOP_PATH, { ...routeContext, routeType: "render" }],
+    ["proxy", "POST", DESKTOP_PATH, { ...routeContext, routeType: "proxy" }],
+  ])(
+    "does not open the receipt for a %s (%s %s)",
+    (_case, method, path, context) => {
+      const error = failedRedemption();
+      onRequestError(error, desktopRequest(method, path), context);
+
+      expect(console.warn).not.toHaveBeenCalled();
+      expect(phLogger.error).toHaveBeenCalledTimes(1);
+      const payload = jest.mocked(phLogger.error).mock.calls[0][1] ?? {};
+      expect(payload.error).toBe(error);
+      expect(
+        Object.keys(payload).filter((key) => key.startsWith("root_")),
+      ).toEqual([]);
+    },
+  );
+
+  it("keeps the expected-auth early return for the exact POST", () => {
+    jest.mocked(isEndedSessionRefreshError).mockReturnValue(true);
+    onRequestError(failedRedemption(), desktopRequest(), routeContext);
+
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(phLogger.error).not.toHaveBeenCalled();
+    expect(phLogger.warn).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(phLogger.warn).mock.calls[0][1]).not.toHaveProperty(
+      "root_request_error_diagnostic_version",
+    );
+  });
+
+  it("bounds a hostile error and still exports the original value", () => {
+    const fail = () => {
+      throw new Error("private-accessor");
+    };
+    const hostile = new Proxy(new Error("private-message"), {
+      get: fail,
+      has: fail,
+      ownKeys: fail,
+      getOwnPropertyDescriptor: fail,
+      getPrototypeOf: fail,
+    });
+    expect(() =>
+      onRequestError(hostile, desktopRequest(), routeContext),
+    ).not.toThrow();
+
+    const line = jest.mocked(console.warn).mock.calls[0][0];
+    expect(JSON.parse(line)).toMatchObject({
+      path: DESKTOP_PATH,
+      root_error_kind: "unreadable_error",
+      root_cause_kind: "unreadable_error",
+      vercel_request_id: expectedTuple.vercel_request_id,
+    });
+    expect(JSON.parse(line)).not.toHaveProperty("error_digest");
+    expect(line).not.toContain("private");
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    const payload = jest.mocked(phLogger.error).mock.calls[0][1] ?? {};
+    expect(payload.error).toBe(hostile);
+    expect(payload.root_request_error_diagnostic_version).toBe(1);
+  });
+
+  it("keeps the original error export when the native receipt sink throws", () => {
+    jest.mocked(console.warn).mockImplementation(() => {
+      throw new Error("console unavailable");
+    });
+    const error = failedRedemption();
+    expect(() =>
+      onRequestError(error, desktopRequest(), routeContext),
+    ).not.toThrow();
+
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    expect(phLogger.error).toHaveBeenCalledWith(
+      "Next.js request error",
+      expect.objectContaining({ error, path: DESKTOP_PATH, ...expectedTuple }),
+    );
+  });
+});
+
 describe("onRequestError", () => {
   const mockPhLoggerError = phLogger.error as jest.MockedFunction<
     typeof phLogger.error

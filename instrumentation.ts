@@ -73,18 +73,27 @@ const getServerActionErrorMetadata = (
   };
 };
 
-/** Correlate selected page reads and share POST failures without request contents. */
+/**
+ * Correlate selected page reads, share POSTs and native Desktop authorization
+ * POST failures without request contents.
+ */
 function getRootRequestErrorMetadata(
   error: unknown,
   request: Parameters<Instrumentation.onRequestError>[1],
   context: Parameters<Instrumentation.onRequestError>[2],
   path: string,
 ) {
+  const isDesktopAuthorization =
+    path === "/api/desktop/authorized-operation" &&
+    request.method === "POST" &&
+    context.routerKind === "App Router" &&
+    context.routeType === "route";
   if (
-    !["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
-    (request.method !== "GET" &&
-      request.method !== "HEAD" &&
-      !(request.method === "POST" && path === "/share/[shareId]"))
+    !isDesktopAuthorization &&
+    (!["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
+      (request.method !== "GET" &&
+        request.method !== "HEAD" &&
+        !(request.method === "POST" && path === "/share/[shareId]")))
   )
     return undefined;
   try {

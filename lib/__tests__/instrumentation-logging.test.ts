@@ -197,4 +197,110 @@ describe("request error diagnostic exports", () => {
       );
     },
   );
+
+  it("exports desktop authorization POST correlation once through the actual log sender and native receipt", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const result = onRequestError(
+      Object.assign(new TypeError("redeem failed"), {
+        digest: "1234567890",
+        cause: Object.assign(new Error("store failed"), {
+          code: "ECONNRESET",
+          status: 503,
+        }),
+      }),
+      {
+        path: "/api/desktop/authorized-operation?id=SYNTHETIC_OPERATION#SYNTHETIC_FRAGMENT",
+        method: "POST",
+        headers: {
+          "x-vercel-id": "iad1::fixture-1794424380724-0123456789ab",
+          cookie: "SYNTHETIC_COOKIE",
+          authorization: "Bearer SYNTHETIC_TOKEN",
+        },
+      },
+      {
+        routePath: "/api/desktop/authorized-operation/route",
+        routeType: "route",
+        routerKind: "App Router",
+        revalidateReason: undefined,
+      },
+    );
+    // The hook stays synchronous and leaves delivery to the existing buffer.
+    expect(result).toBeUndefined();
+    expect(global.fetch).not.toHaveBeenCalled();
+    await flushPostHogLogs();
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const body = String(jest.mocked(global.fetch).mock.calls[0][1]?.body);
+    expect(body).not.toContain("SYNTHETIC_");
+    const records = JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords;
+    expect(records).toHaveLength(1);
+    expect(records[0].attributes).toEqual(
+      expect.arrayContaining([
+        {
+          key: "path",
+          value: { stringValue: "/api/desktop/authorized-operation" },
+        },
+        { key: "method", value: { stringValue: "POST" } },
+        { key: "route_type", value: { stringValue: "route" } },
+        {
+          key: "root_request_error_diagnostic_version",
+          value: { doubleValue: 1 },
+        },
+        { key: "root_error_kind", value: { stringValue: "TypeError" } },
+        { key: "root_cause_kind", value: { stringValue: "Error" } },
+        { key: "root_cause_status", value: { doubleValue: 503 } },
+        { key: "root_cause_code", value: { stringValue: "ECONNRESET" } },
+        { key: "root_render_source", value: { stringValue: "unknown" } },
+        {
+          key: "vercel_request_id",
+          value: { stringValue: "iad1::fixture-1794424380724-0123456789ab" },
+        },
+        { key: "error_digest", value: { stringValue: "1234567890" } },
+      ]),
+    );
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const receiptLine = String(warn.mock.calls[0][0]);
+    expect(receiptLine).not.toMatch(/SYNTHETIC_|redeem failed|store failed/);
+    const receipt = JSON.parse(receiptLine);
+    const correlation = (fields: Record<string, unknown>) =>
+      Object.fromEntries(
+        [
+          "path",
+          "method",
+          "root_request_error_diagnostic_version",
+          "root_error_kind",
+          "root_error_status",
+          "root_error_status_shape",
+          "root_error_code",
+          "root_cause_kind",
+          "root_cause_status",
+          "root_cause_status_shape",
+          "root_cause_code",
+          "root_render_source",
+          "vercel_request_id",
+          "error_digest",
+        ].map((key) => [key, fields[key]]),
+      );
+    expect(correlation(receipt)).toEqual({
+      path: "/api/desktop/authorized-operation",
+      method: "POST",
+      root_request_error_diagnostic_version: 1,
+      root_error_kind: "TypeError",
+      root_error_status: null,
+      root_error_status_shape: "absent",
+      root_error_code: "none",
+      root_cause_kind: "Error",
+      root_cause_status: 503,
+      root_cause_status_shape: "integer",
+      root_cause_code: "ECONNRESET",
+      root_render_source: "unknown",
+      vercel_request_id: "iad1::fixture-1794424380724-0123456789ab",
+      error_digest: "1234567890",
+    });
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(correlation(mockCaptureException.mock.calls[0][2])).toEqual(
+      correlation(receipt),
+    );
+  });
 });
