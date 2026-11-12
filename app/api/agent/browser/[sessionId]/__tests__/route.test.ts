@@ -27,6 +27,15 @@ const mockSendInput = jest.fn(async (..._args: unknown[]) => {
   if (mockFailure === "pointer-release")
     throw new Error("Pointer release failed");
 });
+const mockStreamPort = jest.fn(async (..._args: unknown[]) => 1234);
+const mockRenewContext = jest.fn(
+  (_error: unknown): Record<string, unknown> => ({
+    relay_renew_diagnostic_version: 2,
+    relay_renew_error_kind: "command_exit",
+    relay_renew_command_exit_code: 42,
+    relay_renew_failure_reason: "lock_busy",
+  }),
+);
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
 let mockRunActive = true;
@@ -97,12 +106,7 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
-  browserRelayRenewFailureContext: () => ({
-    relay_renew_diagnostic_version: 2,
-    relay_renew_error_kind: "command_exit",
-    relay_renew_command_exit_code: 42,
-    relay_renew_failure_reason: "lock_busy",
-  }),
+  browserRelayRenewFailureContext: (error: unknown) => mockRenewContext(error),
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
       ? {
@@ -133,7 +137,7 @@ jest.mock("@/lib/ai/browser-handoff/server", () => ({
   setAgentBrowserPaused: (...args: Parameters<typeof mockPause>) =>
     mockPause(...args),
   captureBrowserFrame: (...args: unknown[]) => mockCapture(...args),
-  getPrivateStreamPort: async () => 1234,
+  getPrivateStreamPort: (...args: unknown[]) => mockStreamPort(...args),
 }));
 
 let post: typeof import("../route").POST;
@@ -1082,3 +1086,216 @@ it.each(["take", "resume", "input"])(
     expect(mockSendInput).toHaveBeenCalledTimes(1);
   },
 );
+
+const noRelayExit = {
+  relay_renew_diagnostic_version: 2,
+  relay_renew_error_kind: "other_error",
+  relay_renew_command_exit_code: "none",
+};
+const poisonedGetter = jest.fn(() => {
+  throw new Error("PRIVATE getter");
+});
+
+it.each<{
+  label: string;
+  error: () => unknown;
+  command: Record<string, unknown>;
+  state: string;
+  expected: Record<string, unknown>;
+}>([
+  {
+    label: "fetch transport reset",
+    error: () =>
+      Object.freeze(
+        new TypeError("fetch failed", {
+          cause: Object.assign(new Error("PRIVATE_CAUSE"), {
+            code: "ECONNRESET",
+          }),
+        }),
+      ),
+    command: noRelayExit,
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "other_error",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: "none",
+      post_stream_port_type_error_signal: "fetch_failed",
+      post_stream_port_transport_code: "ECONNRESET",
+    },
+  },
+  {
+    label: "stream_status command exit",
+    error: () => new Error("PRIVATE stdout /PRIVATE_BROWSER_DIRECTORY"),
+    // A renewal-only reason for the same code must not relabel this read.
+    command: {
+      relay_renew_diagnostic_version: 2,
+      relay_renew_error_kind: "command_exit",
+      relay_renew_command_exit_code: 7,
+      relay_renew_failure_reason: "lock_busy",
+    },
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "command_exit",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: 7,
+    },
+  },
+  {
+    label: "SDK timeout",
+    error: () => Object.assign(new Error("PRIVATE"), { name: "TimeoutError" }),
+    command: { ...noRelayExit, relay_renew_error_kind: "timeout" },
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "timeout",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: "none",
+    },
+  },
+  {
+    label: "sandbox HTTP error",
+    error: () =>
+      Object.assign(new Error("PRIVATE"), {
+        name: "SandboxError",
+        statusCode: 502,
+      }),
+    command: noRelayExit,
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "sandbox_error",
+      post_stream_port_http_status: 502,
+      post_stream_port_command_exit_code: "none",
+    },
+  },
+  {
+    label: "unusable port guard",
+    error: () => new BrowserPreviewUnavailable("loading"),
+    command: noRelayExit,
+    state: "loading",
+    expected: {
+      post_stream_port_error_kind: "preview_unavailable",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: "none",
+    },
+  },
+  {
+    label: "getter-rich TypeError",
+    error: () =>
+      Object.defineProperties(new TypeError(), {
+        name: { get: poisonedGetter },
+        message: { get: poisonedGetter },
+        statusCode: { get: poisonedGetter },
+        code: { get: poisonedGetter },
+      }),
+    command: noRelayExit,
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "other_error",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: "none",
+      post_stream_port_type_error_signal: "unreadable",
+      post_stream_port_transport_code: "unreadable",
+    },
+  },
+  {
+    label: "unreadable thrown proxy",
+    error: () =>
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: () => {
+            throw new Error("PRIVATE trap");
+          },
+        },
+      ),
+    command: { ...noRelayExit, relay_renew_error_kind: "thrown_value" },
+    state: "disconnected",
+    expected: {
+      post_stream_port_error_kind: "unreadable_error",
+      post_stream_port_http_status: "none",
+      post_stream_port_command_exit_code: "none",
+    },
+  },
+])(
+  "adds bounded SDK context to the one TAKE read_stream_port 503 for $label",
+  async ({ error, command, state, expected }) => {
+    mockFailure = "";
+    mockRenewContext.mockReturnValueOnce(command);
+    mockStreamPort.mockRejectedValueOnce(error());
+    const response = await take();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ state });
+    expect(mockSendInput).not.toHaveBeenCalled();
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(mockStartRelay).not.toHaveBeenCalled();
+    expect(mockMutation).toHaveBeenCalledWith(
+      "abortTakeoverForBackend",
+      expect.objectContaining({ paused: true }),
+    );
+    expect(mockPaused).toBe(true);
+    expect(mockState).toBe("recovery");
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      {
+        diagnostic_version: 1,
+        action: "take",
+        failure_stage: "read_stream_port",
+        failure_kind: expect.any(String),
+        preview_state: state,
+        web_build_commit: expect.any(String),
+        browser_session_id: mockSessionId,
+        handoff_state: "recovery",
+        run_active: true,
+        trigger_run_id: `run_${"a".repeat(26)}`,
+        post_stream_port_diagnostic_version: 1,
+        ...expected,
+      },
+    );
+    expect(poisonedGetter).not.toHaveBeenCalled();
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toMatch(
+      /PRIVATE|default|fetch failed/,
+    );
+  },
+);
+
+it("keeps a closed stream-status guard at 410 without a POST503 diagnostic", async () => {
+  mockFailure = "";
+  mockStreamPort.mockRejectedValueOnce(new BrowserPreviewUnavailable("closed"));
+  const response = await take();
+  expect(response.status).toBe(410);
+  expect(await response.json()).toEqual({ state: "closed" });
+  expect(mockMutation).toHaveBeenCalledWith(
+    "abortTakeoverForBackend",
+    expect.objectContaining({ paused: true }),
+  );
+  expect(phLogger.info).not.toHaveBeenCalled();
+});
+
+it("preserves the stream-port 503 and Agent rollback when its projection throws", async () => {
+  mockFailure = "";
+  mockState = "agent";
+  mockPaused = false;
+  mockRenewContext.mockImplementationOnce(() => {
+    throw new Error("PRIVATE projection");
+  });
+  mockStreamPort.mockRejectedValueOnce(new Error("PRIVATE stream"));
+  const response = await take();
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ state: "disconnected" });
+  expect(mockPaused).toBe(false);
+  expect(mockState).toBe("agent");
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      action: "take",
+      failure_stage: "read_stream_port",
+    }),
+  );
+  expect(jest.mocked(phLogger.info).mock.calls[0][1]).not.toHaveProperty(
+    "post_stream_port_diagnostic_version",
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+    "PRIVATE",
+  );
+});
