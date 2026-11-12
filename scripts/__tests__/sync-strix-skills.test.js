@@ -155,6 +155,8 @@ describe("sync-strix-skills", () => {
 
     expect(manifest.sourceCommit).toBe(fixture.sourceCommit);
     expect(generatedContent).toContain("Regression material-change marker.");
-    expect(checkOutput).toContain("Verified 52 selectable Strix skills");
+    expect(checkOutput).toContain(
+      `selectable Strix skills at ${fixture.sourceCommit}`,
+    );
   });
 });
