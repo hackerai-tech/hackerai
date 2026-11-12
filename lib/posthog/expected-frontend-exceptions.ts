@@ -498,6 +498,32 @@ function nearbyDispatchGroup(
         )
       )
         return "same_document_short_error";
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        chatDocumentPath.test(current.pathname) &&
+        // Array.from turns sparse holes into rejected undefined frames.
+        Array.from(frames).every(
+          /** An origin-root filename does not identify which script threw. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096 ||
+              /[?#]/.test(frame.filename)
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              source.pathname === "/"
+            );
+          },
+        )
+      )
+        return "chat_root_document_short_error";
     }
     // Reuse native context only for the observed retained five-to-seven-frame shape.
     if (
