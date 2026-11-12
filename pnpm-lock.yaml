@@ -87,6 +87,9 @@ patchedDependencies:
   '@trigger.dev/core@4.7.7':
     hash: 165f83280819b808a9ba2e4a9092a74645febd250900468118287db623c033b8
     path: patches/@trigger.dev__core@4.7.7.patch
+  '@trigger.dev/sdk@4.7.7':
+    hash: 2693ca809ba5b425c3b8ef33ed7ef7ae532541ec0be9636fb82132f82a7ed4d1
+    path: patches/@trigger.dev__sdk@4.7.7.patch
   '@workos-inc/authkit-nextjs@4.3.2':
     hash: 10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378
     path: patches/@workos-inc__authkit-nextjs@4.3.2.patch
@@ -220,7 +223,7 @@ importers:
         version: 4.7.7(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
       '@trigger.dev/sdk':
         specifier: 4.7.7
-        version: 4.7.7(ai@6.0.301(zod@4.6.7))(react@19.3.1)(zod@4.6.7)
+        version: 4.7.7(patch_hash=2693ca809ba5b425c3b8ef33ed7ef7ae532541ec0be9636fb82132f82a7ed4d1)(ai@6.0.301(zod@4.6.7))(react@19.3.1)(zod@4.6.7)
       '@upstash/ratelimit':
         specifier: ^2.2.0
         version: 2.2.0(@upstash/redis@1.41.0)
@@ -11722,7 +11725,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@trigger.dev/sdk@4.7.7(ai@6.0.301(zod@4.6.7))(react@19.3.1)(zod@4.6.7)':
+  '@trigger.dev/sdk@4.7.7(patch_hash=2693ca809ba5b425c3b8ef33ed7ef7ae532541ec0be9636fb82132f82a7ed4d1)(ai@6.0.301(zod@4.6.7))(react@19.3.1)(zod@4.6.7)':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/semantic-conventions': 1.41.1

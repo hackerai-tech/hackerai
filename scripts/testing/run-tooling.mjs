@@ -44,6 +44,7 @@ export const suites = [
       "scripts/trigger-runtime/child-completion.test.mjs",
       "scripts/trigger-runtime/child-flush.test.mjs",
       "scripts/trigger-runtime/s2-uncaught.test.mjs",
+      "scripts/trigger-runtime/stream-cleanup.test.mjs",
     ],
   },
 ];

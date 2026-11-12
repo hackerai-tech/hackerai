@@ -301,7 +301,8 @@
       "resumable-stream@2.2.13": "patches/resumable-stream@2.2.13.patch",
       "use-stick-to-bottom@1.1.6": "patches/use-stick-to-bottom@1.1.6.patch",
       "@trigger.dev/core@4.7.7": "patches/@trigger.dev__core@4.7.7.patch",
-      "trigger.dev@4.7.7": "patches/trigger.dev@4.7.7.patch"
+      "trigger.dev@4.7.7": "patches/trigger.dev@4.7.7.patch",
+      "@trigger.dev/sdk@4.7.7": "patches/@trigger.dev__sdk@4.7.7.patch"
     }
   }
 }
