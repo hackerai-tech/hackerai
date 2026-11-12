@@ -9,6 +9,7 @@ import {
   LocalConnectionLostError,
   readCallbackCode,
   readClientState,
+  readSocketClose,
   type LocalStopClientState,
   type LocalStopReason,
 } from "@/lib/chat/local-connection-stop";
@@ -28,6 +29,23 @@ function monotonicNow(): number | undefined {
   }
 }
 
+/** The runtime's WebSocket; when unreadable the SDK keeps its default path. */
+function nativeWebSocket(): typeof WebSocket | undefined {
+  try {
+    const native = globalThis.WebSocket;
+    return typeof native === "function" ? native : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type SocketWatch = {
+  socket: WebSocket;
+  listener: (event: Event) => void;
+  /** Set at the run's first subscription; a setup close is not the run's. */
+  armed: boolean;
+};
+
 export function watchLocalRunConnection({
   userId,
   connectionId,
@@ -45,9 +63,41 @@ export function watchLocalRunConnection({
   let hadPositivePresence = false;
   let lastPositivePresenceAt: number | undefined;
   let clientStateAtStop: LocalStopClientState | undefined;
+  // Only the current socket attempt's own close listener, and its pair if the
+  // native close preceded the first stop. Never the reason, URL or frames.
+  let socketWatch: SocketWatch | undefined;
+  let socketClose: ReturnType<typeof readSocketClose>;
+  const unwatchSocket = () => {
+    const owned = socketWatch;
+    socketWatch = undefined;
+    try {
+      owned?.socket.removeEventListener("close", owned.listener);
+    } catch {
+      // A listener left attached is no longer current, so it records nothing.
+    }
+  };
+  const watchSocket = (socket: WebSocket) => {
+    if (stopped) return;
+    const owned: SocketWatch = {
+      socket,
+      armed: false,
+      listener: (event) => {
+        if (stopped || socketWatch !== owned || !owned.armed) return;
+        const close = readSocketClose(event);
+        if (!stopped && socketWatch === owned) socketClose = close;
+      },
+    };
+    try {
+      socket.addEventListener("close", owned.listener, { once: true });
+      socketWatch = owned;
+    } catch {
+      // Without its EventTarget API the socket is simply not observed.
+    }
+  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    unwatchSocket();
     clearTimeout(timer);
     clearTimeout(deadline);
     subscription?.removeAllListeners();
@@ -73,6 +123,7 @@ export function watchLocalRunConnection({
         ...(callback && {
           callbackCode: readCallbackCode(callback.context),
           clientState: clientStateAtStop,
+          ...socketClose,
         }),
       }),
     );
@@ -105,9 +156,22 @@ export function watchLocalRunConnection({
     if (stopped) return;
     const wsUrl = process.env.CENTRIFUGO_WS_URL;
     if (!wsUrl) throw new Error("Missing relay configuration");
+    const NativeWebSocket = nativeWebSocket();
     client = new Centrifuge(wsUrl, {
       token,
       getToken: () => generateCentrifugoToken(userId, 3600),
+      // The SDK's public constructor option: the same native socket, built
+      // with the SDK's exact arguments, plus one listener of our own. A
+      // construction failure reaches the SDK unchanged.
+      ...(NativeWebSocket && {
+        websocket: function (...args: ConstructorParameters<typeof WebSocket>) {
+          unwatchSocket();
+          socketClose = undefined;
+          const socket = new NativeWebSocket(...args);
+          watchSocket(socket);
+          return socket;
+        },
+      }),
     });
     subscription = client.newSubscription(
       sandboxConnectionChannel(userId, connectionId),
@@ -117,6 +181,7 @@ export function watchLocalRunConnection({
     subscription.on("subscribed", () => {
       if (subscribed) return;
       subscribed = true;
+      if (socketWatch) socketWatch.armed = true;
       void check();
     });
     subscription.on("leave", (event) => {

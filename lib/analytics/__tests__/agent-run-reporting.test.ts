@@ -369,6 +369,8 @@ describe("first local stop cause", () => {
       lastPositivePresenceAgeMs: 5_000,
       callbackCode: 1,
       clientState: "connecting",
+      socketCloseCode: 1006,
+      socketCloseWasClean: false,
     });
   const localFields = {
     local_stop_diagnostic_version: 1,
@@ -378,6 +380,8 @@ describe("first local stop cause", () => {
     local_stop_last_positive_presence_age_ms: 5_000,
     local_stop_callback_code: 1,
     local_stop_client_state: "connecting",
+    local_stop_socket_close_code: 1006,
+    local_stop_socket_close_was_clean: false,
   };
   const failingCapture = () => {
     throw new Error("enqueue unavailable");

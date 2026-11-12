@@ -775,6 +775,10 @@ describe("captureAgentRun", () => {
         hadPositivePresence: false,
         callbackCode: 2500,
         clientState: "connected",
+        socketCloseCode: 1000,
+        socketCloseWasClean: true,
+        // Never the close reason or socket URL.
+        ...({ reason: "PRIVATE", url: "wss://PRIVATE" } as {}),
       }),
     );
     reporting.captureTerminal(captureAgentCompletionAnalytics, {
@@ -813,10 +817,13 @@ describe("captureAgentRun", () => {
       local_stop_had_positive_presence: false,
       local_stop_callback_code: 2500,
       local_stop_client_state: "connected",
+      local_stop_socket_close_code: 1000,
+      local_stop_socket_close_was_clean: true,
     });
     expect(runs[0].properties).not.toHaveProperty(
       "local_stop_last_positive_presence_age_ms",
     );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
   });
 
   it.each([
