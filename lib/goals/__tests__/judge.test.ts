@@ -385,6 +385,57 @@ describe("independent goal completion check", () => {
       expect(cost.mock.calls.map(([value]) => value)).toEqual([0.004, 0.004]);
     },
   );
+  it("retries a timed-out consistency check without repeating Agent work", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const completed = [
+      {
+        ...messages[0],
+        parts: [
+          ...messages[0].parts,
+          { type: "text", text: "The marker is present." },
+        ],
+      },
+    ] as UIMessage[];
+    generate
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "continue",
+          reason: "Check again",
+          responseOnly: false,
+          evidence: goal.checkpoint!.evidence,
+        },
+        usage: {},
+      })
+      .mockRejectedValueOnce(new DOMException("Timed out", "TimeoutError"))
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "done",
+          reason: "Saved results prove completion",
+          responseOnly: false,
+          evidence: goal.checkpoint!.evidence,
+        },
+        usage: {},
+      });
+
+    const judgment = await judgeGoalCompletion(
+      goal,
+      completed,
+      "r1",
+      jest.fn(),
+    );
+    expect(judgment?.verdict).toBe("done");
+    expect(generate).toHaveBeenCalledTimes(3);
+    expect(warning).toHaveBeenCalledWith(
+      "Goal completion verification failed",
+      expect.objectContaining({
+        stage: "completion",
+        failure_class: "timeout",
+        attempt: 1,
+        retrying: true,
+      }),
+    );
+    warning.mockRestore();
+  });
   it("continues genuinely unfinished work without a redundant verification pass", async () => {
     generate.mockResolvedValue({
       output: {
@@ -472,7 +523,7 @@ describe("independent goal completion check", () => {
       expect(judgment?.verdict).toBe(
         outcome === "unfinished" ? "continue" : "blocked",
       );
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(outcome === "unavailable" ? 3 : 2);
       if (outcome === "unfinished")
         expect(judgment?.evidence).toEqual(goal.checkpoint!.evidence);
     },

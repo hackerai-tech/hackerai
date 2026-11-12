@@ -408,7 +408,8 @@ export async function judgeGoalCompletion(
         runId,
         "completion",
         signal,
-        check === 0 ? 2 : 1,
+        // The consistency recheck needs the same bounded transient recovery.
+        2,
       );
       let responseEvidence: GoalJudgment["responseEvidence"];
       if (
