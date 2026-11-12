@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BROWSER_WRAPPER_COMMAND_CLASSES } from "../../../browser-handoff/daemon-program";
 import { BROWSER_SESSION_PROGRAM } from "../browser-session-program";
 
 /**
@@ -51,15 +52,17 @@ runpy.run_path(script,run_name='__main__')
 `;
 
 /**
- * Controlled CLI: snapshots what the wrapper wrote before it ran, creates the
- * requested socket fixture for its selected session, writes fixed output, exits.
+ * Controlled CLI: snapshots what the wrapper wrote before it ran and the exact
+ * argv it received, creates the requested socket fixture for its selected
+ * session, writes fixed output, exits.
  */
 const FAKE_BROWSER = String.raw`#!/usr/bin/env python3
-import os,pathlib,socket,sys
+import json,os,pathlib,socket,sys
 r=pathlib.Path({root})
 for source,target in (('wrapper-receipt.json','observed.json'),('open-receipt.json','observed-open.json')):
     p=r/source
     (r/target).write_text(p.read_text() if p.is_file() else 'null')
+(r/'cli-argv.json').write_text(json.dumps(sys.argv[1:]))
 (r/'wrapper-pid').write_text(str(os.getppid()))
 f=r/'socket-fixture'
 m=f.read_text() if f.is_file() else ''
@@ -634,3 +637,93 @@ it.each([
     expect(result.leftovers).toBe(0);
   },
 );
+
+/** The fixed k1 code's category, decoded with the daemon helper's wire table. */
+const commandClass = (receipt: { k1?: unknown }) =>
+  BROWSER_WRAPPER_COMMAND_CLASSES[receipt.k1 as number];
+
+it.each<[string[], string, string]>([
+  [["wait", "12000"], "wait", "other"],
+  [["--session", "PRIVATE_SESSION", "snapshot", "-i"], "snapshot", "other"],
+  [
+    ["--session=PRIVATE_SESSION", "screenshot", "PRIVATE_PATH"],
+    "screenshot",
+    "other",
+  ],
+  [defaultArgs, "open", "open"],
+  [["close", "--all"], "close", "close"],
+  [["close", "--help"], "close", "other"], // Declared token, not an actual close.
+  [["--version"], "version", "version"],
+  [["-V"], "version", "version"],
+  [["eval", "PRIVATE_CODE"], "other", "other"],
+  [["PRIVATE_VERB", "wait"], "other", "other"],
+  // A leading unknown option's value is never guessed as a verb.
+  [["--headed", "wait", "1"], "unparsed", "other"],
+  [["--proxy", "open", "snapshot"], "unparsed", "other"],
+  [["--version", "PRIVATE_ARG"], "unparsed", "other"],
+  [[], "unparsed", "other"],
+])(
+  "records only the declared first-verb category for %j without changing argv or the result",
+  (args, category, action) => {
+    const result = exercise(root, 37, false, args);
+    expect(result.status).toBe(37);
+    expect([result.stdout, result.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    // The real CLI receives the unchanged normalized pass-through argv.
+    const named = args.some(
+      (arg) => arg === "--session" || arg.startsWith("--session="),
+    );
+    const passed = args.filter(
+      (arg, i) =>
+        arg !== "--session" &&
+        args[i - 1] !== "--session" &&
+        !arg.startsWith("--session="),
+    );
+    expect(
+      JSON.parse(readFileSync(path.join(root, "cli-argv.json"), "utf8")),
+    ).toEqual(["--session", named ? "PRIVATE_SESSION" : "default", ...passed]);
+    for (const receipt of [result.started, result.finished]) {
+      expect(commandClass(receipt)).toBe(category);
+      expect(receipt.action).toBe(action);
+    }
+    // Only the latest-command receipt carries it, never the sticky open/close records.
+    for (const sticky of [result.open, result.close])
+      expect(sticky ?? {}).not.toHaveProperty("k1");
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|"wait"/);
+    expect(result.leftovers).toBe(0);
+  },
+);
+
+it("records a gated command's declared category without admitting it", () => {
+  const blocked = exercise(root, 0, false, ["wait", "PRIVATE_ARG"], true);
+  expect(blocked.status).toBe(75);
+  expect(blocked.started).toBeNull(); // CLI was not admitted.
+  expect(blocked.finished).toMatchObject({ phase: "completed", exit: 75 });
+  expect(commandClass(blocked.finished)).toBe("wait");
+  expect(blocked.verify_required).toBe(true);
+  const resumed = exercise(root, 0, false, ["snapshot", "-i"]);
+  expect(resumed.status).toBe(0);
+  expect(commandClass(resumed.finished)).toBe("snapshot");
+  expect(resumed.verify_required).toBe(false);
+  expect(JSON.stringify([blocked, resumed])).not.toContain("PRIVATE");
+});
+
+it("adds the category beside a maximal private identity within the 512-byte reader cap", () => {
+  const result = exercise(
+    root,
+    0,
+    false,
+    defaultArgs,
+    false,
+    "PRIVATE_ENV",
+    true,
+    statLine("18446744073709551615"),
+  );
+  // Every existing field, including the identity, is retained.
+  expect(result.started).toMatchObject({
+    idle_env: "unparsed",
+    history: [1, false, false],
+    process: [1, result.wrapper_pid, "18446744073709551615"],
+  });
+  expect(commandClass(result.started)).toBe("open");
+  expect(result.started_bytes).toBeLessThanOrEqual(512);
+});

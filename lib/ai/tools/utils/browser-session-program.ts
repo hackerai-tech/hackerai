@@ -221,6 +221,8 @@ def record_wrapper(phase, status=None, executed=False):
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             return
         action = 'other'
+        # Declared first-verb category only, never the token or later arguments.
+        command = 'unparsed'
         option_prefix = False
         args = iter(sys.argv[1:])
         for arg in args:
@@ -233,6 +235,7 @@ def record_wrapper(phase, status=None, executed=False):
                 break  # Unknown option values must not be mistaken for actions.
             else:
                 action = arg if arg in ('open', 'close') else 'other'
+                command = arg if arg in ('wait', 'snapshot', 'screenshot', 'open', 'close', 'version') else 'other'
                 break
         close_all = False
         if action == 'close':
@@ -246,6 +249,7 @@ def record_wrapper(phase, status=None, executed=False):
         if sys.argv[3:] in (['--version'], ['-V']):
             action = 'version'
             option_prefix = False
+            command = 'version'
         socket_at_return = None
         if action == 'open' and phase == 'completed' and executed and type(status) is int and status == 0:
             socket_at_return = open_socket_at_return()
@@ -274,6 +278,11 @@ def record_wrapper(phase, status=None, executed=False):
             # Optional; omitted rather than displacing fields at the reader's 512-byte cap.
             if identity is not None and len(json.dumps(dict(value, process=identity))) <= 512:
                 latest = dict(value, process=identity)
+        # Fixed k1 code, added only after the identity fits and omitted rather
+        # than displacing any field at the same cap. Not execution or a cause.
+        classified = dict(latest, k1=('wait', 'snapshot', 'screenshot', 'open', 'close', 'version', 'other', 'unparsed').index(command))
+        if len(json.dumps(classified)) <= 512:
+            latest = classified
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', latest)

@@ -22,6 +22,8 @@ import {
   BROWSER_CLI_AT_PREPARE_STATUSES,
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
+  BROWSER_WRAPPER_COMMAND_CLASSES,
+  BROWSER_DAEMON_VERSION_FILE_STATUSES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -417,6 +419,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // Selected-session STARTED wrapper only; visibility is not execution or health.
   capture_wrapper_process_version?: 1;
   capture_wrapper_process_visibility?: (typeof BROWSER_WRAPPER_PROCESS_VISIBILITIES)[number];
+  // Declared first-verb category of that latest command, not the daemon's active
+  // command or a cause. Absent means unmeasured (older writer or budget).
+  capture_wrapper_command_version?: 1;
+  capture_wrapper_command_class?: (typeof BROWSER_WRAPPER_COMMAND_CLASSES)[number];
   capture_wrapper_history_version?: 1;
   capture_wrapper_history_scope?: "handoff_root";
   // Other than a recognized version-only invocation; leading options stay ambiguous.
@@ -445,6 +451,13 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // Absent means unmeasured (older writer or budget), never missing.
   capture_open_socket_return_version?: 1;
   capture_open_socket_return_status?: (typeof BROWSER_OPEN_SOCKET_RETURN_STATUSES)[number];
+  // The selected daemon's .version sidecar declaration beside that matching OPEN's
+  // socket; not a verified daemon version, identity or health. Absent is unmeasured.
+  capture_daemon_version_file_version?: 1;
+  capture_daemon_version_file_status?: (typeof BROWSER_DAEMON_VERSION_FILE_STATUSES)[number];
+  capture_daemon_version_file_major?: number;
+  capture_daemon_version_file_minor?: number;
+  capture_daemon_version_file_patch?: number;
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -605,6 +618,8 @@ export async function captureBrowserFrame(
         | "capture_wrapper_age"
         | "capture_wrapper_process_version"
         | "capture_wrapper_process_visibility"
+        | "capture_wrapper_command_version"
+        | "capture_wrapper_command_class"
         | "capture_wrapper_history_version"
         | "capture_wrapper_history_scope"
         | "capture_wrapper_other_cli_completed"
@@ -629,6 +644,11 @@ export async function captureBrowserFrame(
         | "capture_daemon_process_visibility"
         | "capture_open_socket_return_version"
         | "capture_open_socket_return_status"
+        | "capture_daemon_version_file_version"
+        | "capture_daemon_version_file_status"
+        | "capture_daemon_version_file_major"
+        | "capture_daemon_version_file_minor"
+        | "capture_daemon_version_file_patch"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -757,6 +777,17 @@ export async function captureBrowserFrame(
                 precondition.capture_wrapper_process_visibility =
                   BROWSER_WRAPPER_PROCESS_VISIBILITIES[wrapperProcess];
               }
+              const command = parsed?.k1;
+              if (
+                precondition.capture_wrapper_receipt_version === 1 &&
+                Number.isInteger(command) &&
+                command >= 0 &&
+                command < BROWSER_WRAPPER_COMMAND_CLASSES.length
+              ) {
+                precondition.capture_wrapper_command_version = 1;
+                precondition.capture_wrapper_command_class =
+                  BROWSER_WRAPPER_COMMAND_CLASSES[command];
+              }
               const history = parsed?.h1;
               if (history === 0 || history === 1 || history === 3) {
                 precondition.capture_wrapper_history_version = 1;
@@ -844,6 +875,38 @@ export async function captureBrowserFrame(
                 precondition.capture_open_socket_return_version = 1;
                 precondition.capture_open_socket_return_status =
                   BROWSER_OPEN_SOCKET_RETURN_STATUSES[openSocket];
+              }
+              const daemonVersion = parsed?.dv;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Array.isArray(daemonVersion) &&
+                daemonVersion[0] === 1 &&
+                Number.isInteger(daemonVersion[1]) &&
+                daemonVersion[1] >= 0 &&
+                daemonVersion[1] <
+                  BROWSER_DAEMON_VERSION_FILE_STATUSES.length &&
+                (daemonVersion[1] === 1
+                  ? daemonVersion.length === 3 &&
+                    Number.isInteger(daemonVersion[2]) &&
+                    daemonVersion[2] >= 0 &&
+                    daemonVersion[2] <= 999999999
+                  : daemonVersion.length === 2)
+              ) {
+                precondition.capture_daemon_version_file_version = 1;
+                precondition.capture_daemon_version_file_status =
+                  BROWSER_DAEMON_VERSION_FILE_STATUSES[daemonVersion[1]];
+                if (daemonVersion[1] === 1) {
+                  precondition.capture_daemon_version_file_major = Math.floor(
+                    daemonVersion[2] / 1000000,
+                  );
+                  precondition.capture_daemon_version_file_minor =
+                    Math.floor(daemonVersion[2] / 1000) % 1000;
+                  precondition.capture_daemon_version_file_patch =
+                    daemonVersion[2] % 1000;
+                }
               }
               const openIdle = parsed?.open_idle;
               if (
