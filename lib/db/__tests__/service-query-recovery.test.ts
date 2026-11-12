@@ -237,6 +237,16 @@ const terminatedBody = () => {
   return response;
 };
 
+const jsonEvents = (): Record<string, unknown>[] =>
+  [...warn.mock.calls, ...info.mock.calls].flatMap(([line]) => {
+    try {
+      const parsed = JSON.parse(String(line));
+      return parsed && typeof parsed === "object" ? [parsed] : [];
+    } catch {
+      return [];
+    }
+  });
+
 const loadChatReader = async () => {
   const priorKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   try {
@@ -297,6 +307,42 @@ it("caps terminated chat reads at two shared extra attempts across helper calls"
   );
   expect(results.every((result) => result.status === "rejected")).toBe(true);
   expect(globalThis.fetch).toHaveBeenCalledTimes(6);
+  const events = jsonEvents();
+  expect(
+    events.filter(
+      (entry) =>
+        entry.event === "convex_service_query_recovery" &&
+        entry.outcome === "scheduled",
+    ),
+  ).toHaveLength(2);
+  expect(
+    events.filter((entry) => entry.event === "chat_fetch_retry_scheduled"),
+  ).toEqual([]);
+});
+
+it("keeps the helper's terminated-body retries for a chat read outside any scope", async () => {
+  const getChatById = await loadChatReader();
+  const id = "00000000-0000-4000-8000-000000000002";
+  const chat = { id, user_id: "owner", title: "owned", update_time: 1 };
+  let calls = 0;
+  globalThis.fetch = jest.fn(async () =>
+    ++calls <= 2
+      ? terminatedBody()
+      : new Response(
+          JSON.stringify({ status: "success", value: chat, logLines: [] }),
+        ),
+  );
+  await expect(getChatById({ id })).resolves.toEqual(chat);
+  expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+  const events = jsonEvents();
+  expect(
+    events
+      .filter((entry) => entry.event === "chat_fetch_retry_scheduled")
+      .map((entry) => entry.retry_reason),
+  ).toEqual(["network_response_terminated", "network_response_terminated"]);
+  expect(
+    events.filter((entry) => entry.event === "convex_service_query_recovery"),
+  ).toEqual([]);
 });
 
 it("reserves only two retries across concurrent reads and nested scopes", async () => {

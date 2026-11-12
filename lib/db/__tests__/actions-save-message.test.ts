@@ -271,6 +271,116 @@ describe("getChatById retry result diagnostics", () => {
   );
 });
 
+describe("getChatById response-body termination", () => {
+  const parseLines = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map(([line]) => JSON.parse(String(line)));
+
+  it("retries a terminated body on the final allowed attempt and returns a later null read", async () => {
+    const { getChatById, mockQuery, mockMutation } =
+      await loadSaveMessageWithMocks();
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("terminated") as never)
+      .mockRejectedValueOnce(new TypeError("terminated") as never)
+      .mockResolvedValueOnce(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).resolves.toBeNull();
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(mockQuery.mock.calls[2][1]).toBe(mockQuery.mock.calls[0][1]);
+      expect(mockMutation).not.toHaveBeenCalled();
+      expect(parseLines(warn)).toEqual([
+        expect.objectContaining({
+          event: "chat_fetch_retry_scheduled",
+          retry_reason: "network_response_terminated",
+          attempt: 1,
+        }),
+        expect.objectContaining({
+          event: "chat_fetch_retry_scheduled",
+          retry_reason: "network_response_terminated",
+          attempt: 2,
+        }),
+      ]);
+      expect(parseLines(info)).toEqual([
+        expect.objectContaining({
+          event: "chat_fetch_retry_result",
+          outcome: "read_succeeded",
+          attempts: 3,
+          retry_reason: "network_response_terminated",
+        }),
+      ]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("rejects after three terminated bodies as a database availability error", async () => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(new TypeError("terminated") as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: {
+          db_operation: "chats.getChatById",
+          db_error_name: "TypeError",
+          db_error_message: "terminated",
+          db_retry_reason: "network_response_terminated",
+        },
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+      expect(parseLines(info)).toEqual([
+        expect.objectContaining({
+          outcome: "retry_exhausted",
+          attempts: 3,
+          retry_reason: "network_response_terminated",
+        }),
+      ]);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it.each([
+    ["plain Error", new Error("terminated")],
+    ["string", "terminated"],
+    ["other TypeError", new TypeError("unrelated failure")],
+    [
+      "structured TypeError",
+      Object.assign(new TypeError("terminated"), {
+        data: { code: "INVALID_ARGUMENT" },
+      }),
+    ],
+  ])("does not retry a %s rejection", async (_label, failure) => {
+    const { getChatById, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValue(failure as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(getChatById({ id: "chat-1" })).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "database",
+        metadata: { db_retry_reason: undefined },
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+});
+
 describe("saveMessage retry acknowledgement diagnostics", () => {
   it.each([
     [null, "acknowledged"],

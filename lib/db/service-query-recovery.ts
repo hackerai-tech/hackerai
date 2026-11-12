@@ -13,6 +13,20 @@ export const serviceQueryRecoveryRuntime = globalThis as typeof globalThis & {
   [serviceQueryRecoveryKey]?: () => ServiceQueryRecoveryAttempt | undefined;
 };
 
+// Same AsyncLocalStorage the Node module installs; read without reserving.
+const scopeKey = Symbol.for("hackerai.serviceQueryRecoveryScope.v1");
+const scopeRuntime = globalThis as typeof globalThis & {
+  [scopeKey]?: { getStore(): unknown };
+};
+
+/**
+ * True inside a request/run recovery scope, even after its retries are spent
+ * or its owner ended. That scope then owns response-termination retries, so
+ * helpers must not add their own.
+ */
+export const hasServiceQueryRecoveryScope = (): boolean =>
+  scopeRuntime[scopeKey]?.getStore() !== undefined;
+
 const recoverableQueries = new Set([
   "agentGoals:getForBackend",
   "chats:getChatById",
