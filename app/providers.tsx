@@ -4,7 +4,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
 import { isAbuseTelemetry, isAbuseReportingPath } from "@/lib/abuse/privacy";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
 import {
@@ -14,6 +14,8 @@ import {
 } from "@/lib/posthog/expected-frontend-exceptions";
 import {
   confirmAuthenticatedAnalyticsUserId,
+  getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
   getPostHogClient,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
@@ -32,6 +34,7 @@ import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
+import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import {
   captureXReferralVisit,
   clearXReferralDedupe,
@@ -86,6 +89,19 @@ export function PostHogProvider({
   const pathname = usePathname();
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
+  // Latest committed owner for the server action diagnostic. A previously
+  // installed before_send can run after a commit that withdraws consent, signs
+  // out, switches account or enters a private page, but before the passive
+  // effect below resets analytics identity.
+  const serverActionDiagnosticOwner = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    serverActionDiagnosticOwner.current =
+      analyticsAllowed && !privatePage && userId ? userId : null;
+    return () => {
+      serverActionDiagnosticOwner.current = null;
+    };
+  }, [analyticsAllowed, privatePage, userId]);
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -202,18 +218,35 @@ export function PostHogProvider({
             // incidental component events and SDK autocapture out of the stream.
             if (!userId) return null;
 
-            const sanitizedEvent = sanitizeContextFeedbackEvent(
-              sanitizeChatPerformanceEvent(
-                sanitizeDesktopAckEvent(
-                  sanitizeAgentCancellationEvent(
-                    sanitizeDiffViewEvent(
-                      sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeServerActionClientContextEvent(
+              sanitizeContextFeedbackEvent(
+                sanitizeChatPerformanceEvent(
+                  sanitizeDesktopAckEvent(
+                    sanitizeAgentCancellationEvent(
+                      sanitizeDiffViewEvent(
+                        sanitizeFrontendExceptionUrlProperties(event),
+                      ),
                     ),
                   ),
                 ),
               ),
+              () => {
+                const owner = getPermittedAnalyticsUserId();
+                return {
+                  owner:
+                    owner === userId &&
+                    owner === serverActionDiagnosticOwner.current &&
+                    getIdentifiedAnalyticsUserId() === owner
+                      ? owner
+                      : null,
+                  token: posthogKey,
+                };
+              },
             );
-            if (shouldDropExpectedFrontendException(sanitizedEvent)) {
+            if (
+              !sanitizedEvent ||
+              shouldDropExpectedFrontendException(sanitizedEvent)
+            ) {
               return null;
             }
 

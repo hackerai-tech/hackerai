@@ -1,5 +1,6 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
@@ -23,6 +24,7 @@ jest.mock("@/lib/analytics/client", () => ({
   confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   getIdentifiedAnalyticsUserId: jest.fn(() => null),
+  getPermittedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
@@ -40,6 +42,7 @@ const {
   confirmAuthenticatedAnalyticsUserId,
   getPostHogClient,
   getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -67,6 +70,7 @@ describe("PostHogProvider", () => {
     window.localStorage.clear();
     mockGetPostHogClient.mockReturnValue(null);
     jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
 
     mockUseGlobalState.mockReturnValue({
       subscription: "pro",
@@ -383,6 +387,233 @@ describe("PostHogProvider", () => {
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
   });
+
+  it("exports only the strict server action context after SDK enrichment", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    render(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const config = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => Record<string, unknown> | null;
+    };
+
+    const eventUuid = "0193a5b2-7c41-7a10-8f00-1234567890ab";
+    const retained = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+      $lib: "web",
+      $lib_version: "1.447.5",
+      $is_identified: true,
+      server_action_client_diagnostic_version: 1,
+      caller: "analytics_consent",
+      matched_pattern: "next_unrecognized_action_message",
+      reference_shape: "hex42",
+      recovery_decision: "locally_handled_no_reload",
+      build_state: "measured",
+      hackerai_frontend_build_commit: "a".repeat(40),
+      attempt_denominator_kind: "caller_settled_prefix",
+      caller_settled_attempt_count: 2,
+      caller_recognized_rejection_count: 1,
+    };
+    const accessor = jest.fn(() => "private");
+    const enriched = (properties: Record<string, unknown>) => ({
+      uuid: eventUuid,
+      event: "server_action_client_context",
+      properties: Object.defineProperties(
+        {
+          ...properties,
+          $current_url: "https://hackerai.co/c/private?code=private",
+          $referrer: "https://target.test/private",
+          $pathname: "/c/private",
+          $initial_current_url: "https://target.test/private",
+          utm_campaign: "private",
+          consent: "private",
+          stripe_invoice_id: "private",
+          renewal_amount: "private",
+          $set: { email: "private" },
+        },
+        {
+          // The existing private-page gate reads only URL/path fields first.
+          registered_content: { get: accessor, enumerable: true },
+          $window_id: { get: accessor, enumerable: true },
+        },
+      ),
+      timestamp: new Date(1_794_094_000_000),
+      $set: { email: "private" },
+      $set_once: { $initial_referrer: "private" },
+      private_top_level: "private",
+    });
+
+    const sanitized = config.before_send(enriched(retained));
+    expect(sanitized).toEqual({
+      uuid: eventUuid,
+      event: "server_action_client_context",
+      properties: retained,
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("private");
+    expect(accessor).not.toHaveBeenCalled();
+    expect(
+      config.before_send(enriched({ ...retained, distinct_id: "user-other" })),
+    ).toBeNull();
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-other");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-other");
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockImplementation(() => {
+      throw new Error("identity unavailable");
+    });
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    expect(
+      config.before_send({
+        event: "ordinary_event",
+        properties: { retained: "value" },
+      }),
+    ).toEqual({ event: "ordinary_event", properties: { retained: "value" } });
+    expect(
+      config.before_send(
+        enriched({ ...retained, server_action_client_diagnostic_version: "1" }),
+      ),
+    ).toBeNull();
+    expect(
+      config.before_send(
+        enriched({ ...retained, recovery_decision: "reload_requested" }),
+      ),
+    ).toBeNull();
+
+    // The private-page gate still runs before the event-specific projection.
+    try {
+      expect(
+        config.before_send({
+          ...enriched(retained),
+          properties: {
+            ...retained,
+            $current_url: "https://hackerai.co/abuse/report",
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      // That gate blocks replay for the rest of the tab session.
+      window.sessionStorage.clear();
+    }
+  });
+
+  it.each([
+    ["withdraws consent", false, { id: "user-123" }],
+    ["switches account", true, { id: "user-b" }],
+    ["signs out", true, null],
+  ] as const)(
+    "drops a retained server action context in the commit that %s, before identity resets",
+    async (_name, nextAnalyticsAllowed, nextUser) => {
+      const posthog = {
+        __loaded: false,
+        init: jest.fn(),
+        set_config: jest.fn(),
+        opt_in_capturing: jest.fn(),
+        has_opted_out_capturing: jest.fn(() => false),
+        identify: jest.fn(),
+        sessionRecordingStarted: jest.fn(() => false),
+        startSessionRecording: jest.fn(),
+        stopSessionRecording: jest.fn(),
+        reset: jest.fn(),
+        opt_out_capturing: jest.fn(),
+      };
+      // Global analytics identity is reset only by the provider's passive
+      // effect, so it remains the previous owner throughout the new commit.
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+      const contextEvent = () => ({
+        event: "server_action_client_context",
+        properties: {
+          token: "phc_test",
+          distinct_id: "user-123",
+          server_action_client_diagnostic_version: 1,
+          caller: "billing_renewal_recovery",
+          matched_pattern: "server_action_missing_message",
+          reference_shape: "hex42",
+          recovery_decision: "locally_handled_no_reload",
+          build_state: "unavailable",
+          attempt_denominator_kind: "unmeasured",
+        },
+      });
+      const retained: { beforeSend?: (event: unknown) => unknown } = {};
+      const layoutResults: unknown[] = [];
+      // A parent's layout effect runs after the child provider's layout effects
+      // in the same commit and before any passive effect.
+      function RetainedBeforeSendCaller({
+        children,
+      }: {
+        children: React.ReactNode;
+      }) {
+        useLayoutEffect(() => {
+          if (retained.beforeSend) {
+            layoutResults.push(retained.beforeSend(contextEvent()));
+          }
+        });
+        return <>{children}</>;
+      }
+
+      const view = render(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed>child</PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+      retained.beforeSend = (
+        posthog.init.mock.calls[0][1] as {
+          before_send: (event: unknown) => unknown;
+        }
+      ).before_send;
+
+      // Control: an unrelated commit keeps the same allowed owner.
+      view.rerender(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed>updated child</PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      expect(layoutResults).toEqual([
+        expect.objectContaining({ event: "server_action_client_context" }),
+      ]);
+
+      mockUseAuth.mockReturnValue({ user: nextUser });
+      view.rerender(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed={nextAnalyticsAllowed}>
+            updated child
+          </PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      expect(layoutResults).toHaveLength(2);
+      expect(layoutResults[1]).toBeNull();
+      // Ordinary events from the retained callback are unchanged.
+      expect(
+        retained.beforeSend({
+          event: "ordinary_event",
+          properties: { retained: "value" },
+        }),
+      ).toEqual({ event: "ordinary_event", properties: { retained: "value" } });
+      view.unmount();
+    },
+  );
 
   it("adds bounded context through before_send only while identified consent is active", async () => {
     const posthog = {

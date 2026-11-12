@@ -22,6 +22,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import type { FirstTouchAttribution } from "@/lib/analytics/acquisition";
+import { beginServerActionDiagnostic } from "@/lib/analytics/server-action-diagnostics";
 import {
   type AnalyticsConsent,
   type AnalyticsConsentStatus,
@@ -250,11 +251,19 @@ export function AnalyticsConsentManager({
   const chooseConsent = useCallback(async (choice: AnalyticsConsent) => {
     setIsSaving(true);
     setSaveError(null);
+    // Observe only an opt-in by an owner analytics already permits and identifies;
+    // a decline or a first opt-in never reports its own failure.
+    const settleDiagnostic =
+      choice === "accepted"
+        ? beginServerActionDiagnostic("analytics_consent")
+        : undefined;
     try {
       await saveAnalyticsConsent(choice);
+      settleDiagnostic?.();
       setChosenConsent(choice);
       return true;
-    } catch {
+    } catch (error) {
+      settleDiagnostic?.(error);
       setSaveError("We couldn't save your choice. Please try again.");
       return false;
     } finally {

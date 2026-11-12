@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { recordGlobalServerActionDecision } from "@/lib/analytics/server-action-diagnostics";
 import { getSafeErrorEventCause } from "@/lib/utils/error-event";
 
 const CHUNK_LOAD_RELOAD_STORAGE_KEY = "hackerai:chunk-load-reload-at";
@@ -81,6 +82,19 @@ export function isRecoverableClientStalenessFailure(error: unknown): boolean {
   return isChunkLoadFailure(error) || isStaleServerActionFailure(error);
 }
 
+type RecoveryDecision = "reload_requested" | "cooldown_skipped";
+
+function notifyDecision(
+  onDecision: ((decision: RecoveryDecision) => void) | undefined,
+  decision: RecoveryDecision,
+) {
+  try {
+    onDecision?.(decision);
+  } catch {
+    // Observation is optional and never changes recovery.
+  }
+}
+
 export function maybeRecoverFromClientStalenessFailure(
   error: unknown,
   {
@@ -88,11 +102,13 @@ export function maybeRecoverFromClientStalenessFailure(
     reload,
     now = Date.now(),
     cooldownMs = CHUNK_LOAD_RELOAD_COOLDOWN_MS,
+    onDecision,
   }: {
     storage: StorageLike;
     reload: () => void;
     now?: number;
     cooldownMs?: number;
+    onDecision?: (decision: RecoveryDecision) => void;
   },
 ): boolean {
   if (!isRecoverableClientStalenessFailure(error)) return false;
@@ -106,6 +122,7 @@ export function maybeRecoverFromClientStalenessFailure(
       Number.isFinite(lastReloadedAt) &&
       now - lastReloadedAt < cooldownMs
     ) {
+      notifyDecision(onDecision, "cooldown_skipped");
       return false;
     }
 
@@ -114,6 +131,7 @@ export function maybeRecoverFromClientStalenessFailure(
     // Storage can be unavailable in restricted browser modes; still recover.
   }
 
+  notifyDecision(onDecision, "reload_requested");
   reload();
   return true;
 }
@@ -123,20 +141,25 @@ export const maybeRecoverFromChunkLoadFailure =
 
 export function ChunkLoadRecovery() {
   useEffect(() => {
-    const recover = (error: unknown) =>
+    const recover = (
+      error: unknown,
+      caller: "global_error" | "global_unhandled_rejection",
+    ) =>
       maybeRecoverFromClientStalenessFailure(error, {
         storage: window.sessionStorage,
         reload: () => window.location.reload(),
+        onDecision: (decision) =>
+          recordGlobalServerActionDecision(caller, error, decision),
       });
 
     const onError = (event: ErrorEvent) => {
-      if (recover(getSafeErrorEventCause(event))) {
+      if (recover(getSafeErrorEventCause(event), "global_error")) {
         event.preventDefault();
       }
     };
 
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      if (recover(event.reason)) {
+      if (recover(event.reason, "global_unhandled_rejection")) {
         event.preventDefault();
       }
     };
