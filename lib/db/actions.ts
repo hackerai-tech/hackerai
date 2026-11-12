@@ -11,6 +11,7 @@ import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
 import { createServiceConvexClient } from "./service-client";
+import { hasServiceQueryRecoveryScope } from "./service-query-recovery";
 import { getConvexClient, getConvexUrl, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
@@ -372,11 +373,10 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
-// Response-body termination is safe to retry only for this read. Do not
-// broaden mutation retries: the write may already have committed.
-const getRetryableHistoryPageErrorReason = (
-  error: unknown,
-): string | undefined => {
+// Response-body termination is safe to retry only for idempotent reads (chat
+// lookup and history pages). Do not broaden mutation retries: the write may
+// already have committed.
+const getRetryableReadErrorReason = (error: unknown): string | undefined => {
   if (
     error instanceof TypeError &&
     error.message === "terminated" &&
@@ -408,7 +408,6 @@ const getRetryableSaveMessageErrorReason = (
 
   return undefined;
 };
-const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
 
 const getRetryableChatDeletionErrorReason = (
   error: unknown,
@@ -442,8 +441,11 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
-  if (operation === "messages.getMessagesPageForBackend") {
-    return getRetryableHistoryPageErrorReason(error);
+  if (
+    operation === "messages.getMessagesPageForBackend" ||
+    operation === "chats.getChatById"
+  ) {
+    return getRetryableReadErrorReason(error);
   }
   if (operation === "messages.saveMessage") {
     return getRetryableSaveMessageErrorReason(error);
@@ -695,7 +697,7 @@ const getMessagesPageForBackendWithRetry = async ({
         queryArgs,
       );
     } catch (error) {
-      const retryReason = getRetryableHistoryPageErrorReason(error);
+      const retryReason = getRetryableReadErrorReason(error);
       const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[retryBudget.used];
       if (!retryReason || retryDelayMs === undefined) {
         throw error;
@@ -775,9 +777,14 @@ export async function getChatById({ id }: { id: string }) {
         reportRetryResult("read_succeeded", attemptIndex + 1);
         return chat;
       } catch (error) {
-        const retryReason = getRetryableGetChatErrorReason(error);
+        const retryReason = getRetryableReadErrorReason(error);
         const retryDelayMs = GET_CHAT_RETRY_DELAYS_MS[attemptIndex];
-        if (!retryReason || retryDelayMs === undefined) {
+        // An installed request/run scope owns body-termination retries and
+        // its shared budget; retry here only for reads outside such a scope.
+        const scopeOwnsRetry =
+          retryReason === "network_response_terminated" &&
+          hasServiceQueryRecoveryScope();
+        if (!retryReason || retryDelayMs === undefined || scopeOwnsRetry) {
           reportRetryResult(
             retryReason ? "retry_exhausted" : "non_retryable_error",
             attemptIndex + 1,
@@ -2021,7 +2028,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
-          db_retry_reason: getRetryableHistoryPageErrorReason(error),
+          db_retry_reason: getRetryableReadErrorReason(error),
           db_error_data: getErrorData(error),
         });
 
@@ -2769,7 +2776,7 @@ export async function logUsageRecord({
   modelCostDollars?: number;
   nonModelCostDollars?: number;
   costSource?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
-}) {
+}): Promise<UsageLogPersistence> {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
@@ -2801,7 +2808,15 @@ export async function logUsageRecord({
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
     });
+    return { status: "persisted" };
   } catch (error) {
+    // Ledger persistence is reporting, not money movement: never retry or fail
+    // the response here. Callers report this fixed outcome with the cost event.
+    const failureCategory =
+      error instanceof Error &&
+      error.message.includes("already recorded for another account")
+        ? "settlement_scope_conflict"
+        : "write_failed";
     console.error("Failed to log usage record:", {
       error,
       usage_settlement_id: usageSettlementId,
@@ -2820,5 +2835,13 @@ export async function logUsageRecord({
       inputTokens,
       outputTokens,
     });
+    return { status: "failed", failureCategory };
   }
 }
+
+export type UsageLogPersistence =
+  | { status: "persisted" }
+  | {
+      status: "failed";
+      failureCategory: "settlement_scope_conflict" | "write_failed";
+    };

@@ -56,6 +56,39 @@ export const BROWSER_WRAPPER_PROCESS_VISIBILITIES = [
   "other",
 ] as const;
 
+// Wire code os1 is the index. One lstat of the selected socket when that same
+// OPEN returned 0, not at capture time; not daemon health, idle state or a cause.
+export const BROWSER_OPEN_SOCKET_RETURN_STATUSES = [
+  "unavailable",
+  "owned_socket",
+  "missing",
+  "invalid",
+  "unreadable",
+] as const;
+
+// Wire code k1 is the index. The latest wrapped command's declared first verb
+// token category; not its execution, the daemon's active command or a cause.
+export const BROWSER_WRAPPER_COMMAND_CLASSES = [
+  "wait",
+  "snapshot",
+  "screenshot",
+  "open",
+  "close",
+  "version",
+  "other",
+  "unparsed",
+] as const;
+
+// Wire tuple dv status codes are the indexes. The selected daemon's .version
+// sidecar declaration, distinct from the CLI-at-prepare check; not daemon identity or health.
+export const BROWSER_DAEMON_VERSION_FILE_STATUSES = [
+  "unavailable",
+  "measured",
+  "missing",
+  "unreadable",
+  "unparsed",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -146,6 +179,34 @@ function daemonProcess() {
     return [1, error?.code === 'ENOENT' ? 0 : 2, 0];
   } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
 }
+/** Read the selected daemon's startup .version declaration beside its socket: one
+ * bounded owned plaintext file, never a link or pipe. Returns [1, status(, packed
+ * semver)] or undefined outside an owned private sockets directory. Not daemon identity.
+ */
+function daemonVersionFile() {
+  let fd;
+  try {
+    const sockets = fs.lstatSync(path.join(directory, 'sockets'));
+    if (!sockets.isDirectory() || sockets.uid !== process.getuid() || (sockets.mode & 0o077) !== 0) return;
+  } catch { return; }
+  try {
+    const filename = path.join(directory, 'sockets', name + '.version');
+    const valid = entry => entry.isFile() && entry.uid === process.getuid() &&
+      (entry.mode & 0o022) === 0 && entry.size >= 0 && entry.size <= 32;
+    if (!valid(fs.lstatSync(filename))) return [1, 3];
+    fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!valid(fs.fstatSync(fd))) return [1, 3];
+    const bytes = Buffer.alloc(33);
+    const size = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (size > 32) return [1, 3];
+    const version = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(
+      bytes.subarray(0, size).toString('utf8').trim());
+    if (!version) return [1, 4];
+    return [1, 1, Number(version[1]) * 1000000 + Number(version[2]) * 1000 + Number(version[3])];
+  } catch (error) {
+    return [1, error?.code === 'ENOENT' ? 2 : typeof error?.code === 'string' ? 3 : 0];
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
 const uint64 = text => /^(0|[1-9][0-9]{0,19})$/.test(text) && (text.length < 20 || text <= '18446744073709551615');
 /** Compare the started wrapper's private [1, PID, start ticks] with one bounded
  * procfs stat read; never scan or signal processes or export the PID, ticks or name.
@@ -206,6 +267,8 @@ function wrapperReceipt() {
     // Only the selected session's still-STARTED wrapper has a meaningful incarnation.
     if (receipt.phase === 'started' && receipt.session_key === sessionKey)
       result.w1 = wrapperProcess(receipt.process);
+    // Declared first-verb category of this latest command; older writers omit it.
+    if (Number.isInteger(receipt.k1) && receipt.k1 >= 0 && receipt.k1 <= 7) result.k1 = receipt.k1;
     const history = receipt.history;
     if (Array.isArray(history) && history.length === 3 && history[0] === 1 &&
         typeof history[1] === 'boolean' && typeof history[2] === 'boolean' &&
@@ -252,8 +315,13 @@ function wrapperReceipt() {
     }
     // Only a matching successful OPEN makes this the selected daemon's sidecar.
     // Compact tuple: v1, PID-file status, process visibility (finite codes only).
-    if (open?.session_key === sessionKey && open.phase === 'completed' && open.exit === 0)
+    if (open?.session_key === sessionKey && open.phase === 'completed' && open.exit === 0) {
       result.p1 = daemonProcess();
+      // Recorded with this same OPEN's return; older writers omit it.
+      if (Number.isInteger(open.os1) && open.os1 >= 0 && open.os1 <= 4) result.os1 = open.os1;
+      const declared = daemonVersionFile();
+      if (declared) result.dv = declared;
+    }
     return result;
   } catch { return {}; }
 }
@@ -280,7 +348,11 @@ function finish(code, value) {
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
     const cli = cliAtPrepare();
     if (cli) value = { ...value, cv: cli };
-    // The optional incarnation code never displaces existing context at the parser cap.
+    // Optional codes never displace existing context at the parser cap; the
+    // newest is dropped first.
+    if (value?.dv !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.dv;
+    if (value?.k1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.k1;
+    if (value?.os1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.os1;
     if (value?.w1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.w1;
   }
   if (value !== undefined) {

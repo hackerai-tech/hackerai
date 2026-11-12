@@ -1,4 +1,4 @@
-import { generateText, Output } from "ai";
+import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { DEEPSEEK_1017_MODEL_KEY } from "@/lib/experiments/paid-deepseek-1017";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
@@ -79,7 +79,16 @@ export async function generateNextActions(
       abortSignal.throwIfAborted();
       suggestions = parsePredictedNextAction(result.output);
     }
-  } catch {
+  } catch (error) {
+    // Structured output can fail after a completed, billable generation.
+    // Preserve its usage even though there is no suggestion to deliver.
+    if (NoObjectGeneratedError.isInstance(error)) {
+      cost = getProviderUsageRawModelCost(error.usage?.raw);
+      inputTokens = error.usage?.inputTokens;
+      outputTokens = error.usage?.outputTokens;
+      reasoningTokens = error.usage?.outputTokenDetails?.reasoningTokens;
+      modelId = error.response?.modelId;
+    }
     unavailable = true;
     suggestions = [];
   }

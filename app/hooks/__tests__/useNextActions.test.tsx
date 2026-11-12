@@ -14,6 +14,14 @@ const batch = {
 const generationCalls = () =>
   jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST");
 const response = () => ({ ok: true, status: 200, json: async () => batch });
+const conflict = (reason?: string) =>
+  ({
+    ok: false,
+    status: 409,
+    headers: { get: () => reason ?? null },
+  }) as unknown as Response;
+const deletions = () =>
+  jest.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "DELETE");
 const settledEvents = () =>
   jest
     .mocked(captureQueuedAuthenticatedEvent)
@@ -387,7 +395,100 @@ test("exhausted completion conflicts are counted as one failed delivery, not fou
   expect(setInput).not.toHaveBeenCalled();
 });
 
-test.each([400, 404, 500])(
+test.each(["source_canceled", "source_not_successful", "source_waiting"])(
+  "a %s conflict cannot clear by waiting, so delivery ends after one attempt",
+  async (reason) => {
+    jest.mocked(fetch).mockResolvedValue(conflict(reason));
+    const { result } = renderHook(() => useNextActions(base()));
+    await act(async () => jest.advanceTimersByTimeAsync(20_000));
+    expect(generationCalls()).toHaveLength(1);
+    expect(settledEvents()).toHaveLength(1);
+    expect(settledEvents()[0].properties).toMatchObject({
+      outcome: "failed",
+      elapsed_ms: 500,
+      http_attempts: 1,
+      retry_count: 0,
+      http_status: 409,
+      server_reason: reason,
+      failure_phase: "http",
+    });
+    expect(result.current.batch).toBeNull();
+    expect(setInput).not.toHaveBeenCalled();
+    expect(
+      jest
+        .mocked(fetch)
+        .mock.calls.every(([url]) => url === "/api/chat/next-actions"),
+    ).toBe(true);
+  },
+);
+
+test.each([
+  ["an active source", "source_active"],
+  // Agent can mark the chat complete before its final answer is saved.
+  ["a not-yet-persisted answer", "source_stale"],
+  ["a legacy response without a reason", undefined],
+  ["an unrecognized reason", "source_future"],
+])(
+  "a conflict from %s keeps bounded retries and can recover to a real response",
+  async (_label, reason) => {
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(conflict(reason))
+      .mockResolvedValueOnce(conflict(reason));
+    const { result } = renderHook(() => useNextActions(base()));
+    await act(async () => jest.advanceTimersByTimeAsync(2_500));
+    expect(generationCalls()).toHaveLength(3);
+    expect(settledEvents()).toHaveLength(1);
+    expect(settledEvents()[0].properties).toMatchObject({
+      outcome: "ready",
+      http_attempts: 3,
+      retry_count: 2,
+      http_status: 200,
+    });
+    expect(settledEvents()[0].properties).not.toHaveProperty("server_reason");
+    expect(result.current.batch).toEqual(batch);
+    expect(setInput).not.toHaveBeenCalled();
+  },
+);
+
+test("a retried stale source still rejects a batch for a different answer", async () => {
+  jest
+    .mocked(fetch)
+    .mockResolvedValueOnce(conflict("source_stale"))
+    .mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...batch, messageId: "older-answer" }),
+    } as Response);
+  const { result } = renderHook(() => useNextActions(base()));
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(generationCalls()).toHaveLength(2);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "aborted",
+    http_attempts: 2,
+  });
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("a stale source that never persists stops after the bounded retries", async () => {
+  jest.mocked(fetch).mockResolvedValue(conflict("source_stale"));
+  const { result } = renderHook(() => useNextActions(base()));
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(generationCalls()).toHaveLength(4);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "failed",
+    http_attempts: 4,
+    retry_count: 3,
+    server_reason: "source_stale",
+  });
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test.each([400, 401, 403, 404, 500])(
   "HTTP %s has the same coarse failed outcome",
   async (status) => {
     jest.mocked(fetch).mockResolvedValue({ ok: false, status } as Response);
@@ -853,6 +954,151 @@ test("an in-flight prediction stays hidden while typing and appears only after t
   rerender(base());
   expect(result.current.batch).toEqual(batch);
   expect(generationCalls()).toHaveLength(1);
+});
+
+// The following props mirror chat.tsx/ChatInput: a pending queue blocks the
+// composer, completion supplies the assistant ID, and stop clears completion.
+test("a queued message removed before execution leaves the completing answer eligible through persistence lag", async () => {
+  const streaming = {
+    ...base(),
+    status: "streaming",
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+    blocked: true,
+  };
+  jest.mocked(fetch).mockResolvedValueOnce(conflict("source_active"));
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: streaming,
+  });
+  await settle();
+  rerender({ ...streaming, blocked: false });
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  rerender({ ...base(), latestMessageIsAssistant: true });
+  await act(async () => jest.advanceTimersByTimeAsync(1_500));
+  expect(
+    generationCalls().map(([, init]) => JSON.parse(String(init?.body))),
+  ).toEqual([
+    { chatId: "chat", messageId: "answer", restoreOnly: false },
+    { chatId: "chat", messageId: "answer", restoreOnly: false },
+  ]);
+  expect(result.current.batch).toEqual(batch);
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    outcome: "ready",
+    http_attempts: 2,
+  });
+  expect(deletions()).toHaveLength(0);
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("removing a queued message after the turn finished offers that answer, while an executed queue never revives it", async () => {
+  const finished = { ...base(), latestMessageIsAssistant: true, blocked: true };
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: finished,
+  });
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  rerender({ ...finished, blocked: false });
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+  // A later queued send starts a newer turn; the old answer's batch must not
+  // reappear for it, even if a stale source response arrives.
+  rerender({
+    ...base(),
+    status: "submitted",
+    completedTurn: null,
+    latestMessageId: "queued-user",
+    latestMessageIsAssistant: false,
+  });
+  expect(result.current.batch).toBeNull();
+  rerender({
+    ...base(),
+    completedTurn: { chatId: "chat", messageId: "followup" },
+    latestMessageId: "followup",
+    latestMessageIsAssistant: true,
+  });
+  await settle();
+  expect(generationCalls()).toHaveLength(2);
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("a stopped turn whose queued message is removed restores once and cannot revive a hint", async () => {
+  jest.mocked(fetch).mockResolvedValue(conflict("source_canceled"));
+  const stopped = {
+    ...base(),
+    completedTurn: null,
+    interruptedTurn: { chatId: "chat" },
+    latestMessageIsAssistant: true,
+    blocked: true,
+  };
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: stopped,
+  });
+  await settle();
+  rerender({ ...stopped, blocked: false });
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(generationCalls()).toHaveLength(1);
+  expect(JSON.parse(String(generationCalls()[0][1]?.body)).restoreOnly).toBe(
+    true,
+  );
+  expect(settledEvents()).toHaveLength(1);
+  expect(settledEvents()[0].properties).toMatchObject({
+    request_kind: "restore",
+    outcome: "failed",
+    http_attempts: 1,
+    server_reason: "source_canceled",
+  });
+  expect(result.current.batch).toBeNull();
+  expect(setInput).not.toHaveBeenCalled();
+});
+
+test("reload restores only the current source and never after dismissal or a newer turn", async () => {
+  const reloaded = {
+    ...base(),
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+  };
+  const first = renderHook(() => useNextActions(base()));
+  await settle();
+  first.unmount();
+  const restored = renderHook(() => useNextActions(reloaded));
+  await settle();
+  expect(restored.result.current.batch).toEqual(batch);
+  restored.unmount();
+  // A newer user turn is latest: there is no assistant source to restore.
+  const newerUser = renderHook(() =>
+    useNextActions({
+      ...reloaded,
+      latestMessageId: "newer-user",
+      latestMessageIsAssistant: false,
+    }),
+  );
+  await settle();
+  expect(generationCalls()).toHaveLength(2);
+  expect(newerUser.result.current.batch).toBeNull();
+  newerUser.unmount();
+  // A newer assistant answer cannot display the older source's batch.
+  const newerAnswer = renderHook(() =>
+    useNextActions({ ...reloaded, latestMessageId: "newer-answer" }),
+  );
+  await settle();
+  expect(generationCalls()).toHaveLength(3);
+  expect(newerAnswer.result.current.batch).toBeNull();
+  newerAnswer.unmount();
+  const again = renderHook(() => useNextActions(reloaded));
+  await settle();
+  expect(again.result.current.batch).toEqual(batch);
+  act(() => again.result.current.dismiss());
+  again.unmount();
+  const afterDismissal = renderHook(() => useNextActions(reloaded));
+  await settle();
+  expect(generationCalls()).toHaveLength(4);
+  expect(afterDismissal.result.current.batch).toBeNull();
+  expect(deletions()).toHaveLength(1);
+  expect(setInput).not.toHaveBeenCalled();
 });
 
 test("clearing a restored draft can start the first prediction without disturbing the draft", async () => {

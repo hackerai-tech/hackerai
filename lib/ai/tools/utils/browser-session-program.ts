@@ -186,6 +186,32 @@ def own_process_identity():
     except Exception:
         return None
 
+def open_socket_at_return():
+    """Private code for the selected socket when a wrapped OPEN returned 0.
+    Only lstat: never connect, read, signal or retry. Presence at this return is not
+    daemon health, idle state or a cause of a later capture failure."""
+    # 0 unavailable, 1 owned socket, 2 missing in a valid scope,
+    # 3 invalid scope/type/owner, 4 unreadable or other filesystem error.
+    try:
+        S = __import__('stat')
+        try:
+            parent = (root / 'sockets').lstat()
+        except FileNotFoundError:
+            return 3
+        except OSError:
+            return 4
+        if not S.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+            return 3
+        try:
+            entry = (root / 'sockets' / (name + '.sock')).lstat()
+        except FileNotFoundError:
+            return 2
+        except OSError:
+            return 4
+        return 1 if S.S_ISSOCK(entry.st_mode) and entry.st_uid == os.getuid() else 3
+    except Exception:
+        return 0
+
 def record_wrapper(phase, status=None, executed=False):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
@@ -195,6 +221,8 @@ def record_wrapper(phase, status=None, executed=False):
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             return
         action = 'other'
+        # Declared first-verb category only, never the token or later arguments.
+        command = 'unparsed'
         option_prefix = False
         args = iter(sys.argv[1:])
         for arg in args:
@@ -207,6 +235,7 @@ def record_wrapper(phase, status=None, executed=False):
                 break  # Unknown option values must not be mistaken for actions.
             else:
                 action = arg if arg in ('open', 'close') else 'other'
+                command = arg if arg in ('wait', 'snapshot', 'screenshot', 'open', 'close', 'version') else 'other'
                 break
         close_all = False
         if action == 'close':
@@ -220,6 +249,10 @@ def record_wrapper(phase, status=None, executed=False):
         if sys.argv[3:] in (['--version'], ['-V']):
             action = 'version'
             option_prefix = False
+            command = 'version'
+        socket_at_return = None
+        if action == 'open' and phase == 'completed' and executed and type(status) is int and status == 0:
+            socket_at_return = open_socket_at_return()
         value = dict(v=1, open_receipt_support=1, close_receipt_support=1, close_all=close_all, session_key=__import__('hashlib').sha256(name.encode('utf-8')).hexdigest(), action=action, phase=phase,
                      exit=status, at=int(time.time() * 1000))
         if action == 'open':
@@ -245,11 +278,21 @@ def record_wrapper(phase, status=None, executed=False):
             # Optional; omitted rather than displacing fields at the reader's 512-byte cap.
             if identity is not None and len(json.dumps(dict(value, process=identity))) <= 512:
                 latest = dict(value, process=identity)
+        # Fixed k1 code, added only after the identity fits and omitted rather
+        # than displacing any field at the same cap. Not execution or a cause.
+        classified = dict(latest, k1=('wait', 'snapshot', 'screenshot', 'open', 'close', 'version', 'other', 'unparsed').index(command))
+        if len(json.dumps(classified)) <= 512:
+            latest = classified
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
         write_receipt('wrapper-receipt.json', latest)
         if action == 'open':
-            write_receipt('open-receipt.json', value)
+            opened = value
+            # Only in this OPEN's own completion record; omitted rather than
+            # displacing fields at the reader's 512-byte cap.
+            if socket_at_return is not None and len(json.dumps(dict(value, os1=socket_at_return))) <= 512:
+                opened = dict(value, os1=socket_at_return)
+            write_receipt('open-receipt.json', opened)
         elif action == 'close':
             write_receipt('close-receipt.json', value)
     except Exception:

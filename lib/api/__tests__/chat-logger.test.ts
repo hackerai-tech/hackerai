@@ -20,6 +20,7 @@ const {
   captureAgentCompletionAnalytics,
   captureAgentRun,
   captureToolCalls,
+  captureIncompleteUsageCost,
   captureUsageCost,
   captureUsageSettlement,
   isUsageSettlementSuccessSampled,
@@ -1683,6 +1684,151 @@ describe("captureUsageCost", () => {
     expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
       "response_model",
     );
+  });
+
+  const recordedUsage = {
+    model: "auto",
+    type: "included",
+    inputTokens: 100,
+    outputTokens: 50,
+    totalTokens: 150,
+    costDollars: 0.01,
+    includedCostDollars: 0.01,
+    extraUsageCostDollars: 0,
+    uncoveredCostDollars: 0,
+    includedPointsDeducted: 0,
+    extraUsagePointsDeducted: 0,
+    uncoveredPoints: 0,
+    usageDeductionFailed: false,
+    modelCostDollars: 0.01,
+    nonModelCostDollars: 0,
+    costSource: "provider",
+  };
+  const askContext = {
+    userId: "user_123",
+    subscription: "free",
+    chatId: "chat_123",
+    endpoint: "/api/chat",
+    mode: "ask",
+  };
+
+  it("gives Free Ask a settlement ID and a stable identity shared by the fallback", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    captureUsageCost({
+      ...askContext,
+      posthog,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_free",
+      usageLog: "not_applicable",
+    });
+    captureIncompleteUsageCost({
+      ...askContext,
+      posthog,
+      usageSettlementId: "settlement_free",
+      failureStage: "settlement",
+      canceled: false,
+    });
+
+    const [recorded, incomplete] = capture.mock.calls.map(
+      ([event]) => event as any,
+    );
+    expect(recorded.uuid).toEqual(expect.any(String));
+    // PostHog keeps one record if both captures are ever sent.
+    expect(incomplete.uuid).toBe(recorded.uuid);
+    expect(recorded.properties).toMatchObject({
+      usage_settlement_id: "settlement_free",
+      usage_log_status: "not_applicable",
+    });
+    expect(recorded.properties).not.toHaveProperty(
+      "usage_settlement_summary_version",
+    );
+  });
+
+  it("reports a failed ledger write as fixed fields without changing cost", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      subscription: "pro",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_paid",
+      usageLog: { status: "failed", failureCategory: "write_failed" },
+    });
+    expect(capture.mock.calls[0][0].properties).toMatchObject({
+      cost_accounting_status: "recorded",
+      cost_dollars: 0.01,
+      usage_log_status: "failed",
+      usage_log_failure_category: "write_failed",
+    });
+  });
+
+  it("keeps child execution cost in its own run-scoped record", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      subagent: { id: "sa_1", parentTriggerRunId: "run_parent" },
+      triggerRunUsage: {
+        totalCostDollars: 0.02,
+        computeCostDollars: 0.02,
+        baseCostDollars: 0,
+        durationMs: 10,
+      },
+    });
+    const event = capture.mock.calls[0][0] as any;
+    expect(event.uuid).toBe(
+      agentRunEventUuid("run_child", "hackerai-usage_cost"),
+    );
+    expect(event.uuid).not.toBe(
+      agentRunEventUuid("run_parent", "hackerai-usage_cost"),
+    );
+    expect(event.properties).toMatchObject({
+      cost_scope: "subagent",
+      subagent_id: "sa_1",
+      parent_trigger_run_id: "run_parent",
+      trigger_run_id: "run_child",
+      trigger_cost_is_final: false,
+    });
+  });
+
+  it("reports unknown full cost with a lower bound that counts Trigger once", () => {
+    const capture = jest.fn();
+    captureIncompleteUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      usageMeasurement: {
+        usage_known_incurred_cost_dollars: 1.25,
+        usage_trigger_run_cost_dollars: 0.25,
+        usage_discarded_retry_cost_dollars: 0.5,
+      },
+      latestTriggerCostDollars: 0.375,
+      failureStage: "settlement",
+      canceled: true,
+    });
+    expect(capture.mock.calls[0][0]).toMatchObject({
+      uuid: agentRunEventUuid("run_child", "hackerai-usage_cost"),
+      properties: {
+        cost_accounting_status: "incomplete",
+        cost_dollars: null,
+        model_cost_dollars: null,
+        non_model_cost_dollars: null,
+        usage_discarded_retry_cost_dollars: 0.5,
+        // 1.25 known, with the 0.25 settled snapshot replaced by 0.375.
+        known_incurred_cost_lower_bound_dollars: 1.375,
+        known_trigger_cost_dollars: 0.375,
+        failure_kind: "canceled",
+      },
+    });
   });
 });
 

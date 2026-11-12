@@ -127,6 +127,7 @@ import {
 } from "@/lib/chat/budget-monitor";
 import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { UsageTracker } from "@/lib/usage-tracker";
+import type { UsageLogPersistence } from "@/lib/db/actions";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   acquireFreeRunConcurrencyLock,
@@ -1965,6 +1966,9 @@ export const agentLongTask = task({
     // instead of a silent abort.
     let streamPiped = false;
     let observedUsageTracker: UsageTracker | undefined;
+    // Reads the tracker with the run's current model for terminal reporting.
+    let observeUsageMeasurement:
+      (() => ReturnType<UsageTracker["measurementProperties"]>) | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
     let paidDailyFreeAllowanceReservation:
       PaidDailyFreeAllowanceReservation | undefined;
@@ -2602,6 +2606,8 @@ export const agentLongTask = task({
           try {
             const usageTracker = new UsageTracker();
             observedUsageTracker = usageTracker;
+            observeUsageMeasurement = () =>
+              usageTracker.measurementProperties(selectedModel);
             const auxiliaryVision = directGlmVisionEnabled
               ? {
                   isEnabled: visionSummaryRecovery.isEnabled,
@@ -3652,8 +3658,7 @@ export const agentLongTask = task({
                 const triggerRunUsage = getTriggerRunUsage();
                 const triggerRunCost = triggerRunUsage.totalCostDollars;
                 if (triggerRunCost > 0) {
-                  usageTracker.providerCost += triggerRunCost;
-                  usageTracker.nonModelCost += triggerRunCost;
+                  usageTracker.addTriggerRunCost(triggerRunCost);
                   chatLogger?.getBuilder().addToolCost(triggerRunCost);
                 }
                 if (!usageTracker.hasUsage) {
@@ -3684,6 +3689,8 @@ export const agentLongTask = task({
                 // mid-run settlement. This preserves authoritative step costs
                 // and estimates only the individual steps missing provider cost.
                 const settledCostDollars = usageCostRecord.costDollars;
+                let usageLog: UsageLogPersistence | "not_applicable" =
+                  "not_applicable";
                 if (paidDailyFreeAllowanceReservation) {
                   const allowanceCostRecord =
                     await recordPaidDailyFreeAllowanceCost(
@@ -3709,7 +3716,7 @@ export const agentLongTask = task({
                       },
                     );
                   }
-                  usageTracker.log({
+                  usageLog = await usageTracker.log({
                     userId,
                     organizationId,
                     chatId,
@@ -3821,7 +3828,7 @@ export const agentLongTask = task({
                     ...usageRecordArgs,
                     billingBreakdown,
                   });
-                  usageTracker.log({
+                  usageLog = await usageTracker.log({
                     userId,
                     organizationId,
                     chatId,
@@ -3842,6 +3849,8 @@ export const agentLongTask = task({
                   cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                   usageMeasurement:
                     usageTracker.measurementProperties(selectedModel),
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  usageLog,
                   triggerRunId: ctx.run.id,
                   regionalFreeLimits,
                   posthog,
@@ -6409,7 +6418,15 @@ export const agentLongTask = task({
       } catch {
         /* Usage unavailable. */
       }
+      let usageMeasurement:
+        ReturnType<UsageTracker["measurementProperties"]> | undefined;
+      try {
+        usageMeasurement = observeUsageMeasurement?.();
+      } catch {
+        /* Measurement must not block terminal reporting. */
+      }
       runReporting.finalize({
+        usageMeasurement,
         canceled: triggerSignal.aborted,
         triggerCostDollars:
           typeof reportingUsage?.totalCostInCents === "number"

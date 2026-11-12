@@ -10,6 +10,9 @@ function expectPacketBudgets(text: string) {
   const {
     cv: _cliAtPrepare,
     w1: _wrapperProcess,
+    os1: _openSocket,
+    k1: _commandClass,
+    dv: _daemonVersion,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -61,6 +64,15 @@ function daemon(
     wrapperStatError?: string;
     wrapperStatOwner?: number;
     wrapperStatFifo?: boolean;
+    socketsMode?: number;
+    versionFile?: string;
+    versionOwner?: number;
+    versionMode?: number;
+    versionSize?: number;
+    versionSymlink?: boolean;
+    versionFifo?: boolean;
+    versionError?: string;
+    versionReadError?: boolean;
   } = {},
 ) {
   const socketPath = path.join(
@@ -126,18 +138,31 @@ function daemon(
     size: options.cliSize ?? JSON.stringify(options.cliReceipt)?.length,
     isFile: () => options.cliReceipt !== undefined && !options.cliSymlink,
   });
-  const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
-    bytes.write(
-      fd === 12
-        ? options.wrapperStat!
-        : fd === 11
-          ? JSON.stringify(options.cliReceipt)
-          : fd === 10
-            ? options.pidFile!
-            : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
+  const versionStat = () => ({
+    uid: options.versionOwner ?? 1000,
+    mode: options.versionMode ?? 0o644,
+    size: options.versionSize ?? Buffer.byteLength(options.versionFile ?? ""),
+    isFile: () =>
+      options.versionFile !== undefined &&
+      !options.versionSymlink &&
+      !options.versionFifo,
+  });
+  const readReceipt = jest.fn((fd: number, bytes: Buffer) => {
+    if (fd === 13 && options.versionReadError)
+      throw new Error("PRIVATE version read");
+    return bytes.write(
+      fd === 13
+        ? options.versionFile!
+        : fd === 12
+          ? options.wrapperStat!
+          : fd === 11
+            ? JSON.stringify(options.cliReceipt)
+            : fd === 10
+              ? options.pidFile!
+              : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
-    ),
-  );
+    );
+  });
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
     if (file.startsWith("/proc/")) {
@@ -155,6 +180,11 @@ function daemon(
       return 11;
     }
     if (file.endsWith(".pid")) return 10;
+    if (file.endsWith(".version")) {
+      if (options.versionSymlink)
+        throw Object.assign(new Error("PRIVATE link"), { code: "ELOOP" });
+      return 13;
+    }
     const open = file.endsWith("/open-receipt.json");
     const close = file.endsWith("/close-receipt.json");
     if (
@@ -168,6 +198,49 @@ function daemon(
       throw new Error("PRIVATE unavailable receipt");
     return close ? 9 : open ? 8 : 7;
   });
+  const lstat = jest.fn((file: string) => {
+    if (file.endsWith("/cli-at-prepare.json")) return cliStat();
+    if (file.endsWith(".version")) {
+      if (options.versionError || options.versionFile === undefined)
+        throw Object.assign(new Error("PRIVATE version"), {
+          code: options.versionError ?? "ENOENT",
+        });
+      return versionStat();
+    }
+    if (file.endsWith(".pid")) {
+      if (options.pidFile === undefined)
+        throw Object.assign(new Error("PRIVATE missing PID"), {
+          code: "ENOENT",
+        });
+      return pidStat();
+    }
+    if (
+      file.endsWith("/wrapper-receipt.json") ||
+      file.endsWith("/open-receipt.json") ||
+      file.endsWith("/close-receipt.json")
+    ) {
+      const open = file.endsWith("/open-receipt.json");
+      const close = file.endsWith("/close-receipt.json");
+      if (fileReceipt(open, close) === undefined)
+        throw Object.assign(new Error("PRIVATE missing receipt"), {
+          code: "ENOENT",
+        });
+      return receiptStat(open, close);
+    }
+    if (file === options.missingPath)
+      throw Object.assign(new Error("PRIVATE filesystem path"), {
+        code: options.missingCode ?? "ENOENT",
+      });
+    return {
+      uid: file === options.unownedPath ? 0 : 1000,
+      mode:
+        file.endsWith("/sockets") && options.socketsMode !== undefined
+          ? options.socketsMode
+          : 0o700,
+      isDirectory: () => file !== socketPath && file !== options.invalidPath,
+      isSocket: () => file === socketPath && file !== options.invalidPath,
+    };
+  });
   let deadline: (() => void) | undefined;
   runInNewContext(BROWSER_DAEMON_PROGRAM, {
     require: (name: string) => {
@@ -179,16 +252,18 @@ function daemon(
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
           fstatSync: (fd: number) =>
-            fd === 12
-              ? {
-                  uid: options.wrapperStatOwner ?? 1000,
-                  isFile: () => !options.wrapperStatFifo,
-                }
-              : fd === 11
-                ? cliStat()
-                : fd === 10
-                  ? pidStat()
-                  : receiptStat(fd === 8, fd === 9),
+            fd === 13
+              ? versionStat()
+              : fd === 12
+                ? {
+                    uid: options.wrapperStatOwner ?? 1000,
+                    isFile: () => !options.wrapperStatFifo,
+                  }
+                : fd === 11
+                  ? cliStat()
+                  : fd === 10
+                    ? pidStat()
+                    : receiptStat(fd === 8, fd === 9),
           statfsSync: (file: string) => {
             if (file !== "/proc") throw new Error("Unexpected filesystem");
             if (options.procUnavailable)
@@ -221,41 +296,7 @@ function daemon(
           },
           readSync: readReceipt,
           closeSync: closeReceipt,
-          lstatSync: (file: string) => {
-            if (file.endsWith("/cli-at-prepare.json")) return cliStat();
-            if (file.endsWith(".pid")) {
-              if (options.pidFile === undefined)
-                throw Object.assign(new Error("PRIVATE missing PID"), {
-                  code: "ENOENT",
-                });
-              return pidStat();
-            }
-            if (
-              file.endsWith("/wrapper-receipt.json") ||
-              file.endsWith("/open-receipt.json") ||
-              file.endsWith("/close-receipt.json")
-            ) {
-              const open = file.endsWith("/open-receipt.json");
-              const close = file.endsWith("/close-receipt.json");
-              if (fileReceipt(open, close) === undefined)
-                throw Object.assign(new Error("PRIVATE missing receipt"), {
-                  code: "ENOENT",
-                });
-              return receiptStat(open, close);
-            }
-            if (file === options.missingPath)
-              throw Object.assign(new Error("PRIVATE filesystem path"), {
-                code: options.missingCode ?? "ENOENT",
-              });
-            return {
-              uid: file === options.unownedPath ? 0 : 1000,
-              mode: 0o700,
-              isDirectory: () =>
-                file !== socketPath && file !== options.invalidPath,
-              isSocket: () =>
-                file === socketPath && file !== options.invalidPath,
-            };
-          },
+          lstatSync: lstat,
         };
       throw new Error("Unexpected process or module access");
     },
@@ -289,6 +330,7 @@ function daemon(
     readReceipt,
     closeReceipt,
     openReceipt,
+    lstat,
     timeout: () => deadline?.(),
   };
 }
@@ -1300,4 +1342,453 @@ it("fits the incarnation code beside every maximal existing field within544 with
       "same_time",
     ],
   });
+});
+
+const missingSocket = { missingPath: directory + "/sockets/default.sock" };
+
+it.each([0, 1, 2, 3, 4])(
+  "projects the selected successful OPEN's at-return socket code %s without touching the socket",
+  (code) => {
+    const d = daemon({
+      ...missingSocket,
+      receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+      openReceipt: { ...successfulOpen, os1: code },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    expect(
+      d.openReceipt.mock.calls.some(([file]) => file.endsWith(".sock")),
+    ).toBe(false);
+    const text = d.output.mock.calls[0][0];
+    // The capture-time precondition stays separate from the at-return code.
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      p1: [1, 0, 0],
+      os1: code,
+    });
+    expectPacketBudgets(text);
+    expect(text).not.toMatch(/PRIVATE|\/dev\/shm|default|\.sock/);
+  },
+);
+
+it.each<[string, Record<string, unknown>]>([
+  ["a STARTED OPEN", { phase: "started", exit: null }],
+  ["a failed OPEN", { exit: 37 }],
+  ["a signal-terminated OPEN", { exit: -15 }],
+  ["another session's OPEN", { session_key: "a".repeat(64) }],
+  ["an out-of-range code", { os1: 5 }],
+  ["a negative code", { os1: -1 }],
+  ["a fractional code", { os1: 1.5 }],
+  ["a string code", { os1: "1" }],
+  ["a tuple", { os1: [1, 1] }],
+  ["a boolean", { os1: true }],
+  ["null", { os1: null }],
+  ["an older writer", { os1: undefined }],
+])("omits the at-return socket code for %s", (_case, override) => {
+  const d = daemon({
+    ...missingSocket,
+    receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, os1: 1, ...override },
+  });
+  expect(d.exit).toHaveBeenCalledWith(2);
+  const value = JSON.parse(d.output.mock.calls[0][0]);
+  // Every other bounded open observation remains; absence is never "missing".
+  expect(value).toMatchObject({
+    diagnostic_reason: "socket_stat",
+    open_receipt_status: "recorded",
+  });
+  expect(value).not.toHaveProperty("os1");
+  expect(JSON.stringify(value)).not.toContain("PRIVATE");
+});
+
+it("does not read or add the at-return socket code to a successful daemon response", () => {
+  const d = daemon({
+    receipt: { ...receipt, open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, os1: 2 },
+  });
+  const response = { id: "hackerai-preview", success: true, data: {} };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.openReceipt).not.toHaveBeenCalled();
+});
+
+/** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
+const maximalOpenSocket = (started: boolean, os1?: number, exit = 999) => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit };
+  return daemon({
+    missingPath: directory + "/sockets",
+    missingCode: "ENOTDIR",
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    cliReceipt: [1, 1, 999999999],
+    wrapperStat: procStat(),
+    receipt: {
+      ...longest,
+      action: "version",
+      ...(started
+        ? { phase: "started", exit: null, process: startedWrapper.process }
+        : { session_key: "a".repeat(64) }),
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+      history: [1, true, true],
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      exit: 0,
+      idle_env_version: 1,
+      idle_env: "unparsed",
+      os1,
+    },
+    closeReceipt: { ...longest, action: "close", close_all: false },
+  }).output.mock.calls[0][0];
+};
+
+it.each([true, false])(
+  "drops the at-return socket code before w1 or any existing field at the544 cap (started wrapper:%s)",
+  (started) => {
+    const text = maximalOpenSocket(started, 4);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+    const value = JSON.parse(text);
+    expect(value).not.toHaveProperty("os1");
+    expect(value.w1).toBe(started ? 3 : undefined);
+    // Identical to an older writer's packet: no previous field or w1 displaced.
+    expect(value).toEqual(JSON.parse(maximalOpenSocket(started)));
+    expect(value).toMatchObject({
+      diagnostic_reason: "sockets_stat",
+      diagnostic_error: "not_directory",
+      wrapper_phase: started ? "started" : "completed",
+      h1: 3,
+      open_exit: 0,
+      open_idle: [1, "unparsed"],
+      p1: [1, 2, 0],
+      cv: [1, 1, 999999999],
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        "other",
+        "selected_session",
+        "unknown",
+        "same_time",
+      ],
+    });
+  },
+);
+
+it("retains the at-return socket code in a near-cap packet that still fits", () => {
+  // A numeric last-command/close exit leaves just enough room beside the code.
+  const text = maximalOpenSocket(false, 4, 255);
+  expect(Buffer.byteLength(text)).toBeGreaterThan(512);
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+  const { os1, ...existing } = JSON.parse(text);
+  expect(os1).toBe(4);
+  expect(existing).toEqual(
+    JSON.parse(maximalOpenSocket(false, undefined, 255)),
+  );
+  expect(existing).toMatchObject({ wrapper_exit: 255, h1: 3, p1: [1, 2, 0] });
+});
+
+/** Near-cap selected-OPEN context beside a valid sockets directory, at a
+ * missing-socket precondition, with optional declared category and sidecar. */
+const nearCapDeclaration = (
+  closeExit: number,
+  missingCode: string,
+  { k1, versionFile }: { k1?: number; versionFile?: string } = {},
+) => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit: closeExit };
+  return daemon({
+    missingPath: directory + "/sockets/default.sock",
+    missingCode,
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    cliReceipt: [1, 1, 999999999],
+    wrapperStat: procStat(),
+    versionFile,
+    receipt: {
+      ...longest,
+      action: "other",
+      phase: "started",
+      exit: null,
+      process: startedWrapper.process,
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+      history: [1, true, true],
+      k1,
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      exit: 0,
+      idle_env_version: 1,
+      idle_env: "unparsed",
+      os1: 4,
+    },
+    closeReceipt: { ...longest, action: "close", close_all: false },
+  }).output.mock.calls[0][0];
+};
+
+it.each<[number, string, number | undefined, number | undefined]>([
+  [999, "ENOENT", undefined, 4], // Both new fields drop; os1 and w1 remain.
+  [255, "ENOENT", 6, 4], // Exactly at the cap: the declaration drops before k1.
+  [999, "ENOTDIR", undefined, undefined], // The existing os1 rule is unchanged.
+])(
+  "drops the declaration, then the category, before os1/w1 or any existing field at the544 cap (close exit %s, %s)",
+  (closeExit, missingCode, k1, os1) => {
+    const text = nearCapDeclaration(closeExit, missingCode, {
+      k1: 6,
+      versionFile: "999.999.999",
+    });
+    expectPacketBudgets(text);
+    const { dv, k1: category, ...existing } = JSON.parse(text);
+    expect(dv).toBeUndefined();
+    expect(category).toBe(k1);
+    expect(existing.os1).toBe(os1);
+    expect(existing.w1).toBe(3);
+    // The same packet without the new inputs keeps identical existing context.
+    const {
+      dv: _missing,
+      k1: _absent,
+      ...baseline
+    } = JSON.parse(nearCapDeclaration(closeExit, missingCode));
+    expect(existing).toEqual(baseline);
+    expect(existing).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      wrapper_phase: "started",
+      h1: 3,
+      open_exit: 0,
+      open_idle: [1, "unparsed"],
+      p1: [1, 3, 2],
+      cv: [1, 1, 999999999],
+    });
+    expect(text).not.toMatch(/PRIVATE|314159|271828|default|\/dev\/shm/);
+  },
+);
+
+const versionPath = directory + "/sockets/default.version";
+/** A missing-socket failure after the selected session's successful OPEN. */
+const selectedOpenFailure = {
+  ...missingSocket,
+  receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+  openReceipt: successfulOpen,
+};
+
+it.each<[string, DaemonOptions, unknown[], boolean]>([
+  ["the upstream release", { versionFile: "0.39.3" }, [1, 1, 39003], true],
+  [
+    "the maximal release",
+    { versionFile: "999.999.999" },
+    [1, 1, 999999999],
+    true,
+  ],
+  ["a trailing newline", { versionFile: "0.39.3\n" }, [1, 1, 39003], true],
+  ["missing", {}, [1, 2], false],
+  ["a symlink", { versionFile: "0.39.3", versionSymlink: true }, [1, 3], false],
+  ["a FIFO", { versionFile: "0.39.3", versionFifo: true }, [1, 3], false],
+  ["another owner", { versionFile: "0.39.3", versionOwner: 0 }, [1, 3], false],
+  [
+    "group-writable",
+    { versionFile: "0.39.3", versionMode: 0o664 },
+    [1, 3],
+    false,
+  ],
+  [
+    "world-writable",
+    { versionFile: "0.39.3", versionMode: 0o646 },
+    [1, 3],
+    false,
+  ],
+  ["oversized", { versionFile: "0.39.3", versionSize: 33 }, [1, 3], false],
+  [
+    "grown past its stat size",
+    { versionFile: "0.39.3" + " ".repeat(40), versionSize: 6 },
+    [1, 3],
+    true,
+  ],
+  ["permission", { versionError: "EACCES" }, [1, 3], false],
+  [
+    "an unexpected read failure",
+    { versionFile: "0.39.3", versionReadError: true },
+    [1, 0],
+    true,
+  ],
+  ["empty", { versionFile: "" }, [1, 4], true],
+  ["a component above 999", { versionFile: "1000.0.0" }, [1, 4], true],
+  ["two components", { versionFile: "0.39" }, [1, 4], true],
+  ["four components", { versionFile: "0.39.3.1" }, [1, 4], true],
+  ["a leading zero", { versionFile: "0.039.3" }, [1, 4], true],
+  ["a prerelease", { versionFile: "0.40.0-beta.1" }, [1, 4], true],
+  ["text", { versionFile: "PRIVATE" }, [1, 4], true],
+])(
+  "reports the selected daemon's version declaration when %s without changing the failure",
+  (_case, options, expected, opened) => {
+    const d = daemon({ ...selectedOpenFailure, ...options });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      open_exit: 0,
+      dv: expected,
+    });
+    expectPacketBudgets(text);
+    expect(text).not.toMatch(/PRIVATE|\/dev\/shm|default|\.version|beta/);
+    // Only an owned, regular, non-writable-by-others file is opened, without
+    // following links or blocking, and read at most once.
+    const opens = d.openReceipt.mock.calls.filter(([file]) =>
+      file.endsWith(".version"),
+    );
+    expect(opens).toEqual(opened ? [[versionPath, 256 | 2048]] : []);
+    expect(d.readReceipt.mock.calls.filter(([fd]) => fd === 13).length).toBe(
+      opened ? 1 : 0,
+    );
+    if (opened) expect(d.closeReceipt).toHaveBeenCalledWith(13);
+  },
+);
+
+it.each<[string, DaemonOptions]>([
+  ["no wrapper receipt", { receipt: undefined }],
+  ["an older writer without open receipts", { receipt }],
+  ["a STARTED OPEN", { openReceipt: { ...successfulOpen, phase: "started" } }],
+  ["a failed OPEN", { openReceipt: { ...successfulOpen, exit: 37 } }],
+  ["a fractional OPEN exit", { openReceipt: { ...successfulOpen, exit: 0.5 } }],
+  [
+    "another session's OPEN",
+    { openReceipt: { ...successfulOpen, session_key: "a".repeat(64) } },
+  ],
+  ["an unowned sockets directory", { unownedPath: directory + "/sockets" }],
+  ["a group-accessible sockets directory", { socketsMode: 0o750 }],
+  [
+    "a sockets path that is not a directory",
+    { missingPath: directory + "/sockets", missingCode: "ENOTDIR" },
+  ],
+])(
+  "neither reads nor reports a version declaration for %s",
+  (_case, override) => {
+    const d = daemon({
+      ...selectedOpenFailure,
+      versionFile: "0.39.3",
+      ...override,
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(JSON.parse(d.output.mock.calls[0][0])).not.toHaveProperty("dv");
+    expect(d.lstat.mock.calls.some(([file]) => file.endsWith(".version"))).toBe(
+      false,
+    );
+    expect(
+      d.openReceipt.mock.calls.some(([file]) => file.endsWith(".version")),
+    ).toBe(false);
+  },
+);
+
+it("reads only the selected session's declaration beside its socket", () => {
+  const key = createHash("sha256").update("PRIVATE_SELECTED").digest("hex");
+  const d = daemon({
+    name: "PRIVATE_SELECTED",
+    missingPath: directory + "/sockets/PRIVATE_SELECTED.sock",
+    receipt: {
+      ...receipt,
+      session_key: key,
+      action: "version",
+      open_receipt_support: 1,
+    },
+    openReceipt: { ...successfulOpen, session_key: key },
+    versionFile: "0.39.3",
+  });
+  const text = d.output.mock.calls[0][0];
+  expect(JSON.parse(text).dv).toEqual([1, 1, 39003]);
+  expect(
+    d.lstat.mock.calls
+      .map(([file]) => file)
+      .filter((file) => file.endsWith(".version")),
+  ).toEqual([directory + "/sockets/PRIVATE_SELECTED.version"]);
+  expect(text).not.toContain("PRIVATE");
+});
+
+it("reports the declared wait category and selected daemon declaration at the unchanged response deadline", () => {
+  const d = daemon({
+    receipt: {
+      ...startedWrapper,
+      action: "other",
+      open_receipt_support: 1,
+      k1: 0,
+    },
+    openReceipt: { ...successfulOpen, os1: 1 },
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    wrapperStat: procStat(),
+    versionFile: "0.39.3",
+  });
+  d.socket.emit("connect");
+  d.timeout();
+  expect(d.exit).toHaveBeenCalledWith(3);
+  expect(d.socket.destroy).toHaveBeenCalled();
+  // No new socket, request or retry: only the original status request.
+  expect(d.connect).toHaveBeenCalledTimes(1);
+  expect(d.socket.write).toHaveBeenCalledTimes(1);
+  const text = d.output.mock.calls[0][0];
+  expect(JSON.parse(text)).toMatchObject({
+    deadline: [1, "awaiting_response"],
+    wrapper_action: "other",
+    wrapper_phase: "started",
+    wrapper_session_matches: true,
+    w1: 3,
+    k1: 0,
+    p1: [1, 3, 2],
+    os1: 1,
+    dv: [1, 1, 39003],
+  });
+  expectPacketBudgets(text);
+  expect(text).not.toMatch(/PRIVATE|314159|271828|default|\/dev\/shm/);
+});
+
+it.each<[unknown, number | undefined]>([
+  [0, 0],
+  [3, 3],
+  [7, 7],
+  [8, undefined],
+  [-1, undefined],
+  [1.5, undefined],
+  ["0", undefined],
+  [true, undefined],
+  [null, undefined],
+  [[0], undefined],
+  ["PRIVATE", undefined],
+  [undefined, undefined], // An older writer is unmeasured.
+])(
+  "projects only a fixed declared-category code %j from the latest receipt",
+  (k1, expected) => {
+    const d = daemon({ ...missingSocket, receipt: { ...receipt, k1 } });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const text = d.output.mock.calls[0][0];
+    const { k1: category, ...existing } = JSON.parse(text);
+    expect(category).toBe(expected);
+    // Every other field is the same as for a receipt without the code.
+    expect(existing).toEqual(
+      JSON.parse(daemon({ ...missingSocket, receipt }).output.mock.calls[0][0]),
+    );
+    expect(text).not.toContain("PRIVATE");
+  },
+);
+
+it("neither reads the declaration nor adds the category to a successful response", () => {
+  const d = daemon({
+    receipt: { ...startedWrapper, open_receipt_support: 1, k1: 0 },
+    openReceipt: successfulOpen,
+    versionFile: "0.39.3",
+  });
+  const response = { id: "hackerai-preview", success: true, data: {} };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.openReceipt).not.toHaveBeenCalled();
+  expect(d.lstat.mock.calls.some(([file]) => file.endsWith(".version"))).toBe(
+    false,
+  );
 });

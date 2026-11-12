@@ -11,6 +11,7 @@ import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { v4 as uuidv4 } from "uuid";
 import {
   NEXT_ACTIONS_REASON_HEADER,
+  isRetryableNextActionsConflict,
   nextActionsDeliveryReason,
   type NextActionsDeliveryReason,
   type NextActionsFailurePhase,
@@ -130,7 +131,7 @@ export function useNextActions(options: Options): NextActionsController {
       request.current?.abort();
       request.current = null;
       batchRef.current = null;
-       
+
       setBatch(null);
     }
     keyRef.current = key;
@@ -204,7 +205,7 @@ export function useNextActions(options: Options): NextActionsController {
     previousMode.current = options.chatMode;
     // Revoke before paint, including a pending result that could otherwise
     // reappear after switching back. Keep any already accepted draft intact.
-     
+
     invalidate();
   }, [
     options.chatMode,
@@ -238,7 +239,7 @@ export function useNextActions(options: Options): NextActionsController {
     pending.current = null;
     attempted.current.clear();
     batchRef.current = null;
-     
+
     setBatch(null);
     return () => request.current?.abort();
   }, [options.chatId, options.userId]);
@@ -261,7 +262,6 @@ export function useNextActions(options: Options): NextActionsController {
     if (options.status === "error") pending.current = null;
     if (!key) return;
     if (!canRetain()) {
-       
       if (batchRef.current || request.current) invalidate();
       return;
     }
@@ -399,6 +399,7 @@ export function useNextActions(options: Options): NextActionsController {
         }
         if (
           response.status === 409 &&
+          isRetryableNextActionsConflict(serverReason) &&
           attempt < 3 &&
           !controller.signal.aborted
         ) {
