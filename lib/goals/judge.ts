@@ -249,29 +249,62 @@ export function buildGoalCompletionEvidence(
   };
 }
 
+/** Rendered prose without code, blockquotes or emphasis markers. */
+function requestProse(text: string) {
+  const lines: string[] = [];
+  let fence: { char: string; length: number } | undefined;
+  for (const line of text.split("\n")) {
+    if (fence) {
+      const close = /^ {0,3}(`+|~+)[ \t]*$/.exec(line)?.[1];
+      if (close?.[0] === fence.char && close.length >= fence.length)
+        fence = undefined;
+      continue;
+    }
+    // Backtick info strings cannot contain backticks; "```x```" is inline code.
+    const open = /^ {0,3}(`{3,}(?!.*`)|~{3,})/.exec(line)?.[1];
+    // An unclosed fence runs to the end, so partial code never becomes prose.
+    if (open) fence = { char: open[0], length: open.length };
+    else if (!/^[ \t]*>/.test(line)) lines.push(line);
+  }
+  return lines
+    .join("\n")
+    .replace(/(`+)[^\n]*?\1/g, "")
+    .replace(/\*+|~~|(?<!\w)_+|_+(?!\w)/g, "");
+}
+
+const withoutQuotes = (text: string) =>
+  text.replace(/"[^"\n]*"|“[^”\n]*”/g, "");
+
 const normalizeRequestText = (text: string) =>
   text.replace(/\s+/g, " ").trim().toLowerCase();
 
 /**
  * A model verdict cannot pause a Goal unless the Agent actually requested input.
  * Code, blockquotes and quoted strings are examples, not requests. Structured
- * questions count in any language only when copied from the remaining prose.
+ * questions count in any language only when copied from the remaining prose;
+ * quoted choices must match exactly, but the request cannot be only a quote.
  */
 function hasUserFacingInputRequest(
   text: string,
   questions: readonly { question: string }[] | null,
 ): boolean {
-  const prose = text
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/`[^`]*`/g, "")
-    .replace(/^[ \t]*>.*$/gm, "")
-    .replace(/"[^"\n]*"|“[^”\n]*”/g, "");
-  const normalizedProse = normalizeRequestText(prose);
+  const rendered = requestProse(text);
+  const prose = withoutQuotes(rendered);
+  const isGrounded = (question: string) => {
+    const full = normalizeRequestText(requestProse(question));
+    const unquoted = normalizeRequestText(
+      withoutQuotes(requestProse(question)),
+    );
+    return (
+      !!unquoted &&
+      normalizeRequestText(rendered).includes(full) &&
+      normalizeRequestText(prose).includes(unquoted)
+    );
+  };
   return (
-    /[?？؟]/.test(prose) ||
-    !!questions?.some((q) =>
-      normalizedProse.includes(normalizeRequestText(q.question)),
-    ) ||
+    // A query string such as "/reports?run=1" is not a question.
+    /[？؟]|\?(?=$|[\s)\]"'”’])/.test(prose) ||
+    !!questions?.some((q) => isGrounded(q.question)) ||
     /\b(?:please|kindly)\s+(?:provide|confirm|choose|select|share|tell|send|clarify|approve)\b/i.test(
       prose,
     ) ||

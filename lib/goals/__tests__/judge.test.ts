@@ -329,6 +329,9 @@ describe("independent goal completion check", () => {
     "Provide the target URL.",
     "Send the required scope before I can proceed.",
     "Marker checks passed.\n\n- Confirm which host is in scope.",
+    "**Provide** the target URL.",
+    "Please **provide** the target URL.",
+    "Should I scan https://example.com/login?next=/admin?",
   ])("keeps an imperative request for input: %j", async (text) => {
     const result = await judgeInputRequest(text);
     expect(result).toMatchObject({
@@ -356,6 +359,28 @@ describe("independent goal completion check", () => {
 
   it.each([
     {
+      text: "Der Marker existiert.\n**Nennen Sie** die Ziel-URL.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      text: "**Provide** the target URL.",
+      question: "Provide the target URL.",
+    },
+    {
+      text: 'Der Marker existiert. Wählen Sie "staging" oder "production".',
+      question: 'Wählen Sie "staging" oder "production".',
+    },
+  ])(
+    "keeps a grounded structured request despite markup: $text",
+    async ({ text, question }) => {
+      const questions = [{ id: "q", header: "Input", question, options: [] }];
+      const result = await judgeInputRequest(text, questions);
+      expect(result).toMatchObject({ verdict: "needs_input", questions });
+    },
+  );
+
+  it.each([
+    {
       name: "invented question",
       text: "The marker is ready.",
       question: "Which port should I scan next?",
@@ -364,6 +389,26 @@ describe("independent goal completion check", () => {
       name: "question only inside a code example",
       text: "The marker is ready.\n```\nNennen Sie die Ziel-URL.\n```",
       question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      name: "question with different quoted choices",
+      text: 'Der Marker existiert. Wählen Sie "staging" oder "production".',
+      question: 'Wählen Sie "dev" oder "prod".',
+    },
+    {
+      name: "question only inside a quoted example",
+      text: 'The marker is ready. Its help text reads "Which scope should I use?"',
+      question: "Which scope should I use?",
+    },
+    {
+      name: "code-only question",
+      text: "The marker is ready.",
+      question: "`scope`",
+    },
+    {
+      name: "quote-only question",
+      text: 'The marker is ready. Mode is "staging".',
+      question: '"staging"',
     },
   ])(
     "does not pause for an ungrounded structured $name",
@@ -381,8 +426,13 @@ describe("independent goal completion check", () => {
     "The marker is ready. Run `Send the scope?` to test the prompt.",
     "The marker is ready. The README says:\n> Which target URL should I scan?",
     'The marker is ready. Its help text reads "Which scope should I use?"',
+    "The marker is ready.\n~~~text\nProvide the target URL.\n~~~",
+    "The marker is ready.\n````md\n```\nProvide the target URL.\n```\n````",
+    "The marker is ready. Example:\n```\nProvide the target URL.",
+    "The report is available at /reports?run=1.",
+    "Results: https://example.com/search?q=marker&page=2",
   ])(
-    "does not pause for code examples or quoted instructions: %j",
+    "does not pause for code examples, quoted instructions or URLs: %j",
     async (text) => {
       const result = await judgeInputRequest(text);
       expect(result?.verdict).toBe("continue");
