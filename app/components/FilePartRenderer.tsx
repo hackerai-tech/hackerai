@@ -393,7 +393,7 @@ const FilePartRendererComponent = ({
   return (
     <>
       {renderedFilePart}
-      {/* Image Viewer Modal - rendered via portal to escape contentVisibility containment */}
+      {/* Image Viewer Modal - rendered via portal to escape ancestor containment (timeline rows, dialogs) */}
       {selectedImage &&
         typeof document !== "undefined" &&
         createPortal(
