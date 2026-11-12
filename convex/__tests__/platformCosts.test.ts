@@ -330,4 +330,52 @@ describe("replaceVendorCostWindow", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].recognized_cost_dollars).toBe(12.5);
   });
+  it("a partial Convex invoice history cannot discard an issued receipt in an estimated daily row", async () => {
+    const { replaceCostRows } = await import("../platformCosts");
+    const { ctx, rows } = makeCtx();
+    const args = {
+      vendor: "convex" as const,
+      scope: "charges" as const,
+      startDay: "2026-08-30",
+      endDay: "2026-08-30",
+      observedAt: Date.now(),
+    };
+    const charge = {
+      day: "2026-08-30",
+      serviceName: "team-billing:1",
+      serviceCategory: "database",
+      billingCurrency: "USD",
+      costStatus: "estimated" as const,
+      effectiveCostDollars: 2,
+      sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+      sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+      costBasis: "billing_period_allocation" as const,
+      billingReference: "ISSUED-1,EXAMPLE-DRAFT",
+    };
+    await replaceCostRows(ctx, { ...args, rows: [charge] });
+    await expect(
+      replaceCostRows(ctx, {
+        ...args,
+        rows: [
+          {
+            ...charge,
+            effectiveCostDollars: 0,
+            billingReference: "EXAMPLE-DRAFT",
+          },
+        ],
+      }),
+    ).rejects.toThrow("omits a previously recorded");
+    expect(rows[0].recognized_cost_dollars).toBe(2);
+    await replaceCostRows(ctx, {
+      ...args,
+      rows: [
+        {
+          ...charge,
+          effectiveCostDollars: 0,
+          billingReference: "ISSUED-1,ISSUED-2",
+        },
+      ],
+    });
+    expect(rows[0].recognized_cost_dollars).toBe(0);
+  });
 });

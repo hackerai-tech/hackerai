@@ -126,6 +126,10 @@ invoices, source accounts or dates must fail the import rather than creating
 zero placeholders. Do not infer service periods from local issue/payment dates.
 These are daily allocations of net invoice charges, not exact resource-level
 consumption or a complete cash/credit-note reconciliation.
+An updated Convex billing window must retain previously recorded issued receipt
+references. Draft references may be replaced on finalization; a credit or void
+keeps its issued reference with the corrected net amount. A truncated history
+therefore fails before it can erase a known expense.
 
 ## PostHog examples
 
