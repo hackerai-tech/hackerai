@@ -164,7 +164,8 @@ describe("root request error correlation", () => {
     ["/api/chat", "POST", false],
     ["/login", "POST", false],
     ["/share/item", "POST", true],
-    ["/", "POST", false],
+    ["/index", "POST", false],
+    ["/", "POST", true],
     ["/login", "GET", true],
   ] as const)(
     "does not add a receipt outside unexpected root reads (%s,%s,expected=%s)",
@@ -497,6 +498,288 @@ describe("desktop authorization request error correlation", () => {
   });
 });
 
+describe("core POST request error correlation", () => {
+  const CHAT_ID = "SYNTHETIC-CHAT-0f3c2a91";
+  const appAction = {
+    routePath: "/(chat)/c/[id]/page",
+    routeType: "action",
+    routerKind: "App Router",
+    renderSource: "react-server-components",
+    revalidateReason: undefined,
+  } as const;
+  const appRender = { ...appAction, routeType: "render" } as const;
+  const appRoute = {
+    routePath: "/api/agent/status/route",
+    routeType: "route",
+    routerKind: "App Router",
+    revalidateReason: undefined,
+  } as const;
+  // Next's proxy template reports every proxy throw this way, including for
+  // requests that target App Router pages and APIs.
+  const pagesProxy = {
+    routePath: "/proxy",
+    routeType: "proxy",
+    routerKind: "Pages Router",
+    revalidateReason: undefined,
+  } as const;
+  const failure = () =>
+    Object.assign(new TypeError(`private-failure ${CHAT_ID}`), {
+      digest: "2147368089",
+      cause: Object.assign(new Error(`private-cause ${CHAT_ID}`), {
+        code: "ECONNRESET",
+        status: 503,
+      }),
+    });
+  const postRequest = (path: string, method = "POST") => ({
+    path: `${path}?chatId=${CHAT_ID}&token=private-query#private-fragment`,
+    method,
+    headers: {
+      "x-vercel-id": "iad1::fixture-1794426146963-b68e429d9b2f",
+      cookie: "private-cookie",
+      authorization: "Bearer private-token",
+    },
+  });
+  const tuple = {
+    root_request_error_diagnostic_version: 1,
+    root_error_kind: "TypeError",
+    root_error_status: null,
+    root_error_status_shape: "absent",
+    root_error_code: "none",
+    root_cause_kind: "Error",
+    root_cause_status: 503,
+    root_cause_status_shape: "integer",
+    root_cause_code: "ECONNRESET",
+    vercel_request_id: "iad1::fixture-1794426146963-b68e429d9b2f",
+    error_digest: "2147368089",
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.mocked(isEndedSessionRefreshError).mockReturnValue(false);
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.replaceProperty(process, "env", {
+      ...process.env,
+      VERCEL_ENV: "production",
+      VERCEL_GIT_COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567",
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each<[string, string, Parameters<typeof onRequestError>[2]]>([
+    ["/", "/", appAction],
+    ["/", "/", appRender],
+    ["/", "/", pagesProxy],
+    [`/c/${CHAT_ID}`, "/c/[id]", appAction],
+    [`/c/${CHAT_ID}`, "/c/[id]", appRender],
+    [`/c/${CHAT_ID}`, "/c/[id]", pagesProxy],
+    [`/c/${CHAT_ID}/`, "/c/[id]", appAction],
+    ["/api/agent/status", "/api/agent/status", appRoute],
+    ["/api/agent/status", "/api/agent/status", pagesProxy],
+  ])(
+    "emits one receipt for POST %s as %s without request contents",
+    (path, safePath, context) => {
+      const error = failure();
+      onRequestError(error, postRequest(path), context);
+
+      expect(console.warn).toHaveBeenCalledTimes(1);
+      const line = jest.mocked(console.warn).mock.calls[0][0];
+      expect(JSON.parse(line)).toStrictEqual({
+        timestamp: expect.any(String),
+        level: "warn",
+        event: "root_request_error_context",
+        service: "hackerai-web",
+        environment: "production",
+        web_build_commit: "0123456789abcdef0123456789abcdef01234567",
+        path: safePath,
+        method: "POST",
+        route_type: context.routeType,
+        ...tuple,
+        root_render_source: context.renderSource ?? "unknown",
+      });
+      expect(line).not.toMatch(/private|SYNTHETIC/);
+
+      expect(phLogger.error).toHaveBeenCalledTimes(1);
+      const [message, payload] = jest.mocked(phLogger.error).mock.calls[0];
+      expect(message).toBe("Next.js request error");
+      expect(payload?.error).toBe(error);
+      expect(payload).toMatchObject({
+        path: safePath,
+        method: "POST",
+        routePath: context.routePath,
+        ...tuple,
+      });
+      const { error: _original, ...properties } = payload ?? {};
+      expect(JSON.stringify(properties)).not.toMatch(/private|SYNTHETIC/);
+    },
+  );
+
+  it.each<[string, string, string, Parameters<typeof onRequestError>[2]]>([
+    ["status read", "GET", "/api/agent/status", appRoute],
+    ["status read", "GET", "/api/agent/status", pagesProxy],
+    ["root method", "PUT", "/", appAction],
+    ["chat method", "DELETE", `/c/${CHAT_ID}`, pagesProxy],
+    ["lowercase method", "post", `/c/${CHAT_ID}`, appAction],
+    ["deeper chat", "POST", `/c/${CHAT_ID}/nested`, appAction],
+    ["chat lookalike", "POST", "/c", appAction],
+    ["chat lookalike", "POST", "/c/", appAction],
+    ["chat lookalike", "POST", "/C/opaque", appAction],
+    ["chat lookalike", "POST", "/chat/opaque", appAction],
+    ["chat lookalike", "POST", "/x/c/opaque", appAction],
+    ["status lookalike", "POST", "/api/agent/status/", appRoute],
+    ["status lookalike", "POST", "/api/agent/statuses", appRoute],
+    ["status lookalike", "POST", "/api/agent/status.json", appRoute],
+    ["status parent", "POST", "/api/agent", appRoute],
+    ["other API", "POST", "/api/chat", appRoute],
+    ["other API", "POST", "/api/chat", pagesProxy],
+    ["index", "POST", "/index", appAction],
+    ["root route", "POST", "/", appRoute],
+    ["chat route", "POST", `/c/${CHAT_ID}`, appRoute],
+    ["status action", "POST", "/api/agent/status", appAction],
+    ["status render", "POST", "/api/agent/status", appRender],
+    [
+      "App Router proxy",
+      "POST",
+      "/",
+      { ...pagesProxy, routerKind: "App Router" },
+    ],
+    [
+      "Pages Router render",
+      "POST",
+      `/c/${CHAT_ID}`,
+      { ...appRender, routerKind: "Pages Router" },
+    ],
+    [
+      "Pages Router route",
+      "POST",
+      "/api/agent/status",
+      { ...appRoute, routerKind: "Pages Router" },
+    ],
+    [
+      "unknown router",
+      "POST",
+      "/",
+      {
+        ...appAction,
+        routerKind: "Other Router" as unknown as "App Router",
+      },
+    ],
+  ])(
+    "does not open the receipt for a %s (%s %s)",
+    (_case, method, path, context) => {
+      const error = failure();
+      onRequestError(error, postRequest(path, method), context);
+
+      expect(console.warn).not.toHaveBeenCalled();
+      expect(phLogger.error).toHaveBeenCalledTimes(1);
+      const payload = jest.mocked(phLogger.error).mock.calls[0][1] ?? {};
+      expect(payload.error).toBe(error);
+      expect(
+        Object.keys(payload).filter((key) => key.startsWith("root_")),
+      ).toEqual([]);
+    },
+  );
+
+  it("keeps the expected-auth early return and normalizes its chat path", () => {
+    jest.mocked(isEndedSessionRefreshError).mockReturnValue(true);
+    const error = failure();
+    onRequestError(error, postRequest(`/c/${CHAT_ID}`), appAction);
+
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(phLogger.error).not.toHaveBeenCalled();
+    expect(phLogger.warn).toHaveBeenCalledTimes(1);
+    const payload = jest.mocked(phLogger.warn).mock.calls[0][1] ?? {};
+    expect(payload.error).toBe(error);
+    expect(payload.path).toBe("/c/[id]");
+    expect(payload).not.toHaveProperty("root_request_error_diagnostic_version");
+    const { error: _original, ...properties } = payload;
+    expect(JSON.stringify(properties)).not.toMatch(/private|SYNTHETIC/);
+  });
+
+  it("omits malformed request IDs, digests and builds on a status POST", () => {
+    jest.replaceProperty(process, "env", {
+      ...process.env,
+      VERCEL_ENV: "private-environment",
+      VERCEL_GIT_COMMIT_SHA: `private-${CHAT_ID}`,
+    });
+    const error = Object.assign(new Error("private-message"), {
+      digest: `private-${CHAT_ID}`,
+    });
+    onRequestError(
+      error,
+      {
+        path: "/api/agent/status",
+        method: "POST",
+        headers: { "x-vercel-id": `iad1::${CHAT_ID}` },
+      },
+      appRoute,
+    );
+
+    const line = jest.mocked(console.warn).mock.calls[0][0];
+    const receipt = JSON.parse(line);
+    expect(receipt).toMatchObject({
+      environment: "unknown",
+      path: "/api/agent/status",
+      root_error_kind: "Error",
+    });
+    expect(receipt).not.toHaveProperty("web_build_commit");
+    expect(receipt).not.toHaveProperty("vercel_request_id");
+    expect(receipt).not.toHaveProperty("error_digest");
+    expect(line).not.toMatch(/private|SYNTHETIC/);
+    const payload = jest.mocked(phLogger.error).mock.calls[0][1] ?? {};
+    expect(payload.error).toBe(error);
+    expect(payload).not.toHaveProperty("vercel_request_id");
+    expect(payload).not.toHaveProperty("error_digest");
+  });
+
+  it("bounds a hostile error on a chat POST proxy failure and still exports it", () => {
+    const fail = () => {
+      throw new Error("private-accessor");
+    };
+    const hostile = new Proxy(new Error("private-message"), {
+      get: fail,
+      has: fail,
+      ownKeys: fail,
+      getOwnPropertyDescriptor: fail,
+      getPrototypeOf: fail,
+    });
+    expect(() =>
+      onRequestError(hostile, postRequest(`/c/${CHAT_ID}`), pagesProxy),
+    ).not.toThrow();
+
+    const line = jest.mocked(console.warn).mock.calls[0][0];
+    expect(JSON.parse(line)).toMatchObject({
+      path: "/c/[id]",
+      route_type: "proxy",
+      root_error_kind: "unreadable_error",
+      root_cause_kind: "unreadable_error",
+      vercel_request_id: tuple.vercel_request_id,
+    });
+    expect(JSON.parse(line)).not.toHaveProperty("error_digest");
+    expect(line).not.toMatch(/private|SYNTHETIC/);
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    const payload = jest.mocked(phLogger.error).mock.calls[0][1] ?? {};
+    expect(payload.error).toBe(hostile);
+    expect(payload.path).toBe("/c/[id]");
+  });
+
+  it("keeps the original root POST report when the native receipt sink throws", () => {
+    jest.mocked(console.warn).mockImplementation(() => {
+      throw new Error("console unavailable");
+    });
+    const error = failure();
+    expect(() =>
+      onRequestError(error, postRequest("/"), appAction),
+    ).not.toThrow();
+
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    expect(phLogger.error).toHaveBeenCalledWith(
+      "Next.js request error",
+      expect.objectContaining({ error, path: "/", ...tuple }),
+    );
+  });
+});
+
 describe("onRequestError", () => {
   const mockPhLoggerError = phLogger.error as jest.MockedFunction<
     typeof phLogger.error
@@ -505,7 +788,9 @@ describe("onRequestError", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.mocked(isEndedSessionRefreshError).mockReturnValue(false);
+    jest.spyOn(console, "warn").mockImplementation(() => {});
   });
+  afterEach(() => jest.restoreAllMocks());
 
   describe.each([false, true])(
     "expected auth error: %s",
@@ -521,8 +806,9 @@ describe("onRequestError", () => {
           "https://example.test/auth/callback?state=state-secret",
           "https://example.test/auth/callback",
         ],
-        ["/c/%3F%23opaque?code=oauth-secret", "/c/%3F%23opaque"],
-        ["/c/opaque-chat-id", "/c/opaque-chat-id"],
+        ["/c/%3F%23opaque?code=oauth-secret", "/c/[id]"],
+        ["/c/opaque-chat-id", "/c/[id]"],
+        ["/c/opaque-chat-id/#fragment-secret", "/c/[id]"],
         ["/invalid%path?code=oauth-secret", "/invalid%path"],
       ])(
         "keeps query and fragment out of request diagnostics for %s",
@@ -596,6 +882,7 @@ describe("onRequestError", () => {
       "Next.js request error",
       expect.objectContaining({
         error,
+        path: "/c/[id]",
         routeType: "action",
         action_id: "a".repeat(40),
         content_type: "text/plain",
@@ -607,6 +894,7 @@ describe("onRequestError", () => {
     const logged = JSON.stringify(mockPhLoggerError.mock.calls[0][1]);
     expect(logged).not.toContain("Bearer secret");
     expect(logged).not.toContain("session=secret");
+    expect(logged).not.toContain("opaque-chat-id");
   });
 
   it("omits malformed Server Action metadata", () => {

@@ -198,6 +198,109 @@ describe("request error diagnostic exports", () => {
     },
   );
 
+  it.each([
+    [
+      "/c/SYNTHETIC_CHAT_ID/",
+      "/c/[id]",
+      "action",
+      "App Router",
+      "/(chat)/c/[id]/page",
+    ],
+    ["/c/SYNTHETIC_CHAT_ID", "/c/[id]", "proxy", "Pages Router", "/proxy"],
+    ["/", "/", "render", "App Router", "/(chat)/page"],
+    [
+      "/api/agent/status",
+      "/api/agent/status",
+      "route",
+      "App Router",
+      "/api/agent/status/route",
+    ],
+  ] as const)(
+    "exports core POST %s correlation as %s once without the chat identifier (%s)",
+    async (path, safePath, routeType, routerKind, routePath) => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = Object.assign(new TypeError("core request failed"), {
+        digest: "1234567890",
+        cause: Object.assign(new Error("store failed"), {
+          code: "ECONNRESET",
+          status: 503,
+        }),
+      });
+      onRequestError(
+        error,
+        {
+          path: `${path}?chatId=SYNTHETIC_CHAT_ID&code=SYNTHETIC_CODE#SYNTHETIC_FRAGMENT`,
+          method: "POST",
+          headers: {
+            "x-vercel-id": "iad1::fixture-1794426146963-b68e429d9b2f",
+            cookie: "SYNTHETIC_COOKIE",
+            authorization: "Bearer SYNTHETIC_TOKEN",
+          },
+        },
+        { routePath, routeType, routerKind, revalidateReason: undefined },
+      );
+      await flushPostHogLogs();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const body = String(jest.mocked(global.fetch).mock.calls[0][1]?.body);
+      expect(body).not.toContain("SYNTHETIC_");
+      const records = JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords;
+      expect(records).toHaveLength(1);
+      expect(records[0].attributes).toEqual(
+        expect.arrayContaining([
+          { key: "path", value: { stringValue: safePath } },
+          { key: "method", value: { stringValue: "POST" } },
+          { key: "route_type", value: { stringValue: routeType } },
+          {
+            key: "root_request_error_diagnostic_version",
+            value: { doubleValue: 1 },
+          },
+          { key: "root_error_kind", value: { stringValue: "TypeError" } },
+          { key: "root_cause_code", value: { stringValue: "ECONNRESET" } },
+          {
+            key: "vercel_request_id",
+            value: { stringValue: "iad1::fixture-1794426146963-b68e429d9b2f" },
+          },
+          { key: "error_digest", value: { stringValue: "1234567890" } },
+          // The established export keeps its redacted original error fields.
+          {
+            key: "error_message",
+            value: { stringValue: "core request failed" },
+          },
+        ]),
+      );
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const receiptLine = String(warn.mock.calls[0][0]);
+      expect(receiptLine).not.toMatch(
+        /SYNTHETIC_|core request failed|store failed/,
+      );
+      expect(JSON.parse(receiptLine)).toMatchObject({
+        event: "root_request_error_context",
+        path: safePath,
+        method: "POST",
+        route_type: routeType,
+        root_request_error_diagnostic_version: 1,
+        root_error_kind: "TypeError",
+        root_cause_code: "ECONNRESET",
+        vercel_request_id: "iad1::fixture-1794426146963-b68e429d9b2f",
+        error_digest: "1234567890",
+      });
+
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      const [exception, , properties] = mockCaptureException.mock.calls[0];
+      expect(exception).toBeInstanceOf(Error);
+      expect(exception.message).toBe("core request failed");
+      expect(properties).toMatchObject({
+        path: safePath,
+        root_request_error_diagnostic_version: 1,
+      });
+      expect(JSON.stringify(mockCaptureException.mock.calls)).not.toContain(
+        "SYNTHETIC_",
+      );
+    },
+  );
+
   it("exports desktop authorization POST correlation once through the actual log sender and native receipt", async () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     const result = onRequestError(
