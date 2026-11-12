@@ -1,5 +1,5 @@
 export type PlatformVendor =
-  "vercel" | "convex" | "posthog" | "workos" | "upstash";
+  "vercel" | "convex" | "posthog" | "workos" | "upstash" | "aws";
 export type PlatformCostStatus = "billed" | "estimated" | "metered";
 
 export type PlatformCostRow = {

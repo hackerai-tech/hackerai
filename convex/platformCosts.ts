@@ -6,6 +6,7 @@ import { validateServiceKey } from "./lib/utils";
 const MAX_ROWS_PER_SYNC = 5_000;
 
 const vendorValidator = v.union(
+  v.literal("aws"),
   v.literal("vercel"),
   v.literal("convex"),
   v.literal("posthog"),
@@ -39,7 +40,7 @@ export const rowValidator = v.object({
   billingReference: v.optional(v.string()),
 });
 
-type Vendor = "vercel" | "convex" | "posthog" | "workos" | "upstash";
+type Vendor = "vercel" | "convex" | "posthog" | "workos" | "upstash" | "aws";
 type CostStatus = "billed" | "estimated" | "metered";
 type PlatformCostRow = {
   day: string;
