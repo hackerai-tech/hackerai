@@ -310,6 +310,79 @@ describe("Agent run reporting", () => {
     });
   });
 
+  it("retains discarded and estimated model costs with Trigger counted once", () => {
+    const { reporter, events } = setup();
+    reporter.fail(new Error("settlement write failed"));
+    reporter.finalize({
+      canceled: false,
+      triggerCostDollars: 0.375,
+      // Provider-reported only; would understate the known work.
+      observedAccumulatedCostDollars: 0.25,
+      usageMeasurement: {
+        usage_discarded_retry_cost_dollars: 1,
+        usage_trigger_run_cost_dollars: 0.25,
+        // 1 discarded + 0.5 estimated + 0.25 settled Trigger snapshot.
+        usage_known_incurred_cost_dollars: 1.75,
+      },
+    });
+    expect(events()[1].properties).toMatchObject({
+      cost_accounting_status: "incomplete",
+      cost_dollars: null,
+      usage_discarded_retry_cost_dollars: 1,
+      known_trigger_cost_dollars: 0.375,
+      known_incurred_cost_lower_bound_dollars: 1.875,
+    });
+  });
+
+  it.each([0, 0.25])(
+    "reports later Trigger compute from a %s snapshot without repeating its cost",
+    (settled) => {
+      const { reporter, capture, events } = setup();
+      reporter.captureCost(capture, { event: "hackerai-usage_cost" });
+      reporter.captureTerminal(capture, { event: "hackerai-agent_run" });
+      const snapshot = {
+        canceled: false,
+        triggerCostDollars: 0.375,
+        usageMeasurement: { usage_trigger_run_cost_dollars: settled },
+      };
+      reporter.finalize(snapshot);
+      reporter.finalize(snapshot);
+
+      const observations = events().filter(
+        (event) => event.event === "hackerai-usage_cost_observation",
+      );
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        uuid: agentRunEventUuid(
+          "run_failed",
+          "hackerai-usage_cost_observation",
+        ),
+        properties: {
+          settled_trigger_cost_dollars: settled,
+          latest_trigger_cost_dollars: 0.375,
+          unrecorded_trigger_cost_dollars: 0.375 - settled,
+          trigger_cost_is_final: false,
+        },
+      });
+      expect(
+        events().filter((event) => event.event === "hackerai-usage_cost"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not add an observation to an incomplete run's own Trigger cost", () => {
+    const { reporter, events } = setup();
+    reporter.finalize({
+      canceled: false,
+      triggerCostDollars: 0.375,
+      usageMeasurement: { usage_trigger_run_cost_dollars: 0.25 },
+    });
+    expect(events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+  });
+
   it("tolerates missing PostHog configuration", () => {
     const reporter = createAgentRunReporting({
       posthog: null,

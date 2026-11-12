@@ -2776,7 +2776,7 @@ export async function logUsageRecord({
   modelCostDollars?: number;
   nonModelCostDollars?: number;
   costSource?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
-}) {
+}): Promise<UsageLogPersistence> {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
       serviceKey,
@@ -2808,7 +2808,15 @@ export async function logUsageRecord({
       non_model_cost_dollars: nonModelCostDollars,
       cost_source: costSource,
     });
+    return { status: "persisted" };
   } catch (error) {
+    // Ledger persistence is reporting, not money movement: never retry or fail
+    // the response here. Callers report this fixed outcome with the cost event.
+    const failureCategory =
+      error instanceof Error &&
+      error.message.includes("already recorded for another account")
+        ? "settlement_scope_conflict"
+        : "write_failed";
     console.error("Failed to log usage record:", {
       error,
       usage_settlement_id: usageSettlementId,
@@ -2827,5 +2835,13 @@ export async function logUsageRecord({
       inputTokens,
       outputTokens,
     });
+    return { status: "failed", failureCategory };
   }
 }
+
+export type UsageLogPersistence =
+  | { status: "persisted" }
+  | {
+      status: "failed";
+      failureCategory: "settlement_scope_conflict" | "write_failed";
+    };

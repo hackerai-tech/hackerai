@@ -116,6 +116,12 @@ import {
 import { sanitizeAgentLongRealtimeChunk } from "@/lib/chat/agent-long-realtime-sanitizer";
 import { toolResultsContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 import { UsageTracker } from "@/lib/usage-tracker";
+import type { UsageLogPersistence } from "@/lib/db/actions";
+import {
+  captureIncompleteUsageCost,
+  captureUsageCost,
+} from "@/lib/api/chat-logger";
+import PostHogClient from "@/app/posthog";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   deductUsage,
@@ -591,6 +597,8 @@ export const subagentTask = task({
     });
 
     const usageTracker = new UsageTracker();
+    const posthog = PostHogClient();
+    let usageCostReported = false;
     let resultValue: CheckedSubagentResult | undefined;
     const observeFinalization = createSubagentFinalizationDiagnostics(
       {
@@ -647,14 +655,73 @@ export const subagentTask = task({
       }
     };
 
+    // One cost event per child execution, keyed by the child run. The parent
+    // never adds these costs to its own tracker.
+    const costEventContext = {
+      posthog,
+      userId: row.user_id,
+      subscription: row.subscription,
+      organizationId: row.organization_id,
+      chatId: row.chat_id,
+      endpoint: "/api/agent-long" as const,
+      mode: "agent" as const,
+      triggerRunId: ctx.run.id,
+      subagent: {
+        id: row.subagent_id,
+        parentTriggerRunId: row.parent_trigger_run_id,
+      },
+    };
+    const reportRecordedUsageCost = (
+      usage: ReturnType<UsageTracker["createUsageCostRecord"]>,
+      usageLog: UsageLogPersistence | "not_applicable",
+    ) => {
+      if (usageCostReported) return;
+      try {
+        captureUsageCost({
+          ...costEventContext,
+          usage,
+          usageLog,
+          usageSettlementId: usageTracker.usageSettlementId,
+          usageMeasurement: usageTracker.measurementProperties(selectedModel),
+          responseModel,
+        });
+        usageCostReported = true;
+      } catch {
+        // Reporting must not change settlement; the fallback may still report.
+      }
+    };
+    const reportIncompleteUsageCost = () => {
+      if (usageCostReported) return;
+      usageCostReported = true;
+      try {
+        let latestTriggerCostDollars: number | undefined;
+        try {
+          latestTriggerCostDollars = resolveTriggerRunCost(
+            triggerUsage.getCurrent(),
+          ).totalCostDollars;
+        } catch {
+          /* Trigger usage unavailable. */
+        }
+        captureIncompleteUsageCost({
+          ...costEventContext,
+          usageSettlementId: usageTracker.usageSettlementId,
+          usageMeasurement: usageTracker.measurementProperties(selectedModel),
+          latestTriggerCostDollars,
+          failureStage: "settlement",
+          canceled: triggerSignal.aborted,
+        });
+      } catch {
+        /* Analytics must not interrupt subagent finalization. */
+      }
+    };
+
     const settleUsage = async (): Promise<{
       costDollars: number;
       billingFailure: boolean;
     }> => {
       const triggerRunUsage = resolveTriggerRunCost(triggerUsage.getCurrent());
       if (!triggerRunCostRecorded && triggerRunUsage.totalCostDollars > 0) {
-        usageTracker.providerCost += triggerRunUsage.totalCostDollars;
-        usageTracker.nonModelCost += triggerRunUsage.totalCostDollars;
+        usageTracker.addTriggerRunCost(triggerRunUsage.totalCostDollars);
         triggerRunCostRecorded = true;
         metadata
           .set("triggerRunCostDollars", triggerRunUsage.totalCostDollars)
@@ -680,9 +747,22 @@ export const subagentTask = task({
           throw error;
         }
         usageSettled = true;
+        reportRecordedUsageCost(
+          usageTracker.createUsageCostRecord({
+            selectedModel,
+            selectedModelOverride: selectedModel,
+            responseModel,
+            configuredModelId: selectedModel,
+            accountingModel: responseModel ?? selectedModel,
+            // Free monthly cost has no point deductions.
+            rateLimitInfo: { remaining: 0, resetTime: new Date(0), limit: 0 },
+          }),
+          "not_applicable",
+        );
         return { costDollars, billingFailure: false };
       }
       if (!rateLimitInfo) {
+        reportIncompleteUsageCost();
         return { costDollars, billingFailure: true };
       }
 
@@ -702,13 +782,13 @@ export const subagentTask = task({
         usageTracker.usageSettlementId,
       );
       usageSettled = true;
-      usageTracker.log({
+      const usageLogArgs = {
         userId: row.user_id,
         organizationId: row.organization_id,
         chatId: row.chat_id,
         assistantMessageId: row.subagent_id,
-        endpoint: "/api/agent-long",
-        mode: "agent",
+        endpoint: "/api/agent-long" as const,
+        mode: "agent" as const,
         subscription: row.subscription,
         selectedModel,
         selectedModelOverride: selectedModel,
@@ -717,7 +797,12 @@ export const subagentTask = task({
         accountingModel: responseModel ?? selectedModel,
         rateLimitInfo,
         billingBreakdown: deduction,
-      });
+      };
+      const usageLog = await usageTracker.log(usageLogArgs);
+      reportRecordedUsageCost(
+        usageTracker.createUsageCostRecord(usageLogArgs),
+        usageLog,
+      );
       return {
         costDollars,
         billingFailure:
@@ -2176,10 +2261,13 @@ export const subagentTask = task({
         (triggerRunCostRecorded
           ? 0
           : resolveTriggerRunCost(triggerUsage.getCurrent()).totalCostDollars);
-      const settlement = await settleUsage().catch(() => ({
-        costDollars: fallbackCostDollars,
-        billingFailure: true,
-      }));
+      const settlement = await settleUsage().catch(() => {
+        reportIncompleteUsageCost();
+        return {
+          costDollars: fallbackCostDollars,
+          billingFailure: true,
+        };
+      });
       const captureTerminalOutcome = () => {
         captureSubagentTerminalOutcome({
           userId: row.user_id,
@@ -2321,6 +2409,7 @@ export const subagentTask = task({
       await ptySessionManager.closeAll(row.subagent_id).catch(() => undefined);
       await cleanupBrowserSessions();
       await phLogger.flush().catch(() => undefined);
+      await posthog?.shutdown().catch(() => undefined);
     }
   },
 });

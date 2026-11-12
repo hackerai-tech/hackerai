@@ -4,7 +4,11 @@ import { validateServiceKey } from "./lib/utils";
 
 const MAX_ROWS_PER_SYNC = 5_000;
 
-const vendorValidator = v.union(v.literal("vercel"), v.literal("convex"));
+const vendorValidator = v.union(
+  v.literal("vercel"),
+  v.literal("convex"),
+  v.literal("posthog"),
+);
 const costStatusValidator = v.union(
   v.literal("billed"),
   v.literal("estimated"),
@@ -27,7 +31,7 @@ const rowValidator = v.object({
   sourceChargeCount: v.optional(v.number()),
 });
 
-type Vendor = "vercel" | "convex";
+type Vendor = "vercel" | "convex" | "posthog";
 type CostStatus = "billed" | "estimated" | "metered";
 type PlatformCostRow = {
   day: string;
@@ -70,7 +74,12 @@ function entityId(vendor: Vendor, row: PlatformCostRow) {
 
 function toStoredRow(vendor: Vendor, row: PlatformCostRow, observedAt: number) {
   const billedCost = row.billedCostDollars ?? 0;
-  const recognizedCost = row.costStatus === "metered" ? 0 : billedCost;
+  const recognizedCost =
+    row.costStatus === "metered"
+      ? 0
+      : row.costStatus === "estimated"
+        ? (row.effectiveCostDollars ?? 0)
+        : billedCost;
 
   return {
     entity_id: entityId(vendor, row),

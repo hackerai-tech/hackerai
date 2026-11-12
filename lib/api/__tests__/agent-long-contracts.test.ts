@@ -992,6 +992,38 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("awaits ledger writes and reports each settlement's cost once", () => {
+    // A detached ledger write can be lost when the request or worker ends.
+    for (const source of [chatHandlerSrc, taskSrc, subagentSrc]) {
+      expect(source).not.toMatch(/(?<!await )usageTracker\.log\(/);
+      expect(source).toMatch(
+        /usageSettlementId: usageTracker\.usageSettlementId/,
+      );
+    }
+    expect(
+      chatHandlerSrc.match(/usageLog = await usageTracker\.log\(/g),
+    ).toHaveLength(2);
+    expect(taskSrc.match(/usageLog = await usageTracker\.log\(/g)).toHaveLength(
+      2,
+    );
+    // Ask has no run-level finalizer; setup and settlement failures report
+    // known costs through the same identity as the normal capture.
+    expect(chatHandlerSrc).toMatch(
+      /preemptiveTimeout\?\.clear\(\);\s*await reportIncompleteAskUsageCost\?\.\("setup"\);/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /catch \(error\) \{[\s\S]{0,120}await reportIncompleteAskUsageCost\?\.\("settlement"\);\s*throw error;/,
+    );
+    expect(taskSrc).toMatch(/runReporting\.finalize\(\{\s*usageMeasurement,/);
+    // Child costs use the child run's identity and never enter the parent.
+    expect(subagentSrc).toMatch(
+      /triggerRunId: ctx\.run\.id,\s*subagent: \{\s*id: row\.subagent_id,/,
+    );
+    expect(subagentSrc).toMatch(
+      /settleUsage\(\)\.catch\(\(\) => \{\s*reportIncompleteUsageCost\(\);/,
+    );
+  });
+
   test("captures Trigger usage and active-time attribution on Agent completion", () => {
     expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
     expect(taskSrc).toMatch(
@@ -1000,8 +1032,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /triggerTotalCostUsd:\s*currentUsage\.totalCostDollars/,
     );
+    // addTriggerRunCost keeps Trigger compute in billable non-model cost;
+    // usage-tracker tests cover that behavior.
     expect(taskSrc).toMatch(
-      /usageTracker\.nonModelCost\s*\+=\s*triggerRunCost/,
+      /usageTracker\.addTriggerRunCost\(triggerRunCost\)/,
     );
     expect(taskSrc).toMatch(
       /getTriggerRunCostDollars:\s*\(\)\s*=>\s*getTriggerRunUsage\(\)\.totalCostDollars/,

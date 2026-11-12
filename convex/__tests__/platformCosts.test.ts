@@ -186,4 +186,33 @@ describe("replaceVendorCostWindow", () => {
     });
     expect(rows[0].billed_cost_dollars).toBeUndefined();
   });
+
+  it("recognizes provisional provider spend without pretending it is invoiced", async () => {
+    const { ctx, rows } = makeCtx();
+    await replace(ctx, {
+      vendor: "posthog",
+      rows: [
+        {
+          day: "2026-08-30",
+          serviceName: "product-analytics",
+          serviceCategory: "analytics",
+          billingCurrency: "USD",
+          costStatus: "estimated",
+          effectiveCostDollars: 12,
+          sourcePeriodStart: "2026-08-30T00:00:00.000Z",
+          sourcePeriodEnd: "2026-08-31T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(rows[0]).toMatchObject({
+      recognized_cost_dollars: 12,
+      gross_profit_impact_dollars: -12,
+      cost_status: "estimated",
+    });
+    expect(rows[0].billed_cost_dollars).toBeUndefined();
+    await expect(
+      replace(ctx, { vendor: "vercel", rows: [] }),
+    ).resolves.toMatchObject({ deleted: 0 });
+    expect(rows).toHaveLength(1);
+  });
 });

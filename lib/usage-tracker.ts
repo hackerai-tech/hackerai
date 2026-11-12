@@ -1,4 +1,5 @@
-import { logUsageRecord } from "@/lib/db/actions";
+import { logUsageRecord, type UsageLogPersistence } from "@/lib/db/actions";
+import { servingProviderCostProperties } from "@/lib/analytics/serving-cost";
 import {
   getProviderUsageRawModelCost,
   isPositiveFiniteNumber,
@@ -124,6 +125,19 @@ export class UsageTracker {
   }
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
+  /**
+   * Trigger.dev compute already included in nonModelCost. Measurement replaces
+   * this settlement snapshot with a later one instead of adding both.
+   */
+  triggerRunCostDollars = 0;
+
+  /** Adds Trigger compute to billable non-model cost; billing is unchanged. */
+  addTriggerRunCost(costDollars: number): void {
+    if (!isPositiveFiniteNumber(costDollars)) return;
+    this.providerCost += costDollars;
+    this.nonModelCost += costDollars;
+    this.triggerRunCostDollars += costDollars;
+  }
   lastStepInputTokens = 0;
   /** Input tokens from summarization requests, preserved across model fallback. */
   summarizationInputTokens = 0;
@@ -350,6 +364,19 @@ export class UsageTracker {
     );
   }
 
+  /**
+   * Measurement only: true when any model record (including a discarded retry)
+   * or non-model cost was observed. Never use this to decide billing.
+   */
+  get hasIncurredMeasurement(): boolean {
+    return (
+      this.discardedModelSteps.length > 0 ||
+      this.modelStepCosts.length > 0 ||
+      this.summarizationStepCosts.length > 0 ||
+      this.nonModelCost > 0
+    );
+  }
+
   private stepMeasurementCost(
     step: ModelStepCost,
     fallbackModel: string,
@@ -378,8 +405,16 @@ export class UsageTracker {
     const covered = steps.filter(
       (step) => step.inputReported && step.cacheReadReported,
     );
+    const stepCosts = steps.map((step) => ({
+      modelName: step.modelName ?? fallbackModel,
+      costDollars: this.stepMeasurementCost(step, fallbackModel),
+    }));
+    const observedModelCost = stepCosts.reduce(
+      (sum, step) => sum + step.costDollars,
+      0,
+    );
     return {
-      usage_measurement_version: 1,
+      usage_measurement_version: 2,
       usage_model_calls_started: this.modelCallsStarted,
       usage_model_records: modelSteps.length,
       usage_summary_records: this.summarizationStepCosts.length,
@@ -390,13 +425,26 @@ export class UsageTracker {
       usage_provider_cost_records: steps.filter(
         (step) => step.measurementCost !== undefined,
       ).length,
-      usage_observed_model_cost_dollars: sumCost(steps),
+      // Missing input usage without a provider cost leaves unknown spend,
+      // even if output tokens permit a partial estimate.
+      usage_unreported_model_records: steps.filter(
+        (step) => !step.inputReported && step.measurementCost === undefined,
+      ).length,
+      usage_token_estimated_model_records: steps.filter(
+        (step) => step.measurementCost === undefined,
+      ).length,
+      usage_observed_model_cost_dollars: observedModelCost,
       usage_discarded_retry_cost_dollars: sumCost(this.discardedModelSteps),
       usage_summary_cost_dollars: sumCost(this.summarizationStepCosts),
+      ...servingProviderCostProperties(stepCosts),
       // Includes tool/auxiliary-vision costs plus any sandbox and Trigger run
       // costs already added at settlement. Do not add their separate fields
       // again. Missing unreported calls still remain unknown.
       usage_observed_non_model_cost_dollars: this.nonModelCost,
+      usage_trigger_run_cost_dollars: this.triggerRunCostDollars,
+      // Incurred, not billable: includes discarded retries and estimated steps.
+      // A lower bound while any record or started call remains unreported.
+      usage_known_incurred_cost_dollars: observedModelCost + this.nonModelCost,
       usage_observed_input_tokens: steps.reduce(
         (sum, step) => sum + step.inputTokens,
         0,
@@ -655,9 +703,11 @@ export class UsageTracker {
     accountingModel?: string;
     rateLimitInfo: RateLimitInfo;
     billingBreakdown?: UsageBillingBreakdown;
-  }) {
+  }): Promise<UsageLogPersistence> {
     const usage = this.createUsageCostRecord(args);
-    logUsageRecord({
+    // Callers await this so the ledger row is not abandoned when the request
+    // or worker ends. It resolves with a failure status instead of throwing.
+    return logUsageRecord({
       usageSettlementId: this.usageSettlementId,
       admissionOperationId: args.rateLimitInfo.extraUsageAdmissionOperationId,
       userId: args.userId,

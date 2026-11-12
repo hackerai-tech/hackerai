@@ -31,6 +31,11 @@ which avoids unnecessary warehouse sync churn.
   `cost_status = 'metered'`, preserve `usage_quantity` and `usage_unit`, and do
   not invent a dollar cost. They can be reconciled to an invoice later without
   rewriting the ingestion path.
+- PostHog billing-spend rows use `cost_status = 'estimated'` and preserve the
+  provider's USD amount in `effective_cost_dollars`. Recognized cost uses that
+  amount; it is provisional spend, not a finalized invoice. Queries must report
+  billed and estimated coverage separately. Missing days are rejected before
+  replacing stored rows, rather than being converted to zero.
 - Profit queries should subtract `recognized_cost_dollars` once from aggregate
   economics. The separate table prevents platform overhead from being counted
   in both user-level and organization-level economics.
@@ -49,6 +54,19 @@ authenticated deployment-usage endpoint.
 
 The Vercel token should be scoped to the owning team and used only for this
 billing-read integration. Never log it or expose it to the browser.
+
+The optional `/api/cron/platform-costs/posthog` route requires
+`POSTHOG_BILLING_READ_TOKEN`, `POSTHOG_BILLING_ORGANIZATION_ID`, and a comma-separated
+`POSTHOG_BILLING_PROJECT_IDS` scope. An ingestion or sourcemap key does not imply
+billing read access. The organization billing API requires `billing:read` and
+may require PostHog support to enable its beta. Verify the actual response and
+environment identity before scheduling this route. It reconciles the previous
+seven complete UTC days; no cron is enabled by this code change. A missing reader
+returns 503 without replacing data. See the [PostHog billing API reference](https://posthog.com/docs/api/billing-3).
+
+This table does not imply complete company expense coverage. Provider invoices
+for models, sandboxes, and workers must be reconciled against serving costs
+already recorded per request; adding those invoices in full would double count.
 
 ## PostHog examples
 

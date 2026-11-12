@@ -1,4 +1,4 @@
-export type PlatformVendor = "vercel" | "convex";
+export type PlatformVendor = "vercel" | "convex" | "posthog";
 export type PlatformCostStatus = "billed" | "estimated" | "metered";
 
 export type PlatformCostRow = {

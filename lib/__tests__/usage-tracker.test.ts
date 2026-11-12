@@ -883,6 +883,44 @@ describe("UsageTracker", () => {
       });
     });
 
+    it("resolves only after the ledger write and returns its failure status", async () => {
+      let finishWrite!: (value: unknown) => void;
+      const pendingWrite = new Promise((resolve) => {
+        finishWrite = resolve;
+      });
+      const localMockLog = jest.fn(() => pendingWrite);
+      let IsolatedTracker: typeof UsageTracker;
+      jest.isolateModules(() => {
+        jest.doMock("@/lib/db/actions", () => ({
+          logUsageRecord: localMockLog,
+        }));
+        IsolatedTracker = require("../usage-tracker").UsageTracker;
+      });
+      const t = new IsolatedTracker!();
+      t.accumulateStep({ inputTokens: 10, outputTokens: 5, raw: { cost: 1 } });
+
+      let settled = false;
+      const logged = t
+        .log({
+          userId: "user-123",
+          selectedModel: "model-default",
+          configuredModelId: "model-config",
+          rateLimitInfo: { remaining: 0, resetTime: new Date(), limit: 0 },
+        })
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      finishWrite({ status: "failed", failureCategory: "write_failed" });
+      await expect(logged).resolves.toEqual({
+        status: "failed",
+        failureCategory: "write_failed",
+      });
+    });
+
     it("labels token-estimated cost as a raw estimate", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 

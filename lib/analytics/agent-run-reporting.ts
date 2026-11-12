@@ -6,13 +6,17 @@ import {
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
+import { knownIncurredCostLowerBound } from "@/lib/analytics/serving-cost";
 import {
   getLocalStopDiagnostic,
   LOCAL_CONNECTION_LOST_FINISH_REASON,
   localStopAnalyticsProperties,
 } from "@/lib/chat/local-connection-stop";
 
-type RunEvent = "hackerai-agent_run" | "hackerai-usage_cost";
+type RunEvent =
+  | "hackerai-agent_run"
+  | "hackerai-usage_cost"
+  | "hackerai-usage_cost_observation";
 type FailureStage = "setup" | "preparation" | "model_stream";
 type FailureKind = "error" | "canceled" | "usage_limit" | "elapsed_timeout";
 
@@ -285,9 +289,57 @@ export function createAgentRunReporting(context: {
       canceled: boolean;
       triggerCostDollars?: number;
       triggerDurationMs?: number;
+      /** Legacy: provider-reported cost only; excludes estimates and retries. */
       observedAccumulatedCostDollars?: number;
+      /** UsageTracker measurement, including discarded and estimated steps. */
+      usageMeasurement?: {
+        usage_known_incurred_cost_dollars?: number;
+        usage_trigger_run_cost_dollars?: number;
+      } & Record<string, unknown>;
     }) {
       if (!context.posthog) return;
+      const costRecorded = captured.has("hackerai-usage_cost");
+      const latestTriggerCost = knownAmount(snapshot.triggerCostDollars);
+      const settledTriggerCost = knownAmount(
+        snapshot.usageMeasurement?.usage_trigger_run_cost_dollars,
+      );
+      if (
+        costRecorded &&
+        latestTriggerCost !== null &&
+        settledTriggerCost !== null
+      ) {
+        // The recorded event carries the settlement-time Trigger snapshot.
+        // Only this run's later compute is additive to it.
+        once(
+          "hackerai-usage_cost_observation",
+          () =>
+            context.posthog!.capture({
+              distinctId: context.userId,
+              uuid: agentRunEventUuid(
+                context.runId,
+                "hackerai-usage_cost_observation",
+              ),
+              event: "hackerai-usage_cost_observation",
+              properties: {
+                observation_version: 1,
+                trigger_run_id: context.runId,
+                chat_id: context.chatId,
+                subscription: context.subscription,
+                subscription_tier: context.subscription,
+                endpoint: context.endpoint,
+                settled_trigger_cost_dollars: settledTriggerCost,
+                latest_trigger_cost_dollars: latestTriggerCost,
+                unrecorded_trigger_cost_dollars: Math.max(
+                  0,
+                  latestTriggerCost - settledTriggerCost,
+                ),
+                trigger_cost_is_final: false,
+                $process_person_profile: false,
+              },
+            }),
+          undefined,
+        );
+      }
       // A first local stop ends the run like a cancellation, not a failure.
       const kind =
         failure?.kind ??
@@ -360,6 +412,18 @@ export function createAgentRunReporting(context: {
                   localStopAnalyticsProperties(localStop)),
                 ...(event === "hackerai-usage_cost"
                   ? {
+                      ...snapshot.usageMeasurement,
+                      // Known work only; unreported calls keep it a lower bound.
+                      known_incurred_cost_lower_bound_dollars:
+                        knownIncurredCostLowerBound({
+                          knownIncurredCostDollars:
+                            snapshot.usageMeasurement
+                              ?.usage_known_incurred_cost_dollars,
+                          trackedTriggerCostDollars:
+                            snapshot.usageMeasurement
+                              ?.usage_trigger_run_cost_dollars,
+                          latestTriggerCostDollars: snapshot.triggerCostDollars,
+                        }),
                       // This is a coverage record, not a billable/full-cost estimate.
                       cost_accounting_status: "incomplete",
                       usage_settlement_status: "unknown",
