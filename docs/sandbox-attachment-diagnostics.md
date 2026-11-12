@@ -22,9 +22,16 @@ counts exclude sandbox acquisition failures and cancelled staging attempts.
 
 ## Command readiness and reconnect
 
-E2B batches first run a five-second command readiness probe. A failed probe
-prevents every attachment from independently retrying against an unavailable
-command channel. Recovery permits one reconnect and one new readiness probe;
+E2B batches first run a command readiness probe. A failed probe prevents every
+attachment from independently retrying against an unavailable command channel.
+The probe has two budgets. Five seconds bound the startup request waiting for
+a process ID. Thirty seconds bound
+the whole command, because every E2B command starts a login shell: a workspace
+whose profile is slow has a working channel and must not be reported as
+unreachable. A probe that started and still exceeds thirty seconds is killed
+by its own process ID before any recovery.
+
+Recovery permits one reconnect and one new readiness probe;
 it does not destroy or replace the workspace. `sandbox_attachment_reconnect`
 records `same_sandbox` so reconnecting a client cannot be mistaken for a new VM.
 `upload_retried_after_reconnect` replaces the misleading fresh-sandbox field.
@@ -54,12 +61,40 @@ and a stalled transfer can report curl's download timeout instead of losing
 the command stream at the SDK's default deadline. Stop still cancels the
 specific transfer process and leaves the workspace available for another run.
 
+### Name-resolution fallback
+
+A cloud download whose ordinary attempts end in an observed curl exit 6, or
+exit 28 whose own stderr names only name resolution, may run once more with
+`--resolve host:443:address`, where the worker resolved the address. The URL,
+TLS name and certificate verification are unchanged, and the worker never
+fetches the file. A message-derived exit code, any other timeout wording and
+command-channel failures do not qualify.
+
+The fallback preserves network restrictions. It runs only when the provider's
+own description of the workspace shows no egress
+allow list, deny list, proxy or rules. A missing, failed, or restricted
+description skips it, as does any answer that is not entirely public IPv4.
+Skipping, a failed lookup, and a pinned request without a process result all
+report the original download failure; a pinned request that exits nonzero is
+final and reports its own exit. The recovery log contains no hosts, addresses
+or resolver errors.
+
 Local transfer failures distinguish a disconnected computer, missing Windows
 transfer client, DNS failure, and resource exhaustion. A curl DNS error with
 `getaddrinfo() thread failed to start` is resource exhaustion evidence, not
 proof of a DNS configuration problem. Windows fallback verifies PowerShell
 on the selected computer, including its system-directory executable, before
 staging a transfer script.
+
+## Cloud fallback directories
+
+When a cloud curl transfer cannot write its destination, the fallback reserves
+a new owner-only `hackerai-upload-<uuid>` directory directly beneath the first
+usable base. It does not depend on a shared `hackerai-upload` root: a reused
+workspace can hold one that the command user cannot write in every base at
+once. Existing paths are never changed or removed, so these directories
+accumulate until the workspace owner removes them. Desktop and other native
+transfers keep the shared-root fallback.
 
 ## E2B write probes
 

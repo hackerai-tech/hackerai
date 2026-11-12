@@ -32,6 +32,9 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
   "[deadline_exceeded] the operation timed out: This error is likely due to exceeding 'timeoutMs' - the total time a long running request (like command execution or directory watch) can be active.";
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
+// Cloud reservations accept only the private directory their script named.
+const reservedCloudPath = (command: string) =>
+  `/tmp/${/^name='(hackerai-upload-[0-9a-f-]{36})'$/m.exec(command)?.[1]}/${/^filename='([^']+)'$/m.exec(command)?.[1]}\n`;
 
 it.each(["exit", "disk_full", "fallback"] as const)(
   "retains command context through %s conversion and reports the final fallback rejection",
@@ -76,7 +79,7 @@ it.each(["exit", "disk_full", "fallback"] as const)(
             ? { exitCode: 1, stdout: "", stderr: "" }
             : {
                 exitCode: 0,
-                stdout: "/tmp/hackerai-upload/fallback/private-file",
+                stdout: reservedCloudPath(command),
                 stderr: "",
               };
         }),
@@ -857,6 +860,7 @@ describe("desktop-local sandbox file helpers", () => {
     const consoleWarnSpy = jest
       .spyOn(console, "warn")
       .mockImplementation(() => {});
+    let reservedPath = "";
     const run = jest.fn(async (command: string) => {
       if (command.includes("curl") && command.includes("/home/user/upload")) {
         const error = new Error("exit status 23") as Error & {
@@ -871,9 +875,11 @@ describe("desktop-local sandbox file helpers", () => {
       }
 
       if (command.includes("for base in")) {
+        reservedPath = reservedCloudPath(command).trim();
+        // A login profile may write around the reserved path.
         return {
           exitCode: 0,
-          stdout: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
+          stdout: `profile banner\n${reservedPath}\nlogout\n`,
           stderr: "",
         };
       }
@@ -912,13 +918,13 @@ describe("desktop-local sandbox file helpers", () => {
       await jest.advanceTimersByTimeAsync(1_500);
       const result = await pendingResult;
 
+      expect(reservedPath).toMatch(
+        /^\/tmp\/hackerai-upload-[0-9a-f-]{36}\/report\.pdf$/,
+      );
       expect(result).toEqual({
         failedCount: 0,
         pathRewrites: [
-          {
-            from: "/home/user/upload/report.pdf",
-            to: "/tmp/hackerai-upload/fallback.d4e5f6/report.pdf",
-          },
+          { from: "/home/user/upload/report.pdf", to: reservedPath },
         ],
       });
 
@@ -926,17 +932,10 @@ describe("desktop-local sandbox file helpers", () => {
         String(command).includes("-o '/home/user/upload/report.pdf'"),
       );
       const fallbackCurlAttempts = run.mock.calls.filter(([command]) =>
-        String(command).includes(
-          "-o '/tmp/hackerai-upload/fallback.d4e5f6/report.pdf'",
-        ),
+        String(command).includes(`-o '${reservedPath}'`),
       );
       expect(homeCurlAttempts).toHaveLength(1);
       expect(fallbackCurlAttempts).toHaveLength(1);
-      expect(
-        run.mock.calls.some(([command]) =>
-          String(command).includes('dir="$root/fallback-'),
-        ),
-      ).toBe(true);
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
@@ -2196,7 +2195,7 @@ describe("attachment write fallback observability", () => {
             return { exitCode: 1, stdout: "", stderr: "" };
           return {
             exitCode: 0,
-            stdout: "/tmp/hackerai-upload/fallback/test.pdf",
+            stdout: reservedCloudPath(command),
             stderr: "",
           };
         }
