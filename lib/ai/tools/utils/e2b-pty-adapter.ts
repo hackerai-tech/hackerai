@@ -10,6 +10,7 @@
  */
 
 import type { Sandbox } from "@e2b/code-interpreter";
+import type { PtyExitResult } from "./pty-exited-promise";
 
 // ── Narrow structural types over the E2B SDK surface we actually touch ─
 // Prevents `any` leakage and keeps the adapter resilient to SDK churn.
@@ -53,7 +54,7 @@ export interface PtyHandle {
   kill(): Promise<void>;
   /** Returns an unsubscribe function. */
   onData(cb: (bytes: Uint8Array) => void): () => void;
-  readonly exited: Promise<{ exitCode: number | null }>;
+  readonly exited: Promise<PtyExitResult>;
 }
 
 export interface CreatePtyOptions {
@@ -109,16 +110,16 @@ export async function createE2BPtyHandle(
 
   // Kick off wait() immediately so `exited` resolves exactly once and all
   // consumers share the same resolution. Any rejection is normalized to
-  // {exitCode: null} with a structured log — the error is surfaced, not
+  // an explicitly failed observation with a structured log — the error is surfaced, not
   // swallowed silently.
-  const exited: Promise<{ exitCode: number | null }> = handle
+  const exited: Promise<PtyExitResult> = handle
     .wait({ timeoutMs: PTY_NO_TIMEOUT_MS })
     .then((result) => ({
       exitCode: typeof result?.exitCode === "number" ? result.exitCode : null,
     }))
     .catch((err: unknown) => {
       console.error(`${LOG_PREFIX} pty wait() rejected for pid=${pid}:`, err);
-      return { exitCode: null };
+      return { exitCode: null, observationFailed: true };
     });
 
   return {

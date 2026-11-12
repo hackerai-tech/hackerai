@@ -1427,6 +1427,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 }
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
+                  !(error instanceof CommandExitError),
                 );
                 if (handler) {
                   handler.cleanup();

@@ -151,6 +151,8 @@ interface InternalSession extends PtySession {
   closing: boolean;
   /** Set when the process exits naturally — session stays around for view/wait. */
   exitedNaturally: { exitCode: number | null } | null;
+  /** A rejected transport observation is not proof the process exited. */
+  processExitConfirmed: boolean;
   executionRecord?: CreateSessionOpts["executionRecord"];
   recordQueue: Promise<void>;
   recordWriting: boolean;
@@ -183,6 +185,7 @@ function shortSessionId(
 
 export class PtySessionManager {
   private chats = new Map<string, Map<string, InternalSession>>();
+  private pendingCreates = new Map<string, Set<Promise<PtySession>>>();
   // Record work can outlive a tool's short checkpoint wait and a forgotten
   // foreground session. Keep ownership until the underlying transport settles.
   private recordWork = new Map<string, Set<RecordWork>>();
@@ -241,20 +244,43 @@ export class PtySessionManager {
 
   async create(chatId: string, opts: CreateSessionOpts): Promise<PtySession> {
     const chat = this.chats.get(chatId);
-    const count = chat ? chat.size : 0;
+    const count =
+      [...(chat?.values() ?? [])].filter(
+        (session) => !session.processExitConfirmed,
+      ).length + (this.pendingCreates.get(chatId)?.size ?? 0);
     if (count >= MAX_CONCURRENT_PTYS_PER_CHAT) {
       throw new Error(
         `MAX_CONCURRENT_PTYS_PER_CHAT reached (limit=${MAX_CONCURRENT_PTYS_PER_CHAT}) for chatId=${chatId}`,
       );
     }
 
+    // Reserve synchronously, before any asynchronous factory can spawn. The
+    // same promise is owned by closeAll if shutdown starts during creation.
+    let pending = this.pendingCreates.get(chatId);
+    if (!pending) this.pendingCreates.set(chatId, (pending = new Set()));
+    const creation = Promise.resolve().then(() =>
+      this.createSession(chatId, opts),
+    );
+    pending.add(creation);
+    try {
+      return await creation;
+    } finally {
+      pending.delete(creation);
+      if (!pending.size) this.pendingCreates.delete(chatId);
+    }
+  }
+
+  private async createSession(
+    chatId: string,
+    opts: CreateSessionOpts,
+  ): Promise<PtySession> {
     // The factory is invoked BY the manager so that concurrency cap rejection
     // above happens without spawning anything. If the factory itself throws,
     // nothing leaks — there is no handle to clean up. If wiring the handle
     // *after* it's spawned throws, we best-effort kill the orphan so it
     // doesn't leak in the sandbox.
     const handle = await opts.createHandle();
-    const sessionId = shortSessionId(chat);
+    const sessionId = shortSessionId(this.chats.get(chatId));
     const now = Date.now();
 
     try {
@@ -291,6 +317,7 @@ export class PtySessionManager {
         unsubscribe: null,
         closing: false,
         exitedNaturally: null,
+        processExitConfirmed: false,
         executionRecord: opts.executionRecord,
         recordWork: {
           sessionId,
@@ -325,7 +352,12 @@ export class PtySessionManager {
         .then(
           (info) => {
             session.exitedNaturally = { exitCode: info.exitCode };
-            void this.checkpoint(session);
+            session.processExitConfirmed = info.observationFailed !== true;
+            if (info.observationFailed)
+              session.exitReason ??= "transport_error";
+            void this.checkpoint(session).finally(() =>
+              this.pruneCompleted(chatId),
+            );
           },
           () => {
             session.exitedNaturally = { exitCode: null };
@@ -435,10 +467,21 @@ export class PtySessionManager {
 
   async closeAll(chatId: string): Promise<void> {
     const sessions = Array.from(this.chats.get(chatId)?.values() ?? []);
+    const pending = [...(this.pendingCreates.get(chatId) ?? [])];
     const groups = new Set([
       ...(this.recordWork.get(chatId) ?? []),
       ...sessions.map((session) => session.recordWork),
     ]);
+    // Include only factories admitted before this drain. Later responses own
+    // their own creations, even if those factories finish first.
+    const created = await Promise.allSettled(pending);
+    for (const result of created) {
+      if (result.status === "fulfilled") {
+        const session = result.value as InternalSession;
+        if (!sessions.includes(session)) sessions.push(session);
+        groups.add(session.recordWork);
+      }
+    }
     // Capture only work owned at shutdown. A later response on this chat
     // must not be canceled or included in this response's drain.
     for (const work of groups) {
@@ -588,6 +631,17 @@ export class PtySessionManager {
   }
 
   // ─── internals ──────────────────────────────────────────────────────────
+
+  private pruneCompleted(chatId: string): void {
+    // Retain a bounded in-memory history independently of the live-process cap.
+    // Persisted records and outstanding writes retain their separate ownership.
+    const completed = [...(this.chats.get(chatId)?.values() ?? [])].filter(
+      (session) => session.processExitConfirmed && !session.closing,
+    );
+    for (const session of completed.slice(0, -MAX_CONCURRENT_PTYS_PER_CHAT)) {
+      this.removeSession(session);
+    }
+  }
 
   private onData(session: InternalSession, bytes: Uint8Array): void {
     // Copy into an owned Uint8Array so callers can recycle buffers
