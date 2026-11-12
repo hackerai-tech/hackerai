@@ -2872,44 +2872,44 @@ it.each([
   },
 );
 
-it("retains bounded curl timeout wording through staging diagnostics and image bypass", async () => {
+it("retains curl1 wording from generic E2B result evidence without raw stderr", async () => {
   const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
   const info = jest.spyOn(console, "info").mockImplementation(() => {});
+  const error = jest.spyOn(console, "error").mockImplementation(() => {});
   const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-  const url = "https://private.example/secret.png?signature=secret";
-  const path = "/home/user/upload/private-image.png";
-  const rejection = recordAttachmentDownloadFailure(
-    new Error("Failed to download file: private detail\nexitCode: 28"),
-    {
-      platform: "windows",
-      shell: "bash",
-      httpClient: "curl",
-      exitCode: 28,
-      stderr: "curl: (28) SSL connection timeout private detail",
-    },
-  );
-  recordAttachmentDownloadBoundary(rejection, {
-    phase: "failure_diagnostics",
-    attempt: 3,
-    resultState: "nonzero",
-  });
+  const stderr =
+    'stderr-canary\ncurl: (1) Protocol "privateproto" not supported or disabled in libcurl';
+  const handle = {
+    pid: 124,
+    exitCode: 1,
+    wait: jest.fn().mockRejectedValue(
+      Object.assign(new Error(stderr), {
+        name: "CommandExitError",
+        exitCode: 1,
+        stderr,
+      }),
+    ),
+    disconnect: jest.fn().mockResolvedValue(undefined),
+  };
   const sandbox = {
-    sandboxKind: "centrifugo",
-    getConnectionInfo: () => ({ isDesktop: true }),
-    files: { downloadFromUrl: jest.fn().mockRejectedValue(rejection) },
+    sandboxId: "owned-fixture",
     commands: {
-      run: jest.fn(async () => ({
-        stdout: "/tmp/fallback-image.png",
-        stderr: "",
-        exitCode: 0,
-      })),
+      run: jest.fn().mockResolvedValue(handle),
+      kill: jest.fn().mockResolvedValue(true),
     },
   };
   try {
     const result = await uploadSandboxFiles(
-      [{ kind: "url", url, localPath: path }],
+      [
+        {
+          kind: "url",
+          url: "https://private.example/target?token=query-canary",
+          localPath: "/tmp/path-canary.png",
+        },
+      ],
       async () => sandbox,
       {
+        signal: new AbortController().signal,
         logContext: {
           service: "agent-long",
           requestId: "run-diag",
@@ -2919,50 +2919,164 @@ it("retains bounded curl timeout wording through staging diagnostics and image b
       },
     );
     expect(result.failedCount).toBe(1);
-    const expected = {
-      attachment_download_timeout_version: 1,
-      attachment_download_timeout_hint: "tls_handshake",
-      attachment_download_attempt: 3,
-      attachment_download_route: "native_method",
+    const fields = {
+      attachment_download_route: "generic_command",
+      attachment_download_http_client: "curl",
+      attachment_download_exit_code: 1,
+      attachment_download_curl1_version: 1,
+      attachment_download_curl1_line_present: true,
+      attachment_download_curl1_hint: "protocol_unsupported_or_disabled",
     };
-    expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
-    for (const name of [
-      "sandbox_attachment_failure_diagnostics",
+    const metadata = getSandboxUploadFailureMetadata(result)!;
+    expect(metadata).toMatchObject(fields);
+    expect(event).toHaveBeenCalledWith(
       "sandbox_attachment_staging_failed",
-    ])
-      expect(event).toHaveBeenCalledWith(
-        name,
-        expect.objectContaining(expected),
-      );
-    const messages = [
-      {
-        id: "m1",
-        role: "user",
-        parts: [{ type: "file", url, mediaType: "image/png" }],
-      },
-    ] as UIMessage[];
-    expect(
-      recoverProviderVisibleImagesAfterSandboxUploadFailure(
-        messages,
-        [{ kind: "url", url, localPath: path }],
-        result,
-        { service: "agent-long", userId: "opaque-user", chatId: "opaque-chat" },
-      ),
-    ).not.toBeNull();
-    const bypass = warn.mock.calls
-      .map(([line]) =>
-        typeof line === "string" && line.startsWith("{")
-          ? JSON.parse(line)
-          : null,
-      )
-      .find((x) => x?.event === "sandbox_image_attachment_staging_bypassed");
-    expect(bypass).toMatchObject(expected);
-    expect(JSON.stringify(bypass)).not.toMatch(
-      /private\.example|secret|private detail|private-image|fallback-image/,
+      expect.objectContaining(fields),
     );
+    expect(
+      JSON.stringify(
+        Object.entries(metadata).filter(([key]) =>
+          key.startsWith("attachment_download_"),
+        ),
+      ),
+    ).not.toMatch(
+      /private|stderr-canary|query-canary|path-canary|Protocol|libcurl/,
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   } finally {
     warn.mockRestore();
     info.mockRestore();
+    error.mockRestore();
     event.mockRestore();
   }
 });
+
+it.each([
+  {
+    exitCode: 28,
+    stderr: "curl: (28) SSL connection timeout private detail",
+    causeClipped: false,
+    expected: {
+      attachment_download_timeout_version: 1,
+      attachment_download_timeout_hint: "tls_handshake",
+    },
+  },
+  {
+    exitCode: 1,
+    // Earlier private output pushes the public line past the wrapper's clip.
+    stderr: `${"private detail ".repeat(80)}\ncurl: (1) Protocol "privateproto" not supported or disabled in libcurl`,
+    causeClipped: true,
+    expected: {
+      attachment_download_curl1_version: 1,
+      attachment_download_curl1_line_present: true,
+      attachment_download_curl1_hint: "protocol_unsupported_or_disabled",
+    },
+  },
+])(
+  "retains bounded curl exit$exitCode wording through staging diagnostics and image bypass",
+  async ({ exitCode, stderr, causeClipped, expected: wording }) => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const url = "https://private.example/secret.png?signature=secret";
+    const path = "/home/user/upload/private-image.png";
+    const rejection = recordAttachmentDownloadFailure(
+      new Error(`Failed to download file: ${stderr}\nexitCode: ${exitCode}`),
+      {
+        platform: "windows",
+        shell: "bash",
+        httpClient: "curl",
+        exitCode,
+        stderr,
+      },
+    );
+    recordAttachmentDownloadBoundary(rejection, {
+      phase: "failure_diagnostics",
+      attempt: 3,
+      resultState: "nonzero",
+    });
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+      files: { downloadFromUrl: jest.fn().mockRejectedValue(rejection) },
+      commands: {
+        run: jest.fn(async () => ({
+          stdout: "/tmp/fallback-image.png",
+          stderr: "",
+          exitCode: 0,
+        })),
+      },
+    };
+    try {
+      const result = await uploadSandboxFiles(
+        [{ kind: "url", url, localPath: path }],
+        async () => sandbox,
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run-diag",
+            userId: "opaque-user",
+            chatId: "opaque-chat",
+          },
+        },
+      );
+      expect(result.failedCount).toBe(1);
+      const expected = {
+        ...wording,
+        attachment_download_exit_code: exitCode,
+        attachment_download_attempt: 3,
+        attachment_download_route: "native_method",
+      };
+      const metadata = getSandboxUploadFailureMetadata(result)!;
+      expect(metadata).toMatchObject(expected);
+      const cause = String(metadata.upload_failure_cause);
+      expect(cause.endsWith("...")).toBe(causeClipped);
+      expect(cause.includes(stderr.split("\n").at(-1)!)).toBe(!causeClipped);
+      expect(
+        JSON.stringify(Object.keys(wording).map((key) => [key, metadata[key]])),
+      ).not.toMatch(/private|secret|Protocol|libcurl|SSL/);
+      for (const name of [
+        "sandbox_attachment_failure_diagnostics",
+        "sandbox_attachment_staging_failed",
+      ])
+        expect(event).toHaveBeenCalledWith(
+          name,
+          expect.objectContaining(expected),
+        );
+      const messages = [
+        {
+          id: "m1",
+          role: "user",
+          parts: [{ type: "file", url, mediaType: "image/png" }],
+        },
+      ] as UIMessage[];
+      expect(
+        recoverProviderVisibleImagesAfterSandboxUploadFailure(
+          messages,
+          [{ kind: "url", url, localPath: path }],
+          result,
+          {
+            service: "agent-long",
+            userId: "opaque-user",
+            chatId: "opaque-chat",
+          },
+        ),
+      ).not.toBeNull();
+      const bypass = warn.mock.calls
+        .map(([line]) =>
+          typeof line === "string" && line.startsWith("{")
+            ? JSON.parse(line)
+            : null,
+        )
+        .find((x) => x?.event === "sandbox_image_attachment_staging_bypassed");
+      expect(bypass).toMatchObject(expected);
+      expect(JSON.stringify(bypass)).not.toMatch(
+        /private\.example|secret|private detail|private-image|fallback-image|privateproto/,
+      );
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      event.mockRestore();
+    }
+  },
+);

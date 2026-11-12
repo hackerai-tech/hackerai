@@ -36,6 +36,27 @@ function curlTimeoutHint(stderr: string) {
     : (hints.values().next().value ?? "unclassified");
 }
 
+/** Complete public curl exit1 wording only; the quoted protocol is never kept.
+ * Unsupported and disabled protocols print the same text, so stay merged. */
+function curl1Context(stderr: string, truncated: boolean) {
+  const lines = stderr.split(/\r?\n/);
+  // A truncated final segment may continue past the scan budget.
+  const complete = truncated ? lines.slice(0, -1) : lines;
+  return {
+    attachment_download_curl1_version: 1 as const,
+    attachment_download_curl1_line_present: lines.some((line) =>
+      /^curl: \(1\) /.test(line),
+    ),
+    attachment_download_curl1_hint: complete.some((line) =>
+      /^curl: \(1\) Protocol "[^"\r\n]{1,64}" not supported or disabled in libcurl$/.test(
+        line,
+      ),
+    )
+      ? ("protocol_unsupported_or_disabled" as const)
+      : ("unclassified" as const),
+  };
+}
+
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
 function summarize(input: DownloadInput) {
@@ -92,6 +113,9 @@ function summarize(input: DownloadInput) {
           attachment_download_timeout_version: 1 as const,
           attachment_download_timeout_hint: curlTimeoutHint(stderr),
         }
+      : {}),
+    ...(input.httpClient === "curl" && input.exitCode === 1
+      ? curl1Context(stderr, input.stderr.length > 8192)
       : {}),
   };
 }
