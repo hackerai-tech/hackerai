@@ -153,6 +153,39 @@ def invocation_idle_env():
     if timeout > 18446744073709551615: return 'unparsed'
     return 'disabled' if timeout == 0 else 'lt_15m' if timeout < 900000 else '15m' if timeout == 900000 else 'gt_15m'
 
+def own_process_identity():
+    """Private [1, PID, start ticks] for an exact-incarnation check; never exported."""
+    try:
+        fd = os.open('/proc/self/stat', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except Exception:
+        return None
+    data = b''
+    try:
+        info = os.fstat(fd)
+        if __import__('stat').S_ISREG(info.st_mode) and info.st_uid == os.getuid():
+            data = os.read(fd, 4097)
+    except Exception:
+        data = b''
+    try:
+        os.close(fd)
+    except Exception:
+        return None  # Best effort: omit only the identity, never the receipt.
+    try:
+        if not 0 < len(data) <= 4096:
+            return None
+        # The command name can contain spaces and parentheses; fields follow the last ')'.
+        head = data.find(b' (')
+        close = data.rfind(b')')
+        fields = data[close + 1:].split()
+        if head < 1 or close < head or data[:head] != str(os.getpid()).encode() or len(fields) < 20:
+            return None
+        ticks = fields[19]  # Field 22, counted from the state at field 3.
+        if not ticks.isdigit() or len(ticks) > 20 or int(ticks) > 18446744073709551615:
+            return None
+        return [1, os.getpid(), str(int(ticks))]
+    except Exception:
+        return None
+
 def record_wrapper(phase, status=None, executed=False):
     """Atomically record finite wrapper state without changing CLI admission or its result."""
     # Diagnostic only, in the existing private ephemeral root. Never store argv,
@@ -206,9 +239,15 @@ def record_wrapper(phase, status=None, executed=False):
             pass  # Legacy, missing and unreadable history remains unmeasured.
         finally:
             if previous_fd is not None: os.close(previous_fd)
+        latest = value
+        if phase == 'started':
+            identity = own_process_identity()
+            # Optional; omitted rather than displacing fields at the reader's 512-byte cap.
+            if identity is not None and len(json.dumps(dict(value, process=identity))) <= 512:
+                latest = dict(value, process=identity)
         # Keep wrapped open/close observations even after version/other commands.
         # These are observations, not proof that a browser is still running.
-        write_receipt('wrapper-receipt.json', value)
+        write_receipt('wrapper-receipt.json', latest)
         if action == 'open':
             write_receipt('open-receipt.json', value)
         elif action == 'close':

@@ -7,7 +7,11 @@ import { BROWSER_DAEMON_PROGRAM } from "../daemon-program";
 const directory = "/dev/shm/hackerai-browser-0123456789abcdef";
 /** Preserve the old receipt budget and the existing full parser cap separately. */
 function expectPacketBudgets(text: string) {
-  const { cv: _cliAtPrepare, ...previousContext } = JSON.parse(text);
+  const {
+    cv: _cliAtPrepare,
+    w1: _wrapperProcess,
+    ...previousContext
+  } = JSON.parse(text);
   expect(
     Buffer.byteLength(JSON.stringify(previousContext)),
   ).toBeLessThanOrEqual(512);
@@ -52,6 +56,11 @@ function daemon(
     cliMode?: number;
     cliSize?: number;
     cliSymlink?: boolean;
+    procfsType?: number;
+    wrapperStat?: string;
+    wrapperStatError?: string;
+    wrapperStatOwner?: number;
+    wrapperStatFifo?: boolean;
   } = {},
 ) {
   const socketPath = path.join(
@@ -119,16 +128,27 @@ function daemon(
   });
   const readReceipt = jest.fn((fd: number, bytes: Buffer) =>
     bytes.write(
-      fd === 11
-        ? JSON.stringify(options.cliReceipt)
-        : fd === 10
-          ? options.pidFile!
-          : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
+      fd === 12
+        ? options.wrapperStat!
+        : fd === 11
+          ? JSON.stringify(options.cliReceipt)
+          : fd === 10
+            ? options.pidFile!
+            : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
     ),
   );
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
+    if (file.startsWith("/proc/")) {
+      if (file !== "/proc/271828/stat")
+        throw new Error("Unexpected process path");
+      if (options.wrapperStatError)
+        throw Object.assign(new Error("PRIVATE process"), {
+          code: options.wrapperStatError,
+        });
+      return 12;
+    }
     if (file.endsWith("/cli-at-prepare.json")) {
       if (options.cliReceipt === undefined || options.cliSymlink)
         throw new Error("PRIVATE unavailable CLI receipt");
@@ -159,11 +179,24 @@ function daemon(
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
           fstatSync: (fd: number) =>
-            fd === 11
-              ? cliStat()
-              : fd === 10
-                ? pidStat()
-                : receiptStat(fd === 8, fd === 9),
+            fd === 12
+              ? {
+                  uid: options.wrapperStatOwner ?? 1000,
+                  isFile: () => !options.wrapperStatFifo,
+                }
+              : fd === 11
+                ? cliStat()
+                : fd === 10
+                  ? pidStat()
+                  : receiptStat(fd === 8, fd === 9),
+          statfsSync: (file: string) => {
+            if (file !== "/proc") throw new Error("Unexpected filesystem");
+            if (options.procUnavailable)
+              throw Object.assign(new Error("PRIVATE unavailable procfs"), {
+                code: "ENOENT",
+              });
+            return { type: options.procfsType ?? 0x9fa0 };
+          },
           statSync: (file: string) => {
             if (file === "/proc") {
               if (options.procUnavailable)
@@ -1045,4 +1078,226 @@ it("does not read CLI receipts on a successful daemon response", () => {
   expect(d.exit).toHaveBeenCalledWith(0);
   expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
   expect(d.openReceipt).not.toHaveBeenCalled();
+});
+
+// Synthetic fixtures: the wrapper's private identity tuple and procfs stat lines.
+const UINT64_MAX = "18446744073709551615";
+const startedWrapper = {
+  ...receipt,
+  action: "open",
+  phase: "started",
+  exit: null,
+  process: [1, 271828, "123456"],
+};
+/** A stat line with state at field 3 and start ticks at field 22. */
+const procStat = ({
+  pid = "271828",
+  comm = "python3",
+  state = "S",
+  ticks = "123456",
+} = {}) =>
+  `${pid} (${comm}) ${state} ${Array.from({ length: 18 }, (_, i) => i + 1).join(" ")} ${ticks} 0 0\n`;
+type DaemonOptions = NonNullable<Parameters<typeof daemon>[0]>;
+
+it.each<[string, DaemonOptions & { tuple?: unknown[] }, number]>([
+  ["live", { wrapperStat: procStat() }, 3],
+  [
+    "live with a parenthesized command name",
+    { wrapperStat: procStat({ comm: "x) Z 9 (y" }) },
+    3,
+  ],
+  [
+    "live at the uint64 start bound",
+    {
+      wrapperStat: procStat({ ticks: UINT64_MAX }),
+      tuple: [1, 271828, UINT64_MAX],
+    },
+    3,
+  ],
+  ["zombie", { wrapperStat: procStat({ state: "Z" }) }, 4],
+  ["PID reused", { wrapperStat: procStat({ ticks: "123457" }) }, 2],
+  [
+    "another user's process at the PID",
+    { wrapperStat: procStat({ ticks: "9" }), wrapperStatOwner: 0 },
+    6,
+  ],
+  ["gone", { wrapperStatError: "ENOENT" }, 1],
+  ["reaped while opening", { wrapperStatError: "ESRCH" }, 1],
+  ["permission", { wrapperStatError: "EACCES" }, 5],
+  ["symlink", { wrapperStatError: "ELOOP" }, 6],
+  [
+    "same start under another user",
+    { wrapperStat: procStat(), wrapperStatOwner: 0 },
+    6,
+  ],
+  ["non-regular", { wrapperStat: procStat(), wrapperStatFifo: true }, 6],
+  ["oversized", { wrapperStat: procStat() + " ".repeat(4097) }, 6],
+  ["another PID", { wrapperStat: procStat({ pid: "271829" }) }, 6],
+  ["truncated", { wrapperStat: "271828 (python3) S 1 2 3\n" }, 6],
+  ["non-numeric start", { wrapperStat: procStat({ ticks: "PRIVATE" }) }, 6],
+  [
+    "start beyond uint64",
+    { wrapperStat: procStat({ ticks: "18446744073709551616" }) },
+    6,
+  ],
+  ["procfs unavailable", { procUnavailable: true }, 0],
+  ["not procfs", { wrapperStat: procStat(), procfsType: 0x01021994 }, 0],
+])(
+  "reports exact started-wrapper incarnation visibility (%s) without changing the failure",
+  (_case, { tuple, ...options }, code) => {
+    const d = daemon({
+      ...options,
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...startedWrapper, process: tuple ?? startedWrapper.process },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      wrapper_phase: "started",
+      wrapper_exit: "none",
+      wrapper_session_matches: true,
+      w1: code,
+    });
+    expect(text).not.toMatch(/PRIVATE|271828|123456|\/proc|process/);
+    const probed = d.openReceipt.mock.calls.filter(([file]) =>
+      file.startsWith("/proc/"),
+    );
+    expect(probed).toEqual(
+      code === 0 ? [] : [["/proc/271828/stat", 256 | 2048]],
+    );
+    if (code !== 0 && !("wrapperStatError" in options))
+      expect(d.closeReceipt).toHaveBeenCalledWith(12);
+    // Only an owned regular stat file is read; another UID's bytes never are.
+    if ("wrapperStatFifo" in options || "wrapperStatOwner" in options)
+      expect(d.readReceipt.mock.calls.some(([fd]) => fd === 12)).toBe(false);
+  },
+);
+
+it.each([
+  undefined,
+  [2, 271828, "123456"],
+  [1, 0, "123456"],
+  [1, "271828", "123456"],
+  [1, 271828, 123456],
+  [1, 271828, "0123456"],
+  [1, 271828, "18446744073709551616"],
+  [1, 271828, "123456", "PRIVATE"],
+])(
+  "keeps a legacy or malformed private identity unavailable instead of not_found (%#)",
+  (tuple) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...startedWrapper, process: tuple },
+      wrapperStatError: "ENOENT",
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text).w1).toBe(0);
+    expect(text).not.toMatch(/PRIVATE|271828|123456/);
+    expect(
+      d.openReceipt.mock.calls.some(([file]) => file.startsWith("/proc/")),
+    ).toBe(false);
+  },
+);
+
+it.each([{ phase: "completed", exit: 0 }, { session_key: "a".repeat(64) }])(
+  "does not probe a completed or other-session wrapper receipt (%j)",
+  (override) => {
+    const d = daemon({
+      missingPath: directory + "/sockets/default.sock",
+      receipt: { ...startedWrapper, ...override },
+      wrapperStat: procStat(),
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value.wrapper_receipt_version).toBe(1);
+    expect(value).not.toHaveProperty("w1");
+    expect(
+      d.openReceipt.mock.calls.some(([file]) => file.startsWith("/proc/")),
+    ).toBe(false);
+  },
+);
+
+it("reports a visible started wrapper at the unchanged connected-response deadline", () => {
+  const d = daemon({ receipt: startedWrapper, wrapperStat: procStat() });
+  d.socket.emit("connect");
+  d.timeout();
+  expect(d.exit).toHaveBeenCalledWith(3);
+  expect(d.socket.destroy).toHaveBeenCalled();
+  expect(d.connect).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toMatchObject({
+    deadline: [1, "awaiting_response"],
+    wrapper_phase: "started",
+    w1: 3,
+  });
+});
+
+it("leaves a successful response unprobed even for a started selected wrapper", () => {
+  const d = daemon({ receipt: startedWrapper, wrapperStat: procStat() });
+  const response = { id: "hackerai-preview", success: true, data: {} };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.openReceipt).not.toHaveBeenCalled();
+});
+
+it("fits the incarnation code beside every maximal existing field within544 without changing them", () => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
+  const maximal = (process?: unknown) =>
+    daemon({
+      missingPath: directory + "/sockets",
+      missingCode: "ENOTDIR",
+      pidFile: "314159",
+      processVisibility: "same_uid",
+      cliReceipt: [1, 1, 999999999],
+      wrapperStat: procStat(),
+      receipt: {
+        ...longest,
+        action: "version",
+        phase: "started",
+        exit: null,
+        open_receipt_support: 1,
+        close_receipt_support: 1,
+        history: [1, true, true],
+        process,
+      },
+      openReceipt: {
+        ...longest,
+        action: "open",
+        exit: 0,
+        idle_env_version: 1,
+        idle_env: "unparsed",
+      },
+      closeReceipt: { ...longest, action: "close", close_all: false },
+    }).output.mock.calls[0][0];
+  const text = maximal(startedWrapper.process);
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+  const { w1, ...existing } = JSON.parse(text);
+  expect(w1).toBe(3);
+  const { w1: legacy, ...withoutIdentity } = JSON.parse(maximal(undefined));
+  expect(legacy).toBe(0);
+  expect(existing).toEqual(withoutIdentity);
+  expect(existing).toMatchObject({
+    diagnostic_reason: "sockets_stat",
+    diagnostic_error: "not_directory",
+    wrapper_action: "version",
+    wrapper_age: "unknown",
+    h1: 3,
+    open_exit: 0,
+    open_age: "unknown",
+    open_idle: [1, "unparsed"],
+    p1: [1, 2, 0],
+    cv: [1, 1, 999999999],
+    close_receipt: [
+      1,
+      "recorded",
+      "completed",
+      "other",
+      "selected_session",
+      "unknown",
+      "same_time",
+    ],
+  });
 });
