@@ -82,6 +82,10 @@ function entityId(vendor: Vendor, row: PlatformCostRow) {
   ])}`;
 }
 
+function rowKey(row: { day: string; entity_id: string }) {
+  return JSON.stringify([row.day, row.entity_id]);
+}
+
 function toStoredRow(vendor: Vendor, row: PlatformCostRow, observedAt: number) {
   const billedCost = row.billedCostDollars ?? 0;
   const recognizedCost =
@@ -207,7 +211,7 @@ export async function replaceCostRows(
       throw new Error("billed rows require billedCostDollars");
     }
     const stored = toStoredRow(args.vendor as Vendor, row, args.observedAt);
-    const key = `${stored.day}\u0000${stored.entity_id}`;
+    const key = rowKey(stored);
     if (incoming.has(key)) {
       throw new Error("rows contain a duplicate day and service identity");
     }
@@ -227,6 +231,32 @@ export async function replaceCostRows(
     throw new Error("existing platform rows exceed the safe replacement limit");
   }
 
+  // Partial history cannot erase issued receipts. Drafts may be finalized.
+  if (args.vendor === "convex" && args.scope === "charges") {
+    const receipts = new Map<string, Set<string>>();
+    for (const row of incoming.values()) {
+      const key = JSON.stringify([row.day, row.service_name]);
+      const references = receipts.get(key) ?? new Set<string>();
+      for (const reference of (row.billing_reference ?? "").split(","))
+        references.add(reference);
+      receipts.set(key, references);
+    }
+    for (const row of existing) {
+      if (row.cost_basis !== "billing_period_allocation") continue;
+      const issued = (row.billing_reference ?? "")
+        .split(",")
+        .filter((reference) => reference && !reference.endsWith("-DRAFT"));
+      const references = receipts.get(
+        JSON.stringify([row.day, row.service_name]),
+      );
+      if (issued.some((reference) => !references?.has(reference))) {
+        throw new Error(
+          "Convex billing import omits a previously recorded issued receipt",
+        );
+      }
+    }
+  }
+
   let inserted = 0;
   let updated = 0;
   let deleted = 0;
@@ -235,7 +265,7 @@ export async function replaceCostRows(
   for (const row of existing) {
     if ((args.scope === "metered") !== (row.cost_status === "metered"))
       continue;
-    const key = `${row.day}\u0000${row.entity_id}`;
+    const key = rowKey(row);
     const next = incoming.get(key);
     if (!next) {
       await ctx.db.delete(row._id);
