@@ -48,6 +48,10 @@ export const suites = [
       "scripts/trigger-runtime/wait-stop.test.mjs",
     ],
   },
+  {
+    name: "billing",
+    files: ["scripts/billing/import-operating-costs.test.mjs"],
+  },
 ];
 
 /** Read every staged, unstaged and untracked dependency path; Git errors throw. */
@@ -120,6 +124,11 @@ export function selectSuites(paths) {
     )
       selected.add("markdown");
     else if (triggerRuntimeAppPaths.has(path)) selected.add("trigger-runtime");
+    else if (
+      path.startsWith("scripts/billing/") ||
+      path === "lib/billing/operating-costs.ts"
+    )
+      selected.add("billing");
     // Other application paths are not imported by the tooling suites above.
     // Unknown paths (including configs, lockfiles and new tooling) run
     // everything; expand this allowlist only after inspecting dependencies.

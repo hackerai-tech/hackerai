@@ -114,7 +114,7 @@ export async function fetchWithRetry<T>(
 }
 
 export async function replaceCostWindow(args: {
-  vendor: PlatformVendor;
+  vendor: Exclude<PlatformVendor, "workos" | "upstash">;
   startDay: string;
   endDay: string;
   observedAt: number;

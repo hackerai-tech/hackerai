@@ -71,6 +71,44 @@ This table does not imply complete company expense coverage. Provider invoices
 for models, sandboxes, and workers must be reconciled against serving costs
 already recorded per request; adding those invoices in full would double count.
 
+## Connected operating-cost observations
+
+WorkOS billing can be collected through its authenticated billing connector,
+and Upstash exposes a `dailybilling` series per Redis database. An operator can
+normalize these observations with `scripts/billing/import-operating-costs.mjs`.
+This uses the operator's existing Convex login and the admin-only
+`operatingCosts:importBillingWindow` mutation; browser clients and the ordinary
+service credential cannot submit these new invoice imports. Vendor connector
+tokens are never copied into the app.
+
+Supply private JSON files with `--config` (explicit account/project/deployment
+identity and source scope) and `--snapshot` (fresh billing observations).
+Use `--dry-run` to validate amounts, complete-day coverage and source scope
+without accessing credentials or a backend. A real import independently checks
+the management API's account/project/reference and configured custom domain
+before authorizing the explicitly named deployment. Never use an inferred
+deployment or print credentials. Missing periods, resources, currencies or
+amounts fail before replacing known costs. Refresh the connected platform-cost
+warehouse table after successful imports.
+
+WorkOS invoices and current-period estimates are spread across their billing
+period in integer cents. `cost_basis = 'billing_period_allocation'` identifies
+these daily allocations; they are not exact daily consumption. A final invoice
+replaces the same period's forecast. Current-period allocations remain
+estimated, and invoice references preserve provenance. Fixed fees and variable
+usage are not added again on top of the provider total.
+
+Upstash's daily amounts already include its fixed-plan charge. Do not add the
+plan price separately. Import only complete UTC days present for every expected
+database, retain previous days outside the returned window, and mark these
+observations estimated until reconciled with invoices. A missing date is unknown,
+not zero. Invoices paid through a marketplace must not also be counted in full
+as a second vendor's overhead.
+
+Convex invoice allocations use the same billing import. Its hourly unpriced
+usage observations and priced charges have separate replacement scopes, so
+refreshing either cannot delete or double count the other.
+
 ## PostHog examples
 
 Daily billed platform expense by vendor and service:
