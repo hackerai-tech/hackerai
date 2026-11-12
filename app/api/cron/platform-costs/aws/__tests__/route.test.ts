@@ -47,7 +47,6 @@ beforeEach(() => {
   process.env.VERCEL_ENV = "production";
   process.env.AWS_COST_ACCOUNT_ID = "123456789012";
   process.env.AWS_COST_ROLE_ARN = "arn:aws:iam::123456789012:role/CostReader";
-  process.env.AWS_COST_OIDC_AUDIENCE = "https://vercel.com/example";
   jest.mocked(isAuthorizedCronRequest).mockReturnValue(true);
   jest
     .mocked(STSClient)
@@ -134,10 +133,12 @@ test("a complete AWS response reaches the existing bounded replacement path", as
   expect(awsCredentialsProvider).toHaveBeenCalledWith(
     expect.objectContaining({
       roleArn: process.env.AWS_COST_ROLE_ARN,
-      audience: process.env.AWS_COST_OIDC_AUDIENCE,
       durationSeconds: 900,
     }),
   );
+  expect(
+    jest.mocked(awsCredentialsProvider).mock.calls[0][0],
+  ).not.toHaveProperty("audience");
   expect(replaceCostWindow).toHaveBeenCalledWith(
     expect.objectContaining({
       vendor: "aws",
@@ -172,6 +173,28 @@ test("failed pagination and incomplete daily data preserve stored costs and reda
   expect(logCostSync).toHaveBeenCalledWith(
     "error",
     "platform_cost_sync_failed",
-    { vendor: "aws" },
+    { vendor: "aws", phase: "cost_read", failure_code: "provider_days" },
+  );
+  expect(JSON.stringify(jest.mocked(logCostSync).mock.calls)).not.toContain(
+    "private-provider-token",
+  );
+});
+
+test("provider access failures report a bounded identity code without error payloads", async () => {
+  const error = new Error("Bearer private-identity-token");
+  error.name = "AccessDenied";
+  identity.mockRejectedValueOnce(error);
+  expect((await GET(request())).status).toBe(500);
+  expect(logCostSync).toHaveBeenCalledWith(
+    "error",
+    "platform_cost_sync_failed",
+    {
+      vendor: "aws",
+      phase: "identity",
+      failure_code: "AccessDenied",
+    },
+  );
+  expect(JSON.stringify(jest.mocked(logCostSync).mock.calls)).not.toContain(
+    "private-identity-token",
   );
 });

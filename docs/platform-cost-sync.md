@@ -76,8 +76,9 @@ already recorded per request; adding those invoices in full would double count.
 ### AWS Cost Explorer
 
 The AWS route runs daily at 12:37 UTC and reconciles the previous 35 completed
-UTC days. Configure `AWS_COST_ACCOUNT_ID`, `AWS_COST_ROLE_ARN` and
-`AWS_COST_OIDC_AUDIENCE` only in the authorized Production environment. It uses
+UTC days. Configure `AWS_COST_ACCOUNT_ID` and `AWS_COST_ROLE_ARN` only in the
+authorized Production environment. It uses the deployment's default audience,
+which must match the audience in the role's trust policy. It uses
 Vercel OIDC for short-lived credentials, verifies STS caller account and role,
 and filters Cost Explorer to that linked account. Preview calls cannot obtain
 credentials or import AWS costs. No AWS access keys are needed.
@@ -92,6 +93,8 @@ sign and provider precision. All Cost Explorer rows remain estimated until invoi
 reconciliation; they are not automatically finalized because AWS's estimated flag
 is false. All pages, expected dates and USD amounts must validate before the
 existing bounded replacement mutation runs. Failure retains previous costs.
+Failure receipts include a bounded phase and allowlisted code; they never include
+raw AWS/OIDC error messages, credentials or provider response bodies.
 
 A separate paginated query checks individual Marketplace service/charge-type
 records in the same account/date range. Any nonzero record stops the import for
