@@ -1600,6 +1600,144 @@ it.each([false, true])(
   },
 );
 
+const successfulSelectedOpen = {
+  open_receipt_version: 1,
+  open_receipt_status: "recorded",
+  open_phase: "completed",
+  open_exit: 0,
+  open_session_matches: true,
+  open_age: "lt60s",
+};
+
+it.each([
+  [0, "unavailable"],
+  [1, "owned_socket"],
+  [2, "missing"],
+  [3, "invalid"],
+  [4, "unreadable"],
+  [undefined, undefined], // An older writer is unmeasured, not missing.
+  [5, undefined],
+  [-1, undefined],
+  [1.5, undefined],
+  ["1", undefined],
+  [[1, 1], undefined],
+  [null, undefined],
+  ["PRIVATE", undefined],
+])(
+  "projects only a closed at-return socket code %j beside a matching successful OPEN",
+  async (os1, status) => {
+    const context = await observeDaemonFailure(
+      2,
+      JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        ...successfulSelectedOpen,
+        p1: [1, 0, 0],
+        os1,
+        private: "PRIVATE",
+      }),
+    );
+    // The capture-time precondition and process tuple remain independent.
+    expect(context).toMatchObject({
+      capture_precondition_reason: "socket_stat",
+      capture_precondition_error: "missing",
+      capture_open_exit_code: 0,
+      capture_daemon_pid_status: "missing",
+    });
+    expect(context.capture_open_socket_return_version).toBe(
+      status ? 1 : undefined,
+    );
+    expect(context.capture_open_socket_return_status).toBe(status);
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  { open_session_matches: false },
+  { open_phase: "started", open_exit: "none" },
+  { open_exit: 1 },
+  { open_exit: "other" },
+  { open_receipt_version: 2 },
+  { open_receipt_status: "unreadable" },
+])(
+  "keeps the at-return socket code censored without a matching successful OPEN: %j",
+  async (override) => {
+    const context = await observeDaemonFailure(
+      2,
+      JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        ...successfulSelectedOpen,
+        ...override,
+        os1: 1,
+      }),
+    );
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    expect(context).not.toHaveProperty("capture_open_socket_return_version");
+    expect(context).not.toHaveProperty("capture_open_socket_return_status");
+  },
+);
+
+it.each([false, true])(
+  "retains every field beside the at-return socket code in a packet at the unchanged cap (oversized:%s)",
+  async (oversized) => {
+    // The daemon drops os1 when "other" exits would exceed 544; 255 still fits.
+    const packet = JSON.stringify({
+      diagnostic_reason: "sockets_stat",
+      diagnostic_error: "not_directory",
+      wrapper_receipt_version: 1,
+      wrapper_action: "version",
+      wrapper_phase: "completed",
+      wrapper_exit: 255,
+      wrapper_session_matches: false,
+      wrapper_age: "unknown",
+      ...successfulSelectedOpen,
+      open_age: "unknown",
+      h1: 3,
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        "other",
+        "selected_session",
+        "unknown",
+        "same_time",
+      ],
+      open_idle: [1, "unparsed"],
+      p1: [1, 2, 0],
+      os1: 4,
+      cv: [1, 1, 999999999],
+    });
+    expect(Buffer.byteLength(packet)).toBeLessThanOrEqual(544);
+    // Exactly at the cap is parsed; one more byte rejects the whole packet.
+    const context = await observeDaemonFailure(
+      2,
+      packet + " ".repeat((oversized ? 545 : 544) - packet.length),
+    );
+    if (oversized) {
+      expect(context).not.toHaveProperty("capture_open_socket_return_status");
+      expect(context).not.toHaveProperty("capture_precondition_reason");
+    } else
+      expect(context).toMatchObject({
+        capture_precondition_reason: "sockets_stat",
+        capture_precondition_error: "not_directory",
+        capture_wrapper_phase: "completed",
+        capture_wrapper_exit_code: 255,
+        capture_wrapper_session_matches: false,
+        capture_wrapper_other_cli_completed: true,
+        capture_wrapper_option_prefix_completed: true,
+        capture_open_exit_code: 0,
+        capture_open_idle_env: "unparsed",
+        capture_daemon_pid_status: "unreadable",
+        capture_open_socket_return_version: 1,
+        capture_open_socket_return_status: "unreadable",
+        capture_close_scope: "selected_session",
+        capture_close_open_order: "same_time",
+        capture_cli_at_prepare_status: "measured",
+      });
+  },
+);
+
 it("retains closed frame-decode context without exposing stdout or retrying", async () => {
   const sandbox = fixture();
   sandbox.commands.run.mockResolvedValueOnce({

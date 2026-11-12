@@ -10,6 +10,7 @@ function expectPacketBudgets(text: string) {
   const {
     cv: _cliAtPrepare,
     w1: _wrapperProcess,
+    os1: _openSocket,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -1300,4 +1301,154 @@ it("fits the incarnation code beside every maximal existing field within544 with
       "same_time",
     ],
   });
+});
+
+const missingSocket = { missingPath: directory + "/sockets/default.sock" };
+
+it.each([0, 1, 2, 3, 4])(
+  "projects the selected successful OPEN's at-return socket code %s without touching the socket",
+  (code) => {
+    const d = daemon({
+      ...missingSocket,
+      receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+      openReceipt: { ...successfulOpen, os1: code },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    expect(
+      d.openReceipt.mock.calls.some(([file]) => file.endsWith(".sock")),
+    ).toBe(false);
+    const text = d.output.mock.calls[0][0];
+    // The capture-time precondition stays separate from the at-return code.
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      diagnostic_error: "missing",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      p1: [1, 0, 0],
+      os1: code,
+    });
+    expectPacketBudgets(text);
+    expect(text).not.toMatch(/PRIVATE|\/dev\/shm|default|\.sock/);
+  },
+);
+
+it.each<[string, Record<string, unknown>]>([
+  ["a STARTED OPEN", { phase: "started", exit: null }],
+  ["a failed OPEN", { exit: 37 }],
+  ["a signal-terminated OPEN", { exit: -15 }],
+  ["another session's OPEN", { session_key: "a".repeat(64) }],
+  ["an out-of-range code", { os1: 5 }],
+  ["a negative code", { os1: -1 }],
+  ["a fractional code", { os1: 1.5 }],
+  ["a string code", { os1: "1" }],
+  ["a tuple", { os1: [1, 1] }],
+  ["a boolean", { os1: true }],
+  ["null", { os1: null }],
+  ["an older writer", { os1: undefined }],
+])("omits the at-return socket code for %s", (_case, override) => {
+  const d = daemon({
+    ...missingSocket,
+    receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, os1: 1, ...override },
+  });
+  expect(d.exit).toHaveBeenCalledWith(2);
+  const value = JSON.parse(d.output.mock.calls[0][0]);
+  // Every other bounded open observation remains; absence is never "missing".
+  expect(value).toMatchObject({
+    diagnostic_reason: "socket_stat",
+    open_receipt_status: "recorded",
+  });
+  expect(value).not.toHaveProperty("os1");
+  expect(JSON.stringify(value)).not.toContain("PRIVATE");
+});
+
+it("does not read or add the at-return socket code to a successful daemon response", () => {
+  const d = daemon({
+    receipt: { ...receipt, open_receipt_support: 1 },
+    openReceipt: { ...successfulOpen, os1: 2 },
+  });
+  const response = { id: "hackerai-preview", success: true, data: {} };
+  d.reply(response);
+  expect(d.exit).toHaveBeenCalledWith(0);
+  expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  expect(d.openReceipt).not.toHaveBeenCalled();
+});
+
+/** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
+const maximalOpenSocket = (started: boolean, os1?: number, exit = 999) => {
+  const longest = { ...receipt, at: Date.now() + 60_000, exit };
+  return daemon({
+    missingPath: directory + "/sockets",
+    missingCode: "ENOTDIR",
+    pidFile: "314159",
+    processVisibility: "same_uid",
+    cliReceipt: [1, 1, 999999999],
+    wrapperStat: procStat(),
+    receipt: {
+      ...longest,
+      action: "version",
+      ...(started
+        ? { phase: "started", exit: null, process: startedWrapper.process }
+        : { session_key: "a".repeat(64) }),
+      open_receipt_support: 1,
+      close_receipt_support: 1,
+      history: [1, true, true],
+    },
+    openReceipt: {
+      ...longest,
+      action: "open",
+      exit: 0,
+      idle_env_version: 1,
+      idle_env: "unparsed",
+      os1,
+    },
+    closeReceipt: { ...longest, action: "close", close_all: false },
+  }).output.mock.calls[0][0];
+};
+
+it.each([true, false])(
+  "drops the at-return socket code before w1 or any existing field at the544 cap (started wrapper:%s)",
+  (started) => {
+    const text = maximalOpenSocket(started, 4);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+    const value = JSON.parse(text);
+    expect(value).not.toHaveProperty("os1");
+    expect(value.w1).toBe(started ? 3 : undefined);
+    // Identical to an older writer's packet: no previous field or w1 displaced.
+    expect(value).toEqual(JSON.parse(maximalOpenSocket(started)));
+    expect(value).toMatchObject({
+      diagnostic_reason: "sockets_stat",
+      diagnostic_error: "not_directory",
+      wrapper_phase: started ? "started" : "completed",
+      h1: 3,
+      open_exit: 0,
+      open_idle: [1, "unparsed"],
+      p1: [1, 2, 0],
+      cv: [1, 1, 999999999],
+      close_receipt: [
+        1,
+        "recorded",
+        "completed",
+        "other",
+        "selected_session",
+        "unknown",
+        "same_time",
+      ],
+    });
+  },
+);
+
+it("retains the at-return socket code in a near-cap packet that still fits", () => {
+  // A numeric last-command/close exit leaves just enough room beside the code.
+  const text = maximalOpenSocket(false, 4, 255);
+  expect(Buffer.byteLength(text)).toBeGreaterThan(512);
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
+  const { os1, ...existing } = JSON.parse(text);
+  expect(os1).toBe(4);
+  expect(existing).toEqual(
+    JSON.parse(maximalOpenSocket(false, undefined, 255)),
+  );
+  expect(existing).toMatchObject({ wrapper_exit: 255, h1: 3, p1: [1, 2, 0] });
 });
