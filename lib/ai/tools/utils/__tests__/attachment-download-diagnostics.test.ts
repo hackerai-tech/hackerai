@@ -434,3 +434,383 @@ it.each([
     });
   },
 );
+
+const notRecognized = (program: string) =>
+  `'${program}' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n`;
+const powerShellParserError = [
+  "At C:\\private\\hackerai-transfer.ps1:1 char:20",
+  "+ $url='https://private.example' 'x'",
+  "+                                ~~~",
+  "Unexpected token ''x'' in expression or statement.",
+  "    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException",
+  "    + FullyQualifiedErrorId : UnexpectedToken",
+].join("\r\n");
+
+it.each([
+  // Both previously reported only the coarse command_syntax signal.
+  [
+    "curl",
+    "bash",
+    127,
+    "/bin/bash: line 1: curl: command not found",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "/bin/bash: -c: line 1: syntax error near unexpected token `('\n/bin/bash: -c: line 1: `curl -o '/private/path' 'https://private.example/x'('",
+    "posix_syntax",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: curl: command not found\n",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "/usr/bin/bash: line 1: curl.exe: command not found",
+    "selected_client_not_found",
+  ],
+  ["curl", "bash", 127, "sh: 1: curl: not found", "selected_client_not_found"],
+  [
+    "curl",
+    "bash",
+    127,
+    "/bin/sh: curl: not found",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "zsh:1: command not found: curl",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "Command 'curl' not found, but can be installed with:\n\nsudo apt install curl",
+    "selected_client_not_found",
+  ],
+  ["curl", "cmd", 9009, notRecognized("curl"), "selected_client_not_found"],
+  ["curl", "cmd", 9009, notRecognized("curl.exe"), "selected_client_not_found"],
+  [
+    "wget",
+    "bash",
+    127,
+    "bash: line 1: wget: command not found\r\n",
+    "selected_client_not_found",
+  ],
+  [
+    "wget",
+    "bash",
+    127,
+    "/usr/bin/bash: line 1: wget.exe: command not found",
+    "selected_client_not_found",
+  ],
+  [
+    "powershell",
+    "cmd",
+    9009,
+    notRecognized("powershell"),
+    "selected_client_not_found",
+  ],
+  [
+    "powershell",
+    "bash",
+    127,
+    "/usr/bin/bash: line 1: powershell.exe: command not found",
+    "selected_client_not_found",
+  ],
+  // Another program, a non-alias spelling or a path is not the selected client.
+  [
+    "wget",
+    "bash",
+    127,
+    "bash: line 1: curl: command not found",
+    "other_command_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "/bin/bash: line 1: privatetool: command not found",
+    "other_command_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: line 1: Curl: command not found",
+    "other_command_not_found",
+  ],
+  [
+    "curl",
+    "cmd",
+    9009,
+    notRecognized("C:\\private\\curl.exe"),
+    "other_command_not_found",
+  ],
+  ["powershell", "cmd", 9009, notRecognized("pwsh"), "other_command_not_found"],
+  // Missing selected client while the command's mkdir failed is still a 127 result.
+  [
+    "curl",
+    "bash",
+    127,
+    "mkdir: cannot create directory '/private': Permission denied\nbash: line 1: curl: command not found",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "bash: -c: line 2: syntax error: unexpected end of file",
+    "posix_syntax",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "bash: -c: line 1: syntax error: unexpected end of file from `{' command on line 1",
+    "posix_syntax",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "/bin/bash: -c: line 1: unexpected EOF while looking for matching `''\n/bin/bash: -c: line 2: syntax error: unexpected end of file",
+    "posix_syntax",
+  ],
+  ["curl", "bash", 2, 'sh: 1: Syntax error: "(" unexpected', "posix_syntax"],
+  [
+    "curl",
+    "bash",
+    2,
+    "/bin/sh: 1: Syntax error: Unterminated quoted string",
+    "posix_syntax",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "sh: syntax error: unterminated quoted string",
+    "posix_syntax",
+  ],
+  ["powershell", "cmd", 1, powerShellParserError, "windows_syntax"],
+  // Conflicting observed families stay explicit; one repeated family does not.
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: line 1: curl: command not found\nbash: line 1: privatetool: command not found",
+    "multiple",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: line 1: curl: command not found\nbash: line 2: curl: command not found",
+    "selected_client_not_found",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "/bin/bash: -c: line 1: syntax error near unexpected token `('\nbash: line 1: curl: command not found",
+    "multiple",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "zsh:1: command not found: curl\nzsh:1: parse error near `)'",
+    "multiple",
+  ],
+  [
+    "curl",
+    "cmd",
+    9009,
+    `${notRecognized("curl")}& was unexpected at this time.\r\n`,
+    "multiple",
+  ],
+  // Eligible results without a complete public shell line stay unclassified.
+  ["curl", "bash", 127, "", "unclassified"],
+  [
+    "curl",
+    "bash",
+    127,
+    "private note: curl: command not found",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    " bash: line 1: curl: command not found",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: line 1: curl: command not found private suffix",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "/home/private/bin/bash: line 1: curl: command not found",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "bash: line 1: private tool: command not found",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    127,
+    "progress\rbash: line 1: curl: command not found",
+    "unclassified",
+  ],
+  [
+    "curl",
+    "bash",
+    2,
+    "private text mentions syntax error near unexpected token `('",
+    "unclassified",
+  ],
+  ["curl", "bash", 1, "unexpected token in private input", "unclassified"],
+  [
+    "curl",
+    "cmd",
+    1,
+    "'curl' is not recognized as an internal command",
+    "unclassified",
+  ],
+] as const)(
+  "keeps only a closed command hint for selected %s via %s exit%s: %j",
+  (httpClient, shell, exitCode, stderr, hint) => {
+    const original = Object.freeze(new Error("private original"));
+    expect(
+      recordAttachmentDownloadFailure(original, {
+        ...input,
+        platform: "unknown",
+        httpClient,
+        shell,
+        exitCode,
+        stderr,
+      }),
+    ).toBe(original);
+    const fields = getAttachmentDownloadFailureContext(original);
+    expect(fields).toMatchObject({
+      attachment_download_command_hint_version: 1,
+      attachment_download_command_hint: hint,
+      attachment_download_http_client: httpClient,
+    });
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private|pwsh|Curl|\.exe|not found|recognized|syntax error|unexpected|token|Command '|apt/,
+    );
+    expect(Object.keys(original)).toEqual([]);
+  },
+);
+
+it.each([
+  [22, "curl: (22) The requested URL returned error: 403", "http_status"],
+  [6, "curl: (6) Could not resolve host: private.example", "dns"],
+  [28, "curl: (28) Resolving timed out after 10000 milliseconds", "other"],
+  [1, curl1Protocol, "other"],
+  [126, "bash: line 1: /usr/bin/curl: Permission denied", "permission"],
+  [1, "The syntax of the command is incorrect.", "other"],
+  [1, "zsh:1: parse error near `)'", "other"],
+])(
+  "does not add a command hint to unrelated exit%s results",
+  (exitCode, stderr, signal) => {
+    const fields = getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure(new Error(), {
+        ...input,
+        exitCode,
+        stderr,
+      }),
+    );
+    expect(fields).toHaveProperty("attachment_download_stderr_signal", signal);
+    expect(fields).not.toHaveProperty(
+      "attachment_download_command_hint_version",
+    );
+    expect(fields).not.toHaveProperty("attachment_download_command_hint");
+  },
+);
+
+const selectedMissing = "bash: line 1: curl: command not found";
+
+it.each([
+  // The budget can end exactly after the wording while the line continues.
+  [
+    `${"x".repeat(8192 - selectedMissing.length - 1)}\n${selectedMissing} private suffix`,
+    "unclassified",
+  ],
+  [`${"x".repeat(8192)}\n${selectedMissing}`, "unclassified"],
+  // A newline-terminated line before the cut remains complete.
+  [
+    `${"x".repeat(8000)}\r\n${selectedMissing}\r\n${"y".repeat(500)}`,
+    "selected_client_not_found",
+  ],
+])(
+  "classifies command hints only from lines completed before truncation (%#)",
+  (stderr, hint) => {
+    expect(
+      getAttachmentDownloadFailureContext(
+        recordAttachmentDownloadFailure(new Error(), {
+          ...input,
+          exitCode: 127,
+          stderr,
+        }),
+      ),
+    ).toMatchObject({
+      attachment_download_command_hint: hint,
+      attachment_download_stderr_truncated: true,
+    });
+  },
+);
+
+it("retains the command hint through existing boundary and copy propagation", () => {
+  const original = recordAttachmentDownloadFailure(
+    Object.freeze(new Error("private original")),
+    { ...input, exitCode: 127, stderr: selectedMissing },
+  );
+  recordAttachmentDownloadBoundary(original, {
+    phase: "failure_diagnostics",
+    attempt: 3,
+    resultState: "nonzero",
+  });
+  const copy = copyAttachmentDownloadFailureContext(
+    original,
+    new Error("private wrapper"),
+  );
+  const fields = getAttachmentDownloadFailureContext(copy)!;
+  expect(fields).toMatchObject({
+    attachment_download_command_hint_version: 1,
+    attachment_download_command_hint: "selected_client_not_found",
+    attachment_download_attempt: 3,
+    attachment_download_result_context_present: true,
+  });
+  fields.attachment_download_command_hint = "posix_syntax";
+  expect(
+    getAttachmentDownloadFailureContext(copy)?.attachment_download_command_hint,
+  ).toBe("selected_client_not_found");
+  expect(
+    getAttachmentDownloadFailureContext(original)
+      ?.attachment_download_command_hint,
+  ).toBe("selected_client_not_found");
+  expect(Object.keys(original)).toEqual([]);
+});
