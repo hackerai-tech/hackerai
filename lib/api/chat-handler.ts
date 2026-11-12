@@ -86,6 +86,7 @@ import {
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
+import type { UsageLogPersistence } from "@/lib/db/actions";
 import {
   getMaxTokensForSubscription,
   safeCountTokens,
@@ -97,6 +98,7 @@ import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
   captureToolCalls,
+  captureIncompleteUsageCost,
   captureUsageCost,
   captureUsageSettlement,
   createChatLogger,
@@ -288,6 +290,10 @@ export const createChatHandler = () => {
       PaidDailyFreeAllowanceReservation | undefined;
     let paidDailyFreeAllowanceFinalized = false;
     let paidDailyFreeAllowanceUsageTracker: UsageTracker | undefined;
+    // Set once the request's cost sources exist; reports known costs when the
+    // normal usage cost capture did not happen. Never affects billing.
+    let reportIncompleteAskUsageCost:
+      ((failureStage: "setup" | "settlement") => Promise<void>) | undefined;
     const releasePaidDailyFreeAllowanceReservation = async () => {
       if (
         !paidDailyFreeAllowanceUserId ||
@@ -1012,6 +1018,62 @@ export const createChatHandler = () => {
               },
             );
 
+            let usageCostReported = false;
+            let sandboxCostRecorded = false;
+            reportIncompleteAskUsageCost = async (failureStage) => {
+              if (usageCostReported) return;
+              try {
+                let usageMeasurement =
+                  usageTracker.measurementProperties(selectedModel);
+                if (!sandboxCostRecorded) {
+                  // Read-only: settlement remains the only path that adds
+                  // sandbox runtime to the tracker.
+                  // Sandbox diagnostics may fail during teardown. Preserve
+                  // model/tool measurements even when this component is unknown.
+                  const sandboxCost = await getSandboxSessionUsage()
+                    .then((usage) => usage.totalCostDollars)
+                    .catch(() => 0);
+                  usageMeasurement = {
+                    ...usageMeasurement,
+                    usage_observed_non_model_cost_dollars:
+                      usageMeasurement.usage_observed_non_model_cost_dollars +
+                      sandboxCost,
+                    usage_known_incurred_cost_dollars:
+                      usageMeasurement.usage_known_incurred_cost_dollars +
+                      sandboxCost,
+                  };
+                }
+                if (
+                  usageMeasurement.usage_known_incurred_cost_dollars <= 0 &&
+                  !usageTracker.hasIncurredMeasurement
+                ) {
+                  return;
+                }
+                usageCostReported = true;
+                captureIncompleteUsageCost({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  usageMeasurement,
+                  failureStage:
+                    failureStage === "setup" &&
+                    usageMeasurement.usage_model_records > 0
+                      ? "model_stream"
+                      : failureStage,
+                  canceled: userStopSignal.signal.aborted,
+                });
+              } catch (error) {
+                console.warn("[chat-handler] incomplete usage cost failed", {
+                  error_name: error instanceof Error ? error.name : "unknown",
+                });
+              }
+            };
+
             // Helper to send file metadata via stream for resumable stream clients
             // Uses accumulated metadata directly - no DB query needed!
             const sendFileMetadataToStream = (
@@ -1329,6 +1391,7 @@ export const createChatHandler = () => {
                       usageTracker.nonModelCost += sandboxCost;
                       chatLogger?.getBuilder().addToolCost(sandboxCost);
                     }
+                    sandboxCostRecorded = true;
 
                     if (!usageTracker.hasUsage) {
                       // Release an unused rescue lease so a failed provider start
@@ -1337,6 +1400,9 @@ export const createChatHandler = () => {
                         await releasePaidDailyFreeAllowanceReservation();
                         hasRecordedUsage = paidDailyFreeAllowanceFinalized;
                       }
+                      // Nothing billable survived, but discarded retries were
+                      // still incurred. Report them without charging.
+                      await reportIncompleteAskUsageCost?.("settlement");
                       return;
                     }
                     hasRecordedUsage = true;
@@ -1359,6 +1425,8 @@ export const createChatHandler = () => {
                     // mid-run settlement. This preserves authoritative step costs
                     // and estimates only the individual steps missing provider cost.
                     const settledCostDollars = usageCostRecord.costDollars;
+                    let usageLog: UsageLogPersistence | "not_applicable" =
+                      "not_applicable";
 
                     if (paidDailyFreeAllowanceReservation) {
                       const allowanceCostRecord =
@@ -1385,7 +1453,7 @@ export const createChatHandler = () => {
                           },
                         );
                       }
-                      usageTracker.log({
+                      usageLog = await usageTracker.log({
                         userId,
                         organizationId,
                         chatId,
@@ -1500,7 +1568,7 @@ export const createChatHandler = () => {
                         ...usageRecordArgs,
                         billingBreakdown,
                       });
-                      usageTracker.log({
+                      usageLog = await usageTracker.log({
                         userId,
                         organizationId,
                         chatId,
@@ -1521,6 +1589,8 @@ export const createChatHandler = () => {
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),
+                      usageSettlementId: usageTracker.usageSettlementId,
+                      usageLog,
                       regionalFreeLimits,
                       posthog,
                       userId,
@@ -1552,9 +1622,14 @@ export const createChatHandler = () => {
                           ),
                       }),
                     });
+                    usageCostReported = true;
                   },
                   finishPhase,
                 );
+              } catch (error) {
+                // Settlement outcome is unknown here; report known costs only.
+                await reportIncompleteAskUsageCost?.("settlement");
+                throw error;
               } finally {
                 await observeFinish(
                   "release_run_lock",
@@ -3429,6 +3504,7 @@ export const createChatHandler = () => {
             // execute errors are consumed by createUIMessageStream, so the
             // outer request catch and stream onFinish cannot clean them up.
             preemptiveTimeout?.clear();
+            await reportIncompleteAskUsageCost?.("setup");
             if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
               await releasePaidDailyFreeAllowanceReservation();
             }

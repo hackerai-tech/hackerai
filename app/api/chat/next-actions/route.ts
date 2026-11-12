@@ -1,4 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { v5 as uuidv5 } from "uuid";
 import { api } from "@/convex/_generated/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -232,6 +233,7 @@ export async function POST(req: NextRequest) {
     }
     posthog.capture({
       distinctId: userId,
+      uuid: uuidv5(`hackerai:next-actions-cost:v1:${batchId}`, uuidv5.URL),
       event: "contextual_next_actions_generated",
       properties: {
         ...properties,
@@ -249,6 +251,9 @@ export async function POST(req: NextRequest) {
         reasoning_tokens: result.reasoningTokens,
         cost_usd: result.cost,
         known_cost_usd: result.knownCost,
+        // Standalone product spend, never added to the user's usage charge.
+        cost_measurement_version: 1,
+        cost_measurement_complete: result.unknownProviderCalls === 0,
         provider_calls: result.providerCalls,
         priced_provider_calls: result.pricedProviderCalls,
         unknown_provider_calls: result.unknownProviderCalls,

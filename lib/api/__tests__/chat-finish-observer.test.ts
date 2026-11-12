@@ -289,16 +289,19 @@ it("attributes the first title wait separately from settlement in every finishin
       ...context,
     });
     const releaseFreeRunLockOnce = jest.fn(async () => {});
+    const reportIncompleteAskUsageCost = jest.fn(async () => {});
     const helperText = ts.transpile(`(${usageHelper!.getText(source)})`);
     const deductAccumulatedUsage = vm.runInNewContext(helperText, {
       observeFinish,
       titlePromise: title.promise,
       assistantMessageId: "assistant",
       hasRecordedUsage: false,
+      sandboxCostRecorded: false,
       getSandboxSessionUsage: () => sandbox.promise,
       usageTracker: { hasUsage: false },
       paidDailyFreeAllowanceReservation: null,
       releaseFreeRunLockOnce,
+      reportIncompleteAskUsageCost,
     });
     const pending = vm.runInNewContext(call.getText(source), {
       observeFinish,
@@ -322,6 +325,7 @@ it("attributes the first title wait separately from settlement in every finishin
     sandbox.resolve({ totalCostDollars: 0 });
     await expect(pending).resolves.toBeUndefined();
     expect(releaseFreeRunLockOnce).toHaveBeenCalledTimes(1);
+    expect(reportIncompleteAskUsageCost).toHaveBeenCalledWith("settlement");
     expect(jest.getTimerCount()).toBe(0);
   }
   expect(phases.sort()).toEqual(["primary", "primary", "provider_retry"]);

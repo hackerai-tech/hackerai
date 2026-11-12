@@ -1887,7 +1887,11 @@ export default defineSchema({
   // from user economics so platform overhead is never allocated or counted
   // more than once by accident.
   platform_costs_daily: defineTable({
-    vendor: v.union(v.literal("vercel"), v.literal("convex")),
+    vendor: v.union(
+      v.literal("vercel"),
+      v.literal("convex"),
+      v.literal("posthog"),
+    ),
     entity_id: v.string(),
     day: v.string(),
     service_name: v.string(),

@@ -33,18 +33,109 @@ jest.mock("../unitEconomicsLib", () => ({
   utcDay: jest.fn(() => "2026-06-17"),
 }));
 
+const createLedgerCtx = () => {
+  const rows: any[] = [];
+  const ctx: any = {
+    db: {
+      insert: jest.fn(async (_table: string, row: any) => {
+        rows.push(row);
+        return `usage-${rows.length}`;
+      }),
+      query: jest.fn(() => ({
+        withIndex: jest.fn((_index: string, range: any) => {
+          let settlementId: unknown;
+          range({
+            eq: (_field: string, value: unknown) => {
+              settlementId = value;
+            },
+          });
+          return {
+            first: jest.fn(
+              async () =>
+                rows.find((row) => row.usage_settlement_id === settlementId) ??
+                null,
+            ),
+          };
+        }),
+      })),
+    },
+  };
+  return { ctx, rows };
+};
+
+const includedUsage = {
+  serviceKey: "test-service-key",
+  user_id: "user_1",
+  model: "model-opus-4.6",
+  type: "included",
+  input_tokens: 100,
+  output_tokens: 50,
+  cost_dollars: 2,
+  model_cost_dollars: 2,
+  non_model_cost_dollars: 0,
+  cost_source: "provider",
+};
+
 describe("usageLogs", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
+  it("records a replayed settlement once without a second daily delta", async () => {
+    const { logUsage } = await import("../usageLogs");
+    const { ctx, rows } = createLedgerCtx();
+    const args = { ...includedUsage, usage_settlement_id: "settlement-1" };
+
+    await (logUsage as any).handler(ctx, args);
+    await (logUsage as any).handler(ctx, args);
+
+    expect(rows).toHaveLength(1);
+    // One user-grain delta for the single recorded settlement.
+    expect(mockApplyUnitEconomicsDelta).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a settlement ID is reused by another account scope", async () => {
+    const { logUsage } = await import("../usageLogs");
+    const { ctx, rows } = createLedgerCtx();
+    await (logUsage as any).handler(ctx, {
+      ...includedUsage,
+      usage_settlement_id: "settlement-1",
+    });
+
+    await expect(
+      (logUsage as any).handler(ctx, {
+        ...includedUsage,
+        usage_settlement_id: "settlement-1",
+        user_id: "user_2",
+      }),
+    ).rejects.toThrow("already recorded for another account");
+    await expect(
+      (logUsage as any).handler(ctx, {
+        ...includedUsage,
+        usage_settlement_id: "settlement-1",
+        organization_id: "org_1",
+      }),
+    ).rejects.toThrow("already recorded for another account");
+
+    expect(rows).toHaveLength(1);
+    expect(mockApplyUnitEconomicsDelta).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps legacy rows without a settlement ID additive", async () => {
+    const { logUsage } = await import("../usageLogs");
+    const { ctx, rows } = createLedgerCtx();
+
+    await (logUsage as any).handler(ctx, includedUsage);
+    await (logUsage as any).handler(ctx, includedUsage);
+
+    expect(ctx.db.query).not.toHaveBeenCalled();
+    expect(rows).toHaveLength(2);
+    expect(mockApplyUnitEconomicsDelta).toHaveBeenCalledTimes(2);
+  });
+
   it("normalizes token-estimate split costs before persisting rollups", async () => {
     const { logUsage } = await import("../usageLogs");
-    const ctx: any = {
-      db: {
-        insert: jest.fn(async () => "usage-id"),
-      },
-    };
+    const { ctx } = createLedgerCtx();
 
     await (logUsage as any).handler(ctx, {
       serviceKey: "test-service-key",

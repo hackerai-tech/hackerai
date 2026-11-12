@@ -77,6 +77,12 @@ import {
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { UsageLogPersistence } from "@/lib/db/actions";
+import {
+  knownIncurredCostLowerBound,
+  usageCostEventUuid,
+  usageLogProperties,
+} from "@/lib/analytics/serving-cost";
 import { cacheHistoryProperties } from "@/lib/analytics/cache-history";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
@@ -2075,6 +2081,9 @@ export function captureUsageCost({
   experiment,
   regionalFreeLimits,
   triggerRunId,
+  usageSettlementId,
+  usageLog,
+  subagent,
 }: {
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
   usageMeasurement?: ReturnType<
@@ -2108,8 +2117,19 @@ export function captureUsageCost({
   experiment?: ExperimentAnalyticsContext;
   regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
+  /** Present for every tier, including Free and allowance rescue. */
+  usageSettlementId?: string;
+  usageLog?: UsageLogPersistence | "not_applicable";
+  /** Child execution costs are separate records; never add them to the parent. */
+  subagent?: { id: string; parentTriggerRunId: string };
 }) {
   if (!posthog) return;
+  const settlementId = usageSettlementId ?? usageSettlement?.id;
+  const eventUuid = triggerRunId
+    ? agentRunEventUuid(triggerRunId, "hackerai-usage_cost")
+    : settlementId
+      ? usageCostEventUuid(settlementId)
+      : undefined;
   const includedUsageValueDollars =
     usage.includedPointsDeducted / POINTS_PER_DOLLAR;
   const extraUsageChargeDollars = extraUsagePointsToDollars(
@@ -2124,15 +2144,20 @@ export function captureUsageCost({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
-    ...(triggerRunId && {
-      uuid: agentRunEventUuid(triggerRunId, "hackerai-usage_cost"),
-    }),
+    ...(eventUuid && { uuid: eventUuid }),
     properties: {
       cost_accounting_status: "recorded",
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
+      ...usageLogProperties(usageLog),
       user_id: userId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      ...(settlementId && { usage_settlement_id: settlementId }),
+      ...(subagent && {
+        cost_scope: "subagent",
+        subagent_id: subagent.id,
+        parent_trigger_run_id: subagent.parentTriggerRunId,
+      }),
       subscription,
       subscription_tier: subscription,
       ...(organizationId && { organization_id: organizationId }),
@@ -2186,6 +2211,8 @@ export function captureUsageCost({
         trigger_compute_cost_dollars: triggerRunUsage.computeCostDollars,
         trigger_base_cost_dollars: triggerRunUsage.baseCostDollars,
         trigger_usage_duration_ms: triggerRunUsage.durationMs,
+        // Taken at settlement; the run keeps computing afterwards.
+        trigger_cost_is_final: false,
       }),
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
@@ -2220,6 +2247,90 @@ export function captureUsageCost({
       }),
       ...getExperimentAnalyticsProperties(experiment),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
+    },
+  });
+}
+
+/**
+ * Coverage record for a request whose normal cost capture did not happen.
+ * Full cost is unknown (null); known measurements are lower bounds only. It
+ * shares the recorded event's UUID, so it cannot add a second cost record.
+ */
+export function captureIncompleteUsageCost({
+  posthog,
+  userId,
+  subscription,
+  organizationId,
+  chatId,
+  endpoint,
+  mode,
+  usageSettlementId,
+  triggerRunId,
+  subagent,
+  usageMeasurement,
+  latestTriggerCostDollars,
+  failureStage,
+  canceled,
+}: {
+  posthog: PostHog | null;
+  userId: string;
+  subscription: string;
+  organizationId?: string;
+  chatId: string;
+  endpoint: ChatApiEndpoint;
+  mode: ChatMode;
+  usageSettlementId: string;
+  triggerRunId?: string;
+  subagent?: { id: string; parentTriggerRunId: string };
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
+  latestTriggerCostDollars?: number;
+  failureStage: "setup" | "model_stream" | "settlement";
+  canceled: boolean;
+}) {
+  if (!posthog) return;
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-usage_cost",
+    uuid: triggerRunId
+      ? agentRunEventUuid(triggerRunId, "hackerai-usage_cost")
+      : usageCostEventUuid(usageSettlementId),
+    properties: {
+      ...usageMeasurement,
+      cost_accounting_status: "incomplete",
+      usage_settlement_status: "unknown",
+      cost_dollars: null,
+      model_cost_dollars: null,
+      non_model_cost_dollars: null,
+      known_incurred_cost_lower_bound_dollars: knownIncurredCostLowerBound({
+        knownIncurredCostDollars:
+          usageMeasurement?.usage_known_incurred_cost_dollars,
+        trackedTriggerCostDollars:
+          usageMeasurement?.usage_trigger_run_cost_dollars,
+        latestTriggerCostDollars,
+      }),
+      ...(latestTriggerCostDollars !== undefined && {
+        known_trigger_cost_dollars: latestTriggerCostDollars,
+        trigger_cost_is_final: false,
+      }),
+      failure_stage: failureStage,
+      failure_kind: canceled ? "canceled" : "error",
+      user_id: userId,
+      subscription,
+      subscription_tier: subscription,
+      ...(organizationId && { organization_id: organizationId }),
+      chat_id: chatId,
+      endpoint,
+      mode,
+      usage_settlement_id: usageSettlementId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      ...(subagent && {
+        cost_scope: "subagent",
+        subagent_id: subagent.id,
+        parent_trigger_run_id: subagent.parentTriggerRunId,
+      }),
+      $process_person_profile: false,
     },
   });
 }
