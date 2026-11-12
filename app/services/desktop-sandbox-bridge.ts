@@ -5,13 +5,21 @@ import {
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  getIdentifiedAnalyticsUserId,
+} from "@/lib/analytics/client";
 import {
   DesktopFileBridgeError,
   getDesktopFileFailure,
   type DesktopFileFailure,
 } from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
+import {
+  nativeAuthorizationDiagnostic,
+  parseNativeAuthorizationSendReceipt,
+  type NativeAuthorizationSendReceipt,
+} from "@/lib/analytics/native-authorization-diagnostics";
 import {
   isDesktopAckStopSource,
   type DesktopAckStopSource,
@@ -982,6 +990,8 @@ export class DesktopSandboxBridge {
     legacyCommand: string,
     legacyArgs: Record<string, unknown>,
     channelArgs: Record<string, unknown> = {},
+    // Optional arguments older authorized binaries ignore; never sent to legacy.
+    authorizedOnlyArgs: Record<string, unknown> = {},
   ): Promise<T> {
     const { invoke } = await import("@tauri-apps/api/core");
     if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
@@ -992,6 +1002,7 @@ export class DesktopSandboxBridge {
         authorizationId: message.authorizationId ?? "",
         message,
         ...channelArgs,
+        ...authorizedOnlyArgs,
       });
     } catch (error) {
       if (!nativeCommandMissing(error, authorizedCommand)) throw error;
@@ -1137,6 +1148,14 @@ export class DesktopSandboxBridge {
       (command.timeout ?? 30_000) +
       DESKTOP_COMMAND_DELIVERY_GRACE_MS;
     let terminalExitCode: number | null = null;
+    // Invocation-local native send receipt: one callback attempt, closed by
+    // settlement, owned by the analytics identity at command start, and joined
+    // only to this invocation's rejection.
+    const { nativeAppVersion } = this;
+    const receiptOwner = getIdentifiedAnalyticsUserId();
+    let receiptOpen = true;
+    let sendReceipt: NativeAuthorizationSendReceipt | null = null;
+    let invocationRejected = false;
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1151,17 +1170,56 @@ export class DesktopSandboxBridge {
         !this.isStoppingOrStopped &&
         this.operationRouter === router &&
         this.connectionId === connectionId,
-      (settlement) =>
+      (settlement) => {
+        receiptOpen = false;
         onSettled(
-          { ...settlement, terminalExitCode },
+          {
+            ...settlement,
+            terminalExitCode,
+            ...(invocationRejected &&
+              sendReceipt && {
+                nativeAuthorization: nativeAuthorizationDiagnostic(
+                  sendReceipt,
+                  nativeAppVersion,
+                ),
+              }),
+          },
           this.commandOutputStopSource,
-        ),
+        );
+      },
     );
     this.acknowledgedOutputs.set(command.commandId, stream);
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
     this.activeCommands.add(command.commandId);
+    let diagnosticChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
+      // Optional: construction or delivery failure leaves the command unchanged.
+      // Published legacy binaries take the legacy command, which has no use for
+      // it, and an unidentified owner could never report it.
+      if (
+        receiptOwner &&
+        !usesPublishedLegacyDesktopCommands(nativeAppVersion)
+      ) {
+        try {
+          const receiptChannel = new Channel<unknown>();
+          receiptChannel.onmessage = (value) => {
+            if (!receiptOpen) return;
+            receiptOpen = false;
+            if (
+              this.isStoppingOrStopped ||
+              this.operationRouter !== router ||
+              this.connectionId !== connectionId ||
+              getIdentifiedAnalyticsUserId() !== receiptOwner
+            )
+              return;
+            sendReceipt = parseNativeAuthorizationSendReceipt(value);
+          };
+          diagnosticChannel = receiptChannel;
+        } catch {
+          diagnosticChannel = undefined;
+        }
+      }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
         if (chunk.type === "exit") terminalExitCode = chunk.exitCode ?? null;
@@ -1188,9 +1246,13 @@ export class DesktopSandboxBridge {
               timeoutMs: command.timeout ?? 30_000,
             },
             { onEvent: channel },
+            diagnosticChannel
+              ? { onAuthorizationDiagnostic: diagnosticChannel }
+              : {},
           );
         }
       } catch (error) {
+        invocationRejected = true;
         stream.append({
           type: "error",
           message: error instanceof Error ? error.message : String(error),
@@ -1220,6 +1282,16 @@ export class DesktopSandboxBridge {
       }
     } finally {
       stream.stop();
+      // Native apps that ignore the optional argument never end its channel.
+      // Release the callback through the pinned SDK Channel's own method, which
+      // its typings mark private; the focused bridge test pins this behavior.
+      try {
+        (
+          diagnosticChannel as { cleanupCallback?: () => void } | undefined
+        )?.cleanupCallback?.();
+      } catch {
+        // Diagnostics must never affect command settlement.
+      }
       this.acknowledgedOutputs.delete(command.commandId);
       this.commandDeliveryDeadlines.delete(command.commandId);
       this.activeCommands.delete(command.commandId);

@@ -1,3 +1,4 @@
+mod authorization_send_diagnostics;
 mod platform;
 mod update_safety;
 #[cfg(test)]
@@ -1028,11 +1029,54 @@ fn desktop_authorization_endpoint(loaded_url: &url::Url) -> Result<String, Strin
     Ok(format!("{origin}/api/desktop/authorized-operation"))
 }
 
-async fn redeem_authorized_message(
+/// A finite class of the already validated loaded origin, never its hostname.
+fn authorization_origin_class(
+    loaded_url: &url::Url,
+) -> authorization_send_diagnostics::OriginClass {
+    use authorization_send_diagnostics::OriginClass;
+    match (
+        loaded_url.scheme(),
+        loaded_url.host_str(),
+        loaded_url.port(),
+    ) {
+        ("https", Some("hackerai.co"), None) => OriginClass::CanonicalProduction,
+        (_, Some("localhost"), _) => OriginClass::Localhost,
+        (_, Some(_), _) => OriginClass::OtherAllowed,
+        _ => OriginClass::Unknown,
+    }
+}
+
+/// Parse an optional frontend channel ID. Missing or malformed values only
+/// disable diagnostics; they never reject the command.
+fn authorization_diagnostic_channel_id(
+    value: Option<serde_json::Value>,
+) -> Option<tauri::ipc::JavaScriptChannelId> {
+    serde_json::from_value(value?).ok()
+}
+
+async fn redeem_authorized_message<R: tauri::Runtime>(
+    authorization_id: &str,
+    message: serde_json::Value,
+    window: &tauri::WebviewWindow<R>,
+) -> Result<serde_json::Value, String> {
+    redeem_authorized_message_observed(
+        authorization_id,
+        message,
+        window,
+        None::<fn(authorization_send_diagnostics::SendFailureReceipt)>,
+    )
+    .await
+}
+
+async fn redeem_authorized_message_observed<R: tauri::Runtime, F>(
     authorization_id: &str,
     mut message: serde_json::Value,
-    window: &tauri::WebviewWindow,
-) -> Result<serde_json::Value, String> {
+    window: &tauri::WebviewWindow<R>,
+    send_failure_observer: Option<F>,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce(authorization_send_diagnostics::SendFailureReceipt),
+{
     if authorization_id.len() != 64
         || !authorization_id
             .bytes()
@@ -1051,18 +1095,20 @@ async fn redeem_authorized_message(
         .url()
         .map_err(|_| "Desktop origin is unavailable".to_string())?;
     let endpoint = desktop_authorization_endpoint(&loaded_url)?;
+    let origin_class = authorization_origin_class(&loaded_url);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Desktop authorization client unavailable".to_string())?;
-    let response = client
+    let request = client
         .post(endpoint)
-        .json(&serde_json::json!({ "id": authorization_id, "digest": digest }))
-        .send()
-        .await
-        .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
+        .json(&serde_json::json!({ "id": authorization_id, "digest": digest }));
+    let response =
+        authorization_send_diagnostics::observed_send(request, origin_class, send_failure_observer)
+            .await
+            .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
     if !response.status().is_success() {
         return Err("Desktop operation was not authorized".to_string());
     }
@@ -1377,14 +1423,31 @@ struct AuthorizedCommandMessage {
 }
 
 #[tauri::command]
-async fn execute_authorized_stream_command(
+async fn execute_authorized_stream_command<R: tauri::Runtime>(
     state: tauri::State<'_, StreamCommandState>,
-    window: tauri::WebviewWindow,
+    window: tauri::WebviewWindow<R>,
     authorization_id: String,
     message: serde_json::Value,
     on_event: tauri::ipc::Channel<StreamEvent>,
+    // Separate from the signed message and output events; older frontends omit it.
+    on_authorization_diagnostic: Option<serde_json::Value>,
 ) -> Result<(), String> {
-    let message = redeem_authorized_message(&authorization_id, message, &window).await?;
+    let send_failure_observer = authorization_diagnostic_channel_id(on_authorization_diagnostic)
+        .map(|id| {
+            let webview = AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
+            let channel =
+                id.channel_on::<R, authorization_send_diagnostics::SendFailureReceipt>(webview);
+            move |receipt| {
+                let _ = channel.send(receipt);
+            }
+        });
+    let message = redeem_authorized_message_observed(
+        &authorization_id,
+        message,
+        &window,
+        send_failure_observer,
+    )
+    .await?;
     authorized_operation_type(&message, &["command"])?;
     let command: AuthorizedCommandMessage =
         serde_json::from_value(message).map_err(|_| "Invalid authorized command".to_string())?;
@@ -2092,6 +2155,101 @@ mod tests {
         );
         let untrusted = url::Url::parse("https://hackerai.co.evil.invalid/").unwrap();
         assert!(desktop_authorization_endpoint(&untrusted).is_err());
+    }
+
+    #[test]
+    fn authorization_send_diagnostics_classify_origin_and_parse_optional_channel() {
+        use authorization_send_diagnostics::OriginClass;
+        for (url, class) in [
+            (
+                "https://hackerai.co/chat/task",
+                OriginClass::CanonicalProduction,
+            ),
+            ("https://hackerai.co:8443/", OriginClass::OtherAllowed),
+            ("http://localhost:3000/chat", OriginClass::Localhost),
+            ("https://preview.example.test/", OriginClass::OtherAllowed),
+            ("data:text/plain,hackerai.co", OriginClass::Unknown),
+        ] {
+            assert_eq!(
+                authorization_origin_class(&url::Url::parse(url).unwrap()),
+                class
+            );
+        }
+        assert!(
+            authorization_diagnostic_channel_id(Some(serde_json::json!("__CHANNEL__:7"))).is_some()
+        );
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(7)),
+            Some(serde_json::json!("7")),
+            Some(serde_json::json!("__CHANNEL__:x")),
+            Some(serde_json::json!({ "id": 7 })),
+        ] {
+            assert!(authorization_diagnostic_channel_id(value).is_none());
+        }
+    }
+
+    #[test]
+    fn authorization_send_diagnostics_optional_argument_keeps_original_command_errors() {
+        use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
+        // The compiled ACL admits the trusted IPC origin, while the loaded page
+        // is untrusted for authorization: no POST can be attempted.
+        let app = mock_builder()
+            .manage(StreamCommandState::default())
+            .invoke_handler(tauri::generate_handler![execute_authorized_stream_command])
+            .build(app_context())
+            .unwrap();
+        let untrusted_page =
+            tauri::WebviewUrl::External("https://untrusted.invalid/".parse().unwrap());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", untrusted_page)
+            .build()
+            .unwrap();
+        let invoke = |authorization_id: &str, diagnostic: Option<serde_json::Value>| {
+            let mut body = serde_json::json!({
+                "authorizationId": authorization_id,
+                "message": { "type": "command", "commandId": "synthetic", "command": "true" },
+                "onEvent": "__CHANNEL__:1",
+            });
+            if let Some(value) = diagnostic {
+                body["onAuthorizationDiagnostic"] = value;
+            }
+            get_ipc_response(
+                &window,
+                tauri::webview::InvokeRequest {
+                    cmd: "execute_authorized_stream_command".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "https://hackerai.co/".parse().unwrap(),
+                    body: tauri::ipc::InvokeBody::Json(body),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+            .map(|_| ())
+        };
+        let variants = [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!(42)),
+            Some(serde_json::json!("not-a-channel")),
+            Some(serde_json::json!("__CHANNEL__:2")),
+        ];
+        for variant in variants.clone() {
+            assert_eq!(
+                invoke("invalid", variant),
+                Err(serde_json::json!("Invalid Desktop operation authorization"))
+            );
+        }
+        let valid_id = "a".repeat(64);
+        for variant in variants {
+            assert_eq!(
+                invoke(&valid_id, variant),
+                Err(serde_json::json!(
+                    "Desktop origin is not allowed for native authorization"
+                ))
+            );
+        }
     }
 
     #[tokio::test]
