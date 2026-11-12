@@ -14,6 +14,8 @@ import {
 } from "@/lib/posthog/expected-frontend-exceptions";
 import {
   confirmAuthenticatedAnalyticsUserId,
+  getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
   getPostHogClient,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
@@ -32,6 +34,7 @@ import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
+import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import {
   captureXReferralVisit,
   clearXReferralDedupe,
@@ -202,18 +205,33 @@ export function PostHogProvider({
             // incidental component events and SDK autocapture out of the stream.
             if (!userId) return null;
 
-            const sanitizedEvent = sanitizeContextFeedbackEvent(
-              sanitizeChatPerformanceEvent(
-                sanitizeDesktopAckEvent(
-                  sanitizeAgentCancellationEvent(
-                    sanitizeDiffViewEvent(
-                      sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeServerActionClientContextEvent(
+              sanitizeContextFeedbackEvent(
+                sanitizeChatPerformanceEvent(
+                  sanitizeDesktopAckEvent(
+                    sanitizeAgentCancellationEvent(
+                      sanitizeDiffViewEvent(
+                        sanitizeFrontendExceptionUrlProperties(event),
+                      ),
                     ),
                   ),
                 ),
               ),
+              () => {
+                const owner = getPermittedAnalyticsUserId();
+                return {
+                  owner:
+                    owner === userId && getIdentifiedAnalyticsUserId() === owner
+                      ? owner
+                      : null,
+                  token: posthogKey,
+                };
+              },
             );
-            if (shouldDropExpectedFrontendException(sanitizedEvent)) {
+            if (
+              !sanitizedEvent ||
+              shouldDropExpectedFrontendException(sanitizedEvent)
+            ) {
               return null;
             }
 

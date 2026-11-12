@@ -23,6 +23,7 @@ jest.mock("@/lib/analytics/client", () => ({
   confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   getIdentifiedAnalyticsUserId: jest.fn(() => null),
+  getPermittedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
@@ -40,6 +41,7 @@ const {
   confirmAuthenticatedAnalyticsUserId,
   getPostHogClient,
   getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
   loadPostHogClient,
   setAuthenticatedAnalyticsUserId,
 } = jest.requireMock<typeof import("@/lib/analytics/client")>(
@@ -67,6 +69,7 @@ describe("PostHogProvider", () => {
     window.localStorage.clear();
     mockGetPostHogClient.mockReturnValue(null);
     jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
 
     mockUseGlobalState.mockReturnValue({
       subscription: "pro",
@@ -382,6 +385,134 @@ describe("PostHogProvider", () => {
     expect(config.before_send(ordinaryEvent)).toEqual(ordinaryEvent);
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it("exports only the strict server action context after SDK enrichment", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    render(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const config = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => Record<string, unknown> | null;
+    };
+
+    const eventUuid = "0193a5b2-7c41-7a10-8f00-1234567890ab";
+    const retained = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+      $lib: "web",
+      $lib_version: "1.447.5",
+      $is_identified: true,
+      server_action_client_diagnostic_version: 1,
+      caller: "analytics_consent",
+      matched_pattern: "next_unrecognized_action_message",
+      reference_shape: "hex42",
+      recovery_decision: "locally_handled_no_reload",
+      build_state: "measured",
+      hackerai_frontend_build_commit: "a".repeat(40),
+      attempt_denominator_kind: "caller_settled_prefix",
+      caller_settled_attempt_count: 2,
+      caller_recognized_rejection_count: 1,
+    };
+    const accessor = jest.fn(() => "private");
+    const enriched = (properties: Record<string, unknown>) => ({
+      uuid: eventUuid,
+      event: "server_action_client_context",
+      properties: Object.defineProperties(
+        {
+          ...properties,
+          $current_url: "https://hackerai.co/c/private?code=private",
+          $referrer: "https://target.test/private",
+          $pathname: "/c/private",
+          $initial_current_url: "https://target.test/private",
+          utm_campaign: "private",
+          consent: "private",
+          stripe_invoice_id: "private",
+          renewal_amount: "private",
+          $set: { email: "private" },
+        },
+        {
+          // The existing private-page gate reads only URL/path fields first.
+          registered_content: { get: accessor, enumerable: true },
+          $window_id: { get: accessor, enumerable: true },
+        },
+      ),
+      timestamp: new Date(1_794_094_000_000),
+      $set: { email: "private" },
+      $set_once: { $initial_referrer: "private" },
+      private_top_level: "private",
+    });
+
+    const sanitized = config.before_send(enriched(retained));
+    expect(sanitized).toEqual({
+      uuid: eventUuid,
+      event: "server_action_client_context",
+      properties: retained,
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("private");
+    expect(accessor).not.toHaveBeenCalled();
+    expect(
+      config.before_send(enriched({ ...retained, distinct_id: "user-other" })),
+    ).toBeNull();
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-other");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-other");
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockImplementation(() => {
+      throw new Error("identity unavailable");
+    });
+    expect(config.before_send(enriched(retained))).toBeNull();
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    expect(
+      config.before_send({
+        event: "ordinary_event",
+        properties: { retained: "value" },
+      }),
+    ).toEqual({ event: "ordinary_event", properties: { retained: "value" } });
+    expect(
+      config.before_send(
+        enriched({ ...retained, server_action_client_diagnostic_version: "1" }),
+      ),
+    ).toBeNull();
+    expect(
+      config.before_send(
+        enriched({ ...retained, recovery_decision: "reload_requested" }),
+      ),
+    ).toBeNull();
+
+    // The private-page gate still runs before the event-specific projection.
+    try {
+      expect(
+        config.before_send({
+          ...enriched(retained),
+          properties: {
+            ...retained,
+            $current_url: "https://hackerai.co/abuse/report",
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      // That gate blocks replay for the rest of the tab session.
+      window.sessionStorage.clear();
+    }
   });
 
   it("adds bounded context through before_send only while identified consent is active", async () => {

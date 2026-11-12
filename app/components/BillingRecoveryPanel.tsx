@@ -13,6 +13,7 @@ import type {
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { beginServerActionDiagnostic } from "@/lib/analytics/server-action-diagnostics";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
@@ -186,8 +187,19 @@ export function BillingRecoveryPanel({
     if (opening || checking || recovering) return;
     setRecovering(true);
     setMessage("");
+    const settleDiagnostic = beginServerActionDiagnostic(
+      "billing_renewal_recovery",
+    );
     try {
-      const ready = await recoverCanceledRenewal();
+      let ready: boolean;
+      try {
+        ready = await recoverCanceledRenewal();
+      } catch (error) {
+        settleDiagnostic(error);
+        throw error;
+      }
+      // Settle before onCheck so a later status-check failure is not attributed to the action.
+      settleDiagnostic();
       const next = await onCheck();
       if (!mounted.current) return;
       if (
