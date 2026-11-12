@@ -39,5 +39,18 @@ export function nextActionsDeliveryReason(
     ? (value as NextActionsDeliveryReason)
     : undefined;
 }
+// These source states cannot clear by waiting. Active and stale sources retry:
+// Agent marks the chat complete before its final assistant message is saved.
+// A missing or unknown reason keeps legacy retries.
+const FINAL_CONFLICTS = new Set<NextActionsDeliveryReason>([
+  "source_canceled",
+  "source_not_successful",
+  "source_waiting",
+]);
+export function isRetryableNextActionsConflict(
+  reason: NextActionsDeliveryReason | undefined,
+): boolean {
+  return !reason || !FINAL_CONFLICTS.has(reason);
+}
 export type NextActionsFailurePhase =
   "http" | "decode" | "schema" | "network" | "deadline" | "lifecycle";
