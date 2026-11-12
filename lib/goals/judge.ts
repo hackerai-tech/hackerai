@@ -250,7 +250,7 @@ export function buildGoalCompletionEvidence(
   };
 }
 
-/** Visible Markdown prose without code, blockquotes, HTML or link targets. */
+/** Request prose without code, blockquotes, withdrawn text or link targets. */
 function requestProse(text: string) {
   const inline = (tokens: readonly Token[] = []): string =>
     tokens
@@ -263,12 +263,11 @@ function requestProse(text: string) {
             return t.text;
           case "strong":
           case "em":
-          case "del":
           case "link":
             return inline(t.tokens);
           case "br":
             return "\n";
-          default: // codespan, html, image, checkbox
+          default: // codespan, del (withdrawn), html, image, checkbox
             return "";
         }
       })

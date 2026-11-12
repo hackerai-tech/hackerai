@@ -336,6 +336,7 @@ describe("independent goal completion check", () => {
     "- Check the marker.\n    - Provide the target URL.",
     "The delimiter is a ` character.\n\nProvide the target URL.\n\nThen type ` again.",
     "Use the ``` marker.\nProvide the target URL.\nSee `x`.",
+    "~~The marker failed.~~ Provide the target URL.",
   ])("keeps an imperative request for input: %j", async (text) => {
     const result = await judgeInputRequest(text);
     expect(result).toMatchObject({
@@ -410,6 +411,11 @@ describe("independent goal completion check", () => {
       question: "Nennen Sie die Ziel-URL.",
     },
     {
+      name: "withdrawn question",
+      text: "~~Nennen Sie die Ziel-URL.~~ I found it; no reply is needed.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
       name: "code-only question",
       text: "The marker is ready.",
       question: "`scope`",
@@ -445,6 +451,7 @@ describe("independent goal completion check", () => {
     "The marker is ready.\n\n\tSend the required scope.",
     "The marker is ready. Example: `\nProvide the target URL.\n`",
     "The marker is ready. Example: ``\nProvide the `target` URL.\n``",
+    "~~Provide the target URL.~~ I found it; no reply is needed.",
   ])(
     "does not pause for code examples, quoted instructions or URLs: %j",
     async (text) => {
