@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Redis } from "@upstash/redis";
 
 const TRANSFER_TOKEN_TTL_SECONDS = 300;
@@ -5,6 +6,43 @@ const OAUTH_STATE_TTL_SECONDS = 300;
 const TRANSFER_TOKEN_PREFIX = "desktop-auth-transfer:";
 const OAUTH_STATE_PREFIX = "desktop-oauth-state:";
 const TOKEN_FORMAT_REGEX = /^[a-f0-9]{64}$/;
+const OAUTH_STATE_OBSERVATION_DOMAIN =
+  "hackerai:desktop-oauth-state-lifecycle:v1\0";
+const BUILD_COMMIT_REGEX = /^[a-f0-9]{40}$/;
+
+type OAuthStateLifecyclePhase =
+  "issued" | "store_returned_other" | "consumed" | "lookup_empty";
+
+// Joins one OAuth state's issue and lookup logs through a domain-separated
+// digest. The reference is observation only: it is never returned to callers
+// or used for Redis keys or auth decisions, and failures never change auth.
+function observeOAuthStateLifecycle(
+  state: string,
+  phase: OAuthStateLifecyclePhase,
+): void {
+  try {
+    if (!TOKEN_FORMAT_REGEX.test(state)) return;
+    const buildCommit = process.env.VERCEL_GIT_COMMIT_SHA;
+    console.info(
+      JSON.stringify({
+        event: "desktop.oauth_state_lifecycle",
+        oauth_state_diagnostic_version: 1,
+        phase,
+        observation_ref: createHash("sha256")
+          .update(OAUTH_STATE_OBSERVATION_DOMAIN)
+          .update(state)
+          .digest("hex"),
+        ttl_seconds: OAUTH_STATE_TTL_SECONDS,
+        server_build_commit:
+          buildCommit && BUILD_COMMIT_REGEX.test(buildCommit)
+            ? buildCommit
+            : null,
+      }),
+    );
+  } catch {
+    // Diagnostics must not affect the OAuth outcome.
+  }
+}
 
 type TransferTokenData = {
   sealedSession: string;
@@ -179,13 +217,20 @@ export async function createOAuthState(
 
   const value = metadata ? JSON.stringify(metadata) : "1";
 
+  let acknowledgement: unknown;
   try {
-    await redis.set(key, value, { ex: OAUTH_STATE_TTL_SECONDS });
+    acknowledgement = await redis.set(key, value, {
+      ex: OAUTH_STATE_TTL_SECONDS,
+    });
   } catch (err) {
     console.error("[Desktop Auth] Failed to store OAuth state in Redis:", err);
     return null;
   }
 
+  observeOAuthStateLifecycle(
+    state,
+    acknowledgement === "OK" ? "issued" : "store_returned_other",
+  );
   return state;
 }
 
@@ -209,6 +254,7 @@ export async function verifyAndConsumeOAuthState(
 
   try {
     const value = await redis.getdel<string>(key);
+    observeOAuthStateLifecycle(state, value ? "consumed" : "lookup_empty");
     if (!value) {
       return { valid: false };
     }
