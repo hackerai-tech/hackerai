@@ -52,7 +52,13 @@ import {
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
 } from "@/packages/local/src/centrifugo-transport";
+import {
+  getSandboxUploadFailureMetadata,
+  uploadSandboxFiles,
+} from "@/lib/utils/sandbox-file-utils";
+import { getLocalCopyFailureContext } from "../local-copy-failure-context";
 
+jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("@/lib/centrifugo/traffic", () => ({
   ...jest.requireActual("@/lib/centrifugo/traffic"),
   recordRelayReceivedBytes: jest.fn(),
@@ -6744,6 +6750,397 @@ describe("CentrifugoSandbox", () => {
         });
       },
     );
+  });
+
+  describe("local copy failure diagnostics", () => {
+    const COPY_COMMAND_ID = "33333333-3333-4333-8333-333333333333";
+    // Existing `local_copy_failure_reason` predates this versioned context.
+    const copyFields = (fields: Record<string, unknown> = {}) =>
+      Object.fromEntries(
+        Object.entries(fields).filter(
+          ([key]) =>
+            key.startsWith("local_copy_") &&
+            key !== "local_copy_failure_reason",
+        ),
+      );
+
+    it("does not attribute an observed copy error to a later URL transfer", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "",
+        stderr: "Permission denied",
+        exitCode: 1,
+      });
+      let copyError: unknown;
+      try {
+        await sandbox.files.copyLocal("/private/source", "/tmp/copy");
+      } catch (error) {
+        copyError = error;
+      }
+      expect(getLocalCopyFailureContext(copyError)).toBeDefined();
+      jest.spyOn(sandbox.files, "downloadFromUrl").mockRejectedValue(copyError);
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/fixture",
+            localPath: "/tmp/url",
+          },
+        ],
+        async () => sandbox,
+      );
+      expect(result.failedCount).toBe(1);
+      expect(copyFields(getSandboxUploadFailureMetadata(result))).toEqual({});
+    });
+
+    it.each([
+      {
+        platform: "linux",
+        shell: "bash",
+        source: "/home/PRIVATE_USER/PRIVATE_SOURCE.pdf",
+        stderr: "bash: line 1: cp: command not found",
+        exitCode: 127,
+        category: "missing_utility",
+        pathShape: "posix_absolute",
+        command:
+          "mkdir -p '/tmp/hackerai-upload' && cp -f '/home/PRIVATE_USER/PRIVATE_SOURCE.pdf' '/tmp/hackerai-upload/PRIVATE_DEST.pdf'",
+      },
+      {
+        platform: "win32",
+        shell: "cmd",
+        source: "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf",
+        stderr: "The syntax of the command is incorrect.",
+        exitCode: 1,
+        category: "shell_syntax",
+        pathShape: "windows_drive_absolute",
+        command:
+          'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload" && copy /Y "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf" "C:\\temp\\hackerai-upload\\PRIVATE_DEST.pdf" >nul',
+      },
+    ])(
+      "carries the actual $shell copy receipt and classified stderr to existing staging sinks",
+      async ({
+        platform,
+        shell,
+        source,
+        stderr,
+        exitCode,
+        category,
+        pathShape,
+        command,
+      }) => {
+        crypto.randomUUID = jest.fn(() => COPY_COMMAND_ID) as any;
+        const sandbox = createDesktopSandbox(undefined, platform);
+        if (shell === "cmd") (sandbox as any).shellKind = "cmd";
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const pending = uploadSandboxFiles(
+            [
+              {
+                kind: "localPath",
+                path: source,
+                localPath: "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+              },
+            ],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "agent-long",
+                requestId: "run-copy",
+                userId: "user-1",
+                chatId: "chat-copy",
+              },
+            },
+          );
+          for (let tick = 0; tick < 10 && !mockSubscriptions[0]; tick++)
+            await jest.advanceTimersByTimeAsync(0);
+          const reply = mockSubscriptions[0];
+          reply.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          expect(reply.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ commandId: COPY_COMMAND_ID, command }),
+          );
+          reply.emit("publication", {
+            data: {
+              type: "stderr",
+              commandId: COPY_COMMAND_ID,
+              data: `${stderr}\r\nPRIVATE_STDERR_CANARY`,
+            },
+          });
+          reply.emit("publication", {
+            data: { type: "exit", commandId: COPY_COMMAND_ID, exitCode },
+          });
+          const result = await pending;
+
+          expect(result.failureDetails?.[0]).toMatchObject({
+            kind: "localPath",
+            exitCode,
+          });
+          const expected = {
+            local_copy_diagnostic_version: 1,
+            local_copy_selected_shell: shell,
+            local_copy_receiver_mode: "desktop_shared",
+            local_copy_source_path_shape: pathShape,
+            local_copy_destination_path_shape: pathShape,
+            local_copy_command_failure_category: category,
+            local_copy_stderr_scan_truncated: false,
+            local_copy_receipt_available: true,
+            local_copy_command_id: COPY_COMMAND_ID,
+            local_copy_acknowledged_output: false,
+            local_copy_terminal_ack_published: false,
+          };
+          const events = (name: string) =>
+            event.mock.calls
+              .filter(([eventName]) => eventName === name)
+              .map(([, fields]) => fields);
+          const consoleRecords = (spy: jest.SpyInstance, name: string) =>
+            spy.mock.calls
+              .map(([value]) => {
+                try {
+                  return JSON.parse(value);
+                } catch {
+                  return {};
+                }
+              })
+              .filter((record) => record.event === name);
+          const sinks = [
+            ...events("sandbox_attachment_failure_diagnostics"),
+            ...consoleRecords(warn, "sandbox_attachment_failure_diagnostics"),
+            ...events("sandbox_attachment_staging_failed"),
+            ...consoleRecords(error, "sandbox_attachment_staging_failed"),
+            getSandboxUploadFailureMetadata(result),
+          ];
+          expect(sinks).toHaveLength(5);
+          for (const sink of sinks) expect(copyFields(sink)).toEqual(expected);
+          expect(JSON.stringify(sinks.map(copyFields))).not.toMatch(
+            /PRIVATE|hackerai-upload|cp -f|copy \/Y/,
+          );
+        } finally {
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
+
+    it.each(["returned", "thrown"] as const)(
+      "reports only the terminal fallback copy context when the final attempt is %s",
+      async (finalAttempt) => {
+        const sandbox = createDesktopSandbox(undefined, "linux");
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            if (command.includes("for base in"))
+              return {
+                stdout: "/home/PRIVATE_USER/hackerai-upload/fallback/a.pdf",
+                stderr: "",
+                exitCode: 0,
+              };
+            if (command.includes("'/tmp/hackerai-upload/PRIVATE_DEST.pdf'"))
+              return {
+                stdout: "",
+                stderr: "cp: cannot create regular file: Permission denied",
+                exitCode: 1,
+              };
+            if (finalAttempt === "thrown")
+              throw new Error("PRIVATE relay failure");
+            return {
+              stdout: "",
+              stderr:
+                "bash: -c: line 1: syntax error near unexpected token `('",
+              exitCode: 2,
+            };
+          });
+        try {
+          const result = await uploadSandboxFiles(
+            [
+              {
+                kind: "localPath",
+                path: "/home/PRIVATE_USER/PRIVATE_SOURCE.pdf",
+                localPath: "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+              },
+            ],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "chat-handler",
+                userId: "user-1",
+                chatId: "chat-copy",
+              },
+            },
+          );
+          expect(run).toHaveBeenCalledTimes(3);
+          expect(result.failedCount).toBe(1);
+          const metadata = copyFields(getSandboxUploadFailureMetadata(result));
+          const staging = event.mock.calls.find(
+            ([name]) => name === "sandbox_attachment_staging_failed",
+          )?.[1];
+          if (finalAttempt === "thrown") {
+            // The initial permission failure must not stand in for the final one.
+            expect(metadata).toEqual({});
+            expect(copyFields(staging)).toEqual({});
+          } else {
+            const expected = {
+              local_copy_diagnostic_version: 1,
+              local_copy_selected_shell: "bash",
+              local_copy_receiver_mode: "desktop_shared",
+              local_copy_source_path_shape: "posix_absolute",
+              local_copy_destination_path_shape: "posix_absolute",
+              local_copy_command_failure_category: "shell_syntax",
+              local_copy_stderr_scan_truncated: false,
+              // A result not produced by this adapter's relay has no receipt.
+              local_copy_receipt_available: false,
+            };
+            expect(metadata).toEqual(expected);
+            expect(copyFields(staging)).toEqual(expected);
+          }
+        } finally {
+          run.mockRestore();
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
+
+    it("binds a sequenced terminal ACK to the returned copy failure", async () => {
+      crypto.randomUUID = jest.fn(() => COPY_COMMAND_ID) as any;
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          osInfo: {
+            platform: "linux",
+            arch: "x64",
+            release: "6.8",
+            hostname: "PRIVATE_HOST",
+          },
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const pending = sandbox.files
+        .copyLocal("/tmp/source.pdf", "/tmp/hackerai-upload/dest.pdf")
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: COPY_COMMAND_ID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: {
+          type: "exit",
+          commandId: COPY_COMMAND_ID,
+          exitCode: 1,
+          sequence: 0,
+          outputProtocol: "ack-v1",
+        },
+      });
+      const error = await pending;
+      expect(error).toMatchObject({
+        message: "Failed to prepare local file: exit status 1",
+        exitCode: 1,
+      });
+      expect(getLocalCopyFailureContext(error)).toMatchObject({
+        local_copy_receiver_mode: "desktop_isolated",
+        local_copy_command_failure_category: "unknown",
+        local_copy_receipt_available: true,
+        local_copy_command_id: COPY_COMMAND_ID,
+        local_copy_acknowledged_output: true,
+        local_copy_terminal_ack_published: true,
+      });
+    });
+
+    it.each([
+      ["linux", "", "empty"],
+      ["linux", "PRIVATE_RELATIVE.pdf", "relative"],
+      ["linux", "/tmp/PRIVATE\u0007NAME.pdf", "invalid_control"],
+      ["win32", "\\\\PRIVATE_HOST\\share\\a.pdf", "unc"],
+      ["win32", "D:\\PRIVATE\\a.pdf", "windows_drive_absolute"],
+    ])(
+      "projects the effective %s source path %j as %s only",
+      async (platform, source, shape) => {
+        const sandbox = createDesktopSandbox(undefined, platform);
+        if (platform === "win32") (sandbox as any).shellKind = "cmd";
+        jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "PRIVATE_STDERR",
+          exitCode: 1,
+        });
+        const error = await sandbox.files
+          .copyLocal(source, "/tmp/hackerai-upload/PRIVATE_DEST.pdf")
+          .catch((failure: unknown) => failure);
+        const context = getLocalCopyFailureContext(error);
+        expect(context).toMatchObject({
+          local_copy_source_path_shape: shape,
+          local_copy_destination_path_shape:
+            platform === "win32" ? "windows_drive_absolute" : "posix_absolute",
+          local_copy_receipt_available: false,
+        });
+        expect(JSON.stringify(context)).not.toMatch(/PRIVATE|\.pdf/);
+      },
+    );
+
+    it("bounds the stderr scan and keeps other observations when receiver mode fails", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      // The classifier marker lies past the scan budget, so it is not proven.
+      const stderr = `${"x".repeat(16_384)}\nbash: cp: command not found`;
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "PRIVATE_STDOUT",
+        stderr,
+        exitCode: 127,
+      });
+      jest
+        .spyOn(sandbox, "supportsOperationChannels")
+        .mockImplementation(() => {
+          throw new Error("PRIVATE mode");
+        });
+      const error = await sandbox.files
+        .copyLocal("/tmp/source.pdf", "/tmp/dest.pdf")
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({
+        message: `Failed to prepare local file: ${stderr}`,
+        exitCode: 127,
+      });
+      expect(getLocalCopyFailureContext(error)).toEqual({
+        local_copy_diagnostic_version: 1,
+        local_copy_selected_shell: "bash",
+        local_copy_source_path_shape: "posix_absolute",
+        local_copy_destination_path_shape: "posix_absolute",
+        local_copy_command_failure_category: "unknown",
+        local_copy_stderr_scan_truncated: true,
+        local_copy_receipt_available: false,
+      });
+    });
+
+    it("records nothing for a thrown copy command or a successful copy", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      const thrown = new Error("PRIVATE relay failure");
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockRejectedValueOnce(thrown)
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      await expect(
+        sandbox.files.copyLocal("/tmp/source.pdf", "/tmp/dest.pdf"),
+      ).rejects.toBe(thrown);
+      expect(getLocalCopyFailureContext(thrown)).toBeUndefined();
+      await expect(
+        sandbox.files.copyLocal("/tmp/source.pdf", "/tmp/dest.pdf"),
+      ).resolves.toBeUndefined();
+      expect(run).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("getSandboxContext", () => {

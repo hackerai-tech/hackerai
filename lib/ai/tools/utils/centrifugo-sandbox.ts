@@ -31,6 +31,7 @@ import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
 } from "./attachment-command";
+import { recordLocalCopyFailure } from "./local-copy-failure-context";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
@@ -479,6 +480,11 @@ export class CentrifugoSandbox extends EventEmitter {
 
   supportsOperationChannels(): boolean {
     return this.connectionInfo.capabilities?.operationChannels === true;
+  }
+
+  /** Selected connection mode for diagnostics, not the physical host OS. */
+  private receiverMode(): NativePathReceiverMode {
+    return `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
   }
 
   supportsCommandStdin(): boolean {
@@ -1902,7 +1908,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         const receipt = this.commandReceipts.get(result);
         let receiverMode: NativePathReceiverMode | undefined;
         try {
-          receiverMode = `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
+          receiverMode = this.receiverMode();
         } catch {
           /* Optional mode context cannot replace the guarded path failure. */
         }
@@ -2878,9 +2884,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       if (result.exitCode !== 0) {
         const failureDetail =
           result.stderr || result.stdout || `exit status ${result.exitCode}`;
-        throw Object.assign(
-          new Error(`Failed to prepare local file: ${failureDetail}`),
-          { exitCode: result.exitCode },
+        throw recordLocalCopyFailure(
+          Object.assign(
+            new Error(`Failed to prepare local file: ${failureDetail}`),
+            { exitCode: result.exitCode },
+          ),
+          {
+            shell: destCtx.useBash ? "bash" : "cmd",
+            receiverMode: () => this.receiverMode(),
+            sourcePath: sourceCtx.path,
+            destinationPath: destCtx.path,
+            stderr: result.stderr,
+            // Only this relay's returned result has a receipt.
+            receipt: this.commandReceipts.get(result),
+          },
         );
       }
     },
