@@ -738,6 +738,44 @@ describe("canceled renewal invoice", () => {
     ).resolves.toBe(false);
   });
 
+  it.each([0, -791])(
+    "allows checkout after a finalized renewal totaling %i collected no payment",
+    async (total) => {
+      const { stripe } = stripeMock(
+        invoice({
+          status: "paid",
+          total,
+          amount_due: 0,
+          amount_paid: 0,
+          amount_remaining: 0,
+          status_transitions: { paid_at: endedAt + 120 },
+        }),
+      );
+
+      await expect(
+        hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 180),
+      ).resolves.toBe(false);
+    },
+  );
+
+  it("keeps a positive renewal paid with customer credit under review", async () => {
+    const { stripe } = stripeMock(
+      invoice({
+        status: "paid",
+        total: 6000,
+        amount_due: 0,
+        amount_paid: 0,
+        amount_remaining: 0,
+        starting_balance: -6000,
+        status_transitions: { paid_at: endedAt + 120 },
+      }),
+    );
+
+    await expect(
+      hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 180),
+    ).resolves.toBe(true);
+  });
+
   it("allows checkout after support marked a paid renewal resolved", async () => {
     const { stripe, listInvoicePayments } = stripeMock(
       invoice({

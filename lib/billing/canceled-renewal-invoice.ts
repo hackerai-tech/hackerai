@@ -359,6 +359,17 @@ export async function hasRecentCanceledRenewalAtRisk(
         return true;
       }
       if (invoice.status === "paid") {
+        // Stripe also finalizes zero/negative proration invoices as paid.
+        // They collected no renewal payment that a new checkout could duplicate.
+        // A positive invoice settled with customer credit still needs review.
+        if (
+          invoice.total <= 0 &&
+          invoice.amount_due === 0 &&
+          invoice.amount_paid === 0 &&
+          invoice.amount_remaining === 0
+        ) {
+          continue;
+        }
         if (
           (invoice.status_transitions.paid_at ?? 0) <
           endedAt - PAYMENT_CANCELLATION_RACE_SECONDS
