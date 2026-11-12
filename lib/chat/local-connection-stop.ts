@@ -34,6 +34,12 @@ export type LocalStopDetails = {
   callbackCode?: number;
   /** Public observer client state before the watcher's own disconnect. */
   clientState?: LocalStopClientState;
+  /**
+   * Native close of the observer's armed socket seen before the first stop;
+   * both or neither. Absent means unmeasured, not that no socket closed.
+   */
+  socketCloseCode?: number;
+  socketCloseWasClean?: boolean;
 };
 
 type LocalStopDiagnostic = Readonly<
@@ -42,6 +48,7 @@ type LocalStopDiagnostic = Readonly<
 
 const MAX_PRESENCE_AGE_MS = 86_400_000;
 const MAX_CALLBACK_CODE = 4_999;
+const MIN_SOCKET_CLOSE_CODE = 1_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Keyed by the constructed instance, so forged or proxied objects carry nothing.
@@ -70,11 +77,32 @@ function clientState(value: unknown): LocalStopClientState | undefined {
   return CLIENT_STATES.find((known) => known === value);
 }
 
+function socketClose(code: unknown, wasClean: unknown) {
+  return typeof code === "number" &&
+    Number.isInteger(code) &&
+    code >= MIN_SOCKET_CLOSE_CODE &&
+    code <= MAX_CALLBACK_CODE &&
+    typeof wasClean === "boolean"
+    ? { socketCloseCode: code, socketCloseWasClean: wasClean }
+    : undefined;
+}
+
 /** Getter-free reads of SDK values; faults and invalid values are omitted. */
 export const readCallbackCode = (context: unknown) =>
   callbackCode(ownData(context, "code"));
 export const readClientState = (client: unknown) =>
   clientState(ownData(client, "state"));
+
+/** A native CloseEvent's public getters, never its reason; faults are omitted. */
+export function readSocketClose(event: unknown) {
+  try {
+    if (event === null || typeof event !== "object") return undefined;
+    const { code, wasClean } = event as { code?: unknown; wasClean?: unknown };
+    return socketClose(code, wasClean);
+  } catch {
+    return undefined;
+  }
+}
 
 function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
   const diagnostic: { reason: LocalStopReason } & LocalStopDetails = {
@@ -101,6 +129,11 @@ function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
   if (code !== undefined) diagnostic.callbackCode = code;
   const state = clientState(ownData(details, "clientState"));
   if (state !== undefined) diagnostic.clientState = state;
+  const close = socketClose(
+    ownData(details, "socketCloseCode"),
+    ownData(details, "socketCloseWasClean"),
+  );
+  if (close) Object.assign(diagnostic, close);
   return Object.freeze(diagnostic);
 }
 
@@ -149,5 +182,10 @@ export function localStopAnalyticsProperties(error: unknown) {
     ...(diagnostic.clientState !== undefined && {
       local_stop_client_state: diagnostic.clientState,
     }),
+    ...(diagnostic.socketCloseCode !== undefined &&
+      diagnostic.socketCloseWasClean !== undefined && {
+        local_stop_socket_close_code: diagnostic.socketCloseCode,
+        local_stop_socket_close_was_clean: diagnostic.socketCloseWasClean,
+      }),
   } as const;
 }

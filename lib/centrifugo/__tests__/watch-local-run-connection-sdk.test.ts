@@ -16,17 +16,47 @@ const CHANNEL = sandboxConnectionChannel("u", SELECTED);
 
 type Command = { id: number } & Record<string, unknown>;
 
-class FakeSocket {
+// Its getters, like a native CloseEvent's.
+class FakeCloseEvent extends Event {
+  constructor(
+    readonly init: { code: number; wasClean: boolean; reason: string },
+  ) {
+    super("close");
+  }
+  get code() {
+    return this.init.code;
+  }
+  get wasClean() {
+    return this.init.wasClean;
+  }
+  get reason() {
+    return this.init.reason;
+  }
+}
+
+class FakeSocket extends EventTarget {
   static all: FakeSocket[] = [];
   onopen?: () => void;
-  onclose?: (event: { code: number; reason: string }) => void;
   onmessage?: (event: { data: string }) => void;
   onerror?: (event: unknown) => void;
   commands: Command[] = [];
   closed = false;
+  #onclose?: (event: Event) => void;
 
   constructor(readonly url: string) {
+    super();
     FakeSocket.all.push(this);
+  }
+
+  // As a native event handler attribute, it takes its listener slot when first
+  // set, after any listener added before then.
+  get onclose() {
+    return this.#onclose;
+  }
+  set onclose(handler) {
+    if (!this.#onclose)
+      this.addEventListener("close", (event) => this.#onclose?.(event));
+    this.#onclose = handler;
   }
 
   send(data: string) {
@@ -48,8 +78,15 @@ class FakeSocket {
     }
   }
 
+  // The client's own close completes later, without a status code.
   close() {
+    if (this.closed) return;
     this.closed = true;
+    void Promise.resolve().then(() =>
+      this.dispatchEvent(
+        new FakeCloseEvent({ code: 1005, wasClean: true, reason: "" }),
+      ),
+    );
   }
 
   // Server frames arrive after the current task, as from a real socket.
@@ -59,9 +96,11 @@ class FakeSocket {
     });
   }
 
-  serverClose(code: number) {
+  serverClose(code: number, wasClean = false) {
     this.closed = true;
-    this.onclose?.({ code, reason: "" });
+    this.dispatchEvent(
+      new FakeCloseEvent({ code, wasClean, reason: "PRIVATE" }),
+    );
   }
 
   presenceReads() {
@@ -128,6 +167,8 @@ const unsubscribe = (code: number) => (socket: FakeSocket) =>
     push: { channel: CHANNEL, unsubscribe: { code, reason: "PRIVATE" } },
   });
 
+// Only a native close delivered before the first stop carries a socket pair;
+// the closes that follow the SDK's or the watcher's own close carry none.
 test.each([
   [
     "a transport close",
@@ -135,6 +176,16 @@ test.each([
     "subscription_reconnecting",
     1,
     "connecting",
+    { socketCloseCode: 1006, socketCloseWasClean: false },
+  ],
+  // An observed normal closure, not itself evidence of an outage.
+  [
+    "a clean server close",
+    (socket: FakeSocket) => socket.serverClose(1000, true),
+    "subscription_reconnecting",
+    1,
+    "connecting",
+    { socketCloseCode: 1000, socketCloseWasClean: true },
   ],
   [
     "a permanent server disconnect",
@@ -147,6 +198,7 @@ test.each([
     "subscription_reconnecting",
     1,
     "disconnected",
+    {},
   ],
   [
     "a server resubscribe 2500",
@@ -154,6 +206,7 @@ test.each([
     "subscription_reconnecting",
     2500,
     "connected",
+    {},
   ],
   [
     "a server resubscribe 2502",
@@ -161,6 +214,7 @@ test.each([
     "subscription_reconnecting",
     2502,
     "connected",
+    {},
   ],
   [
     "a server unsubscribe",
@@ -168,10 +222,11 @@ test.each([
     "subscription_unsubscribed",
     2000,
     "connected",
+    {},
   ],
 ])(
   "classifies %s by the first callback and the state before its own disconnect",
-  async (_name, trigger, reason, callbackCode, clientState) => {
+  async (_name, trigger, reason, callbackCode, clientState, socketClose) => {
     const watcher = await start();
     const sent = watcher.socket.commands.length;
     trigger(watcher.socket);
@@ -186,6 +241,7 @@ test.each([
       lastPositivePresenceAgeMs: 0,
       callbackCode,
       clientState,
+      ...socketClose,
     });
     expect(JSON.stringify(cause)).not.toContain("PRIVATE");
     await expectDisposed(watcher, sent);
@@ -200,4 +256,55 @@ test("explicit completion disposes the actual client silently", async () => {
   expect(watcher.stop()).toBeUndefined();
   await expectDisposed(watcher, sent);
   expect(watcher.onLost).not.toHaveBeenCalled();
+});
+
+test("a selected host leave stops without the following own socket close", async () => {
+  const watcher = await start();
+  const sent = watcher.socket.commands.length;
+  watcher.socket.push({
+    push: {
+      channel: CHANNEL,
+      leave: {
+        info: { client: "host", conn_info: { connectionId: SELECTED } },
+      },
+    },
+  });
+  await settle();
+  expect(getLocalStopDiagnostic(watcher.onLost.mock.calls[0][0])).toEqual({
+    reason: "selected_host_left",
+    connectionId: SELECTED,
+    hadPositivePresence: true,
+    lastPositivePresenceAgeMs: 0,
+  });
+  await expectDisposed(watcher, sent);
+  expect(watcher.onLost).toHaveBeenCalledTimes(1);
+});
+
+test("a close during initial setup is not the run's socket close", async () => {
+  const onLost = jest.fn();
+  watchLocalRunConnection({ userId: "u", connectionId: SELECTED, onLost });
+  await settle();
+  // The first attempt fails before it opens; the SDK retries with a new socket.
+  FakeSocket.all[0].serverClose(1006);
+  await settle();
+  await jest.advanceTimersByTimeAsync(1_000);
+  expect(FakeSocket.all).toHaveLength(2);
+  expect(onLost).not.toHaveBeenCalled();
+  const socket = FakeSocket.all[1];
+  socket.onopen!();
+  await settle();
+  expect(socket.presenceReads()).toBe(1);
+  socket.push({
+    push: { disconnect: { code: 3501, reason: "PRIVATE", reconnect: false } },
+  });
+  await settle();
+  expect(onLost).toHaveBeenCalledTimes(1);
+  expect(getLocalStopDiagnostic(onLost.mock.calls[0][0])).toEqual({
+    reason: "subscription_reconnecting",
+    connectionId: SELECTED,
+    hadPositivePresence: true,
+    lastPositivePresenceAgeMs: 0,
+    callbackCode: 1,
+    clientState: "disconnected",
+  });
 });

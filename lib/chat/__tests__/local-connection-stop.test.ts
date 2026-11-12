@@ -29,6 +29,8 @@ it("projects only validated closed fields", () => {
     lastPositivePresenceAgeMs: 4_999.6,
     callbackCode: 3012,
     clientState: "connecting",
+    socketCloseCode: 1006,
+    socketCloseWasClean: false,
     // Raw SDK context must never be carried along.
     ...({ reason: "PRIVATE", message: "PRIVATE", channel: "PRIVATE" } as {}),
   });
@@ -41,6 +43,8 @@ it("projects only validated closed fields", () => {
     local_stop_last_positive_presence_age_ms: 5_000,
     local_stop_callback_code: 3012,
     local_stop_client_state: "connecting",
+    local_stop_socket_close_code: 1006,
+    local_stop_socket_close_was_clean: false,
   });
   expect(JSON.stringify(getLocalStopDiagnostic(error))).not.toContain(
     "PRIVATE",
@@ -93,6 +97,58 @@ it.each([
 );
 
 it.each([
+  [1_000, true],
+  [4_999, false],
+] as const)(
+  "keeps native close code %s with wasClean %s",
+  (socketCloseCode, socketCloseWasClean) => {
+    expect(
+      localStopAnalyticsProperties(
+        new LocalConnectionLostError("subscription_reconnecting", {
+          socketCloseCode,
+          socketCloseWasClean,
+        }),
+      ),
+    ).toMatchObject({
+      local_stop_socket_close_code: socketCloseCode,
+      local_stop_socket_close_was_clean: socketCloseWasClean,
+    });
+  },
+);
+
+// The pair is kept whole or not at all; a partial pair cannot be interpreted.
+it.each([
+  ["below 1000", 999, true],
+  ["above 4999", 5_000, false],
+  ["fraction", 1_006.5, false],
+  ["NaN", NaN, false],
+  ["string code", "1006", false],
+  ["boxed code", new Number(1006), false],
+  ["string wasClean", 1_006, "false"],
+  ["boxed wasClean", 1_006, new Boolean(false)],
+  ["numeric wasClean", 1_006, 0],
+  ["code only", 1_006, undefined],
+  ["wasClean only", undefined, true],
+])(
+  "omits an invalid native close pair: %s",
+  (_name, socketCloseCode, socketCloseWasClean) => {
+    expect(
+      localStopAnalyticsProperties(
+        new LocalConnectionLostError("subscription_reconnecting", {
+          callbackCode: 1,
+          socketCloseCode,
+          socketCloseWasClean,
+        } as never),
+      ),
+    ).toEqual({
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "subscription_reconnecting",
+      local_stop_callback_code: 1,
+    });
+  },
+);
+
+it.each([
   [
     "non-UUID connection and unknown reason",
     "PRIVATE reason",
@@ -136,10 +192,13 @@ it("never invokes getters or proxy traps that could expose private values", () =
   const getterDetails = Object.defineProperties(
     {},
     Object.fromEntries(
-      ["connectionId", "callbackCode", "clientState"].map((key) => [
-        key,
-        { enumerable: true, get: read },
-      ]),
+      [
+        "connectionId",
+        "callbackCode",
+        "clientState",
+        "socketCloseCode",
+        "socketCloseWasClean",
+      ].map((key) => [key, { enumerable: true, get: read }]),
     ),
   );
   const throwingProxy = new Proxy(
