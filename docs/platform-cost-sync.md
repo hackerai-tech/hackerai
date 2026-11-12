@@ -109,6 +109,10 @@ Convex invoice allocations use the same billing import. Its hourly unpriced
 usage observations and priced charges have separate replacement scopes, so
 refreshing either cannot delete or double count the other.
 
+Convex target configurations require `sources.convexTeamIds` for the full approved
+billing-account set. Legacy single-account `billingPeriods` imports are rejected.
+Each account supplies an `invoiceReferences` manifest collected independently
+from its invoice list, plus the matching receipts and current draft.
 Convex billing observations contain every approved billing account, each
 invoice's net amount due after applied balance, and its service-period subtotals.
 The invoice list's gross amount is insufficient. A single invoice can contain
@@ -119,7 +123,9 @@ input cents. Reported credits therefore reduce the total once; the included
 minimum and its usage are not added a second time.
 
 Paid seat prorations may overlap an existing monthly seat period; they are
-separate charges and must both be retained. A fully credited invoice has a
+separate charges and must both be retained. Store each invoice/service-period
+component separately so its status, amount, reference and dates remain reconcilable.
+A draft never changes an issued component from billed to estimated. A fully credited invoice has a
 known zero net amount. Include the current draft's explicit service-period
 amounts, including known zero overage, and retain its estimated status. Missing
 invoices, source accounts or dates must fail the import rather than creating

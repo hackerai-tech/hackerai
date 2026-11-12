@@ -233,14 +233,23 @@ export async function replaceCostRows(
 
   // Partial history cannot erase issued receipts. Drafts may be finalized.
   if (args.vendor === "convex" && args.scope === "charges") {
+    const receipts = new Map<string, Set<string>>();
+    for (const row of incoming.values()) {
+      const key = JSON.stringify([row.day, row.service_name]);
+      const references = receipts.get(key) ?? new Set<string>();
+      for (const reference of (row.billing_reference ?? "").split(","))
+        references.add(reference);
+      receipts.set(key, references);
+    }
     for (const row of existing) {
       if (row.cost_basis !== "billing_period_allocation") continue;
       const issued = (row.billing_reference ?? "")
         .split(",")
         .filter((reference) => reference && !reference.endsWith("-DRAFT"));
-      const next = incoming.get(rowKey(row));
-      const references = new Set((next?.billing_reference ?? "").split(","));
-      if (issued.some((reference) => !references.has(reference))) {
+      const references = receipts.get(
+        JSON.stringify([row.day, row.service_name]),
+      );
+      if (issued.some((reference) => !references?.has(reference))) {
         throw new Error(
           "Convex billing import omits a previously recorded issued receipt",
         );

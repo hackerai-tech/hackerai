@@ -222,6 +222,8 @@ export type ConvexBillingInvoice = {
 
 export type ConvexBillingAccount = {
   teamId: number;
+  /** Independently collected from the billing invoice list, including draft. */
+  invoiceReferences: string[];
   invoices: ConvexBillingInvoice[];
 };
 
@@ -243,6 +245,7 @@ export function allocateNetInvoice(invoice: ConvexBillingInvoice): number[] {
   ) {
     throw new Error("Invalid Convex invoice");
   }
+  const periods = new Set<string>();
   const weights = invoice.parts.map((part) => {
     const start = utcDayTime(part.start),
       end = utcDayTime(part.end);
@@ -255,6 +258,10 @@ export function allocateNetInvoice(invoice: ConvexBillingInvoice): number[] {
     ) {
       throw new Error("Invalid Convex invoice service period");
     }
+    const period = `${part.start}/${part.end}`;
+    if (periods.has(period))
+      throw new Error("Duplicate invoice service period");
+    periods.add(period);
     return BigInt(cents);
   });
   const weight = weights.reduce((n, value) => n + value, BigInt(0));
@@ -311,22 +318,19 @@ export function normalizeConvexInvoices(
       seen.has(account.teamId) ||
       !Array.isArray(account.invoices) ||
       !account.invoices.length ||
-      account.invoices.length > 64
+      account.invoices.length > 64 ||
+      !Array.isArray(account.invoiceReferences) ||
+      account.invoiceReferences.length !== account.invoices.length ||
+      new Set(account.invoiceReferences).size !==
+        account.invoiceReferences.length
     )
       throw new Error("Unexpected Convex billing account or invoices");
     seen.add(account.teamId);
     const invoices = new Set<string>();
-    const daily = new Map<
-      string,
-      {
-        cents: number;
-        estimated: boolean;
-        start: string;
-        end: string;
-        references: Set<string>;
-      }
-    >();
+    const coveredDays = new Set<string>();
     for (const invoice of account.invoices) {
+      if (!account.invoiceReferences.includes(invoice.reference))
+        throw new Error("Convex invoice manifest does not match the receipts");
       if (invoices.has(invoice.reference))
         throw new Error("Duplicate Convex invoice reference");
       invoices.add(invoice.reference);
@@ -354,52 +358,17 @@ export function normalizeConvexInvoices(
         );
         for (const allocation of allocations) {
           if (allocation.day < startDay || allocation.day > endDay) continue;
-          const existing = daily.get(allocation.day) ?? {
-            cents: 0,
-            estimated: false,
-            start: part.start,
-            end: part.end,
-            references: new Set<string>(),
-          };
-          existing.cents += Math.round(
-            (allocation.billedCostDollars ?? allocation.effectiveCostDollars!) *
-              100,
-          );
-          existing.estimated ||= invoice.status === "estimated";
-          existing.start =
-            existing.start < part.start ? existing.start : part.start;
-          existing.end = existing.end > part.end ? existing.end : part.end;
-          existing.references.add(invoice.reference);
-          daily.set(allocation.day, existing);
+          coveredDays.add(allocation.day);
+          rows.push({
+            ...allocation,
+            serviceName: `team-billing:${account.teamId}`,
+            chargeCategory: `invoice:${invoice.reference}:${part.start}:${part.end}`,
+          });
         }
       }
     }
-    if (days.some((day) => !daily.has(day)))
+    if (days.some((day) => !coveredDays.has(day)))
       throw new Error("Convex invoices have missing account/day coverage");
-    for (const day of days) {
-      const value = daily.get(day)!;
-      const reference = [...value.references].sort().join(",");
-      if (reference.length > 200)
-        throw new Error(
-          "Convex invoice provenance exceeds the bounded reference",
-        );
-      rows.push({
-        day,
-        serviceName: `team-billing:${account.teamId}`,
-        serviceCategory: "database",
-        chargeCategory: "billing-period",
-        billingCurrency: "USD",
-        costStatus: value.estimated ? "estimated" : "billed",
-        ...(value.estimated
-          ? { effectiveCostDollars: value.cents / 100 }
-          : { billedCostDollars: value.cents / 100 }),
-        sourcePeriodStart: new Date(utcDayTime(value.start)).toISOString(),
-        sourcePeriodEnd: new Date(utcDayTime(value.end)).toISOString(),
-        sourceChargeCount: value.references.size,
-        costBasis: "billing_period_allocation",
-        billingReference: reference,
-      });
-    }
   }
   return rows;
 }
@@ -410,7 +379,6 @@ export function prepareOperatingImport(
   scope: {
     workosTeamName?: string;
     upstashDatabaseIds?: string[];
-    convexTeamId?: number;
     convexTeamIds?: number[];
   },
   now = Date.now(),
@@ -421,7 +389,6 @@ export function prepareOperatingImport(
     startDay?: string;
     endDay?: string;
     workosTeamName?: string;
-    convexTeamId?: number;
     billingPeriods?: BillingPeriod[];
     redisBilling?: RedisCostObservation[];
     convexBilling?: ConvexBillingAccount[];
@@ -468,21 +435,12 @@ export function prepareOperatingImport(
       startDay,
       endDay,
     );
-  } else if (snapshot.vendor === "workos" || snapshot.vendor === "convex") {
+  } else if (snapshot.vendor === "workos") {
     if (
-      snapshot.vendor === "workos" &&
-      (!scope.workosTeamName ||
-        snapshot.workosTeamName !== scope.workosTeamName)
+      !scope.workosTeamName ||
+      snapshot.workosTeamName !== scope.workosTeamName
     ) {
       throw new Error("WorkOS workspace does not match the configured source");
-    }
-    if (
-      snapshot.vendor === "convex" &&
-      (!scope.convexTeamId || snapshot.convexTeamId !== scope.convexTeamId)
-    ) {
-      throw new Error(
-        "Convex billing account does not match the configured source",
-      );
     }
     if (!Array.isArray(snapshot.billingPeriods))
       throw new Error("Missing billing periods");
@@ -490,8 +448,8 @@ export function prepareOperatingImport(
       snapshot.billingPeriods,
       startDay,
       endDay,
-      snapshot.vendor === "workos" ? "workspace-billing" : "team-billing",
-      snapshot.vendor === "workos" ? "identity" : "database",
+      "workspace-billing",
+      "identity",
     );
   } else throw new Error("Unsupported operating-cost vendor");
   return { vendor: snapshot.vendor, startDay, endDay, observedAt, rows };

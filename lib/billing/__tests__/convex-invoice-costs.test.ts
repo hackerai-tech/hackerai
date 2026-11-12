@@ -1,6 +1,7 @@
 import {
   allocateNetInvoice,
-  normalizeConvexInvoices,
+  normalizeConvexInvoices as normalizeSource,
+  type ConvexBillingAccount,
   prepareOperatingImport,
   type ConvexBillingInvoice,
 } from "../operating-costs";
@@ -18,6 +19,25 @@ const invoice = (
   status,
   currency: "USD",
 });
+const normalizeConvexInvoices = (
+  accounts: Array<
+    Omit<ConvexBillingAccount, "invoiceReferences"> & {
+      invoiceReferences?: string[];
+    }
+  >,
+  expected: number[],
+  start: string,
+  end: string,
+) =>
+  normalizeSource(
+    accounts.map((account) => ({
+      invoiceReferences: account.invoices.map((invoice) => invoice.reference),
+      ...account,
+    })),
+    expected,
+    start,
+    end,
+  );
 const prior = { start: "2026-10-01", end: "2026-11-01", subtotalDollars: 100 };
 const current = {
   start: "2026-11-01",
@@ -82,11 +102,16 @@ test("the previous minimum plus its overage is counted once, and the next minimu
   expect(cents(rows.filter((row) => row.day.startsWith("2026-11")))).toBe(
     10000,
   );
-  expect(
-    rows
-      .filter((row) => row.day.startsWith("2026-11"))
-      .every((row) => row.costStatus === "estimated"),
-  ).toBe(true);
+  const november = rows.filter((row) => row.day.startsWith("2026-11"));
+  expect(cents(november.filter((row) => row.costStatus === "billed"))).toBe(
+    10000,
+  );
+  expect(cents(november.filter((row) => row.costStatus === "estimated"))).toBe(
+    0,
+  );
+  expect(november.filter((row) => row.costStatus === "estimated")).toHaveLength(
+    30,
+  );
   expect(rows.every((row) => row.day < "2026-12-01")).toBe(true);
 });
 
@@ -113,9 +138,19 @@ test("seat prorations can overlap a monthly base charge and preserve both invoic
   expect(rows.find((row) => row.day === "2026-11-15")?.billedCostDollars).toBe(
     1,
   );
-  expect(rows.find((row) => row.day === "2026-11-16")?.billedCostDollars).toBe(
-    2,
-  );
+  const overlapping = rows.filter((row) => row.day === "2026-11-16");
+  expect(cents(overlapping)).toBe(200);
+  expect(
+    overlapping.map((row) => [
+      row.billingReference,
+      row.sourcePeriodStart,
+      row.billedCostDollars,
+    ]),
+  ).toEqual([
+    ["base", "2026-11-01T00:00:00.000Z", 1],
+    ["new-seat", "2026-11-16T00:00:00.000Z", 1],
+  ]);
+  expect(new Set(overlapping.map((row) => row.chargeCategory)).size).toBe(2);
 });
 
 test("two billing accounts have independent cost identities and cannot silently omit one", () => {
@@ -155,7 +190,7 @@ test("duplicate invoices and incomplete service-period coverage fail before any 
       "2026-10-01",
       "2026-10-31",
     ),
-  ).toThrow("Duplicate");
+  ).toThrow("account or invoices");
   expect(() =>
     normalizeConvexInvoices(
       [{ teamId: 1, invoices: [one] }],
@@ -214,6 +249,7 @@ test("canonical Convex snapshots validate the configured billing-account set", (
     convexBilling: [
       {
         teamId: 1,
+        invoiceReferences: ["source"],
         invoices: [invoice("source", 31, [{ ...prior, subtotalDollars: 31 }])],
       },
     ],
@@ -232,4 +268,46 @@ test("canonical Convex snapshots validate the configured billing-account set", (
       Date.parse("2026-11-12T19:00:00Z"),
     ),
   ).toThrow("account scope");
+});
+
+test("the invoice-list manifest detects an omitted proration even when base fees cover every date", () => {
+  const base = invoice("base", 30, [current]);
+  expect(() =>
+    normalizeConvexInvoices(
+      [
+        {
+          teamId: 1,
+          invoiceReferences: ["base", "proration"],
+          invoices: [base],
+        },
+      ],
+      [1],
+      "2026-11-01",
+      "2026-11-30",
+    ),
+  ).toThrow("account or invoices");
+});
+
+test("the legacy single-account Convex format cannot replace multi-account invoice rows", () => {
+  expect(() =>
+    prepareOperatingImport(
+      {
+        vendor: "convex",
+        observedAt: "2026-11-12T18:00:00Z",
+        startDay: "2026-11-01",
+        endDay: "2026-11-11",
+        billingPeriods: [
+          {
+            ...current,
+            totalDollars: 100,
+            currency: "USD",
+            status: "billed",
+            reference: "legacy",
+          },
+        ],
+      },
+      { convexTeamIds: [1] },
+      Date.parse("2026-11-12T19:00:00Z"),
+    ),
+  ).toThrow("Unsupported");
 });
