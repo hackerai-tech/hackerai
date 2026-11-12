@@ -5,7 +5,10 @@ import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
 } from "../sandbox-file-utils";
-import { sampleAttachmentFailureMetrics } from "../sandbox-upload-readiness";
+import {
+  checkAttachmentReadiness,
+  sampleAttachmentFailureMetrics,
+} from "../sandbox-upload-readiness";
 import { phLogger } from "@/lib/posthog/server";
 
 const files = [1, 2, 3].map((index) => ({
@@ -441,4 +444,165 @@ it("retains a wrapped E2B 504 after the acquisition budget is spent", async () =
   expect(getSandboxUploadUserMessage(result)).toBe(
     "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.",
   );
+});
+
+const timeoutError = (message: string) =>
+  Object.assign(new Error(message), { name: "TimeoutError" });
+
+/** Models the SDK's two budgets: requestTimeoutMs bounds only the wait for a
+ * process ID; timeoutMs bounds the whole command from its start. */
+function timedCloudSandbox({
+  startMs,
+  exitMs,
+}: {
+  startMs: number;
+  exitMs: number;
+}) {
+  const kill = jest.fn(async () => true);
+  const run = jest.fn(
+    (
+      command: string,
+      options: { timeoutMs: number; requestTimeoutMs: number },
+    ) =>
+      new Promise((resolve, reject) => {
+        const timers: ReturnType<typeof setTimeout>[] = [];
+        const handle = {
+          pid: 4242,
+          exitCode: undefined as number | undefined,
+          wait: () =>
+            new Promise((settle, fail) => {
+              if (command !== "true") {
+                handle.exitCode = 0;
+                return settle(ok);
+              }
+              timers.push(
+                setTimeout(() => {
+                  handle.exitCode = 0;
+                  settle(ok);
+                }, exitMs - startMs),
+                setTimeout(
+                  () =>
+                    fail(
+                      timeoutError(
+                        "[deadline_exceeded] the operation timed out",
+                      ),
+                    ),
+                  options.timeoutMs - startMs,
+                ),
+              );
+            }),
+          disconnect: async () => timers.forEach(clearTimeout),
+        };
+        if (command !== "true") return resolve(handle);
+        if (startMs >= options.requestTimeoutMs)
+          setTimeout(
+            () =>
+              reject(
+                timeoutError(
+                  `Request handshake timed out after ${options.requestTimeoutMs}ms`,
+                ),
+              ),
+            options.requestTimeoutMs,
+          );
+        else setTimeout(() => resolve(handle), startMs);
+      }),
+  );
+  return { sandboxId: "timed-workspace", commands: { run, kill } };
+}
+
+const probe = (
+  sandbox: ReturnType<typeof timedCloudSandbox>,
+  signal = new AbortController().signal,
+) => {
+  const settled = jest.fn();
+  checkAttachmentReadiness(sandbox as any, signal).then(settled, settled);
+  return settled;
+};
+
+it("stages attachments once after a healthy login shell that needs six seconds", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 6_000 });
+  const ensure = jest.fn(async () => sandbox);
+  const pending = uploadSandboxFiles(files, ensure, {
+    signal: new AbortController().signal,
+    retryAfterReconnectOnTransientFailure: true,
+  });
+  await jest.advanceTimersByTimeAsync(6_000);
+  const result = await pending;
+
+  expect(result.failedCount).toBe(0);
+  expect(result.retriedAfterReconnect).toBeUndefined();
+  expect(ensure).toHaveBeenCalledTimes(1);
+  expect(
+    sandbox.commands.run.mock.calls.filter(([command]) => command === "true"),
+  ).toHaveLength(1);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("still fails after five seconds when the command channel yields no process", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 60_000, exitMs: 60_000 });
+  const settled = probe(sandbox);
+
+  await jest.advanceTimersByTimeAsync(4_999);
+  expect(settled).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1);
+  expect(settled).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: "Request handshake timed out after 5000ms",
+    }),
+  );
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+});
+
+it("kills only its own probe when a started login shell exhausts thirty seconds", async () => {
+  jest.useFakeTimers();
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 120_000 });
+  const settled = probe(sandbox);
+
+  await jest.advanceTimersByTimeAsync(29_999);
+  expect(settled).not.toHaveBeenCalled();
+  expect(sandbox.commands.kill).not.toHaveBeenCalled();
+  await jest.advanceTimersByTimeAsync(1);
+  expect(settled).toHaveBeenCalledWith(
+    expect.objectContaining({ name: "TimeoutError" }),
+  );
+  expect(sandbox.commands.kill).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).toHaveBeenCalledWith(4242, {
+    requestTimeoutMs: 5_000,
+  });
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("stops a slow probe immediately by killing only its own process", async () => {
+  jest.useFakeTimers();
+  const controller = new AbortController();
+  const stop = new Error("user stopped");
+  const sandbox = timedCloudSandbox({ startMs: 200, exitMs: 20_000 });
+  const settled = probe(sandbox, controller.signal);
+
+  await jest.advanceTimersByTimeAsync(2_000);
+  controller.abort(stop);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(settled).toHaveBeenCalledWith(stop);
+  expect(sandbox.commands.kill).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.kill).toHaveBeenCalledWith(4242, {
+    requestTimeoutMs: 5_000,
+  });
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("does not probe a sandbox that is not an E2B workspace", async () => {
+  const run = jest.fn();
+  await expect(
+    checkAttachmentReadiness({
+      sandboxKind: "centrifugo",
+      commands: { run },
+    } as any),
+  ).resolves.toBeUndefined();
+  expect(run).not.toHaveBeenCalled();
 });

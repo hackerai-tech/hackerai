@@ -22,6 +22,8 @@ import {
   sampleAttachmentFailureMetrics,
 } from "./sandbox-upload-readiness";
 import { probeSandboxUploadWrite } from "./sandbox-upload-diagnostics";
+import { reserveCloudUploadFallbackPath } from "./cloud-upload-path-recovery";
+import { resolveCloudAttachmentDnsPin } from "./cloud-attachment-dns";
 import { abortableDelay as delay } from "./abortable-delay";
 import {
   runAttachmentCommand,
@@ -439,8 +441,9 @@ const runSandboxCommand = async (
   command: string,
   signal?: AbortSignal,
   options?: { timeoutMs: number },
+  maxAttempts = SANDBOX_COMMAND_MAX_ATTEMPTS,
 ): Promise<SandboxCommandResult> => {
-  for (let attempt = 1; attempt <= SANDBOX_COMMAND_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       signal?.throwIfAborted();
       const result = await runAttachmentCommand(
@@ -460,15 +463,12 @@ const runSandboxCommand = async (
       const commandResult = commandErrorToResult(error);
       if (commandResult) return commandResult;
 
-      if (
-        attempt === SANDBOX_COMMAND_MAX_ATTEMPTS ||
-        !isTransientSandboxCommandError(error)
-      ) {
+      if (attempt === maxAttempts || !isTransientSandboxCommandError(error)) {
         throw error;
       }
 
       console.warn(
-        `[sandbox-command] transient command channel failure on attempt ${attempt}/${SANDBOX_COMMAND_MAX_ATTEMPTS}, retrying: ${errorMessage(error)}`,
+        `[sandbox-command] transient command channel failure on attempt ${attempt}/${maxAttempts}, retrying: ${errorMessage(error)}`,
       );
       await delay(SANDBOX_COMMAND_RETRY_BASE_DELAY_MS * attempt, signal);
     }
@@ -932,6 +932,58 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
   return { messages: preparedMessages, sandboxFiles };
 };
 
+type ObservedCurlFailure = Parameters<
+  typeof recordAttachmentDownloadFailure
+>[1];
+
+/**
+ * A message-derived exit may preserve existing control flow without proving a
+ * process result. Only a confirmed E2B command exit is evidence, and only SDK
+ * stderr is evidence of what curl printed.
+ */
+const observedCloudCurlFailure = (
+  sandbox: any,
+  result: SandboxCommandResult,
+): ObservedCurlFailure | undefined => {
+  try {
+    const commandFailure = getAttachmentCommandFailureContext(result);
+    const observedExit =
+      result.error === undefined ||
+      (commandFailure?.attachment_command_error_kind === "command_exit" &&
+        (commandFailure.attachment_command_stage === "foreground" ||
+          (commandFailure.attachment_command_stage === "wait" &&
+            commandFailure.attachment_command_exit_observed === true)));
+    if (
+      observedExit &&
+      !result.exitCodeFromErrorMessage &&
+      isE2BSandbox(sandbox) &&
+      Number.isInteger(result.exitCode) &&
+      result.exitCode > 0 &&
+      result.exitCode <= 255
+    ) {
+      return {
+        platform: "unknown",
+        shell: "bash",
+        httpClient: "curl",
+        exitCode: result.exitCode,
+        // The legacy error keeps its fallback text; it is not SDK stderr.
+        stderr: result.stderrFromErrorMessage ? "" : result.stderr,
+      };
+    }
+  } catch {
+    // An optional diagnostic must not replace the transfer failure.
+  }
+  return undefined;
+};
+
+/** curl exit 6, or exit 28 whose own wording names only name resolution. */
+const isNameResolutionFailure = (failure: ObservedCurlFailure): boolean =>
+  failure.exitCode === 6 ||
+  (failure.exitCode === 28 &&
+    getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure({}, failure),
+    )?.attachment_download_timeout_hint === "resolving");
+
 /**
  * Downloads a file from URL to sandbox path
  * Works with both E2B and CentrifugoSandbox
@@ -976,10 +1028,12 @@ const downloadFileToSandbox = async (
     const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
     const MAX_ATTEMPTS = 3;
 
-    const curlCmd =
+    const buildCurlCommand = (dnsPin?: string) =>
       `curl -fsSL --connect-timeout 10 --max-time 120 ` +
       `--retry 3 --retry-max-time 120 --retry-connrefused --retry-delay 1 --create-dirs ` +
+      (dnsPin ? `--resolve ${shellQuote(dnsPin)} ` : "") +
       `-o '${escapedLocalPath}' '${escapedUrl}'`;
+    const curlCmd = buildCurlCommand();
 
     // --retry-max-time bounds when another attempt may start, not its duration.
     // The last attempt can consume another --max-time. Keep the SDK stream open
@@ -1013,6 +1067,40 @@ const downloadFileToSandbox = async (
       );
     }
 
+    // The workspace could not resolve the host. When its egress is
+    // unrestricted, give curl one worker-resolved address for the same HTTPS
+    // request. Anything short of an observed result keeps the original failure.
+    const resolutionFailure = observedCloudCurlFailure(sandbox, result);
+    if (resolutionFailure && isNameResolutionFailure(resolutionFailure)) {
+      let dnsPin: string | null = null;
+      try {
+        dnsPin = await resolveCloudAttachmentDnsPin(sandbox, url, signal);
+      } catch (error) {
+        throwIfAttachmentAborted(signal, error);
+      }
+      signal?.throwIfAborted();
+      if (dnsPin) {
+        console.info(
+          "[sandbox-download] retrying once with a worker-resolved address",
+        );
+        let pinned: SandboxCommandResult | undefined;
+        try {
+          pinned = await runSandboxCommand(
+            sandbox,
+            buildCurlCommand(dnsPin),
+            signal,
+            commandOptions,
+            1,
+          );
+        } catch (error) {
+          throwIfAttachmentAborted(signal, error);
+        }
+        if (pinned?.exitCode === 0) return;
+        if (pinned && observedCloudCurlFailure(sandbox, pinned))
+          result = pinned;
+      }
+    }
+
     // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
     let safeUrl = url;
     try {
@@ -1031,36 +1119,9 @@ const downloadFileToSandbox = async (
           `  exitCode: ${result.exitCode}`,
       ),
     );
-    try {
-      const commandFailure = getAttachmentCommandFailureContext(result);
-      // A message-derived exit may preserve existing control flow without
-      // proving a process result. Only classify confirmed E2B command exits.
-      const observedExit =
-        result.error === undefined ||
-        (commandFailure?.attachment_command_error_kind === "command_exit" &&
-          (commandFailure.attachment_command_stage === "foreground" ||
-            (commandFailure.attachment_command_stage === "wait" &&
-              commandFailure.attachment_command_exit_observed === true)));
-      if (
-        observedExit &&
-        !result.exitCodeFromErrorMessage &&
-        isE2BSandbox(sandbox) &&
-        Number.isInteger(result.exitCode) &&
-        result.exitCode > 0 &&
-        result.exitCode <= 255
-      ) {
-        recordAttachmentDownloadFailure(error, {
-          platform: "unknown",
-          shell: "bash",
-          httpClient: "curl",
-          exitCode: result.exitCode,
-          // The legacy error keeps its fallback text; it is not SDK stderr.
-          stderr: result.stderrFromErrorMessage ? "" : result.stderr,
-        });
-      }
-    } catch {
-      // An optional diagnostic must not replace the transfer failure.
-    }
+    const observedFailure = observedCloudCurlFailure(sandbox, result);
+    if (observedFailure)
+      recordAttachmentDownloadFailure(error, observedFailure);
     throw error;
   } catch (error) {
     recordAttachmentDownloadRoute(error, route);
@@ -1248,9 +1309,18 @@ const stageSandboxFile = async (
           ),
         )
       : error;
+    // Cloud curl transfers reserve a private directory: a shared root left
+    // unwritable in a reused workspace must not disqualify every base. Native
+    // transfers keep their existing shared-root fallback.
+    const reserveFallbackPath =
+      file.kind === "url" &&
+      !sandbox.files?.downloadFromUrl &&
+      isE2BSandbox(sandbox)
+        ? reserveCloudUploadFallbackPath
+        : resolveWritableUploadFallbackPath;
     let fallbackPath: string | null;
     try {
-      fallbackPath = await resolveWritableUploadFallbackPath(
+      fallbackPath = await reserveFallbackPath(
         sandbox,
         file.localPath,
         signal,
