@@ -34,6 +34,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/trigger-agent-mode",
   "/api/health/trigger-reports",
   "/api/cron/platform-costs/convex",
+  "/api/cron/platform-costs/posthog",
   "/api/cron/platform-costs/vercel",
   "/api/cron/subscription-pauses",
   "/api/cron/trigger-health",
