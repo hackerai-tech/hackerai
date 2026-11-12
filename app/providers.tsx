@@ -4,7 +4,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { PostHogConfig } from "posthog-js";
 import { isAbuseTelemetry, isAbuseReportingPath } from "@/lib/abuse/privacy";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
 import {
@@ -89,6 +89,19 @@ export function PostHogProvider({
   const pathname = usePathname();
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
+  // Latest committed owner for the server action diagnostic. A previously
+  // installed before_send can run after a commit that withdraws consent, signs
+  // out, switches account or enters a private page, but before the passive
+  // effect below resets analytics identity.
+  const serverActionDiagnosticOwner = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    serverActionDiagnosticOwner.current =
+      analyticsAllowed && !privatePage && userId ? userId : null;
+    return () => {
+      serverActionDiagnosticOwner.current = null;
+    };
+  }, [analyticsAllowed, privatePage, userId]);
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
@@ -221,7 +234,9 @@ export function PostHogProvider({
                 const owner = getPermittedAnalyticsUserId();
                 return {
                   owner:
-                    owner === userId && getIdentifiedAnalyticsUserId() === owner
+                    owner === userId &&
+                    owner === serverActionDiagnosticOwner.current &&
+                    getIdentifiedAnalyticsUserId() === owner
                       ? owner
                       : null,
                   token: posthogKey,

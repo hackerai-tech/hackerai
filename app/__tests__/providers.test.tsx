@@ -1,5 +1,6 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
@@ -514,6 +515,105 @@ describe("PostHogProvider", () => {
       window.sessionStorage.clear();
     }
   });
+
+  it.each([
+    ["withdraws consent", false, { id: "user-123" }],
+    ["switches account", true, { id: "user-b" }],
+    ["signs out", true, null],
+  ] as const)(
+    "drops a retained server action context in the commit that %s, before identity resets",
+    async (_name, nextAnalyticsAllowed, nextUser) => {
+      const posthog = {
+        __loaded: false,
+        init: jest.fn(),
+        set_config: jest.fn(),
+        opt_in_capturing: jest.fn(),
+        has_opted_out_capturing: jest.fn(() => false),
+        identify: jest.fn(),
+        sessionRecordingStarted: jest.fn(() => false),
+        startSessionRecording: jest.fn(),
+        stopSessionRecording: jest.fn(),
+        reset: jest.fn(),
+        opt_out_capturing: jest.fn(),
+      };
+      // Global analytics identity is reset only by the provider's passive
+      // effect, so it remains the previous owner throughout the new commit.
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+      const contextEvent = () => ({
+        event: "server_action_client_context",
+        properties: {
+          token: "phc_test",
+          distinct_id: "user-123",
+          server_action_client_diagnostic_version: 1,
+          caller: "billing_renewal_recovery",
+          matched_pattern: "server_action_missing_message",
+          reference_shape: "hex42",
+          recovery_decision: "locally_handled_no_reload",
+          build_state: "unavailable",
+          attempt_denominator_kind: "unmeasured",
+        },
+      });
+      const retained: { beforeSend?: (event: unknown) => unknown } = {};
+      const layoutResults: unknown[] = [];
+      // A parent's layout effect runs after the child provider's layout effects
+      // in the same commit and before any passive effect.
+      function RetainedBeforeSendCaller({
+        children,
+      }: {
+        children: React.ReactNode;
+      }) {
+        useLayoutEffect(() => {
+          if (retained.beforeSend) {
+            layoutResults.push(retained.beforeSend(contextEvent()));
+          }
+        });
+        return <>{children}</>;
+      }
+
+      const view = render(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed>child</PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+      retained.beforeSend = (
+        posthog.init.mock.calls[0][1] as {
+          before_send: (event: unknown) => unknown;
+        }
+      ).before_send;
+
+      // Control: an unrelated commit keeps the same allowed owner.
+      view.rerender(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed>updated child</PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      expect(layoutResults).toEqual([
+        expect.objectContaining({ event: "server_action_client_context" }),
+      ]);
+
+      mockUseAuth.mockReturnValue({ user: nextUser });
+      view.rerender(
+        <RetainedBeforeSendCaller>
+          <PostHogProvider analyticsAllowed={nextAnalyticsAllowed}>
+            updated child
+          </PostHogProvider>
+        </RetainedBeforeSendCaller>,
+      );
+      expect(layoutResults).toHaveLength(2);
+      expect(layoutResults[1]).toBeNull();
+      // Ordinary events from the retained callback are unchanged.
+      expect(
+        retained.beforeSend({
+          event: "ordinary_event",
+          properties: { retained: "value" },
+        }),
+      ).toEqual({ event: "ordinary_event", properties: { retained: "value" } });
+      view.unmount();
+    },
+  );
 
   it("adds bounded context through before_send only while identified consent is active", async () => {
     const posthog = {
