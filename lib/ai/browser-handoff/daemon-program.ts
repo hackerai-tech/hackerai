@@ -56,6 +56,16 @@ export const BROWSER_WRAPPER_PROCESS_VISIBILITIES = [
   "other",
 ] as const;
 
+// Wire code os1 is the index. One lstat of the selected socket when that same
+// OPEN returned 0, not at capture time; not daemon health, idle state or a cause.
+export const BROWSER_OPEN_SOCKET_RETURN_STATUSES = [
+  "unavailable",
+  "owned_socket",
+  "missing",
+  "invalid",
+  "unreadable",
+] as const;
+
 export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "connecting",
   "awaiting_response",
@@ -252,8 +262,11 @@ function wrapperReceipt() {
     }
     // Only a matching successful OPEN makes this the selected daemon's sidecar.
     // Compact tuple: v1, PID-file status, process visibility (finite codes only).
-    if (open?.session_key === sessionKey && open.phase === 'completed' && open.exit === 0)
+    if (open?.session_key === sessionKey && open.phase === 'completed' && open.exit === 0) {
       result.p1 = daemonProcess();
+      // Recorded with this same OPEN's return; older writers omit it.
+      if (Number.isInteger(open.os1) && open.os1 >= 0 && open.os1 <= 4) result.os1 = open.os1;
+    }
     return result;
   } catch { return {}; }
 }
@@ -280,7 +293,9 @@ function finish(code, value) {
     if (receipt.wrapper_receipt_version === 1) value = { ...value, ...receipt };
     const cli = cliAtPrepare();
     if (cli) value = { ...value, cv: cli };
-    // The optional incarnation code never displaces existing context at the parser cap.
+    // Optional codes never displace existing context at the parser cap; the
+    // newest is dropped first.
+    if (value?.os1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.os1;
     if (value?.w1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.w1;
   }
   if (value !== undefined) {

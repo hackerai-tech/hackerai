@@ -21,6 +21,7 @@ import {
   BROWSER_DAEMON_DEADLINE_PHASES,
   BROWSER_CLI_AT_PREPARE_STATUSES,
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
+  BROWSER_OPEN_SOCKET_RETURN_STATUSES,
 } from "./daemon-program";
 import {
   browserRelayProgram,
@@ -440,6 +441,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
     | "other_uid"
     | "permission"
     | "other";
+  // Selected socket when that matching OPEN returned 0, not at capture time.
+  // Absent means unmeasured (older writer or budget), never missing.
+  capture_open_socket_return_version?: 1;
+  capture_open_socket_return_status?: (typeof BROWSER_OPEN_SOCKET_RETURN_STATUSES)[number];
   capture_close_receipt_version?: 1;
   capture_close_receipt_status?:
     "unavailable" | "not_observed" | "unreadable" | "recorded";
@@ -622,6 +627,8 @@ export async function captureBrowserFrame(
         | "capture_daemon_process_version"
         | "capture_daemon_pid_status"
         | "capture_daemon_process_visibility"
+        | "capture_open_socket_return_version"
+        | "capture_open_socket_return_status"
         | "capture_close_receipt_version"
         | "capture_close_receipt_status"
         | "capture_close_phase"
@@ -823,6 +830,20 @@ export async function captureBrowserFrame(
                     "other",
                   ] as const
                 )[processObservation[2]];
+              }
+              const openSocket = parsed?.os1;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Number.isInteger(openSocket) &&
+                openSocket >= 0 &&
+                openSocket < BROWSER_OPEN_SOCKET_RETURN_STATUSES.length
+              ) {
+                precondition.capture_open_socket_return_version = 1;
+                precondition.capture_open_socket_return_status =
+                  BROWSER_OPEN_SOCKET_RETURN_STATUSES[openSocket];
               }
               const openIdle = parsed?.open_idle;
               if (
