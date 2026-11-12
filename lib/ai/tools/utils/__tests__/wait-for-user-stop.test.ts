@@ -74,6 +74,25 @@ async function responded() {
   for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
 }
 
+/** The same, under fake timers, which also fake setImmediate. */
+async function settledMicrotasks() {
+  for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+}
+
+/** The closed receipt of a stopped completion, with nothing else in it. */
+const receipt = (
+  outcome: string,
+  httpStatus: number | null,
+  elapsedMs: unknown,
+  abortSource: string | null,
+) => ({ outcome, httpStatus, elapsedMs, abortSource });
+
+function expectBoundedElapsed(report: any) {
+  expect(Number.isInteger(report.elapsedMs)).toBe(true);
+  expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
+  expect(report.elapsedMs).toBeLessThanOrEqual(60_000);
+}
+
 /** A fetch that never answers until its own signal aborts, like a stalled peer. */
 const stalledFetch = (_url: unknown, init: any) =>
   new Promise((_resolve, reject) => {
@@ -141,27 +160,72 @@ describe("completeWaitOnStop", () => {
     await expect(completion.settle()).resolves.toBe("accepted");
   });
 
-  it("sends nothing without a signal or after settling", async () => {
-    await expect(completeWaitOnStop(undefined, token).settle()).resolves.toBe(
-      "not_sent",
-    );
-    const completion = completeWaitOnStop(stop.signal, token);
+  it("sends and reports nothing without a signal or after settling", async () => {
+    const onReport = jest.fn();
+    await expect(
+      completeWaitOnStop(undefined, token, onReport).settle(),
+    ).resolves.toBe("not_sent");
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     await expect(completion.settle()).resolves.toBe("not_sent");
     stop.abort();
     stop.signal.dispatchEvent(new Event("abort"));
+    await responded();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(onReport).not.toHaveBeenCalled();
   });
 
-  it("makes one attempt however often the stop is signalled", async () => {
+  it("makes and reports one attempt however often the stop is signalled", async () => {
     fetchMock.mockImplementation(async () => fakeResponse(503).response);
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
     stop.signal.dispatchEvent(new Event("abort"));
     stop.signal.dispatchEvent(new Event("abort"));
     await responded();
     await expect(completion.settle()).resolves.toBe("rejected");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onReport).toHaveBeenCalledTimes(1);
+    expect(onReport.mock.calls[0][0]).toMatchObject({
+      outcome: "rejected",
+      httpStatus: 503,
+    });
   });
+
+  it.each([
+    [202, "accepted", 202],
+    [409, "rejected", 409],
+    // A status fetch cannot express as HTTP (an opaque 0) is not reported.
+    [0, "rejected", null],
+  ] as const)(
+    "reports an HTTP %s answer once while the original wait is still pending",
+    async (status, outcome, httpStatus) => {
+      jest.useFakeTimers();
+      fetchMock.mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve(fakeResponse(status).response), 1_234),
+          ),
+      );
+      const onReport = jest.fn();
+      const completion = completeWaitOnStop(stop.signal, token, onReport);
+      stop.abort();
+      await jest.advanceTimersByTimeAsync(1_233);
+      await settledMicrotasks();
+      expect(onReport).not.toHaveBeenCalled();
+
+      // Reported as the request finishes, without waiting for settle().
+      await jest.advanceTimersByTimeAsync(1);
+      await settledMicrotasks();
+      expect(onReport.mock.calls).toEqual([
+        [receipt(outcome, httpStatus, 1_234, null)],
+      ]);
+
+      // Aborting a finished request must not relabel or repeat the receipt.
+      await expect(completion.settle()).resolves.toBe(outcome);
+      expect(onReport).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
 
   it.each([
     ["plain HTTP", URL_FOR().replace("https:", "http:")],
@@ -181,24 +245,36 @@ describe("completeWaitOnStop", () => {
     ["a malformed URL", "not a url"],
     ["a non-string URL", undefined],
   ])("refuses a callback URL with %s", async (_case, url) => {
-    const completion = completeWaitOnStop(stop.signal, {
-      id: TOKEN_ID,
-      url: url as string,
-    });
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(
+      stop.signal,
+      { id: TOKEN_ID, url: url as string },
+      onReport,
+    );
     stop.abort();
+    // Reported on the stop itself, while the original wait is still pending.
+    expect(onReport.mock.calls).toEqual([
+      [receipt("invalid_callback", null, 0, null)],
+    ]);
     await expect(completion.settle()).resolves.toBe("invalid_callback");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(onReport).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a token id that cannot be a single path segment", async () => {
     const id = "waitpoint/../x";
-    const completion = completeWaitOnStop(stop.signal, {
-      id,
-      url: URL_FOR(id),
-    });
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(
+      stop.signal,
+      { id, url: URL_FOR(id) },
+      onReport,
+    );
     stop.abort();
     await expect(completion.settle()).resolves.toBe("invalid_callback");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(onReport.mock.calls).toEqual([
+      [receipt("invalid_callback", null, 0, null)],
+    ]);
   });
 
   it("discards a response body unread, whatever the status", async () => {
@@ -225,25 +301,38 @@ describe("completeWaitOnStop", () => {
     ["a redirect is refused", new TypeError("unexpected redirect")],
   ])("reports unknown without retrying when %s", async (_case, error) => {
     fetchMock.mockRejectedValue(error);
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
+    await responded();
+    // The receipt is closed: no URL, hash, token or error text.
+    expect(onReport.mock.calls).toEqual([
+      [receipt("unknown", null, expect.any(Number), null)],
+    ]);
+    expectBoundedElapsed(onReport.mock.calls[0][0]);
     await expect(completion.settle()).resolves.toBe("unknown");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onReport).toHaveBeenCalledTimes(1);
   });
 
   it("reports unknown when fetch throws synchronously", async () => {
     fetchMock.mockImplementation(() => {
       throw new Error(`invalid request ${URL_FOR()}`);
     });
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
     await expect(completion.settle()).resolves.toBe("unknown");
+    expect(onReport.mock.calls).toEqual([
+      [receipt("unknown", null, expect.any(Number), null)],
+    ]);
   });
 
-  it("aborts stalled response headers at its own deadline", async () => {
+  it("aborts stalled response headers at its own deadline and reports it then", async () => {
     jest.useFakeTimers();
     fetchMock.mockImplementation(stalledFetch);
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
     const init = fetchMock.mock.calls[0][1] as any;
 
@@ -251,10 +340,49 @@ describe("completeWaitOnStop", () => {
     expect(init.signal.aborted).toBe(false);
     await jest.advanceTimersByTimeAsync(1);
     expect(init.signal.aborted).toBe(true);
+    // Reported before the original wait settles; settle() keeps the source.
+    await settledMicrotasks();
+    expect(onReport.mock.calls).toEqual([
+      [receipt("unknown", null, 10_000, "deadline")],
+    ]);
     await expect(completion.settle()).resolves.toBe("unknown");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onReport).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  it.each([
+    ["the original wait settles", "original_wait_settled"],
+    ["the deadline passes", "deadline"],
+  ] as const)(
+    "keeps the first abort source when %s first and bounds the elapsed time",
+    async (first, abortSource) => {
+      jest.useFakeTimers();
+      // A transport that does not honour abort, so both aborts land in flight.
+      let finish!: (response: unknown) => void;
+      fetchMock.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const onReport = jest.fn();
+      const completion = completeWaitOnStop(stop.signal, token, onReport);
+      stop.abort();
+      let joined: Promise<string> | undefined;
+      if (first === "the original wait settles") joined = completion.settle();
+      await jest.advanceTimersByTimeAsync(10_000);
+      joined ??= completion.settle();
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(onReport).not.toHaveBeenCalled();
+
+      finish(fakeResponse(409).response);
+      await expect(joined).resolves.toBe("rejected");
+      expect(onReport.mock.calls).toEqual([
+        [receipt("rejected", 409, 60_000, abortSource)],
+      ]);
+    },
+  );
 
   it("aborts a stalled body at its deadline, as native fetch errors it", async () => {
     jest.useFakeTimers();
@@ -272,23 +400,69 @@ describe("completeWaitOnStop", () => {
       body = fake.body;
       return fake.response;
     });
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
     await jest.advanceTimersByTimeAsync(10_000);
     // The status arrived before the body stalled; it stays the result.
     await expect(completion.settle()).resolves.toBe("accepted");
     expect(body?.cancel).toHaveBeenCalledTimes(1);
+    expect(onReport.mock.calls).toEqual([
+      [receipt("accepted", 200, 10_000, "deadline")],
+    ]);
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  it("aborts and joins an in-flight request when the wait settles first", async () => {
+  it("aborts, joins and reports an in-flight request when the wait settles first", async () => {
     fetchMock.mockImplementation(stalledFetch);
-    const completion = completeWaitOnStop(stop.signal, token);
+    const onReport = jest.fn();
+    const completion = completeWaitOnStop(stop.signal, token, onReport);
     stop.abort();
     const init = fetchMock.mock.calls[0][1] as any;
+    expect(onReport).not.toHaveBeenCalled();
     await expect(completion.settle()).resolves.toBe("unknown");
     expect(init.signal.aborted).toBe(true);
+    expect(onReport.mock.calls).toEqual([
+      [receipt("unknown", null, expect.any(Number), "original_wait_settled")],
+    ]);
+    expectBoundedElapsed(onReport.mock.calls[0][0]);
   });
+
+  it.each([
+    ["an invalid callback", { id: TOKEN_ID, url: "not a url" }, false],
+    [
+      "an invalid callback stopped before it starts",
+      { id: TOKEN_ID, url: "not a url" },
+      true,
+    ],
+    ["an accepted request", token, false],
+  ])(
+    "contains a throwing observer for %s",
+    async (_case, callbackToken, stoppedFirst) => {
+      const reason = new Error("local_connection_lost");
+      if (stoppedFirst) stop.abort(reason);
+      const onReport = jest.fn(() => {
+        throw new Error("analytics unavailable");
+      });
+      const completion = completeWaitOnStop(
+        stop.signal,
+        callbackToken,
+        onReport,
+      );
+      if (!stoppedFirst) stop.abort(reason);
+      await responded();
+      expect(onReport).toHaveBeenCalledTimes(1);
+      const init = fetchMock.mock.calls[0]?.[1] as any;
+      // The request was neither aborted nor repeated by the observer failure.
+      if (init) expect(init.signal.aborted).toBe(false);
+      await expect(completion.settle()).resolves.toBe(
+        callbackToken === token ? "accepted" : "invalid_callback",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(callbackToken === token ? 1 : 0);
+      expect(stop.signal.reason).toBe(reason);
+      expect(onReport).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("keeps settle pending until its own request actually finishes", async () => {
     // A transport that does not honour abort: settle must not claim a join

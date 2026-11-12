@@ -328,6 +328,35 @@ describe("wait_for_user product stop", () => {
   const callbackBody = (init: any) =>
     JSON.parse(new TextDecoder().decode(init.body));
 
+  const STOP_EVENT = "agent_wait_for_user_stop_completion";
+  const stopEvents = () =>
+    captureEvent.mock.calls
+      .filter(([name]) => name === STOP_EVENT)
+      .map(([, fields]) => fields as Record<string, unknown>);
+
+  /** The whole allowed payload: closed receipt fields and existing opaque IDs. */
+  const stopReceipt = (fields: {
+    completion_outcome: string;
+    http_status: number | null;
+    abort_source: string | null;
+    original_wait_settled_at_receipt: boolean;
+    elapsed_ms?: unknown;
+  }) => ({
+    userId: context.userID,
+    chat_id: context.chatId,
+    trigger_run_id: context.triggerRunId,
+    version: 1,
+    elapsed_ms: expect.any(Number),
+    ...fields,
+  });
+
+  function expectBoundedElapsed(fields: Record<string, unknown>) {
+    const elapsed = fields.elapsed_ms as number;
+    expect(Number.isInteger(elapsed)).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(0);
+    expect(elapsed).toBeLessThanOrEqual(60_000);
+  }
+
   beforeEach(() => {
     jest.resetAllMocks();
     stop = new AbortController();
@@ -429,9 +458,20 @@ describe("wait_for_user product stop", () => {
     });
     expect(state.settled).toBe(false);
     expect(resumeActiveTime).not.toHaveBeenCalled();
+    // The HTTP receipt is recorded while the original waiter is still pending.
+    expect(stopEvents()).toEqual([
+      stopReceipt({
+        completion_outcome: "accepted",
+        http_status: 200,
+        abort_source: null,
+        original_wait_settled_at_receipt: false,
+      }),
+    ]);
+    expectBoundedElapsed(stopEvents()[0]);
 
     engine.notify();
     await expect(result).rejects.toBe(reason);
+    expect(stopEvents()).toHaveLength(1);
     expect(engine.outputReads).toBe(0);
     expect(revalidateAfterSuspend).not.toHaveBeenCalled();
     expect(captureEvent).not.toHaveBeenCalledWith(
@@ -502,6 +542,7 @@ describe("wait_for_user product stop", () => {
     engine.notify();
     await expect(result).rejects.toBe(reason);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(stopEvents()).toHaveLength(1);
   });
 
   it("keeps awaiting the original wait when the callback is not this token's", async () => {
@@ -517,13 +558,87 @@ describe("wait_for_user product stop", () => {
     await turns();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state.settled).toBe(false);
+    expect(stopEvents()).toEqual([
+      stopReceipt({
+        completion_outcome: "invalid_callback",
+        http_status: null,
+        elapsed_ms: 0,
+        abort_source: null,
+        original_wait_settled_at_receipt: false,
+      }),
+    ]);
 
     // A real reply still settles the original waiter; the stop still wins.
     engine.complete({ ok: true, output: reply });
     engine.notify();
     await expect(result).rejects.toBe(reason);
     expect(engine.outputReads).toBe(0);
+    expect(stopEvents()).toHaveLength(1);
   });
+
+  it("reports a failed request without its URL or error", async () => {
+    fetchMock.mockRejectedValue(
+      new TypeError(`fetch failed: ${CALLBACK_URL} (connect ECONNRESET)`),
+    );
+    const result = execute({}, { signal: stop.signal });
+    await until(() => forToken.mock.calls.length === 1);
+    stop.abort(reason);
+    await until(() => stopEvents().length === 1);
+    expect(stopEvents()).toEqual([
+      stopReceipt({
+        completion_outcome: "unknown",
+        http_status: null,
+        abort_source: null,
+        original_wait_settled_at_receipt: false,
+      }),
+    ]);
+    const captured = JSON.stringify(captureEvent.mock.calls);
+    for (const secret of [CALLBACK_URL, "a1".repeat(32), TOKEN_ID, "ECONN"])
+      expect(captured).not.toContain(secret);
+
+    engine.complete({ ok: true, output: reply });
+    engine.notify();
+    await expect(result).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an accepted request", CALLBACK_URL, false],
+    ["an invalid callback stopped while the wait registers", "not a url", true],
+  ])(
+    "keeps the stop and original wait when recording %s throws",
+    async (_case, url, stopWhileRegistering) => {
+      createToken.mockResolvedValue({ id: TOKEN_ID, isCached: false, url });
+      captureEvent.mockImplementation((name: unknown) => {
+        if (name === STOP_EVENT) throw new Error("analytics unavailable");
+      });
+      if (stopWhileRegistering)
+        forToken.mockImplementation(() => {
+          stop.abort(reason);
+          return engine.wait;
+        });
+      const resumeActiveTime = jest.fn();
+      const result = execute({}, { signal: stop.signal, resumeActiveTime });
+      const state = track(result);
+      await until(() => forToken.mock.calls.length === 1);
+      if (!stopWhileRegistering) stop.abort(reason);
+      await until(() => stopEvents().length === 1);
+      await turns();
+      // Still awaiting the original waiter, with the request unchanged.
+      expect(state.settled).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(Number(!stopWhileRegistering));
+
+      // Without a sent completion, a real reply settles the original waiter.
+      engine.complete({ ok: true, output: reply });
+      engine.notify();
+      await expect(result).rejects.toBe(reason);
+      expect(resumeActiveTime).toHaveBeenCalledTimes(1);
+      expect(setActiveWait).toHaveBeenLastCalledWith(
+        contextToIdentity("tool-1"),
+      );
+      expect(stopEvents()).toHaveLength(1);
+    },
+  );
 
   it("throws the first stop when the original wait rejects after it", async () => {
     let rejectWait!: (error: Error) => void;
@@ -561,6 +676,14 @@ describe("wait_for_user product stop", () => {
     await expect(result).rejects.toBe(reason);
     expect(requestSignal?.aborted).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(stopEvents()).toEqual([
+      stopReceipt({
+        completion_outcome: "unknown",
+        http_status: null,
+        abort_source: "original_wait_settled",
+        original_wait_settled_at_receipt: true,
+      }),
+    ]);
   });
 
   it.each([
@@ -578,6 +701,8 @@ describe("wait_for_user product stop", () => {
       stop.abort(reason);
       await turns();
       expect(fetchMock).not.toHaveBeenCalled();
+      // Only a stopped wait records a completion receipt.
+      expect(stopEvents()).toEqual([]);
     },
   );
 

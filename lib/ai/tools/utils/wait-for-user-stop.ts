@@ -18,6 +18,25 @@ const STOP_MARKER = new TextEncoder().encode(
 export type WaitStopCompletion =
   "not_sent" | "invalid_callback" | "accepted" | "rejected" | "unknown";
 
+// Which abort reached the request first. Passed as the abort reason, so a
+// later abort cannot replace it.
+type AbortSource = "deadline" | "original_wait_settled";
+
+/**
+ * A closed receipt of the one completion attempt. An accepted status means a
+ * successful HTTP response, not proof that the waiting run woke up.
+ */
+export type WaitStopReport = {
+  outcome: Exclude<WaitStopCompletion, "not_sent">;
+  /** The response status, only when one was received and is valid HTTP. */
+  httpStatus: number | null;
+  /** Monotonic time from the stop to this receipt, bounded. */
+  elapsedMs: number;
+  abortSource: AbortSource | null;
+};
+
+const MAX_REPORTED_MS = 60_000;
+
 /** The callback URL, only if it is Trigger's and names exactly this token. */
 function callbackUrl(token: { id: string; url: string }): string | undefined {
   if (typeof token.id !== "string" || !TOKEN_ID.test(token.id)) return;
@@ -52,7 +71,9 @@ function callbackUrl(token: { id: string; url: string }): string | undefined {
 async function post(
   url: string,
   signal: AbortSignal,
-): Promise<WaitStopCompletion> {
+): Promise<Omit<WaitStopReport, "elapsedMs">> {
+  let outcome: "accepted" | "rejected" | "unknown";
+  let httpStatus: number | null = null;
   try {
     // Keep the capability URL out of outgoing-HTTP spans, as the SDK's own
     // API client does for its requests.
@@ -67,12 +88,18 @@ async function post(
     );
     // The status is the whole result; discard the body unread.
     await response.body?.cancel().catch(() => undefined);
-    return response.ok ? "accepted" : "rejected";
+    outcome = response.ok ? "accepted" : "rejected";
+    const { status } = response;
+    if (Number.isInteger(status) && status >= 100 && status <= 599)
+      httpStatus = status;
   } catch {
     // The server may have committed before the failure. Never retry: the
     // first completion of a token is final, and the original wait decides.
-    return "unknown";
+    outcome = "unknown";
   }
+  // Read as the request finishes, so a later abort cannot relabel it.
+  const abortSource: AbortSource | null = signal.aborted ? signal.reason : null;
+  return { outcome, httpStatus, abortSource };
 }
 
 /**
@@ -84,16 +111,29 @@ async function post(
  * Call `settle()` once the original wait settles; it detaches the stop listener,
  * aborts any request still in flight and waits for that request to finish.
  * Native fetch ends promptly on abort; the join is only as bounded as that.
+ *
+ * `onReport` receives one receipt after a stop: on an invalid callback, or as
+ * the request finishes, without waiting for the original wait. It must be
+ * synchronous; its errors are ignored.
  */
 export function completeWaitOnStop(
   signal: AbortSignal | undefined,
   token: { id: string; url: string },
+  onReport: (report: WaitStopReport) => void = () => {},
 ) {
   let used = false;
   let outcome: WaitStopCompletion = "not_sent";
   let request:
     | { controller: AbortController; done: Promise<WaitStopCompletion> }
     | undefined;
+
+  const report = (receipt: WaitStopReport) => {
+    try {
+      onReport(receipt);
+    } catch {
+      // A diagnostic must not affect the stop, the request or the wait.
+    }
+  };
 
   const onStop = () => {
     signal?.removeEventListener("abort", onStop);
@@ -102,14 +142,28 @@ export function completeWaitOnStop(
     const url = callbackUrl(token);
     if (!url) {
       outcome = "invalid_callback";
+      report({ outcome, httpStatus: null, elapsedMs: 0, abortSource: null });
       return;
     }
+    const startedAt = performance.now();
     // A separate controller: the product signal is already aborted.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), COMPLETION_DEADLINE_MS);
+    const timer = setTimeout(
+      () => controller.abort("deadline" satisfies AbortSource),
+      COMPLETION_DEADLINE_MS,
+    );
     request = {
       controller,
-      done: post(url, controller.signal).finally(() => clearTimeout(timer)),
+      done: post(url, controller.signal)
+        .finally(() => clearTimeout(timer))
+        .then((result) => {
+          const elapsedMs = Math.round(performance.now() - startedAt);
+          report({
+            ...result,
+            elapsedMs: Math.min(MAX_REPORTED_MS, Math.max(0, elapsedMs)),
+          });
+          return result.outcome;
+        }),
     };
   };
 
@@ -121,7 +175,7 @@ export function completeWaitOnStop(
       used = true;
       signal?.removeEventListener("abort", onStop);
       if (!request) return outcome;
-      request.controller.abort();
+      request.controller.abort("original_wait_settled" satisfies AbortSource);
       return await request.done;
     },
   };
