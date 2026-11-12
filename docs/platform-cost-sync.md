@@ -55,14 +55,17 @@ authenticated deployment-usage endpoint.
 The Vercel token should be scoped to the owning team and used only for this
 billing-read integration. Never log it or expose it to the browser.
 
-The optional `/api/cron/platform-costs/posthog` route requires
-`POSTHOG_BILLING_READ_TOKEN`, `POSTHOG_BILLING_ORGANIZATION_ID`, and a comma-separated
-`POSTHOG_BILLING_PROJECT_IDS` scope. An ingestion or sourcemap key does not imply
-billing read access. The organization billing API requires `billing:read` and
-may require PostHog support to enable its beta. Verify the actual response and
-environment identity before scheduling this route. It reconciles the previous
-seven complete UTC days; no cron is enabled by this code change. A missing reader
-returns 503 without replacing data. See the [PostHog billing API reference](https://posthog.com/docs/api/billing-3).
+The `/api/cron/platform-costs/posthog` route runs daily at 12:47 UTC and requires
+`POSTHOG_BILLING_READ_TOKEN`, `POSTHOG_BILLING_ORGANIZATION_ID`,
+`POSTHOG_BILLING_CUSTOMER_ID`, and a comma-separated `POSTHOG_BILLING_PROJECT_IDS`
+scope. Use a dedicated key with only `billing:read`, restricted to the owning
+organization. An ingestion or sourcemap key does not imply billing access.
+The job uses `/api/billing/spend/`, passes project IDs as a JSON array, and checks
+the returned customer ID before replacing any data. This endpoint avoids the
+separate organization API's beta gate. It reconciles the previous 35 complete
+UTC days to pick up corrections. A missing reader returns 503 without replacing
+data. Verify the actual response and environment identity before activation.
+See the [PostHog billing API reference](https://posthog.com/docs/api/billing-2).
 
 This table does not imply complete company expense coverage. Provider invoices
 for models, sandboxes, and workers must be reconciled against serving costs

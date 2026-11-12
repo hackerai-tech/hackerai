@@ -31,6 +31,7 @@ beforeEach(() => {
   process.env.POSTHOG_BILLING_ORGANIZATION_ID =
     "00000000-0000-0000-0000-000000000001";
   process.env.POSTHOG_BILLING_PROJECT_IDS = "12,34";
+  process.env.POSTHOG_BILLING_CUSTOMER_ID = "12345";
 });
 afterEach(() => {
   process.env = { ...original };
@@ -53,6 +54,7 @@ test("partial provider response leaves persisted costs intact", async () => {
       consume(
         Response.json({
           status: "ok",
+          customer_id: 12345,
           results: [{ data: [1], dates: ["2026-11-05"] }],
         }),
       ),
@@ -68,34 +70,35 @@ test("reconciles complete UTC days under the explicit organization and project s
       consume(
         Response.json({
           status: "ok",
+          customer_id: 12345,
           results: [
             {
-              dates: Array.from(
-                { length: 7 },
-                (_, i) => `2026-11-${String(i + 5).padStart(2, "0")}`,
+              dates: Array.from({ length: 35 }, (_, i) =>
+                new Date(Date.UTC(2026, 9, 8 + i)).toISOString().slice(0, 10),
               ),
-              data: [1, 2, 3, 4, 5, 6, 0],
+              data: Array.from({ length: 35 }, (_, i) => i),
             },
           ],
         }),
       ),
     );
   jest.mocked(replaceCostWindow).mockResolvedValueOnce({
-    inserted: 7,
+    inserted: 35,
     updated: 0,
     deleted: 0,
     unchanged: 0,
   });
   expect((await GET(new Request("https://example.test"))).status).toBe(200);
   const url = new URL(jest.mocked(fetchWithRetry).mock.calls[0][0]);
-  expect(url.pathname).toBe(
-    "/api/organizations/00000000-0000-0000-0000-000000000001/billing/spend/timeseries/",
+  expect(url.pathname).toBe("/api/billing/spend/");
+  expect(url.searchParams.get("team_ids")).toBe("[12,34]");
+  expect(url.searchParams.get("organization_id")).toBe(
+    "00000000-0000-0000-0000-000000000001",
   );
-  expect(url.searchParams.get("team_ids")).toBe("12,34");
   expect(replaceCostWindow).toHaveBeenCalledWith(
     expect.objectContaining({
       vendor: "posthog",
-      startDay: "2026-11-05",
+      startDay: "2026-10-08",
       endDay: "2026-11-11",
       rows: expect.arrayContaining([
         expect.objectContaining({
@@ -106,3 +109,23 @@ test("reconciles complete UTC days under the explicit organization and project s
     }),
   );
 });
+
+test("a different billing customer cannot replace the configured account's costs", async () => {
+  jest
+    .mocked(fetchWithRetry)
+    .mockImplementationOnce(async (_url, _init, consume) =>
+      consume(Response.json({ status: "ok", customer_id: 99999, results: [] })),
+    );
+  expect((await GET(new Request("https://example.test"))).status).toBe(500);
+  expect(replaceCostWindow).not.toHaveBeenCalled();
+});
+
+test.each(["12,12", "0,34", "9007199254740992"])(
+  "rejects invalid project scope %s before fetching",
+  async (ids) => {
+    process.env.POSTHOG_BILLING_PROJECT_IDS = ids;
+    expect((await GET(new Request("https://example.test"))).status).toBe(500);
+    expect(fetchWithRetry).not.toHaveBeenCalled();
+    expect(replaceCostWindow).not.toHaveBeenCalled();
+  },
+);

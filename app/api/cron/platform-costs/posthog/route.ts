@@ -33,32 +33,40 @@ export async function GET(request: Request) {
     const token = requireEnvironment("POSTHOG_BILLING_READ_TOKEN");
     const organization = requireEnvironment("POSTHOG_BILLING_ORGANIZATION_ID");
     const projects = requireEnvironment("POSTHOG_BILLING_PROJECT_IDS");
+    const customer = requireEnvironment("POSTHOG_BILLING_CUSTOMER_ID");
+    const projectIds = projects.split(",").map(Number);
     if (
       !/^[0-9a-f-]{36}$/i.test(organization) ||
       !/^\d+(,\d+)*$/.test(projects) ||
-      new Set(projects.split(",")).size !== projects.split(",").length
+      projectIds.some((id) => !Number.isSafeInteger(id) || id <= 0) ||
+      new Set(projectIds).size !== projectIds.length ||
+      !/^[1-9]\d*$/.test(customer) ||
+      !Number.isSafeInteger(Number(customer))
     ) {
       throw new Error("Invalid billing scope");
     }
-    const window = completedUtcDayWindow(observedAt, 7);
-    // Organization-scoped endpoint prevents the active/default project from
-    // silently selecting a different organization's billing account.
-    const url = new URL(
-      `https://us.posthog.com/api/organizations/${organization}/billing/spend/timeseries/`,
-    );
+    const window = completedUtcDayWindow(observedAt, 35);
+    // The organization REST endpoint is beta-gated. The billing endpoint is
+    // available to billing:read keys; pin its organization and customer, too.
+    const url = new URL("https://us.posthog.com/api/billing/spend/");
+    url.searchParams.set("organization_id", organization);
     url.searchParams.set("start_date", window.startDay);
     url.searchParams.set("end_date", window.endDay);
     url.searchParams.set("interval", "day");
-    url.searchParams.set("team_ids", projects);
+    // PostHog requires a JSON array here, not comma-separated IDs.
+    url.searchParams.set("team_ids", JSON.stringify(projectIds));
     const rows = await fetchWithRetry(
       url.toString(),
       { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
-      async (response) =>
-        parsePostHogSpend(
-          await response.json(),
-          window.startDay,
-          window.endDay,
-        ),
+      async (response) => {
+        const payload = await response.json();
+        if (payload?.customer_id !== Number(customer)) {
+          throw new Error(
+            "Billing customer does not match the configured account",
+          );
+        }
+        return parsePostHogSpend(payload, window.startDay, window.endDay);
+      },
     );
     const result = await replaceCostWindow({
       vendor: "posthog",

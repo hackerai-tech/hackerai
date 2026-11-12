@@ -10,6 +10,10 @@
       "schedule": "59 * * * *"
     },
     {
+      "path": "/api/cron/platform-costs/posthog",
+      "schedule": "47 12 * * *"
+    },
+    {
       "path": "/api/cron/subscription-pauses",
       "schedule": "23 * * * *"
     },
