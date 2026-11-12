@@ -1,8 +1,8 @@
 diff --git a/dist/esm/actions.js b/dist/esm/actions.js
-index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b01a3e1fd4 100644
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7cefc395045 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
-@@ -13,6 +13,75 @@ function sanitize(value) {
+@@ -13,6 +13,175 @@ function sanitize(value) {
      const { accessToken, ...sanitized } = value;
      return sanitized;
  }
@@ -54,6 +54,106 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
 +        provider.error === "invalid_grant" &&
 +        provider.errorDescription === "Invalid refresh token.");
 +};
++const REFRESH_FAILURE_KINDS = new Set([
++    'Error',
++    'TypeError',
++    'AbortError',
++    'TimeoutError',
++    'AuthKitError',
++    'TokenRefreshError',
++    'OauthException',
++    'BadRequestException',
++    'AuthenticationException',
++    'UnauthorizedException',
++    'GenericServerException',
++    'RateLimitExceededException',
++]);
++const REFRESH_FAILURE_CODES = new Set([
++    'ECONNRESET',
++    'ECONNREFUSED',
++    'ENOTFOUND',
++    'EAI_AGAIN',
++    'ETIMEDOUT',
++    'UND_ERR_CONNECT_TIMEOUT',
++    'UND_ERR_SOCKET',
++    'invalid_grant',
++    'invalid_client',
++    'invalid_request',
++    'unauthorized_client',
++    'unsupported_grant_type',
++    'access_denied',
++    'temporarily_unavailable',
++    'server_error',
++]);
++const describeRefreshFailure = (value) => {
++    if (!value || typeof value !== 'object')
++        return ['non_error', null, 'absent', 'none'];
++    try {
++        const record = value;
++        const { name, status } = record;
++        const codes = [record.code, record.error];
++        const code = codes.find((candidate) => typeof candidate === 'string' && REFRESH_FAILURE_CODES.has(candidate));
++        const validStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599;
++        return [
++            typeof name === 'string' && REFRESH_FAILURE_KINDS.has(name) ? name : 'other_error',
++            validStatus ? status : null,
++            status == null
++                ? 'absent'
++                : typeof status !== 'number'
++                    ? 'non_numeric'
++                    : !Number.isInteger(status)
++                        ? 'non_integer'
++                        : validStatus
++                            ? 'integer'
++                            : 'out_of_range',
++            typeof code === 'string' ? code : codes.every((candidate) => candidate == null) ? 'none' : 'other',
++        ];
++    }
++    catch {
++        return ['unreadable', null, 'unreadable', 'unreadable'];
++    }
++};
++/**
++ * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
++ * Reads the thrown value and at most one cause; never copies provider text.
++ */
++const getRefreshFailureDiagnostics = (error) => {
++    const root = describeRefreshFailure(error);
++    const record = error && typeof error === 'object' ? error : null;
++    let cause = ['none', null, 'absent', 'none'];
++    let isTransient = 'absent';
++    if (record) {
++        try {
++            const firstCause = record.cause;
++            if (firstCause != null && firstCause !== error)
++                cause = describeRefreshFailure(firstCause);
++        }
++        catch {
++            cause = ['unreadable', null, 'unreadable', 'unreadable'];
++        }
++        try {
++            const value = record.isTransient;
++            isTransient = typeof value === 'boolean' ? value : value === undefined ? 'absent' : 'other';
++        }
++        catch {
++            isTransient = 'unreadable';
++        }
++    }
++    return JSON.stringify({
++        event: 'auth.access_token_refresh_failed',
++        boundary: 'server_action',
++        auth_action_refresh_diagnostic_version: 1,
++        auth_action_refresh_error_kind: root[0],
++        auth_action_refresh_error_status: root[1],
++        auth_action_refresh_error_status_shape: root[2],
++        auth_action_refresh_error_code: root[3],
++        auth_action_refresh_cause_kind: cause[0],
++        auth_action_refresh_cause_status: cause[1],
++        auth_action_refresh_cause_status_shape: cause[2],
++        auth_action_refresh_cause_code: cause[3],
++        auth_action_refresh_is_transient: isTransient,
++    });
++};
 +/**
 + * Client-invoked server actions run after middleware, so a session can end
 + * between the middleware check and the action's refresh. Treat only WorkOS's
@@ -78,7 +178,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -29,7 +98,7 @@ export const getOrganizationAction = async (organizationId) => {
+@@ -29,7 +198,7 @@ export const getOrganizationAction = async (organizationId) => {
      // authenticated within. The WorkOS client uses the app's API key, which can
      // read any organization in the environment, so without this check any caller
      // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -87,7 +187,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
      if (!user || sessionOrganizationId !== organizationId) {
          return null;
      }
-@@ -43,7 +112,7 @@ export const getAuthAction = async (options) => {
+@@ -43,7 +212,7 @@ export const getAuthAction = async (options) => {
      // would call redirect() to an external URL, which causes CORS errors when
      // invoked via a client-side fetch. Instead, return the sign-in URL so the
      // client can redirect via window.location.href.
@@ -96,7 +196,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
      const sanitized = sanitize(auth);
      if (options?.ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -51,10 +120,11 @@ export const getAuthAction = async (options) => {
+@@ -51,10 +220,11 @@ export const getAuthAction = async (options) => {
      }
      return sanitized;
  };
@@ -110,7 +210,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
      const sanitized = sanitize(auth);
      if (ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -63,14 +133,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+@@ -63,14 +233,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
      return sanitized;
  };
  export const switchToOrganizationAction = async (organizationId, options) => {
@@ -127,10 +227,11 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
      return auth.accessToken;
  }
  /**
-@@ -86,6 +156,13 @@ export async function refreshAccessTokenAction() {
+@@ -86,7 +256,14 @@ export async function refreshAccessTokenAction() {
          return { accessToken: auth.accessToken };
      }
      catch (error) {
+-        console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
 +        if (isInvalidRefreshTokenError(error)) {
 +            console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
 +            return { accessToken: undefined };
@@ -138,11 +239,12 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b0
 +        if (isEndedSessionRefreshError(error)) {
 +            return { accessToken: undefined };
 +        }
-         console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
++        console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error), getRefreshFailureDiagnostics(error));
          return {
              accessToken: undefined,
+             error: 'Failed to refresh access token',
 diff --git a/dist/esm/types/actions.d.ts b/dist/esm/types/actions.d.ts
-index 631a2e457db56b87b4c295da3fabc2844aba02ae..d5da9b46aa2dcc5f660814fe8437b795222736b0 100644
+index 2ad3f32e5f275becdf7b076f0de253cdd52aab58..f81a1be45a32b1181d42059514d9c759e861d431 100644
 --- a/dist/esm/types/actions.d.ts
 +++ b/dist/esm/types/actions.d.ts
 @@ -30,10 +30,10 @@ export declare const getAuthAction: (options?: {
@@ -162,7 +264,9 @@ diff --git a/src/actions.spec.ts b/src/actions.spec.ts
 index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b664cc97b71 100644
 --- a/src/actions.spec.ts
 +++ b/src/actions.spec.ts
-@@ -154,4 +154,11 @@ describe('actions', () => {
+@@ -152,6 +152,13 @@ describe('actions', () => {
+   });
+ 
    describe('refreshAuthAction', () => {
 +    it.each([undefined, null])('treats a %s options payload as default refresh options', async (options) => {
 +      const result = await refreshAuthAction(options);
@@ -175,10 +279,10 @@ index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b66
        const params = { ensureSignedIn: false, organizationId: 'org_123' };
        const result = await refreshAuthAction(params);
 diff --git a/src/actions.ts b/src/actions.ts
-index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265d7ba090e 100644
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e796f0a60a 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
-@@ -22,6 +22,84 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
+@@ -22,6 +22,185 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
    return sanitized;
  }
  
@@ -239,6 +343,107 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
 +  );
 +};
 +
++const REFRESH_FAILURE_KINDS = new Set([
++  'Error',
++  'TypeError',
++  'AbortError',
++  'TimeoutError',
++  'AuthKitError',
++  'TokenRefreshError',
++  'OauthException',
++  'BadRequestException',
++  'AuthenticationException',
++  'UnauthorizedException',
++  'GenericServerException',
++  'RateLimitExceededException',
++]);
++
++const REFRESH_FAILURE_CODES = new Set([
++  'ECONNRESET',
++  'ECONNREFUSED',
++  'ENOTFOUND',
++  'EAI_AGAIN',
++  'ETIMEDOUT',
++  'UND_ERR_CONNECT_TIMEOUT',
++  'UND_ERR_SOCKET',
++  'invalid_grant',
++  'invalid_client',
++  'invalid_request',
++  'unauthorized_client',
++  'unsupported_grant_type',
++  'access_denied',
++  'temporarily_unavailable',
++  'server_error',
++]);
++
++type RefreshFailureDescription = [kind: string, status: number | null, statusShape: string, code: string];
++
++const describeRefreshFailure = (value: unknown): RefreshFailureDescription => {
++  if (!value || typeof value !== 'object') return ['non_error', null, 'absent', 'none'];
++  try {
++    const record = value as Record<string, unknown>;
++    const { name, status } = record;
++    const codes = [record.code, record.error];
++    const code = codes.find((candidate) => typeof candidate === 'string' && REFRESH_FAILURE_CODES.has(candidate));
++    const validStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599;
++    return [
++      typeof name === 'string' && REFRESH_FAILURE_KINDS.has(name) ? name : 'other_error',
++      validStatus ? status : null,
++      status == null
++        ? 'absent'
++        : typeof status !== 'number'
++          ? 'non_numeric'
++          : !Number.isInteger(status)
++            ? 'non_integer'
++            : validStatus
++              ? 'integer'
++              : 'out_of_range',
++      typeof code === 'string' ? code : codes.every((candidate) => candidate == null) ? 'none' : 'other',
++    ];
++  } catch {
++    return ['unreadable', null, 'unreadable', 'unreadable'];
++  }
++};
++
++/**
++ * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
++ * Reads the thrown value and at most one cause; never copies provider text.
++ */
++const getRefreshFailureDiagnostics = (error: unknown): string => {
++  const root = describeRefreshFailure(error);
++  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null;
++  let cause: RefreshFailureDescription = ['none', null, 'absent', 'none'];
++  let isTransient: boolean | string = 'absent';
++  if (record) {
++    try {
++      const firstCause = record.cause;
++      if (firstCause != null && firstCause !== error) cause = describeRefreshFailure(firstCause);
++    } catch {
++      cause = ['unreadable', null, 'unreadable', 'unreadable'];
++    }
++    try {
++      const value = record.isTransient;
++      isTransient = typeof value === 'boolean' ? value : value === undefined ? 'absent' : 'other';
++    } catch {
++      isTransient = 'unreadable';
++    }
++  }
++  return JSON.stringify({
++    event: 'auth.access_token_refresh_failed',
++    boundary: 'server_action',
++    auth_action_refresh_diagnostic_version: 1,
++    auth_action_refresh_error_kind: root[0],
++    auth_action_refresh_error_status: root[1],
++    auth_action_refresh_error_status_shape: root[2],
++    auth_action_refresh_error_code: root[3],
++    auth_action_refresh_cause_kind: cause[0],
++    auth_action_refresh_cause_status: cause[1],
++    auth_action_refresh_cause_status_shape: cause[2],
++    auth_action_refresh_cause_code: cause[3],
++    auth_action_refresh_is_transient: isTransient,
++  });
++};
++
 +/**
 + * Client-triggered server actions run after middleware, so a session can end
 + * between the middleware check and the action's refresh. Treat only WorkOS's
@@ -263,7 +468,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -40,7 +118,10 @@ export const getOrganizationAction = async (organizationId: string) => {
+@@ -40,7 +219,10 @@ export const getOrganizationAction = async (organizationId: string) => {
    // authenticated within. The WorkOS client uses the app's API key, which can
    // read any organization in the environment, so without this check any caller
    // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -275,7 +480,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
    if (!user || sessionOrganizationId !== organizationId) {
      return null;
    }
-@@ -56,7 +137,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -56,7 +238,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    // would call redirect() to an external URL, which causes CORS errors when
    // invoked via a client-side fetch. Instead, return the sign-in URL so the
    // client can redirect via window.location.href.
@@ -284,7 +489,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
    const sanitized = sanitize(auth);
  
    if (options?.ensureSignedIn && !auth.user) {
-@@ -67,16 +148,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -67,16 +249,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    return sanitized;
  };
  
@@ -310,7 +515,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
    const sanitized = sanitize(auth);
  
    if (ensureSignedIn && !auth.user) {
-@@ -88,7 +172,10 @@ export const refreshAuthAction = async ({
+@@ -88,7 +273,10 @@ export const refreshAuthAction = async ({
  };
  
  export const switchToOrganizationAction = async (organizationId: string, options?: SwitchToOrganizationOptions) => {
@@ -322,7 +527,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
  };
  
  /**
-@@ -96,7 +183,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
+@@ -96,7 +284,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
   * It is used to fetch the access token from the server.
   */
  export async function getAccessTokenAction() {
@@ -331,10 +536,11 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
    return auth.accessToken;
  }
  
-@@ -112,6 +199,13 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
+@@ -112,7 +300,18 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
      const auth = await refreshSession();
      return { accessToken: auth.accessToken };
    } catch (error) {
+-    console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
 +    if (isInvalidRefreshTokenError(error)) {
 +      console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
 +      return { accessToken: undefined };
@@ -342,6 +548,11 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265
 +    if (isEndedSessionRefreshError(error)) {
 +      return { accessToken: undefined };
 +    }
-     console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error));
++    console.warn(
++      'Failed to refresh access token:',
++      error instanceof Error ? error.message : String(error),
++      getRefreshFailureDiagnostics(error),
++    );
      return {
        accessToken: undefined,
+       error: 'Failed to refresh access token',

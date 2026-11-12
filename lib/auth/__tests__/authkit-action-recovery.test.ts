@@ -98,17 +98,27 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
         accessToken: undefined,
       });
       expect(organization).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledTimes(7);
-      expect(
-        warn.mock.calls.every(
-          ([message]) =>
-            message ===
-            JSON.stringify({
-              event: "auth.invalid_refresh_token",
-              boundary: "server_action",
-            }),
-        ),
-      ).toBe(true);
+      expect(warn.mock.calls).toEqual(
+        Array(7).fill([
+          JSON.stringify({
+            event: "auth.invalid_refresh_token",
+            boundary: "server_action",
+          }),
+        ]),
+      );
+    });
+
+    it("keeps an ended session signed out without a refresh failure warning", async () => {
+      const { actions, warn } = loadActions({
+        name: "OauthException",
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Session has already ended.",
+      });
+      const result = await actions.refreshAccessTokenAction();
+      expect(Object.keys(result)).toEqual(["accessToken"]);
+      expect(result.accessToken).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -140,6 +150,156 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       },
     );
 
+    const throwingGetter = () => {
+      throw new Error("getter canary");
+    };
+    const withThrowingGetter = (error: Error, key: string) =>
+      Object.defineProperty(error, key, { get: throwingGetter });
+    const metadata = (
+      root: [string, number | null, string, string],
+      cause: [string, number | null, string, string],
+      isTransient: boolean | string,
+    ) => ({
+      event: "auth.access_token_refresh_failed",
+      boundary: "server_action",
+      auth_action_refresh_diagnostic_version: 1,
+      auth_action_refresh_error_kind: root[0],
+      auth_action_refresh_error_status: root[1],
+      auth_action_refresh_error_status_shape: root[2],
+      auth_action_refresh_error_code: root[3],
+      auth_action_refresh_cause_kind: cause[0],
+      auth_action_refresh_cause_status: cause[1],
+      auth_action_refresh_cause_status_shape: cause[2],
+      auth_action_refresh_cause_code: cause[3],
+      auth_action_refresh_is_transient: isTransient,
+    });
+    const selfCycle = Object.assign(new Error("Canary server text"), {
+      name: "GenericServerException",
+      status: 700,
+      code: "server_error",
+    });
+    selfCycle.cause = selfCycle;
+
+    it.each([
+      {
+        case: "SDK-wrapped WorkOS 429",
+        error: Object.assign(
+          new Error("Failed to refresh session: Rate limit canary"),
+          {
+            name: "TokenRefreshError",
+            isTransient: true,
+            userId: "user_canary",
+            sessionId: "session_canary",
+            cause: Object.assign(new Error("Rate limit canary"), {
+              name: "RateLimitExceededException",
+              status: 429,
+              requestID: "req_canary",
+              retryAfter: 30,
+              rawData: { message: "canary body" },
+            }),
+          },
+        ),
+        expected: metadata(
+          ["TokenRefreshError", null, "absent", "none"],
+          ["RateLimitExceededException", 429, "integer", "none"],
+          true,
+        ),
+      },
+      {
+        case: "network cause and a status-like message",
+        error: Object.assign(new Error("HTTP 429 rate limit canary"), {
+          cause: Object.assign(new TypeError("fetch failed canary"), {
+            code: "ECONNRESET",
+          }),
+        }),
+        expected: metadata(
+          ["Error", null, "absent", "none"],
+          ["TypeError", null, "absent", "ECONNRESET"],
+          "absent",
+        ),
+      },
+      {
+        case: "unknown names, codes and malformed statuses",
+        error: {
+          name: "CanaryCustomError",
+          status: "429",
+          code: "CANARY_CODE",
+          isTransient: "canary",
+          cause: {
+            name: "OauthException",
+            status: 503.5,
+            error: "temporarily_unavailable",
+            errorDescription: "canary description",
+          },
+        },
+        expected: metadata(
+          ["other_error", null, "non_numeric", "other"],
+          ["OauthException", null, "non_integer", "temporarily_unavailable"],
+          "other",
+        ),
+      },
+      {
+        case: "self-referencing cause and out-of-range status",
+        error: selfCycle,
+        expected: metadata(
+          ["GenericServerException", null, "out_of_range", "server_error"],
+          ["none", null, "absent", "none"],
+          "absent",
+        ),
+      },
+      {
+        case: "non-error value",
+        error: "canary provider text",
+        expected: metadata(
+          ["non_error", null, "absent", "none"],
+          ["none", null, "absent", "none"],
+          "absent",
+        ),
+      },
+      {
+        case: "throwing root code getter",
+        error: withThrowingGetter(new Error("Canary"), "code"),
+        expected: metadata(
+          ["unreadable", null, "unreadable", "unreadable"],
+          ["none", null, "absent", "none"],
+          "absent",
+        ),
+      },
+      {
+        case: "throwing cause code and root isTransient getters",
+        error: Object.assign(
+          withThrowingGetter(new Error("Canary"), "isTransient"),
+          { cause: withThrowingGetter(new Error("Canary cause"), "code") },
+        ),
+        expected: metadata(
+          ["Error", null, "absent", "none"],
+          ["unreadable", null, "unreadable", "unreadable"],
+          "unreadable",
+        ),
+      },
+    ])(
+      "adds only fixed refresh failure metadata to the existing warning: $case",
+      async ({ error, expected }) => {
+        const { actions, auth, organization, warn } = loadActions(error);
+        const result = await actions.refreshAccessTokenAction();
+        expect(Object.keys(result)).toEqual(["accessToken", "error"]);
+        expect(result).toEqual({
+          accessToken: undefined,
+          error: "Failed to refresh access token",
+        });
+        expect(auth).toHaveBeenCalledTimes(1);
+        expect(organization).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [prefix, message, diagnostics, ...rest] = warn.mock.calls[0];
+        expect(prefix).toBe("Failed to refresh access token:");
+        expect(typeof message).toBe("string");
+        expect(rest).toEqual([]);
+        expect(typeof diagnostics).toBe("string");
+        expect(diagnostics).not.toMatch(/canary|req_|user_|session_/i);
+        expect(JSON.parse(diagnostics)).toEqual(expected);
+      },
+    );
+
     it("preserves authenticated organization boundaries and token sanitization", async () => {
       const { actions, organization, warn } = loadActions();
       await expect(actions.getAuthAction()).resolves.toEqual({
@@ -153,6 +313,9 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       await expect(actions.getOrganizationAction("org-1")).resolves.toEqual({
         id: "org-1",
         name: "Example",
+      });
+      await expect(actions.refreshAccessTokenAction()).resolves.toEqual({
+        accessToken: "private-token",
       });
       expect(warn).not.toHaveBeenCalled();
     });
