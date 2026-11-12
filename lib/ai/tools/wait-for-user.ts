@@ -105,11 +105,31 @@ export const createWaitForUserTool = (
         // the waiter can settle, then the first stop reason wins over any
         // reply, timeout or SDK error without reading the output.
         const waiting = wait.forToken<UserReply>(token);
-        const stopCompletion = completeWaitOnStop(options.signal, token);
+        let originalWaitSettled = false;
+        // A stopped wait's completion receipt, recorded once the request
+        // finishes, even while the original waiter is still pending. An
+        // accepted completion is not proof that the waiter woke up.
+        const stopCompletion = completeWaitOnStop(
+          options.signal,
+          token,
+          (report) =>
+            phLogger.event("agent_wait_for_user_stop_completion", {
+              userId: context.userID,
+              chat_id: context.chatId,
+              trigger_run_id: runId,
+              version: 1,
+              completion_outcome: report.outcome,
+              http_status: report.httpStatus,
+              elapsed_ms: report.elapsedMs,
+              abort_source: report.abortSource,
+              original_wait_settled_at_receipt: originalWaitSettled,
+            }),
+        );
         let result: Awaited<typeof waiting>;
         try {
           result = await waiting;
         } finally {
+          originalWaitSettled = true;
           await stopCompletion.settle();
         }
         options.resumeActiveTime?.();
