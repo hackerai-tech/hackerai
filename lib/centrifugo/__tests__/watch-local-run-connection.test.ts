@@ -7,6 +7,7 @@ const mockSubscription = Object.assign(new EventEmitter(), {
   subscribe: jest.fn(),
 });
 const mockClient = Object.assign(new EventEmitter(), {
+  state: "connected",
   connect: jest.fn(),
   disconnect: jest.fn(),
   newSubscription: jest.fn(() => mockSubscription),
@@ -30,6 +31,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSubscription.removeAllListeners();
   mockClient.removeAllListeners();
+  mockClient.state = "connected";
+  mockClient.disconnect.mockImplementation(() => {
+    mockClient.state = "disconnected";
+  });
   mockSubscription.presence.mockResolvedValue(online);
   process.env.CENTRIFUGO_WS_URL = "ws://localhost";
 });
@@ -103,29 +108,141 @@ test("stops a thinking run even when no commands are being executed", async () =
 });
 
 // Observer failures still stop immediately, but must not look like host loss.
+const PRIVATE_CONTEXT = { reason: "PRIVATE", channel: "PRIVATE" };
 test.each([
-  ["observer_reconnecting", () => mockClient.emit("connecting")],
-  ["observer_disconnected", () => mockClient.emit("disconnected", {})],
-  ["subscription_reconnecting", () => mockSubscription.emit("subscribing")],
-  ["subscription_unsubscribed", () => mockSubscription.emit("unsubscribed")],
+  [
+    "observer_reconnecting",
+    "connecting",
+    () => mockClient.emit("connecting", { code: 3012, ...PRIVATE_CONTEXT }),
+    { callbackCode: 3012, clientState: "connecting" },
+  ],
+  [
+    "observer_disconnected",
+    "disconnected",
+    () => mockClient.emit("disconnected", { code: 3501, ...PRIVATE_CONTEXT }),
+    { callbackCode: 3501, clientState: "disconnected" },
+  ],
+  [
+    "subscription_reconnecting",
+    "connected",
+    () =>
+      mockSubscription.emit("subscribing", { code: 2500, ...PRIVATE_CONTEXT }),
+    { callbackCode: 2500, clientState: "connected" },
+  ],
+  [
+    "subscription_unsubscribed",
+    "connected",
+    () =>
+      mockSubscription.emit("unsubscribed", { code: 2000, ...PRIVATE_CONTEXT }),
+    { callbackCode: 2000, clientState: "connected" },
+  ],
+  // A distinct question: its nested error code is not this callback code.
   [
     "subscription_error",
-    () => mockSubscription.emit("error", { error: { message: "PRIVATE" } }),
+    "connected",
+    () =>
+      mockSubscription.emit("error", {
+        code: 1,
+        error: { code: 100, message: "PRIVATE" },
+        ...PRIVATE_CONTEXT,
+      }),
+    {},
   ],
 ])(
   "stops on %s after positive host presence with that observer cause",
-  async (reason, emit) => {
+  async (reason, clientState, emit, callback) => {
     const { cause } = await start();
+    mockClient.state = clientState;
     emit();
     expect(cause()).toEqual({
       reason,
       connectionId: SELECTED,
       hadPositivePresence: true,
       lastPositivePresenceAgeMs: 0,
+      ...callback,
     });
     expect(JSON.stringify(cause())).not.toContain("PRIVATE");
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
   },
 );
+
+test.each([
+  [
+    "a getter",
+    () =>
+      Object.defineProperty({ ...PRIVATE_CONTEXT }, "code", {
+        enumerable: true,
+        get: () => {
+          throw new Error("PRIVATE getter");
+        },
+      }),
+  ],
+  [
+    "a throwing proxy",
+    () =>
+      new Proxy(PRIVATE_CONTEXT, {
+        getOwnPropertyDescriptor: () => {
+          throw new Error("PRIVATE trap");
+        },
+      }),
+  ],
+  ["a string", () => ({ code: "2500", ...PRIVATE_CONTEXT })],
+])(
+  "omits an unreadable callback code from %s without changing the stop",
+  async (_name, context) => {
+    const { onLost, cause } = await start();
+    mockSubscription.emit("subscribing", context());
+    expect(cause()).toEqual({
+      reason: "subscription_reconnecting",
+      connectionId: SELECTED,
+      hadPositivePresence: true,
+      lastPositivePresenceAgeMs: 0,
+      clientState: "connected",
+    });
+    expect(JSON.stringify(cause())).not.toContain("PRIVATE");
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(onLost).toHaveBeenCalledTimes(1);
+  },
+);
+
+test("a hostile client state read cannot block, replace or revive the first stop", async () => {
+  const { Centrifuge } = jest.requireMock("centrifuge");
+  let armed = false;
+  let stopWatcher = () => {};
+  const trap = jest.fn((target: object, key: string | symbol) => {
+    if (!armed || key !== "state")
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    // Re-enter the watcher and the SDK before failing.
+    stopWatcher();
+    mockClient.emit("disconnected", { code: 3501 });
+    throw new Error("PRIVATE trap");
+  });
+  Centrifuge.mockImplementationOnce(
+    () => new Proxy(mockClient, { getOwnPropertyDescriptor: trap }),
+  );
+  const { onLost, stop, cause } = watch();
+  stopWatcher = stop;
+  await flush();
+  mockSubscription.emit("subscribed");
+  await flush();
+  const polls = mockSubscription.presence.mock.calls.length;
+  armed = true;
+  mockSubscription.emit("subscribing", { code: 1 });
+  expect(trap).toHaveBeenCalled();
+  expect(cause()).toEqual({
+    reason: "subscription_reconnecting",
+    connectionId: SELECTED,
+    hadPositivePresence: true,
+    lastPositivePresenceAgeMs: 0,
+    callbackCode: 1,
+  });
+  expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(onLost).toHaveBeenCalledTimes(1);
+  expect(mockSubscription.presence).toHaveBeenCalledTimes(polls);
+  expect(jest.getTimerCount()).toBe(0);
+});
 
 test("distinguishes a rejected later presence read from host absence", async () => {
   const { cause } = await start();
@@ -238,11 +355,14 @@ test("omits a stale age when the clock fails after an earlier positive read", as
   try {
     await jest.advanceTimersByTimeAsync(5_000);
     now.mockRestore();
-    mockClient.emit("connecting");
+    mockClient.state = "connecting";
+    mockClient.emit("connecting", { code: 1 });
     expect(cause()).toEqual({
       reason: "observer_reconnecting",
       connectionId: SELECTED,
       hadPositivePresence: true,
+      callbackCode: 1,
+      clientState: "connecting",
     });
   } finally {
     now.mockRestore();

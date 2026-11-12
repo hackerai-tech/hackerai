@@ -363,17 +363,21 @@ it("keeps reconnect-required Agent attempts unsuccessful in analytics", () => {
 describe("first local stop cause", () => {
   const CONNECTION = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
   const localStop = () =>
-    new LocalConnectionLostError("selected_presence_absent", {
+    new LocalConnectionLostError("subscription_reconnecting", {
       connectionId: CONNECTION,
       hadPositivePresence: true,
       lastPositivePresenceAgeMs: 5_000,
+      callbackCode: 1,
+      clientState: "connecting",
     });
   const localFields = {
     local_stop_diagnostic_version: 1,
-    local_stop_reason: "selected_presence_absent",
+    local_stop_reason: "subscription_reconnecting",
     local_stop_connection_id: CONNECTION,
     local_stop_had_positive_presence: true,
     local_stop_last_positive_presence_age_ms: 5_000,
+    local_stop_callback_code: 1,
+    local_stop_client_state: "connecting",
   };
   const failingCapture = () => {
     throw new Error("enqueue unavailable");

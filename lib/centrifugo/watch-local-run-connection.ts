@@ -7,6 +7,9 @@ import {
 } from "./presence";
 import {
   LocalConnectionLostError,
+  readCallbackCode,
+  readClientState,
+  type LocalStopClientState,
   type LocalStopReason,
 } from "@/lib/chat/local-connection-stop";
 
@@ -41,6 +44,7 @@ export function watchLocalRunConnection({
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let hadPositivePresence = false;
   let lastPositivePresenceAt: number | undefined;
+  let clientStateAtStop: LocalStopClientState | undefined;
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -48,10 +52,12 @@ export function watchLocalRunConnection({
     clearTimeout(deadline);
     subscription?.removeAllListeners();
     client?.removeAllListeners();
+    // Before our own disconnect, which would always report "disconnected".
+    clientStateAtStop = readClientState(client);
     client?.disconnect();
   };
   // The first cause wins; stop() makes every later trigger a no-op.
-  const lost = (reason: LocalStopReason) => {
+  const lost = (reason: LocalStopReason, callback?: { context: unknown }) => {
     if (stopped) return;
     stop();
     const now = monotonicNow();
@@ -63,6 +69,11 @@ export function watchLocalRunConnection({
           now === undefined || lastPositivePresenceAt === undefined
             ? undefined
             : now - lastPositivePresenceAt,
+        // Only the observer state callbacks; never their reason or channel.
+        ...(callback && {
+          callbackCode: readCallbackCode(callback.context),
+          clientState: clientStateAtStop,
+        }),
       }),
     );
   };
@@ -112,14 +123,18 @@ export function watchLocalRunConnection({
       if (getConnectionIdFromPresenceClient(event.info) === connectionId)
         lost("selected_host_left");
     });
-    subscription.on("subscribing", () => {
-      if (subscribed) lost("subscription_reconnecting");
+    subscription.on("subscribing", (context) => {
+      if (subscribed) lost("subscription_reconnecting", { context });
     });
-    subscription.on("unsubscribed", () => lost("subscription_unsubscribed"));
+    subscription.on("unsubscribed", (context) =>
+      lost("subscription_unsubscribed", { context }),
+    );
     subscription.on("error", () => lost("subscription_error"));
-    client.on("disconnected", () => lost("observer_disconnected"));
-    client.on("connecting", () => {
-      if (subscribed) lost("observer_reconnecting");
+    client.on("disconnected", (context) =>
+      lost("observer_disconnected", { context }),
+    );
+    client.on("connecting", (context) => {
+      if (subscribed) lost("observer_reconnecting", { context });
     });
     subscription.subscribe();
     client.connect();

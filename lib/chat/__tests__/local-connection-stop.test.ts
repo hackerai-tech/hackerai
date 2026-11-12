@@ -27,6 +27,10 @@ it("projects only validated closed fields", () => {
     connectionId: CONNECTION,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: 4_999.6,
+    callbackCode: 3012,
+    clientState: "connecting",
+    // Raw SDK context must never be carried along.
+    ...({ reason: "PRIVATE", message: "PRIVATE", channel: "PRIVATE" } as {}),
   });
   expect(error.message).toBe(new LocalConnectionLostError().message);
   expect(localStopAnalyticsProperties(error)).toEqual({
@@ -35,8 +39,58 @@ it("projects only validated closed fields", () => {
     local_stop_connection_id: CONNECTION,
     local_stop_had_positive_presence: true,
     local_stop_last_positive_presence_age_ms: 5_000,
+    local_stop_callback_code: 3012,
+    local_stop_client_state: "connecting",
   });
+  expect(JSON.stringify(getLocalStopDiagnostic(error))).not.toContain(
+    "PRIVATE",
+  );
 });
+
+it.each([
+  [0, "connected"],
+  [4_999, "disconnected"],
+] as const)(
+  "keeps callback code %s and client state %s",
+  (callbackCode, clientState) => {
+    expect(
+      localStopAnalyticsProperties(
+        new LocalConnectionLostError("subscription_reconnecting", {
+          callbackCode,
+          clientState,
+        }),
+      ),
+    ).toMatchObject({
+      local_stop_callback_code: callbackCode,
+      local_stop_client_state: clientState,
+    });
+  },
+);
+
+it.each([
+  ["fraction", 1.5, "CONNECTED"],
+  ["NaN", NaN, "closed"],
+  ["infinite", Infinity, "PRIVATE state"],
+  ["above 4999", 5_000, 1],
+  ["unsafe overflow", 2 ** 53, {}],
+  ["negative", -1, ["connected"]],
+  ["string", "1", new String("connected")],
+  ["boxed", new Number(1), undefined],
+])(
+  "omits an invalid callback code and client state: %s",
+  (_name, callbackCode, clientState) => {
+    const properties = localStopAnalyticsProperties(
+      new LocalConnectionLostError("subscription_reconnecting", {
+        callbackCode,
+        clientState,
+      } as never),
+    );
+    expect(properties).toEqual({
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "subscription_reconnecting",
+    });
+  },
+);
 
 it.each([
   [
@@ -79,10 +133,15 @@ it.each([
 
 it("never invokes getters or proxy traps that could expose private values", () => {
   const read = jest.fn(() => "PRIVATE");
-  const getterDetails = Object.defineProperty({}, "connectionId", {
-    enumerable: true,
-    get: read,
-  });
+  const getterDetails = Object.defineProperties(
+    {},
+    Object.fromEntries(
+      ["connectionId", "callbackCode", "clientState"].map((key) => [
+        key,
+        { enumerable: true, get: read },
+      ]),
+    ),
+  );
   const throwingProxy = new Proxy(
     {},
     {
