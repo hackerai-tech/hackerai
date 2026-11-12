@@ -10,6 +10,7 @@ import {
   upgradeCtaImpressionInsertId,
 } from "@/lib/analytics/paid-funnel";
 import { POSTHOG_SESSION_ID_HEADER } from "@/lib/analytics/request-context";
+import { withDesktopRuntimeIdentity } from "@/lib/analytics/desktop-runtime-identity";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
 
@@ -113,6 +114,8 @@ function captureWithPostHogClient(
         hackerai_frontend_build_commit: buildCommit.toLowerCase(),
       };
     }
+    // Inside the native app every event carries the measured runtime identity.
+    properties = withDesktopRuntimeIdentity(event, properties);
     if (options) {
       posthog.capture(event, properties, options);
     } else {

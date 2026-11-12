@@ -18,6 +18,11 @@ import {
 } from "@/lib/centrifugo/acknowledged-command-output";
 import { sanitizeDesktopAckEvent } from "../desktop-ack-privacy";
 import {
+  applyDesktopRuntimeIdentity,
+  startDesktopRuntimeIdentityLookup,
+  withDesktopRuntimeIdentity,
+} from "../desktop-runtime-identity";
+import {
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   type NativeAuthorizationDiagnostic,
 } from "../native-authorization-diagnostics";
@@ -26,6 +31,10 @@ jest.mock("../client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
   getIdentifiedAnalyticsUserId: jest.fn(),
   subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
+}));
+jest.mock("@tauri-apps/api/core", () => ({
+  invoke: async (command: string) =>
+    command === "plugin:app|version" ? "0.0.74" : undefined,
 }));
 const capture = jest.mocked(captureQueuedAuthenticatedEvent);
 const identity = jest.mocked(getIdentifiedAnalyticsUserId);
@@ -732,5 +741,110 @@ describe("volume reduction and reliability counters", () => {
       windowSequence: 0,
     });
     expect(JSON.stringify(enriched)).not.toContain("PRIVATE");
+  });
+});
+
+describe("Desktop runtime identity at the capture and before_send boundaries", () => {
+  const measured = {
+    native_app_version: "0.0.74",
+    native_platform: "windows",
+    hackerai_frontend_build_commit: "a".repeat(40),
+  };
+  // Mirrors the production order: manual capture, SDK projection, then final.
+  const send = (event: string, properties: Record<string, unknown>) =>
+    applyDesktopRuntimeIdentity(
+      sanitizeDesktopAckEvent({
+        event,
+        properties: {
+          ...withDesktopRuntimeIdentity(event, properties),
+          $current_url: "PRIVATE",
+        },
+      }),
+    ).properties!;
+
+  beforeAll(async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__TAURI_OS_PLUGIN_INTERNALS__", {
+      configurable: true,
+      value: { platform: "windows" },
+    });
+    await startDesktopRuntimeIdentityLookup();
+  });
+
+  afterAll(() => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as { __TAURI_OS_PLUGIN_INTERNALS__?: unknown })
+      .__TAURI_OS_PLUGIN_INTERNALS__;
+  });
+
+  it("drops an invalid receipt before shared identity can make it look valid", () => {
+    const sent = send("desktop_ack_command_settled", {
+      terminalType: "error",
+      native_authorization_diagnostic_version: 1,
+      native_authorization_send_timeout: true,
+      native_authorization_send_connect: false,
+      native_authorization_send_request: false,
+      native_authorization_send_elapsed_ms: 500,
+      native_authorization_origin_class: "canonical_production",
+      native_app_version: "PRIVATE",
+      native_platform: "darwin",
+    });
+    expect(sent).toMatchObject(measured);
+    expect(
+      Object.keys(sent).filter((key) =>
+        key.startsWith("native_authorization_"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps the same-invocation receipt group intact on a terminal-error final", () => {
+    const receipt: NativeAuthorizationDiagnostic = {
+      native_authorization_diagnostic_version: 1,
+      native_authorization_send_timeout: true,
+      native_authorization_send_connect: false,
+      native_authorization_send_request: false,
+      native_authorization_send_elapsed_ms: 500,
+      native_authorization_origin_class: "canonical_production",
+      native_app_version: null,
+      native_platform: "darwin",
+    };
+    telemetry.start({ connectionId: "connection", commandId: "receipt" })({
+      ...result,
+      terminalType: "error",
+      terminalExitCode: null,
+      nativeAuthorization: receipt,
+    } as never);
+    const final = capture.mock.calls.at(-1)![0];
+    const sent = send(final.event, final.properties!);
+    expect(sent).toMatchObject({
+      ...receipt,
+      native_app_version: "0.0.74",
+      terminalType: "error",
+      hackerai_frontend_build_commit: "a".repeat(40),
+    });
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+  });
+
+  it("attributes unreceipted nonzero finals and unsampled summaries", () => {
+    jest.mocked(sampleDiagnosticOperation).mockReturnValue(false);
+    telemetry.start({ connectionId: "connection", commandId: "nonzero" })({
+      ...result,
+      terminalExitCode: 2,
+    });
+    telemetry.flush();
+    const [final, summary] = capture.mock.calls.map(([event]) => event);
+    expect(final.event).toBe("desktop_ack_command_settled");
+    expect(send(final.event, final.properties!)).toMatchObject({
+      terminalExitCode: 2,
+      ...measured,
+    });
+    expect(summary.event).toBe("desktop_ack_delivery_summary");
+    expect(send(summary.event, summary.properties!)).toMatchObject({
+      nonzeroExitCount: 1,
+      ...measured,
+    });
   });
 });

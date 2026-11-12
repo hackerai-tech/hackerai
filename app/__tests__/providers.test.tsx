@@ -1,4 +1,13 @@
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { render, waitFor } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import {
@@ -27,6 +36,11 @@ jest.mock("@/lib/analytics/client", () => ({
   getPermittedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
+}));
+
+const mockNativeInvoke = jest.fn<(command: string) => Promise<unknown>>();
+jest.mock("@tauri-apps/api/core", () => ({
+  invoke: (command: string) => mockNativeInvoke(command),
 }));
 
 process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
@@ -1296,5 +1310,254 @@ describe("abuse reporting replay privacy", () => {
       expect(posthog.stopSessionRecording.mock.calls.length).toBeGreaterThan(1),
     );
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Desktop runtime identity", () => {
+  const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  const identity = {
+    native_app_version: "0.0.74",
+    native_platform: "darwin",
+    hackerai_frontend_build_commit: "a".repeat(40),
+  };
+  const sdk = () => ({
+    __loaded: false,
+    init: jest.fn(),
+    set_config: jest.fn(),
+    opt_in_capturing: jest.fn(),
+    has_opted_out_capturing: jest.fn(() => false),
+    identify: jest.fn(),
+    sessionRecordingStarted: jest.fn(() => false),
+    startSessionRecording: jest.fn(),
+    stopSessionRecording: jest.fn(),
+    reset: jest.fn(),
+    opt_out_capturing: jest.fn(),
+  });
+  type BeforeSend = (event: unknown) => {
+    event?: string;
+    properties?: Record<string, unknown>;
+  } | null;
+
+  beforeAll(() => {
+    // Natively injected before page scripts; no Desktop bridge is started.
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(window, "__TAURI_OS_PLUGIN_INTERNALS__", {
+      configurable: true,
+      value: { platform: "macos", version: "private-os", arch: "aarch64" },
+    });
+  });
+
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "A".repeat(40);
+    mockNativeInvoke.mockImplementation(async (command) =>
+      command === "plugin:app|version" ? "0.0.74" : undefined,
+    );
+    mockUseAuth.mockReturnValue({
+      user: { id: "user-123", email: "user@example.com", locale: "en-US" },
+    });
+    mockUseGlobalState.mockReturnValue({ subscription: "pro" });
+    mockGetPostHogClient.mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+    window.sessionStorage.clear();
+  });
+
+  afterAll(() => {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as { __TAURI_OS_PLUGIN_INTERNALS__?: unknown })
+      .__TAURI_OS_PLUGIN_INTERNALS__;
+    if (originalBuild === undefined) {
+      delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    } else {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+    }
+  });
+
+  async function renderDesktop() {
+    const posthog = sdk();
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const { before_send } = posthog.init.mock.calls[0][1] as {
+      before_send: BeforeSend;
+    };
+    // The provider started the lookup; wait for that same bounded promise.
+    const { startDesktopRuntimeIdentityLookup } =
+      require("@/lib/analytics/desktop-runtime-identity") as typeof import("@/lib/analytics/desktop-runtime-identity");
+    await startDesktopRuntimeIdentityLookup();
+    return { posthog, view, beforeSend: before_send };
+  }
+
+  it("waits for the bounded native identity lookup before enabling startup capture", async () => {
+    let answer!: (version: string) => void;
+    mockNativeInvoke.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const posthog = sdk();
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    render(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    await waitFor(() =>
+      expect(mockNativeInvoke).toHaveBeenCalledWith("plugin:app|version"),
+    );
+    const prematurelyEnabled = posthog.init.mock.calls.length;
+    answer("0.0.74");
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    expect(prematurelyEnabled).toBe(0);
+    const { before_send } = posthog.init.mock.calls[0][1] as {
+      before_send: BeforeSend;
+    };
+    expect(
+      before_send({ event: "$exception", properties: {} })?.properties,
+    ).toMatchObject(identity);
+  });
+
+  it("attributes automatic exceptions after URL sanitization and enrichment", async () => {
+    const { beforeSend } = await renderDesktop();
+    const exception = beforeSend({
+      event: "$exception",
+      properties: {
+        $current_url: "https://hackerai.co/c/chat?token=PRIVATE",
+        $exception_list: [
+          {
+            type: "Error",
+            value: "Desktop startup failed",
+            mechanism: { handled: false, synthetic: false },
+          },
+        ],
+        native_app_version: "PRIVATE",
+        native_platform: "PRIVATE",
+        hackerai_frontend_build_commit: "PRIVATE",
+      },
+    });
+    expect(exception?.properties).toMatchObject({
+      ...identity,
+      $current_url: "https://hackerai.co/c/chat",
+      hackerai_exception_category: "unknown",
+    });
+    expect(JSON.stringify(exception)).not.toContain("PRIVATE");
+  });
+
+  it("keeps identity through the strict ACK projections and preserves a valid send receipt", async () => {
+    const { beforeSend } = await renderDesktop();
+    const ack = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      schemaVersion: 2,
+      outputProtocol: "ack-v1",
+      connectionId: "connection-123",
+      commandId: "command-123",
+      telemetry_sample_rate: 1,
+      terminalAcknowledged: true,
+      durationMs: 2000,
+    };
+    const leaked = {
+      $current_url: "https://target.test/PRIVATE",
+      command: "PRIVATE",
+      error: "PRIVATE",
+      // Valid-looking but unreceipted caller identity is not trusted.
+      native_app_version: "0.0.99",
+      native_platform: "windows",
+    };
+    for (const final of [
+      {
+        outcome: "acknowledged",
+        reason: "terminal_ack",
+        terminalType: "error",
+      },
+      { outcome: "acknowledged", reason: "terminal_ack", terminalExitCode: 2 },
+      { outcome: "incomplete", reason: "deadline_exceeded" },
+    ]) {
+      const sent = beforeSend({
+        event: "desktop_ack_command_settled",
+        properties: { ...ack, ...final, ...leaked },
+        $set: { email: "PRIVATE" },
+      });
+      expect(sent?.properties).toEqual({ ...ack, ...final, ...identity });
+      expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+    }
+
+    const receipt = {
+      native_authorization_diagnostic_version: 1,
+      native_authorization_send_timeout: false,
+      native_authorization_send_connect: true,
+      native_authorization_send_request: false,
+      native_authorization_send_elapsed_ms: 42,
+      native_authorization_origin_class: "canonical_production",
+      native_app_version: "0.0.73",
+      native_platform: "linux",
+    };
+    const terminalError = {
+      ...ack,
+      outcome: "acknowledged",
+      reason: "terminal_ack",
+      terminalType: "error",
+    };
+    expect(
+      beforeSend({
+        event: "desktop_ack_command_settled",
+        properties: { ...terminalError, ...receipt },
+      })?.properties,
+    ).toEqual({
+      ...terminalError,
+      ...receipt,
+      hackerai_frontend_build_commit: "a".repeat(40),
+    });
+
+    const counts = {
+      schemaVersion: 2,
+      startedCount: 10,
+      settledCount: 10,
+      terminalErrorCount: 0,
+      pendingAtEnd: 0,
+      telemetry_sample_rate: 1,
+    };
+    const summary = beforeSend({
+      event: "desktop_ack_delivery_summary",
+      properties: { ...counts, ...leaked, $set: { content: "PRIVATE" } },
+    });
+    expect(summary?.properties).toEqual({ ...counts, ...identity });
+  });
+
+  it("does not bypass private-page, expected-noise or consent suppression", async () => {
+    const { posthog, view, beforeSend } = await renderDesktop();
+    const exception = (value: string, url = "https://hackerai.co/c/chat") => ({
+      event: "$exception",
+      properties: {
+        $current_url: url,
+        $exception_list: [{ type: "Error", value }],
+      },
+    });
+    expect(
+      beforeSend(
+        exception("Desktop failure", "https://hackerai.co/abuse/report"),
+      ),
+    ).toBeNull();
+    expect(
+      beforeSend(
+        exception(
+          "ResizeObserver loop completed with undelivered notifications.",
+        ),
+      ),
+    ).toBeNull();
+
+    posthog.__loaded = true;
+    mockGetPostHogClient.mockReturnValue(posthog);
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    const withdrawn = posthog.set_config.mock.calls.at(-1)![0] as {
+      before_send: BeforeSend;
+    };
+    expect(withdrawn.before_send(exception("Desktop failure"))).toBeNull();
+    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
   });
 });
