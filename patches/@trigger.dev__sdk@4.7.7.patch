@@ -1,0 +1,38 @@
+diff --git a/dist/commonjs/v3/streams.js b/dist/commonjs/v3/streams.js
+index f3ecce2604f7c14bfcde5ce42efcfe7bd9d2d906..651e8545d67abdd14c7529dc44d12dbf234df88b 100644
+--- a/dist/commonjs/v3/streams.js
++++ b/dist/commonjs/v3/streams.js
+@@ -92,9 +92,13 @@ function pipeInternal(key, value, opts, spanName) {
+             target: runId,
+             requestOptions,
+         });
++        // Callers observe the stream's outcome through their own
++        // `waitUntilComplete()` promise. This chain only ends the span, so
++        // consume it: otherwise a failed stream (or a throwing `span.end()`)
++        // also surfaces as an unhandled rejection.
+         instance.wait().finally(() => {
+             span.end();
+-        });
++        }).catch(() => { });
+         return {
+             stream: instance.stream,
+             waitUntilComplete: async () => {
+diff --git a/dist/esm/v3/streams.js b/dist/esm/v3/streams.js
+index bb3eabe03674f1fd70998ecf26677361035b5308..031466f1e08fa64e540149a88d1205b2374c7597 100644
+--- a/dist/esm/v3/streams.js
++++ b/dist/esm/v3/streams.js
+@@ -88,9 +88,13 @@ function pipeInternal(key, value, opts, spanName) {
+             target: runId,
+             requestOptions,
+         });
++        // Callers observe the stream's outcome through their own
++        // `waitUntilComplete()` promise. This chain only ends the span, so
++        // consume it: otherwise a failed stream (or a throwing `span.end()`)
++        // also surfaces as an unhandled rejection.
+         instance.wait().finally(() => {
+             span.end();
+-        });
++        }).catch(() => { });
+         return {
+             stream: instance.stream,
+             waitUntilComplete: async () => {
