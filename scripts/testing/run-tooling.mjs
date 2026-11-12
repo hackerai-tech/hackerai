@@ -45,6 +45,7 @@ export const suites = [
       "scripts/trigger-runtime/child-flush.test.mjs",
       "scripts/trigger-runtime/s2-uncaught.test.mjs",
       "scripts/trigger-runtime/stream-cleanup.test.mjs",
+      "scripts/trigger-runtime/wait-stop.test.mjs",
     ],
   },
 ];
@@ -85,6 +86,15 @@ const markdownRendererPaths = new Set([
   "lib/chat/sandbox-attachment-links.ts",
 ]);
 
+// The trigger-runtime wait-stop fixture runs the actual wait_for_user tool and
+// its stop helper against the installed SDK.
+const triggerRuntimeAppPaths = new Set([
+  "lib/ai/tools/wait-for-user.ts",
+  "lib/ai/tools/utils/wait-for-user-stop.ts",
+  "lib/chat/user-input-questions.ts",
+  "lib/chat/agent-user-wait.ts",
+]);
+
 /** Select inspected tooling dependencies, falling back to all for unknown paths. */
 export function selectSuites(paths) {
   const selected = new Set(["testing"]);
@@ -109,8 +119,9 @@ export function selectSuites(paths) {
       markdownRendererPaths.has(path)
     )
       selected.add("markdown");
-    // These tooling suites use isolated fixtures and do not import application
-    // modules. Unknown paths (including configs, lockfiles and new tooling) run
+    else if (triggerRuntimeAppPaths.has(path)) selected.add("trigger-runtime");
+    // Other application paths are not imported by the tooling suites above.
+    // Unknown paths (including configs, lockfiles and new tooling) run
     // everything; expand this allowlist only after inspecting dependencies.
     else if (/^(app|lib|convex|types|__mocks__|public|e2e)\//.test(path))
       continue;

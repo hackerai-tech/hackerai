@@ -3203,6 +3203,7 @@ export const agentLongTask = task({
                   stopSignal.abort("browser_ownership_lost"),
                 additionalTools: (toolContext) => ({
                   wait_for_user: createWaitForUserTool(toolContext, {
+                    signal: userStopSignal.signal,
                     beforeSuspend:
                       subscription === "free"
                         ? releaseFreeRunLockOnce
