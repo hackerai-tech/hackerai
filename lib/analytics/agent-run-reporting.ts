@@ -142,6 +142,7 @@ export function createAgentRunReporting(context: {
     ReturnType<typeof selectedComputerFailureDiagnostics> | undefined;
   let failureSignals: FailureSignalContext | undefined;
   const captured = new Set<RunEvent>();
+  let settlementCostCaptured = false;
   let terminalOutcome: "success" | "error" | "aborted" | undefined;
   let terminalAbortSource: string | undefined;
   let terminalFinishReason: string | undefined;
@@ -282,7 +283,14 @@ export function createAgentRunReporting(context: {
       );
     },
     captureCost<T>(capture: (args: T) => void, args: T) {
-      once("hackerai-usage_cost", capture, args);
+      once(
+        "hackerai-usage_cost",
+        (value: T) => {
+          capture(value);
+          settlementCostCaptured = true;
+        },
+        args,
+      );
     },
     /** Fill missing reports without changing outcomes, settlement or capture identity. */
     finalize(snapshot: {
@@ -298,7 +306,7 @@ export function createAgentRunReporting(context: {
       } & Record<string, unknown>;
     }) {
       if (!context.posthog) return;
-      const costRecorded = captured.has("hackerai-usage_cost");
+      const costRecorded = settlementCostCaptured;
       const latestTriggerCost = knownAmount(snapshot.triggerCostDollars);
       const settledTriggerCost = knownAmount(
         snapshot.usageMeasurement?.usage_trigger_run_cost_dollars,

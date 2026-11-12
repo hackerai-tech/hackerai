@@ -78,7 +78,7 @@ function toStoredRow(vendor: Vendor, row: PlatformCostRow, observedAt: number) {
     row.costStatus === "metered"
       ? 0
       : row.costStatus === "estimated"
-        ? (row.effectiveCostDollars ?? 0)
+        ? row.effectiveCostDollars!
         : billedCost;
 
   return {
@@ -155,6 +155,12 @@ export const replaceVendorCostWindow = mutation({
       }
       assertFiniteOptional(row.billedCostDollars, "billedCostDollars");
       assertFiniteOptional(row.effectiveCostDollars, "effectiveCostDollars");
+      if (
+        row.costStatus === "estimated" &&
+        row.effectiveCostDollars === undefined
+      ) {
+        throw new Error("estimated rows require effectiveCostDollars");
+      }
       assertFiniteOptional(row.usageQuantity, "usageQuantity");
       assertFiniteOptional(row.sourceChargeCount, "sourceChargeCount");
       if (row.costStatus === "metered" && row.billedCostDollars !== undefined) {

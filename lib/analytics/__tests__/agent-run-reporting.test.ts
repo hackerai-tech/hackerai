@@ -372,11 +372,13 @@ describe("Agent run reporting", () => {
 
   it("does not add an observation to an incomplete run's own Trigger cost", () => {
     const { reporter, events } = setup();
-    reporter.finalize({
+    const snapshot = {
       canceled: false,
       triggerCostDollars: 0.375,
       usageMeasurement: { usage_trigger_run_cost_dollars: 0.25 },
-    });
+    };
+    reporter.finalize(snapshot);
+    reporter.finalize(snapshot);
     expect(events().map((event) => event.event)).toEqual([
       "hackerai-agent_run",
       "hackerai-usage_cost",

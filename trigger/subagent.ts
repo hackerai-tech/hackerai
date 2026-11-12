@@ -122,7 +122,10 @@ import {
   captureUsageCost,
 } from "@/lib/api/chat-logger";
 import PostHogClient from "@/app/posthog";
-import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
+import {
+  resolveTriggerRunCost,
+  type TriggerRunCostBreakdown,
+} from "@/lib/billing/trigger-run-cost";
 import {
   deductUsage,
   isHandledUserRateLimitError,
@@ -674,6 +677,7 @@ export const subagentTask = task({
     const reportRecordedUsageCost = (
       usage: ReturnType<UsageTracker["createUsageCostRecord"]>,
       usageLog: UsageLogPersistence | "not_applicable",
+      triggerRunUsage: TriggerRunCostBreakdown,
     ) => {
       if (usageCostReported) return;
       try {
@@ -681,6 +685,7 @@ export const subagentTask = task({
           ...costEventContext,
           usage,
           usageLog,
+          triggerRunUsage,
           usageSettlementId: usageTracker.usageSettlementId,
           usageMeasurement: usageTracker.measurementProperties(selectedModel),
           responseModel,
@@ -758,6 +763,7 @@ export const subagentTask = task({
             rateLimitInfo: { remaining: 0, resetTime: new Date(0), limit: 0 },
           }),
           "not_applicable",
+          triggerRunUsage,
         );
         return { costDollars, billingFailure: false };
       }
@@ -802,6 +808,7 @@ export const subagentTask = task({
       reportRecordedUsageCost(
         usageTracker.createUsageCostRecord(usageLogArgs),
         usageLog,
+        triggerRunUsage,
       );
       return {
         costDollars,
