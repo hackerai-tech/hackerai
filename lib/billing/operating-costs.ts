@@ -64,8 +64,8 @@ export function allocateBillingPeriods(
     if (
       period.currency !== "USD" ||
       !["billed", "estimated"].includes(period.status) ||
-      !period.reference ||
-      period.reference.length > 200 ||
+      typeof period.reference !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(period.reference) ||
       count < 1 ||
       count > 366 ||
       Math.abs(cents / 100 - period.totalDollars) > 1e-7
@@ -215,6 +215,8 @@ export type ConvexBillingInvoice = {
   status: "billed" | "estimated";
   /** Net amount due after applied invoice balance, not the dashboard subtotal. */
   totalDollars: number;
+  /** Displayed invoice subtotal, used to detect omitted service-period parts. */
+  subtotalDollars: number;
   parts: Array<{ start: string; end: string; subtotalDollars: number }>;
 };
 
@@ -226,12 +228,15 @@ export type ConvexBillingAccount = {
 /** Preserve net invoice cents while splitting prepaid fees and prior overage. */
 export function allocateNetInvoice(invoice: ConvexBillingInvoice): number[] {
   const total = Math.round(money(invoice.totalDollars) * 100);
+  const subtotal = Math.round(money(invoice.subtotalDollars) * 100);
   if (
     invoice.currency !== "USD" ||
     !["billed", "estimated"].includes(invoice.status) ||
-    !invoice.reference ||
-    invoice.reference.length > 120 ||
+    typeof invoice.reference !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9:_-]{0,119}$/.test(invoice.reference) ||
     Math.abs(total / 100 - invoice.totalDollars) > 1e-7 ||
+    subtotal < 0 ||
+    Math.abs(subtotal / 100 - invoice.subtotalDollars) > 1e-7 ||
     !Array.isArray(invoice.parts) ||
     !invoice.parts.length ||
     invoice.parts.length > 128
@@ -253,6 +258,8 @@ export function allocateNetInvoice(invoice: ConvexBillingInvoice): number[] {
     return BigInt(cents);
   });
   const weight = weights.reduce((n, value) => n + value, BigInt(0));
+  if (weight !== BigInt(subtotal))
+    throw new Error("Convex invoice service parts do not match its subtotal");
   if (weight === BigInt(0)) {
     if (total !== 0)
       throw new Error("Convex invoice amount has no service-period allocation");

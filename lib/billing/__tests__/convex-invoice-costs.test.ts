@@ -13,6 +13,7 @@ const invoice = (
 ): ConvexBillingInvoice => ({
   reference,
   totalDollars,
+  subtotalDollars: parts.reduce((n, part) => n + part.subtotalDollars, 0),
   parts,
   status,
   currency: "USD",
@@ -183,6 +184,25 @@ test("no service-period basis cannot receive an unexplained nonzero invoice amou
   expect(
     allocateNetInvoice(invoice("zero", 0, [{ ...prior, subtotalDollars: 0 }])),
   ).toEqual([0]);
+});
+
+test("missing service-period parts cannot silently allocate the whole net invoice to the remaining period", () => {
+  const complete = invoice("complete", 90, [
+    { ...prior, subtotalDollars: 40 },
+    { ...current, subtotalDollars: 60 },
+  ]);
+  expect(() =>
+    allocateNetInvoice({ ...complete, parts: complete.parts.slice(0, 1) }),
+  ).toThrow("do not match its subtotal");
+});
+
+test("signed invoice URLs cannot enter analytics as invoice references", () => {
+  expect(() =>
+    allocateNetInvoice({
+      ...invoice("safe", 100, [prior]),
+      reference: "https://example.invalid/view?token=private",
+    }),
+  ).toThrow("Invalid Convex invoice");
 });
 
 test("canonical Convex snapshots validate the configured billing-account set", () => {
