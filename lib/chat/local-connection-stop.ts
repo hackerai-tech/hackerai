@@ -22,10 +22,18 @@ const LOCAL_STOP_REASONS = [
 
 export type LocalStopReason = (typeof LOCAL_STOP_REASONS)[number];
 
+const CLIENT_STATES = ["connected", "connecting", "disconnected"] as const;
+
+export type LocalStopClientState = (typeof CLIENT_STATES)[number];
+
 export type LocalStopDetails = {
   connectionId?: string;
   hadPositivePresence?: boolean;
   lastPositivePresenceAgeMs?: number;
+  /** First winning observer callback's code; its namespace depends on the reason. */
+  callbackCode?: number;
+  /** Public observer client state before the watcher's own disconnect. */
+  clientState?: LocalStopClientState;
 };
 
 type LocalStopDiagnostic = Readonly<
@@ -33,6 +41,7 @@ type LocalStopDiagnostic = Readonly<
 >;
 
 const MAX_PRESENCE_AGE_MS = 86_400_000;
+const MAX_CALLBACK_CODE = 4_999;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Keyed by the constructed instance, so forged or proxied objects carry nothing.
@@ -47,6 +56,25 @@ function ownData(value: unknown, key: string): unknown {
     return undefined;
   }
 }
+
+function callbackCode(value: unknown): number | undefined {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_CALLBACK_CODE
+    ? value
+    : undefined;
+}
+
+function clientState(value: unknown): LocalStopClientState | undefined {
+  return CLIENT_STATES.find((known) => known === value);
+}
+
+/** Getter-free reads of SDK values; faults and invalid values are omitted. */
+export const readCallbackCode = (context: unknown) =>
+  callbackCode(ownData(context, "code"));
+export const readClientState = (client: unknown) =>
+  clientState(ownData(client, "state"));
 
 function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
   const diagnostic: { reason: LocalStopReason } & LocalStopDetails = {
@@ -69,6 +97,10 @@ function validate(reason: unknown, details: unknown): LocalStopDiagnostic {
     )
       diagnostic.lastPositivePresenceAgeMs = Math.round(age);
   }
+  const code = callbackCode(ownData(details, "callbackCode"));
+  if (code !== undefined) diagnostic.callbackCode = code;
+  const state = clientState(ownData(details, "clientState"));
+  if (state !== undefined) diagnostic.clientState = state;
   return Object.freeze(diagnostic);
 }
 
@@ -110,6 +142,12 @@ export function localStopAnalyticsProperties(error: unknown) {
     ...(diagnostic.lastPositivePresenceAgeMs !== undefined && {
       local_stop_last_positive_presence_age_ms:
         diagnostic.lastPositivePresenceAgeMs,
+    }),
+    ...(diagnostic.callbackCode !== undefined && {
+      local_stop_callback_code: diagnostic.callbackCode,
+    }),
+    ...(diagnostic.clientState !== undefined && {
+      local_stop_client_state: diagnostic.clientState,
     }),
   } as const;
 }

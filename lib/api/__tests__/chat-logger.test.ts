@@ -770,9 +770,11 @@ describe("captureAgentRun", () => {
       endpoint: "/api/agent",
     });
     reporting.recordLocalStop(
-      new LocalConnectionLostError("subscription_error", {
+      new LocalConnectionLostError("subscription_reconnecting", {
         connectionId,
         hadPositivePresence: false,
+        callbackCode: 2500,
+        clientState: "connected",
       }),
     );
     reporting.captureTerminal(captureAgentCompletionAnalytics, {
@@ -806,9 +808,11 @@ describe("captureAgentRun", () => {
       outcome: "aborted",
       finish_reason: "local-connection-lost",
       local_stop_diagnostic_version: 1,
-      local_stop_reason: "subscription_error",
+      local_stop_reason: "subscription_reconnecting",
       local_stop_connection_id: connectionId,
       local_stop_had_positive_presence: false,
+      local_stop_callback_code: 2500,
+      local_stop_client_state: "connected",
     });
     expect(runs[0].properties).not.toHaveProperty(
       "local_stop_last_positive_presence_age_ms",
