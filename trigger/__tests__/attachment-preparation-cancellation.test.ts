@@ -54,6 +54,7 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
       writer,
       hasObservedUsage: () => false,
       paidDailyFreeAllowanceUsageTracker: { hasUsage: false },
+      reportIncompleteAskUsageCost: jest.fn(async () => {}),
       releasePaidDailyFreeAllowanceReservation: release,
       releaseFreeRunLockOnce: release,
       usageRefundTracker: { refund },
@@ -84,6 +85,9 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
     expect(refund).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledTimes(2);
     expect(writer.write).toHaveBeenCalledWith({ type: "abort" });
+    if (file === "lib/api/chat-handler.ts") {
+      expect(deps.reportIncompleteAskUsageCost).toHaveBeenCalledWith("setup");
+    }
     writer.write.mockClear();
     const unrelated = new Error("Cleanup could not be confirmed");
     await expect(

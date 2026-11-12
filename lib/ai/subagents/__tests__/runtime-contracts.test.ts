@@ -27,7 +27,7 @@ describe("security validation subagent runtime contracts", () => {
       "resolveTriggerRunCost(triggerUsage.getCurrent())",
     );
     expect(source).toContain(
-      "usageTracker.nonModelCost += triggerRunUsage.totalCostDollars",
+      "usageTracker.addTriggerRunCost(triggerRunUsage.totalCostDollars)",
     );
     expect(source).toContain("retry: { maxAttempts: 1 }");
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
