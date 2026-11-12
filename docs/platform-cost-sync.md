@@ -73,6 +73,36 @@ already recorded per request; adding those invoices in full would double count.
 
 ## Connected operating-cost observations
 
+### AWS Cost Explorer
+
+The AWS route runs daily at 12:37 UTC and reconciles the previous 35 completed
+UTC days. Configure `AWS_COST_ACCOUNT_ID`, `AWS_COST_ROLE_ARN` and
+`AWS_COST_OIDC_AUDIENCE` only in the authorized Production environment. It uses
+Vercel OIDC for short-lived credentials, verifies STS caller account and role,
+and filters Cost Explorer to that linked account. Preview calls cannot obtain
+credentials or import AWS costs. No AWS access keys are needed.
+
+The dedicated role needs only `ce:GetCostAndUsage` on `*`. Its web-identity trust
+must constrain the exact Vercel issuer, audience, project and Production subject;
+do not grant all projects or Preview access. `sts:GetCallerIdentity` does not
+require an added permission. Follow the [Vercel AWS OIDC procedure](https://vercel.com/docs/oidc/aws).
+
+Daily `UnblendedCost` is grouped by service and charge type. Credits retain their
+sign and provider precision. All Cost Explorer rows remain estimated until invoice
+reconciliation; they are not automatically finalized because AWS's estimated flag
+is false. All pages, expected dates and USD amounts must validate before the
+existing bounded replacement mutation runs. Failure retains previous costs.
+
+A separate paginated query checks individual Marketplace service/charge-type
+records in the same account/date range. Any nonzero record stops the import for
+review, including offsetting usage and refunds: some vendors
+are already collected directly, and unfamiliar charges must not be silently
+discarded or counted twice. The later AWS query also filters billing entity to AWS, so Marketplace changes
+between reads cannot enter the import. Resolve those overlaps explicitly before resuming.
+The collector does not change customer pricing, wallets or per-request costs.
+
+### WorkOS, Upstash and invoice observations
+
 WorkOS billing can be collected through its authenticated billing connector,
 and Upstash exposes a `dailybilling` series per Redis database. An operator can
 normalize these observations with `scripts/billing/import-operating-costs.mjs`.

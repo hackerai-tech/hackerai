@@ -1,0 +1,96 @@
+import { NextResponse } from "next/server";
+import { CostExplorerClient } from "@aws-sdk/client-cost-explorer";
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
+import { awsCredentialsProvider } from "@vercel/oidc-aws-credentials-provider";
+import { fetchAwsCostWindow } from "@/lib/billing/aws-costs";
+import { completedUtcDayWindow } from "@/lib/billing/platform-costs";
+import {
+  isAuthorizedCronRequest,
+  logCostSync,
+  replaceCostWindow,
+  requireEnvironment,
+} from "@/lib/billing/platform-cost-sync";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
+/** Account overhead only; never used to settle customer usage or wallets. */
+export async function GET(request: Request) {
+  if (!isAuthorizedCronRequest(request))
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (
+    process.env.VERCEL_ENV !== "production" ||
+    !process.env.AWS_COST_ROLE_ARN ||
+    !process.env.AWS_COST_ACCOUNT_ID ||
+    !process.env.AWS_COST_OIDC_AUDIENCE
+  )
+    return NextResponse.json(
+      { error: "AWS cost reader not configured" },
+      { status: 503 },
+    );
+  let sts: STSClient | undefined;
+  let costs: CostExplorerClient | undefined;
+  try {
+    const accountId = requireEnvironment("AWS_COST_ACCOUNT_ID");
+    const roleArn = requireEnvironment("AWS_COST_ROLE_ARN");
+    const role =
+      /^arn:aws:iam::(\d{12}):role\/([A-Za-z0-9+=,.@_-]{1,64})$/.exec(roleArn);
+    const audience = requireEnvironment("AWS_COST_OIDC_AUDIENCE");
+    if (
+      !role ||
+      role[1] !== accountId ||
+      !/^https:\/\/vercel\.com\/[a-z0-9-]+$/.test(audience)
+    )
+      throw new Error("Invalid AWS cost reader scope");
+    const credentials = awsCredentialsProvider({
+      roleArn,
+      audience,
+      durationSeconds: 900,
+      clientConfig: { region: "us-east-1" },
+    });
+    sts = new STSClient({ region: "us-east-1", credentials, maxAttempts: 3 });
+    const identity = await sts.send(new GetCallerIdentityCommand({}), {
+      abortSignal: AbortSignal.timeout(30_000),
+    });
+    if (
+      identity.Account !== accountId ||
+      !identity.Arn?.startsWith(
+        `arn:aws:sts::${accountId}:assumed-role/${role[2]}/`,
+      )
+    )
+      throw new Error("AWS caller differs from the approved cost role");
+    const observedAt = Date.now();
+    const window = completedUtcDayWindow(observedAt, 35);
+    costs = new CostExplorerClient({
+      region: "us-east-1",
+      credentials,
+      maxAttempts: 3,
+    });
+    const rows = await fetchAwsCostWindow(
+      costs,
+      accountId,
+      window.startDay,
+      window.endDay,
+    );
+    const result = await replaceCostWindow({
+      vendor: "aws",
+      startDay: window.startDay,
+      endDay: window.endDay,
+      observedAt,
+      rows,
+    });
+    logCostSync("info", "platform_cost_sync_completed", {
+      vendor: "aws",
+      row_count: rows.length,
+      ...result,
+    });
+    return NextResponse.json({ ok: true, rowCount: rows.length, ...result });
+  } catch {
+    // STS/provider errors can contain signed requests and credentials.
+    logCostSync("error", "platform_cost_sync_failed", { vendor: "aws" });
+    return NextResponse.json({ error: "Cost sync failed" }, { status: 500 });
+  } finally {
+    sts?.destroy();
+    costs?.destroy();
+  }
+}

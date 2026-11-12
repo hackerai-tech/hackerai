@@ -122,7 +122,13 @@ importers:
       '@ai-sdk/react':
         specifier: 3.0.304
         version: 3.0.304(react@19.3.1)(zod@4.6.7)
+      '@aws-sdk/client-cost-explorer':
+        specifier: 3.1165.0
+        version: 3.1165.0
       '@aws-sdk/client-s3':
+        specifier: 3.1165.0
+        version: 3.1165.0
+      '@aws-sdk/client-sts':
         specifier: 3.1165.0
         version: 3.1165.0
       '@aws-sdk/s3-request-presigner':
@@ -236,6 +242,9 @@ importers:
       '@vercel/functions':
         specifier: 3.10.6
         version: 3.10.6(@aws-sdk/credential-provider-web-identity@3.972.89)(ws@8.22.2)
+      '@vercel/oidc-aws-credentials-provider':
+        specifier: 3.3.20
+        version: 3.3.20
       '@workos-inc/authkit-nextjs':
         specifier: 4.3.2
         version: 4.3.2(patch_hash=10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378)(@workos-inc/node@10.14.0)(next@16.4.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)
@@ -657,8 +666,16 @@ packages:
     resolution: {integrity: sha512-C3EkQ34SUaVFhALeGrxCJQx0DM0r6NLxUVoYtt9jh/SSK5CqyYvhLn2kgUxW+XoLYxeytpmxk809H7ay4YyMFw==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/client-cost-explorer@3.1165.0':
+    resolution: {integrity: sha512-cSaMn9iX11ZqVr4QEHS3H23gJeM1EgT+S6j71Js/iTuTXT7fPpL4eOWb1wodT8qxjU4NEat333BWEULWan9tUA==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/client-s3@3.1165.0':
     resolution: {integrity: sha512-6wcKobhqnJ89AEyHwvUAa8YTB2sLA4ISsSG6Ysn38XG8mHwtGfcMUrXKekshf2xKGCCA+88uoe3TXf9/BLshUg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sts@3.1165.0':
+    resolution: {integrity: sha512-eZqk1JGUcykaPdwtParjfy77hu8CNPyHxqd0m9OWT2pysFelZ2jLC0Z2YoNAjvfYPbHEXKJHWrErNFCmAtZJUg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.980.2':
@@ -4451,6 +4468,9 @@ packages:
   '@vercel/cli-config@0.3.6':
     resolution: {integrity: sha512-jKsEWixJ+yMs2V29fqFxeDTQDglsgj7hvSXJf9pPmyYISvuTpTt45j/g47O6RWbe7aJycPbDOk7uKPHPA+LDYg==}
 
+  '@vercel/cli-config@0.3.8':
+    resolution: {integrity: sha512-C6av1p4tN+rHIcD0rdlsx3y9SaosRUU67dbgrjbLG8KdAK8oNVzfKg0ckV+1qWh5VC/Ft1BN3Pg/PuXSKNFVOA==}
+
   '@vercel/cli-exec@1.0.1':
     resolution: {integrity: sha512-g9XerViJ/paZujufXYcu5XYI2vU2rtB4sgdpjUHde5RnOkdmpu0ngH46LCFGHoPXO/C+qDPSczIHIRN+8Q2YKQ==}
     engines: {node: '>= 18'}
@@ -4467,12 +4487,20 @@ packages:
       ws:
         optional: true
 
+  '@vercel/oidc-aws-credentials-provider@3.3.20':
+    resolution: {integrity: sha512-hU3ImMHpbIGYuZReqFqnN4n7thUXqUafPVVbNCRJOyJNVMBVE6B1823nXHe5YatId0uvIxTvBSgPdblIqdA6eQ==}
+    engines: {node: '>= 20'}
+
   '@vercel/oidc@3.2.0':
     resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
     engines: {node: '>= 20'}
 
   '@vercel/oidc@4.0.6':
     resolution: {integrity: sha512-VlrMq9V20Sts9PRYeeh7d8+QCuTvDgujZ0OyakfEJkM7NpQTW+x2IFvVWGJzg+84RhFFa2kKir6gw5E4EcTsuw==}
+    engines: {node: '>= 20'}
+
+  '@vercel/oidc@4.0.8':
+    resolution: {integrity: sha512-8wcmhuhrEsQlgTvPfRIeE4Y2geSaid0a1DP+um1PfNK4ETjqnfGTL5k5l7vS2T8A2gOx/MV7yNGxUJTs+0tqPQ==}
     engines: {node: '>= 20'}
 
   '@workos-inc/authkit-js@0.20.0':
@@ -8715,12 +8743,35 @@ snapshots:
       '@smithy/types': 4.20.0
       tslib: 2.8.1
 
+  '@aws-sdk/client-cost-explorer@3.1165.0':
+    dependencies:
+      '@aws-sdk/core': 3.980.2
+      '@aws-sdk/credential-provider-node': 3.972.95
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.39.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
   '@aws-sdk/client-s3@3.1165.0':
     dependencies:
       '@aws-sdk/checksums': 3.1002.4
       '@aws-sdk/core': 3.980.2
       '@aws-sdk/credential-provider-node': 3.972.95
       '@aws-sdk/middleware-sdk-s3': 3.972.88
+      '@aws-sdk/signature-v4-multi-region': 3.996.52
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.39.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-sts@3.1165.0':
+    dependencies:
+      '@aws-sdk/core': 3.980.2
+      '@aws-sdk/credential-provider-node': 3.972.95
       '@aws-sdk/signature-v4-multi-region': 3.996.52
       '@aws-sdk/types': 3.975.1
       '@smithy/core': 3.39.0
@@ -12136,6 +12187,11 @@ snapshots:
       xdg-app-paths: 5.5.1
       zod: 4.6.7
 
+  '@vercel/cli-config@0.3.8':
+    dependencies:
+      xdg-app-paths: 5.5.1
+      zod: 4.6.7
+
   '@vercel/cli-exec@1.0.1':
     dependencies:
       execa: 5.1.1
@@ -12147,11 +12203,22 @@ snapshots:
       '@aws-sdk/credential-provider-web-identity': 3.972.89
       ws: 8.22.2
 
+  '@vercel/oidc-aws-credentials-provider@3.3.20':
+    dependencies:
+      '@aws-sdk/credential-provider-web-identity': 3.972.89
+      '@vercel/oidc': 4.0.8
+
   '@vercel/oidc@3.2.0': {}
 
   '@vercel/oidc@4.0.6':
     dependencies:
       '@vercel/cli-config': 0.3.6
+      '@vercel/cli-exec': 1.0.1
+      jose: 5.10.0
+
+  '@vercel/oidc@4.0.8':
+    dependencies:
+      '@vercel/cli-config': 0.3.8
       '@vercel/cli-exec': 1.0.1
       jose: 5.10.0
 

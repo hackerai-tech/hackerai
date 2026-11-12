@@ -1888,6 +1888,7 @@ export default defineSchema({
   // more than once by accident.
   platform_costs_daily: defineTable({
     vendor: v.union(
+      v.literal("aws"),
       v.literal("vercel"),
       v.literal("convex"),
       v.literal("posthog"),
