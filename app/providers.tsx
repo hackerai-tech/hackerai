@@ -33,6 +33,10 @@ import { sanitizeAgentCancellationEvent } from "@/lib/analytics/agent-cancellati
 import { sanitizeDiffViewEvent } from "@/lib/analytics/diff-view-privacy";
 import { sanitizeContextFeedbackEvent } from "@/lib/analytics/context-feedback-privacy";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import {
+  applyDesktopRuntimeIdentity,
+  startDesktopRuntimeIdentityLookup,
+} from "@/lib/analytics/desktop-runtime-identity";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import {
@@ -106,6 +110,8 @@ export function PostHogProvider({
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
+    // Local-only and bounded: resolve before the SDK can report startup errors.
+    void startDesktopRuntimeIdentityLookup();
 
     const replayBlockKey = "hackerai_abuse_replay_blocked";
     const blockReplay = () => {
@@ -175,8 +181,13 @@ export function PostHogProvider({
     let stopRejectionDiagnostics: (() => void) | undefined;
 
     void loadPostHogClient()
-      .then((posthog) => {
-        if (cancelled) return;
+      .then(async (posthog) => {
+        await startDesktopRuntimeIdentityLookup();
+        if (
+          cancelled ||
+          (userId && serverActionDiagnosticOwner.current !== userId)
+        )
+          return;
 
         const config = {
           api_host:
@@ -250,7 +261,10 @@ export function PostHogProvider({
               return null;
             }
 
-            return enrichFrontendExceptionEvent(sanitizedEvent);
+            // Last, so no event-specific projection can strip Desktop identity.
+            return applyDesktopRuntimeIdentity(
+              enrichFrontendExceptionEvent(sanitizedEvent),
+            );
           },
         } satisfies Partial<PostHogConfig>;
 

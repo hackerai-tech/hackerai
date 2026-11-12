@@ -1,4 +1,5 @@
 import {
+  afterAll,
   afterEach,
   beforeAll,
   beforeEach,
@@ -19,6 +20,11 @@ const mockPostHog = {
 jest.mock("posthog-js", () => ({
   __esModule: true,
   default: mockPostHog,
+}));
+
+jest.mock("@tauri-apps/api/core", () => ({
+  invoke: async (command: string) =>
+    command === "plugin:app|version" ? "0.0.74" : undefined,
 }));
 
 const {
@@ -259,6 +265,103 @@ describe("client analytics", () => {
         }
       },
     );
+  });
+
+  describe("Desktop runtime identity", () => {
+    const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    const identity = {
+      native_app_version: "0.0.74",
+      native_platform: "windows",
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+
+    beforeAll(async () => {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        configurable: true,
+        value: {},
+      });
+      Object.defineProperty(window, "__TAURI_OS_PLUGIN_INTERNALS__", {
+        configurable: true,
+        value: { platform: "windows" },
+      });
+      const { startDesktopRuntimeIdentityLookup } =
+        require("../desktop-runtime-identity") as typeof import("../desktop-runtime-identity");
+      await startDesktopRuntimeIdentityLookup();
+    });
+
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "A".repeat(40);
+    });
+
+    afterAll(() => {
+      delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      delete (window as { __TAURI_OS_PLUGIN_INTERNALS__?: unknown })
+        .__TAURI_OS_PLUGIN_INTERNALS__;
+      if (originalBuild === undefined) {
+        delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+      } else {
+        process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+      }
+    });
+
+    it("attributes an ordinary diagnostic without a send receipt or caller identity", () => {
+      const caller = { reason: "connected" };
+      expect(
+        captureAuthenticatedEvent("desktop_bridge_relay_state_changed", caller),
+      ).toBe(true);
+      expect(mockCapture).toHaveBeenCalledWith(
+        "desktop_bridge_relay_state_changed",
+        { reason: "connected", ...identity },
+      );
+      expect(caller).toEqual({ reason: "connected" });
+    });
+
+    it("replaces a spoofed probe identity and an invalid build with measured values", () => {
+      process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "not-a-commit";
+      captureAuthenticatedEvent("desktop_file_bridge_probe_failed", {
+        reason: "unavailable",
+        native_app_version: "unknown",
+        native_platform: "private-host",
+        hackerai_frontend_build_commit: "b".repeat(40),
+      });
+      expect(mockCapture).toHaveBeenCalledWith(
+        "desktop_file_bridge_probe_failed",
+        {
+          reason: "unavailable",
+          native_app_version: "0.0.74",
+          native_platform: "windows",
+          hackerai_frontend_build_commit: null,
+        },
+      );
+    });
+
+    it("attributes a queued unsampled ACK summary when the SDK becomes ready", () => {
+      mockPostHog.__loaded = false;
+      expect(
+        captureQueuedAuthenticatedEvent({
+          event: "desktop_ack_delivery_summary",
+          properties: { schemaVersion: 2, startedCount: 3, settledCount: 3 },
+          dedupeKey: "desktop-identity-summary",
+        }),
+      ).toBe(true);
+      mockPostHog.__loaded = true;
+      expect(flushPendingAuthenticatedEvents("user_123")).toBe(true);
+      expect(mockCapture).toHaveBeenCalledWith(
+        "desktop_ack_delivery_summary",
+        { schemaVersion: 2, startedCount: 3, settledCount: 3, ...identity },
+        { uuid: expect.stringMatching(/^[0-9a-f-]{36}$/i) },
+      );
+    });
+
+    it("does not bypass the capture gate on Desktop", () => {
+      mockPostHog.__loaded = false;
+      try {
+        expect(captureAuthenticatedEvent("ordinary_event", {})).toBe(false);
+        expect(mockCapture).not.toHaveBeenCalled();
+      } finally {
+        mockPostHog.__loaded = true;
+      }
+    });
   });
 
   it("notifies survey consumers only of the consented, identified account", () => {
