@@ -543,6 +543,32 @@ function nearbyDispatchGroup(
       (frames === undefined || (Array.isArray(frames) && frames.length === 0))
     )
       return "stackless_dom_exception";
+    // The SDK's client frame, not stored resolved positions or in_app, is compared.
+    if (
+      exception.type === "SyntaxError" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 256 &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length === 1 &&
+      typeof frames[0]?.filename === "string" &&
+      frames[0].filename.length <= 4096
+    ) {
+      const current = new URL(properties.$current_url);
+      const source = new URL(frames[0].filename);
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        source.origin === current.origin &&
+        !source.username &&
+        !source.password &&
+        source.pathname === current.pathname
+      )
+        return "same_document_singleframe_syntaxerror";
+    }
     if (
       exception.type === "SyntaxError" &&
       exception.mechanism.synthetic === false &&

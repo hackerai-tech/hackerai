@@ -87,7 +87,7 @@ function getReadyPostHogClient() {
   return posthogClient?.__loaded ? posthogClient : null;
 }
 
-/** Preserve capture semantics while attributing selected native diagnostics to their loaded bundle. */
+/** Preserve capture semantics while attributing selected diagnostics to their loaded bundle. */
 function captureWithPostHogClient(
   posthog: PostHogClient,
   event: string,
@@ -100,7 +100,9 @@ function captureWithPostHogClient(
       (event === "desktop_file_bridge_probe_failed" ||
         ((event === "sandbox_connection_terminated" ||
           event === "desktop_bridge_relay_state_changed") &&
-          properties.native_auth_diagnostic_version === 1)) &&
+          properties.native_auth_diagnostic_version === 1) ||
+        (event === "react_boundary_failure_context" &&
+          properties.version === 1)) &&
       buildCommit &&
       /^[a-f0-9]{40}$/i.test(buildCommit)
     ) {

@@ -541,7 +541,7 @@ function ForkAutoSendEffect({
 
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   return (
-    <ConvexErrorBoundary>
+    <ConvexErrorBoundary diagnosticScope="chat_content">
       <ChatContent autoResume={autoResume} />
     </ConvexErrorBoundary>
   );
