@@ -370,6 +370,7 @@ export class UsageTracker {
    */
   get hasIncurredMeasurement(): boolean {
     return (
+      this.modelCallsStarted > 0 ||
       this.discardedModelSteps.length > 0 ||
       this.modelStepCosts.length > 0 ||
       this.summarizationStepCosts.length > 0 ||

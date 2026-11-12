@@ -155,7 +155,11 @@ it("exposes discarded-only work for measurement while nothing is billable", () =
 
 it("distinguishes missing telemetry from explicit zero reads and unfinished calls", () => {
   const tracker = new UsageTracker();
+  expect(tracker.hasIncurredMeasurement).toBe(false);
   tracker.recordModelCall();
+  // A started call can incur cost even when it fails before returning usage.
+  expect(tracker.hasIncurredMeasurement).toBe(true);
+  expect(tracker.hasUsage).toBe(false);
   expect(tracker.measurementProperties("model")).toMatchObject({
     usage_model_calls_started: 1,
     usage_model_records: 0,
