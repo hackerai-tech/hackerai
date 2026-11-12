@@ -57,6 +57,70 @@ function curl1Context(stderr: string, truncated: boolean) {
   };
 }
 
+const SELECTED_CLIENT_ALIASES: Record<
+  DownloadInput["httpClient"],
+  readonly string[]
+> = {
+  curl: ["curl", "curl.exe"],
+  wget: ["wget", "wget.exe"],
+  powershell: ["powershell", "powershell.exe"],
+};
+
+// bash/dash/busybox, zsh, Ubuntu command-not-found and cmd.exe wording.
+const COMMAND_NOT_FOUND = [
+  /^(?:\/(?:usr\/)?bin\/)?(?:bash|sh|dash)(?:: line \d{1,6}|: \d{1,6})?: ([^\s'"]{1,128}): (?:command )?not found$/,
+  /^(?:\/(?:usr\/)?bin\/)?zsh(?::\d{1,6})?: command not found: ([^\s'"]{1,128})$/,
+  /^Command '([^\s']{1,128})' not found, (?:but can be installed with|did you mean):$/,
+  /^'([^'\r\n]{1,260})' is not recognized as an internal or external command,$/,
+];
+const POSIX_SYNTAX = [
+  /^(?:\/(?:usr\/)?bin\/)?(?:bash|sh|dash)(?:: -c)?(?:: line \d{1,6}|: \d{1,6})?: (?:syntax error near unexpected token `[^\r\n]{1,64}'|unexpected EOF while looking for matching `[^\r\n]{1,4}'|Syntax error: (?:Unterminated quoted string|(?:"[^"\r\n]{1,16}"|[a-z]{1,16}(?: [a-z]{1,16}){0,3}) unexpected(?: \(expecting "[^"\r\n]{1,16}"\))?)|syntax error: (?:unterminated quoted string|unexpected (?:end of file|newline|"[^"\r\n]{1,16}")(?: \(expecting "[^"\r\n]{1,16}"\)| from `[^\r\n]{1,16}' command on line \d{1,6})?))$/,
+  /^(?:\/(?:usr\/)?bin\/)?zsh(?::\d{1,6})?: (?:parse error near `[^\r\n]{1,64}'|unmatched ["'`])$/,
+];
+// cmd.exe and Windows PowerShell parser wording.
+const WINDOWS_SYNTAX = [
+  /^The syntax of the command is incorrect\.$/,
+  /^\S{1,64} was unexpected at this time\.$/,
+  /^ {0,8}\+ CategoryInfo {1,16}: ParserError: \(:\) \[\], ParentContainsErrorRecordException$/,
+];
+
+/** Complete public shell diagnostic lines only. A missing program name is
+ * compared with the selected client's aliases and never kept. This is a text
+ * observation, not executable identity or cause proof, and never drives recovery. */
+function commandHint(
+  stderr: string,
+  truncated: boolean,
+  httpClient: DownloadInput["httpClient"],
+) {
+  const lines = stderr.split(/\r?\n/);
+  // A truncated final segment may continue past the scan budget.
+  const complete = truncated ? lines.slice(0, -1) : lines;
+  const hints = new Set<
+    | "selected_client_not_found"
+    | "other_command_not_found"
+    | "posix_syntax"
+    | "windows_syntax"
+  >();
+  for (const line of complete) {
+    let missing: string | undefined;
+    for (const pattern of COMMAND_NOT_FOUND)
+      missing ??= pattern.exec(line)?.[1];
+    if (missing !== undefined)
+      hints.add(
+        SELECTED_CLIENT_ALIASES[httpClient]?.includes(missing)
+          ? "selected_client_not_found"
+          : "other_command_not_found",
+      );
+    else if (POSIX_SYNTAX.some((pattern) => pattern.test(line)))
+      hints.add("posix_syntax");
+    else if (WINDOWS_SYNTAX.some((pattern) => pattern.test(line)))
+      hints.add("windows_syntax");
+  }
+  return hints.size > 1
+    ? "multiple"
+    : (hints.values().next().value ?? "unclassified");
+}
+
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
 function summarize(input: DownloadInput) {
@@ -116,6 +180,16 @@ function summarize(input: DownloadInput) {
       : {}),
     ...(input.httpClient === "curl" && input.exitCode === 1
       ? curl1Context(stderr, input.stderr.length > 8192)
+      : {}),
+    ...(input.exitCode === 127 || signal === "command_syntax"
+      ? {
+          attachment_download_command_hint_version: 1 as const,
+          attachment_download_command_hint: commandHint(
+            stderr,
+            input.stderr.length > 8192,
+            input.httpClient,
+          ),
+        }
       : {}),
   };
 }
