@@ -1891,6 +1891,8 @@ export default defineSchema({
       v.literal("vercel"),
       v.literal("convex"),
       v.literal("posthog"),
+      v.literal("workos"),
+      v.literal("upstash"),
     ),
     entity_id: v.string(),
     day: v.string(),
@@ -1913,6 +1915,13 @@ export default defineSchema({
     source_period_end: v.string(),
     source_observed_at: v.number(),
     source_charge_count: v.optional(v.number()),
+    cost_basis: v.optional(
+      v.union(
+        v.literal("provider_daily_spend"),
+        v.literal("billing_period_allocation"),
+      ),
+    ),
+    billing_reference: v.optional(v.string()),
     updated_at: v.number(),
   })
     .index("by_day", ["day"])

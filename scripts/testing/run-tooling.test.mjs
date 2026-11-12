@@ -36,6 +36,14 @@ test("application changes skip isolated tooling but tooling dependencies and unk
     assert.deepEqual(names([path]), ["markdown", "testing"], path);
   }
   assert.deepEqual(names(["app/components/MessageItem.tsx"]), ["testing"]);
+  assert.deepEqual(names(["lib/billing/operating-costs.ts"]), [
+    "testing",
+    "billing",
+  ]);
+  assert.deepEqual(names(["scripts/billing/import-operating-costs.mjs"]), [
+    "testing",
+    "billing",
+  ]);
   // The wait-stop fixture loads these application modules.
   for (const path of [
     "lib/ai/tools/wait-for-user.ts",

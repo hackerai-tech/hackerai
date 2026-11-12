@@ -260,4 +260,74 @@ describe("replaceVendorCostWindow", () => {
       recognized_cost_dollars: 0,
     });
   });
+
+  it("keeps priced Convex charges and its hourly usage meters in separate replacement scopes", async () => {
+    const { replaceCostRows } = await import("../platformCosts");
+    const { ctx, rows } = makeCtx();
+    const common = {
+      vendor: "convex" as const,
+      startDay: "2026-08-30",
+      endDay: "2026-08-30",
+      observedAt: Date.now(),
+    };
+    const charge = {
+      day: "2026-08-30",
+      serviceName: "team-billing",
+      serviceCategory: "database",
+      billingCurrency: "USD",
+      costStatus: "billed" as const,
+      billedCostDollars: 2,
+      sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+      sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+    };
+    await replaceCostRows(ctx, { ...common, scope: "charges", rows: [charge] });
+    await replace(ctx, {
+      ...common,
+      rows: [
+        {
+          ...charge,
+          serviceName: "database-bandwidth",
+          costStatus: "metered",
+          billedCostDollars: undefined,
+          usageQuantity: 5,
+          usageUnit: "GB",
+        },
+      ],
+    });
+    expect(rows).toHaveLength(2);
+    const repeat = await replaceCostRows(ctx, {
+      ...common,
+      scope: "charges",
+      rows: [charge],
+    });
+    expect(repeat).toEqual({
+      inserted: 0,
+      updated: 0,
+      deleted: 0,
+      unchanged: 1,
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((n, row) => n + row.recognized_cost_dollars, 0)).toBe(2);
+  });
+
+  it("rejects an unknown billed amount before changing an existing expense", async () => {
+    const { ctx, rows } = makeCtx();
+    await replace(ctx);
+    await expect(
+      replace(ctx, {
+        rows: [
+          {
+            day: "2026-08-30",
+            serviceName: "billing",
+            serviceCategory: "database",
+            costStatus: "billed",
+            sourcePeriodStart: "2026-08-01T00:00:00.000Z",
+            sourcePeriodEnd: "2026-09-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    ).rejects.toThrow("billedCostDollars");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].recognized_cost_dollars).toBe(12.5);
+  });
 });

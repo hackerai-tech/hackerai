@@ -1,4 +1,5 @@
-export type PlatformVendor = "vercel" | "convex" | "posthog";
+export type PlatformVendor =
+  "vercel" | "convex" | "posthog" | "workos" | "upstash";
 export type PlatformCostStatus = "billed" | "estimated" | "metered";
 
 export type PlatformCostRow = {
@@ -15,6 +16,8 @@ export type PlatformCostRow = {
   sourcePeriodStart: string;
   sourcePeriodEnd: string;
   sourceChargeCount?: number;
+  costBasis?: "provider_daily_spend" | "billing_period_allocation";
+  billingReference?: string;
 };
 
 type VercelFocusCharge = {
