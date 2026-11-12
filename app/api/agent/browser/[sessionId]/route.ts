@@ -5,6 +5,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
+import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
   normalizeBrowserInput,
   normalizeBrowserInputBatch,
@@ -202,6 +203,37 @@ const unavailablePost = (
         : undefined;
     const requestId = request.headers.get("x-vercel-id");
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    // TAKE reads the port with one SDK command before its own guards. Reuse
+    // the closed SDK projections without labeling this failure a renewal.
+    let streamPortContext: Record<string, unknown> | undefined;
+    if (action === "take" && stage === "read_stream_port") {
+      try {
+        const cloud = checkpointCloudErrorContext(error);
+        const command = browserRelayRenewFailureContext(error);
+        streamPortContext = {
+          post_stream_port_diagnostic_version: 1,
+          post_stream_port_error_kind:
+            command.relay_renew_error_kind === "command_exit" ||
+            command.relay_renew_error_kind === "timeout"
+              ? command.relay_renew_error_kind
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : cloud.cloud_error_kind,
+          post_stream_port_http_status: cloud.cloud_http_status,
+          post_stream_port_command_exit_code:
+            command.relay_renew_command_exit_code,
+          ...(cloud.cloud_type_error_signal === undefined
+            ? {}
+            : {
+                post_stream_port_type_error_signal:
+                  cloud.cloud_type_error_signal,
+                post_stream_port_transport_code: cloud.cloud_transport_code,
+              }),
+        };
+      } catch {
+        // Keep the existing event and response if optional projection fails.
+      }
+    }
     phLogger.info("agent_browser_preview_post_unavailable", {
       diagnostic_version: 1,
       action:
@@ -234,6 +266,7 @@ const unavailablePost = (
           : "not_observed",
         ...failureDiagnostic?.inputContext,
       }),
+      ...streamPortContext,
       ...(action === "heartbeat" && stage === "renew_relay"
         ? browserRelayRenewFailureContext(error)
         : {}),
