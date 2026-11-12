@@ -365,8 +365,8 @@ export class UsageTracker {
   }
 
   /**
-   * Measurement only: true when any model record (including a discarded retry)
-   * or non-model cost was observed. Never use this to decide billing.
+   * Measurement only: true when a model call started, a model record (including
+   * a discarded retry) or non-model cost was observed. Never decide billing here.
    */
   get hasIncurredMeasurement(): boolean {
     return (

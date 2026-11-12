@@ -1028,8 +1028,11 @@ export const createChatHandler = () => {
                 if (!sandboxCostRecorded) {
                   // Read-only: settlement remains the only path that adds
                   // sandbox runtime to the tracker.
-                  const sandboxCost = (await getSandboxSessionUsage())
-                    .totalCostDollars;
+                  // Sandbox diagnostics may fail during teardown. Preserve
+                  // model/tool measurements even when this component is unknown.
+                  const sandboxCost = await getSandboxSessionUsage()
+                    .then((usage) => usage.totalCostDollars)
+                    .catch(() => 0);
                   usageMeasurement = {
                     ...usageMeasurement,
                     usage_observed_non_model_cost_dollars:
