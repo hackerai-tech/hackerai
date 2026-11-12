@@ -133,6 +133,50 @@ const environmentFor = (
   };
 };
 
+type RetestToolStage =
+  | "flag_check"
+  | "history_read"
+  | "start_save"
+  | "result_validation"
+  | "evidence_preparation"
+  | "environment_derivation"
+  | "complete_save"
+  | "success_telemetry";
+
+/**
+ * Reports an unexpected caught failure without the caught value, which can
+ * carry report content, sandbox paths or credentials even after redaction. A
+ * fresh static exception keeps Error Tracking grouping bounded. Best-effort:
+ * telemetry must never replace the tool's safe response.
+ */
+const reportToolFailure = (
+  context: ToolContext,
+  operation:
+    "get_finding_retests" | "start_finding_retest" | "complete_finding_retest",
+  stage: RetestToolStage,
+  caught: unknown,
+) => {
+  try {
+    const error = new Error("Finding retest tool failed");
+    error.name = "FindingRetestToolError";
+    phLogger.error(error.message, {
+      event: "finding_retest_tool_failed",
+      operation,
+      stage,
+      failure_kind: caught instanceof Error ? "error" : "non_error",
+      userId: context.userID,
+      chat_id: context.chatId,
+      ...(context.assistantMessageId && {
+        assistant_message_id: context.assistantMessageId,
+      }),
+      ...(context.triggerRunId && { trigger_run_id: context.triggerRunId }),
+      error,
+    });
+  } catch {
+    // best-effort
+  }
+};
+
 const toText = ({ output }: { output: unknown }) => ({
   type: "text" as const,
   value: JSON.stringify(output),
@@ -145,10 +189,12 @@ export const createGetFindingRetests = (context: ToolContext) =>
       { finding_id }: GetFindingRetestsInput,
       { abortSignal },
     ) => {
+      let stage: RetestToolStage = "flag_check";
       try {
         if (!(await isFindingRetestsEnabled(context.userID)))
           return unavailable;
         abortSignal?.throwIfAborted();
+        stage = "history_read";
         const history = await getAgentRetestHistory({
           userId: context.userID,
           chatId: context.chatId,
@@ -174,6 +220,7 @@ export const createGetFindingRetests = (context: ToolContext) =>
         };
       } catch (error) {
         if (abortSignal?.aborted) throw error;
+        reportToolFailure(context, "get_finding_retests", stage, error);
         return {
           success: false as const,
           error: "general" as const,
@@ -192,10 +239,12 @@ export const createStartFindingRetest = (context: ToolContext) =>
       { abortSignal },
     ) => {
       if (!context.assistantMessageId) return noProvenance;
+      let stage: RetestToolStage = "flag_check";
       try {
         if (!(await isFindingRetestsEnabled(context.userID)))
           return unavailable;
         abortSignal?.throwIfAborted();
+        stage = "start_save";
         const result = await startAgentRetest({
           userId: context.userID,
           chatId: context.chatId,
@@ -205,6 +254,7 @@ export const createStartFindingRetest = (context: ToolContext) =>
           expectedUpdatedAt: expected_updated_at,
         });
         if (!result.success) return result;
+        stage = "success_telemetry";
         if (!result.duplicate)
           phLogger.event("finding_retest_started", { userId: context.userID });
         return {
@@ -214,6 +264,7 @@ export const createStartFindingRetest = (context: ToolContext) =>
         };
       } catch (error) {
         if (abortSignal?.aborted) throw error;
+        reportToolFailure(context, "start_finding_retest", stage, error);
         return {
           success: false as const,
           error: "general" as const,
@@ -236,9 +287,11 @@ export const createCompleteFindingRetest = (
       { abortSignal },
     ) => {
       if (!context.assistantMessageId) return noProvenance;
+      let stage: RetestToolStage = "flag_check";
       try {
         if (!(await isFindingRetestsEnabled(context.userID)))
           return unavailable;
+        stage = "result_validation";
         const parsed = parseAgentRetestResult({
           ...input,
           evidence_refs: input.evidence_refs ?? [],
@@ -250,6 +303,7 @@ export const createCompleteFindingRetest = (
             message: parsed.message,
           };
         abortSignal?.throwIfAborted();
+        stage = "evidence_preparation";
         const prepared = await prepareFindingEvidence(
           { evidence_refs: parsed.result.evidence_refs },
           getCurrentSandbox,
@@ -262,6 +316,9 @@ export const createCompleteFindingRetest = (
             message: prepared.error,
           };
         abortSignal?.throwIfAborted();
+        stage = "environment_derivation";
+        const environment = environmentFor(getCurrentSandbox());
+        stage = "complete_save";
         const result = await completeAgentRetest({
           userId: context.userID,
           chatId: context.chatId,
@@ -273,9 +330,10 @@ export const createCompleteFindingRetest = (
           ...(prepared.evidenceVerification && {
             evidenceVerification: prepared.evidenceVerification,
           }),
-          environment: environmentFor(getCurrentSandbox()),
+          environment,
         });
         if (!result.success) return result;
+        stage = "success_telemetry";
         if (!result.duplicate)
           phLogger.event("finding_retest_completed", {
             userId: context.userID,
@@ -291,6 +349,7 @@ export const createCompleteFindingRetest = (
         };
       } catch (error) {
         if (abortSignal?.aborted) throw error;
+        reportToolFailure(context, "complete_finding_retest", stage, error);
         return {
           success: false as const,
           error: "general" as const,
