@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "e05948080bdccd2af47c922f70503005c17747b4",
+  "sourceCommit": "01119158f8f50027591cbae73f37cf0a2fea644d",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -470,10 +470,10 @@
       "filename": "idor",
       "name": "idor",
       "description": "IDOR/BOLA testing for object-level authorization failures and cross-account data access",
-      "contentBytes": 10257,
+      "contentBytes": 10795,
       "internal": false,
       "sourcePath": "vulnerabilities/idor.md",
-      "sourceSha256": "2b97ead5254ab3e3fec92c3edafcd3eb619e59264c9f743c844bdadfcc1d0659"
+      "sourceSha256": "fb2add80106c302c95b1e5710fe7ec26a3c6d60713ed7da487443389924e597f"
     },
     {
       "id": "vulnerabilities/information_disclosure",
@@ -536,10 +536,10 @@
       "filename": "nosql_injection",
       "name": "nosql-injection",
       "description": "NoSQL injection testing covering MongoDB operator injection, authentication bypass, blind extraction, GraphQL variable injection, and Redis/DynamoDB/Elasticsearch/Neo4j-specific attack surfaces",
-      "contentBytes": 14619,
+      "contentBytes": 15031,
       "internal": false,
       "sourcePath": "vulnerabilities/nosql_injection.md",
-      "sourceSha256": "1bddffe3071fb6a831d59a9c7d4909e13f0865582b01d65fdfe7d66b86159f45"
+      "sourceSha256": "200db1c3cb7059934d011161031515bf262a3c3ddf1e2558203510dad42c65af"
     },
     {
       "id": "vulnerabilities/open_redirect",
@@ -573,6 +573,17 @@
       "internal": false,
       "sourcePath": "vulnerabilities/prototype_pollution.md",
       "sourceSha256": "06e0b2da334bb6a5faf9126653968905e9cfe17b667f98c1fe859febbac3e4d8"
+    },
+    {
+      "id": "vulnerabilities/query_language_injection",
+      "category": "vulnerabilities",
+      "filename": "query_language_injection",
+      "name": "query-language-injection",
+      "description": "Query-language injection testing for scalar search, filter, selector, and authorization inputs compiled into JSONPath, JMESPath, OData, Lucene, LDAP, Cypher, XPath, or similar expressions. Requires a per-sink four-cell balanced true/false matrix before generic spraying or no-issue closure",
+      "contentBytes": 9747,
+      "internal": false,
+      "sourcePath": "vulnerabilities/query_language_injection.md",
+      "sourceSha256": "c651e3b5ba0fa603d5c420044563eead261bfc56aaaa267a3dcd2f447375630a"
     },
     {
       "id": "vulnerabilities/race_conditions",
