@@ -433,7 +433,7 @@ export const useChatHandlers = ({
           return result;
         },
         (error: unknown) => {
-          settleTelemetry("error");
+          settleTelemetry("error", error);
           throw error;
         },
       )
