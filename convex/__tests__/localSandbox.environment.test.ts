@@ -168,7 +168,8 @@ it("keeps one environment across fresh sessions and exposes it only after relay 
     await handler(resolveEnvironmentPreference)(ctx, {
       preference: first.connectionId,
     }),
-  ).toBe(`environment:${environmentId}`);
+  ).toBe(first.connectionId);
+  expect(rows.local_sandbox_connections[0].registration_origin).toBe("runner");
 });
 
 it("keeps old clients usable and never maps another account's session", async () => {
@@ -205,6 +206,66 @@ it("keeps old clients usable and never maps another account's session", async ()
       connectionId: modern.connectionId,
     }),
   ).rejects.toThrow();
+});
+
+it("does not trust a token runner that claims Desktop version and environment", async () => {
+  const { ctx, rows } = fixture();
+  const impostor = await handler(connect)(ctx, {
+    token: "test-token",
+    connectionName: "Desktop lookalike",
+    clientVersion: "desktop",
+    environmentId,
+  });
+  await handler(ready)(ctx, {
+    token: "test-token",
+    connectionId: impostor.connectionId,
+  });
+  const desktop = await handler(connectDesktop)(ctx, {
+    connectionName: "Real Desktop",
+    environmentId,
+  });
+  expect(
+    await handler(heartbeatDesktop)(ctx, {
+      connectionId: impostor.connectionId,
+    }),
+  ).toEqual({ success: false });
+  await handler(heartbeatDesktop)(ctx, { connectionId: desktop.connectionId });
+  expect(rows.local_sandbox_connections[0].status).toBe("connected");
+  const browser = await handler(listConnectionDetails)(ctx, {});
+  const backend = await handler(listConnectionsForBackend)(ctx, {
+    serviceKey: "test",
+    userId: "user-a",
+  });
+  for (const listing of [browser, backend]) {
+    expect(listing).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          connectionId: impostor.connectionId,
+          isDesktop: false,
+        }),
+        expect.objectContaining({
+          connectionId: desktop.connectionId,
+          isDesktop: true,
+        }),
+      ]),
+    );
+  }
+  expect(
+    await handler(resolveEnvironmentPreference)(ctx, {
+      preference: impostor.connectionId,
+    }),
+  ).toBe(impostor.connectionId);
+  expect(
+    await handler(resolveEnvironmentPreference)(ctx, {
+      preference: desktop.connectionId,
+    }),
+  ).toBe(`desktop-environment:${environmentId}`);
+
+  // Existing unmarked records also fail closed until a new registration.
+  delete rows.local_sandbox_connections[0].registration_origin;
+  expect((await handler(listConnectionDetails)(ctx, {}))[0].isDesktop).toBe(
+    false,
+  );
 });
 
 it("does not disconnect another desktop environment when a desktop restarts", async () => {

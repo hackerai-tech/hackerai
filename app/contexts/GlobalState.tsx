@@ -10,7 +10,6 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
-import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -63,8 +62,6 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
-import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
-import { environmentPreference } from "@/lib/sandbox/environment";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -171,7 +168,7 @@ interface GlobalStateType {
   // Active local sandbox connections, shared to avoid duplicate Convex subscriptions
   localConnections: LocalSandboxConnection[] | undefined;
 
-  // The sandbox preference to use for free agent mode (desktop or first remote connection ID)
+  // The embedded Desktop default for free Agent mode, when present.
   defaultLocalSandboxPreference: SandboxPreference | null;
 
   // Model selection
@@ -533,7 +530,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
-    hasExplicitSandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
     desktopBridgeActive,
@@ -565,12 +561,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         return desktopEnvironmentId
           ? `desktop-environment:${desktopEnvironmentId}`
           : "desktop";
-      const firstRemote = localConnections?.find((c) => !c.isDesktop);
-      if (firstRemote) return environmentPreference(firstRemote);
-      const firstDesktop = localConnections?.find((c) => c.isDesktop);
-      if (firstDesktop) return environmentPreference(firstDesktop);
       return null;
-    }, [desktopBridgeActive, desktopEnvironmentId, localConnections]);
+    }, [desktopBridgeActive, desktopEnvironmentId]);
 
   const entitlementRefreshRequested =
     typeof window !== "undefined" &&
@@ -793,22 +785,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [agentOnlyActive],
   );
-
-  const pathname = usePathname();
-  useAutoSelectNewRemoteConnection({
-    connections: localConnections,
-    enabled: Boolean(user),
-    isNewChat: pathname === "/",
-    hasExplicitSandboxPreference,
-    chatMode: accessibleChatMode,
-    setChatMode,
-    subscription: paidAgentSubscription,
-    freeSubscriptionResolved,
-    sandboxPreference,
-    setSandboxPreference,
-    selectedModel,
-    setSelectedModel: setSelectedModelState,
-  });
 
   useEffect(() => {
     if (!agentOnlyActive) return;

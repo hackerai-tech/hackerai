@@ -1584,6 +1584,10 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
+    // Set by the authenticated registration entry point, never by the client.
+    registration_origin: v.optional(
+      v.union(v.literal("runner"), v.literal("desktop")),
+    ),
     // Keep accepting legacy cloud rows until production data has been purged.
     // No current writer creates them, and connection queries exclude them.
     mode: v.union(

@@ -24,7 +24,7 @@ describe("subagent sandbox identity", () => {
     );
   });
 
-  it("survives relay replacement only for the same persistent environment", () => {
+  it("does not carry CLI work identity across a replacement relay session", () => {
     const local = (connectionId: string, environmentId: string) =>
       ({
         sandboxKind: "centrifugo",
@@ -40,10 +40,8 @@ describe("subagent sandbox identity", () => {
     const replacement = local("session-2", "machine-a");
     const other = local("session-3", "machine-b");
 
-    expect(getSubagentSandboxIdentity(first)).toBe(
-      "connection:environment:machine-a",
-    );
-    expect(getSubagentSandboxIdentity(replacement)).toBe(
+    expect(getSubagentSandboxIdentity(first)).toBe("connection:session-1");
+    expect(getSubagentSandboxIdentity(replacement)).not.toBe(
       getSubagentSandboxIdentity(first),
     );
     expect(getSubagentSandboxIdentity(other)).not.toBe(

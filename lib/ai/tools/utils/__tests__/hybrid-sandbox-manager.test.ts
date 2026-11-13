@@ -425,16 +425,19 @@ describe("stable environment acquisition", () => {
     },
   );
 
-  it("uses the replacement session while persisting the same environment", async () => {
+  it("uses an authenticated Desktop replacement while persisting its environment", async () => {
     const previousWs = process.env.CENTRIFUGO_WS_URL;
     const previousSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     process.env.CENTRIFUGO_WS_URL = "ws://localhost:8000/connection/websocket";
     process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    const confirmFiles = jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
     try {
       const manager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
-        "environment:machine-a",
+        "desktop-environment:machine-a",
         "service-key",
         null,
         "free",
@@ -442,12 +445,17 @@ describe("stable environment acquisition", () => {
       const session = makeConnection({
         environmentId: "machine-a",
         connectionId: "replacement",
+        isDesktop: true,
+        capabilities: { commands: true, files: true },
       });
       jest.spyOn(manager, "listConnections").mockResolvedValue([session]);
       const result = await manager.getSandbox();
       expect((result.sandbox as any).getConnectionId()).toBe("replacement");
-      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+      expect(manager.getEffectivePreference()).toBe(
+        "desktop-environment:machine-a",
+      );
     } finally {
+      confirmFiles.mockRestore();
       if (previousWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
       else process.env.CENTRIFUGO_WS_URL = previousWs;
       if (previousSecret === undefined)
@@ -602,7 +610,10 @@ describe("lookup failure abort evidence", () => {
 
 describe("isSameLocalMachine", () => {
   it("uses stable identity across host renames and refuses a different identity with matching metadata", () => {
-    const first = makeConnection({ environmentId: "machine-a" });
+    const first = makeConnection({
+      environmentId: "machine-a",
+      isDesktop: true,
+    });
     expect(
       isSameLocalMachine(first, {
         ...first,
@@ -629,7 +640,7 @@ describe("isSameLocalMachine", () => {
     },
   });
 
-  it("matches a restarted runner on the same host", () => {
+  it("refuses to infer a restarted runner from matching host metadata", () => {
     expect(
       isSameLocalMachine(
         kaliConnection,
@@ -639,7 +650,7 @@ describe("isSameLocalMachine", () => {
           lastSeen: Date.now(),
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it.each([
@@ -980,7 +991,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     ).toThrow("selected sandbox changed after approval");
   });
 
-  it("keeps approvals bound to a stable local environment across relay sessions", () => {
+  it("keeps Desktop approvals bound to an authenticated stable environment", () => {
     const local = (connectionId: string, environmentId: string) =>
       ({
         sandboxKind: "centrifugo" as const,
@@ -988,7 +999,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
         getConnectionInfo: () => ({
           connectionId,
           environmentId,
-          isDesktop: false,
+          isDesktop: true,
         }),
       }) as never;
     const first = local("session-a", "machine-a");
@@ -1396,12 +1407,16 @@ describe("HybridSandboxManager reset cleanup", () => {
     const originalWsUrl = process.env.CENTRIFUGO_WS_URL;
     const originalTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     process.env.CENTRIFUGO_WS_URL = "ws://centrifugo.test/connection/websocket";
+    const confirmFiles = jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
     process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const stale = makeConnection({
       connectionId: "conn-stale",
       name: "4p3x",
-      isDesktop: false,
+      isDesktop: true,
+      capabilities: { commands: true, files: true },
       osInfo: {
         platform: "linux",
         arch: "x86_64",
@@ -1455,7 +1470,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       expect((recovered.sandbox as any).getConnectionId()).toBe(
         "conn-replacement",
       );
-      expect(manager.getEffectivePreference()).toBe("conn-replacement");
+      expect(manager.getEffectivePreference()).toBe("desktop");
       expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
         serviceKey: "service-key",
         connectionId: "conn-stale",
@@ -1463,6 +1478,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       });
       expect(setSandbox).toHaveBeenLastCalledWith(recovered.sandbox);
     } finally {
+      confirmFiles.mockRestore();
       warnSpy.mockRestore();
       if (originalWsUrl === undefined) delete process.env.CENTRIFUGO_WS_URL;
       else process.env.CENTRIFUGO_WS_URL = originalWsUrl;
@@ -1792,12 +1808,15 @@ describe("selected-computer failure diagnostics", () => {
   });
 
   it("distinguishes a quarantined selected connection from a missing registry match", async () => {
-    const selected = makeConnection({ environmentId: "private-selected" });
+    const selected = makeConnection({
+      environmentId: "private-selected",
+      isDesktop: true,
+    });
     mockConvexQuery.mockResolvedValue([selected]);
     const manager = new HybridSandboxManager(
       "user",
       jest.fn(),
-      "environment:private-selected",
+      "desktop-environment:private-selected",
       "key",
     );
     await manager.quarantineLocalConnection(
@@ -1841,13 +1860,14 @@ describe("selected-computer failure diagnostics", () => {
         .mockImplementation(() => {});
       const selected = makeConnection({
         environmentId: "private-selected",
+        isDesktop: true,
         lastSeen: 1,
       });
       mockConvexQuery.mockResolvedValue([selected]);
       const manager = new HybridSandboxManager(
         "user",
         jest.fn(),
-        "environment:private-selected",
+        "desktop-environment:private-selected",
         "key",
       );
       const error = await manager
@@ -1878,13 +1898,29 @@ describe("selected-computer failure diagnostics", () => {
 });
 
 describe("Agent connection interruption", () => {
+  const priorWs = process.env.CENTRIFUGO_WS_URL;
+  const priorSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+  beforeEach(() => {
+    process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (priorWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+    else process.env.CENTRIFUGO_WS_URL = priorWs;
+    if (priorSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+    else process.env.CENTRIFUGO_TOKEN_SECRET = priorSecret;
+  });
   it.each(["prompt", "acquisition"])(
     "keeps an initially offline computer on reconnect-required recovery during %s",
     async (phase) => {
       const manager = new HybridSandboxManager(
         "u",
         jest.fn(),
-        "environment:machine",
+        "desktop-environment:machine",
         "key",
         null,
         "pro",
@@ -1906,24 +1942,32 @@ describe("Agent connection interruption", () => {
     const manager = new HybridSandboxManager(
       "u",
       jest.fn(),
-      "environment:machine",
+      "desktop-environment:machine",
       "key",
       null,
       "pro",
     );
     const onLost = jest.fn();
     const dispose = manager.stopOnLocalDisconnect(onLost);
-    const list = jest
-      .spyOn(manager, "listConnections")
-      .mockResolvedValue([
-        makeConnection({ connectionId: "first", environmentId: "machine" }),
-      ]);
+    const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "first",
+        environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, files: true },
+      }),
+    ]);
     await manager.getSandboxContextForPrompt();
     expect(mockWatchLocalRunConnection).toHaveBeenLastCalledWith(
       expect.objectContaining({ connectionId: "first" }),
     );
     list.mockResolvedValue([
-      makeConnection({ connectionId: "replacement", environmentId: "machine" }),
+      makeConnection({
+        connectionId: "replacement",
+        environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, files: true },
+      }),
     ]);
     await expect(manager.getSandbox()).rejects.toThrow(
       "local connection was lost",
@@ -1940,7 +1984,7 @@ describe("Agent connection interruption", () => {
     const resumedManager = new HybridSandboxManager(
       "u",
       jest.fn(),
-      "environment:machine",
+      "desktop-environment:machine",
       "key",
       null,
       "pro",
@@ -1949,6 +1993,8 @@ describe("Agent connection interruption", () => {
       makeConnection({
         connectionId: "replacement",
         environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, files: true },
       }),
     ]);
     const stop = resumedManager.stopOnLocalDisconnect(jest.fn());
@@ -1967,18 +2013,21 @@ describe("Agent connection interruption", () => {
       const manager = new HybridSandboxManager(
         "u",
         jest.fn(),
-        "environment:machine",
+        "desktop-environment:machine",
         "key",
         null,
         "pro",
       );
       const onLost = jest.fn();
       const dispose = manager.stopOnLocalDisconnect(onLost);
-      const list = jest
-        .spyOn(manager, "listConnections")
-        .mockResolvedValue([
-          makeConnection({ connectionId: FIRST, environmentId: "machine" }),
-        ]);
+      const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          connectionId: FIRST,
+          environmentId: "machine",
+          isDesktop: true,
+          capabilities: { commands: true, files: true },
+        }),
+      ]);
       await manager.getSandboxContextForPrompt();
       return { manager, onLost, dispose, list };
     }
@@ -2020,6 +2069,8 @@ describe("Agent connection interruption", () => {
             makeConnection({
               connectionId: SUCCESSOR,
               environmentId: "machine",
+              isDesktop: true,
+              capabilities: { commands: true, files: true },
             }),
           ]);
           return manager.getSandbox();
@@ -2062,7 +2113,12 @@ describe("Agent connection interruption", () => {
       watcherLost(new LocalConnectionLostError("selected_host_left"));
       expect(onLost.mock.calls).toEqual([[observed]]);
       list.mockResolvedValue([
-        makeConnection({ connectionId: SUCCESSOR, environmentId: "machine" }),
+        makeConnection({
+          connectionId: SUCCESSOR,
+          environmentId: "machine",
+          isDesktop: true,
+          capabilities: { commands: true, files: true },
+        }),
       ]);
       await expect(manager.getSandboxContextForPrompt()).rejects.toBe(observed);
       await expectFirstStopReused(manager, observed);

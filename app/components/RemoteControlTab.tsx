@@ -19,18 +19,7 @@ import { toast } from "sonner";
 import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
-
-interface LocalConnection {
-  connectionId: string;
-  name: string;
-  osInfo?: {
-    platform: string;
-    arch: string;
-    release: string;
-    hostname: string;
-  };
-  isDesktop: boolean;
-}
+import { environmentPreference } from "@/lib/sandbox/environment";
 
 /** Renders connection status and setup controls for local Remote Control. */
 const RemoteControlTab = () => {
@@ -43,7 +32,17 @@ const RemoteControlTab = () => {
     null,
   );
 
-  const { localConnections: connections } = useGlobalState();
+  const {
+    localConnections: connections,
+    sandboxPreference,
+    setSandboxPreference,
+    chatMode,
+    setChatMode,
+    subscription,
+    chatModeAccessResolved,
+    selectedModel,
+    setSelectedModel,
+  } = useGlobalState();
 
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
@@ -159,6 +158,12 @@ const RemoteControlTab = () => {
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Connections
         </h4>
+        {activeConnections.some((connection) => !connection.isDesktop) && (
+          <p className="text-xs text-muted-foreground">
+            Match the connection ID with the one printed in your terminal before
+            selecting a runner.
+          </p>
+        )}
         {activeConnections.length > 0 ? (
           <div className="space-y-2">
             {activeConnections.map((conn) => (
@@ -180,7 +185,35 @@ const RemoteControlTab = () => {
                       ? "Desktop app connected"
                       : "Remote Control connected"}
                   </div>
+                  {!conn.isDesktop && (
+                    <div className="text-xs text-muted-foreground font-mono">
+                      {conn.connectionId.slice(0, 8)}
+                    </div>
+                  )}
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={sandboxPreference === environmentPreference(conn)}
+                  onClick={() => {
+                    setSandboxPreference(environmentPreference(conn), {
+                      remember: true,
+                    });
+                    if (
+                      chatModeAccessResolved &&
+                      subscription === "free" &&
+                      selectedModel !== "auto"
+                    ) {
+                      setSelectedModel("auto");
+                    }
+                    if (chatMode !== "agent") setChatMode("agent");
+                    toast.success("Computer selected for Agent mode.");
+                  }}
+                >
+                  {sandboxPreference === environmentPreference(conn)
+                    ? "Selected"
+                    : "Select"}
+                </Button>
               </div>
             ))}
             {!showConnectSetup ? (
