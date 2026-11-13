@@ -263,6 +263,39 @@ describe("POST /api/fraud/webhook", () => {
     );
   });
 
+  it("does not undo a support-resolved source when a stale claim is retried", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing")
+        return { state: "acquired" };
+      if (operation === "userSuspensions.upsertActive") return null;
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.claimWebhookProcessing",
+      expect.objectContaining({
+        eventId: "evt_dispute",
+        sourceId: "dp_fraudulent",
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "userSuspensions.upsertActive",
+      expect.objectContaining({
+        sourceId: "dp_fraudulent",
+        preserveResolved: true,
+      }),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
+    expect(mockUpdateCustomer).not.toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.markWebhookHandled",
+      expect.any(Object),
+    );
+  });
+
   it.each<CustomerBoundary>([
     "subscriptions.list",
     "paymentMethods.list",

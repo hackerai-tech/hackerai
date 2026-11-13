@@ -14,6 +14,9 @@ import {
   isTerminalStripeResourceError,
 } from "@/lib/billing/stripe-terminal-errors";
 
+// Keep execution below the ten-minute stale-claim takeover window.
+export const maxDuration = 300;
+
 const WEBHOOK_LOG_PREFIX = "[Fraud Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
   webhook: "fraud",
@@ -234,22 +237,29 @@ async function suspendCustomerUsers({
   sourceReason?: string;
   chargeId?: string | null;
   sourceCreatedUnix: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  let supportResolved = false;
 
   for (const userId of userIds) {
-    await getConvexClient().mutation(api.userSuspensions.upsertActive, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      category,
-      sourceId,
-      sourceReason,
-      stripeCustomerId: customerId,
-      stripeChargeId: chargeId ?? undefined,
-      workosOrganizationId: orgId ?? undefined,
-      sourceCreatedAt: sourceCreatedUnix * 1000,
-    });
+    const suspensionId = await getConvexClient().mutation(
+      api.userSuspensions.upsertActive,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        category,
+        sourceId,
+        preserveResolved: true,
+        sourceReason,
+        stripeCustomerId: customerId,
+        stripeChargeId: chargeId ?? undefined,
+        workosOrganizationId: orgId ?? undefined,
+        sourceCreatedAt: sourceCreatedUnix * 1000,
+      },
+    );
+    if (suspensionId === null) supportResolved = true;
   }
+  return !supportResolved;
 }
 
 /**
@@ -279,7 +289,7 @@ async function blockFraudulentUser(
 ): Promise<void> {
   // Suspend first so a customer deleted during Stripe cleanup cannot prevent
   // the local safety control from being applied. The upsert is replay-safe.
-  await suspendCustomerUsers({
+  const shouldCleanUp = await suspendCustomerUsers({
     customerId,
     category: suspension.category,
     sourceId: suspension.sourceId,
@@ -287,6 +297,12 @@ async function blockFraudulentUser(
     chargeId,
     sourceCreatedUnix,
   });
+  if (!shouldCleanUp) {
+    console.log(
+      `[Fraud Webhook] Skipped cleanup for support-resolved source ${suspension.sourceId}`,
+    );
+    return;
+  }
   await expireOpenCheckoutSessions(customerId);
   await cancelAllSubscriptions(customerId);
   await detachAllPaymentMethods(customerId);
@@ -407,7 +423,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // AND detach payment methods. Don't mark the Stripe customer as a fraud
     // actor, but keep the Convex billing hold authoritative: every app billing
     // path rejects new transactions until support resolves the suspension.
-    await suspendCustomerUsers({
+    const shouldCleanUp = await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
       sourceId: dispute.id,
@@ -415,6 +431,12 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
+    if (!shouldCleanUp) {
+      console.log(
+        `[Fraud Webhook] Skipped cleanup for support-resolved source ${dispute.id}`,
+      );
+      return;
+    }
     await expireOpenCheckoutSessions(customerId);
     await cancelAllSubscriptions(customerId);
     await detachAllPaymentMethods(customerId);
@@ -484,6 +506,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const sourceId =
+    event.type === "radar.early_fraud_warning.created" ||
+    event.type === "charge.dispute.created"
+      ? event.data.object.id
+      : undefined;
+  if (sourceId !== undefined && typeof sourceId !== "string") {
+    return NextResponse.json(
+      { error: "Invalid fraud source" },
+      { status: 400 },
+    );
+  }
+
   // Atomic claim — eliminates the TOCTOU window where two concurrent
   // deliveries of the same event.id could both pass a read-then-write
   // pre-check and both run side effects. claimWebhookProcessing inserts
@@ -498,6 +532,7 @@ export async function POST(req: NextRequest) {
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         eventId: event.id,
+        sourceId,
       },
     );
     claimState = result.state;

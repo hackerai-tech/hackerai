@@ -16,6 +16,7 @@ jest.mock("convex/values", () => ({
   v: {
     string: jest.fn(() => "string"),
     number: jest.fn(() => "number"),
+    boolean: jest.fn(() => "boolean"),
     optional: jest.fn(() => "optional"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
@@ -58,15 +59,23 @@ type TokenRow = {
   revoked_at?: number;
 };
 
+type WebhookRow = {
+  _id: string;
+  source_id: string;
+  status: "pending" | "handled" | "completed";
+};
+
 function makeMockCtx(
   initialRows: SuspensionRow[] = [],
   initialTokens: TokenRow[] = [],
+  initialWebhooks: WebhookRow[] = [],
 ) {
   const rows = [...initialRows];
   const tokens = [...initialTokens];
   const tables: Record<string, any[]> = {
     user_suspensions: rows,
     local_sandbox_tokens: tokens,
+    processed_webhooks: initialWebhooks,
   };
 
   const matchesFilters = (row: any, filters: Record<string, unknown>) =>
@@ -267,6 +276,56 @@ describe("userSuspensions", () => {
       resolved_at: undefined,
       resolved_reason: undefined,
     });
+  });
+
+  it("blocks support resolution during pending fraud cleanup and preserves it after completion", async () => {
+    const { resolveBySource, upsertActive } =
+      await import("../userSuspensions");
+    const webhook: WebhookRow = {
+      _id: "webhook-1",
+      source_id: "dp_123",
+      status: "pending",
+    };
+    const { ctx, rows } = makeMockCtx(
+      [
+        {
+          _id: "id-1",
+          user_id: "user_123",
+          status: "active",
+          category: "dispute_fraudulent",
+          source: "stripe",
+          source_id: "dp_123",
+          stripe_customer_id: "cus_123",
+          created_at: 5_000,
+          updated_at: 5_000,
+        },
+      ],
+      [],
+      [webhook],
+    );
+    const resolveArgs = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      sourceId: "dp_123",
+    };
+
+    await expect(
+      (resolveBySource as any).handler(ctx, resolveArgs),
+    ).rejects.toThrow("Fraud webhook is still processing");
+    expect(rows[0].status).toBe("active");
+
+    webhook.status = "handled";
+    expect(await (resolveBySource as any).handler(ctx, resolveArgs)).toEqual({
+      resolved: true,
+    });
+    expect(
+      await (upsertActive as any).handler(ctx, {
+        ...baseArgs,
+        preserveResolved: true,
+      }),
+    ).toBeNull();
+    expect(rows[0].status).toBe("resolved");
+    expect(rows[0].resolved_at).toBe(10_000);
   });
 
   it("returns the newest active suspension for a user", async () => {

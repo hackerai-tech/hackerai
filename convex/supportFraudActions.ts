@@ -131,11 +131,15 @@ export const suspendSupportConfirmedFraud = internalAction({
 
     const suspensionId: Id<"user_suspensions"> =
       await applySupportConfirmedFraudSuspension(plan, {
-        upsertActive: async (suspension): Promise<Id<"user_suspensions">> =>
-          await ctx.runMutation(api.userSuspensions.upsertActive, {
+        upsertActive: async (suspension): Promise<Id<"user_suspensions">> => {
+          const id = await ctx.runMutation(api.userSuspensions.upsertActive, {
             serviceKey,
             ...suspension,
-          }),
+          });
+          if (id === null)
+            throw new Error("Unexpected resolved support suspension");
+          return id;
+        },
       });
 
     return { ...plan, applied: true, suspensionId };

@@ -311,6 +311,7 @@ export const claimWebhookProcessing = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    sourceId: v.optional(v.string()),
   },
   returns: v.object({
     state: v.union(
@@ -334,6 +335,7 @@ export const claimWebhookProcessing = mutation({
     if (!existing) {
       await ctx.db.insert("processed_webhooks", {
         event_id: args.eventId,
+        source_id: args.sourceId,
         processed_at: now,
         status: "pending",
         claimed_at: now,
@@ -344,6 +346,17 @@ export const claimWebhookProcessing = mutation({
     // Legacy rows without status were inserted under the older "mark on entry"
     // semantics for events whose lifecycle has already concluded.
     const status = existing.status ?? "completed";
+
+    if (
+      args.sourceId &&
+      existing.source_id &&
+      existing.source_id !== args.sourceId
+    ) {
+      throw new Error("Webhook source changed for existing event");
+    }
+    if (args.sourceId && !existing.source_id && status !== "completed") {
+      await ctx.db.patch(existing._id, { source_id: args.sourceId });
+    }
 
     if (status === "completed") {
       return { state: "already_processed" as const };

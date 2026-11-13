@@ -56,6 +56,7 @@ const EVENT_ID = "evt_test_123";
 type Row = {
   _id: string;
   event_id: string;
+  source_id?: string;
   processed_at: number;
   status?: "pending" | "handled" | "completed";
   claimed_at?: number;
@@ -113,6 +114,7 @@ async function callClaim(ctx: any) {
   return (claimWebhookProcessing as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
     eventId: EVENT_ID,
+    sourceId: "dp_123",
   });
 }
 
@@ -151,6 +153,7 @@ describe("claimWebhookProcessing", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       event_id: EVENT_ID,
+      source_id: "dp_123",
       status: "pending",
       claimed_at: 1_000_000,
       processed_at: 1_000_000,
@@ -210,7 +213,9 @@ describe("claimWebhookProcessing", () => {
 
     expect(result).toEqual({ state: "claim_held" });
     expect(rows[0].claimed_at).toBe(recentClaimAt);
-    expect(ctx.db.patch).not.toHaveBeenCalled();
+    expect(ctx.db.patch).toHaveBeenCalledWith("id-1", {
+      source_id: "dp_123",
+    });
   });
 
   it("takes over a stale pending claim and re-acquires it", async () => {
