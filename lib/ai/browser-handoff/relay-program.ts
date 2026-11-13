@@ -247,7 +247,17 @@ process.stdin.on('end', async () => {
 // The failing STOP program's only output, read solely from that invocation's
 // result: first failure, then aggregate counts capped at 16, never per-relay
 // results, paths or messages. Stage and code are 1-based indexes into these
-// lists; a drain deadline uses 0 0.
+// lists; a drain deadline uses 0 0. Version 2 appends the alive branch (and
+// code, for `_error` branches) last observed by the first relay to reach its
+// drain deadline, or 0 0 without a deadline.
+export const RELAY_STOP_ALIVE_BRANCHES = [
+  "pid_read_error",
+  "pid_invalid",
+  "signal_error",
+  "linux_matching_cmdline",
+  "linux_cmdline_error",
+  "nonlinux_present",
+] as const;
 export const RELAY_STOP_RECEIPT_STAGES = [
   "scan_root",
   "write_revoked",
@@ -291,7 +301,8 @@ export const RELAY_STOP_PROGRAM = String.raw`
 const fs = require('node:fs');
 const root = process.argv[1], only = process.argv[2];
 const errnoCodes = new Map(${relayStopErrnoIndexes});
-let first, deadlines = 0, failures = 0;
+const errnoCode = code => errnoCodes.get(code) || ${RELAY_STOP_RECEIPT_CODES.length};
+let first, deadlines = 0, failures = 0, deadlineAlive = '0 0';
 function failed(stage, error) {
   let code = ${RELAY_STOP_RECEIPT_CODES.length};
   try { code = errnoCodes.get(error.code) || code; } catch {}
@@ -301,18 +312,42 @@ function failed(stage, error) {
 process.on('exit', exitCode => {
   if (exitCode === 0 || first === undefined) return;
   const cap = count => Math.min(count, 16);
-  try { fs.writeSync(1, 'relay-stop-receipt/1 ' + first + ' ' + cap(deadlines) + ' ' + cap(failures) + '\n'); } catch {}
+  try { fs.writeSync(1, 'relay-stop-receipt/2 ' + first + ' ' + cap(deadlines) + ' ' + cap(failures) + ' ' + deadlineAlive + '\n'); } catch {}
 });
-function alive(directory) {
+// Records which check kept the relay alive, from values each check already read.
+function alive(directory, seen) {
   let pid;
-  try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch { return true; }
-  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
-  try { process.kill(pid, 0); } catch (error) { return error.code !== 'ESRCH'; }
+  try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch (error) {
+    // This failure never read its code before; never invoke a getter for it.
+    let code = ${RELAY_STOP_RECEIPT_CODES.length};
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+      if (descriptor && 'value' in descriptor) code = errnoCode(descriptor.value);
+    } catch {}
+    seen.alive = '1 ' + code;
+    return true;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) { seen.alive = '2 0'; return true; }
+  try { process.kill(pid, 0); } catch (error) {
+    const code = error.code;
+    if (code === 'ESRCH') return false;
+    seen.alive = '3 ' + errnoCode(code);
+    return true;
+  }
   if (process.platform === 'linux') {
     // A reused PID belongs to a different process, not this relay.
-    try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(directory); }
-    catch (error) { return error.code !== 'ENOENT'; }
+    try {
+      if (!fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(directory)) return false;
+      seen.alive = '4 0';
+      return true;
+    } catch (error) {
+      const code = error.code;
+      if (code === 'ENOENT') return false;
+      seen.alive = '5 ' + errnoCode(code);
+      return true;
+    }
   }
+  seen.alive = '6 0';
   return true;
 }
 (async () => {
@@ -322,13 +357,14 @@ function alive(directory) {
   } catch (error) { failed(1, error); throw error; }
   await Promise.all(dirs.map(async directory => {
     let stage = 2;
+    const seen = {};
     try {
       if (!fs.existsSync(directory)) return;
       fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
       stage = 3;
       for (let i = 0; i < 100; i++) {
         if (fs.existsSync(directory + '/closed')) return;
-        if (!alive(directory)) {
+        if (!alive(directory, seen)) {
           stage = 4;
           fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
           return;
@@ -336,7 +372,7 @@ function alive(directory) {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
     } catch (error) { failed(stage, error); throw error; }
-    deadlines++;
+    if (deadlines++ === 0) deadlineAlive = seen.alive;
     if (first === undefined) first = '0 0 0';
     process.exitCode = 1;
   }));

@@ -1017,9 +1017,13 @@ it.each([
   },
 );
 
-it.each(["take", "resume", "release"])(
-  "records bounded relay stop context on %s without changing its recovery response",
-  async (action) => {
+it.each(
+  ["take", "resume", "release"].flatMap((action) =>
+    [1, 2].map((version) => [action, version] as const),
+  ),
+)(
+  "records bounded relay stop context on %s with receipt v%s without changing its recovery response",
+  async (action, version) => {
     mockFailure = "";
     const original = new Error("PRIVATE relay await failure");
     mockStopRelay.mockRejectedValueOnce(original);
@@ -1028,13 +1032,17 @@ it.each(["take", "resume", "release"])(
       relay_stop_error_kind: "command_exit",
       relay_stop_http_status: "none",
       relay_stop_command_exit_code: 1,
-      relay_stop_receipt_version: 1,
+      relay_stop_receipt_version: version,
       relay_stop_receipt_status: "recorded",
       relay_stop_first_failure: "filesystem",
       relay_stop_first_filesystem_stage: "write_revoked",
       relay_stop_first_filesystem_code: "permission",
-      relay_stop_drain_deadline_count: 0,
+      relay_stop_drain_deadline_count: version === 2 ? 1 : 0,
       relay_stop_filesystem_failure_count: 1,
+      ...(version === 2 && {
+        relay_stop_first_deadline_alive_branch: "pid_read_error",
+        relay_stop_first_deadline_alive_code: "missing",
+      }),
     };
     mockStopContext.mockReturnValueOnce(receipt);
     const response = await diagnosticPost({

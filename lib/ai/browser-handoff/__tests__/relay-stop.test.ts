@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { compileFunction } from "node:vm";
 import {
   CommandExitError,
   SandboxError,
@@ -19,6 +20,7 @@ import {
   renewBrowserRelay,
   stopBrowserRelays,
 } from "../server";
+import { RELAY_STOP_PROGRAM } from "../relay-program";
 
 jest.mock("server-only", () => ({}));
 // SDK-only transitive dependency without a root link; keep the real error types.
@@ -73,12 +75,19 @@ const invalidReceipt = {
   relay_stop_receipt_status: "invalid",
 };
 const deadlineReceipt = "relay-stop-receipt/1 0 0 0 1 0\n";
+const v2DeadlineReceipt = "relay-stop-receipt/2 0 0 0 1 0 3 2\n";
 const recordedDeadline = {
   relay_stop_receipt_version: 1,
   relay_stop_receipt_status: "recorded",
   relay_stop_first_failure: "drain_deadline",
   relay_stop_drain_deadline_count: 1,
   relay_stop_filesystem_failure_count: 0,
+};
+const commandExit = {
+  relay_stop_diagnostic_version: 1,
+  relay_stop_error_kind: "command_exit",
+  relay_stop_http_status: "none",
+  relay_stop_command_exit_code: 1,
 };
 
 it.each([
@@ -230,11 +239,141 @@ describe("stop receipt projection", () => {
         relay_stop_filesystem_failure_count: 1,
       },
     ],
+    [
+      "a version 2 drain deadline",
+      1,
+      v2DeadlineReceipt,
+      {
+        ...recordedDeadline,
+        relay_stop_receipt_version: 2,
+        relay_stop_first_deadline_alive_branch: "signal_error",
+        relay_stop_first_deadline_alive_code: "permission",
+      },
+    ],
+    [
+      "the longest version 2 receipt",
+      1,
+      "relay-stop-receipt/2 1 4 8 16 16 5 8\n",
+      {
+        relay_stop_receipt_version: 2,
+        relay_stop_receipt_status: "recorded",
+        relay_stop_first_failure: "filesystem",
+        relay_stop_first_filesystem_stage: "write_closed",
+        relay_stop_first_filesystem_code: "other",
+        relay_stop_drain_deadline_count: 16,
+        relay_stop_filesystem_failure_count: 16,
+        relay_stop_first_deadline_alive_branch: "linux_cmdline_error",
+        relay_stop_first_deadline_alive_code: "other",
+      },
+    ],
+    [
+      "a version 2 non-error alive branch",
+      1,
+      "relay-stop-receipt/2 0 0 0 2 0 4 0",
+      {
+        ...recordedDeadline,
+        relay_stop_receipt_version: 2,
+        relay_stop_drain_deadline_count: 2,
+        relay_stop_first_deadline_alive_branch: "linux_matching_cmdline",
+      },
+    ],
+    [
+      "a version 2 receipt without a deadline",
+      1,
+      "relay-stop-receipt/2 1 1 1 0 1 0 0",
+      {
+        relay_stop_receipt_version: 2,
+        relay_stop_receipt_status: "recorded",
+        relay_stop_first_failure: "filesystem",
+        relay_stop_first_filesystem_stage: "scan_root",
+        relay_stop_first_filesystem_code: "missing",
+        relay_stop_drain_deadline_count: 0,
+        relay_stop_filesystem_failure_count: 1,
+      },
+    ],
+    [
+      "a version 1 receipt with an extra newline",
+      1,
+      deadlineReceipt + "\n",
+      invalidReceipt,
+    ],
+    [
+      "a version 2 receipt with an extra newline",
+      1,
+      v2DeadlineReceipt + "\n",
+      invalidReceipt,
+    ],
     ["a receipt with another exit", 3, deadlineReceipt, invalidReceipt],
     [
-      "a newer receipt version",
+      "a version 2 receipt with another exit",
+      3,
+      v2DeadlineReceipt,
+      invalidReceipt,
+    ],
+    [
+      "a version 2 receipt without alive fields",
       1,
       "relay-stop-receipt/2 0 0 0 1 0",
+      invalidReceipt,
+    ],
+    [
+      "a version 1 receipt with alive fields",
+      1,
+      "relay-stop-receipt/1 0 0 0 1 0 1 1",
+      invalidReceipt,
+    ],
+    [
+      "an unknown receipt version",
+      1,
+      "relay-stop-receipt/3 0 0 0 1 0 1 1",
+      invalidReceipt,
+    ],
+    [
+      "a deadline without an alive branch",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 0 0",
+      invalidReceipt,
+    ],
+    [
+      "an alive branch without a deadline",
+      1,
+      "relay-stop-receipt/2 1 2 3 0 1 6 0",
+      invalidReceipt,
+    ],
+    [
+      "an error branch without a code",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 1 0",
+      invalidReceipt,
+    ],
+    [
+      "a code on a non-error branch",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 6 1",
+      invalidReceipt,
+    ],
+    [
+      "an unknown alive branch",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 7 0",
+      invalidReceipt,
+    ],
+    [
+      "an unknown alive code",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 1 9",
+      invalidReceipt,
+    ],
+    [
+      "an extra alive field",
+      1,
+      "relay-stop-receipt/2 0 0 0 1 0 1 1 1",
+      invalidReceipt,
+    ],
+    [
+      "a version 2 deadline with a stage",
+      1,
+      "relay-stop-receipt/2 0 2 3 1 0 1 1",
       invalidReceipt,
     ],
     ["a truncated receipt", 1, "relay-stop-receipt/1 1 2", invalidReceipt],
@@ -509,12 +648,6 @@ describe("with the actual relay stop program", () => {
       return result;
     });
 
-  const commandExit = {
-    relay_stop_diagnostic_version: 1,
-    relay_stop_error_kind: "command_exit",
-    relay_stop_http_status: "none",
-    relay_stop_command_exit_code: 1,
-  };
   // A missing pid file stays alive under the existing permissive rule.
   const neverClosedRelay = async (name: string) => {
     const relay = join(root, name);
@@ -565,7 +698,7 @@ describe("with the actual relay stop program", () => {
       const context = browserRelayStopFailureContext(caught);
       expect(context).toEqual({
         ...commandExit,
-        relay_stop_receipt_version: 1,
+        relay_stop_receipt_version: 2,
         relay_stop_receipt_status: "recorded",
         relay_stop_first_failure: "filesystem",
         relay_stop_first_filesystem_stage: "write_revoked",
@@ -589,7 +722,7 @@ describe("with the actual relay stop program", () => {
     const context = browserRelayStopFailureContext(caught);
     expect(context).toEqual({
       ...commandExit,
-      relay_stop_receipt_version: 1,
+      relay_stop_receipt_version: 2,
       relay_stop_receipt_status: "recorded",
       relay_stop_first_failure: "filesystem",
       relay_stop_first_filesystem_stage: "scan_root",
@@ -617,7 +750,13 @@ describe("with the actual relay stop program", () => {
     expect(await readFile(join(selected, "revoked"), "utf8")).toBe("1");
     await expect(readFile(join(selected, "closed"))).rejects.toThrow();
     const context = browserRelayStopFailureContext(caught);
-    expect(context).toEqual({ ...commandExit, ...recordedDeadline });
+    expect(context).toEqual({
+      ...commandExit,
+      ...recordedDeadline,
+      relay_stop_receipt_version: 2,
+      relay_stop_first_deadline_alive_branch: "pid_read_error",
+      relay_stop_first_deadline_alive_code: "missing",
+    });
     expect(JSON.stringify(context)).not.toContain(root);
   }, 15_000);
 
@@ -636,15 +775,407 @@ describe("with the actual relay stop program", () => {
     // Other relays still receive their permanent tombstones.
     expect(await readFile(join(closed, "revoked"), "utf8")).toBe("1");
     expect(await readFile(join(waiting, "revoked"), "utf8")).toBe("1");
+    // The deadline's alive branch is kept beside an earlier filesystem failure.
     expect(browserRelayStopFailureContext(caught)).toEqual({
       ...commandExit,
-      relay_stop_receipt_version: 1,
+      relay_stop_receipt_version: 2,
       relay_stop_receipt_status: "recorded",
       relay_stop_first_failure: "filesystem",
       relay_stop_first_filesystem_stage: "write_revoked",
       relay_stop_first_filesystem_code: "not_directory",
       relay_stop_drain_deadline_count: 1,
       relay_stop_filesystem_failure_count: 1,
+      relay_stop_first_deadline_alive_branch: "pid_read_error",
+      relay_stop_first_deadline_alive_code: "missing",
     });
   }, 15_000);
+});
+
+describe("relay stop program at its syscall boundary", () => {
+  const ROOT = "/PRIVATE_ROOT";
+  const A = `relay-${"a".repeat(24)}`;
+  const B = `relay-${"b".repeat(24)}`;
+  const C = `relay-${"c".repeat(24)}`;
+  const errno = (code: string) =>
+    Object.assign(new Error("PRIVATE_ERRNO"), { code });
+  const missingPid = () => {
+    throw errno("ENOENT");
+  };
+  type Boundary = {
+    platform?: string;
+    relays: Record<string, { pid?: () => string; revoked?: () => void }>;
+    kill?: (pid: number) => void;
+    cmdline?: (path: string) => string;
+  };
+
+  // Runs the actual program source with only its fs, signal and timer
+  // boundaries replaced, and tallies every boundary operation it performs.
+  async function runStopProgram({
+    platform = "darwin",
+    relays,
+    kill = () => {},
+    cmdline,
+  }: Boundary) {
+    const ops: string[] = [];
+    let stdout = "";
+    let onExit: ((code: number) => void) | undefined;
+    const locate = (path: string) => {
+      const [name, leaf = "dir"] = path.slice(ROOT.length + 1).split("/");
+      return { relay: relays[name], leaf };
+    };
+    const fs = {
+      readdirSync: () => {
+        ops.push("readdir");
+        return Object.keys(relays);
+      },
+      existsSync: (path: string) => {
+        const { leaf } = locate(path);
+        ops.push(`exists ${leaf}`);
+        return leaf === "dir";
+      },
+      writeFileSync: (path: string) => {
+        const { relay, leaf } = locate(path);
+        ops.push(`write ${leaf}`);
+        if (leaf === "revoked") relay.revoked?.();
+      },
+      readFileSync: (path: string) => {
+        if (path.startsWith("/proc/")) {
+          ops.push("read cmdline");
+          if (!cmdline) throw new Error("Unexpected cmdline read");
+          return cmdline(path);
+        }
+        const { relay, leaf } = locate(path);
+        ops.push(`read ${leaf}`);
+        return (relay.pid ?? missingPid)();
+      },
+      writeSync: (fd: number, text: string) => {
+        ops.push(`writeSync ${fd}`);
+        stdout += text;
+      },
+    };
+    const program = {
+      argv: [process.execPath, ROOT],
+      platform,
+      exitCode: undefined as number | undefined,
+      kill: (pid: number, signal: number) => {
+        ops.push(`kill ${signal}`);
+        kill(pid);
+      },
+      on: (event: string, listener: (code: number) => void) => {
+        if (event === "exit") onExit = listener;
+      },
+    };
+    const sleep = (resolve: () => void, ms: number) => {
+      ops.push(`sleep ${ms}`);
+      resolve();
+    };
+    compileFunction(RELAY_STOP_PROGRAM, ["require", "process", "setTimeout"])(
+      (id: string) => {
+        if (id !== "node:fs") throw new Error(`Unexpected module ${id}`);
+        return fs;
+      },
+      program,
+      sleep,
+    );
+    // Every boundary settles synchronously, so the program completes within
+    // microtasks that drain before this macrotask.
+    await new Promise((resolve) => setImmediate(resolve));
+    const exitCode = program.exitCode ?? 0;
+    onExit?.(exitCode);
+    const counts: Record<string, number> = {};
+    for (const op of ops) counts[op] = (counts[op] ?? 0) + 1;
+    return { exitCode, stdout, counts };
+  }
+
+  async function project(result: { exitCode: number; stdout: string }) {
+    const f = fakeSandbox(async () => ({ ...result, stderr: "" }));
+    const [caught] = await rejectionOf(
+      stopBrowserRelays(f.sandbox, session, grant),
+    );
+    const context = browserRelayStopFailureContext(caught);
+    expect(JSON.stringify(context)).not.toMatch(/PRIVATE|4242|relay-/);
+    return context;
+  }
+
+  // The unchanged 100 x 50 ms wait for one relay that never closes.
+  const deadlineOps = {
+    readdir: 1,
+    "exists dir": 1,
+    "write revoked": 1,
+    "exists closed": 100,
+    "read pid": 100,
+    "sleep 50": 100,
+    "writeSync 1": 1,
+  };
+  const deadline = {
+    ...commandExit,
+    ...recordedDeadline,
+    relay_stop_receipt_version: 2,
+  };
+  const matching = (path: string) =>
+    path === "/proc/4242/cmdline" ? `node\0-e\0program\0${ROOT}/${A}\0` : "";
+
+  it.each<
+    [
+      string,
+      Omit<Boundary, "relays"> & { pid?: () => string },
+      Record<string, number>,
+      string,
+      string | undefined,
+    ]
+  >([
+    ["a missing pid file", {}, {}, "pid_read_error", "missing"],
+    [
+      "a denied pid file",
+      {
+        pid: () => {
+          throw errno("EACCES");
+        },
+      },
+      {},
+      "pid_read_error",
+      "permission",
+    ],
+    ["an invalid pid", { pid: () => "0" }, {}, "pid_invalid", undefined],
+    [
+      "a refused signal",
+      {
+        pid: () => "4242",
+        kill: () => {
+          throw errno("EPERM");
+        },
+      },
+      { "kill 0": 100 },
+      "signal_error",
+      "permission",
+    ],
+    [
+      "a matching Linux cmdline",
+      { platform: "linux", pid: () => "4242", cmdline: matching },
+      { "kill 0": 100, "read cmdline": 100 },
+      "linux_matching_cmdline",
+      undefined,
+    ],
+    [
+      "an unreadable Linux cmdline",
+      {
+        platform: "linux",
+        pid: () => "4242",
+        cmdline: () => {
+          throw errno("EMFILE");
+        },
+      },
+      { "kill 0": 100, "read cmdline": 100 },
+      "linux_cmdline_error",
+      "fd_limit",
+    ],
+    [
+      "a present non-Linux process",
+      { pid: () => "4242" },
+      { "kill 0": 100 },
+      "nonlinux_present",
+      undefined,
+    ],
+  ])(
+    "records %s as the deadline's alive branch without extra operations",
+    async (_name, { pid, ...boundary }, extraOps, branch, code) => {
+      const run = await runStopProgram({
+        ...boundary,
+        relays: { [A]: { pid } },
+      });
+      expect(run.exitCode).toBe(1);
+      expect(run.counts).toEqual({ ...deadlineOps, ...extraOps });
+      expect(await project(run)).toEqual({
+        ...deadline,
+        relay_stop_first_deadline_alive_branch: branch,
+        ...(code === undefined
+          ? {}
+          : { relay_stop_first_deadline_alive_code: code }),
+      });
+    },
+  );
+
+  it.each<[string, Omit<Boundary, "relays">, Record<string, number>]>([
+    [
+      "an exited process",
+      {
+        kill: () => {
+          throw errno("ESRCH");
+        },
+      },
+      {},
+    ],
+    [
+      "a reused Linux pid",
+      { platform: "linux", cmdline: () => "other\0process\0" },
+      { "read cmdline": 1 },
+    ],
+    [
+      "an exited Linux process",
+      {
+        platform: "linux",
+        cmdline: () => {
+          throw errno("ENOENT");
+        },
+      },
+      { "read cmdline": 1 },
+    ],
+  ])(
+    "still drains %s at once with empty output",
+    async (_name, boundary, extraOps) => {
+      const run = await runStopProgram({
+        ...boundary,
+        relays: { [A]: { pid: () => "4242" } },
+      });
+      expect(run).toEqual({
+        exitCode: 0,
+        stdout: "",
+        counts: {
+          readdir: 1,
+          "exists dir": 1,
+          "write revoked": 1,
+          "exists closed": 1,
+          "read pid": 1,
+          "kill 0": 1,
+          "write closed": 1,
+          ...extraOps,
+        },
+      });
+    },
+  );
+
+  it("reports only the last check before the deadline", async () => {
+    let reads = 0;
+    const run = await runStopProgram({
+      relays: {
+        [A]: {
+          pid: () => {
+            if (++reads < 100) throw errno("EACCES");
+            return "0";
+          },
+        },
+      },
+    });
+    expect(run.counts).toEqual(deadlineOps);
+    expect(await project(run)).toEqual({
+      ...deadline,
+      relay_stop_first_deadline_alive_branch: "pid_invalid",
+    });
+  });
+
+  it("reads error codes only as the existing checks did", async () => {
+    let pidCodeReads = 0;
+    const pidError = Object.defineProperty(new Error("PRIVATE"), "code", {
+      get() {
+        pidCodeReads++;
+        return "EACCES";
+      },
+    });
+    const pidRun = await runStopProgram({
+      relays: {
+        [A]: {
+          pid: () => {
+            throw pidError;
+          },
+        },
+      },
+    });
+    // The swallowed pid failure never read its code, so no getter runs.
+    expect(pidCodeReads).toBe(0);
+    expect(await project(pidRun)).toEqual({
+      ...deadline,
+      relay_stop_first_deadline_alive_branch: "pid_read_error",
+      relay_stop_first_deadline_alive_code: "other",
+    });
+
+    let signalCodeReads = 0;
+    const signalError = Object.defineProperty(new Error("PRIVATE"), "code", {
+      get() {
+        signalCodeReads++;
+        return "EPERM";
+      },
+    });
+    const signalRun = await runStopProgram({
+      relays: { [A]: { pid: () => "4242" } },
+      kill: () => {
+        throw signalError;
+      },
+    });
+    // One read per check, as before.
+    expect(signalCodeReads).toBe(100);
+    expect(await project(signalRun)).toEqual({
+      ...deadline,
+      relay_stop_first_deadline_alive_branch: "signal_error",
+      relay_stop_first_deadline_alive_code: "permission",
+    });
+  });
+
+  it("keeps a throwing signal code as the existing drain check failure", async () => {
+    const run = await runStopProgram({
+      relays: { [A]: { pid: () => "4242" } },
+      kill: () => {
+        throw Object.defineProperty(new Error("PRIVATE"), "code", {
+          get() {
+            throw new Error("PRIVATE getter");
+          },
+        });
+      },
+    });
+    expect(run.counts).toEqual({
+      readdir: 1,
+      "exists dir": 1,
+      "write revoked": 1,
+      "exists closed": 1,
+      "read pid": 1,
+      "kill 0": 1,
+      "writeSync 1": 1,
+    });
+    expect(await project(run)).toEqual({
+      ...commandExit,
+      relay_stop_receipt_version: 2,
+      relay_stop_receipt_status: "recorded",
+      relay_stop_first_failure: "filesystem",
+      relay_stop_first_filesystem_stage: "drain_check",
+      relay_stop_first_filesystem_code: "other",
+      relay_stop_drain_deadline_count: 0,
+      relay_stop_filesystem_failure_count: 1,
+    });
+  });
+
+  it("keeps the first relay to reach its deadline beside other failures", async () => {
+    const run = await runStopProgram({
+      relays: {
+        [A]: {
+          revoked: () => {
+            throw errno("ENOTDIR");
+          },
+        },
+        [B]: {},
+        // A later deadline cannot replace the first relay's observation.
+        [C]: { pid: () => "4242" },
+      },
+    });
+    expect(run.counts).toEqual({
+      readdir: 1,
+      "exists dir": 3,
+      "write revoked": 3,
+      "exists closed": 200,
+      "read pid": 200,
+      "kill 0": 100,
+      "sleep 50": 200,
+      "writeSync 1": 1,
+    });
+    expect(await project(run)).toEqual({
+      ...commandExit,
+      relay_stop_receipt_version: 2,
+      relay_stop_receipt_status: "recorded",
+      relay_stop_first_failure: "filesystem",
+      relay_stop_first_filesystem_stage: "write_revoked",
+      relay_stop_first_filesystem_code: "not_directory",
+      relay_stop_drain_deadline_count: 2,
+      relay_stop_filesystem_failure_count: 1,
+      relay_stop_first_deadline_alive_branch: "pid_read_error",
+      relay_stop_first_deadline_alive_code: "missing",
+    });
+  });
 });
