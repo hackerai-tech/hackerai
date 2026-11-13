@@ -29,5 +29,10 @@
       "path": "/api/cron/influencer-analytics",
       "schedule": "* * * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "codex/hunt-similar-findings": false
+    }
+  }
 }
