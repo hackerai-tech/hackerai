@@ -6413,8 +6413,23 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      // Close the shared approval inbox first: the close record wakes this run's
+      // and its children's pending waits even if a wake send failed.
+      if (payload.approvalSessionId && triggerSessions) {
+        try {
+          await triggerSessions.close(payload.approvalSessionId, {
+            reason: "agent-run-ended",
+          });
+          approvalSessionClosed = true;
+        } catch (error) {
+          console.error(
+            "[agent-long] failed to close approval session:",
+            error,
+          );
+        }
+      }
       // A stopped stream can stop awaiting a tool callback that still holds a
-      // Session waitpoint. Settle it before the task closes the Session or returns.
+      // Session waitpoint. Settle every started wait before the task returns.
       await approvalSessionWaits.finish();
       // Fill only missing reports; never repeat billing or manufacture a full cost.
       let reportingUsage:
@@ -6459,19 +6474,6 @@ export const agentLongTask = task({
         ).catch(() => undefined);
       }
       await ptySessionManager.closeAll(chatId).catch(() => undefined);
-      if (payload.approvalSessionId && triggerSessions) {
-        try {
-          await triggerSessions.close(payload.approvalSessionId, {
-            reason: "agent-run-ended",
-          });
-          approvalSessionClosed = true;
-        } catch (error) {
-          console.error(
-            "[agent-long] failed to close approval session:",
-            error,
-          );
-        }
-      }
       await cleanupBrowserSessions();
       await finishE2BIdleLeaseRelease?.().catch((error) => {
         triggerLogger.warn("[agent-long] E2B idle lease release failed", {

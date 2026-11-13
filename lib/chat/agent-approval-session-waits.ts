@@ -48,7 +48,9 @@ const isSessionCloseRecord = (value: unknown): boolean =>
  * Owns every approval Session wait and slot delay started by one Trigger task.
  * Each holds a run-engine waitpoint. Settle it before submitting the task
  * result so completion uses the engine's current snapshot.
- * Await `finish()` before closing the Session or returning from the task.
+ * Await `finish()` before returning from the task. A Session wait settles only
+ * when a record or close arrives, so a parent that owns the Session closes it
+ * first in case the wake send failed.
  */
 export const createAgentApprovalSessionWaits =
   (): AgentApprovalSessionWaits => {

@@ -168,6 +168,30 @@ describe("createAgentApprovalSessionWaits", () => {
     expect(unhandledRejections).toEqual([]);
   });
 
+  it("keeps finish pending after a failed wake send until the Session close settles the wait", async () => {
+    const waits = createAgentApprovalSessionWaits();
+    const { input, resolveWait } = createControlledInput({
+      send: () => Promise.reject(new Error("session append failed")),
+    });
+
+    const outcome = track(
+      waits.waitForApprovalInput(input, new AbortController().signal),
+    );
+    const finished = track(waits.finish());
+    await flush();
+    expect(input.send).toHaveBeenCalledTimes(1);
+    expect(finished.settled).toBe(false);
+    expect(outcome.settled).toBe(false);
+
+    resolveWait({ ok: true, output: { trigger: "close" } });
+    await flush();
+
+    expect(outcome.value).toEqual({ status: "aborted" });
+    expect(waits.isSessionClosed()).toBe(true);
+    expect(finished.settled).toBe(true);
+    expect(unhandledRejections).toEqual([]);
+  });
+
   it("propagates a wait failure that was not caused by Stop", async () => {
     const waits = createAgentApprovalSessionWaits();
     const failure = new Error("waitpoint failed");

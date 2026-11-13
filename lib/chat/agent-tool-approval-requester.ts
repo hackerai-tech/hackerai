@@ -663,6 +663,17 @@ export const buildAgentToolApprovalRequester = ({
             "The Agent approval request is no longer active. Retry the action if the run is still open.",
         };
       }
+      // The claim can succeed after Stop or task cleanup began. The finally
+      // block below compare-clears the slot.
+      if (signal.aborted || approvalSessionWaits.isFinished()) {
+        completeAutoReviewLifecycle("dismissed");
+        metadata.set("approvalStatus", "aborted");
+        return {
+          approved: false,
+          approvalId,
+          reason: "The Agent run was stopped before approval was requested.",
+        };
+      }
 
       metadata
         .set("approvalStatus", "pending")

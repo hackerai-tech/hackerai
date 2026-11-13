@@ -284,6 +284,37 @@ describe("buildAgentToolApprovalRequester session waits", () => {
     });
   });
 
+  it("lets the parent's terminal Session close settle a stopped wait whose wake send failed", async () => {
+    const approvalSessionWaits = createAgentApprovalSessionWaits();
+    const stop = new AbortController();
+    const { requester, revalidateAfterSuspend } = buildRequester({
+      approvalSessionWaits,
+      signal: stop.signal,
+    });
+    mockSessionSend.mockReturnValueOnce(
+      Promise.reject(new Error("session append failed")),
+    );
+
+    const toolCallback = track(requester(request));
+    await flush();
+    stop.abort();
+    await flush();
+    expect(mockSessionSend).toHaveBeenCalledTimes(1);
+    expect(toolCallback.settled).toBe(false);
+
+    // Parent outer finally: close the shared inbox, then join started waits.
+    mockSessionWaits[0].resolve({ ok: true, output: { trigger: "close" } });
+    await approvalSessionWaits.finish();
+    await flush();
+
+    expect(toolCallback.value).toMatchObject({
+      approved: false,
+      reason: "The Agent run was stopped before approval was received.",
+    });
+    expect(mockSessionWait).toHaveBeenCalledTimes(1);
+    expect(revalidateAfterSuspend).not.toHaveBeenCalled();
+  });
+
   it("treats a Session close record as closed and never waits on that Session again", async () => {
     const approvalSessionWaits = createAgentApprovalSessionWaits();
     const { requester, writer } = buildRequester({ approvalSessionWaits });
@@ -461,6 +492,50 @@ describe("buildAgentToolApprovalRequester approval slot delays", () => {
     expect(mockWaitFor).not.toHaveBeenCalled();
     expect(mockSessionWait).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["the task finishes", "finish"],
+    ["the user stops the run", "stop"],
+  ])(
+    "releases a slot acquired after %s without showing or waiting for approval",
+    async (_label, cause) => {
+      const approvalSessionWaits = createAgentApprovalSessionWaits();
+      const stop = new AbortController();
+      const { requester, writer } = buildRequester({
+        approvalSessionWaits,
+        signal: stop.signal,
+      });
+      const claim = deferred<string>();
+      mockSetActiveAgentApprovalPending.mockReturnValueOnce(claim.promise);
+
+      const toolCallback = track(requester(request));
+      await flush();
+      expect(slotClaims()).toBe(1);
+
+      const taskFinally =
+        cause === "finish" ? approvalSessionWaits.finish() : undefined;
+      if (cause === "stop") stop.abort();
+      claim.resolve("acquired");
+      await taskFinally;
+      await flush();
+
+      expect(toolCallback.value).toEqual({
+        approved: false,
+        approvalId: pendingApprovalId(),
+        reason: "The Agent run was stopped before approval was requested.",
+      });
+      expect(approvalRequestsWritten(writer)).toBe(0);
+      expect(mockSessionsOpen).not.toHaveBeenCalled();
+      expect(mockSessionWait).not.toHaveBeenCalled();
+      expect(mockWaitFor).not.toHaveBeenCalled();
+      expect(mockSetActiveAgentApprovalPending).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          pending: false,
+          expectedApprovalId: pendingApprovalId(),
+        }),
+      );
+    },
+  );
 
   it("retries a busy slot while active and then applies the user's signed approval", async () => {
     const { requester, revalidateAfterSuspend } = buildRequester();
