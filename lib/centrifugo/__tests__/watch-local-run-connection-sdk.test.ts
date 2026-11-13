@@ -167,26 +167,9 @@ const unsubscribe = (code: number) => (socket: FakeSocket) =>
     push: { channel: CHANNEL, unsubscribe: { code, reason: "PRIVATE" } },
   });
 
-// Only a native close delivered before the first stop carries a socket pair;
-// the closes that follow the SDK's or the watcher's own close carry none.
+// A terminal callback is classified by itself, even when the SDK first moves
+// its subscription to subscribing in the same teardown.
 test.each([
-  [
-    "a transport close",
-    (socket: FakeSocket) => socket.serverClose(1006),
-    "subscription_reconnecting",
-    1,
-    "connecting",
-    { socketCloseCode: 1006, socketCloseWasClean: false },
-  ],
-  // An observed normal closure, not itself evidence of an outage.
-  [
-    "a clean server close",
-    (socket: FakeSocket) => socket.serverClose(1000, true),
-    "subscription_reconnecting",
-    1,
-    "connecting",
-    { socketCloseCode: 1000, socketCloseWasClean: true },
-  ],
   [
     "a permanent server disconnect",
     (socket: FakeSocket) =>
@@ -195,25 +178,9 @@ test.each([
           disconnect: { code: 3501, reason: "PRIVATE", reconnect: false },
         },
       }),
-    "subscription_reconnecting",
-    1,
+    "observer_disconnected",
+    3501,
     "disconnected",
-    {},
-  ],
-  [
-    "a server resubscribe 2500",
-    unsubscribe(2500),
-    "subscription_reconnecting",
-    2500,
-    "connected",
-    {},
-  ],
-  [
-    "a server resubscribe 2502",
-    unsubscribe(2502),
-    "subscription_reconnecting",
-    2502,
-    "connected",
     {},
   ],
   [
@@ -248,6 +215,85 @@ test.each([
     expect(watcher.onLost).toHaveBeenCalledTimes(1);
   },
 );
+
+// The SDK's own reconnect or resubscribe, then a new lookup confirming the
+// host: the run continues on the same subscription channel.
+test.each([
+  ["a transport close", (socket: FakeSocket) => socket.serverClose(1006)],
+  // An observed normal closure, not itself evidence of an outage.
+  [
+    "a clean server close",
+    (socket: FakeSocket) => socket.serverClose(1000, true),
+  ],
+  ["a server resubscribe 2500", unsubscribe(2500)],
+  ["a server resubscribe 2502", unsubscribe(2502)],
+])(
+  "recovers from %s through the SDK and a new presence read",
+  async (_name, trigger) => {
+    const watcher = await start();
+    trigger(watcher.socket);
+    await settle();
+    expect(watcher.onLost).not.toHaveBeenCalled();
+    // A closed transport is reopened by the SDK after its bounded backoff.
+    await jest.advanceTimersByTimeAsync(3_000);
+    const socket = FakeSocket.all.at(-1)!;
+    if (socket !== watcher.socket) {
+      expect(FakeSocket.all).toHaveLength(2);
+      socket.onopen!();
+      await settle();
+    }
+    expect(watcher.subscription.state).toBe("subscribed");
+    expect(
+      FakeSocket.all.reduce((reads, each) => reads + each.presenceReads(), 0),
+    ).toBe(2);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(watcher.onLost).not.toHaveBeenCalled();
+    // A positively observed departure still ends the run, once.
+    socket.push({
+      push: {
+        channel: CHANNEL,
+        leave: {
+          info: { client: "host", conn_info: { connectionId: SELECTED } },
+        },
+      },
+    });
+    await settle();
+    expect(watcher.onLost).toHaveBeenCalledTimes(1);
+    expect(
+      getLocalStopDiagnostic(watcher.onLost.mock.calls[0][0])?.reason,
+    ).toBe("selected_host_left");
+    watcher.stop();
+  },
+);
+
+test("an outage outlasting the window stops once with the interrupting close", async () => {
+  const watcher = await start();
+  watcher.socket.serverClose(1006);
+  await settle();
+  // Every SDK attempt fails before opening.
+  for (let elapsed = 0; elapsed < 14_900; elapsed += 100) {
+    await jest.advanceTimersByTimeAsync(100);
+    const socket = FakeSocket.all.at(-1)!;
+    if (!socket.closed) socket.serverClose(1006);
+  }
+  expect(watcher.onLost).not.toHaveBeenCalled();
+  expect(FakeSocket.all.length).toBeGreaterThanOrEqual(4);
+  await jest.advanceTimersByTimeAsync(100);
+  expect(getLocalStopDiagnostic(watcher.onLost.mock.calls[0][0])).toEqual({
+    reason: "observer_recovery_expired",
+    connectionId: SELECTED,
+    hadPositivePresence: true,
+    lastPositivePresenceAgeMs: 15_000,
+    clientState: "connecting",
+    socketCloseCode: 1006,
+    socketCloseWasClean: false,
+  });
+  const attempts = FakeSocket.all.length;
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(FakeSocket.all).toHaveLength(attempts);
+  expect(watcher.onLost).toHaveBeenCalledTimes(1);
+  expect(jest.getTimerCount()).toBe(0);
+});
 
 test("explicit completion disposes the actual client silently", async () => {
   const watcher = await start();
@@ -300,11 +346,11 @@ test("a close during initial setup is not the run's socket close", async () => {
   await settle();
   expect(onLost).toHaveBeenCalledTimes(1);
   expect(getLocalStopDiagnostic(onLost.mock.calls[0][0])).toEqual({
-    reason: "subscription_reconnecting",
+    reason: "observer_disconnected",
     connectionId: SELECTED,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: 0,
-    callbackCode: 1,
+    callbackCode: 3501,
     clientState: "disconnected",
   });
 });
