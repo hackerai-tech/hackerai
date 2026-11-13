@@ -24,7 +24,11 @@ const skillIdsFromPart = (part: any): string[] => {
 };
 
 const skillTarget = (part: any): string | undefined => {
-  const labels = skillIdsFromPart(part).map(formatSubagentSkillLabel);
+  const labels = skillIdsFromPart(part).map((id) => {
+    if (!id.startsWith("user:")) return formatSubagentSkillLabel(id);
+    const result = part.output?.results?.find((item: any) => item?.id === id);
+    return typeof result?.name === "string" ? result.name : "Private skill";
+  });
   return labels.length > 0 ? labels.join(", ") : undefined;
 };
 

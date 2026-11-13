@@ -64,3 +64,30 @@ describe("SubagentSkillToolHandler", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+it("shows a private skill's name without exposing its storage ID or document", () => {
+  render(
+    <SubagentSkillToolHandler
+      status="ready"
+      toolName="load_skill"
+      part={{
+        toolCallId: "private-load",
+        state: "output-available",
+        input: { skills: ["user:opaque-id"] },
+        output: {
+          success: true,
+          results: [
+            {
+              id: "user:opaque-id",
+              name: "API workflow",
+              content: "Private methodology",
+            },
+          ],
+        },
+      }}
+    />,
+  );
+  expect(screen.getByText("API workflow")).toBeVisible();
+  expect(screen.queryByText(/opaque-id/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Private methodology")).not.toBeInTheDocument();
+});

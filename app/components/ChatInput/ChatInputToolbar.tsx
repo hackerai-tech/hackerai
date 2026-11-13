@@ -5,6 +5,8 @@ import {
   type AttachmentButtonProps,
 } from "@/app/components/AttachmentButton";
 import { Button } from "@/components/ui/button";
+import { useComposerSkills } from "./ComposerSkills";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
@@ -48,6 +50,8 @@ export function ChatInputToolbar({
     subscription,
   } = useGlobalState();
   const { user } = useAuth();
+  const skills = useComposerSkills();
+  const isMobile = useIsMobile();
   const showChatModeSelector = Boolean(
     user &&
     chatModeAccessResolved &&
@@ -83,7 +87,17 @@ export function ChatInputToolbar({
           <>
             <div className="shrink-0">
               <AttachmentButton
+                onMenuOpen={skills?.closeSelector}
                 goalMenu={goalMenu}
+                skillsMenu={
+                  user && skills && isMobile !== undefined
+                    ? {
+                        layout: isMobile ? "mobile" : "desktop",
+                        disabled: skills.disabled,
+                        onSelect: skills.openSelector,
+                      }
+                    : undefined
+                }
                 onAttachClick={onAttachClick}
                 disabled={!isOnline || attachmentsDisabled}
               />

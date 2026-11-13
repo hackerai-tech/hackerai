@@ -32,6 +32,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { SkillsManagerProvider } from "./MySkills";
 import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
@@ -2990,314 +2991,321 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   return (
     <CloudRecoveryAdmissionContext.Provider value={cloudRecoveryAdmission}>
-      <StreamEffects
-        finishReason={chatDataForCurrentChat?.finish_reason}
-        sendDisabledReason={computerSendDisabledReason}
-        key={chatId}
-        chatId={chatId}
-        autoResume={autoResume}
-        serverMessages={serverMessages}
-        resumeStream={resumeStream}
-        setMessages={setMessages}
-        status={status}
-        chatMode={chatMode}
-        sendMessage={sendMessage}
-        hasManuallyStoppedRef={hasManuallyStoppedRef}
-        todos={todos}
-        sandboxPreference={sandboxPreference}
-        agentPermissionMode={agentPermissionMode}
-        selectedModel={requestSelectedModel}
-        resetRef={resetAutoContinueRef}
-        hasActiveStream={
-          chatData === undefined || (chatData && !chatDataForCurrentChat)
-            ? undefined
-            : !!chatDataForCurrentChat?.active_stream_id ||
-              !!chatDataForCurrentChat?.active_trigger_run_id
-        }
-      />
-      <ForkAutoSendEffect
-        sendDisabledReason={computerSendDisabledReason}
-        key={`fork-auto-send:${chatId}`}
-        chatId={chatId}
-        status={status}
-        isExistingChat={isExistingChat}
-        messageCount={messages.length}
-        onSubmit={handleSubmit}
-      />
-      <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
-        <div className="flex min-h-0 flex-1 min-w-0 relative">
-          {/* Left side - Chat content */}
-          <div className="flex min-h-0 flex-col flex-1 min-w-0">
-            {/* Unified Header */}
-            <ChatHeader
-              hasMessages={hasMessages}
-              hasActiveChat={isExistingChat}
-              chatTitle={chatTitle}
-              id={chatId}
-              chatData={chatDataForCurrentChat}
-              chatSidebarOpen={chatSidebarOpen}
-              isExistingChat={isExistingChat}
-              isChatNotFound={isChatNotFound}
-              branchedFromChatTitle={branchedFromChatTitle}
-            />
+      <SkillsManagerProvider scopeKey={chatId}>
+        <StreamEffects
+          finishReason={chatDataForCurrentChat?.finish_reason}
+          sendDisabledReason={computerSendDisabledReason}
+          key={chatId}
+          chatId={chatId}
+          autoResume={autoResume}
+          serverMessages={serverMessages}
+          resumeStream={resumeStream}
+          setMessages={setMessages}
+          status={status}
+          chatMode={chatMode}
+          sendMessage={sendMessage}
+          hasManuallyStoppedRef={hasManuallyStoppedRef}
+          todos={todos}
+          sandboxPreference={sandboxPreference}
+          agentPermissionMode={agentPermissionMode}
+          selectedModel={requestSelectedModel}
+          resetRef={resetAutoContinueRef}
+          hasActiveStream={
+            chatData === undefined || (chatData && !chatDataForCurrentChat)
+              ? undefined
+              : !!chatDataForCurrentChat?.active_stream_id ||
+                !!chatDataForCurrentChat?.active_trigger_run_id
+          }
+        />
+        <ForkAutoSendEffect
+          sendDisabledReason={computerSendDisabledReason}
+          key={`fork-auto-send:${chatId}`}
+          chatId={chatId}
+          status={status}
+          isExistingChat={isExistingChat}
+          messageCount={messages.length}
+          onSubmit={handleSubmit}
+        />
+        <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
+          <div className="flex min-h-0 flex-1 min-w-0 relative">
+            {/* Left side - Chat content */}
+            <div className="flex min-h-0 flex-col flex-1 min-w-0">
+              {/* Unified Header */}
+              <ChatHeader
+                hasMessages={hasMessages}
+                hasActiveChat={isExistingChat}
+                chatTitle={chatTitle}
+                id={chatId}
+                chatData={chatDataForCurrentChat}
+                chatSidebarOpen={chatSidebarOpen}
+                isExistingChat={isExistingChat}
+                isChatNotFound={isChatNotFound}
+                branchedFromChatTitle={branchedFromChatTitle}
+              />
 
-            {usesCloudRecovery && (
-              <div className="mx-auto w-full max-w-[768px] px-4">
-                <CloudWorkspaceRecovery
-                  key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
-                  surface={
-                    cloudConnectionFailure?.chatId === chatId
-                      ? "cloud_connection_error"
-                      : "workspace_status"
-                  }
-                />
-              </div>
-            )}
-
-            {/* Chat interface */}
-            <div
-              className={`bg-background flex flex-col flex-1 relative min-h-0 ${
-                !showChatLayout && !isChatNotFound
-                  ? "justify-center-safe overflow-y-auto"
-                  : ""
-              }`}
-            >
-              {/* Messages area */}
-              {isChatNotFound ? (
-                <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                  <div className="w-full max-w-full sm:max-w-[768px] flex flex-col items-center space-y-8">
-                    <div className="text-center">
-                      <h1 className="text-2xl font-bold text-foreground mb-2">
-                        Task Not Found
-                      </h1>
-                      <p className="text-muted-foreground">
-                        This task doesn&apos;t exist or you don&apos;t have
-                        permission to view it.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : showChatLayout ? (
-                <div
-                  className="flex min-h-0 flex-1"
-                  aria-busy={isInitialExistingChatLoad || isRouteTransitioning}
-                  data-testid="chat-timeline-shell"
-                >
-                  {isInitialExistingChatLoad || isRouteTransitioning ? (
-                    <div
-                      className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"
-                      role="status"
-                      data-testid="chat-timeline-loading"
-                    >
-                      <SlowLoadingNotice key={chatId} label="Loading task…" />
-                    </div>
-                  ) : (
-                    <Messages
-                      key={chatId}
-                      chatId={chatId}
-                      scrollRef={scrollRef}
-                      contentRef={contentRef}
-                      messages={messages}
-                      setMessages={setMessages}
-                      onRegenerate={handleRegenerate}
-                      onRetry={handleRetry}
-                      onContinue={handleContinue}
-                      onReconnect={resumeStream}
-                      onEditMessage={handleEditMessage}
-                      onBranchMessage={handleBranchMessage}
-                      status={status}
-                      error={error || null}
-                      paginationStatus={paginatedMessages.status}
-                      loadMore={paginatedMessages.loadMore}
-                      isMobile={isMobile}
-                      tempChatFileDetails={tempChatFileDetails}
-                      finishReason={chatDataForCurrentChat?.finish_reason}
-                      continueDisabledReason={computerSendDisabledReason}
-                      agentRunSpendCapWarning={agentRunSpendCapWarning}
-                      uploadStatus={uploadStatus}
-                      summarizationStatus={summarizationStatus}
-                      mode={
-                        chatMode ??
-                        (chatDataForCurrentChat as any)?.default_model_slug
-                      }
-                      chatTitle={chatTitle}
-                      branchedFromChatId={branchedFromChatId}
-                      branchedFromChatTitle={branchedFromChatTitle}
-                      anchorMessageId={timelineAnchorMessageId}
-                      contentInsetEndAdjustment={composerOverlayHeight}
-                    />
-                  )}
-                </div>
-              ) : (
-                <div
-                  className={`flex flex-col min-h-0 ${isMobile ? "flex-1" : "shrink-0"}`}
-                >
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-4 min-h-0">
-                    <div className="w-full max-w-[768px] flex flex-col items-center">
-                      <HackingSuggestions />
-                    </div>
-                  </div>
+              {usesCloudRecovery && (
+                <div className="mx-auto w-full max-w-[768px] px-4">
+                  <CloudWorkspaceRecovery
+                    key={`${chatId}:${cloudConnectionFailure?.sequence ?? 0}`}
+                    surface={
+                      cloudConnectionFailure?.chatId === chatId
+                        ? "cloud_connection_error"
+                        : "workspace_status"
+                    }
+                  />
                 </div>
               )}
 
-              {/* Keep one composer mounted across folding and the first message.
-                  Remounting can restore an older saved draft over live input. */}
-              {!isChatNotFound ? (
-                <ComposerOverlay
-                  active={showChatLayout}
-                  onHeightChange={setComposerOverlayHeight}
-                >
-                  {/* Anchor above the entire composer, including browser notices. */}
-                  <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
-                    {!scrollButtonInGoal && (
-                      <ScrollToBottomButton
-                        onClick={handleScrollToBottom}
-                        hasMessages={hasMessages}
-                        isAtBottom={isAtBottom}
+              {/* Chat interface */}
+              <div
+                className={`bg-background flex flex-col flex-1 relative min-h-0 ${
+                  !showChatLayout && !isChatNotFound
+                    ? "justify-center-safe overflow-y-auto"
+                    : ""
+                }`}
+              >
+                {/* Messages area */}
+                {isChatNotFound ? (
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
+                    <div className="w-full max-w-full sm:max-w-[768px] flex flex-col items-center space-y-8">
+                      <div className="text-center">
+                        <h1 className="text-2xl font-bold text-foreground mb-2">
+                          Task Not Found
+                        </h1>
+                        <p className="text-muted-foreground">
+                          This task doesn&apos;t exist or you don&apos;t have
+                          permission to view it.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : showChatLayout ? (
+                  <div
+                    className="flex min-h-0 flex-1"
+                    aria-busy={
+                      isInitialExistingChatLoad || isRouteTransitioning
+                    }
+                    data-testid="chat-timeline-shell"
+                  >
+                    {isInitialExistingChatLoad || isRouteTransitioning ? (
+                      <div
+                        className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"
+                        role="status"
+                        data-testid="chat-timeline-loading"
+                      >
+                        <SlowLoadingNotice key={chatId} label="Loading task…" />
+                      </div>
+                    ) : (
+                      <Messages
+                        key={chatId}
+                        chatId={chatId}
+                        scrollRef={scrollRef}
+                        contentRef={contentRef}
+                        messages={messages}
+                        setMessages={setMessages}
+                        onRegenerate={handleRegenerate}
+                        onRetry={handleRetry}
+                        onContinue={handleContinue}
+                        onReconnect={resumeStream}
+                        onEditMessage={handleEditMessage}
+                        onBranchMessage={handleBranchMessage}
+                        status={status}
+                        error={error || null}
+                        paginationStatus={paginatedMessages.status}
+                        loadMore={paginatedMessages.loadMore}
+                        isMobile={isMobile}
+                        tempChatFileDetails={tempChatFileDetails}
+                        finishReason={chatDataForCurrentChat?.finish_reason}
+                        continueDisabledReason={computerSendDisabledReason}
+                        agentRunSpendCapWarning={agentRunSpendCapWarning}
+                        uploadStatus={uploadStatus}
+                        summarizationStatus={summarizationStatus}
+                        mode={
+                          chatMode ??
+                          (chatDataForCurrentChat as any)?.default_model_slug
+                        }
+                        chatTitle={chatTitle}
+                        branchedFromChatId={branchedFromChatId}
+                        branchedFromChatTitle={branchedFromChatTitle}
+                        anchorMessageId={timelineAnchorMessageId}
+                        contentInsetEndAdjustment={composerOverlayHeight}
                       />
                     )}
                   </div>
-                  <ChatInput
-                    completedPredictionTurn={completedPredictionTurn}
-                    predictionModeReady={
-                      !isExistingChat ||
-                      initializedPredictionModeChatId === chatId
-                    }
-                    interruptedPredictionTurn={interruptedPredictionTurn}
-                    latestMessageId={messages.at(-1)?.id}
-                    latestMessageIsAssistant={
-                      messages.at(-1)?.role === "assistant"
-                    }
-                    goalPanel={goalPanel}
-                    hasActiveGoalRun={hasActiveGoalRun}
-                    pauseGoalOnSend={pauseGoalOnSend}
-                    topNotice={
-                      showChatLayout ? (
-                        <BrowserHandoffEntry
-                          chatId={chatId}
-                          messages={messages}
-                          persistedMessages={serverMessages}
+                ) : (
+                  <div
+                    className={`flex flex-col min-h-0 ${isMobile ? "flex-1" : "shrink-0"}`}
+                  >
+                    <div className="flex-1 flex flex-col items-center justify-center px-4 py-4 min-h-0">
+                      <div className="w-full max-w-[768px] flex flex-col items-center">
+                        <HackingSuggestions />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Keep one composer mounted across folding and the first message.
+                  Remounting can restore an older saved draft over live input. */}
+                {!isChatNotFound ? (
+                  <ComposerOverlay
+                    active={showChatLayout}
+                    onHeightChange={setComposerOverlayHeight}
+                  >
+                    {/* Anchor above the entire composer, including browser notices. */}
+                    <div className="absolute bottom-full left-1/2 mb-4 -translate-x-1/2 z-40">
+                      {!scrollButtonInGoal && (
+                        <ScrollToBottomButton
+                          onClick={handleScrollToBottom}
+                          hasMessages={hasMessages}
+                          isAtBottom={isAtBottom}
                         />
-                      ) : undefined
-                    }
+                      )}
+                    </div>
+                    <ChatInput
+                      completedPredictionTurn={completedPredictionTurn}
+                      predictionModeReady={
+                        !isExistingChat ||
+                        initializedPredictionModeChatId === chatId
+                      }
+                      interruptedPredictionTurn={interruptedPredictionTurn}
+                      latestMessageId={messages.at(-1)?.id}
+                      latestMessageIsAssistant={
+                        messages.at(-1)?.role === "assistant"
+                      }
+                      goalPanel={goalPanel}
+                      hasActiveGoalRun={hasActiveGoalRun}
+                      pauseGoalOnSend={pauseGoalOnSend}
+                      topNotice={
+                        showChatLayout ? (
+                          <BrowserHandoffEntry
+                            chatId={chatId}
+                            messages={messages}
+                            persistedMessages={serverMessages}
+                          />
+                        ) : undefined
+                      }
 
-                    onSubmit={handleSubmit}
-                    onStop={handleStop}
-                    onReconnect={resumeStream}
-                    onSendNow={handleSendNow}
-                    status={status}
-                    hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
-                    isCentered={isComposerCentered}
-                    hasMessages={hasMessages}
-                    isNewChat={!isExistingChat}
-                    chatId={chatId}
-                    sendDisabledReason={
-                      pendingUserWait ? undefined : computerSendDisabledReason
-                    }
-                    isResolvingInitialState={isApprovalPresentationLoading}
-                    rateLimitWarning={
-                      rateLimitWarning ? rateLimitWarning : undefined
-                    }
-                    onDismissRateLimitWarning={handleDismissRateLimitWarning}
-                    storedApprovalRequest={storedAgentApprovalRequest}
-                    pendingUserWait={pendingUserWait}
-                    pendingGoalQuestions={
-                      !pendingUserWait && persistedGoal?.state === "needs_input"
-                        ? {
-                            generation: persistedGoal.generation,
-                            questions: persistedGoal.judgment?.questions ?? [
-                              {
-                                id: "reply",
-                                header: "Your input",
-                                question:
-                                  persistedGoal.reason ||
-                                  "What should the Agent do next?",
-                                options: [],
-                              },
-                            ],
-                          }
-                        : undefined
-                    }
-                  />
-                </ComposerOverlay>
-              ) : null}
-              {!showChatLayout && !isChatNotFound && <Footer />}
+                      onSubmit={handleSubmit}
+                      onStop={handleStop}
+                      onReconnect={resumeStream}
+                      onSendNow={handleSendNow}
+                      status={status}
+                      hideStop={isAgentRunUiTerminal && !hasActiveGoalRun}
+                      isCentered={isComposerCentered}
+                      hasMessages={hasMessages}
+                      isNewChat={!isExistingChat}
+                      chatId={chatId}
+                      sendDisabledReason={
+                        pendingUserWait ? undefined : computerSendDisabledReason
+                      }
+                      isResolvingInitialState={isApprovalPresentationLoading}
+                      rateLimitWarning={
+                        rateLimitWarning ? rateLimitWarning : undefined
+                      }
+                      onDismissRateLimitWarning={handleDismissRateLimitWarning}
+                      storedApprovalRequest={storedAgentApprovalRequest}
+                      pendingUserWait={pendingUserWait}
+                      pendingGoalQuestions={
+                        !pendingUserWait &&
+                        persistedGoal?.state === "needs_input"
+                          ? {
+                              generation: persistedGoal.generation,
+                              questions: persistedGoal.judgment?.questions ?? [
+                                {
+                                  id: "reply",
+                                  header: "Your input",
+                                  question:
+                                    persistedGoal.reason ||
+                                    "What should the Agent do next?",
+                                  options: [],
+                                },
+                              ],
+                            }
+                          : undefined
+                      }
+                    />
+                  </ComposerOverlay>
+                ) : null}
+                {!showChatLayout && !isChatNotFound && <Footer />}
+              </div>
             </div>
-          </div>
 
-          {/* Load on first open, then retain Goal drafts across browser panel closes. */}
-          <div
-            ref={computerDialogRef}
-            className={
-              computerSidebarOverlay
-                ? sidebarOpen
-                  ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
-                  : "hidden"
-                : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
-            }
-            role={computerSidebarOverlay && sidebarOpen ? "dialog" : undefined}
-            aria-modal={
-              computerSidebarOverlay && sidebarOpen ? true : undefined
-            }
-            aria-label={
-              computerSidebarOverlay && sidebarOpen
-                ? sidebarContent &&
-                  "kind" in sidebarContent &&
-                  sidebarContent.kind === "goal"
-                  ? "Edit goal"
-                  : "HackerAI’s Computer"
-                : undefined
-            }
-            tabIndex={computerSidebarOverlay ? -1 : undefined}
-            data-layout={computerSidebarOverlay ? "overlay" : "split"}
-            data-testid="computer-sidebar-container"
-          >
+            {/* Load on first open, then retain Goal drafts across browser panel closes. */}
             <div
+              ref={computerDialogRef}
               className={
-                computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
+                computerSidebarOverlay
+                  ? sidebarOpen
+                    ? "fixed inset-0 z-50 flex items-center justify-center bg-background p-4"
+                    : "hidden"
+                  : `min-w-0 transition-[width] duration-300 ${sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"}`
               }
+              role={
+                computerSidebarOverlay && sidebarOpen ? "dialog" : undefined
+              }
+              aria-modal={
+                computerSidebarOverlay && sidebarOpen ? true : undefined
+              }
+              aria-label={
+                computerSidebarOverlay && sidebarOpen
+                  ? sidebarContent &&
+                    "kind" in sidebarContent &&
+                    sidebarContent.kind === "goal"
+                    ? "Edit goal"
+                    : "HackerAI’s Computer"
+                  : undefined
+              }
+              tabIndex={computerSidebarOverlay ? -1 : undefined}
+              data-layout={computerSidebarOverlay ? "overlay" : "split"}
+              data-testid="computer-sidebar-container"
             >
-              {(sidebarOpen || hasOpenedComputerSidebar) && (
-                <ComputerSidebar
-                  key={chatId}
-                  stopGoalRunBeforeControl={stopGoalRunBeforeControl}
-                  continueGoal={async (goal) => {
-                    if (computerSendDisabledReason)
-                      throw new Error(computerSendDisabledReason);
-                    hasManuallyStoppedRef.current = false;
-                    resetAutoContinueCount();
-                    await sendGoalMessage(
-                      { text: goalResumeMessage(goal) },
-                      {
-                        body: {
-                          sandboxPreference: goal.sandboxPreference,
-                          agentPermissionMode: goal.permissionMode,
-                          selectedModel: goal.selectedModel,
-                          mode: "agent",
-                          goal: {
-                            action: "resume",
-                            expectedGeneration: goal.generation,
+              <div
+                className={
+                  computerSidebarOverlay ? "w-full max-w-4xl h-full" : "h-full"
+                }
+              >
+                {(sidebarOpen || hasOpenedComputerSidebar) && (
+                  <ComputerSidebar
+                    key={chatId}
+                    stopGoalRunBeforeControl={stopGoalRunBeforeControl}
+                    continueGoal={async (goal) => {
+                      if (computerSendDisabledReason)
+                        throw new Error(computerSendDisabledReason);
+                      hasManuallyStoppedRef.current = false;
+                      resetAutoContinueCount();
+                      await sendGoalMessage(
+                        { text: goalResumeMessage(goal) },
+                        {
+                          body: {
+                            sandboxPreference: goal.sandboxPreference,
+                            agentPermissionMode: goal.permissionMode,
+                            selectedModel: goal.selectedModel,
+                            mode: "agent",
+                            goal: {
+                              action: "resume",
+                              expectedGeneration: goal.generation,
+                            },
                           },
                         },
-                      },
-                    );
-                  }}
-                  onBrowserContinue={continueBrowserHandoff}
-                  chatId={chatId}
-                  messages={messages}
-                  status={status}
-                />
-              )}
+                      );
+                    }}
+                    onBrowserContinue={continueBrowserHandoff}
+                    chatId={chatId}
+                    messages={messages}
+                    status={status}
+                  />
+                )}
+              </div>
             </div>
-          </div>
 
-          {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
-          <DragDropOverlay
-            isVisible={showDragOverlay}
-            isDragOver={isDragOver}
-          />
+            {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
+            <DragDropOverlay
+              isVisible={showDragOverlay}
+              isDragOver={isDragOver}
+            />
+          </div>
         </div>
-      </div>
+      </SkillsManagerProvider>
     </CloudRecoveryAdmissionContext.Provider>
   );
 };

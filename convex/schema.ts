@@ -215,6 +215,24 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  user_skill_drafts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    ids: v.array(v.id("user_skills")),
+    updated_at: v.number(),
+  })
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+  user_skills: defineTable({
+    user_id: v.string(),
+    name: v.string(),
+    description: v.string(),
+    content: v.string(),
+    is_default: v.boolean(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_default", ["user_id", "is_default"]),
   abuse_notifications: defineTable({
     // Optional caseId keeps historical case-owned deliveries readable. New
     // intake writes only a temporary encrypted queue entry and receipt metadata.
@@ -355,6 +373,7 @@ export default defineSchema({
   }).index("by_chat_id", ["chat_id"]),
 
   chats: defineTable({
+    user_skill_ids: v.optional(v.array(v.id("user_skills"))),
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
     engagement_scope_expected: v.optional(v.boolean()),

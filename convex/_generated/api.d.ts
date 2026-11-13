@@ -105,6 +105,7 @@ import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
 import type * as userResearch from "../userResearch.js";
 import type * as userResearchValidators from "../userResearchValidators.js";
+import type * as userSkills from "../userSkills.js";
 import type * as userSuspensions from "../userSuspensions.js";
 
 import type {
@@ -211,6 +212,7 @@ declare const fullApi: ApiFromModules<{
   userDeletion: typeof userDeletion;
   userResearch: typeof userResearch;
   userResearchValidators: typeof userResearchValidators;
+  userSkills: typeof userSkills;
   userSuspensions: typeof userSuspensions;
 }>;
 

@@ -8,6 +8,7 @@ import { useQuestionAnswers } from "./useQuestionAnswers";
 import { UserInputQuestionPanel } from "./UserInputQuestionPanel";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ComposerSkillsProvider } from "./ComposerSkills";
 import { useNextActions } from "@/app/hooks/useNextActions";
 import { useLatestRef } from "@/app/hooks/useLatestRef";
 import type { CompletedPredictionTurn } from "@/lib/chat/next-actions/contracts";
@@ -954,6 +955,7 @@ const ChatInputContent = ({
     selectedComputerUnavailable,
     sendDisabledReason: computerSendDisabledReason,
   } = useSelectedComputerConnection();
+  const [skillsSaving, setSkillsSaving] = useState(false);
   const [goalMode, setGoalMode] = useComposerGoalMode(draftId);
   const [goalEnabled, setGoalEnabled] = useState<boolean | null>(null);
   const [dismissedGoalSuggestionInput, setDismissedGoalSuggestionInput] =
@@ -994,6 +996,7 @@ const ChatInputContent = ({
         : "Checking goal availability…"
       : undefined;
   const effectiveSendDisabledReason =
+    (skillsSaving ? "Saving skill selection" : undefined) ??
     (submissionPending ? "Sending message…" : undefined) ??
     (uploadedFiles.some((file) => file.removing)
       ? "Wait for the attachment to finish removing."
@@ -1564,216 +1567,228 @@ const ChatInputContent = ({
             onStop={() => void handleAgentStop()}
           />
         )}
-        <div
-          hidden={showAgentApprovalPrompt}
-          className="order-2 flex min-h-0 flex-col"
+        <ComposerSkillsProvider
+          chatId={chatId}
+          disabled={!user || isOffline || isGenerating || isWaitingForReply}
+          onSavingChange={setSkillsSaving}
+          onFocusComposer={
+            isMobile === false
+              ? () =>
+                  composerTextareaRef.current?.focus({ preventScroll: true })
+              : undefined
+          }
         >
-          {user && hasQuestionPanel && questionAnswers.question && (
-            <UserInputQuestionPanel
-              key={`${questionKey}:${questionAnswers.question.id}`}
-              question={questionAnswers.question}
-              answer={questionAnswers.answer}
-              index={questionAnswers.index}
-              total={questions.length}
-              disabled={
-                !questionAnswers.ready ||
-                submissionPending ||
-                isStoppingAgent ||
-                isOffline ||
-                !!effectiveSendDisabledReason
-              }
-              answersLocked={questionAnswers.locked}
-              stopping={isStoppingAgent}
-              onSelect={questionAnswers.select}
-              onStop={
-                pendingUserWait && !hideStop
-                  ? () => void handleAgentStop()
-                  : undefined
-              }
-            />
-          )}
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 transition-colors dark:border-border ${landingAppearance ? "min-h-[130px] shadow-[0_18px_55px_rgba(0,0,0,0.24)]" : "min-h-[96px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)]"} ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
-            data-testid="chat-input-surface"
-            data-panels-joined={hasJoinedComposerPanels || undefined}
-            onPointerDownCapture={holdComposerFocusForPointer}
-            onClick={(event) => {
-              // Reveal controls only after focus, not during touch start. Focus
-              // padding taps inside the click gesture so mobile opens the keyboard.
-              const target = event.target;
-              if (
-                !(target instanceof Element) ||
-                !event.currentTarget.contains(target) ||
-                target.closest(
-                  "button, a, input, textarea, select, label, [contenteditable], [role='button'], [role='menuitem'], [role='option'], [role='combobox']",
-                )
-              )
-                return;
-              const textarea = composerTextareaRef.current;
-              if (textarea && textarea !== document.activeElement) {
-                textarea.focus({ preventScroll: true });
-              }
-            }}
+            hidden={showAgentApprovalPrompt}
+            className="order-2 flex min-h-0 flex-col"
           >
-            <ChatInputTextarea
-              answerInput={
-                questionKey
-                  ? {
-                      value: questionAnswers.answer.customAnswer,
-                      onChange: questionAnswers.setCustomAnswer,
-                    }
-                  : undefined
-              }
-              disabled={
-                !!questionKey &&
-                (!questionAnswers.ready ||
-                  questionAnswers.locked ||
-                  questionAnswers.question?.allowCustomAnswer === false ||
-                  submissionPending)
-              }
-              prediction={nextActions.batch?.suggestions[0]}
-              onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
-              onPredictionExposed={nextActions.exposed}
-              onPredictionTyping={nextActions.recordTyping}
-              onDismissPrediction={nextActions.dismiss}
-              composerRef={composerTextareaRef}
-              draftId={draftId}
-              chatMode={chatMode}
-              onEnterSubmit={handleSubmit}
-              minRows={isCentered ? 3 : 1}
-              placeholder={
-                hasQuestionPanel
-                  ? questionAnswers.question?.allowCustomAnswer === false
-                    ? "Choose an option above"
-                    : questionAnswers.question?.options.length
-                      ? "Choose an option or type your answer…"
-                      : "Type your answer…"
-                  : isWaitingForReply
-                    ? "Type your answer…"
-                    : goalMode
-                      ? "Describe your goal, define measurable outcomes for best results"
-                      : placeholder
-              }
-              describedBy={
-                isWaitingForReply && !hasQuestionPanel
-                  ? WAITING_FOR_REPLY_DESCRIPTION_ID
-                  : undefined
-              }
-              isReplyingToAgent={isWaitingForReply}
-              onCommandKeyDown={(e) => {
-                if (showGoalSuggestion && e.key === "Tab") {
-                  e.preventDefault();
-                  selectGoal();
+            {user && hasQuestionPanel && questionAnswers.question && (
+              <UserInputQuestionPanel
+                key={`${questionKey}:${questionAnswers.question.id}`}
+                question={questionAnswers.question}
+                answer={questionAnswers.answer}
+                index={questionAnswers.index}
+                total={questions.length}
+                disabled={
+                  !questionAnswers.ready ||
+                  submissionPending ||
+                  isStoppingAgent ||
+                  isOffline ||
+                  !!effectiveSendDisabledReason
                 }
-                if (e.key === "Escape") {
-                  // Dismiss composer UI before the global Stop shortcut.
-                  if (goalMode || showGoalSuggestion) e.preventDefault();
-                  exitGoalMode("escape");
-                  setDismissedGoalSuggestionInput(input);
+                answersLocked={questionAnswers.locked}
+                stopping={isStoppingAgent}
+                onSelect={questionAnswers.select}
+                onStop={
+                  pendingUserWait && !hideStop
+                    ? () => void handleAgentStop()
+                    : undefined
                 }
-              }}
-              autoFocus={autoFocus}
-              onFocus={() => setComposerFocused(true)}
-              onBlur={(event) => {
-                if (composerPointerDownRef.current) return;
-                const next = event.relatedTarget;
+              />
+            )}
+            <div
+              className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 transition-colors dark:border-border ${landingAppearance ? "min-h-[130px] shadow-[0_18px_55px_rgba(0,0,0,0.24)]" : "min-h-[96px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)]"} ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+              data-testid="chat-input-surface"
+              data-panels-joined={hasJoinedComposerPanels || undefined}
+              onPointerDownCapture={holdComposerFocusForPointer}
+              onClick={(event) => {
+                // Reveal controls only after focus, not during touch start. Focus
+                // padding taps inside the click gesture so mobile opens the keyboard.
+                const target = event.target;
                 if (
-                  next instanceof Node &&
-                  (chatInputContainerRef.current?.contains(next) ||
-                    (next instanceof Element &&
-                      next.closest("[data-chat-input-agent-menu]")))
+                  !(target instanceof Element) ||
+                  !event.currentTarget.contains(target) ||
+                  target.closest(
+                    "button, a, input, textarea, select, label, [contenteditable], [role='button'], [role='menuitem'], [role='option'], [role='combobox']",
+                  )
                 )
                   return;
-                setComposerFocused(false);
+                const textarea = composerTextareaRef.current;
+                if (textarea && textarea !== document.activeElement) {
+                  textarea.focus({ preventScroll: true });
+                }
               }}
-            />
-            <ChatInputToolbar
-              replyActionLabel={
-                isWaitingForReply
-                  ? questionAnswers.index < answerQuestions.length - 1
-                    ? "Next"
-                    : answerQuestions.length > 1
-                      ? "Submit answers"
-                      : "Submit answer"
-                  : undefined
-              }
-              replyBack={
-                isWaitingForReply && questionAnswers.index > 0
-                  ? {
-                      onClick: () =>
-                        questionAnswers.go(questionAnswers.index - 1),
-                      disabled: submissionPending || isStoppingAgent,
-                    }
-                  : undefined
-              }
-              goalMenu={
-                !isWaitingForReply &&
-                isMobile !== undefined &&
-                user &&
-                chatMode === "agent" &&
-                subscription !== "free" &&
-                goalEnabled
-                  ? {
-                      active: goalMode,
-                      layout: isMobile === true ? "mobile" : "desktop",
-                      hasDraft: !!input.trim(),
-                      hasAttachments: uploadedFiles.length > 0,
-                      onSelect: () => {
-                        setGoalMode(true);
-                      },
-                      onFocusComposer: () =>
-                        composerTextareaRef.current?.focus({
-                          preventScroll: true,
-                        }),
-                    }
-                  : undefined
-              }
-              goalControl={
-                goalMode && !isWaitingForReply ? (
-                  <GoalModeButton
-                    compact={isMobile === true}
-                    onClear={() => exitGoalMode("close_button")}
-                  />
-                ) : undefined
-              }
-              allowSendWhileGenerating={hasActiveGoalRun}
-              pausesGoal={
-                pauseGoalOnSend &&
-                !isWaitingForReply &&
-                !goalMode &&
-                !/^\/goal(?:\s|$)/i.test(input.trim())
-              }
-              onAttachClick={handleAttachClick}
-              isGenerating={isGenerating && !isWaitingForReply}
-              isReplyingToAgent={isWaitingForReply}
-              attachmentsDisabled={isWaitingForReply}
-              hideStop={hideStop || (isWaitingForReply && !pendingUserWait)}
-              onStop={() => void handleAgentStop()}
-              onSubmit={handleSubmit}
-              status={status}
-              isUploadingFiles={isUploadingFiles}
-              input={
-                questionKey
-                  ? questionAnswers.canAdvance
-                    ? "answer"
-                    : ""
-                  : input
-              }
-              uploadedFiles={uploadedFiles}
-              chatMode={user ? chatMode : "ask"}
-              isOnline={!isOffline}
-              sendDisabledReason={
-                questionKey && (submissionPending || isStoppingAgent)
-                  ? isStoppingAgent
-                    ? "Stopping…"
-                    : "Sending your answer…"
-                  : goalMode && !isWaitingForReply && !input.trim()
-                    ? "Describe your goal before sending."
-                    : effectiveSendDisabledReason
-              }
-            />
+            >
+              <ChatInputTextarea
+                answerInput={
+                  questionKey
+                    ? {
+                        value: questionAnswers.answer.customAnswer,
+                        onChange: questionAnswers.setCustomAnswer,
+                      }
+                    : undefined
+                }
+                disabled={
+                  !!questionKey &&
+                  (!questionAnswers.ready ||
+                    questionAnswers.locked ||
+                    questionAnswers.question?.allowCustomAnswer === false ||
+                    submissionPending)
+                }
+                prediction={nextActions.batch?.suggestions[0]}
+                onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
+                onPredictionExposed={nextActions.exposed}
+                onPredictionTyping={nextActions.recordTyping}
+                onDismissPrediction={nextActions.dismiss}
+                composerRef={composerTextareaRef}
+                draftId={draftId}
+                chatMode={chatMode}
+                onEnterSubmit={handleSubmit}
+                minRows={isCentered ? 3 : 1}
+                placeholder={
+                  hasQuestionPanel
+                    ? questionAnswers.question?.allowCustomAnswer === false
+                      ? "Choose an option above"
+                      : questionAnswers.question?.options.length
+                        ? "Choose an option or type your answer…"
+                        : "Type your answer…"
+                    : isWaitingForReply
+                      ? "Type your answer…"
+                      : goalMode
+                        ? "Describe your goal, define measurable outcomes for best results"
+                        : placeholder
+                }
+                describedBy={
+                  isWaitingForReply && !hasQuestionPanel
+                    ? WAITING_FOR_REPLY_DESCRIPTION_ID
+                    : undefined
+                }
+                isReplyingToAgent={isWaitingForReply}
+                onCommandKeyDown={(e) => {
+                  if (showGoalSuggestion && e.key === "Tab") {
+                    e.preventDefault();
+                    selectGoal();
+                  }
+                  if (e.key === "Escape") {
+                    // Dismiss composer UI before the global Stop shortcut.
+                    if (goalMode || showGoalSuggestion) e.preventDefault();
+                    exitGoalMode("escape");
+                    setDismissedGoalSuggestionInput(input);
+                  }
+                }}
+                autoFocus={autoFocus}
+                onFocus={() => setComposerFocused(true)}
+                onBlur={(event) => {
+                  if (composerPointerDownRef.current) return;
+                  const next = event.relatedTarget;
+                  if (
+                    next instanceof Node &&
+                    (chatInputContainerRef.current?.contains(next) ||
+                      (next instanceof Element &&
+                        next.closest("[data-chat-input-agent-menu]")))
+                  )
+                    return;
+                  setComposerFocused(false);
+                }}
+              />
+              <ChatInputToolbar
+                replyActionLabel={
+                  isWaitingForReply
+                    ? questionAnswers.index < answerQuestions.length - 1
+                      ? "Next"
+                      : answerQuestions.length > 1
+                        ? "Submit answers"
+                        : "Submit answer"
+                    : undefined
+                }
+                replyBack={
+                  isWaitingForReply && questionAnswers.index > 0
+                    ? {
+                        onClick: () =>
+                          questionAnswers.go(questionAnswers.index - 1),
+                        disabled: submissionPending || isStoppingAgent,
+                      }
+                    : undefined
+                }
+                goalMenu={
+                  !isWaitingForReply &&
+                  isMobile !== undefined &&
+                  user &&
+                  chatMode === "agent" &&
+                  subscription !== "free" &&
+                  goalEnabled
+                    ? {
+                        active: goalMode,
+                        layout: isMobile === true ? "mobile" : "desktop",
+                        hasDraft: !!input.trim(),
+                        hasAttachments: uploadedFiles.length > 0,
+                        onSelect: () => {
+                          setGoalMode(true);
+                        },
+                        onFocusComposer: () =>
+                          composerTextareaRef.current?.focus({
+                            preventScroll: true,
+                          }),
+                      }
+                    : undefined
+                }
+                goalControl={
+                  goalMode && !isWaitingForReply ? (
+                    <GoalModeButton
+                      compact={isMobile === true}
+                      onClear={() => exitGoalMode("close_button")}
+                    />
+                  ) : undefined
+                }
+                allowSendWhileGenerating={hasActiveGoalRun}
+                pausesGoal={
+                  pauseGoalOnSend &&
+                  !isWaitingForReply &&
+                  !goalMode &&
+                  !/^\/goal(?:\s|$)/i.test(input.trim())
+                }
+                onAttachClick={handleAttachClick}
+                isGenerating={isGenerating && !isWaitingForReply}
+                isReplyingToAgent={isWaitingForReply}
+                attachmentsDisabled={isWaitingForReply}
+                hideStop={hideStop || (isWaitingForReply && !pendingUserWait)}
+                onStop={() => void handleAgentStop()}
+                onSubmit={handleSubmit}
+                status={status}
+                isUploadingFiles={isUploadingFiles}
+                input={
+                  questionKey
+                    ? questionAnswers.canAdvance
+                      ? "answer"
+                      : ""
+                    : input
+                }
+                uploadedFiles={uploadedFiles}
+                chatMode={user ? chatMode : "ask"}
+                isOnline={!isOffline}
+                sendDisabledReason={
+                  questionKey && (submissionPending || isStoppingAgent)
+                    ? isStoppingAgent
+                      ? "Stopping…"
+                      : "Sending your answer…"
+                    : goalMode && !isWaitingForReply && !input.trim()
+                      ? "Describe your goal before sending."
+                      : effectiveSendDisabledReason
+                }
+              />
+            </div>
           </div>
-        </div>
+        </ComposerSkillsProvider>
       </div>
     </div>
   );
