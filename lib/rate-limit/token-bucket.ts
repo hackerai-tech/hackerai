@@ -699,8 +699,10 @@ local currentTokens = tonumber(redis.call("HGET", key, "tokens")) or tierMax
 local previousAllocation = tonumber(redis.call("HGET", key, "cycleAllocation")) or tierMax
 local targetAllocation = math.min(previousAllocation, requestedAllocation)
 local previousRemaining = math.max(0, math.min(previousAllocation, currentTokens))
-local consumed = math.max(0, previousAllocation - previousRemaining)
+local previousOffset = tonumber(redis.call("HGET", key, "tierChangeConsumedOffset")) or 0
+local consumed = math.max(0, previousAllocation - previousRemaining) + previousOffset
 local targetRemaining = math.max(0, targetAllocation - consumed)
+local targetOffset = math.max(0, consumed - (targetAllocation - targetRemaining))
 local pointsRemoved = math.max(0, currentTokens - targetRemaining)
 
 if targetRefilledAt >= 0 then
@@ -709,6 +711,7 @@ if targetRefilledAt >= 0 then
     key,
     "tokens", targetRemaining,
     "cycleAllocation", targetAllocation,
+    "tierChangeConsumedOffset", targetOffset,
     "cycleTierMax", tierMax,
     "refilledAt", targetRefilledAt,
     "billingPeriodEndMs", targetRefilledAt + 30 * 24 * 60 * 60 * 1000
@@ -720,6 +723,7 @@ else
     key,
     "tokens", targetRemaining,
     "cycleAllocation", targetAllocation,
+    "tierChangeConsumedOffset", targetOffset,
     "cycleTierMax", tierMax
   )
 end
@@ -1973,13 +1977,15 @@ const tierChangeClaimKey = (stashKey: string) => `${stashKey}:claim`;
 const tierChangeCompletedKey = (stashKey: string) => `${stashKey}:completed`;
 
 export type TierChangeBucketState = {
-  version: 3;
+  version: 3 | 4;
   oldTier: SubscriptionTier | null;
+  oldPlanMax: number;
   targetTier: SubscriptionTier | null;
   subscriptionId: string | null;
   transitionId: string | null;
   remaining: number;
   cycleAllocation: number;
+  consumedCredits: number;
   resetAtMs: number;
 };
 
@@ -2007,6 +2013,14 @@ const parseTierChangeBucketState = (
   const cycleAllocation =
     finiteNonNegativePoints(parsed.cycleAllocation) ??
     remaining + legacyConsumed;
+  const consumedCredits = Math.max(
+    cycleAllocation - Math.min(remaining, cycleAllocation),
+    finiteNonNegativePoints(parsed.consumedCredits) ?? legacyConsumed,
+  );
+  // Version 3 stashes did not retain the old plan ceiling. Preserve their
+  // previous calculation until their 24-hour TTL expires.
+  const oldPlanMax =
+    finiteNonNegativePoints(parsed.oldPlanMax) || cycleAllocation;
   const resetAtMs = finiteNonNegativePoints(parsed.resetAtMs) ?? 0;
   const oldTier =
     typeof parsed.oldTier === "string" && parsed.oldTier in MONTHLY_CREDITS
@@ -2027,13 +2041,15 @@ const parseTierChangeBucketState = (
       : null;
 
   return {
-    version: 3,
+    version: parsed.version === 4 ? 4 : 3,
     oldTier,
+    oldPlanMax,
     targetTier,
     subscriptionId,
     transitionId,
     remaining: Math.min(remaining, cycleAllocation),
     cycleAllocation,
+    consumedCredits,
     resetAtMs,
   };
 };
@@ -2065,14 +2081,17 @@ local tokens = tonumber(redis.call("HGET", bucketKey, "tokens")) or oldCycleMax
 local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or oldCycleMax
 allocation = math.max(0, math.min(oldCycleMax, allocation))
 local remaining = math.max(0, math.min(allocation, tokens))
+local consumedOffset = tonumber(redis.call("HGET", bucketKey, "tierChangeConsumedOffset")) or 0
 local state = cjson.encode({
-  version = 3,
+  version = 4,
   oldTier = oldTier,
+  oldPlanMax = oldCycleMax,
   targetTier = targetTier,
   subscriptionId = subscriptionId,
   transitionId = transitionId,
   remaining = remaining,
   cycleAllocation = allocation,
+  consumedCredits = allocation - remaining + consumedOffset,
   resetAtMs = resetAtMs
 })
 
@@ -2144,6 +2163,7 @@ local refilledAt = tonumber(ARGV[6])
 local expireSeconds = tonumber(ARGV[7])
 local completedTtlSeconds = tonumber(ARGV[8])
 local periodEndMs = tonumber(ARGV[9])
+local carriedConsumed = tonumber(ARGV[10])
 
 if redis.call("GET", claimKey) ~= expectedClaim then
   return {0, 0}
@@ -2157,10 +2177,12 @@ end
 local existingTokens = tonumber(redis.call("HGET", bucketKey, "tokens"))
 local existingAllocation = redis.call("HGET", bucketKey, "cycleAllocation")
 local remaining = desiredRemaining
+local provisionalConsumed = 0
 if existingTokens and not existingAllocation then
-  local provisionalConsumed = math.max(0, tierMax - existingTokens)
+  provisionalConsumed = math.max(0, tierMax - existingTokens)
   remaining = math.max(0, desiredRemaining - provisionalConsumed)
 end
+local consumedOffset = math.max(0, carriedConsumed + provisionalConsumed - (allocation - remaining))
 
 redis.call("DEL", bucketKey)
 redis.call(
@@ -2168,6 +2190,7 @@ redis.call(
   bucketKey,
   "tokens", remaining,
   "cycleAllocation", allocation,
+  "tierChangeConsumedOffset", consumedOffset,
   "cycleTierMax", tierMax,
   "cycleStartedAt", cycleStartedAt,
   "refilledAt", refilledAt
@@ -2241,7 +2264,7 @@ export const stashTierChangeBucketState = async (
 
 /**
  * Compute the new cycle from the old cycle, not from the whole new plan.
- * Upgrades add only the prorated difference between allocations. Downgrades
+ * Upgrades add only the prorated difference between plan ceilings. Downgrades
  * cap the cycle immediately without restoring already-consumed credits.
  */
 export const calculateTierChangeCredits = (
@@ -2249,9 +2272,12 @@ export const calculateTierChangeCredits = (
   oldCycleAllocation: number,
   oldRemaining: number,
   proratedRatio: number,
+  oldPlanMax = oldCycleAllocation,
+  priorConsumedCredits = oldCycleAllocation - oldRemaining,
 ): TierChangeCredits => {
   const normalizedNewMax = Math.max(0, Math.round(newCycleMax));
   const normalizedOldAllocation = Math.max(0, Math.round(oldCycleAllocation));
+  const normalizedOldPlanMax = Math.max(0, Math.round(oldPlanMax));
   const normalizedOldRemaining = Math.min(
     normalizedOldAllocation,
     Math.max(0, Math.round(oldRemaining)),
@@ -2260,12 +2286,14 @@ export const calculateTierChangeCredits = (
     ? Math.max(0, Math.min(1, proratedRatio))
     : 0;
   const consumedCredits = Math.max(
-    0,
     normalizedOldAllocation - normalizedOldRemaining,
+    Number.isFinite(priorConsumedCredits)
+      ? Math.max(0, Math.round(priorConsumedCredits))
+      : 0,
   );
-  const isUpgrade = normalizedNewMax >= normalizedOldAllocation;
+  const isUpgrade = normalizedNewMax >= normalizedOldPlanMax;
   const incrementalCredits = isUpgrade
-    ? Math.floor((normalizedNewMax - normalizedOldAllocation) * normalizedRatio)
+    ? Math.floor((normalizedNewMax - normalizedOldPlanMax) * normalizedRatio)
     : 0;
   const cycleAllocation = isUpgrade
     ? normalizedOldAllocation + incrementalCredits
@@ -2392,6 +2420,8 @@ export const applyProratedTierChangeBucket = async (
     state.cycleAllocation,
     state.remaining,
     proratedRatio,
+    state.oldPlanMax,
+    state.consumedCredits,
   );
   const periodEndSeconds =
     storedResetAtMs > nowMs ? Math.ceil(storedResetAtMs / 1000) : undefined;
@@ -2399,7 +2429,18 @@ export const applyProratedTierChangeBucket = async (
     ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
     : nowMs;
   const [applied, appliedRemaining] = await redis.eval<
-    [string, number, number, number, number, number, number, number, number],
+    [
+      string,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ],
     [number, number]
   >(
     APPLY_TIER_CHANGE_BUCKET_SCRIPT,
@@ -2421,6 +2462,7 @@ export const applyProratedTierChangeBucket = async (
       periodEndSeconds
         ? periodEndSeconds * 1000
         : 0,
+      credits.consumedCredits,
     ],
   );
   if (applied !== 1) return null;

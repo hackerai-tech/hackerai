@@ -530,6 +530,53 @@ describe("token-bucket", () => {
       });
     });
 
+    it("uses the old plan ceiling on a second prorated upgrade", () => {
+      const result = calculateTierChangeCredits(
+        2_000_000,
+        425_000,
+        175_000,
+        0.25,
+        600_000,
+      );
+
+      expect(result).toEqual({
+        consumedCredits: 250_000,
+        incrementalCredits: 350_000,
+        cycleAllocation: 775_000,
+        remainingCredits: 525_000,
+      });
+    });
+
+    it("retains spent credits through a downgrade and later upgrade", () => {
+      const downgraded = calculateTierChangeCredits(
+        600_000,
+        2_000_000,
+        500_000,
+        0.5,
+        2_000_000,
+      );
+      const upgraded = calculateTierChangeCredits(
+        2_000_000,
+        downgraded.cycleAllocation,
+        downgraded.remainingCredits,
+        0.25,
+        600_000,
+        downgraded.consumedCredits,
+      );
+
+      expect(downgraded).toMatchObject({
+        consumedCredits: 1_500_000,
+        cycleAllocation: 600_000,
+        remainingCredits: 0,
+      });
+      expect(upgraded).toMatchObject({
+        consumedCredits: 1_500_000,
+        incrementalCredits: 350_000,
+        cycleAllocation: 950_000,
+        remainingCredits: 0,
+      });
+    });
+
     it("caps a downgrade without restoring consumed usage", () => {
       const result = calculateTierChangeCredits(250_000, 600_000, 400_000, 0.5);
 
