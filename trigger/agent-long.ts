@@ -399,6 +399,7 @@ import {
   extractAgentAutoReviewAuthorizationContext,
   extractAgentAutoReviewConversationContext,
 } from "@/lib/chat/agent-auto-review";
+import { createAgentApprovalSessionWaits } from "@/lib/chat/agent-approval-session-waits";
 import {
   AgentAutoReviewEntitlementRevalidationUnavailableError,
   buildAgentToolApprovalRequester,
@@ -1996,6 +1997,7 @@ export const agentLongTask = task({
       }
     };
     let cleanupBrowserSessions = async () => {};
+    const approvalSessionWaits = createAgentApprovalSessionWaits();
     let approvalSessionClosed = false;
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
@@ -3101,6 +3103,7 @@ export const agentLongTask = task({
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode,
               approvalSessionId,
+              approvalSessionWaits,
               writer,
               chatId,
               userId,
@@ -6410,6 +6413,9 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      // A stopped stream can stop awaiting a tool callback that still holds a
+      // Session waitpoint. Settle it before the task closes the Session or returns.
+      await approvalSessionWaits.finish();
       // Fill only missing reports; never repeat billing or manufacture a full cost.
       let reportingUsage:
         ReturnType<typeof triggerUsage.getCurrent> | undefined;
