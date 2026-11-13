@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "01119158f8f50027591cbae73f37cf0a2fea644d",
+  "sourceCommit": "fe3b30ea8f424c1bd2ddc0433b539dd6637ee5f1",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -206,10 +206,10 @@
       "filename": "graphql",
       "name": "graphql",
       "description": "GraphQL security testing covering introspection, resolver injection, batching attacks, and authorization bypass",
-      "contentBytes": 8527,
+      "contentBytes": 8774,
       "internal": false,
       "sourcePath": "protocols/graphql.md",
-      "sourceSha256": "884bc5aabeee41a0e3731af9406b8a8b3d5eaf2d3df4f82e7abaec52ea39eb80"
+      "sourceSha256": "0c133decf9c1a7aebea2ee29eeba59dff7223f3ff45c12e85576f9cf8b03e24c"
     },
     {
       "id": "protocols/oauth",
@@ -217,10 +217,10 @@
       "filename": "oauth",
       "name": "oauth",
       "description": "OAuth 2.0 and OIDC flow security testing covering redirect manipulation, token leakage, PKCE bypass, and client misconfiguration",
-      "contentBytes": 9151,
+      "contentBytes": 9428,
       "internal": false,
       "sourcePath": "protocols/oauth.md",
-      "sourceSha256": "05602f134b076d9c4af19586863787ad9f69e7bef3b27546d9fa43a4a17af2e3"
+      "sourceSha256": "ede8b207c545d352cb70891f808b4ffabe82863347415429962255e98cd1f5cb"
     },
     {
       "id": "reconnaissance/asset_discovery",
@@ -437,10 +437,10 @@
       "filename": "csrf",
       "name": "csrf",
       "description": "CSRF testing covering token bypass, SameSite cookies, CORS misconfigurations, and state-changing request abuse",
-      "contentBytes": 8000,
+      "contentBytes": 8536,
       "internal": false,
       "sourcePath": "vulnerabilities/csrf.md",
-      "sourceSha256": "aaf01a435e09734d8fbc18424727336a473f38c1241b33d212ae1cebe6820974"
+      "sourceSha256": "4348560ebe4768fd1cf33f770cb5f03882eb95767021215b727466c105afa644"
     },
     {
       "id": "vulnerabilities/header_injection",
