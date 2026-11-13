@@ -337,6 +337,72 @@ function cliAtPrepare() {
     return r;
   } catch { return [1, 0]; }
 }
+/** Read one bounded owned decimal sidecar beside the selected socket; never a link or pipe. */
+function ownedInteger(filename, max) {
+  let fd;
+  try {
+    const valid = entry => entry.isFile() && entry.uid === process.getuid() &&
+      (entry.mode & 0o022) === 0 && entry.size >= 1 && entry.size <= 11;
+    if (!valid(fs.lstatSync(filename))) return;
+    fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!valid(fs.fstatSync(fd))) return;
+    const bytes = Buffer.alloc(12);
+    const text = bytes.subarray(0, fs.readSync(fd, bytes, 0, bytes.length, 0)).toString('latin1');
+    const value = /^[1-9][0-9]{0,9}\n?$/.test(text) ? Number(text.trim()) : 0;
+    return value <= max ? value : 0;
+  } catch { return 0; } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
+/** Read one fixed procfs network table, refusing a truncated view beyond 256 KiB. */
+function procTable(filename) {
+  let fd;
+  try {
+    fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!fs.fstatSync(fd).isFile()) return;
+    const bytes = Buffer.alloc(262145);
+    let size = 0;
+    for (let count; (count = fs.readSync(fd, bytes, size, bytes.length - size, null)) > 0;)
+      if ((size += count) > 262144) return;
+    return bytes.subarray(0, size).toString('latin1').split('\n');
+  } catch { return; } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch {} } }
+}
+/** Return the selected daemon's recorded preview port only when the same live PID
+ * holds both the selected Unix listener and the loopback TCP listener on that port.
+ * Any doubt returns 0 so the original daemon request runs. Paths, PIDs, inodes and
+ * table rows stay local; this proves no connection, health or freshness.
+ */
+function ownedStreamPort(root, sockets, address) {
+  try {
+    if (process.platform !== 'linux' || typeof fs.constants?.O_NOFOLLOW !== 'number' ||
+        typeof fs.constants.O_NONBLOCK !== 'number' || typeof fs.statfsSync !== 'function' ||
+        [root, sockets].some(item => (item.mode & 0o077) !== 0) ||
+        fs.statfsSync('/proc').type !== 0x9fa0) return 0;
+    const port = ownedInteger(path.join(directory, 'sockets', name + '.stream'), 65535);
+    const pid = ownedInteger(path.join(directory, 'sockets', name + '.pid'), 4194304);
+    if (!port || !pid || fs.statSync('/proc/' + pid).uid !== process.getuid()) return 0;
+    // Accepted connections inherit the listener's path; only listeners carry ACCEPTCON.
+    // The path follows the inode and may contain spaces.
+    const unix = procTable('/proc/net/unix')?.map(row =>
+      /^[0-9a-fA-F]+: [0-9A-F]{8} [0-9A-F]{8} 00010000 0001 01 +([0-9]+) (.*)$/.exec(row))
+      .filter(row => row?.[2] === address);
+    // procfs prints IPv4 addresses in host byte order.
+    const loopback = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1 ? '0100007F' : '7F000001';
+    const local = loopback + ':' + port.toString(16).toUpperCase().padStart(4, '0');
+    const tcp = procTable('/proc/net/tcp')?.map(row => row.trim().split(/ +/))
+      .filter(fields => /^[0-9]+:$/.test(fields[0]) && fields[1] === local && fields[3] === '0A');
+    if (unix?.length !== 1 || tcp?.length !== 1 || !/^[0-9]+$/.test(tcp[0][9] ?? '')) return 0;
+    const wanted = new Set(['socket:[' + unix[0][1] + ']', 'socket:[' + tcp[0][9] + ']']);
+    let fds;
+    try {
+      fds = fs.opendirSync('/proc/' + pid + '/fd');
+      for (let count = 0, entry; count < 256 && (entry = fds.readSync()); count++) {
+        if (!/^[0-9]+$/.test(entry.name)) return 0;
+        wanted.delete(fs.readlinkSync('/proc/' + pid + '/fd/' + entry.name));
+        if (wanted.size === 0) return port;
+      }
+    } finally { if (fds) { try { fds.closeSync(); } catch {} } }
+  } catch {}
+  return 0;
+}
 /** Finish with the original daemon status even when optional diagnostics cannot be written. */
 function finish(code, value) {
   if (done) return;
@@ -385,31 +451,38 @@ try {
   precondition = 'owner_mismatch';
   if ([root, sockets, info].some(item => item.uid !== process.getuid())) throw new Error();
   precondition = 'request_invalid';
-  const request = JSON.parse(payload);
+  // The internal opt-in never reaches the daemon.
+  const { owned_port: ownedPort, ...request } = JSON.parse(payload);
   if (!['stream_status', 'screenshot', 'viewport'].includes(request.action)) throw new Error();
   const id = 'hackerai-preview';
-  let buffer = '';
-  timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
-  socket = net.createConnection(address);
-  socket.setEncoding('utf8');
-  socket.on('connect', () => {
-    deadlinePhase = 'awaiting_response';
-    socket.write(JSON.stringify({ ...request, id }) + '\n');
-  });
-  socket.on('data', chunk => {
-    if (chunk.length > 0) deadlinePhase = 'partial_response';
-    buffer += chunk;
-    if (buffer.length > 2 * 1024 * 1024) return finish(4);
-    const newline = buffer.indexOf('\n');
-    if (newline < 0) return;
-    try {
-      const response = JSON.parse(buffer.slice(0, newline));
-      if (response.id !== id || response.success !== true) return finish(5);
-      finish(0, response);
-    } catch { finish(5); }
-  });
-  socket.on('error', () => finish(6));
-  socket.on('close', () => { if (!done) finish(6); });
+  // A non-fresh preview may skip the serialized daemon queue only with listener proof.
+  const port = ownedPort === true && request.action === 'stream_status' ?
+    ownedStreamPort(root, sockets, address) : 0;
+  if (port) finish(0, { id, success: true, data: { port } });
+  else {
+    let buffer = '';
+    timer = setTimeout(() => finish(3, { deadline: [1, deadlinePhase] }), 6000);
+    socket = net.createConnection(address);
+    socket.setEncoding('utf8');
+    socket.on('connect', () => {
+      deadlinePhase = 'awaiting_response';
+      socket.write(JSON.stringify({ ...request, id }) + '\n');
+    });
+    socket.on('data', chunk => {
+      if (chunk.length > 0) deadlinePhase = 'partial_response';
+      buffer += chunk;
+      if (buffer.length > 2 * 1024 * 1024) return finish(4);
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline));
+        if (response.id !== id || response.success !== true) return finish(5);
+        finish(0, response);
+      } catch { finish(5); }
+    });
+    socket.on('error', () => finish(6));
+    socket.on('close', () => { if (!done) finish(6); });
+  }
 } catch (error) {
   const value = { diagnostic_reason: precondition };
   if (['root_stat', 'sockets_stat', 'socket_stat'].includes(precondition)) {
@@ -424,7 +497,9 @@ try {
 `;
 
 type BrowserDaemonRequest =
-  | { action: "stream_status" }
+  // owned_port lets the helper prove the port from the daemon's own listeners;
+  // the helper strips it and falls back to this same daemon request otherwise.
+  | { action: "stream_status"; owned_port?: true }
   | { action: "screenshot"; path: string; format: "jpeg"; quality: 65 }
   | {
       action: "viewport";

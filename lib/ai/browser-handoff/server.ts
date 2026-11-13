@@ -357,15 +357,25 @@ export async function getActiveBrowserSessionName(
   return name;
 }
 
+/**
+ * Only a non-fresh preview passes ownedListener: the helper may then return a
+ * port its daemon provably listens on without waiting behind serialized daemon
+ * work, and otherwise sends this same status request.
+ */
 export async function getPrivateStreamPort(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
+  ownedListener = false,
 ) {
   const result = await sandbox.commands.run(
-    browserDaemonCommand(session.directory, browserSessionName, {
-      action: "stream_status",
-    }),
+    browserDaemonCommand(
+      session.directory,
+      browserSessionName,
+      ownedListener
+        ? { action: "stream_status", owned_port: true }
+        : { action: "stream_status" },
+    ),
     {
       ...buildSandboxCommandOptions(sandbox),
       timeoutMs: 7_000,
@@ -682,7 +692,12 @@ export async function captureBrowserFrame(
   try {
     const port =
       streamPort ??
-      (await getPrivateStreamPort(sandbox, session, browserSessionName));
+      (await getPrivateStreamPort(
+        sandbox,
+        session,
+        browserSessionName,
+        !requireFresh,
+      ));
     stage = "frame_bridge";
     const result = await sandbox.commands.run(
       browserBridgeCommand(port, "frame"),

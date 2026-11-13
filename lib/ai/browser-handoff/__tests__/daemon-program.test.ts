@@ -20,12 +20,30 @@ function expectPacketBudgets(text: string) {
   ).toBeLessThanOrEqual(512);
   expect(Buffer.byteLength(text)).toBeLessThanOrEqual(544);
 }
+/** The selected stream sidecar and this helper's procfs view of its daemon. */
+type OwnedState = {
+  stream?: string;
+  streamOwner?: number;
+  streamMode?: number;
+  streamSize?: number;
+  streamSymlink?: boolean;
+  streamFifo?: boolean;
+  unix?: string;
+  tcp?: string;
+  tableError?: string;
+  fds?: Record<string, string>;
+  fdError?: string;
+  linkError?: string;
+};
 /** Run the real daemon helper against controlled filesystem and socket boundaries. */
 function daemon(
   options: {
     directory?: string;
     invalidPath?: string;
     action?: string;
+    request?: Record<string, unknown>;
+    rootMode?: number;
+    owned?: OwnedState;
     unownedPath?: string;
     missingPath?: string;
     missingCode?: string;
@@ -147,7 +165,33 @@ function daemon(
       !options.versionSymlink &&
       !options.versionFifo,
   });
-  const readReceipt = jest.fn((fd: number, bytes: Buffer) => {
+  const owned = options.owned ?? {};
+  const streamStat = () => ({
+    uid: owned.streamOwner ?? 1000,
+    mode: owned.streamMode ?? 0o644,
+    size: owned.streamSize ?? Buffer.byteLength(owned.stream ?? ""),
+    isFile: () =>
+      owned.stream !== undefined && !owned.streamSymlink && !owned.streamFifo,
+  });
+  // procfs tables report size 0 and return at most a page per read.
+  const tables = new Map<number, { text: Buffer; at: number }>();
+  const readReceipt = jest.fn(
+    (fd: number, bytes: Buffer, offset = 0, length = bytes.length) => {
+      const table = tables.get(fd);
+      if (table) {
+        const chunk = table.text.subarray(
+          table.at,
+          table.at + Math.min(length, 4096),
+        );
+        chunk.copy(bytes, offset);
+        table.at += chunk.length;
+        return chunk.length;
+      }
+      if (fd === 14) return bytes.write(owned.stream!, "latin1");
+      return readFile(fd, bytes);
+    },
+  );
+  const readFile = (fd: number, bytes: Buffer) => {
     if (fd === 13 && options.versionReadError)
       throw new Error("PRIVATE version read");
     return bytes.write(
@@ -162,9 +206,24 @@ function daemon(
               : JSON.stringify(fileReceipt(fd === 8, fd === 9)),
       "utf8",
     );
-  });
+  };
   const closeReceipt = jest.fn();
   const openReceipt = jest.fn((file: string) => {
+    if (file === "/proc/net/unix" || file === "/proc/net/tcp") {
+      const text = file.endsWith("unix") ? owned.unix : owned.tcp;
+      if (owned.tableError || text === undefined)
+        throw Object.assign(new Error("PRIVATE table"), {
+          code: owned.tableError ?? "ENOENT",
+        });
+      const fd = file.endsWith("unix") ? 15 : 16;
+      tables.set(fd, { text: Buffer.from(text, "latin1"), at: 0 });
+      return fd;
+    }
+    if (file.endsWith(".stream")) {
+      if (owned.streamSymlink)
+        throw Object.assign(new Error("PRIVATE link"), { code: "ELOOP" });
+      return 14;
+    }
     if (file.startsWith("/proc/")) {
       if (file !== "/proc/271828/stat")
         throw new Error("Unexpected process path");
@@ -200,6 +259,13 @@ function daemon(
   });
   const lstat = jest.fn((file: string) => {
     if (file.endsWith("/cli-at-prepare.json")) return cliStat();
+    if (file.endsWith(".stream")) {
+      if (owned.stream === undefined)
+        throw Object.assign(new Error("PRIVATE missing stream"), {
+          code: "ENOENT",
+        });
+      return streamStat();
+    }
     if (file.endsWith(".version")) {
       if (options.versionError || options.versionFile === undefined)
         throw Object.assign(new Error("PRIVATE version"), {
@@ -236,10 +302,36 @@ function daemon(
       mode:
         file.endsWith("/sockets") && options.socketsMode !== undefined
           ? options.socketsMode
-          : 0o700,
+          : file === (options.directory ?? directory) &&
+              options.rootMode !== undefined
+            ? options.rootMode
+            : 0o700,
       isDirectory: () => file !== socketPath && file !== options.invalidPath,
       isSocket: () => file === socketPath && file !== options.invalidPath,
     };
+  });
+  const closeDescriptors = jest.fn();
+  const openDescriptors = jest.fn((file: string) => {
+    if (file !== "/proc/314159/fd") throw new Error("Unexpected process path");
+    if (owned.fdError)
+      throw Object.assign(new Error("PRIVATE descriptors"), {
+        code: owned.fdError,
+      });
+    const names = Object.keys(owned.fds ?? {});
+    return {
+      readSync: () => (names.length ? { name: names.shift() } : null),
+      closeSync: closeDescriptors,
+    };
+  });
+  const readLink = jest.fn((file: string) => {
+    const descriptor = /^\/proc\/314159\/fd\/([0-9]+)$/.exec(file)?.[1];
+    if (descriptor === undefined || owned.fds?.[descriptor] === undefined)
+      throw new Error("Unexpected descriptor path");
+    if (owned.linkError)
+      throw Object.assign(new Error("PRIVATE link"), {
+        code: owned.linkError,
+      });
+    return owned.fds[descriptor];
   });
   let deadline: (() => void) | undefined;
   runInNewContext(BROWSER_DAEMON_PROGRAM, {
@@ -252,18 +344,22 @@ function daemon(
           constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
           openSync: openReceipt,
           fstatSync: (fd: number) =>
-            fd === 13
-              ? versionStat()
-              : fd === 12
-                ? {
-                    uid: options.wrapperStatOwner ?? 1000,
-                    isFile: () => !options.wrapperStatFifo,
-                  }
-                : fd === 11
-                  ? cliStat()
-                  : fd === 10
-                    ? pidStat()
-                    : receiptStat(fd === 8, fd === 9),
+            fd === 15 || fd === 16
+              ? { isFile: () => true }
+              : fd === 14
+                ? streamStat()
+                : fd === 13
+                  ? versionStat()
+                  : fd === 12
+                    ? {
+                        uid: options.wrapperStatOwner ?? 1000,
+                        isFile: () => !options.wrapperStatFifo,
+                      }
+                    : fd === 11
+                      ? cliStat()
+                      : fd === 10
+                        ? pidStat()
+                        : receiptStat(fd === 8, fd === 9),
           statfsSync: (file: string) => {
             if (file !== "/proc") throw new Error("Unexpected filesystem");
             if (options.procUnavailable)
@@ -297,6 +393,8 @@ function daemon(
           readSync: readReceipt,
           closeSync: closeReceipt,
           lstatSync: lstat,
+          opendirSync: openDescriptors,
+          readlinkSync: readLink,
         };
       throw new Error("Unexpected process or module access");
     },
@@ -305,7 +403,9 @@ function daemon(
         "node",
         options.directory ?? directory,
         options.name ?? "default",
-        JSON.stringify({ action: options.action ?? "stream_status" }),
+        JSON.stringify(
+          options.request ?? { action: options.action ?? "stream_status" },
+        ),
       ],
       getuid: () => 1000,
       platform: "linux",
@@ -331,6 +431,9 @@ function daemon(
     closeReceipt,
     openReceipt,
     lstat,
+    openDescriptors,
+    closeDescriptors,
+    readLink,
     timeout: () => deadline?.(),
   };
 }
@@ -1792,3 +1895,321 @@ it("neither reads the declaration nor adds the category to a successful response
     false,
   );
 });
+
+const selectedSocket = directory + "/sockets/default.sock";
+/** /proc/net/unix as Linux prints it: a %5lu inode, then a path that can contain spaces. */
+const unixTable = (...rows: string[]) =>
+  ["Num       RefCount Protocol Flags    Type St Inode Path", ...rows, ""].join(
+    "\n",
+  );
+const unixRow = (inode: number, address?: string, listening = true) =>
+  `0000000000000000: 00000002 00000000 ${listening ? "00010000" : "00000000"} 0001 ${listening ? "01" : "03"} ${String(inode).padStart(5)}${address === undefined ? "" : ` ${address}`}`;
+/** /proc/net/tcp: host-order (little-endian) hex address:port, 0A is LISTEN, field 10 the inode. */
+const tcpTable = (...rows: string[]) =>
+  [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    ...rows,
+    "",
+  ].join("\n");
+const tcpRow = (
+  inode: number,
+  { local = "0100007F", port = 9223, state = "0A" } = {},
+) =>
+  `   0: ${local}:${port.toString(16).toUpperCase().padStart(4, "0")} 00000000:0000 ${state} 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 100 0 0 10 0`.padEnd(
+    149,
+  );
+const descriptors = (fillers: number, ...links: string[]) =>
+  Object.fromEntries(
+    [...Array.from({ length: fillers }, () => "/dev/null"), ...links].map(
+      (link, index) => [String(index), link],
+    ),
+  );
+const ownedFds = {
+  "0": "/dev/null",
+  "3": "socket:[4242]",
+  "4": "anon_inode:[eventfd]",
+  "7": "socket:[4243]",
+  "9": "socket:[5151]",
+};
+/** The selected daemon holds both listeners while a serialized wait is connected. */
+const ownedState: OwnedState = {
+  stream: "9223",
+  unix: unixTable(
+    unixRow(4100),
+    unixRow(4242, selectedSocket),
+    // The accepted wait connection inherits the listener's path.
+    unixRow(4243, selectedSocket, false),
+    unixRow(4300, directory + "/sockets/other session.sock"),
+  ),
+  tcp: tcpTable(
+    tcpRow(5151),
+    tcpRow(5152, { state: "01" }),
+    tcpRow(5200, { port: 9224 }),
+  ),
+  fds: ownedFds,
+};
+const ownedRequest = { action: "stream_status", owned_port: true };
+const ownedDaemon = (options: DaemonOptions = {}, owned: OwnedState = {}) =>
+  daemon({
+    pidFile: "314159",
+    request: ownedRequest,
+    ...options,
+    owned: { ...ownedState, ...owned },
+  });
+
+it.each<[string, DaemonOptions, OwnedState, number]>([
+  ["the upstream plain sidecars", {}, {}, 9223],
+  [
+    "newline-terminated sidecars",
+    { pidFile: "314159\n" },
+    { stream: "9223\n" },
+    9223,
+  ],
+  [
+    "the highest port",
+    {},
+    { stream: "65535", tcp: tcpTable(tcpRow(5151, { port: 65535 })) },
+    65535,
+  ],
+  [
+    "both listeners at the descriptor cap",
+    {},
+    { fds: descriptors(254, "socket:[4242]", "socket:[5151]") },
+    9223,
+  ],
+])(
+  "returns only a port held by the selected daemon's own Unix and loopback listeners (%s)",
+  (_case, options, owned, port) => {
+    const d = ownedDaemon(options, owned);
+    expect(d.exit).toHaveBeenCalledWith(0);
+    // No serialized daemon request, so the preview is not queued behind a wait.
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    // Never a fabricated connection, health or freshness claim.
+    expect(JSON.parse(text)).toEqual({
+      id: "hackerai-preview",
+      success: true,
+      data: { port },
+    });
+    expect(text).not.toMatch(/314159|4242|5151|\/proc|\/dev\/shm|default/);
+    // Only fixed tables and the recorded PID's descriptors; never a process scan.
+    expect(
+      d.openReceipt.mock.calls.filter(([file]) => file.startsWith("/proc/")),
+    ).toEqual([
+      ["/proc/net/unix", 256 | 2048],
+      ["/proc/net/tcp", 256 | 2048],
+    ]);
+    expect(d.openReceipt).toHaveBeenCalledWith(
+      directory + "/sockets/default.stream",
+      256 | 2048,
+    );
+    expect(d.openReceipt).toHaveBeenCalledWith(
+      directory + "/sockets/default.pid",
+      256 | 2048,
+    );
+    for (const fd of [10, 14, 15, 16])
+      expect(d.closeReceipt).toHaveBeenCalledWith(fd);
+    expect(d.openDescriptors.mock.calls).toEqual([["/proc/314159/fd"]]);
+    expect(d.closeDescriptors).toHaveBeenCalledTimes(1);
+    expect(d.readLink.mock.calls.length).toBeLessThanOrEqual(256);
+  },
+);
+
+const unixFiller = Array.from({ length: 2000 }, (_, index) =>
+  unixRow(10000 + index, "/tmp/" + "x".repeat(100)),
+);
+const tcpFiller = Array.from({ length: 2000 }, (_, index) =>
+  tcpRow(10000 + index, { port: 10000 + index }),
+);
+
+it.each<[string, DaemonOptions, OwnedState]>([
+  ["the stream sidecar is missing", {}, { stream: undefined }],
+  ...[
+    "0",
+    "65536",
+    "09223",
+    " 9223",
+    "9223 ",
+    "9223\r\n",
+    "9223\n\n",
+    "+9223",
+    "9223.0",
+    "PRIVATE",
+    '{"port":9223}',
+    "",
+  ].map((stream): [string, DaemonOptions, OwnedState] => [
+    `the stream sidecar is ${JSON.stringify(stream)}`,
+    {},
+    { stream },
+  ]),
+  ["the stream sidecar is a symlink", {}, { streamSymlink: true }],
+  ["the stream sidecar is a FIFO", {}, { streamFifo: true }],
+  ["another user owns the stream sidecar", {}, { streamOwner: 0 }],
+  ["the stream sidecar is group-writable", {}, { streamMode: 0o664 }],
+  ["the stream sidecar is world-writable", {}, { streamMode: 0o646 }],
+  ["the stream sidecar exceeds its bound", {}, { streamSize: 12 }],
+  ["the sockets directory is group-accessible", { socketsMode: 0o750 }, {}],
+  ["the root directory is group-accessible", { rootMode: 0o710 }, {}],
+  ["the PID sidecar is missing", { pidFile: undefined }, {}],
+  ["the PID sidecar is malformed", { pidFile: "PRIVATE" }, {}],
+  ["the PID sidecar is zero", { pidFile: "0" }, {}],
+  ["the PID exceeds the kernel limit", { pidFile: "4194305" }, {}],
+  ["the PID sidecar is a symlink", { pidSymlink: true }, {}],
+  ["another user owns the PID sidecar", { pidOwner: 0 }, {}],
+  ["the PID sidecar is group-writable", { pidMode: 0o664 }, {}],
+  ["the recorded process is gone", { processVisibility: "missing" }, {}],
+  [
+    "another user runs the recorded PID",
+    { processVisibility: "other_uid" },
+    {},
+  ],
+  ["procfs denies the process", { processVisibility: "permission" }, {}],
+  ["procfs is unavailable", { procUnavailable: true }, {}],
+  ["/proc is not procfs", { procfsType: 0x01021994 }, {}],
+  ["the recorded port is stale", {}, { stream: "9225" }],
+  [
+    "another process listens on the recorded port",
+    {},
+    { fds: { "3": "socket:[4242]" } },
+  ],
+  [
+    "another process holds the selected Unix listener",
+    {},
+    { fds: { "9": "socket:[5151]" } },
+  ],
+  [
+    "the PID was reused by an unrelated process",
+    {},
+    { fds: { "0": "/dev/null", "1": "pipe:[4242]", "2": "pipe:[5151]" } },
+  ],
+  [
+    "only an accepted connection has the selected path",
+    {},
+    {
+      unix: unixTable(unixRow(4243, selectedSocket, false)),
+      fds: { "7": "socket:[4243]", "9": "socket:[5151]" },
+    },
+  ],
+  [
+    "the listener only shares the selected path's prefix",
+    {},
+    { unix: unixTable(unixRow(4242, selectedSocket + ".old")) },
+  ],
+  [
+    "the listener belongs to another session",
+    {},
+    { unix: unixTable(unixRow(4242, directory + "/sockets/other.sock")) },
+  ],
+  [
+    "two listeners claim the selected path",
+    {},
+    {
+      unix: unixTable(
+        unixRow(4242, selectedSocket),
+        unixRow(4244, selectedSocket),
+      ),
+      fds: { ...ownedFds, "11": "socket:[4244]" },
+    },
+  ],
+  [
+    "two loopback listeners share the port",
+    {},
+    {
+      tcp: tcpTable(tcpRow(5151), tcpRow(5153)),
+      fds: { ...ownedFds, "11": "socket:[5153]" },
+    },
+  ],
+  [
+    "the port listener is not loopback",
+    {},
+    { tcp: tcpTable(tcpRow(5151, { local: "00000000" })) },
+  ],
+  [
+    "the port socket is not listening",
+    {},
+    { tcp: tcpTable(tcpRow(5151, { state: "01" })) },
+  ],
+  [
+    "the Unix table exceeds its bound",
+    {},
+    { unix: unixTable(unixRow(4242, selectedSocket), ...unixFiller) },
+  ],
+  [
+    "the TCP table exceeds its bound",
+    {},
+    { tcp: tcpTable(tcpRow(5151), ...tcpFiller) },
+  ],
+  ["procfs denies the tables", {}, { tableError: "EACCES" }],
+  ["procfs denies the descriptor list", {}, { fdError: "EACCES" }],
+  ["a descriptor cannot be read", {}, { linkError: "EACCES" }],
+  [
+    "the listeners lie beyond the descriptor cap",
+    {},
+    { fds: descriptors(256, "socket:[4242]", "socket:[5151]") },
+  ],
+])(
+  "keeps the unchanged daemon request and deadline packet when %s",
+  (_case, options, owned) => {
+    const deadline = (request: Record<string, unknown>) => {
+      const d = ownedDaemon({ ...options, request }, owned);
+      expect(d.exit).not.toHaveBeenCalled();
+      expect(d.connect.mock.calls).toEqual([[selectedSocket]]);
+      d.socket.emit("connect");
+      d.timeout();
+      expect(d.exit.mock.calls).toEqual([[3]]);
+      return [d.socket.write.mock.calls, d.output.mock.calls[0][0]];
+    };
+    const [writes, text] = deadline(ownedRequest);
+    // Byte-identical to a request that never opted in: the flag is internal.
+    expect(writes).toEqual([
+      ['{"action":"stream_status","id":"hackerai-preview"}\n'],
+    ]);
+    expect(text).toBe(deadline({ action: "stream_status" })[1]);
+    expect(JSON.parse(text).deadline).toEqual([1, "awaiting_response"]);
+    expect(text).not.toMatch(/PRIVATE|314159|9223|4242|5151/);
+  },
+);
+
+it.each<Record<string, unknown>>([
+  { action: "stream_status" },
+  { action: "stream_status", owned_port: "true" },
+  { action: "stream_status", owned_port: 1 },
+  {
+    action: "screenshot",
+    path: directory + "/preview.jpg",
+    format: "jpeg",
+    quality: 65,
+    owned_port: true,
+  },
+  {
+    action: "viewport",
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    owned_port: true,
+  },
+])(
+  "never reads the stream sidecar or procfs for a request without the exact status opt-in: %j",
+  (request) => {
+    const d = ownedDaemon({ request });
+    expect(d.connect.mock.calls).toEqual([[selectedSocket]]);
+    d.socket.emit("connect");
+    const { owned_port: _flag, ...wire } = request;
+    expect(d.socket.write.mock.calls).toEqual([
+      [JSON.stringify({ ...wire, id: "hackerai-preview" }) + "\n"],
+    ]);
+    expect(d.lstat.mock.calls.some(([file]) => file.endsWith(".stream"))).toBe(
+      false,
+    );
+    expect(d.openReceipt).not.toHaveBeenCalled();
+    expect(d.openDescriptors).not.toHaveBeenCalled();
+    const response = {
+      id: "hackerai-preview",
+      success: true,
+      data: { connected: true, port: 9223 },
+    };
+    d.reply(response);
+    expect(d.exit).toHaveBeenCalledWith(0);
+    expect(JSON.parse(d.output.mock.calls[0][0])).toEqual(response);
+  },
+);
