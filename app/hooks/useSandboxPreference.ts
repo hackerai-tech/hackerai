@@ -1,11 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useMutation, useQuery } from "convex/react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+} from "react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
-import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
+import type {
+  DesktopSandboxBridge,
+  NativeAuthFrontendState,
+} from "@/app/services/desktop-sandbox-bridge";
 import {
   DESKTOP_UPDATE_URL,
   isTauriEnvironment,
@@ -98,6 +107,15 @@ let bridgeRecoveryExhausted = false;
 let bridgeRecoveryPausedOffline = false;
 let bridgeRecoveryResumeAt = 0;
 const bridgeTelemetry = new DesktopRelayTelemetry(captureAuthenticatedEvent);
+// The bridge outlives the consumer that created it, so its auth-stop
+// diagnostics read the latest committed consumer rather than a render closure.
+// Each commit's snapshot object is its owner token for cleanup.
+let nativeAuthFrontendSnapshot: { state: NativeAuthFrontendState } | null =
+  null;
+
+function readNativeAuthFrontendState(): NativeAuthFrontendState {
+  return nativeAuthFrontendSnapshot?.state ?? "unavailable";
+}
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
   if (bridgeRecoveryTimer) {
@@ -130,6 +148,24 @@ export function useSandboxPreference(
     useState<DesktopBridgeStatus>("idle");
   const [desktopBridgeRetryAttempt, setDesktopBridgeRetryAttempt] = useState(0);
   const [desktopEnvironmentId, setDesktopEnvironmentId] = useState<string>();
+
+  const convexAuth = useConvexAuth();
+  const nativeAuthFrontendState: NativeAuthFrontendState = !isAuthenticated
+    ? "owner_absent"
+    : convexAuth.isLoading
+      ? "owner_present_convex_loading"
+      : convexAuth.isAuthenticated
+        ? "owner_present_convex_authenticated"
+        : "owner_present_convex_unauthenticated";
+  useLayoutEffect(() => {
+    const snapshot = { state: nativeAuthFrontendState };
+    nativeAuthFrontendSnapshot = snapshot;
+    return () => {
+      if (nativeAuthFrontendSnapshot === snapshot) {
+        nativeAuthFrontendSnapshot = null;
+      }
+    };
+  }, [nativeAuthFrontendState]);
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
@@ -384,6 +420,7 @@ export function useSandboxPreference(
                     refreshTokenRef.current(args),
                   disconnectDesktop: (args) => disconnectRef.current(args),
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
+                  readNativeAuthFrontendState,
                   onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {

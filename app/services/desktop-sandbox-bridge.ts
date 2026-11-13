@@ -249,6 +249,40 @@ function isTargetedIncomingMessage(
   );
 }
 
+/**
+ * Committed foreground WorkOS user presence plus Convex SDK auth readiness.
+ * This is telemetry context only, not proof of the backend principal or token.
+ */
+export type NativeAuthFrontendState =
+  | "owner_absent"
+  | "owner_present_convex_loading"
+  | "owner_present_convex_authenticated"
+  | "owner_present_convex_unauthenticated"
+  | "unavailable";
+
+const NATIVE_AUTH_FRONTEND_STATES: readonly NativeAuthFrontendState[] = [
+  "owner_absent",
+  "owner_present_convex_loading",
+  "owner_present_convex_authenticated",
+  "owner_present_convex_unauthenticated",
+  "unavailable",
+];
+
+// Only a known closed value may reach analytics; anything else is unavailable.
+function readNativeAuthFrontendState(
+  read: (() => NativeAuthFrontendState) | undefined,
+): NativeAuthFrontendState {
+  try {
+    const state: unknown = read?.();
+    return (
+      NATIVE_AUTH_FRONTEND_STATES.find((known) => known === state) ??
+      "unavailable"
+    );
+  } catch {
+    return "unavailable";
+  }
+}
+
 // Join an existing auth-stop event to its backend failure without copying error
 // text. SDK formats may change; missing/malformed markers simply omit the ID.
 function nativeAuthDiagnostics(
@@ -256,6 +290,7 @@ function nativeAuthDiagnostics(
   convexFunction:
     | "localSandbox:heartbeatDesktop"
     | "localSandbox:refreshCentrifugoTokenDesktop",
+  readFrontendState: (() => NativeAuthFrontendState) | undefined,
 ): Record<string, string | number> {
   const diagnostics: Record<string, string | number> = {
     native_auth_diagnostic_version: 1,
@@ -263,6 +298,7 @@ function nativeAuthDiagnostics(
     // This identifies the heartbeat policy, not the native binary or build.
     heartbeat_backpressure_version: 1,
     convex_function: convexFunction,
+    native_auth_frontend_state: readNativeAuthFrontendState(readFrontendState),
   };
   try {
     const message = error instanceof Error ? error.message : undefined;
@@ -319,6 +355,8 @@ interface DesktopBridgeConfig {
     environmentId?: string,
   ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
+  // Read only when a heartbeat/token authentication failure stops this bridge.
+  readNativeAuthFrontendState?: () => NativeAuthFrontendState;
 }
 
 export class DesktopSandboxBridge {
@@ -456,7 +494,11 @@ export class DesktopSandboxBridge {
       if (isUnauthenticatedConvexError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
-          ...nativeAuthDiagnostics(error, "localSandbox:heartbeatDesktop"),
+          ...nativeAuthDiagnostics(
+            error,
+            "localSandbox:heartbeatDesktop",
+            this.config.readNativeAuthFrontendState,
+          ),
         });
         this.terminateClient("unauthenticated");
         return;
@@ -665,6 +707,7 @@ export class DesktopSandboxBridge {
               ...nativeAuthDiagnostics(
                 error,
                 "localSandbox:refreshCentrifugoTokenDesktop",
+                this.config.readNativeAuthFrontendState,
               ),
             };
             console.warn(
