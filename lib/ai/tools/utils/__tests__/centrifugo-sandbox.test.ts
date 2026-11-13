@@ -5099,6 +5099,51 @@ describe("CentrifugoSandbox", () => {
       expect(sandbox.isWindows()).toBe(false);
     });
 
+    // Desktop 0.0.74 registers Rust's `windows`; its relay may run either shell.
+    it.each([
+      {
+        shell: "cmd",
+        probe: "$BASH_VERSION\r\n",
+        copy: 'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload" && copy /Y "C:\\Users\\qa\\source.pdf" "C:\\temp\\hackerai-upload\\dest.pdf" >nul',
+      },
+      {
+        shell: "Git Bash",
+        probe: "5.2.37(1)-release\n",
+        copy: "mkdir -p '/c/Users/qa/AppData/Local/Temp/hackerai-upload' && cp -f '/c/Users/qa/source.pdf' '/c/Users/qa/AppData/Local/Temp/hackerai-upload/dest.pdf'",
+      },
+    ])(
+      "probes a raw Rust windows host before copying through $shell",
+      async ({ probe, copy }) => {
+        const sandbox = createDesktopSandbox(undefined, "windows");
+        const runs: string[] = [];
+        jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            runs.push(command);
+            return {
+              stdout:
+                command === "echo $BASH_VERSION"
+                  ? probe
+                  : command ===
+                      "/usr/bin/cygpath -w -- '/tmp/hackerai-upload/dest.pdf'"
+                    ? "C:\\Users\\qa\\AppData\\Local\\Temp\\hackerai-upload\\dest.pdf\n"
+                    : "",
+              stderr: "",
+              exitCode: 0,
+            };
+          });
+
+        await sandbox.files.copyLocal(
+          "C:\\Users\\qa\\source.pdf",
+          "/tmp/hackerai-upload/dest.pdf",
+        );
+
+        expect(sandbox.isWindows()).toBe(true);
+        expect(runs[0]).toBe("echo $BASH_VERSION");
+        expect(runs.at(-1)).toBe(copy);
+      },
+    );
+
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
       const { sandbox, runs, runOptions } = createWindowsBashSandbox();
       // Mock validateDownloadUrl is real; use an https URL it accepts.
@@ -7210,28 +7255,31 @@ describe("CentrifugoSandbox", () => {
       expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     });
 
-    it("uses a cmd-compatible browser probe on Windows", () => {
-      const sandbox = createSandbox({
-        osInfo: {
-          platform: "win32",
-          arch: "x86_64",
-          release: "11",
-          hostname: "windows-box",
-        },
-      });
+    it.each(["win32", "windows"])(
+      "uses a cmd-compatible browser probe on Windows (%s)",
+      (platform) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform,
+            arch: "x86_64",
+            release: "11",
+            hostname: "windows-box",
+          },
+        });
 
-      const context = sandbox.getSandboxContext();
+        const context = sandbox.getSandboxContext();
 
-      expect(context).toContain(
-        "where agent-browser && agent-browser --version",
-      );
-      expect(context).not.toContain("command -v agent-browser");
-      expect(context).toContain(
-        "Git Bash when available, otherwise cmd.exe /C",
-      );
-      expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
-      expect(context).not.toContain("Commands are invoked via cmd.exe /C");
-    });
+        expect(context).toContain(
+          "where agent-browser && agent-browser --version",
+        );
+        expect(context).not.toContain("command -v agent-browser");
+        expect(context).toContain(
+          "Git Bash when available, otherwise cmd.exe /C",
+        );
+        expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
+        expect(context).not.toContain("Commands are invoked via cmd.exe /C");
+      },
+    );
 
     it("safely serializes project folders before adding them to the prompt", () => {
       const sandbox = createDesktopSandbox(

@@ -829,6 +829,64 @@ describe("desktop capability registration", () => {
     },
   );
 
+  it.each([
+    ["windows", "win32", "windows"],
+    ["macos", "darwin", "darwin"],
+    ["linux", "linux", "linux"],
+  ])(
+    "registers 0.0.74 native OS %s as %s and reports it after a native denial",
+    async (rustOs, platform, nativePlatform) => {
+      const original = mockInvokeHandler;
+      let denyFiles = true;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "plugin:app|version") return "0.0.74";
+        // Exact Rust shape: platform is std::env::consts::OS.
+        if (cmd === "get_desktop_os_info")
+          return {
+            platform: rustOs,
+            arch: "x64",
+            release: "10.0.26100",
+            hostname: "qa-host",
+          };
+        if (cmd === "execute_command")
+          throw new Error("native OS info must not fall back to a shell");
+        if (denyFiles && cmd === "desktop_file_request")
+          throw new Error("Command desktop_file_request not allowed by ACL");
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await expect(bridge.start()).rejects.toMatchObject({
+          fileFailure: "native_ipc_denied",
+        });
+        expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+          "desktop_file_bridge_probe_failed",
+          expect.objectContaining({
+            native_app_version: "0.0.74",
+            native_platform: nativePlatform,
+          }),
+        );
+        await bridge.stop();
+        denyFiles = false;
+        await bridge.start();
+        expect(config.connectDesktop).toHaveBeenCalledWith(
+          expect.objectContaining({
+            osInfo: {
+              platform,
+              arch: "x64",
+              release: "10.0.26100",
+              hostname: "qa-host",
+            },
+          }),
+        );
+      } finally {
+        await bridge.stop();
+        mockInvokeHandler = original;
+      }
+    },
+  );
+
   it("records Windows native diagnostics without trusting the browser user agent", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) => {

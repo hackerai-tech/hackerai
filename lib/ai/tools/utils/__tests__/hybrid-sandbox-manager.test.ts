@@ -642,31 +642,41 @@ describe("isSameLocalMachine", () => {
     ).toBe(true);
   });
 
-  it("reconnects a legacy Git Bash report to its normalized Windows identity only on the same host", () => {
-    const previous = makeConnection({
-      ...kaliConnection,
-      isDesktop: true,
-      osInfo: { ...kaliConnection.osInfo!, platform: "mingw64_nt-10.0-22631" },
-    });
-    const replacement = {
-      ...previous,
-      connectionId: "replacement",
-      osInfo: { ...previous.osInfo!, platform: "win32" },
-    };
-    expect(isSameLocalMachine(previous, replacement)).toBe(true);
-    expect(
-      isSameLocalMachine(previous, {
-        ...replacement,
-        osInfo: { ...replacement.osInfo, hostname: "other-host" },
-      }),
-    ).toBe(false);
-    expect(
-      isSameLocalMachine(previous, {
-        ...replacement,
-        environmentId: "other-machine",
-      }),
-    ).toBe(false);
-  });
+  it.each([
+    ["mingw64_nt-10.0-22631", "win32"],
+    // Saved Desktop 0.0.74 registrations carry Rust's raw OS name.
+    ["windows", "win32"],
+    ["macos", "darwin"],
+  ])(
+    "reconnects a legacy %s report to its normalized %s identity only on the same host",
+    (legacy, canonical) => {
+      const previous = makeConnection({
+        ...kaliConnection,
+        isDesktop: true,
+        osInfo: { ...kaliConnection.osInfo!, platform: legacy },
+      });
+      const replacement = {
+        ...previous,
+        connectionId: "replacement",
+        osInfo: { ...previous.osInfo!, platform: canonical },
+      };
+      expect(isSameLocalMachine(previous, replacement)).toBe(true);
+      for (const other of [
+        {
+          ...replacement,
+          osInfo: { ...replacement.osInfo, hostname: "other-host" },
+        },
+        { ...replacement, environmentId: "other-machine" },
+        { ...replacement, isDesktop: false },
+        {
+          ...replacement,
+          osInfo: { ...replacement.osInfo, platform: "linux" },
+        },
+      ]) {
+        expect(isSameLocalMachine(previous, other)).toBe(false);
+      }
+    },
+  );
 
   it("rejects another host and connections without host identity", () => {
     expect(
@@ -753,6 +763,8 @@ describe("HybridSandboxManager browser automation prompt", () => {
     ["win32", false],
     ["mingw64_nt-10.0-22631", true],
     ["mingw64_nt-10.0-22631", false],
+    // Saved Desktop 0.0.74 registrations carry Rust's raw OS name.
+    ["windows", true],
   ] as const)(
     "uses Windows paths and shell guidance for %s (desktop=%s)",
     async (platform, isDesktop) => {
