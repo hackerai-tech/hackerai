@@ -1094,6 +1094,53 @@ test("an in-flight prediction stays hidden while typing and appears only after t
 
 // The following props mirror chat.tsx/ChatInput: a pending queue blocks the
 // composer, completion supplies the assistant ID, and stop clears completion.
+test("queueing through the composer submit path during streaming keeps the parent eligible after removal", async () => {
+  // ChatInput calls prepareSubmission before onSubmit even when the message is
+  // only queued behind the active turn; that must not consume the parent.
+  const streaming = {
+    ...base(),
+    status: "streaming",
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+  };
+  const { result, rerender, unmount } = renderHook(
+    (props) => useNextActions(props),
+    { initialProps: streaming },
+  );
+  input = "Queued follow-up";
+  rerender({ ...streaming, input });
+  act(() => {
+    const finish = result.current.prepareSubmission();
+    input = "";
+    finish(true);
+  });
+  rerender({ ...streaming, input, suspended: true });
+  await settle();
+  // The queued message is removed before it starts.
+  rerender({ ...streaming, input });
+  await settle();
+  expect(fetch).not.toHaveBeenCalled();
+  rerender({ ...base(), latestMessageIsAssistant: true });
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  expect(result.current.batch).toEqual(batch);
+  expect(deletions()).toHaveLength(0);
+  unmount();
+  const reloaded = renderHook(() =>
+    useNextActions({
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+    }),
+  );
+  await settle();
+  expect(reloaded.result.current.batch).toEqual(batch);
+  expect(
+    JSON.parse(String(generationCalls().at(-1)?.[1]?.body)).restoreOnly,
+  ).toBe(true);
+  expect(deletions()).toHaveLength(0);
+});
+
 test("a queued message removed before execution leaves the completing answer eligible through persistence lag", async () => {
   const streaming = {
     ...base(),

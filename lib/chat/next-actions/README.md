@@ -8,7 +8,9 @@ queued messages, send-disabled computer states, initial loading, and an
 ineligible device only hide the batch. They never start or delete a generation.
 An unsent request is deferred without counting as attempted, while a request
 already sent may settle hidden. Once the condition clears, the same batch
-returns with no new model call. Server latest-assistant fences still decide
+returns with no new model call. Sending while a turn is still active only
+queues or steers it, so it does not consume that in-flight parent; a submission
+from the ready state still does. Server latest-assistant fences still decide
 whether a source can be generated or restored, so a newer, failed or canceled
 turn never revives an older hint.
 

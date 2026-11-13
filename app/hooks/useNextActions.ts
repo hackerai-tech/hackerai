@@ -558,6 +558,10 @@ export function useNextActions(options: Options): NextActionsController {
       return true;
     },
     prepareSubmission: () => {
+      // While a turn is active the composer only queues or steers. Keep the
+      // in-flight parent eligible; latest-source fences reject it if a queued
+      // message later runs, and completion attribution stays pending.
+      if (current.current.status !== "ready") return () => {};
       const selection = accepted.current;
       const text = current.current.getInput();
       submissionInProgress.current = true;
