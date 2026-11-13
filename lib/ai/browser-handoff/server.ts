@@ -30,6 +30,7 @@ import {
   RELAY_START_PROGRAM,
   RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
+  RELAY_STOP_ALIVE_BRANCHES,
   RELAY_STOP_PROGRAM,
   RELAY_STOP_RECEIPT_CODES,
   RELAY_STOP_RECEIPT_STAGES,
@@ -121,7 +122,8 @@ const exitStatus = (value: unknown) =>
     : "other";
 
 type RelayStopReceiptContext = {
-  relay_stop_receipt_version: 1;
+  // 2 only for a recorded version 2 receipt; every other status keeps 1.
+  relay_stop_receipt_version: 1 | 2;
   // Absent: no output (including an older program); invalid: anything but
   // the exact bounded receipt for this exit; unreadable: non-data properties.
   relay_stop_receipt_status: "recorded" | "absent" | "invalid" | "unreadable";
@@ -132,6 +134,10 @@ type RelayStopReceiptContext = {
   // Aggregate counts, capped at 16 (meaning 16 or more).
   relay_stop_drain_deadline_count?: number;
   relay_stop_filesystem_failure_count?: number;
+  // Version 2 with a deadline: the check that last kept the first relay to
+  // reach its deadline alive, independent of the first overall failure.
+  relay_stop_first_deadline_alive_branch?: (typeof RELAY_STOP_ALIVE_BRANCHES)[number];
+  relay_stop_first_deadline_alive_code?: (typeof RELAY_STOP_RECEIPT_CODES)[number];
 };
 
 export type BrowserRelayStopFailureContext = {
@@ -146,8 +152,9 @@ export type BrowserRelayStopFailureContext = {
 
 // Keyed by the stop invocation's own failure, never a similar error elsewhere.
 const relayStopReceipts = new WeakMap<object, RelayStopReceiptContext>();
+// Version 1 has exactly five fields and version 2 exactly seven.
 const RELAY_STOP_RECEIPT =
-  /^relay-stop-receipt\/1 ([01]) ([0-4]) ([0-8]) (1[0-6]|[0-9]) (1[0-6]|[0-9])\n?$/;
+  /^relay-stop-receipt\/([12]) ([01]) ([0-4]) ([0-8]) (1[0-6]|[0-9]) (1[0-6]|[0-9])(?: ([0-6]) ([0-8]))?\n?$/;
 
 const receiptStatus = (
   status: "absent" | "invalid" | "unreadable",
@@ -162,23 +169,41 @@ function relayStopReceipt(
   stdout: unknown,
 ): RelayStopReceiptContext {
   if (stdout === undefined || stdout === "") return receiptStatus("absent");
-  // The receipt is at most 33 characters; never match against longer output.
+  // The receipt is at most 37 characters; never match against longer output.
   if (typeof stdout !== "string" || stdout.length > 64 || exitCode !== 1)
     return receiptStatus("invalid");
   const match = RELAY_STOP_RECEIPT.exec(stdout);
-  if (!match) return receiptStatus("invalid");
-  const [first, stage, code, deadlines, failures] = match.slice(1).map(Number);
+  if (!match || match[0].length !== stdout.length)
+    return receiptStatus("invalid");
+  const [version, first, stage, code, deadlines, failures] = match
+    .slice(1, 7)
+    .map(Number);
+  const [branch, branchCode] = match.slice(7).map(Number);
+  const aliveBranch =
+    version === 2 && deadlines >= 1
+      ? RELAY_STOP_ALIVE_BRANCHES[branch - 1]
+      : undefined;
   const consistent =
-    first === 0
+    (first === 0
       ? stage === 0 && code === 0 && deadlines >= 1
       : stage >= 1 &&
         code >= 1 &&
         failures >= 1 &&
         // A failed root scan precedes every relay.
-        (stage !== 1 || (deadlines === 0 && failures === 1));
+        (stage !== 1 || (deadlines === 0 && failures === 1))) &&
+    (version === 1
+      ? match[7] === undefined
+      : match[7] !== undefined &&
+        (deadlines === 0
+          ? branch === 0 && branchCode === 0
+          : aliveBranch !== undefined &&
+            // Only error branches carry an errno code.
+            (aliveBranch.endsWith("_error")
+              ? branchCode >= 1
+              : branchCode === 0)));
   if (!consistent) return receiptStatus("invalid");
   return {
-    relay_stop_receipt_version: 1,
+    relay_stop_receipt_version: version === 2 ? 2 : 1,
     relay_stop_receipt_status: "recorded",
     relay_stop_first_failure: first === 0 ? "drain_deadline" : "filesystem",
     ...(first === 1 && {
@@ -187,6 +212,13 @@ function relayStopReceipt(
     }),
     relay_stop_drain_deadline_count: deadlines,
     relay_stop_filesystem_failure_count: failures,
+    ...(aliveBranch !== undefined && {
+      relay_stop_first_deadline_alive_branch: aliveBranch,
+      ...(branchCode >= 1 && {
+        relay_stop_first_deadline_alive_code:
+          RELAY_STOP_RECEIPT_CODES[branchCode - 1],
+      }),
+    }),
   };
 }
 
