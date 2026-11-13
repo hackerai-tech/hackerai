@@ -1,5 +1,6 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
+import { getRecentMessageNavigatorDiagnostics } from "./message-navigator-diagnostics";
 import { getRecentMessageTimestampDiagnostics } from "./message-time-diagnostics";
 import {
   getUnhandledRejectionDiagnostics,
@@ -669,9 +670,16 @@ const getExceptionCaptureStructure = (
     hasBrowserFetchTransportMessage(strings),
 });
 
-/** Enrich retained exceptions with bounded build and recent-context diagnostics. */
+/**
+ * Enrich retained exceptions with bounded build and recent-context diagnostics.
+ * `navigatorDiagnosticOwner` is the caller's current committed analytics
+ * owner; without it, no navigator failure context is attached.
+ */
 export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event: T,
+  {
+    navigatorDiagnosticOwner = null,
+  }: { navigatorDiagnosticOwner?: string | null } = {},
 ): T {
   if (event.event !== "$exception") return event;
 
@@ -681,6 +689,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     if (
       key.startsWith("hackerai_recent_rejection_") ||
       key.startsWith("hackerai_recent_formatter_") ||
+      key.startsWith("hackerai_recent_navigator_") ||
       key.startsWith("hackerai_nearby_dispatch_") ||
       key.startsWith("hackerai_exception_capture_")
     )
@@ -700,6 +709,9 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     ...getExceptionCaptureStructure(properties, strings, frameSources),
     ...(category === "stack_overflow"
       ? getRecentMessageTimestampDiagnostics()
+      : {}),
+    ...(category === "stack_overflow"
+      ? getRecentMessageNavigatorDiagnostics(navigatorDiagnosticOwner)
       : {}),
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()

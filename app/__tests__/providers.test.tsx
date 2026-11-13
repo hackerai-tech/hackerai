@@ -14,6 +14,7 @@ import {
   createPostHogIdentitySignature,
   POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
 } from "@/lib/analytics/identity";
+import type { ChatMessage } from "@/types";
 
 jest.mock("next/navigation", () => ({
   usePathname: () => window.location.pathname,
@@ -36,6 +37,7 @@ jest.mock("@/lib/analytics/client", () => ({
   getPermittedAnalyticsUserId: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
   setAuthenticatedAnalyticsUserId: jest.fn(),
+  subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
 }));
 
 const mockNativeInvoke = jest.fn<(command: string) => Promise<unknown>>();
@@ -66,6 +68,10 @@ const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 const { getUnhandledRejectionDiagnostics } =
   require("@/lib/posthog/unhandled-rejection-diagnostics") as typeof import("@/lib/posthog/unhandled-rejection-diagnostics");
+const { deriveMessageNavigatorItems } =
+  require("../components/message-navigator") as typeof import("../components/message-navigator");
+const { deriveChatTimelineRows } =
+  require("../components/message-timeline-rows") as typeof import("../components/message-timeline-rows");
 
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseGlobalState = useGlobalState as jest.Mock;
@@ -1624,4 +1630,315 @@ describe("Desktop runtime identity", () => {
       withdrawn.before_send(transport("https://hackerai.co/c/chat", appFrames)),
     ).toBeNull();
   });
+});
+
+describe("message navigator failure context", () => {
+  const CANARY = "PRIVATE_NAVIGATOR_CANARY";
+  type BeforeSend = (event: unknown) => {
+    event?: string;
+    properties?: Record<string, unknown>;
+  } | null;
+  const sdk = () => ({
+    __loaded: false,
+    init: jest.fn(),
+    set_config: jest.fn(),
+    opt_in_capturing: jest.fn(),
+    has_opted_out_capturing: jest.fn(() => false),
+    identify: jest.fn(),
+    sessionRecordingStarted: jest.fn(() => false),
+    startSessionRecording: jest.fn(),
+    stopSessionRecording: jest.fn(),
+    reset: jest.fn(),
+    opt_out_capturing: jest.fn(),
+  });
+  const navigatorFields = (properties: Record<string, unknown> | undefined) =>
+    Object.fromEntries(
+      Object.entries(properties ?? {}).filter(([key]) =>
+        key.startsWith("hackerai_recent_navigator_"),
+      ),
+    );
+  // A retained native stack exception as the SDK captures it, plus a stale
+  // field from earlier processing that must never survive re-enrichment.
+  const stackException = () => ({
+    event: "$exception",
+    properties: {
+      $current_url: "https://hackerai.co/c/chat?token=PRIVATE_URL_TOKEN",
+      $exception_list: [
+        {
+          type: "InternalError",
+          value: "too much recursion",
+          mechanism: { handled: false, synthetic: false, type: "generic" },
+          stacktrace: {
+            frames: [
+              {
+                source:
+                  "turbopack:///[project]/app/components/message-navigator.ts",
+              },
+            ],
+          },
+        },
+      ],
+      hackerai_recent_navigator_phase: "PRIVATE_STALE_PHASE",
+    },
+  });
+
+  /** Throw `original` from one String method, only for the canary, inside the actual navigator. */
+  function failNavigatorNormalization(
+    method: "replace" | "trim",
+    text: string,
+    original: Error,
+  ) {
+    const messages = [
+      {
+        id: "PRIVATE_USER_MESSAGE_ID",
+        role: "user",
+        parts: [{ type: "text", text }],
+      },
+      {
+        id: "PRIVATE_ASSISTANT_MESSAGE_ID",
+        role: "assistant",
+        parts: [{ type: "text", text: "Synthetic answer" }],
+      },
+    ] as ChatMessage[];
+    const rows = deriveChatTimelineRows({
+      messages,
+      status: "ready",
+      lastAssistantMessageIndex: undefined,
+      expandedAgentMessageIds: new Set(),
+    });
+    const prototype = String.prototype as unknown as Record<
+      string,
+      (...args: unknown[]) => unknown
+    >;
+    const actual = prototype[method];
+    prototype[method] = function (this: unknown, ...args: unknown[]) {
+      if (typeof this === "string" && this.includes(CANARY)) throw original;
+      return actual.apply(this, args);
+    };
+    try {
+      deriveMessageNavigatorItems(messages, rows);
+    } catch (error) {
+      return error;
+    } finally {
+      // Restore before any capture or privacy code runs.
+      prototype[method] = actual;
+    }
+    return undefined;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    window.history.replaceState({}, "", "/");
+    mockUseAuth.mockReturnValue({
+      user: { id: "user-123", email: "user@example.com", locale: "en-US" },
+    });
+    mockUseGlobalState.mockReturnValue({ subscription: "pro" });
+    mockGetPostHogClient.mockReturnValue(null);
+    // Global analytics identity is reset only by the provider's passive
+    // effect, so it remains the previous owner throughout each new commit.
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    // A fixed clock keeps the five-second expiry out of the assertions.
+    jest.spyOn(performance, "now").mockReturnValue(1000);
+  });
+
+  afterEach(() => {
+    jest.mocked(performance.now).mockRestore();
+    window.history.replaceState({}, "", "/");
+    window.sessionStorage.clear();
+  });
+
+  it.each([
+    ["replace", "replace_whitespace", `${CANARY}  short\n\ntext`, "le255"],
+    [
+      "trim",
+      "trim_whitespace",
+      `  ${CANARY}  ${"x".repeat(5000)}  `,
+      "le65535",
+    ],
+  ] as const)(
+    "rethrows the original %s failure and delivers only closed nearby context",
+    async (method, phase, text, bucket) => {
+      const posthog = sdk();
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+      const view = render(
+        <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+      );
+      await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+      const { before_send: beforeSend } = posthog.init.mock.calls[0][1] as {
+        before_send: BeforeSend;
+      };
+      const original = Object.freeze(
+        Object.assign(new Error("too much recursion"), {
+          name: "InternalError",
+          syntheticDetail: "PRIVATE_ERROR_DETAIL",
+        }),
+      );
+
+      expect(failNavigatorNormalization(method, text, original)).toBe(original);
+
+      const exception = stackException();
+      const list = exception.properties.$exception_list;
+      const sent = beforeSend(exception);
+      expect(navigatorFields(sent?.properties)).toEqual({
+        hackerai_recent_navigator_version: 1,
+        hackerai_recent_navigator_phase: phase,
+        hackerai_recent_navigator_input_shape: "string",
+        hackerai_recent_navigator_length_bucket: bucket,
+        hackerai_recent_navigator_age: "lt_100ms",
+        hackerai_recent_navigator_association: "nearby_only",
+      });
+      expect(sent?.properties).toMatchObject({
+        hackerai_exception_category: "stack_overflow",
+        $exception_list: list,
+      });
+      expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+
+      // The same context never reaches a retained non-stack exception.
+      const other = beforeSend({
+        event: "$exception",
+        properties: {
+          $exception_list: [{ type: "Error", value: "Unrelated failure" }],
+          hackerai_recent_navigator_phase: "PRIVATE_STALE_PHASE",
+        },
+      });
+      expect(other?.properties).toMatchObject({
+        hackerai_exception_category: "unknown",
+      });
+      expect(navigatorFields(other?.properties)).toEqual({});
+      view.unmount();
+    },
+  );
+
+  const transitions = [
+    [
+      "withdraws consent",
+      () => (
+        <PostHogProvider analyticsAllowed={false}>
+          updated child
+        </PostHogProvider>
+      ),
+    ],
+    [
+      "switches account",
+      () => {
+        mockUseAuth.mockReturnValue({ user: { id: "user-b" } });
+        return (
+          <PostHogProvider analyticsAllowed>updated child</PostHogProvider>
+        );
+      },
+    ],
+    [
+      "enters a private page",
+      () => {
+        window.history.pushState({}, "", "/abuse");
+        return (
+          <PostHogProvider analyticsAllowed>updated child</PostHogProvider>
+        );
+      },
+    ],
+  ] as const;
+  const ownerA = () => (
+    <PostHogProvider analyticsAllowed>child</PostHogProvider>
+  );
+  const recordFailure = () =>
+    failNavigatorNormalization(
+      "replace",
+      `${CANARY} text`,
+      new Error("too much recursion"),
+    );
+
+  /** Run `onCommit` with the first installed before_send in each commit's layout phase. */
+  async function renderWithRetainedCallback() {
+    const posthog = sdk();
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const retained: {
+      beforeSend?: BeforeSend;
+      onCommit?: (beforeSend: BeforeSend) => void;
+    } = {};
+    // A parent's layout effect runs after the child provider's layout effects
+    // in the same commit and before any passive effect.
+    function RetainedBeforeSendCaller({
+      children,
+    }: {
+      children: React.ReactNode;
+    }) {
+      useLayoutEffect(() => {
+        if (retained.beforeSend) retained.onCommit?.(retained.beforeSend);
+      });
+      return <>{children}</>;
+    }
+    const view = render(
+      <RetainedBeforeSendCaller>{ownerA()}</RetainedBeforeSendCaller>,
+    );
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    retained.beforeSend = (
+      posthog.init.mock.calls[0][1] as { before_send: BeforeSend }
+    ).before_send;
+    const commit = (
+      provider: React.ReactElement,
+      onCommit?: (beforeSend: BeforeSend) => void,
+    ) => {
+      retained.onCommit = onCommit;
+      view.rerender(
+        <RetainedBeforeSendCaller>{provider}</RetainedBeforeSendCaller>,
+      );
+      retained.onCommit = undefined;
+    };
+    return { view, commit };
+  }
+
+  it.each(transitions)(
+    "drops a failure observed in the commit that %s from a retained callback",
+    async (_name, transition) => {
+      const { view, commit } = await renderWithRetainedCallback();
+      const results: ReturnType<BeforeSend>[] = [];
+      // Recorded after the provider's layout cleanup, while global analytics
+      // identity still names the previous owner; only the owner gate applies.
+      const recordThenSend = (beforeSend: BeforeSend) => {
+        recordFailure();
+        results.push(beforeSend(stackException()));
+      };
+
+      commit(ownerA(), recordThenSend);
+      expect(navigatorFields(results[0]?.properties)).toMatchObject({
+        hackerai_recent_navigator_phase: "replace_whitespace",
+      });
+      commit(transition(), recordThenSend);
+      expect(results).toHaveLength(2);
+      expect(navigatorFields(results[1]?.properties ?? {})).toEqual({});
+      view.unmount();
+    },
+  );
+
+  it.each(transitions)(
+    "does not revive an earlier failure after the owner %s and returns",
+    async (_name, transition) => {
+      const { view, commit } = await renderWithRetainedCallback();
+      const results: ReturnType<BeforeSend>[] = [];
+      const send = (beforeSend: BeforeSend) => {
+        results.push(beforeSend(stackException()));
+      };
+      recordFailure();
+      // Control: a valid same-owner read keeps the observation.
+      commit(ownerA(), send);
+      expect(navigatorFields(results[0]?.properties)).toMatchObject({
+        hackerai_recent_navigator_phase: "replace_whitespace",
+      });
+
+      // Nothing reads during the transition, so only its cleanup can clear.
+      commit(transition());
+      window.history.pushState({}, "", "/");
+      mockUseAuth.mockReturnValue({
+        user: { id: "user-123", email: "user@example.com", locale: "en-US" },
+      });
+      commit(ownerA(), send);
+      expect(results).toHaveLength(2);
+      expect(results[1]).toEqual(
+        expect.objectContaining({ event: "$exception" }),
+      );
+      expect(navigatorFields(results[1]?.properties)).toEqual({});
+      view.unmount();
+    },
+  );
 });
