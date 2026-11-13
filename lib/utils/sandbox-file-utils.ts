@@ -2,8 +2,10 @@ import "server-only";
 
 import {
   copyAttachmentDownloadFailureContext,
+  recordAttachmentDownloadDnsFallback,
   recordAttachmentDownloadFailure,
   recordAttachmentDownloadRoute,
+  type AttachmentDownloadDnsFallback,
   type AttachmentDownloadRoute,
   getAttachmentDownloadFailureContext,
   type AttachmentDownloadFailureContext,
@@ -1077,10 +1079,23 @@ const downloadFileToSandbox = async (
     // unrestricted, give curl one worker-resolved address for the same HTTPS
     // request. Anything short of an observed result keeps the original failure.
     const resolutionFailure = observedCloudCurlFailure(sandbox, result);
+    let dnsFallback: AttachmentDownloadDnsFallback | undefined;
     if (resolutionFailure && isNameResolutionFailure(resolutionFailure)) {
+      const fallback: AttachmentDownloadDnsFallback = {
+        decision: "unavailable",
+        retryResult: "not_attempted",
+      };
+      dnsFallback = fallback;
       let dnsPin: string | null = null;
       try {
-        dnsPin = await resolveCloudAttachmentDnsPin(sandbox, url, signal);
+        dnsPin = await resolveCloudAttachmentDnsPin(
+          sandbox,
+          url,
+          signal,
+          (decision) => {
+            fallback.decision = decision;
+          },
+        );
       } catch (error) {
         throwIfAttachmentAborted(signal, error);
       }
@@ -1100,10 +1115,13 @@ const downloadFileToSandbox = async (
           );
         } catch (error) {
           throwIfAttachmentAborted(signal, error);
+          fallback.retryResult = "threw";
         }
         if (pinned?.exitCode === 0) return;
-        if (pinned && observedCloudCurlFailure(sandbox, pinned))
+        if (pinned && observedCloudCurlFailure(sandbox, pinned)) {
           result = pinned;
+          fallback.retryResult = "nonzero";
+        } else if (pinned) fallback.retryResult = "unobserved";
       }
     }
 
@@ -1126,8 +1144,10 @@ const downloadFileToSandbox = async (
       ),
     );
     const observedFailure = observedCloudCurlFailure(sandbox, result);
-    if (observedFailure)
+    if (observedFailure) {
       recordAttachmentDownloadFailure(error, observedFailure);
+      if (dnsFallback) recordAttachmentDownloadDnsFallback(error, dnsFallback);
+    }
     throw error;
   } catch (error) {
     recordAttachmentDownloadRoute(error, route);
