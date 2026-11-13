@@ -1,6 +1,8 @@
 import {
   recordAttachmentDownloadFailure,
   recordAttachmentDownloadBoundary,
+  recordAttachmentCommandReceiver,
+  recordAttachmentCommandSetupAttempt,
   type AttachmentDownloadBoundary,
 } from "./attachment-download-diagnostics";
 import {
@@ -956,16 +958,26 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
 
       const result = await new Promise<CommandResult>((resolve, fail) => {
         let commandPublicationStarted = false;
-        const reject = (error: unknown, retryable = false) =>
-          fail(
-            isLocalCommandRelayUnsubscribedError(error)
-              ? error
-              : new LocalCommandDispatchError(
-                  error,
-                  commandPublicationStarted,
-                  retryable && !commandPublicationStarted,
-                ),
-          );
+        const reject = (error: unknown, retryable = false) => {
+          const rejection = isLocalCommandRelayUnsubscribedError(error)
+            ? error
+            : new LocalCommandDispatchError(
+                error,
+                commandPublicationStarted,
+                retryable && !commandPublicationStarted,
+              );
+          // Every rejection follows cleanup; never fabricate a reason.
+          if (cleanupReason)
+            recordAttachmentCommandReceiver(rejection, {
+              reason: cleanupReason,
+              connectedObserved: Boolean(tConnected),
+              subscribedObserved: Boolean(tSubscribed),
+              publicationStarted: commandPublicationStarted,
+              publishCompleted: Boolean(tPublished),
+              firstMessageObserved: Boolean(tFirstMessage),
+            });
+          fail(rejection);
+        };
         let stdout = "";
         let stderr = "";
         let settled = false;
@@ -1062,8 +1074,10 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         let tSubscribed = 0;
         let tPublished = 0;
         let tFirstMessage = 0;
+        let cleanupReason: ReceiverCleanupReason | undefined;
 
         const cleanup = (reason: ReceiverCleanupReason) => {
+          cleanupReason = reason;
           diagnostics.finish(reason);
           clearTimeout(acknowledgementTimer);
           // Every terminal path must release Stop callers before clearing the
@@ -2046,6 +2060,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
           attempt === SETUP_COMMAND_MAX_ATTEMPTS ||
           !isTransientCommandTimeoutError(error)
         ) {
+          recordAttachmentCommandSetupAttempt(error, attempt);
           throw error;
         }
         console.warn(
