@@ -588,6 +588,23 @@ describe("token-bucket", () => {
       });
     });
 
+    it("does not increase a partially prorated allocation on downgrade", () => {
+      const result = calculateTierChangeCredits(
+        600_000,
+        425_000,
+        175_000,
+        0.1,
+        2_000_000,
+      );
+
+      expect(result).toEqual({
+        consumedCredits: 250_000,
+        incrementalCredits: 0,
+        cycleAllocation: 425_000,
+        remainingCredits: 175_000,
+      });
+    });
+
     it("clamps invalid remaining credits and proration ratios", () => {
       expect(calculateTierChangeCredits(600_000, 250_000, 999_999, 2)).toEqual({
         consumedCredits: 0,

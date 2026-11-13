@@ -2297,7 +2297,7 @@ export const calculateTierChangeCredits = (
     : 0;
   const cycleAllocation = isUpgrade
     ? normalizedOldAllocation + incrementalCredits
-    : normalizedNewMax;
+    : Math.min(normalizedOldAllocation, normalizedNewMax);
 
   return {
     consumedCredits,
