@@ -234,22 +234,29 @@ async function suspendCustomerUsers({
   sourceReason?: string;
   chargeId?: string | null;
   sourceCreatedUnix: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  let supportResolved = false;
 
   for (const userId of userIds) {
-    await getConvexClient().mutation(api.userSuspensions.upsertActive, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      category,
-      sourceId,
-      sourceReason,
-      stripeCustomerId: customerId,
-      stripeChargeId: chargeId ?? undefined,
-      workosOrganizationId: orgId ?? undefined,
-      sourceCreatedAt: sourceCreatedUnix * 1000,
-    });
+    const suspensionId = await getConvexClient().mutation(
+      api.userSuspensions.upsertActive,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        category,
+        sourceId,
+        preserveResolved: true,
+        sourceReason,
+        stripeCustomerId: customerId,
+        stripeChargeId: chargeId ?? undefined,
+        workosOrganizationId: orgId ?? undefined,
+        sourceCreatedAt: sourceCreatedUnix * 1000,
+      },
+    );
+    if (suspensionId === null) supportResolved = true;
   }
+  return !supportResolved;
 }
 
 /**
@@ -279,7 +286,7 @@ async function blockFraudulentUser(
 ): Promise<void> {
   // Suspend first so a customer deleted during Stripe cleanup cannot prevent
   // the local safety control from being applied. The upsert is replay-safe.
-  await suspendCustomerUsers({
+  const shouldCleanUp = await suspendCustomerUsers({
     customerId,
     category: suspension.category,
     sourceId: suspension.sourceId,
@@ -287,6 +294,12 @@ async function blockFraudulentUser(
     chargeId,
     sourceCreatedUnix,
   });
+  if (!shouldCleanUp) {
+    console.log(
+      `[Fraud Webhook] Skipped cleanup for resolved source ${suspension.sourceId}`,
+    );
+    return;
+  }
   await expireOpenCheckoutSessions(customerId);
   await cancelAllSubscriptions(customerId);
   await detachAllPaymentMethods(customerId);
@@ -407,7 +420,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // AND detach payment methods. Don't mark the Stripe customer as a fraud
     // actor, but keep the Convex billing hold authoritative: every app billing
     // path rejects new transactions until support resolves the suspension.
-    await suspendCustomerUsers({
+    const shouldCleanUp = await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
       sourceId: dispute.id,
@@ -415,6 +428,12 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
+    if (!shouldCleanUp) {
+      console.log(
+        `[Fraud Webhook] Skipped cleanup for resolved source ${dispute.id}`,
+      );
+      return;
+    }
     await expireOpenCheckoutSessions(customerId);
     await cancelAllSubscriptions(customerId);
     await detachAllPaymentMethods(customerId);

@@ -82,6 +82,7 @@ export const upsertActive = mutation({
     stripeChargeId: v.optional(v.string()),
     workosOrganizationId: v.optional(v.string()),
     sourceCreatedAt: v.optional(v.number()),
+    preserveResolved: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -101,6 +102,10 @@ export const upsertActive = mutation({
         q.eq("user_id", args.userId).eq("source_id", args.sourceId),
       )
       .first();
+
+    // A support resolution is authoritative for this Stripe source. Webhook
+    // retries may finish event accounting, but must not reactivate the hold.
+    if (args.preserveResolved && existing?.status === "resolved") return null;
 
     const fields = {
       status: "active" as const,

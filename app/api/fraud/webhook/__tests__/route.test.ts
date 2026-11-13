@@ -153,6 +153,9 @@ describe("POST /api/fraud/webhook", () => {
       if (operation === "extraUsage.claimWebhookProcessing") {
         return { state: "acquired" };
       }
+      if (operation === "userSuspensions.upsertActive") {
+        return "suspension-id";
+      }
       return undefined;
     });
 
@@ -205,6 +208,64 @@ describe("POST /api/fraud/webhook", () => {
       "extraUsage.finalizeWebhookProcessing",
       expect.objectContaining({ eventId: "evt_dispute" }),
     );
+  });
+
+  it("does not undo a support resolution when Stripe replays the event", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing") {
+        return { state: "acquired" };
+      }
+      if (operation === "userSuspensions.upsertActive") return null;
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "userSuspensions.upsertActive",
+      expect.objectContaining({ preserveResolved: true }),
+    );
+    expect(mockListCheckoutSessions).not.toHaveBeenCalled();
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
+    expect(mockUpdateCustomer).not.toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.finalizeWebhookProcessing",
+      expect.objectContaining({ eventId: "evt_dispute" }),
+    );
+  });
+
+  it("does not repeat a non-fraudulent billing hold after support resolves it", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_dispute_non_fraudulent",
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_duplicate",
+          reason: "duplicate",
+          amount: 4200,
+          charge: "ch_disputed",
+          created: 1_788_000_000,
+        },
+      },
+    });
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing") {
+        return { state: "acquired" };
+      }
+      if (operation === "userSuspensions.upsertActive") return null;
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockListCheckoutSessions).not.toHaveBeenCalled();
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
   });
 
   it.each<CustomerBoundary>([
