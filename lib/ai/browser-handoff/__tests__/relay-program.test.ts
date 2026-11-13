@@ -394,9 +394,14 @@ async function stopRelay(target = directory) {
   const stopper = spawn(
     process.execPath,
     ["-e", RELAY_STOP_PROGRAM, root, target],
-    { stdio: "ignore" },
+    { stdio: ["ignore", "pipe", "ignore"] },
   );
-  return (await once(stopper, "exit"))[0];
+  let stdout = "";
+  stopper.stdout.on("data", (chunk) => (stdout += chunk));
+  const [code] = await once(stopper, "close");
+  // Failure receipts are optional diagnostics; success keeps empty output.
+  if (code === 0) expect(stdout).toBe("");
+  return code;
 }
 
 it("recovers from a dead relay without a close marker", async () => {
