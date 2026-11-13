@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { getCancellationResponseReceipt } from "@/lib/agent-cancellation-response";
 import {
   captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
@@ -53,12 +54,14 @@ export function prepareAgentCancellationTelemetry(
     };
     capture("agent_run_cancellation_requested");
     let settled = false;
-    return (outcome: CancellationResult) => {
+    return (outcome: CancellationResult, error?: unknown) => {
       if (settled) return;
       settled = true;
       capture("agent_run_cancellation_settled", {
         outcome,
         durationMs: Math.max(0, Date.now() - startedAt),
+        // Only a terminal HTTP rejection carries a bounded response receipt.
+        ...(outcome === "error" && getCancellationResponseReceipt(error)),
       });
     };
   };

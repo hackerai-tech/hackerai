@@ -65,6 +65,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
 
 const { useChatHandlers } =
   require("../useChatHandlers") as typeof import("../useChatHandlers");
+const { getCancellationResponseReceipt } =
+  require("@/lib/agent-cancellation-response") as typeof import("@/lib/agent-cancellation-response");
 
 const messages = [
   {
@@ -530,19 +532,37 @@ describe("useChatHandlers regenerate model", () => {
   });
 
   it("reports a terminal cancellation rejection to approval UI callers", async () => {
+    const readBody = jest.fn();
+    const headerGet = jest.fn((name: string) =>
+      name === "x-vercel-id"
+        ? "iad1::iad1::abcd1-1763049600000-0123456789abcdef"
+        : "session=CANARY",
+    );
     const fetchMock = jest.fn(
-      async () => ({ ok: false, status: 403 }) as Response,
+      async () =>
+        ({
+          ok: false,
+          status: 403,
+          type: "basic",
+          redirected: false,
+          url: "https://hackerai.co/api/agent/cancel?token=CANARY",
+          headers: { get: headerGet },
+          json: readBody,
+          text: readBody,
+        }) as unknown as Response,
     );
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: fetchMock,
     });
+    const logged = jest.spyOn(console, "error").mockImplementation(() => {});
+    const stop = jest.fn();
     const { result } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
         messages: [],
         sendMessage: mockSendMessage,
-        stop: jest.fn(),
+        stop,
         regenerate: mockRegenerate,
         setMessages: mockSetMessages,
         isExistingChat: true,
@@ -554,11 +574,58 @@ describe("useChatHandlers regenerate model", () => {
     );
 
     let stopped: boolean | undefined;
-    await act(async () => {
-      stopped = await result.current.handleStop();
-    });
+    let errorLogs: unknown[][];
+    try {
+      await act(async () => {
+        stopped = await result.current.handleStop();
+      });
+    } finally {
+      errorLogs = [...logged.mock.calls];
+      logged.mockRestore();
+    }
 
     expect(stopped).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readBody).not.toHaveBeenCalled();
+    expect(headerGet.mock.calls).toEqual([["x-vercel-id"]]);
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    // The caller still sees the service's original rejection object.
+    const [, rejection] = errorLogs.find(
+      ([message]) => message === "Failed to cancel trigger.dev run:",
+    )!;
+    expect(rejection).toEqual(
+      new Error("Agent cancellation failed with status 403"),
+    );
+    const receipt = {
+      cancellation_response_diagnostic_version: 1,
+      cancellation_response_http_status: 403,
+      cancellation_response_type: "basic",
+      cancellation_response_redirected: "false",
+      cancellation_response_url_origin: "hackerai_production",
+      cancellation_response_endpoint: "agent_cancel",
+      cancellation_response_platform_request_id_state: "valid",
+      cancellation_response_platform_request_id:
+        "iad1::iad1::abcd1-1763049600000-0123456789abcdef",
+    };
+    expect(getCancellationResponseReceipt(rejection)).toEqual(receipt);
+    const settled = mockCaptureCancellationEvent.mock.calls
+      .map(([event]) => event as { event: string; properties: object })
+      .filter(({ event }) => event === "agent_run_cancellation_settled");
+    expect(settled).toEqual([
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          schemaVersion: 1,
+          action: "stop",
+          triggerRunId: "run-1",
+          outcome: "error",
+          ...receipt,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(settled)).not.toContain("CANARY");
+    expect(settled[0].properties).not.toHaveProperty("error");
   });
 
   it("reconnects to the persisted run after a stale cancellation", async () => {

@@ -1,3 +1,4 @@
+import { recordCancellationResponse } from "@/lib/agent-cancellation-response";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
 
 export type AgentRunCancellationResult =
@@ -90,7 +91,9 @@ async function deliverCancellation(
           }
           // Authentication, ownership and malformed requests need user action;
           // never retry them or replace the captured ID with the current run.
-          throw new CancellationRejected(message);
+          const rejection = new CancellationRejected(message);
+          recordCancellationResponse(rejection, response);
+          throw rejection;
         })(),
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
