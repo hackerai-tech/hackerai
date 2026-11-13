@@ -4,6 +4,7 @@ import {
   browserRelayRenewFailureContext,
   captureBrowserFrame,
   getActiveBrowserSessionName,
+  getPrivateStreamPort,
   renewBrowserRelay,
   resizeBrowserViewport,
 } from "../server";
@@ -996,6 +997,71 @@ it("fails closed and removes the temporary file when fresh capture fails", async
   expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
 });
 
+/** The JSON request argument of each daemon-helper command that was run. */
+const daemonRequests = (run: jest.Mock) =>
+  run.mock.calls
+    .map(([command]) => command as string)
+    .filter((command) => command.includes('"action":'))
+    .map((command) =>
+      JSON.parse(command.slice(command.lastIndexOf(" '") + 2, -1)),
+    );
+
+it.each([
+  ["omitted", undefined],
+  ["false", false],
+  ["true", true],
+] as const)(
+  "asks for the owned-listener port only when freshness is not required (%s)",
+  async (_case, requireFresh) => {
+    const sandbox = fixture();
+    const before = Date.now();
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+    );
+    const requests = daemonRequests(sandbox.commands.run);
+    expect(requests[0]).toEqual(
+      requireFresh
+        ? { action: "stream_status" }
+        : { action: "stream_status", owned_port: true },
+    );
+    // The returned port still goes through the unchanged frame bridge.
+    expect(sandbox.commands.run.mock.calls[1][0]).toMatch(/ 1234 frame$/);
+    if (requireFresh) {
+      // A fresh capture still requests its own unchanged daemon screenshot.
+      expect(requests.slice(1)).toEqual([
+        {
+          action: "screenshot",
+          path: expect.stringMatching(/\/preview-[a-f0-9]{32}\.jpg$/),
+          format: "jpeg",
+          quality: 65,
+        },
+      ]);
+      expect(result.capturedAt).toBeGreaterThanOrEqual(before);
+      expect(result.image).toBe(
+        `data:image/jpeg;base64,${fresh.toString("base64")}`,
+      );
+    } else {
+      // A cached frame is never relabeled fresh.
+      expect(requests).toHaveLength(1);
+      expect(result.capturedAt).toBe(0);
+      expect(sandbox.files.read).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it("keeps stream-port lookups for TAKE, input and relays on the daemon request", async () => {
+  const sandbox = fixture();
+  await expect(
+    getPrivateStreamPort(sandbox as unknown as Sandbox, location, "default"),
+  ).resolves.toBe(1234);
+  expect(daemonRequests(sandbox.commands.run)).toEqual([
+    { action: "stream_status" },
+  ]);
+});
+
 it("keeps cached-frame age unknown for ordinary viewing", async () => {
   const sandbox = fixture();
   const result = await captureBrowserFrame(
@@ -1025,6 +1091,10 @@ it("resizes only the bound browser session and returns a fresh frame", async () 
     ),
     expect.objectContaining({ user: "root" }),
   );
+  // A resize requires a fresh frame, so its port lookup never opts in.
+  expect(daemonRequests(sandbox.commands.run)[1]).toEqual({
+    action: "stream_status",
+  });
   expect(result.image).toBe(
     `data:image/jpeg;base64,${fresh.toString("base64")}`,
   );
