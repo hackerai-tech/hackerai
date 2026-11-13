@@ -460,6 +460,11 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
 
+    case "tool-get_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="get_note" />
+      );
+
     case "tool-list_reports":
       return (
         <ReportToolHandler

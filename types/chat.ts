@@ -345,14 +345,24 @@ export type NoteCategory = (typeof VALID_NOTE_CATEGORIES)[number];
 export interface SidebarNote {
   note_id: string;
   title: string;
+  /** Full content, or a truncated preview when `preview_truncated` is set. */
   content: string;
   category: NoteCategory;
   tags: string[];
   updated_at: number;
+  /** Present on legacy list outputs. */
+  _creationTime?: number;
+  /** Relevant-recall metadata; absent on legacy outputs. */
+  target?: string;
+  observed_at?: number;
+  recheck?: "recheck_due" | "observation_date_unknown";
+  preview_truncated?: boolean;
+  /** get_note: this is one page of a longer note. */
+  partial_content?: boolean;
 }
 
 export interface SidebarNotes {
-  action: "create" | "list" | "update" | "delete";
+  action: "create" | "list" | "update" | "delete" | "get";
   notes: SidebarNote[];
   totalCount: number;
   isExecuting: boolean;

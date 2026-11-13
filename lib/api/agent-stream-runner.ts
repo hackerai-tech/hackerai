@@ -101,7 +101,10 @@ import {
   sampleCacheHistoryStart,
   type CacheHistoryTelemetry,
 } from "@/lib/analytics/cache-history";
-import { getAppendedNotesUpdate } from "./chat-stream-helpers";
+import {
+  getAppendedNotesUpdate,
+  type NoteInjectionOpts,
+} from "./chat-stream-helpers";
 import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
 import { addPromptCacheBreakpoints } from "@/lib/ai/prompt-cache";
 import {
@@ -821,11 +824,7 @@ export type AgentStreamContext = {
   selectedModelOverride?: SelectedModel;
   chatId: string;
   fileTokens: Record<string, number>;
-  noteInjectionOpts: {
-    userId: string;
-    subscription: SubscriptionTier;
-    shouldIncludeNotes: boolean;
-  };
+  noteInjectionOpts: NoteInjectionOpts;
   systemPromptTokens: number;
   ctxSystemTokens: number;
   ctxMaxTokens: number;

@@ -166,6 +166,7 @@ export function getActionText(content: SidebarContent): string {
         list: "Listing notes",
         update: "Updating note",
         delete: "Deleting note",
+        get: "Reading note",
       };
       return streamingActionMap[content.action];
     }
@@ -174,6 +175,7 @@ export function getActionText(content: SidebarContent): string {
       list: "Notes",
       update: "Updated note",
       delete: "Deleted note",
+      get: "Read note",
     };
     return completedActionMap[content.action];
   }

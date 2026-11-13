@@ -19,6 +19,7 @@ import {
   createListNotes,
   createUpdateNote,
   createDeleteNote,
+  createGetNote,
 } from "./notes";
 import {
   createCreateVulnerabilityReport,
@@ -94,6 +95,9 @@ export type CreateToolsRuntimePolicy = {
    * evaluated the finding retest rollout for this user. The tools re-check
    * the flag and fail closed on every call. */
   findingRetestToolsEnabled?: boolean;
+  /** notes_relevant_recall_v1 decision for this request: compact list_notes,
+   * target/observation metadata and get_note. Off keeps the legacy tools. */
+  notesRelevantRecallEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -132,6 +136,7 @@ export const createTools = (
   auxiliaryVision?: ToolContext["auxiliaryVision"],
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
+  const notesRecall = runtimePolicy.notesRelevantRecallEnabled === true;
   let sandbox: AnySandbox | null = null;
   let sandboxCostSegmentStartedAt: number | null = null;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
@@ -351,10 +356,11 @@ export const createTools = (
         ),
       }),
       ...(notesEnabled && {
-        create_note: createCreateNote(context),
-        list_notes: createListNotes(context),
-        update_note: createUpdateNote(context),
+        create_note: createCreateNote(context, notesRecall),
+        list_notes: createListNotes(context, notesRecall),
+        update_note: createUpdateNote(context, notesRecall),
         delete_note: createDeleteNote(context),
+        ...(notesRecall && { get_note: createGetNote(context) }),
       }),
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
@@ -384,6 +390,7 @@ export const createTools = (
             list_notes: allTools.list_notes,
             update_note: allTools.update_note,
             delete_note: allTools.delete_note,
+            ...(notesRecall && { get_note: allTools.get_note }),
           }),
           ...(process.env.PERPLEXITY_API_KEY && {
             web_search: createWebSearch(context),

@@ -397,6 +397,21 @@ const compactNoteForStorage = (value: unknown): unknown => {
       : note.tags,
     _creationTime: note._creationTime,
     updated_at: note.updated_at,
+    // Relevant-recall list outputs: bounded previews and metadata.
+    ...(typeof note.preview === "string" && {
+      preview: truncateStorageString(
+        note.preview,
+        STORAGE_NOTE_CONTENT_PREVIEW_LIMIT,
+      ),
+      preview_truncated: note.preview_truncated,
+    }),
+    ...(typeof note.target === "string" && {
+      target: truncateStorageString(note.target, 200),
+    }),
+    ...(typeof note.observed_at === "number" && {
+      observed_at: note.observed_at,
+    }),
+    ...(typeof note.recheck === "string" && { recheck: note.recheck }),
   };
 };
 
@@ -420,6 +435,8 @@ const compactProtectedToolOutputForStorage = (
       ? listOutput.notes.map(compactNoteForStorage)
       : listOutput.notes,
     total_count: listOutput.total_count,
+    has_more: listOutput.has_more,
+    next_cursor: listOutput.next_cursor,
     message: listOutput.message,
     error: listOutput.error,
     __hackeraiStorageCompacted: true,
