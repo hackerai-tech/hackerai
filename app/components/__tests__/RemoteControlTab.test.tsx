@@ -177,6 +177,16 @@ describe("RemoteControlTab", () => {
     expect(mockSetChatMode).toHaveBeenCalledWith("agent");
   });
 
+  it("allows a selected runner to switch from Ask back to Agent", () => {
+    mockConnections = [remoteConnection];
+    mockSandboxPreference = remoteConnection.connectionId;
+    mockChatMode = "ask";
+    render(<RemoteControlTab />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    expect(mockSetChatMode).toHaveBeenCalledWith("agent");
+  });
+
   it("replaces setup with a connect-another action when already connected", () => {
     mockConnections = [remoteConnection];
     render(<RemoteControlTab />);

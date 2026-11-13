@@ -194,7 +194,10 @@ const RemoteControlTab = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={sandboxPreference === environmentPreference(conn)}
+                  disabled={
+                    sandboxPreference === environmentPreference(conn) &&
+                    chatMode === "agent"
+                  }
                   onClick={() => {
                     setSandboxPreference(environmentPreference(conn), {
                       remember: true,
@@ -210,7 +213,8 @@ const RemoteControlTab = () => {
                     toast.success("Computer selected for Agent mode.");
                   }}
                 >
-                  {sandboxPreference === environmentPreference(conn)
+                  {sandboxPreference === environmentPreference(conn) &&
+                  chatMode === "agent"
                     ? "Selected"
                     : "Select"}
                 </Button>

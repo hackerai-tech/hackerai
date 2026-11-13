@@ -446,7 +446,7 @@ describe("stable environment acquisition", () => {
         environmentId: "machine-a",
         connectionId: "replacement",
         isDesktop: true,
-        capabilities: { commands: true, files: true },
+        capabilities: { commands: true, pty: true, files: true },
       });
       jest.spyOn(manager, "listConnections").mockResolvedValue([session]);
       const result = await manager.getSandbox();
@@ -784,7 +784,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
           connectionId: "desktop-conn",
           name: "Desktop",
           isDesktop,
-          capabilities: { commands: true, files: true },
+          capabilities: { commands: true, pty: true, files: true },
           osInfo: {
             platform,
             arch: "x86_64",
@@ -1416,7 +1416,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       connectionId: "conn-stale",
       name: "4p3x",
       isDesktop: true,
-      capabilities: { commands: true, files: true },
+      capabilities: { commands: true, pty: true, files: true },
       osInfo: {
         platform: "linux",
         arch: "x86_64",
@@ -1954,7 +1954,7 @@ describe("Agent connection interruption", () => {
         connectionId: "first",
         environmentId: "machine",
         isDesktop: true,
-        capabilities: { commands: true, files: true },
+        capabilities: { commands: true, pty: true, files: true },
       }),
     ]);
     await manager.getSandboxContextForPrompt();
@@ -1966,7 +1966,7 @@ describe("Agent connection interruption", () => {
         connectionId: "replacement",
         environmentId: "machine",
         isDesktop: true,
-        capabilities: { commands: true, files: true },
+        capabilities: { commands: true, pty: true, files: true },
       }),
     ]);
     await expect(manager.getSandbox()).rejects.toThrow(
@@ -1994,7 +1994,7 @@ describe("Agent connection interruption", () => {
         connectionId: "replacement",
         environmentId: "machine",
         isDesktop: true,
-        capabilities: { commands: true, files: true },
+        capabilities: { commands: true, pty: true, files: true },
       }),
     ]);
     const stop = resumedManager.stopOnLocalDisconnect(jest.fn());
@@ -2025,7 +2025,7 @@ describe("Agent connection interruption", () => {
           connectionId: FIRST,
           environmentId: "machine",
           isDesktop: true,
-          capabilities: { commands: true, files: true },
+          capabilities: { commands: true, pty: true, files: true },
         }),
       ]);
       await manager.getSandboxContextForPrompt();
@@ -2070,7 +2070,7 @@ describe("Agent connection interruption", () => {
               connectionId: SUCCESSOR,
               environmentId: "machine",
               isDesktop: true,
-              capabilities: { commands: true, files: true },
+              capabilities: { commands: true, pty: true, files: true },
             }),
           ]);
           return manager.getSandbox();
@@ -2117,7 +2117,7 @@ describe("Agent connection interruption", () => {
           connectionId: SUCCESSOR,
           environmentId: "machine",
           isDesktop: true,
-          capabilities: { commands: true, files: true },
+          capabilities: { commands: true, pty: true, files: true },
         }),
       ]);
       await expect(manager.getSandboxContextForPrompt()).rejects.toBe(observed);
