@@ -1,5 +1,10 @@
 import type { ChatMessage } from "@/types";
 import { extractMessageText } from "@/lib/utils/message-utils";
+import {
+  getMessageNavigatorLengthBucket,
+  recordMessageNavigatorNormalizationFailure,
+  type MessageNavigatorNormalizationPhase,
+} from "@/lib/posthog/message-navigator-diagnostics";
 import type { ChatTimelineRow } from "./message-timeline-rows";
 
 export const MESSAGE_NAVIGATOR_MIN_ITEMS = 2;
@@ -18,8 +23,30 @@ export interface MessageNavigatorItem {
 }
 
 const compactPreview = (text: string | null | undefined) => {
-  const compact = text?.replace(/\s+/g, " ").trim() ?? "";
-  return compact.length > 0 ? compact : null;
+  // Equivalent to `text?.replace(/\s+/g, " ").trim() ?? ""`, split only so a
+  // failure can record which step threw.
+  if (text === null || text === undefined) return null;
+  let phase: MessageNavigatorNormalizationPhase = "replace_whitespace";
+  try {
+    const replaced = text.replace(/\s+/g, " ");
+    phase = "trim_whitespace";
+    const compact = replaced.trim() ?? "";
+    return compact.length > 0 ? compact : null;
+  } catch (error) {
+    // Guarded here too: near a stack limit, even entering the recorder can
+    // throw, and that must not replace the original error.
+    try {
+      const isString = typeof text === "string";
+      recordMessageNavigatorNormalizationFailure(
+        phase,
+        isString ? "string" : "other",
+        isString ? getMessageNavigatorLengthBucket(text.length) : "unknown",
+      );
+    } catch {
+      /* Rethrow the original below. */
+    }
+    throw error;
+  }
 };
 
 export function deriveMessageNavigatorItems(

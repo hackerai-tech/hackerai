@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import { startUnhandledRejectionDiagnostics } from "@/lib/posthog/unhandled-rejection-diagnostics";
+import { clearMessageNavigatorDiagnostics } from "@/lib/posthog/message-navigator-diagnostics";
 import {
   enrichFrontendExceptionEvent,
   sanitizeFrontendExceptionUrlProperties,
@@ -93,10 +94,10 @@ export function PostHogProvider({
   const pathname = usePathname();
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
-  // Latest committed owner for the server action diagnostic. A previously
-  // installed before_send can run after a commit that withdraws consent, signs
-  // out, switches account or enters a private page, but before the passive
-  // effect below resets analytics identity.
+  // Latest committed owner for the server action and navigator diagnostics. A
+  // previously installed before_send can run after a commit that withdraws
+  // consent, signs out, switches account or enters a private page, but before
+  // the passive effect below resets analytics identity.
   const serverActionDiagnosticOwner = useRef<string | null>(null);
 
   useLayoutEffect(() => {
@@ -104,6 +105,8 @@ export function PostHogProvider({
       analyticsAllowed && !privatePage && userId ? userId : null;
     return () => {
       serverActionDiagnosticOwner.current = null;
+      // A later return to the same owner must not revive an older observation.
+      clearMessageNavigatorDiagnostics();
     };
   }, [analyticsAllowed, privatePage, userId]);
 
@@ -229,6 +232,14 @@ export function PostHogProvider({
             // incidental component events and SDK autocapture out of the stream.
             if (!userId) return null;
 
+            const committedDiagnosticOwner = () => {
+              const owner = getPermittedAnalyticsUserId();
+              return owner === userId &&
+                owner === serverActionDiagnosticOwner.current &&
+                getIdentifiedAnalyticsUserId() === owner
+                ? owner
+                : null;
+            };
             const sanitizedEvent = sanitizeServerActionClientContextEvent(
               sanitizeContextFeedbackEvent(
                 sanitizeChatPerformanceEvent(
@@ -241,18 +252,7 @@ export function PostHogProvider({
                   ),
                 ),
               ),
-              () => {
-                const owner = getPermittedAnalyticsUserId();
-                return {
-                  owner:
-                    owner === userId &&
-                    owner === serverActionDiagnosticOwner.current &&
-                    getIdentifiedAnalyticsUserId() === owner
-                      ? owner
-                      : null,
-                  token: posthogKey,
-                };
-              },
+              () => ({ owner: committedDiagnosticOwner(), token: posthogKey }),
             );
             if (
               !sanitizedEvent ||
@@ -261,9 +261,19 @@ export function PostHogProvider({
               return null;
             }
 
+            let navigatorDiagnosticOwner: string | null = null;
+            if (sanitizedEvent.event === "$exception") {
+              try {
+                navigatorDiagnosticOwner = committedDiagnosticOwner();
+              } catch {
+                // Fail closed; the exception itself is still retained.
+              }
+            }
             // Last, so no event-specific projection can strip Desktop identity.
             return applyDesktopRuntimeIdentity(
-              enrichFrontendExceptionEvent(sanitizedEvent),
+              enrichFrontendExceptionEvent(sanitizedEvent, {
+                navigatorDiagnosticOwner,
+              }),
             );
           },
         } satisfies Partial<PostHogConfig>;
