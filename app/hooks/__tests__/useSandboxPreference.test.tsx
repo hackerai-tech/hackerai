@@ -1,13 +1,20 @@
-import { StrictMode, type ReactNode } from "react";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { Component, StrictMode, Suspense, type ReactNode } from "react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { DesktopFileBridgeError } from "@/lib/centrifugo/desktop-file-errors";
 
 const mockResolvedPreferences = new Map<string, string>();
+type ConvexAuthState = { isLoading: boolean; isAuthenticated: boolean };
+const signedInConvexAuth = (): ConvexAuthState => ({
+  isLoading: false,
+  isAuthenticated: true,
+});
+let mockConvexAuth = signedInConvexAuth;
 jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(),
   useQuery: (_query: unknown, args: "skip" | { preference: string }) =>
     args === "skip" ? undefined : mockResolvedPreferences.get(args.preference),
+  useConvexAuth: () => mockConvexAuth(),
 }));
 
 const mockIsTauriEnvironment = jest.fn(() => true);
@@ -56,6 +63,7 @@ type BridgeConfig = {
     state: "connecting" | "connected",
     environmentId?: string,
   ) => void;
+  readNativeAuthFrontendState?: () => unknown;
 };
 
 describe("useSandboxPreference", () => {
@@ -64,6 +72,158 @@ describe("useSandboxPreference", () => {
     mockIsTauriEnvironment.mockReturnValue(true);
     window.localStorage.clear();
     mockResolvedPreferences.clear();
+    mockConvexAuth = signedInConvexAuth;
+  });
+
+  describe("native auth frontend state for bridge diagnostics", () => {
+    let configs: BridgeConfig[];
+    const readState = () => configs[0]?.readNativeAuthFrontendState?.();
+    const setConvexAuth = (isLoading: boolean, isAuthenticated: boolean) => {
+      mockConvexAuth = () => ({ isLoading, isAuthenticated });
+    };
+    const mountConsumer = (
+      wrapper?: (props: { children: ReactNode }) => ReactNode,
+    ) =>
+      renderHook(({ authenticated }) => useSandboxPreference(authenticated), {
+        initialProps: { authenticated: true },
+        wrapper,
+      });
+
+    beforeEach(() => {
+      configs = [];
+      (DesktopSandboxBridge as jest.Mock).mockImplementation(
+        (config: BridgeConfig) => {
+          configs.push(config);
+          return {
+            start: jest.fn().mockResolvedValue("connection"),
+            stop: jest.fn().mockResolvedValue(undefined),
+            getConnectionId: () => "connection",
+          };
+        },
+      );
+    });
+
+    it("reads the current committed state without restarting the bridge", async () => {
+      const view = mountConsumer(({ children }) => (
+        <StrictMode>{children}</StrictMode>
+      ));
+      try {
+        await waitFor(() =>
+          expect(view.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(readState()).toBe("owner_present_convex_authenticated");
+        setConvexAuth(true, false);
+        view.rerender({ authenticated: true });
+        expect(readState()).toBe("owner_present_convex_loading");
+        setConvexAuth(false, false);
+        view.rerender({ authenticated: true });
+        expect(readState()).toBe("owner_present_convex_unauthenticated");
+        setConvexAuth(false, true);
+        view.rerender({ authenticated: true });
+        expect(readState()).toBe("owner_present_convex_authenticated");
+        expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
+        expect(view.result.current.desktopBridgeStatus).toBe("connected");
+
+        await act(async () => view.rerender({ authenticated: false }));
+        expect(readState()).toBe("owner_absent");
+      } finally {
+        await act(async () => view.rerender({ authenticated: false }));
+        view.unmount();
+      }
+      expect(readState()).toBe("unavailable");
+    });
+
+    it("reads the remounted consumer, not the bridge creator", async () => {
+      const first = mountConsumer();
+      await waitFor(() =>
+        expect(first.result.current.desktopBridgeStatus).toBe("connected"),
+      );
+      first.unmount();
+      expect(readState()).toBe("unavailable");
+
+      setConvexAuth(true, false);
+      const second = mountConsumer();
+      try {
+        await waitFor(() =>
+          expect(second.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(configs).toHaveLength(1);
+        expect(readState()).toBe("owner_present_convex_loading");
+      } finally {
+        await act(async () => second.rerender({ authenticated: false }));
+        second.unmount();
+      }
+    });
+
+    it("does not let an older consumer's cleanup clear a newer consumer", async () => {
+      const older = mountConsumer();
+      await waitFor(() =>
+        expect(older.result.current.desktopBridgeStatus).toBe("connected"),
+      );
+      setConvexAuth(false, false);
+      const newer = mountConsumer();
+      try {
+        expect(readState()).toBe("owner_present_convex_unauthenticated");
+        older.unmount();
+        expect(readState()).toBe("owner_present_convex_unauthenticated");
+      } finally {
+        await act(async () => newer.rerender({ authenticated: false }));
+        newer.unmount();
+        older.unmount();
+      }
+      expect(readState()).toBe("unavailable");
+    });
+
+    it.each(["suspended", "abandoned"])(
+      "does not publish a %s render",
+      async (interruption) => {
+        class Boundary extends Component<
+          { children: ReactNode },
+          { failed: boolean }
+        > {
+          state = { failed: false };
+          static getDerivedStateFromError() {
+            return { failed: true };
+          }
+          render() {
+            return this.state.failed ? null : this.props.children;
+          }
+        }
+        const never = new Promise<never>(() => {});
+        function Interrupted(): ReactNode {
+          useSandboxPreference(false);
+          if (interruption === "suspended") throw never;
+          throw new Error("render abandoned");
+        }
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        const committed = mountConsumer();
+        try {
+          await waitFor(() =>
+            expect(committed.result.current.desktopBridgeStatus).toBe(
+              "connected",
+            ),
+          );
+          setConvexAuth(false, false);
+          const interrupted = render(
+            <Boundary>
+              <Suspense fallback={null}>
+                <Interrupted />
+              </Suspense>
+            </Boundary>,
+          );
+          expect(readState()).toBe("owner_present_convex_authenticated");
+          expect(committed.result.current.desktopBridgeStatus).toBe(
+            "connected",
+          );
+          interrupted.unmount();
+          expect(readState()).toBe("owner_present_convex_authenticated");
+        } finally {
+          await act(async () => committed.rerender({ authenticated: false }));
+          committed.unmount();
+          error.mockRestore();
+        }
+      },
+    );
   });
 
   it("defaults Desktop to the local sandbox when no preference is saved", () => {

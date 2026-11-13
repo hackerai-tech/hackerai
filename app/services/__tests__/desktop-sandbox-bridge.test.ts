@@ -1268,6 +1268,238 @@ describe("terminal connection state", () => {
   );
 });
 
+describe("native auth frontend state on authentication stops", () => {
+  const UNAUTHORIZED = { data: { code: "UNAUTHORIZED" } };
+  const FRONTEND_STATES = [
+    "owner_absent",
+    "owner_present_convex_loading",
+    "owner_present_convex_authenticated",
+    "owner_present_convex_unauthenticated",
+    "unavailable",
+  ];
+
+  function authStopCapture(path: "heartbeat" | "token refresh") {
+    return jest
+      .mocked(captureAuthenticatedEvent)
+      .mock.calls.find(([event, properties]) =>
+        path === "heartbeat"
+          ? event === "desktop_bridge_relay_state_changed" &&
+            properties?.reason === "heartbeat_unauthenticated"
+          : event === "sandbox_connection_terminated" &&
+            properties?.reason === "unauthenticated",
+      )?.[1];
+  }
+
+  // Drives the real catch path and returns once the bridge has handled it.
+  async function rejectWithAuthFailure(
+    path: "heartbeat" | "token refresh",
+    config: ReturnType<typeof buildConfig>,
+    error: unknown,
+  ) {
+    if (path === "heartbeat") {
+      config.heartbeatDesktop.mockRejectedValueOnce(error);
+      await jest.advanceTimersByTimeAsync(LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS);
+      return;
+    }
+    (config.refreshCentrifugoTokenDesktop as jest.Mock).mockRejectedValueOnce(
+      error,
+    );
+    // The original error, not a diagnostic failure, must reach Centrifuge.
+    await expect(mockClientOptions?.getToken?.()).rejects.toBe(error);
+  }
+
+  describe.each(["heartbeat", "token refresh"] as const)("%s", (path) => {
+    it.each(FRONTEND_STATES)(
+      "reports %s as read when the existing stop happens",
+      async (state) => {
+        jest.useFakeTimers();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        let current = "owner_present_convex_authenticated";
+        const readNativeAuthFrontendState = jest.fn(() => current);
+        const onTerminated = jest.fn();
+        const config = buildConfig({
+          onTerminated,
+          readNativeAuthFrontendState,
+        });
+        const bridge = new DesktopSandboxBridge(config);
+        try {
+          await bridge.start();
+          await jest.advanceTimersByTimeAsync(
+            LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+          );
+          expect(readNativeAuthFrontendState).not.toHaveBeenCalled();
+          // The foreground state can change after startup; the stop must not
+          // report a value captured when the bridge was created.
+          current = state;
+          await rejectWithAuthFailure(path, config, UNAUTHORIZED);
+
+          expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+          expect(bridge.getConnectionId()).toBeNull();
+          expect(readNativeAuthFrontendState).toHaveBeenCalledTimes(1);
+          expect(authStopCapture(path)).toMatchObject({
+            native_auth_frontend_state: state,
+            native_auth_diagnostic_version: 1,
+            convex_function:
+              path === "heartbeat"
+                ? "localSandbox:heartbeatDesktop"
+                : "localSandbox:refreshCentrifugoTokenDesktop",
+          });
+          const heartbeats = config.heartbeatDesktop.mock.calls.length;
+          await jest.advanceTimersByTimeAsync(
+            LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS * 4,
+          );
+          expect(config.heartbeatDesktop).toHaveBeenCalledTimes(heartbeats);
+          expect(onTerminated).toHaveBeenCalledTimes(1);
+        } finally {
+          await bridge.stop();
+          jest.useRealTimers();
+          warn.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      ["missing", undefined],
+      [
+        "throwing",
+        () => {
+          throw new Error("private-reader-canary");
+        },
+      ],
+      ["private string", () => "private-account-canary@example.com"],
+      ["near-miss string", () => "OWNER_ABSENT"],
+      ["boxed string", () => new String("owner_absent")],
+      ["object", () => ({ state: "owner_absent" })],
+    ])(
+      "reports unavailable for a %s reader without changing the stop",
+      async (_label, readNativeAuthFrontendState) => {
+        jest.useFakeTimers();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const onTerminated = jest.fn();
+        const config = buildConfig({
+          onTerminated,
+          ...(readNativeAuthFrontendState && { readNativeAuthFrontendState }),
+        });
+        const bridge = new DesktopSandboxBridge(config);
+        const error = Object.assign(
+          new Error(
+            "[CONVEX M(localSandbox:heartbeatDesktop)] [Request ID: 0123456789abcdef] Server Error",
+          ),
+          UNAUTHORIZED,
+        );
+        try {
+          await bridge.start();
+          await rejectWithAuthFailure(path, config, error);
+
+          expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+          expect(bridge.getConnectionId()).toBeNull();
+          expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+          expect(authStopCapture(path)).toMatchObject({
+            native_auth_frontend_state: "unavailable",
+            native_auth_diagnostic_version: 1,
+          });
+          const captured = JSON.stringify([
+            jest.mocked(captureAuthenticatedEvent).mock.calls,
+            warn.mock.calls,
+          ]);
+          expect(captured).not.toContain("canary");
+          expect(captured).not.toContain("OWNER_ABSENT");
+        } finally {
+          await bridge.stop();
+          jest.useRealTimers();
+          warn.mockRestore();
+        }
+      },
+    );
+  });
+
+  it("does not read or attach the state outside authentication stops", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    const readNativeAuthFrontendState = jest.fn(
+      () => "owner_present_convex_authenticated",
+    );
+    const onTerminated = jest.fn();
+    const config = buildConfig({ onTerminated, readNativeAuthFrontendState });
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      await bridge.start();
+      config.heartbeatDesktop.mockRejectedValueOnce(new Error("offline"));
+      await jest.advanceTimersByTimeAsync(LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS);
+      (config.refreshCentrifugoTokenDesktop as jest.Mock).mockRejectedValueOnce(
+        new Error("offline"),
+      );
+      await expect(mockClientOptions?.getToken?.()).rejects.toThrow("offline");
+      expect(bridge.getConnectionId()).toBe("conn-123");
+
+      // A stale generation's authentication failure is not this bridge's stop.
+      let rejectOld!: (reason: unknown) => void;
+      config.heartbeatDesktop.mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS);
+      await bridge.stop();
+      await bridge.start();
+      rejectOld(UNAUTHORIZED);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(onTerminated).not.toHaveBeenCalled();
+
+      config.heartbeatDesktop.mockResolvedValueOnce({ success: false });
+      await jest.advanceTimersByTimeAsync(LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS);
+      expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
+
+      await bridge.start();
+      (config.refreshCentrifugoTokenDesktop as jest.Mock).mockResolvedValueOnce(
+        {
+          ok: false,
+          terminated: true,
+          reason: "ownership_mismatch",
+          connectionId: "conn-123",
+          clientVersion: null,
+          status: null,
+          disconnectReason: null,
+          msSinceDisconnected: null,
+          msSinceLastHeartbeat: null,
+          msSinceCreated: null,
+        },
+      );
+      await expect(mockClientOptions?.getToken?.()).rejects.toThrow(
+        "Centrifugo refresh aborted: ownership_mismatch",
+      );
+      expect(onTerminated).toHaveBeenLastCalledWith("ownership_mismatch");
+
+      const captures = jest.mocked(captureAuthenticatedEvent).mock.calls;
+      expect(captures).toEqual(
+        expect.arrayContaining([
+          ["desktop_bridge_relay_error", expect.anything()],
+          [
+            "desktop_bridge_relay_state_changed",
+            expect.objectContaining({
+              reason: "heartbeat_connection_inactive",
+            }),
+          ],
+          [
+            "sandbox_connection_terminated",
+            expect.objectContaining({ reason: "ownership_mismatch" }),
+          ],
+        ]),
+      );
+      expect(readNativeAuthFrontendState).not.toHaveBeenCalled();
+      expect(JSON.stringify(captures)).not.toContain(
+        "native_auth_frontend_state",
+      );
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+});
+
 describe("heartbeat backpressure", () => {
   it.each(["success", "transient failure"])(
     "does not queue heartbeats while pending and resumes after %s",
