@@ -61,6 +61,7 @@ import {
   uploadSandboxFiles,
 } from "@/lib/utils/sandbox-file-utils";
 import { getLocalCopyFailureContext } from "../local-copy-failure-context";
+import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 
 jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("@/lib/centrifugo/traffic", () => ({
@@ -5037,6 +5038,476 @@ describe("CentrifugoSandbox", () => {
         expect.stringContaining("target_dir_exists"),
         expect.anything(),
       );
+    });
+  });
+
+  describe("command receiver rejection diagnostics", () => {
+    const receiverFields = (error: unknown) =>
+      Object.fromEntries(
+        Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+          ([key]) =>
+            key.startsWith("attachment_command_receiver_") ||
+            key.startsWith("attachment_command_setup_"),
+        ),
+      );
+    const receiver = (
+      reason: string,
+      observed: {
+        connected?: boolean;
+        subscribed?: boolean;
+        publicationStarted?: boolean;
+        publishCompleted?: boolean;
+        firstMessage?: boolean;
+      },
+    ) => ({
+      attachment_command_receiver_version: 1,
+      attachment_command_receiver_reason: reason,
+      attachment_command_receiver_connected_observed:
+        observed.connected ?? false,
+      attachment_command_receiver_subscribed_observed:
+        observed.subscribed ?? false,
+      attachment_command_receiver_publication_started:
+        observed.publicationStarted ?? false,
+      attachment_command_receiver_publish_completed:
+        observed.publishCompleted ?? false,
+      attachment_command_receiver_first_message_observed:
+        observed.firstMessage ?? false,
+    });
+    // An earlier test replaces the client factory with auto-replying clients;
+    // these receivers must only observe what each test emits.
+    let previousFactory: ReturnType<
+      ReturnType<typeof jest.mocked<typeof Centrifuge>>["getMockImplementation"]
+    >;
+    beforeEach(() => {
+      const factory = jest.mocked(Centrifuge);
+      previousFactory = factory.getMockImplementation();
+      factory.mockImplementation(() => {
+        const client = new MockCentrifugeClient();
+        mockClients.push(client);
+        return client as unknown as Centrifuge;
+      });
+    });
+    afterEach(() => {
+      if (previousFactory)
+        jest.mocked(Centrifuge).mockImplementation(previousFactory);
+    });
+    const PRIVATE_URL = "https://private.example/PRIVATE_SECRET?token=hidden";
+    const PRIVATE_PATH = "/tmp/hackerai-upload/PRIVATE_DEST.png";
+    const RECEIVER_USER = "user-receiver";
+    // Scoped to this sandbox's own clients and token requests, so unrelated
+    // relay work cannot be mistaken for these command receivers.
+    function receiverSandbox(linux = true) {
+      const sandbox = new CentrifugoSandbox(
+        RECEIVER_USER,
+        {
+          ...defaultConnection,
+          ...(linux && {
+            osInfo: {
+              platform: "linux",
+              arch: "x64",
+              release: "6.1",
+              hostname: "devbox",
+            },
+          }),
+        },
+        defaultConfig,
+      );
+      const run = sandbox.commands.run;
+      const rejections: unknown[] = [];
+      (sandbox as any).commands.run = jest.fn(
+        (...args: Parameters<typeof run>) =>
+          run(...args).catch((error: unknown) => {
+            rejections.push(error);
+            throw error;
+          }),
+      );
+      const seen = new Set<MockCentrifugeClient>();
+      const nextReceiver = async () => {
+        const active = (sandbox as any).activeClients as MockCentrifugeClient[];
+        const next = () => active.find((client) => !seen.has(client));
+        for (let tick = 0; tick < 20 && !next(); tick++)
+          await jest.advanceTimersByTimeAsync(0);
+        const client = next();
+        expect(client).toBeDefined();
+        seen.add(client!);
+        expect(client!.newSubscription).toHaveBeenCalledTimes(1);
+        const sub = client!.newSubscription.mock.results[0].value;
+        return { client: client!, sub };
+      };
+      return { sandbox, rejections, nextReceiver };
+    }
+    // Attempt 1 never subscribes; attempt 2 publishes and reaches its deadline.
+    async function exhaustSetupProbe(
+      sandbox: CentrifugoSandbox,
+      nextReceiver: ReturnType<typeof receiverSandbox>["nextReceiver"],
+    ) {
+      const failure = sandbox.files
+        .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH)
+        .catch((error: unknown) => error);
+      await nextReceiver();
+      await jest.advanceTimersByTimeAsync(35_000);
+      await jest.advanceTimersByTimeAsync(500);
+      const { sub } = await nextReceiver();
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(35_000);
+      return failure;
+    }
+    const setupRetryWarnings = (warn: jest.SpyInstance) =>
+      warn.mock.calls.filter(([message]) =>
+        String(message).startsWith("[centrifugo-setup]"),
+      );
+
+    it("records a pre-publication presence rejection on the original relay error", async () => {
+      const { sandbox, nextReceiver } = receiverSandbox(false);
+      const rejection = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+        .catch((error: unknown) => error);
+      const { client, sub } = await nextReceiver();
+      sub.presence.mockResolvedValueOnce({ clients: {} });
+      client.emit("connected");
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const error = await rejection;
+      expect(error).toBeInstanceOf(LocalCommandRelayUnsubscribedError);
+      expect(sub.publish).not.toHaveBeenCalled();
+      expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(client.disconnect).toHaveBeenCalledTimes(1);
+      expect(receiverFields(error)).toEqual(
+        receiver("presence_missing", { connected: true, subscribed: true }),
+      );
+    });
+
+    it.each([false, true])(
+      "records a post-publication deadline (first message observed: %s)",
+      async (output) => {
+        const { sandbox, nextReceiver } = receiverSandbox(false);
+        const rejection = sandbox.commands
+          .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+          .catch((error: unknown) => error);
+        const { client, sub } = await nextReceiver();
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).toHaveBeenCalledTimes(1);
+        if (output)
+          sub.emit("publication", {
+            data: { type: "stdout", commandId: FIXED_UUID, data: "PRIVATE" },
+          });
+        await jest.advanceTimersByTimeAsync(6_001);
+        const error = await rejection;
+        // Existing dispatch flags and cleanup are unchanged.
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: true,
+          retryable: false,
+        });
+        expect(error.message).toContain("Command timeout after 6000ms");
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(receiverFields(error)).toEqual(
+          receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+            firstMessage: output,
+          }),
+        );
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toMatch(/PRIVATE|conn-1/);
+      },
+    );
+
+    it.each([
+      [
+        "subscription_error",
+        (sub: MockSubscription) =>
+          sub.emit("error", {
+            type: "subscribe",
+            error: { code: 103, message: "PRIVATE_REASON" },
+          }),
+      ],
+      [
+        "disconnected",
+        (_sub: MockSubscription, client: MockCentrifugeClient) =>
+          client.emit("disconnected", { code: 3000, reason: "PRIVATE_REASON" }),
+      ],
+      [
+        "client_error",
+        (_sub: MockSubscription, client: MockCentrifugeClient) =>
+          client.emit("error", {
+            type: "connect",
+            error: { code: 3500, message: "PRIVATE_REASON" },
+          }),
+      ],
+    ] as const)(
+      "records a terminal %s before subscription",
+      async (reason, fail) => {
+        const { sandbox, nextReceiver } = receiverSandbox(false);
+        const rejection = sandbox.commands
+          .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+          .catch((error: unknown) => error);
+        const { client, sub } = await nextReceiver();
+        client.emit("connected");
+        fail(sub, client);
+        const error = await rejection;
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: false,
+          retryable: false,
+        });
+        expect(error.message).toContain("PRIVATE_REASON");
+        expect(sub.publish).not.toHaveBeenCalled();
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(receiverFields(error)).toEqual(
+          receiver(reason, { connected: true }),
+        );
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toContain("PRIVATE");
+      },
+    );
+
+    it("marks only the exhausted final setup attempt with its own receiver observations", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const error = await exhaustSetupProbe(sandbox, nextReceiver);
+        expect(rejections).toHaveLength(2);
+        expect(error).toBe(rejections[1]);
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: true,
+          retryable: false,
+        });
+        expect(setupRetryWarnings(warn)).toHaveLength(1);
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_phase: "http_client",
+          attachment_download_attempt: 0,
+          attachment_download_result_state: "not_observed",
+        });
+        expect(receiverFields(error)).toEqual({
+          ...receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+          }),
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        });
+        // The retried attempt keeps its own receiver evidence, unmarked.
+        expect(rejections[0]).toMatchObject({
+          dispatched: false,
+          retryable: true,
+        });
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toMatch(/PRIVATE|private\.example|hidden|command -v|conn-1/);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("leaves a retried setup attempt unmarked when the retry succeeds", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const download = sandbox.files.downloadFromUrl(
+          PRIVATE_URL,
+          PRIVATE_PATH,
+        );
+        await nextReceiver();
+        await jest.advanceTimersByTimeAsync(35_500);
+        // Curl path, curl capabilities, then the download itself.
+        for (const stdout of [
+          "/usr/bin/curl\n",
+          "--retry-all-errors --retry-connrefused\n",
+          "",
+        ]) {
+          const { sub } = await nextReceiver();
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          sub.emit("publication", {
+            data: { type: "stdout", commandId: FIXED_UUID, data: stdout },
+          });
+          sub.emit("publication", {
+            data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+          });
+          await jest.advanceTimersByTimeAsync(0);
+        }
+        await expect(download).resolves.toBeUndefined();
+        expect(setupRetryWarnings(warn)).toHaveLength(1);
+        expect(rejections).toHaveLength(1);
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("records a final pre-receiver token failure without fabricating a receiver", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const tokens = jest
+          .mocked(generateCentrifugoToken)
+          .mockImplementation(async (userId) => {
+            if (
+              userId === RECEIVER_USER &&
+              tokens.mock.calls.filter(([id]) => id === RECEIVER_USER)
+                .length === 2
+            )
+              throw new Error("PRIVATE_TOKEN_FAILURE");
+            return "mock-jwt-token";
+          });
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const failure = sandbox.files
+          .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH)
+          .catch((error: unknown) => error);
+        await nextReceiver();
+        await jest.advanceTimersByTimeAsync(35_500);
+        const error = await failure;
+        expect(
+          tokens.mock.calls.filter(([id]) => id === RECEIVER_USER),
+        ).toHaveLength(2);
+        // Only the first attempt created a receiver.
+        expect((sandbox as any).activeClients).toHaveLength(0);
+        expect(rejections).toHaveLength(2);
+        expect(error).toBe(rejections[1]);
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: false,
+          retryable: false,
+        });
+        expect(receiverFields(error)).toEqual({
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        });
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+      } finally {
+        jest
+          .mocked(generateCentrifugoToken)
+          .mockResolvedValue("mock-jwt-token");
+        warn.mockRestore();
+      }
+    });
+
+    it("preserves a setup Stop reason without marking an attempt or receiver", async () => {
+      const { sandbox, nextReceiver } = receiverSandbox();
+      const controller = new AbortController();
+      const reason = Object.freeze(new Error("PRIVATE_STOP"));
+      const failure = sandbox.files
+        .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH, {
+          signal: controller.signal,
+        })
+        .catch((error: unknown) => error);
+      await nextReceiver();
+      controller.abort(reason);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(await failure).toBe(reason);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(getAttachmentDownloadFailureContext(reason)).toMatchObject({
+        attachment_download_phase: "http_client",
+      });
+      expect(receiverFields(reason)).toEqual({});
+    });
+
+    it("carries only closed receiver and setup fields to existing staging sinks", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        const { sandbox, nextReceiver } = receiverSandbox();
+        const rejection = await exhaustSetupProbe(sandbox, nextReceiver);
+        jest
+          .spyOn(sandbox.files, "downloadFromUrl")
+          .mockRejectedValue(rejection);
+        jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "PRIVATE_PROBE",
+          exitCode: 1,
+        });
+        warn.mockClear();
+        const pending = uploadSandboxFiles(
+          [{ kind: "url", url: PRIVATE_URL, localPath: PRIVATE_PATH }],
+          async () => sandbox,
+          {
+            logContext: {
+              service: "agent-long",
+              requestId: "run-setup",
+              userId: "user-1",
+              chatId: "chat-setup",
+            },
+          },
+        );
+        for (let tick = 0; tick < 20; tick++)
+          await jest.advanceTimersByTimeAsync(10_000);
+        const result = await pending;
+        expect(result.failedCount).toBe(1);
+
+        const records = (spy: jest.SpyInstance, name: string) =>
+          spy.mock.calls
+            .map(([value]) => {
+              try {
+                return JSON.parse(value);
+              } catch {
+                return {};
+              }
+            })
+            .filter((record) => record.event === name);
+        const events = (name: string) =>
+          event.mock.calls
+            .filter(([eventName]) => eventName === name)
+            .map(([, fields]) => fields);
+        const sinks = [
+          ...events("sandbox_attachment_failure_diagnostics"),
+          ...records(warn, "sandbox_attachment_failure_diagnostics"),
+          ...events("sandbox_attachment_staging_failed"),
+          ...records(error, "sandbox_attachment_staging_failed"),
+          getSandboxUploadFailureMetadata(result),
+        ];
+        expect(sinks).toHaveLength(5);
+        const expected = {
+          ...receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+          }),
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        };
+        for (const sink of sinks) {
+          const fields = Object.fromEntries(
+            Object.entries(sink ?? {}).filter(
+              ([key]) =>
+                key.startsWith("attachment_download_") ||
+                key.startsWith("attachment_command_"),
+            ),
+          );
+          expect(fields).toMatchObject({
+            ...expected,
+            attachment_download_phase: "http_client",
+          });
+          expect(
+            Object.fromEntries(
+              Object.entries(fields).filter(
+                ([key]) =>
+                  key.startsWith("attachment_command_receiver_") ||
+                  key.startsWith("attachment_command_setup_"),
+              ),
+            ),
+          ).toEqual(expected);
+          expect(JSON.stringify(fields)).not.toMatch(
+            /PRIVATE|private\.example|hidden|command -v|conn-1/,
+          );
+        }
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+        event.mockRestore();
+      }
     });
   });
 

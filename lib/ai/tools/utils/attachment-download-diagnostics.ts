@@ -1,3 +1,5 @@
+import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostics";
+
 type DownloadInput = {
   platform: "windows" | "posix" | "unknown";
   shell: "bash" | "cmd";
@@ -281,10 +283,94 @@ type RouteContext = {
   attachment_download_route: AttachmentDownloadRoute;
   attachment_download_boundary_present: boolean;
 };
+/** Observed by the command receiver that selected this rejection. Publish
+ * completion is the existing dispatch result, not execution or sender receipt. */
+export type AttachmentCommandReceiver = {
+  reason: ReceiverCleanupReason;
+  connectedObserved: boolean;
+  subscribedObserved: boolean;
+  publicationStarted: boolean;
+  publishCompleted: boolean;
+  firstMessageObserved: boolean;
+};
+type ReceiverContext = {
+  attachment_command_receiver_version: 1;
+  attachment_command_receiver_reason: ReceiverCleanupReason;
+  attachment_command_receiver_connected_observed: boolean;
+  attachment_command_receiver_subscribed_observed: boolean;
+  attachment_command_receiver_publication_started: boolean;
+  attachment_command_receiver_publish_completed: boolean;
+  attachment_command_receiver_first_message_observed: boolean;
+};
+type SetupContext = {
+  attachment_command_setup_version: 1;
+  attachment_command_setup_attempt: 1 | 2;
+};
 export type AttachmentDownloadFailureContext = Partial<
-  ResultContext & BoundaryContext & RouteContext
+  ResultContext &
+    BoundaryContext &
+    RouteContext &
+    ReceiverContext &
+    SetupContext
 > &
-  (ResultContext | BoundaryContext | RouteContext);
+  (
+    | ResultContext
+    | BoundaryContext
+    | RouteContext
+    | ReceiverContext
+    | SetupContext
+  );
+
+/** Bind the receiver's own finite observations to the exact rejection it
+ * selected. Never inspects the rejection or replaces it. */
+export function recordAttachmentCommandReceiver(
+  error: unknown,
+  input: AttachmentCommandReceiver,
+): void {
+  if (
+    (typeof error !== "object" || error === null) &&
+    typeof error !== "function"
+  )
+    return;
+  try {
+    contexts.set(error, {
+      ...contexts.get(error),
+      attachment_command_receiver_version: 1,
+      attachment_command_receiver_reason: input.reason,
+      attachment_command_receiver_connected_observed: input.connectedObserved,
+      attachment_command_receiver_subscribed_observed: input.subscribedObserved,
+      attachment_command_receiver_publication_started: input.publicationStarted,
+      attachment_command_receiver_publish_completed: input.publishCompleted,
+      attachment_command_receiver_first_message_observed:
+        input.firstMessageObserved,
+    });
+  } catch {
+    // Optional diagnostics must preserve the original rejection.
+  }
+}
+
+/** Record the setup attempt whose rejection is rethrown; retried attempts'
+ * rejections are never marked. */
+export function recordAttachmentCommandSetupAttempt(
+  error: unknown,
+  attempt: number,
+): void {
+  if (
+    ((typeof error !== "object" || error === null) &&
+      typeof error !== "function") ||
+    (attempt !== 1 && attempt !== 2)
+  )
+    return;
+  try {
+    contexts.set(error, {
+      ...contexts.get(error),
+      attachment_command_setup_version: 1,
+      attachment_command_setup_attempt: attempt,
+    });
+  } catch {
+    // Optional diagnostics must preserve the original rejection.
+  }
+}
 
 /** Bind failure evidence to the route actually selected by attachment staging,
  * including native rejection without an adapter boundary receipt. */

@@ -3,6 +3,10 @@ import {
   recordAttachmentDownloadBoundary,
   getAttachmentDownloadFailureContext,
   recordAttachmentDownloadFailure,
+  recordAttachmentCommandReceiver,
+  recordAttachmentDownloadRoute,
+  recordAttachmentCommandSetupAttempt,
+  type AttachmentCommandReceiver,
 } from "../attachment-download-diagnostics";
 
 const input = {
@@ -965,4 +969,123 @@ it("retains directory probe fields through existing boundary and copy propagatio
   });
   expect(JSON.stringify(fields)).not.toMatch(/private|Filesystem|dev\//);
   expect(Object.keys(original)).toEqual([]);
+});
+
+const deadlineReceiver: AttachmentCommandReceiver = {
+  reason: "deadline",
+  connectedObserved: true,
+  subscribedObserved: true,
+  publicationStarted: true,
+  publishCompleted: true,
+  firstMessageObserved: false,
+};
+
+it("records receiver and setup context on a hostile rejection without touching it", () => {
+  const privateRead = jest.fn(() => {
+    throw new Error("private trap");
+  });
+  const hostile = new Proxy(
+    {},
+    {
+      get: privateRead,
+      has: privateRead,
+      ownKeys: privateRead,
+      getOwnPropertyDescriptor: privateRead,
+      getPrototypeOf: privateRead,
+      set: privateRead,
+      defineProperty: privateRead,
+    },
+  );
+  recordAttachmentCommandReceiver(hostile, deadlineReceiver);
+  recordAttachmentCommandSetupAttempt(hostile, 2);
+  recordAttachmentDownloadRoute(hostile, "native_method");
+  const wrapper = copyAttachmentDownloadFailureContext(
+    hostile,
+    new Error("private wrapper"),
+  );
+  expect(privateRead).not.toHaveBeenCalled();
+  expect(getAttachmentDownloadFailureContext(wrapper)).toEqual({
+    attachment_command_receiver_version: 1,
+    attachment_command_receiver_reason: "deadline",
+    attachment_command_receiver_connected_observed: true,
+    attachment_command_receiver_subscribed_observed: true,
+    attachment_command_receiver_publication_started: true,
+    attachment_command_receiver_publish_completed: true,
+    attachment_command_receiver_first_message_observed: false,
+    attachment_command_setup_version: 1,
+    attachment_command_setup_attempt: 2,
+    attachment_download_route_version: 1,
+    attachment_download_route: "native_method",
+    attachment_download_boundary_present: false,
+  });
+});
+
+it("retains receiver and setup context through the later existing boundary", () => {
+  const error = Object.freeze(new Error("private original"));
+  recordAttachmentCommandSetupAttempt(error, 1);
+  recordAttachmentCommandReceiver(error, {
+    ...deadlineReceiver,
+    reason: "presence_missing",
+    publicationStarted: false,
+    publishCompleted: false,
+  });
+  recordAttachmentDownloadBoundary(error, {
+    phase: "http_client",
+    attempt: 0,
+    resultState: "not_observed",
+  });
+  expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+    attachment_command_receiver_reason: "presence_missing",
+    attachment_command_receiver_publication_started: false,
+    attachment_command_setup_attempt: 1,
+    attachment_download_phase: "http_client",
+    attachment_download_result_context_present: false,
+  });
+  expect(Object.keys(error)).toEqual([]);
+});
+
+it("keeps setup attempts bounded and primitives unrecorded", () => {
+  for (const attempt of [0, 3, 1.5, NaN]) {
+    const error = new Error();
+    recordAttachmentCommandSetupAttempt(error, attempt);
+    expect(getAttachmentDownloadFailureContext(error)).toBeUndefined();
+  }
+  recordAttachmentCommandReceiver("private", deadlineReceiver);
+  recordAttachmentCommandSetupAttempt("private", 1);
+  expect(getAttachmentDownloadFailureContext("private")).toBeUndefined();
+});
+
+it("reports only the final rejection's receiver context when an earlier failure is wrapped", () => {
+  const earlier = new Error("private earlier");
+  recordAttachmentCommandReceiver(earlier, deadlineReceiver);
+  recordAttachmentCommandSetupAttempt(earlier, 2);
+  const final = new Error("private final");
+  recordAttachmentCommandReceiver(final, {
+    ...deadlineReceiver,
+    reason: "client_error",
+    subscribedObserved: false,
+    publicationStarted: false,
+    publishCompleted: false,
+  });
+  // The existing wrapper copies only the final rejection's evidence.
+  const combined = copyAttachmentDownloadFailureContext(
+    final,
+    new Error("private combined"),
+  );
+  const fields = getAttachmentDownloadFailureContext(combined)!;
+  expect(fields).toMatchObject({
+    attachment_command_receiver_reason: "client_error",
+    attachment_command_receiver_subscribed_observed: false,
+  });
+  expect(fields).not.toHaveProperty("attachment_command_setup_attempt");
+  // A later attempt record on the final error cannot be replaced by the earlier one.
+  recordAttachmentCommandSetupAttempt(final, 1);
+  expect(getAttachmentDownloadFailureContext(final)).toMatchObject({
+    attachment_command_receiver_reason: "client_error",
+    attachment_command_setup_attempt: 1,
+  });
+  expect(getAttachmentDownloadFailureContext(earlier)).toMatchObject({
+    attachment_command_receiver_reason: "deadline",
+    attachment_command_setup_attempt: 2,
+  });
 });
