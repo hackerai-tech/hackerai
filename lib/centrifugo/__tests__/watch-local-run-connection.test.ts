@@ -137,15 +137,9 @@ test("stops a thinking run even when no commands are being executed", async () =
   expect(cause()?.reason).toBe("selected_presence_absent");
 });
 
-// Observer failures still stop immediately, but must not look like host loss.
+// Terminal observer failures still stop at once, but must not look like host loss.
 const PRIVATE_CONTEXT = { reason: "PRIVATE", channel: "PRIVATE" };
 test.each([
-  [
-    "observer_reconnecting",
-    "connecting",
-    () => mockClient.emit("connecting", { code: 3012, ...PRIVATE_CONTEXT }),
-    { callbackCode: 3012, clientState: "connecting" },
-  ],
   [
     "observer_disconnected",
     "disconnected",
@@ -153,30 +147,11 @@ test.each([
     { callbackCode: 3501, clientState: "disconnected" },
   ],
   [
-    "subscription_reconnecting",
-    "connected",
-    () =>
-      mockSubscription.emit("subscribing", { code: 2500, ...PRIVATE_CONTEXT }),
-    { callbackCode: 2500, clientState: "connected" },
-  ],
-  [
     "subscription_unsubscribed",
     "connected",
     () =>
       mockSubscription.emit("unsubscribed", { code: 2000, ...PRIVATE_CONTEXT }),
     { callbackCode: 2000, clientState: "connected" },
-  ],
-  // A distinct question: its nested error code is not this callback code.
-  [
-    "subscription_error",
-    "connected",
-    () =>
-      mockSubscription.emit("error", {
-        code: 1,
-        error: { code: 100, message: "PRIVATE" },
-        ...PRIVATE_CONTEXT,
-      }),
-    {},
   ],
 ])(
   "stops on %s after positive host presence with that observer cause",
@@ -221,9 +196,9 @@ test.each([
   "omits an unreadable callback code from %s without changing the stop",
   async (_name, context) => {
     const { onLost, cause } = await start();
-    mockSubscription.emit("subscribing", context());
+    mockSubscription.emit("unsubscribed", context());
     expect(cause()).toEqual({
-      reason: "subscription_reconnecting",
+      reason: "subscription_unsubscribed",
       connectionId: SELECTED,
       hadPositivePresence: true,
       lastPositivePresenceAgeMs: 0,
@@ -258,10 +233,10 @@ test("a hostile client state read cannot block, replace or revive the first stop
   await flush();
   const polls = mockSubscription.presence.mock.calls.length;
   armed = true;
-  mockSubscription.emit("subscribing", { code: 1 });
+  mockSubscription.emit("unsubscribed", { code: 1 });
   expect(trap).toHaveBeenCalled();
   expect(cause()).toEqual({
-    reason: "subscription_reconnecting",
+    reason: "subscription_unsubscribed",
     connectionId: SELECTED,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: 0,
@@ -274,34 +249,60 @@ test("a hostile client state read cannot block, replace or revive the first stop
   expect(jest.getTimerCount()).toBe(0);
 });
 
-test("distinguishes a rejected later presence read from host absence", async () => {
-  const { cause } = await start();
+test("distinguishes a rejected first presence read from host absence", async () => {
   mockSubscription.presence.mockRejectedValue(new Error("PRIVATE"));
-  await jest.advanceTimersByTimeAsync(5_000);
-  expect(cause()).toMatchObject({
+  const { cause } = await start();
+  expect(cause()).toEqual({
     reason: "presence_error",
-    hadPositivePresence: true,
+    connectionId: SELECTED,
+    hadPositivePresence: false,
   });
 });
 
-test.each([
-  ["first", false],
-  ["later", true],
-])("bounds a hung %s presence check", async (_check, hadPositive) => {
-  if (!hadPositive)
-    mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
+test("bounds a hung first presence check", async () => {
+  mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
   const { onLost, cause } = await start();
-  if (hadPositive) {
-    mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
-    await jest.advanceTimersByTimeAsync(5_000);
-  }
   await jest.advanceTimersByTimeAsync(9_999);
   expect(onLost).not.toHaveBeenCalled();
   await jest.advanceTimersByTimeAsync(1);
   expect(cause()).toMatchObject({
     reason: "presence_timeout",
-    hadPositivePresence: hadPositive,
+    hadPositivePresence: false,
   });
+});
+
+// After verification a failed or hung read opens the recovery window instead.
+test.each([
+  ["rejected", () => Promise.reject(new Error("PRIVATE")), 5_000],
+  ["hung", () => new Promise(() => {}), 15_000],
+])(
+  "a %s later presence read expires the window unless a read confirms the host",
+  async (_kind, read, interruptedAt) => {
+    const { onLost, cause } = await start();
+    mockSubscription.presence.mockImplementation(read);
+    await jest.advanceTimersByTimeAsync(interruptedAt + 14_999);
+    expect(onLost).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(cause()).toEqual({
+      reason: "observer_recovery_expired",
+      connectionId: SELECTED,
+      hadPositivePresence: true,
+      lastPositivePresenceAgeMs: interruptedAt + 15_000,
+      clientState: "connected",
+    });
+    expect(jest.getTimerCount()).toBe(0);
+  },
+);
+
+test("a later read confirming the host ends a presence-read interruption", async () => {
+  const { onLost } = await start();
+  mockSubscription.presence.mockRejectedValueOnce(new Error("PRIVATE"));
+  await jest.advanceTimersByTimeAsync(5_000);
+  // The next read, at the normal cadence, confirms the host.
+  await jest.advanceTimersByTimeAsync(5_000);
+  expect(mockSubscription.presence).toHaveBeenCalledTimes(3);
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(onLost).not.toHaveBeenCalled();
 });
 
 test("distinguishes setup deadline, setup failure and an initial disconnect", async () => {
@@ -334,13 +335,14 @@ test("distinguishes setup deadline, setup failure and an initial disconnect", as
 test("keeps the first cause when later events and deadlines follow", async () => {
   const { cause } = await start();
   mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
+  // A recoverable interruption is not a cause; the departure during it is.
   mockClient.emit("connecting");
   mockSubscription.emit("leave", {
     info: { connInfo: { connectionId: SELECTED } },
   });
   mockSubscription.emit("unsubscribed");
   await jest.advanceTimersByTimeAsync(30_000);
-  expect(cause()?.reason).toBe("observer_reconnecting");
+  expect(cause()?.reason).toBe("selected_host_left");
 });
 
 test.each([
@@ -385,14 +387,14 @@ test("omits a stale age when the clock fails after an earlier positive read", as
   try {
     await jest.advanceTimersByTimeAsync(5_000);
     now.mockRestore();
-    mockClient.state = "connecting";
-    mockClient.emit("connecting", { code: 1 });
+    mockClient.state = "disconnected";
+    mockClient.emit("disconnected", { code: 1 });
     expect(cause()).toEqual({
-      reason: "observer_reconnecting",
+      reason: "observer_disconnected",
       connectionId: SELECTED,
       hadPositivePresence: true,
       callbackCode: 1,
-      clientState: "connecting",
+      clientState: "disconnected",
     });
   } finally {
     now.mockRestore();
@@ -416,17 +418,17 @@ test("normal completion disposes monitoring without marking the run interrupted"
 
 describe("native socket close observed before the first stop", () => {
   const observerCause = {
-    reason: "observer_reconnecting",
+    reason: "observer_disconnected",
     connectionId: SELECTED,
     hadPositivePresence: true,
     lastPositivePresenceAgeMs: 0,
     callbackCode: 1,
-    clientState: "connecting",
+    clientState: "disconnected",
   };
-  // The SDK's own reaction to a transport close.
-  const sdkReconnects = () => {
-    mockClient.state = "connecting";
-    mockClient.emit("connecting", { code: 1, ...PRIVATE_CONTEXT });
+  // The SDK's own terminal reaction to a transport close.
+  const sdkDisconnects = () => {
+    mockClient.state = "disconnected";
+    mockClient.emit("disconnected", { code: 1, ...PRIVATE_CONTEXT });
   };
 
   test("adds the close pair to the first callback stop without changing it", async () => {
@@ -436,7 +438,7 @@ describe("native socket close observed before the first stop", () => {
     Object.defineProperty(event, "reason", { get: reason });
     socket.dispatchEvent(event);
     expect(onLost).not.toHaveBeenCalled();
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual({
       ...observerCause,
       socketCloseCode: 1006,
@@ -445,7 +447,7 @@ describe("native socket close observed before the first stop", () => {
     expect(reason).not.toHaveBeenCalled();
     expect(JSON.stringify(cause())).not.toContain("PRIVATE");
     // Later SDK events neither replace the first cause nor its pair.
-    mockClient.emit("disconnected", { code: 3501 });
+    mockClient.emit("connecting", { code: 3012 });
     mockSubscription.emit("unsubscribed", { code: 2000 });
     await jest.advanceTimersByTimeAsync(30_000);
     expect(onLost).toHaveBeenCalledTimes(1);
@@ -525,7 +527,7 @@ describe("native socket close observed before the first stop", () => {
     socket.dispatchEvent(closeEvent(1006, false));
     mockSubscription.emit("subscribed");
     await flush();
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual(observerCause);
   });
 
@@ -545,7 +547,7 @@ describe("native socket close observed before the first stop", () => {
       if (closesFirst) earlier.dispatchEvent(closeEvent(4000, true));
       const current = sdkSocket("ws://localhost");
       if (!closesFirst) earlier.dispatchEvent(closeEvent(4000, true));
-      sdkReconnects();
+      sdkDisconnects();
       expect(cause()).toEqual(observerCause);
       expect(NativeSocket.created).toEqual([earlier, current]);
     },
@@ -559,7 +561,7 @@ describe("native socket close observed before the first stop", () => {
     mockSubscription.emit("subscribed");
     await flush();
     current.dispatchEvent(closeEvent(1000, true));
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual({
       ...observerCause,
       socketCloseCode: 1000,
@@ -577,7 +579,7 @@ describe("native socket close observed before the first stop", () => {
   ])("omits a %s close pair", async (_name, code, wasClean) => {
     const { socket, cause } = await start();
     socket.dispatchEvent(closeEvent(code, wasClean));
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual(observerCause);
   });
 
@@ -609,7 +611,7 @@ describe("native socket close observed before the first stop", () => {
     mockSubscription.emit("subscribed");
     await flush();
     expect(onLost).not.toHaveBeenCalled();
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual(observerCause);
   });
 
@@ -650,7 +652,7 @@ describe("native socket close observed before the first stop", () => {
       expect(socket).toBeInstanceOf(FaultySocket);
       mockSubscription.emit("subscribed");
       await flush();
-      sdkReconnects();
+      sdkDisconnects();
       expect(cause()).toEqual(observerCause);
       expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
       socket.dispatchEvent(closeEvent(1006, false));
@@ -665,7 +667,292 @@ describe("native socket close observed before the first stop", () => {
     const event = new Event("close");
     Object.defineProperty(event, "code", { get: throwing });
     socket.dispatchEvent(event);
-    sdkReconnects();
+    sdkDisconnects();
     expect(cause()).toEqual(observerCause);
+  });
+});
+
+describe("an observer interruption after the host was verified", () => {
+  function deferred() {
+    let resolve!: (value: unknown) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+  const hang = () => new Promise(() => {});
+  // In the SDK's order: its subscription moves first, then its client.
+  const transportClosed = () => {
+    mockClient.state = "connecting";
+    mockSubscription.emit("subscribing", { code: 1, ...PRIVATE_CONTEXT });
+    mockClient.emit("connecting", { code: 1, ...PRIVATE_CONTEXT });
+  };
+  const resubscribed = async () => {
+    mockClient.state = "connected";
+    mockSubscription.emit("subscribed");
+    await flush();
+  };
+  const interruptions: [string, () => void][] = [
+    ["a transport close", transportClosed],
+    [
+      "a server resubscribe",
+      () => mockSubscription.emit("subscribing", { code: 2500 }),
+    ],
+    [
+      "a failed resubscribe",
+      () => {
+        mockSubscription.emit("subscribing", { code: 2500 });
+        mockSubscription.emit("error", {
+          type: "subscribe",
+          error: { code: 100, message: "PRIVATE" },
+        });
+      },
+    ],
+  ];
+
+  test.each(interruptions)(
+    "recovers from %s through a new positive read",
+    async (_name, interrupt) => {
+      const { onLost } = await start();
+      interrupt();
+      const read = deferred();
+      mockSubscription.presence.mockReturnValueOnce(read.promise);
+      await resubscribed();
+      await jest.advanceTimersByTimeAsync(9_000);
+      read.resolve(online);
+      await flush();
+      const reads = mockSubscription.presence.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(onLost).not.toHaveBeenCalled();
+      // The normal cadence resumes.
+      expect(mockSubscription.presence).toHaveBeenCalledTimes(reads + 12);
+    },
+  );
+
+  test.each(interruptions)(
+    "a resubscription after %s alone never restores readiness",
+    async (_name, interrupt) => {
+      const { onLost, cause } = await start();
+      interrupt();
+      mockSubscription.presence.mockImplementation(hang);
+      await resubscribed();
+      await jest.advanceTimersByTimeAsync(14_999);
+      expect(onLost).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(cause()).toEqual({
+        reason: "observer_recovery_expired",
+        connectionId: SELECTED,
+        hadPositivePresence: true,
+        lastPositivePresenceAgeMs: 15_000,
+        clientState: "connected",
+      });
+      expect(JSON.stringify(cause())).not.toContain("PRIVATE");
+      expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  test("repeated callbacks and failed reads never extend the window", async () => {
+    const { onLost, cause } = await start();
+    mockSubscription.presence.mockRejectedValue(new Error("PRIVATE"));
+    transportClosed();
+    for (let at = 0; at < 12_000; at += 4_000) {
+      await jest.advanceTimersByTimeAsync(2_000);
+      await resubscribed();
+      await jest.advanceTimersByTimeAsync(2_000);
+      transportClosed();
+      mockSubscription.emit("error", { type: "subscribe", error: {} });
+    }
+    await jest.advanceTimersByTimeAsync(2_999);
+    expect(onLost).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(cause()).toMatchObject({
+      reason: "observer_recovery_expired",
+      lastPositivePresenceAgeMs: 15_000,
+    });
+  });
+
+  test("ignores a read started before the interruption, even a positive one", async () => {
+    const { onLost, cause } = await start();
+    const stale = deferred();
+    mockSubscription.presence.mockReturnValueOnce(stale.promise);
+    await jest.advanceTimersByTimeAsync(5_000);
+    mockSubscription.emit("subscribing", { code: 2500 });
+    mockSubscription.presence.mockImplementation(hang);
+    await resubscribed();
+    stale.resolve(online);
+    await flush();
+    await jest.advanceTimersByTimeAsync(14_999);
+    expect(onLost).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(cause()?.reason).toBe("observer_recovery_expired");
+  });
+
+  test("ignores a failure of a superseded read after recovery", async () => {
+    const { onLost, cause } = await start();
+    const stale = deferred();
+    mockSubscription.presence.mockReturnValueOnce(stale.promise);
+    await jest.advanceTimersByTimeAsync(5_000);
+    mockSubscription.emit("subscribing", { code: 2500 });
+    await resubscribed();
+    stale.reject(new Error("PRIVATE"));
+    await flush();
+    // Later reads hang: only their own timeout may open a new window.
+    mockSubscription.presence.mockImplementation(hang);
+    await jest.advanceTimersByTimeAsync(29_999);
+    expect(onLost).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(cause()).toMatchObject({
+      reason: "observer_recovery_expired",
+      lastPositivePresenceAgeMs: 30_000,
+    });
+  });
+
+  test("keeps at most one current read", async () => {
+    await start();
+    mockSubscription.presence.mockRejectedValueOnce(new Error("PRIVATE"));
+    await jest.advanceTimersByTimeAsync(5_000);
+    mockSubscription.presence.mockImplementation(hang);
+    await jest.advanceTimersByTimeAsync(2_000);
+    // Resubscribed while the next scheduled read was pending.
+    mockSubscription.emit("subscribing", { code: 2500 });
+    await resubscribed();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(mockSubscription.presence).toHaveBeenCalledTimes(3);
+  });
+
+  test.each([
+    [
+      "a selected host leave",
+      () =>
+        mockSubscription.emit("leave", {
+          info: { connInfo: { connectionId: SELECTED } },
+        }),
+      "selected_host_left",
+    ],
+    [
+      "a read without the selected host",
+      async () => {
+        mockSubscription.presence.mockResolvedValue({
+          clients: { other: { connInfo: { connectionId: "replacement" } } },
+        });
+        await resubscribed();
+      },
+      "selected_presence_absent",
+    ],
+    [
+      "a server unsubscribe",
+      () => mockSubscription.emit("unsubscribed", { code: 2000 }),
+      "subscription_unsubscribed",
+    ],
+  ])("stops at once on %s during recovery", async (_name, event, reason) => {
+    const { onLost, cause } = await start();
+    transportClosed();
+    await jest.advanceTimersByTimeAsync(1_000);
+    await event();
+    expect(cause()?.reason).toBe(reason);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(onLost).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("normal completion during recovery cancels its timers and late reads", async () => {
+    const { onLost, stop } = await start();
+    transportClosed();
+    const read = deferred();
+    mockSubscription.presence.mockReturnValueOnce(read.promise);
+    await resubscribed();
+    stop();
+    expect(jest.getTimerCount()).toBe(0);
+    read.resolve(online);
+    mockSubscription.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(onLost).not.toHaveBeenCalled();
+    expect(mockSubscription.presence).toHaveBeenCalledTimes(2);
+  });
+
+  test("an expired window reports the interrupting close, not the retry's", async () => {
+    const { socket, cause } = await start();
+    socket.dispatchEvent(closeEvent(1006, false));
+    transportClosed();
+    // The SDK's next attempt fails silently before the deadline.
+    sdkSocket("ws://localhost").dispatchEvent(closeEvent(1001, true));
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(cause()).toEqual({
+      reason: "observer_recovery_expired",
+      connectionId: SELECTED,
+      hadPositivePresence: true,
+      lastPositivePresenceAgeMs: 15_000,
+      clientState: "connecting",
+      socketCloseCode: 1006,
+      socketCloseWasClean: false,
+    });
+  });
+
+  test("leaves the SDK as the only retry owner, with delays that fit the window", async () => {
+    const { Centrifuge } = jest.requireMock("centrifuge");
+    await start();
+    const { maxReconnectDelay } = Centrifuge.mock.calls[0][1];
+    const { maxResubscribeDelay } = (
+      mockClient.newSubscription.mock.calls[0] as unknown[]
+    )[1] as { maxResubscribeDelay: number };
+    // Several attempts of each fit in the fixed window.
+    expect(maxReconnectDelay * 3).toBeLessThanOrEqual(15_000);
+    expect(maxResubscribeDelay * 3).toBeLessThanOrEqual(15_000);
+    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    transportClosed();
+    await jest.advanceTimersByTimeAsync(15_000);
+    expect(mockClient.connect).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.subscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Before the first positive read, no host was verified: nothing to recover.
+test.each([
+  [
+    "observer_reconnecting",
+    "connecting",
+    () => mockClient.emit("connecting", { code: 3012, ...PRIVATE_CONTEXT }),
+    3012,
+  ],
+  [
+    "subscription_reconnecting",
+    "connected",
+    () =>
+      mockSubscription.emit("subscribing", { code: 2500, ...PRIVATE_CONTEXT }),
+    2500,
+  ],
+])(
+  "stops on %s after subscribing, before the host is verified",
+  async (reason, clientState, emit, callbackCode) => {
+    mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
+    const { cause } = await start();
+    mockClient.state = clientState;
+    emit();
+    expect(cause()).toEqual({
+      reason,
+      connectionId: SELECTED,
+      hadPositivePresence: false,
+      callbackCode,
+      clientState,
+    });
+    expect(JSON.stringify(cause())).not.toContain("PRIVATE");
+  },
+);
+
+test("a subscription error before verification still stops", async () => {
+  mockSubscription.presence.mockImplementation(() => new Promise(() => {}));
+  const { cause } = await start();
+  mockSubscription.emit("error", {
+    code: 1,
+    error: { code: 100, message: "PRIVATE" },
+    ...PRIVATE_CONTEXT,
+  });
+  expect(cause()).toEqual({
+    reason: "subscription_error",
+    connectionId: SELECTED,
+    hadPositivePresence: false,
   });
 });

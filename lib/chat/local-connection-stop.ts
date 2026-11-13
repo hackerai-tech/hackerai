@@ -13,6 +13,7 @@ const LOCAL_STOP_REASONS = [
   "setup_timeout",
   "setup_error",
   "presence_timeout",
+  "observer_recovery_expired",
   "watched_connection_replaced",
   "selected_connection_unavailable",
   "local_recovery_requested",
@@ -30,7 +31,10 @@ export type LocalStopDetails = {
   connectionId?: string;
   hadPositivePresence?: boolean;
   lastPositivePresenceAgeMs?: number;
-  /** First winning observer callback's code; its namespace depends on the reason. */
+  /**
+   * First winning observer callback's code; its namespace depends on the
+   * reason. An expired recovery has no callback, so it carries none.
+   */
   callbackCode?: number;
   /** Public observer client state before the watcher's own disconnect. */
   clientState?: LocalStopClientState;

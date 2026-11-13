@@ -18,16 +18,27 @@ import {
 // session may restore availability, but must never revive the interrupted run.
 const PRESENCE_INTERVAL_MS = 5_000;
 const PRESENCE_TIMEOUT_MS = 10_000;
+// Once the selected host is verified, an outage of this observer alone may
+// recover. The window is fixed at its first interruption: neither SDK retries
+// nor failed lookups extend it, and only a new positive lookup ends it.
+const OBSERVER_RECOVERY_MS = 15_000;
+// The SDK owns every reconnect and resubscribe; cap its jittered backoff so
+// several attempts fit in the window.
+const MAX_RETRY_DELAY_MS = 3_000;
 
-/** Optional diagnostic clock; a fault must never become or block a stop. */
-function monotonicNow(): number | undefined {
+function readClock(read: () => number): number | undefined {
   try {
-    const now = performance.now();
+    const now = read();
     return Number.isFinite(now) ? now : undefined;
   } catch {
     return undefined;
   }
 }
+
+/** Optional diagnostic clock; a fault must never become or block a stop. */
+const monotonicNow = () => readClock(() => performance.now());
+/** Also advances while suspended, when the monotonic clock may not. */
+const wallNow = () => readClock(() => Date.now());
 
 /** The runtime's WebSocket; when unreadable the SDK keeps its default path. */
 function nativeWebSocket(): typeof WebSocket | undefined {
@@ -42,8 +53,18 @@ function nativeWebSocket(): typeof WebSocket | undefined {
 type SocketWatch = {
   socket: WebSocket;
   listener: (event: Event) => void;
-  /** Set at the run's first subscription; a setup close is not the run's. */
+  /** Set once it carries the subscription; a setup close is not the run's. */
   armed: boolean;
+};
+
+type SocketClose = ReturnType<typeof readSocketClose>;
+
+type Recovery = {
+  timer: ReturnType<typeof setTimeout>;
+  wallDeadline?: number;
+  monotonicDeadline?: number;
+  /** The interrupting close, kept past the SDK's own new sockets. */
+  close: SocketClose;
 };
 
 export function watchLocalRunConnection({
@@ -60,13 +81,19 @@ export function watchLocalRunConnection({
   let subscription: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  let recovery: Recovery | undefined;
+  // Bumped by every subscription change and lookup: only the current lookup
+  // of the current subscription may report, and its timers die with it.
+  let generation = 0;
+  let subscribed = false;
+  let everSubscribed = false;
   let hadPositivePresence = false;
   let lastPositivePresenceAt: number | undefined;
   let clientStateAtStop: LocalStopClientState | undefined;
   // Only the current socket attempt's own close listener, and its pair if the
   // native close preceded the first stop. Never the reason, URL or frames.
   let socketWatch: SocketWatch | undefined;
-  let socketClose: ReturnType<typeof readSocketClose>;
+  let socketClose: SocketClose;
   const unwatchSocket = () => {
     const owned = socketWatch;
     socketWatch = undefined;
@@ -100,6 +127,7 @@ export function watchLocalRunConnection({
     unwatchSocket();
     clearTimeout(timer);
     clearTimeout(deadline);
+    clearTimeout(recovery?.timer);
     subscription?.removeAllListeners();
     client?.removeAllListeners();
     // Before our own disconnect, which would always report "disconnected".
@@ -107,7 +135,10 @@ export function watchLocalRunConnection({
     client?.disconnect();
   };
   // The first cause wins; stop() makes every later trigger a no-op.
-  const lost = (reason: LocalStopReason, callback?: { context: unknown }) => {
+  const lost = (
+    reason: LocalStopReason,
+    observed?: { context?: unknown; close: SocketClose },
+  ) => {
     if (stopped) return;
     stop();
     const now = monotonicNow();
@@ -119,34 +150,102 @@ export function watchLocalRunConnection({
           now === undefined || lastPositivePresenceAt === undefined
             ? undefined
             : now - lastPositivePresenceAt,
-        // Only the observer state callbacks; never their reason or channel.
-        ...(callback && {
-          callbackCode: readCallbackCode(callback.context),
+        // Only the observer's own state; never a callback reason or channel.
+        ...(observed && {
+          callbackCode: readCallbackCode(observed.context),
           clientState: clientStateAtStop,
-          ...socketClose,
+          ...observed.close,
         }),
       }),
     );
   };
-  const check = async () => {
-    if (stopped) return;
+  const callbackLost = (reason: LocalStopReason, context: unknown) =>
+    lost(reason, { context, close: socketClose });
+  const expire = () => {
+    if (recovery) lost("observer_recovery_expired", { close: recovery.close });
+  };
+  // Either clock passing the deadline ends it, even if its timer is late.
+  const recoveryExpired = ({ wallDeadline, monotonicDeadline }: Recovery) => {
+    const wall = wallNow();
+    const monotonic = monotonicNow();
+    return (
+      (wallDeadline !== undefined &&
+        wall !== undefined &&
+        wall >= wallDeadline) ||
+      (monotonicDeadline !== undefined &&
+        monotonic !== undefined &&
+        monotonic >= monotonicDeadline)
+    );
+  };
+  // Invalidates the current lookup and its timers. Only the first
+  // interruption of an outage starts its window.
+  const interrupt = () => {
+    generation++;
+    clearTimeout(timer);
     clearTimeout(deadline);
-    deadline = setTimeout(() => lost("presence_timeout"), PRESENCE_TIMEOUT_MS);
+    if (!recovery) {
+      const wall = wallNow();
+      const monotonic = monotonicNow();
+      recovery = {
+        timer: setTimeout(expire, OBSERVER_RECOVERY_MS),
+        wallDeadline:
+          wall === undefined ? undefined : wall + OBSERVER_RECOVERY_MS,
+        monotonicDeadline:
+          monotonic === undefined
+            ? undefined
+            : monotonic + OBSERVER_RECOVERY_MS,
+        close: socketClose,
+      };
+    }
+    // A subscription that is still current is looked up at the normal cadence.
+    if (subscribed)
+      timer = setTimeout(() => void check(), PRESENCE_INTERVAL_MS);
+  };
+  // Before verification any observer failure still stops the run.
+  const unconfirmed = (reason: LocalStopReason) => {
+    if (hadPositivePresence) interrupt();
+    else lost(reason);
+  };
+  const check = async () => {
+    if (stopped || !subscribed) return;
+    const current = ++generation;
+    clearTimeout(timer);
+    clearTimeout(deadline);
+    deadline = setTimeout(() => {
+      if (current === generation) unconfirmed("presence_timeout");
+    }, PRESENCE_TIMEOUT_MS);
+    let presence: Awaited<ReturnType<Subscription["presence"]>>;
     try {
-      const presence = await subscription!.presence();
-      if (stopped) return;
-      clearTimeout(deadline);
-      if (!presenceHasConnectionId(presence, connectionId)) {
-        lost("selected_presence_absent");
+      presence = await subscription!.presence();
+    } catch {
+      if (!stopped && current === generation) unconfirmed("presence_error");
+      return;
+    }
+    if (stopped || current !== generation) return;
+    clearTimeout(deadline);
+    if (!presenceHasConnectionId(presence, connectionId)) {
+      lost("selected_presence_absent");
+      return;
+    }
+    if (recovery) {
+      if (recoveryExpired(recovery)) {
+        expire();
         return;
       }
-      hadPositivePresence = true;
-      // Unavailable now: omit the age rather than report a stale timestamp.
-      lastPositivePresenceAt = monotonicNow();
-      timer = setTimeout(() => void check(), PRESENCE_INTERVAL_MS);
-    } catch {
-      lost("presence_error");
+      clearTimeout(recovery.timer);
+      recovery = undefined;
     }
+    hadPositivePresence = true;
+    // Unavailable now: omit the age rather than report a stale timestamp.
+    lastPositivePresenceAt = monotonicNow();
+    timer = setTimeout(() => void check(), PRESENCE_INTERVAL_MS);
+  };
+  // The SDK's own reconnect or resubscribe: during setup its retries are
+  // bounded by the setup deadline, and before verification they still stop.
+  const reconnecting = (reason: LocalStopReason, context: unknown) => {
+    subscribed = false;
+    if (hadPositivePresence) interrupt();
+    else if (everSubscribed) callbackLost(reason, context);
   };
 
   // Also bound initial token/subscription setup and a relay that goes silent.
@@ -160,6 +259,7 @@ export function watchLocalRunConnection({
     client = new Centrifuge(wsUrl, {
       token,
       getToken: () => generateCentrifugoToken(userId, 3600),
+      maxReconnectDelay: MAX_RETRY_DELAY_MS,
       // The SDK's public constructor option: the same native socket, built
       // with the SDK's exact arguments, plus one listener of our own. A
       // construction failure reaches the SDK unchanged.
@@ -175,12 +275,12 @@ export function watchLocalRunConnection({
     });
     subscription = client.newSubscription(
       sandboxConnectionChannel(userId, connectionId),
-      { joinLeave: true },
+      { joinLeave: true, maxResubscribeDelay: MAX_RETRY_DELAY_MS },
     );
-    let subscribed = false;
     subscription.on("subscribed", () => {
-      if (subscribed) return;
+      if (stopped) return;
       subscribed = true;
+      everSubscribed = true;
       if (socketWatch) socketWatch.armed = true;
       void check();
     });
@@ -188,19 +288,20 @@ export function watchLocalRunConnection({
       if (getConnectionIdFromPresenceClient(event.info) === connectionId)
         lost("selected_host_left");
     });
-    subscription.on("subscribing", (context) => {
-      if (subscribed) lost("subscription_reconnecting", { context });
-    });
+    subscription.on("subscribing", (context) =>
+      reconnecting("subscription_reconnecting", context),
+    );
     subscription.on("unsubscribed", (context) =>
-      lost("subscription_unsubscribed", { context }),
+      callbackLost("subscription_unsubscribed", context),
     );
-    subscription.on("error", () => lost("subscription_error"));
+    // A failed resubscribe the SDK retries; a permanent one unsubscribes.
+    subscription.on("error", () => unconfirmed("subscription_error"));
     client.on("disconnected", (context) =>
-      lost("observer_disconnected", { context }),
+      callbackLost("observer_disconnected", context),
     );
-    client.on("connecting", (context) => {
-      if (subscribed) lost("observer_reconnecting", { context });
-    });
+    client.on("connecting", (context) =>
+      reconnecting("observer_reconnecting", context),
+    );
     subscription.subscribe();
     client.connect();
   })().catch(() => lost("setup_error"));
