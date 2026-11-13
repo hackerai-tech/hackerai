@@ -37,15 +37,25 @@ const BRIDGE_ERROR_REASONS = [
   "other",
   "unreadable",
 ] as const;
+const BRIDGE_NONFRAME_MESSAGE_CAP = 16;
+// The daemon's own protocol claim, not verified browser health.
+const BRIDGE_STATUS_CONNECTED = [
+  "true",
+  "false",
+  "other",
+  "not_observed",
+] as const;
 
 export type BrowserBridgeFailureContext = {
-  capture_bridge_diagnostic_version?: 1 | 2 | 3;
+  capture_bridge_diagnostic_version?: 1 | 2 | 3 | 4;
   capture_bridge_failure?: "error" | "early_close" | "deadline";
   capture_bridge_phase?: (typeof BRIDGE_PHASES)[number];
   capture_bridge_close_code?:
     (typeof BRIDGE_CLOSE_CODES)[number] | "none" | "other";
   capture_bridge_error_reason?: (typeof BRIDGE_ERROR_REASONS)[number];
   capture_bridge_node_major?: number | "other";
+  capture_bridge_nonframe_message_count?: number;
+  capture_bridge_status_message_connected?: (typeof BRIDGE_STATUS_CONNECTED)[number];
 };
 
 /** Read bounded packets tied to their failure exit; never frames, stderr or getters. */
@@ -61,6 +71,30 @@ export function browserBridgeFailureContext(
     const tuple = JSON.parse(stdout)?.bridge_failure;
     if (!Array.isArray(tuple)) return {};
     if (exitCode === 3) {
+      const count = tuple[4];
+      if (
+        tuple.length === 6 &&
+        tuple[0] === 4 &&
+        tuple[1] === "deadline" &&
+        BRIDGE_PHASES.includes(tuple[2]) &&
+        tuple[3] === "none" &&
+        Number.isInteger(count) &&
+        count >= 0 &&
+        count <= BRIDGE_NONFRAME_MESSAGE_CAP &&
+        BRIDGE_STATUS_CONNECTED.includes(tuple[5]) &&
+        // Any parsed message moves the helper to message_received.
+        (tuple[2] === "message_received"
+          ? count >= 1
+          : count === 0 && tuple[5] === "not_observed")
+      )
+        return {
+          capture_bridge_diagnostic_version: 4,
+          capture_bridge_failure: "deadline",
+          capture_bridge_phase: tuple[2],
+          capture_bridge_close_code: "none",
+          capture_bridge_nonframe_message_count: count,
+          capture_bridge_status_message_connected: tuple[5],
+        };
       if (
         tuple.length === 4 &&
         tuple[0] === 3 &&
@@ -123,6 +157,8 @@ if (!Number.isInteger(port) || port < 1 || port > 65535 ||
 }
 let done = false;
 let phase = 'connecting';
+let nonFrameMessages = 0;
+let lastStatus = 'not_observed';
 const closeCodes = ${JSON.stringify(BRIDGE_CLOSE_CODES)};
 const errorReasons = ${JSON.stringify(BRIDGE_ERROR_REASON_LABELS)};
 const finish = (code, value) => {
@@ -138,7 +174,8 @@ const finish = (code, value) => {
   setTimeout(() => process.exit(code), 20);
 };
 const timer = setTimeout(() => finish(3, mode === 'frame'
-  ? { bridge_failure: [3, 'deadline', phase, 'none'] } : undefined), 6500);
+  ? { bridge_failure: [4, 'deadline', phase, 'none', nonFrameMessages, lastStatus] }
+  : undefined), 6500);
 let payload = '';
 let socket;
 if (mode === 'input') {
@@ -171,7 +208,15 @@ function connect() {
     phase = 'message_received';
     try {
       const message = JSON.parse(String(event.data));
-      if (message.type !== 'frame') return;
+      if (message.type !== 'frame') {
+        // Closed summary only; never the raw type or any message contents.
+        if (nonFrameMessages < ${BRIDGE_NONFRAME_MESSAGE_CAP}) nonFrameMessages += 1;
+        if (message.type === 'status') {
+          lastStatus = message.connected === true ? 'true'
+            : message.connected === false ? 'false' : 'other';
+        }
+        return;
+      }
       if (typeof message.data !== 'string' || message.data.length > 900000) {
         finish(5); return;
       }

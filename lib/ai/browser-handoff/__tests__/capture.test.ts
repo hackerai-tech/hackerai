@@ -2193,3 +2193,58 @@ it.each([true, false])(
     expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
   },
 );
+
+it.each([
+  [true, [4, "deadline", "message_received", "none", 16, "false"], true],
+  [false, [4, "deadline", "message_received", "none", 3, "not_observed"], true],
+  [true, [4, "deadline", "awaiting_frame", "none", 1, "false"], false],
+  [false, [4, "deadline", "message_received", "none", 17, "true"], false],
+] as const)(
+  "forwards only a consistent v4 status summary through the capture observer (SDK throws: %s, %#)",
+  async (throws, tuple, accepted) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 3,
+      stdout: JSON.stringify({ bridge_failure: tuple }),
+      stderr: "PRIVATE_FRAME",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn();
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else await expect(capture).rejects.toThrow();
+    expect(observe).toHaveBeenCalledTimes(1);
+    const context = observe.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_stage: "frame_bridge",
+      capture_command_exit_code: throws ? 3 : "none",
+    });
+    const bridge = Object.fromEntries(
+      Object.entries(context).filter(([key]) =>
+        key.startsWith("capture_bridge_"),
+      ),
+    );
+    expect(bridge).toEqual(
+      accepted
+        ? {
+            capture_bridge_diagnostic_version: 4,
+            capture_bridge_failure: "deadline",
+            capture_bridge_phase: tuple[2],
+            capture_bridge_close_code: "none",
+            capture_bridge_nonframe_message_count: tuple[4],
+            capture_bridge_status_message_connected: tuple[5],
+          }
+        : {},
+    );
+    expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  },
+);
