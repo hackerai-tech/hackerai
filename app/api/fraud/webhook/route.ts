@@ -508,9 +508,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (claimState !== "acquired") {
-    console.log(`[Fraud Webhook] Event ${event.id} ${claimState}, skipping`);
+  if (claimState === "already_processed") {
     return NextResponse.json({ received: true });
+  }
+  if (claimState === "claim_held") {
+    // A concurrent delivery is still pending. A 2xx would tell Stripe the
+    // event is complete even if the holder later fails or crashes.
+    return NextResponse.json(
+      { error: "Webhook processing in progress" },
+      { status: 503, headers: { "Retry-After": "600" } },
+    );
   }
 
   // Handle events. If the handler throws, return 500 WITHOUT finalizing —
@@ -537,12 +544,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Handler failed" }, { status: 500 });
   }
 
-  // Finalize the claim. If this write itself fails, log and continue:
-  // a duplicate Stripe retry would re-run the handler operations, but the
-  // cleanup operations are idempotent and re-read current Stripe state. A
-  // replay therefore removes any subscription, card, or open Checkout session
-  // that drifted in after the original dispute event while the hold remained
-  // active.
+  // A failed finalize leaves the claim pending. Keep the delivery retryable
+  // so Stripe can drive a replay after the claim becomes stale.
   try {
     await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
@@ -553,6 +556,7 @@ export async function POST(req: NextRequest) {
       `[Fraud Webhook] Failed to finalize event ${event.id}:`,
       error,
     );
+    return NextResponse.json({ error: "Finalization failed" }, { status: 500 });
   }
 
   return NextResponse.json({ received: true });

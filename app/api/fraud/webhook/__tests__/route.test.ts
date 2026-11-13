@@ -164,6 +164,49 @@ describe("POST /api/fraud/webhook", () => {
     jest.restoreAllMocks();
   });
 
+  it.each([
+    ["claim_held", 503],
+    ["already_processed", 200],
+  ] as const)(
+    "responds to %s without running side effects",
+    async (state, status) => {
+      mockConvexMutation.mockResolvedValueOnce({ state } as never);
+
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(status);
+      expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+      expect(mockRetrieveCharge).not.toHaveBeenCalled();
+      expect(mockUpdateCustomer).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "extraUsage.finalizeWebhookProcessing",
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("keeps a completed handler retryable when claim finalization fails", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing") {
+        return { state: "acquired" };
+      }
+      if (operation === "extraUsage.finalizeWebhookProcessing") {
+        throw new Error("transient storage failure");
+      }
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.finalizeWebhookProcessing",
+      expect.objectContaining({ eventId: "evt_dispute" }),
+    );
+  });
+
   it.each<CustomerBoundary>([
     "subscriptions.list",
     "paymentMethods.list",

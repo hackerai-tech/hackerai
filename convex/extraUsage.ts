@@ -299,8 +299,8 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
  *                           finalizeWebhookProcessing on success
  *   - "already_processed" : event was finalized previously; skip with 200
  *   - "claim_held"        : another worker is currently processing this event;
- *                           skip with 200 (the holder will finalize, or its
- *                           claim will expire and a future retry takes over)
+ *                           return a retryable non-2xx response so a failed
+ *                           holder does not lose the provider delivery
  *
  * If a `pending` row's claim is older than STALE_CLAIM_MS, this mutation
  * reclaims it and returns "acquired" — this is what allows Stripe webhook
