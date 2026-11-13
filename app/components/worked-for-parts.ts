@@ -385,6 +385,7 @@ const toolSummaryCategory = (
     case "tool-list_notes":
     case "tool-update_note":
     case "tool-delete_note":
+    case "tool-get_note":
       return "notes";
     case "tool-list_requests":
     case "tool-view_request":

@@ -16,8 +16,16 @@ import {
 // ── Mock external dependencies used by refreshNotesInModelMessages ──────────
 
 const mockGetNotes = jest.fn();
+const mockRecallCandidates = jest.fn();
 jest.mock("@/lib/db/actions", () => ({
   getNotes: (...args: unknown[]) => mockGetNotes(...args),
+  getNoteRecallCandidates: (...args: unknown[]) =>
+    mockRecallCandidates(...args),
+}));
+const mockEvent = jest.fn();
+jest.mock("@/lib/posthog/server", () => ({
+  getPostHogBooleanFlagDecisionForUser: jest.fn(),
+  phLogger: { event: (...args: unknown[]) => mockEvent(...args) },
 }));
 
 jest.mock("@/lib/logger", () => ({
@@ -433,5 +441,126 @@ describe("injectNotesIntoMessages", () => {
     expect(mockGetNotes).toHaveBeenCalledTimes(1);
     const text = (result[0].parts[0] as { text: string }).text;
     expect(text).toContain("Preloaded");
+  });
+});
+
+// ── Relevant recall (notes_relevant_recall_v1) ──────────────────────────────
+
+describe("relevant recall injection and refresh", () => {
+  const alpha = {
+    note_id: "alpha1",
+    title: "Alpha IDOR",
+    category: "findings",
+    tags: [],
+    target: "alpha.example",
+    updated_at: 1,
+    excerpt: "Invoice export leaks PDFs",
+    excerpt_truncated: false,
+  };
+  const recallOpts = {
+    userId: "user-1",
+    subscription: "pro" as const,
+    shouldIncludeNotes: true,
+    relevantRecall: { taskText: "retest alpha.example invoices" },
+  };
+  const userMessage = {
+    id: "u1",
+    role: "user" as const,
+    parts: [{ type: "text" as const, text: "retest alpha.example invoices" }],
+  };
+
+  beforeEach(() => {
+    mockGetNotes.mockReset();
+    mockRecallCandidates.mockReset();
+    mockEvent.mockReset();
+  });
+
+  it("replaces the general dump and records one exposure for a non-empty block", async () => {
+    mockRecallCandidates.mockResolvedValue([alpha]);
+    const result = await injectNotesIntoMessages([userMessage], {
+      ...recallOpts,
+      preloadedNotes: Promise.resolve([]),
+    });
+    const text = (result[0].parts[0] as { text: string }).text;
+    expect(text).toContain("Alpha IDOR");
+    expect(mockGetNotes).not.toHaveBeenCalled();
+    expect(mockEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues without notes and without exposure when recall fails", async () => {
+    mockRecallCandidates.mockRejectedValue(new Error("unavailable"));
+    const result = await injectNotesIntoMessages([userMessage], recallOpts);
+    expect(result).toEqual([userMessage]);
+    expect(mockEvent).not.toHaveBeenCalled();
+  });
+
+  it("never recalls when notes are opted out", async () => {
+    expect(
+      await getAppendedNotesUpdate(
+        [],
+        { ...recallOpts, shouldIncludeNotes: false },
+        true,
+      ),
+    ).toBeUndefined();
+    await injectNotesIntoMessages([userMessage], {
+      ...recallOpts,
+      shouldIncludeNotes: false,
+    });
+    expect(mockRecallCandidates).not.toHaveBeenCalled();
+  });
+
+  it("keeps the previous block when a refresh lookup fails", async () => {
+    const messages = [
+      { role: "user", content: `hi\n\n${buildNotesReminder("Kept Note")}` },
+    ];
+    mockGetNotes.mockRejectedValue(new Error("unavailable"));
+    expect(
+      await refreshNotesInModelMessages(messages, {
+        userId: "user-1",
+        subscription: "pro",
+        shouldIncludeNotes: true,
+      }),
+    ).toBe(messages);
+    // The lookup must be able to report failure rather than return [].
+    expect(mockGetNotes).toHaveBeenCalledWith(
+      expect.objectContaining({ throwOnError: true }),
+    );
+
+    mockRecallCandidates.mockRejectedValue(new Error("unavailable"));
+    expect(await refreshNotesInModelMessages(messages, recallOpts)).toBe(
+      messages,
+    );
+  });
+
+  it("refreshes only after a successful note mutation, without repeating unchanged snapshots", async () => {
+    mockRecallCandidates.mockResolvedValue([alpha]);
+    expect(
+      await getAppendedNotesUpdate(
+        [{ toolName: "create_note", output: { success: false, error: "x" } }],
+        recallOpts,
+      ),
+    ).toBeUndefined();
+    expect(
+      await getAppendedNotesUpdate([{ toolName: "file" }], recallOpts),
+    ).toBeUndefined();
+    expect(mockRecallCandidates).not.toHaveBeenCalled();
+
+    const { ModelHistoryReplay } = jest.requireActual<
+      typeof import("@/lib/chat/model-history")
+    >("@/lib/chat/model-history");
+    const replay = new ModelHistoryReplay();
+    let messages = [{ role: "user" as const, content: "retest alpha.example" }];
+    for (let step = 0; step < 3; step++) {
+      messages = replay.append(
+        messages,
+        "notes",
+        await getAppendedNotesUpdate(
+          [{ toolName: "update_note", output: { success: true } }],
+          recallOpts,
+        ),
+      ) as typeof messages;
+    }
+    expect(messages).toHaveLength(2);
+    expect(messages[1].content).toContain("Current relevant saved notes");
   });
 });

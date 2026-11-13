@@ -163,6 +163,7 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-list_notes",
   "tool-update_note",
   "tool-delete_note",
+  "tool-get_note",
   "tool-create_vulnerability_report",
   "tool-list_reports",
   "tool-get_report",

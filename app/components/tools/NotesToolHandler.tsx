@@ -1,14 +1,14 @@
 import { memo, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
-import type { ChatStatus, SidebarNote, SidebarNotes } from "@/types/chat";
+import type { ChatStatus, SidebarNotes } from "@/types/chat";
 import { isSidebarNotes } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  buildNotesSidebarContent,
   getNotesIcon,
   getNotesStreamingActionText,
   getNotesActionText,
-  getNotesActionType,
   type NotesToolName,
 } from "./notes-tool-utils";
 
@@ -35,6 +35,8 @@ export const NotesToolHandler = memo(function NotesToolHandler({
         return "Stopped updating note";
       case "delete_note":
         return "Stopped deleting note";
+      case "get_note":
+        return "Stopped reading note";
       default:
         return "Stopped note action";
     }
@@ -44,6 +46,10 @@ export const NotesToolHandler = memo(function NotesToolHandler({
     if (toolName === "create_note" && input?.title) {
       return input.title;
     }
+    if (toolName === "get_note") {
+      const result = output || part.result;
+      return result?.note?.title || input?.note_id;
+    }
     if (toolName === "update_note" && input?.note_id) {
       return input.note_id;
     }
@@ -52,6 +58,8 @@ export const NotesToolHandler = memo(function NotesToolHandler({
     }
     if (toolName === "list_notes") {
       const filters: string[] = [];
+      if (typeof input?.target === "string" && input.target)
+        filters.push(input.target);
       if (input?.category) filters.push(input.category);
       if (input?.tags?.length) filters.push(`tagged: ${input.tags.join(", ")}`);
       if (input?.search) filters.push(`"${input.search}"`);
@@ -60,56 +68,17 @@ export const NotesToolHandler = memo(function NotesToolHandler({
     return undefined;
   };
 
-  const sidebarContent = useMemo((): SidebarNotes | null => {
-    const result = output || part.result;
-    const action = getNotesActionType(toolName);
-
-    let notes: SidebarNote[] = [];
-    let totalCount = 0;
-    let affectedTitle: string | undefined;
-    let newNoteId: string | undefined;
-    let original: SidebarNotes["original"];
-    let modified: SidebarNotes["modified"];
-
-    if (action === "list" && result?.notes) {
-      notes = result.notes;
-      totalCount = result.total_count || notes.length;
-    } else if (action === "create" && input) {
-      notes = [
-        {
-          note_id: result?.note_id || "pending",
-          title: input.title || "",
-          content: input.content || "",
-          category: input.category || "general",
-          tags: input.tags || [],
-          updated_at: 0,
-        },
-      ];
-      totalCount = 1;
-      affectedTitle = input.title;
-      newNoteId = result?.note_id;
-    } else if (action === "update") {
-      original = result?.original;
-      modified = result?.modified;
-      affectedTitle = modified?.title || input?.title || input?.note_id;
-      totalCount = 1;
-    } else if (action === "delete") {
-      affectedTitle = result?.deleted_title || input?.note_id;
-      totalCount = 0;
-    }
-
-    return {
-      action,
-      notes,
-      totalCount,
-      isExecuting: state !== "output-available",
-      toolCallId: toolCallId || "",
-      affectedTitle,
-      newNoteId,
-      original,
-      modified,
-    };
-  }, [toolName, output, part.result, input, state, toolCallId]);
+  const sidebarContent = useMemo(
+    (): SidebarNotes | null =>
+      buildNotesSidebarContent({
+        toolName,
+        input,
+        output: output || part.result,
+        state,
+        toolCallId,
+      }),
+    [toolName, output, part.result, input, state, toolCallId],
+  );
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
     toolCallId,

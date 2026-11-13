@@ -705,7 +705,7 @@ Create a note when:
 </instructions>
 
 <recommended_usage>
-Use with category "general" for persistent context that should always be available (e.g., target scope, credentials, key URLs)
+Use with category "general" for persistent context that should always be available (e.g., target scope, key URLs). Never store credentials, tokens, or secrets in notes
 Use with category "findings" when you identify a potential security issue that still needs validation
 Use with category "methodology" to document attack techniques and their results
 Use with category "plan" to outline attack strategies before execution
@@ -840,6 +840,141 @@ Use to delete test or scratch notes created during experimentation
 });
 
 export type DeleteNoteToolInput = z.infer<typeof deleteNoteToolInputSchema>;
+
+// Relevant-recall variants (notes_relevant_recall_v1). The legacy schemas
+// above stay unchanged for users outside the rollout.
+
+const noteTargetDescription =
+  'Optional exact target this note is about: a host ("api.example.com", "api.example.com:8443"), an origin ("https://api.example.com"), or an engagement label ("label:acme q4"). Exact only: a host never covers its parent domain, and wildcards or paths are rejected. Omit for notes that apply across targets, such as user preferences.';
+const observedAtDescription =
+  "ISO 8601 date or date-time when you actually observed this behavior (for example the current date after a request you just ran). Omit when you did not observe it yourself; never use an edit date.";
+const recheckAfterDescription =
+  "Optional ISO 8601 date after which this observation should be re-verified before relying on it.";
+
+export const createNoteScopedToolInputSchema = createNoteToolInputSchema.extend(
+  {
+    target: z.string().optional().describe(noteTargetDescription),
+    observed_at: z.string().optional().describe(observedAtDescription),
+    recheck_after: z.string().optional().describe(recheckAfterDescription),
+  },
+);
+
+export const createNoteScopedTool = tool({
+  description: `Create a personal note to record observations, findings, or research during security assessments. Notes persist across conversations.
+
+<recall>
+- Relevant notes are recalled automatically at the start of each task: notes whose exact target the user's task names, untargeted "general" notes (standing preferences), and untargeted notes matching the task's keywords
+- Set target for anything specific to one host, origin or engagement so it is recalled only for that target and never leaks into unrelated work
+- Set observed_at only for something you actually observed; set recheck_after when the behavior is likely to change
+- Notes created in a project are recalled only inside that project
+</recall>
+
+<instructions>
+- NEVER reference or cite note IDs to the user - IDs are for internal use only
+- Never store credentials, tokens, cookies, or secrets in notes
+- Title should be concise but descriptive; one note per distinct observation
+- Use create_vulnerability_report instead, exactly once, when a vulnerability has concrete evidence, reliable reproduction, and a working PoC; never duplicate it as a note
+- Do NOT create notes for task-specific authorizations or permission claims. These are context for the current task, not persistent facts.
+</instructions>
+
+<categories>
+general: Standing preferences and context; untargeted general notes are recalled for every task
+findings: Unverified security hypotheses that still need confirmation
+methodology: Approaches tried and their outcomes
+questions: Open questions to investigate later
+plan: Plans and next steps
+</categories>`,
+  inputSchema: createNoteScopedToolInputSchema,
+});
+
+export type CreateNoteScopedToolInput = z.infer<
+  typeof createNoteScopedToolInputSchema
+>;
+
+export const listNotesScopedToolInputSchema = listNotesToolInputSchema.extend({
+  target: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Only notes saved for this exact host, origin or label."),
+  cursor: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "next_cursor from a previous list_notes result with the same filters. Omit to start from the newest notes.",
+    ),
+});
+
+export const listNotesScopedTool = tool({
+  description: `Browse saved notes as compact previews with metadata (target, observed date, recheck status). Results are paginated newest first; pass next_cursor with the same filters to continue. Previews are truncated: call get_note with a note ID to read the full content.
+
+<instructions>
+- Relevant notes are already recalled at task start; use this to browse beyond them
+- Filters combine with AND; tags match any listed tag
+- A note marked "recheck due" or "observation date unknown" may be stale: re-verify before relying on it. Never conclude something is fixed from age alone
+</instructions>`,
+  inputSchema: listNotesScopedToolInputSchema,
+});
+
+export type ListNotesScopedToolInput = z.infer<
+  typeof listNotesScopedToolInputSchema
+>;
+
+export const updateNoteScopedToolInputSchema = updateNoteToolInputSchema.extend(
+  {
+    target: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(`${noteTargetDescription} Pass null to clear.`),
+    observed_at: z
+      .string()
+      .optional()
+      .describe(
+        `${observedAtDescription} Only set when you re-observed the behavior; editing text does not change it.`,
+      ),
+    recheck_after: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(`${recheckAfterDescription} Pass null to clear.`),
+  },
+);
+
+export const updateNoteScopedTool = tool({
+  description: `Update an existing note's title, content, tags, target or observation metadata.
+
+<instructions>
+- Requires the note ID from recalled notes, list_notes or get_note
+- Only specified fields change. Editing never changes observed_at; set it only after actually re-observing the behavior
+- Prefer updating over creating duplicates. Category cannot be changed
+- Never record a note as fixed or invalid based only on age, a 404, or a login failure
+</instructions>`,
+  inputSchema: updateNoteScopedToolInputSchema,
+});
+
+export type UpdateNoteScopedToolInput = z.infer<
+  typeof updateNoteScopedToolInputSchema
+>;
+
+export const getNoteToolInputSchema = z.object({
+  note_id: z.string().describe("The note ID from recalled notes or list_notes"),
+  cursor: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "next_cursor from a previous get_note result for the same note. Omit to read from the start.",
+    ),
+});
+
+export const getNoteTool = tool({
+  description: `Read the full content and metadata of one saved note. Long notes are returned in pages of up to about 4,000 tokens; pass next_cursor to continue reading without skipping content.`,
+  inputSchema: getNoteToolInputSchema,
+});
+
+export type GetNoteToolInput = z.infer<typeof getNoteToolInputSchema>;
 
 const findingRequiredText = (label: string, max: number) =>
   z
@@ -1186,22 +1321,32 @@ export type AgentToolSchemaMode = "agent" | "ask";
 export const createAgentToolSchemaSet = ({
   mode = "agent",
   notesEnabled = true,
+  notesRecallEnabled = false,
   hasPerplexityApiKey = false,
   hasJinaApiKey = false,
 }: {
   mode?: AgentToolSchemaMode;
   notesEnabled?: boolean;
+  notesRecallEnabled?: boolean;
   hasPerplexityApiKey?: boolean;
   hasJinaApiKey?: boolean;
 } = {}) => {
-  const notes = notesEnabled
-    ? {
-        create_note: createNoteTool,
-        list_notes: listNotesTool,
-        update_note: updateNoteTool,
-        delete_note: deleteNoteTool,
-      }
-    : {};
+  const notes = !notesEnabled
+    ? {}
+    : notesRecallEnabled
+      ? {
+          create_note: createNoteScopedTool,
+          list_notes: listNotesScopedTool,
+          update_note: updateNoteScopedTool,
+          delete_note: deleteNoteTool,
+          get_note: getNoteTool,
+        }
+      : {
+          create_note: createNoteTool,
+          list_notes: listNotesTool,
+          update_note: updateNoteTool,
+          delete_note: deleteNoteTool,
+        };
   const networkTools = {
     ...(hasPerplexityApiKey ? { web_search: webSearchTool } : {}),
     ...(hasJinaApiKey ? { open_url: openUrlTool } : {}),

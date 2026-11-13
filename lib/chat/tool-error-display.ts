@@ -46,6 +46,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   "tool-list_notes": "Notes",
   "tool-update_note": "Notes",
   "tool-delete_note": "Notes",
+  "tool-get_note": "Notes",
   "tool-list_requests": "Proxy",
   "tool-view_request": "Proxy",
   "tool-send_request": "Proxy",

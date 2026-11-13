@@ -1,5 +1,9 @@
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import {
+  getLatestUserTaskText,
+  isNotesRelevantRecallEnabled,
+} from "@/lib/notes/recall";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
@@ -2424,6 +2428,10 @@ export const agentLongTask = task({
         selectedModel = flashRoutingAssignment.modelKey;
       const findingRetestAssignment = isFindingRetestsEnabled(userId);
       const notesEnabled = userCustomization?.include_notes ?? true;
+      // Evaluated once per task run and shared by the tools and recall.
+      const notesRecallAssignment = notesEnabled
+        ? isNotesRelevantRecallEnabled(userId)
+        : Promise.resolve(false);
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -3203,6 +3211,7 @@ export const agentLongTask = task({
                 triggerRegion,
                 environment: ctx.environment.type,
                 findingRetestToolsEnabled: await findingRetestAssignment,
+                notesRelevantRecallEnabled: await notesRecallAssignment,
                 signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>
@@ -3456,6 +3465,12 @@ export const agentLongTask = task({
               userId,
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
+              relevantRecall: (await notesRecallAssignment)
+                ? {
+                    taskText: getLatestUserTaskText(truncatedMessages),
+                    projectId: projectContext.projectId,
+                  }
+                : undefined,
             };
             const trackedProvider = createTrackedProvider();
             const [baseSystemPrompt, messagesWithNotes] = await Promise.all([

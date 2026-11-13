@@ -2578,12 +2578,21 @@ export async function createNote({
   content,
   category,
   tags,
+  chatId,
+  target,
+  observedAt,
+  recheckAfter,
 }: {
   userId: string;
   title: string;
   content: string;
   category?: NoteCategory;
   tags?: string[];
+  /** Server-owned source chat; Convex derives the project from it. */
+  chatId?: string;
+  target?: string;
+  observedAt?: number;
+  recheckAfter?: number;
 }) {
   try {
     const result = await getConvexClient().mutation(
@@ -2595,6 +2604,10 @@ export async function createNote({
         content,
         category,
         tags,
+        chatId,
+        target,
+        observedAt,
+        recheckAfter,
       },
     );
     return result;
@@ -2637,18 +2650,76 @@ export async function listNotes({
   }
 }
 
+export async function listNoteSummaries(args: {
+  userId: string;
+  category?: NoteCategory;
+  tags?: string[];
+  search?: string;
+  target?: string;
+  cursor?: string;
+}) {
+  try {
+    return await getConvexClient().query(
+      api.notes.listNoteSummariesForBackend,
+      { serviceKey, ...args },
+    );
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to list notes",
+    );
+  }
+}
+
+export async function getNoteContent(args: {
+  userId: string;
+  noteId: string;
+  offset?: number;
+}) {
+  try {
+    return await getConvexClient().query(api.notes.getNoteForBackend, {
+      serviceKey,
+      ...args,
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to read note",
+    );
+  }
+}
+
+/** Throws on failure: recall must distinguish "no notes" from an outage. */
+export async function getNoteRecallCandidates(args: {
+  userId: string;
+  projectId?: string;
+  targets: string[];
+  searchText?: string;
+}) {
+  return await getConvexClient().query(
+    api.notes.getNoteRecallCandidatesForBackend,
+    { serviceKey, ...args },
+  );
+}
+
 export async function updateNote({
   userId,
   noteId,
   title,
   content,
   tags,
+  target,
+  observedAt,
+  recheckAfter,
 }: {
   userId: string;
   noteId: string;
   title?: string;
   content?: string;
   tags?: string[];
+  target?: string | null;
+  observedAt?: number;
+  recheckAfter?: number | null;
 }) {
   try {
     const result = await getConvexClient().mutation(
@@ -2660,6 +2731,9 @@ export async function updateNote({
         title,
         content,
         tags,
+        target,
+        observedAt,
+        recheckAfter,
       },
     );
     return result;

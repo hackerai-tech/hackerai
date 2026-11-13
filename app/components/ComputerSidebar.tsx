@@ -65,6 +65,7 @@ import {
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { getNoteMetaSegments } from "./tools/notes-tool-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { AgentBrowserPreview } from "./AgentBrowserPreview";
 import { detectAgentBrowserUsage } from "@/lib/utils/agent-browser-command";
@@ -1174,38 +1175,69 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                 </div>
                               </div>
                             ) : (
-                              sidebarContent.notes.map((note, index) => (
-                                <div
-                                  key={note.note_id}
-                                  className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
-                                >
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-foreground text-sm font-medium">
-                                      {note.title}
-                                    </span>
-                                    <span
-                                      className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
-                                    >
-                                      {note.category}
-                                    </span>
-                                  </div>
-                                  <div className="text-muted-foreground text-sm whitespace-pre-wrap">
-                                    {note.content}
-                                  </div>
-                                  {note.tags.length > 0 && (
-                                    <div className="flex gap-1 mt-2 flex-wrap">
-                                      {note.tags.map((tag) => (
-                                        <span
-                                          key={tag}
-                                          className="text-xs bg-muted px-1.5 py-0.5 rounded"
-                                        >
-                                          {tag}
-                                        </span>
-                                      ))}
+                              sidebarContent.notes.map((note, index) => {
+                                const meta = getNoteMetaSegments(note);
+                                return (
+                                  <div
+                                    key={note.note_id}
+                                    className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
+                                  >
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-foreground text-sm font-medium min-w-0 break-words">
+                                        {note.title}
+                                      </span>
+                                      <span
+                                        className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
+                                      >
+                                        {note.category}
+                                      </span>
                                     </div>
-                                  )}
-                                </div>
-                              ))
+                                    {meta.length > 0 && (
+                                      <div className="-mt-0.5 mb-1 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                                        {meta.map((segment, segmentIndex) => (
+                                          <span
+                                            key={segment}
+                                            className={`min-w-0 max-w-full whitespace-nowrap ${segmentIndex === 0 && note.target ? "truncate font-mono" : ""}`}
+                                          >
+                                            {segmentIndex > 0 && (
+                                              <span
+                                                aria-hidden="true"
+                                                className="mr-1.5"
+                                              >
+                                                ·
+                                              </span>
+                                            )}
+                                            {segment}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div
+                                      className={`text-muted-foreground text-sm whitespace-pre-wrap break-words ${sidebarContent.action === "list" && note.preview_truncated ? "line-clamp-2" : ""}`}
+                                    >
+                                      {note.content}
+                                    </div>
+                                    {sidebarContent.action === "get" &&
+                                      note.partial_content && (
+                                        <div className="mt-2 text-xs text-muted-foreground">
+                                          Showing part of a long note.
+                                        </div>
+                                      )}
+                                    {note.tags.length > 0 && (
+                                      <div className="flex gap-1 mt-2 flex-wrap">
+                                        {note.tags.map((tag) => (
+                                          <span
+                                            key={tag}
+                                            className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                          >
+                                            {tag}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
                             )}
                           </div>
                         </div>

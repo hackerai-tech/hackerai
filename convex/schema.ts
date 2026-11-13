@@ -1539,8 +1539,36 @@ export default defineSchema({
     tags: v.array(v.string()),
     tokens: v.number(),
     updated_at: v.number(),
+    // Relevant recall metadata. Legacy rows omit all four and stay unscoped.
+    // Normalized exact host, origin or `label:` engagement label.
+    target: v.optional(v.string()),
+    // Derived from the authenticated source chat, never from model input.
+    project_id: v.optional(v.id("projects")),
+    // When the noted behavior was actually observed; distinct from edits.
+    observed_at: v.optional(v.number()),
+    recheck_after: v.optional(v.number()),
   })
     .index("by_note_id", ["note_id"])
+    .index("by_user_and_target_and_updated", [
+      "user_id",
+      "target",
+      "updated_at",
+    ])
+    // Recall reads each scope (unprojected, current project) separately so
+    // newer notes from other projects cannot crowd out eligible ones.
+    .index("by_user_and_project_and_target_and_updated", [
+      "user_id",
+      "project_id",
+      "target",
+      "updated_at",
+    ])
+    .index("by_user_and_project_and_target_and_category_and_updated", [
+      "user_id",
+      "project_id",
+      "target",
+      "category",
+      "updated_at",
+    ])
     .index("by_user_and_category", ["user_id", "category"])
     .index("by_user_and_category_and_updated", [
       "user_id",
@@ -1550,7 +1578,7 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",
-      filterFields: ["user_id", "category"],
+      filterFields: ["user_id", "category", "project_id"],
     }),
 
   // Local Sandbox Tables
