@@ -151,6 +151,21 @@ function selectPublicAddress(records: unknown): string | null {
 }
 
 /**
+ * The step that settled the pin, from values already evaluated. Not network
+ * proof: `network_not_verified_open` includes unknown or malformed state, and
+ * `address_not_public` includes empty, oversized or invalid answers.
+ */
+export type CloudAttachmentDnsDecision =
+  | "url_not_pinnable"
+  | "sandbox_unsupported"
+  | "get_info_missing"
+  | "network_info_unavailable"
+  | "network_not_verified_open"
+  | "resolution_unavailable"
+  | "address_not_public"
+  | "pin_available";
+
+/**
  * Resolve a cloud attachment host on the worker for one `curl --resolve`
  * retry after the workspace's own resolver failed. Returns `host:443:address`
  * or null when the retry must not happen.
@@ -159,21 +174,35 @@ function selectPublicAddress(records: unknown): string | null {
  * the provider reports the workspace's egress as unrestricted, and only for
  * a public IPv4 address of the URL's own HTTPS host. Unknown, failed or
  * restricted network state and every resolver failure return null. Only Stop
- * rejects, with its original reason.
+ * rejects, with its original reason, and reports no decision.
  */
 export async function resolveCloudAttachmentDnsPin(
   sandbox: AnySandbox,
   url: string,
   signal?: AbortSignal,
+  onDecision?: (decision: CloudAttachmentDnsDecision) => void,
 ): Promise<string | null> {
+  const decide = (decision: CloudAttachmentDnsDecision) => {
+    try {
+      onDecision?.(decision);
+    } catch {
+      // An optional observer must not change the pin.
+    }
+  };
   signal?.throwIfAborted();
   const hostname = pinnableHostname(url);
-  if (
-    !hostname ||
-    !isE2BSandbox(sandbox) ||
-    typeof sandbox.getInfo !== "function"
-  )
+  if (!hostname) {
+    decide("url_not_pinnable");
     return null;
+  }
+  if (!isE2BSandbox(sandbox)) {
+    decide("sandbox_unsupported");
+    return null;
+  }
+  if (typeof sandbox.getInfo !== "function") {
+    decide("get_info_missing");
+    return null;
+  }
 
   const info = await settleWithin(NETWORK_INFO_TIMEOUT_MS, signal, (bounded) =>
     sandbox.getInfo({
@@ -181,7 +210,14 @@ export async function resolveCloudAttachmentDnsPin(
       requestTimeoutMs: NETWORK_INFO_TIMEOUT_MS,
     }),
   );
-  if (!hasOpenEgress(info)) return null;
+  if (info === undefined) {
+    decide("network_info_unavailable");
+    return null;
+  }
+  if (!hasOpenEgress(info)) {
+    decide("network_not_verified_open");
+    return null;
+  }
 
   const records = await settleWithin(
     LOOKUP_DEADLINE_MS,
@@ -199,6 +235,11 @@ export async function resolveCloudAttachmentDnsPin(
         );
       }),
   );
+  if (records === undefined) {
+    decide("resolution_unavailable");
+    return null;
+  }
   const address = selectPublicAddress(records);
+  decide(address ? "pin_available" : "address_not_public");
   return address ? `${hostname}:443:${address}` : null;
 }

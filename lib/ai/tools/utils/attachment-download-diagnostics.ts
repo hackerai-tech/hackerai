@@ -1,4 +1,5 @@
 import type { ReceiverCleanupReason } from "@/lib/centrifugo/receiver-diagnostics";
+import type { CloudAttachmentDnsDecision } from "@/lib/utils/cloud-attachment-dns";
 
 type DownloadInput = {
   platform: "windows" | "posix" | "unknown";
@@ -306,12 +307,25 @@ type SetupContext = {
   attachment_command_setup_version: 1;
   attachment_command_setup_attempt: 1 | 2;
 };
+/** The cloud DNS-pin recovery this transfer entered. `unavailable` means the
+ * helper settled without a decision; `unobserved` is a pinned result that is
+ * not a confirmed process exit, so the original failure was kept. */
+export type AttachmentDownloadDnsFallback = {
+  decision: CloudAttachmentDnsDecision | "unavailable";
+  retryResult: "not_attempted" | "nonzero" | "unobserved" | "threw";
+};
+type DnsFallbackContext = {
+  attachment_download_dns_fallback_version: 1;
+  attachment_download_dns_fallback_decision: AttachmentDownloadDnsFallback["decision"];
+  attachment_download_dns_fallback_retry_result: AttachmentDownloadDnsFallback["retryResult"];
+};
 export type AttachmentDownloadFailureContext = Partial<
   ResultContext &
     BoundaryContext &
     RouteContext &
     ReceiverContext &
-    SetupContext
+    SetupContext &
+    DnsFallbackContext
 > &
   (
     | ResultContext
@@ -319,6 +333,7 @@ export type AttachmentDownloadFailureContext = Partial<
     | RouteContext
     | ReceiverContext
     | SetupContext
+    | DnsFallbackContext
   );
 
 /** Bind the receiver's own finite observations to the exact rejection it
@@ -447,6 +462,24 @@ export function recordAttachmentDownloadFailure<T extends object>(
     // Optional diagnostics must preserve the original rejection.
   }
   return error;
+}
+
+/** Add the DNS-pin recovery outcome to the failure it kept. Call after
+ * recordAttachmentDownloadFailure, which replaces earlier context. */
+export function recordAttachmentDownloadDnsFallback(
+  error: object,
+  input: AttachmentDownloadDnsFallback,
+): void {
+  try {
+    contexts.set(error, {
+      ...contexts.get(error),
+      attachment_download_dns_fallback_version: 1,
+      attachment_download_dns_fallback_decision: input.decision,
+      attachment_download_dns_fallback_retry_result: input.retryResult,
+    });
+  } catch {
+    // Optional diagnostics must preserve the original rejection.
+  }
 }
 
 export function getAttachmentDownloadFailureContext(

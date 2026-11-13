@@ -45,6 +45,7 @@ jest.mock("node:dns", () => ({
 
 import type { AnySandbox } from "@/types";
 import { AttachmentCommandCleanupError } from "@/lib/ai/tools/utils/attachment-command";
+import { getAttachmentDownloadFailureContext } from "@/lib/ai/tools/utils/attachment-download-diagnostics";
 import { resolveCloudAttachmentDnsPin } from "../cloud-attachment-dns";
 import {
   getSandboxUploadFailureMetadata,
@@ -144,6 +145,40 @@ const expectOriginalResolvingFailure = (
     attachment_download_exit_code: 28,
     attachment_download_timeout_hint: "resolving",
   });
+};
+
+const dnsFallbackFields = (fields: Record<string, unknown> | undefined) =>
+  Object.fromEntries(
+    Object.entries(fields ?? {}).filter(([key]) =>
+      key.startsWith("attachment_download_dns_fallback_"),
+    ),
+  );
+const lastStagingFailedEvent = () =>
+  jest
+    .mocked(console.error)
+    .mock.calls.map(([line]) =>
+      typeof line === "string" && line.startsWith("{")
+        ? JSON.parse(line)
+        : undefined,
+    )
+    .filter((event) => event?.event === "sandbox_attachment_staging_failed")
+    .at(-1);
+
+/** Only the three closed fields reach the Trigger summary and staging event. */
+const expectDnsFallback = (
+  result: Awaited<ReturnType<typeof uploadSandboxFiles>>,
+  decision: string,
+  retryResult: string,
+) => {
+  const expected = {
+    attachment_download_dns_fallback_version: 1,
+    attachment_download_dns_fallback_decision: decision,
+    attachment_download_dns_fallback_retry_result: retryResult,
+  };
+  expect(dnsFallbackFields(getSandboxUploadFailureMetadata(result))).toEqual(
+    expected,
+  );
+  expect(dnsFallbackFields(lastStagingFailedEvent())).toEqual(expected);
 };
 
 beforeEach(() => {
@@ -248,15 +283,29 @@ it.each([
   expect(sandbox.getInfo).not.toHaveBeenCalled();
   expect(mockDns.resolvers).toHaveLength(0);
   expect(pinnedCommands(sandbox)).toHaveLength(0);
+  // Failures that never entered recovery carry no DNS fallback record.
+  expect(dnsFallbackFields(getSandboxUploadFailureMetadata(result))).toEqual(
+    {},
+  );
 });
 
+const NOT_OPEN = "network_not_verified_open";
 it.each([
   [
     "restricted egress",
     { network: { allowOut: ["a.example"], denyOut: ["0.0.0.0/0"] } },
+    NOT_OPEN,
   ],
-  ["offline egress", { network: { allowOut: [], denyOut: ["0.0.0.0/0"] } }],
-  ["an allowlist alone", { network: { allowOut: ["a.example"], denyOut: [] } }],
+  [
+    "offline egress",
+    { network: { allowOut: [], denyOut: ["0.0.0.0/0"] } },
+    NOT_OPEN,
+  ],
+  [
+    "an allowlist alone",
+    { network: { allowOut: ["a.example"], denyOut: [] } },
+    NOT_OPEN,
+  ],
   [
     "an egress proxy",
     {
@@ -265,34 +314,83 @@ it.each([
         egressProxy: { address: "proxy.example:1080" },
       },
     },
+    NOT_OPEN,
   ],
   [
     "egress rules",
     { network: { ...OPEN_NETWORK, rules: { "a.example": [{}] } } },
+    NOT_OPEN,
   ],
   [
     "disabled internet access",
     { network: OPEN_NETWORK, allowInternetAccess: false },
+    NOT_OPEN,
   ],
-  ["no network description", {}],
-  ["a malformed network description", { network: [] }],
-  ["malformed egress rules", { network: { ...OPEN_NETWORK, rules: [] } }],
+  // Unknown or malformed state is not verified open, not proven restricted.
+  ["no network description", {}, NOT_OPEN],
+  ["a malformed network description", { network: [] }, NOT_OPEN],
+  [
+    "malformed egress rules",
+    { network: { ...OPEN_NETWORK, rules: [] } },
+    NOT_OPEN,
+  ],
   [
     "a malformed deny list",
     { network: { allowOut: [], denyOut: "0.0.0.0/0" } },
+    NOT_OPEN,
   ],
-  ["an unavailable network description", new Error("private provider detail")],
-])("never pins around %s and keeps the original failure", async (_, info) => {
-  const sandbox = cloudSandbox({ failure: exit(28, RESOLVING), info });
-  const result = await uploadSandboxFiles([file], async () => sandbox, {
-    retryAfterReconnectOnTransientFailure: true,
-  });
+  [
+    "an unavailable network description",
+    new Error("private provider detail"),
+    "network_info_unavailable",
+  ],
+])(
+  "never pins around %s and keeps the original failure",
+  async (_, info, decision) => {
+    const sandbox = cloudSandbox({ failure: exit(28, RESOLVING), info });
+    const result = await uploadSandboxFiles([file], async () => sandbox, {
+      retryAfterReconnectOnTransientFailure: true,
+    });
 
-  expectOriginalResolvingFailure(result);
-  expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
-  expect(mockDns.resolvers).toHaveLength(0);
-  expect(curlCommands(sandbox)).toHaveLength(1);
-});
+    expectOriginalResolvingFailure(result);
+    expectDnsFallback(result, decision, "not_attempted");
+    expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
+    expect(mockDns.resolvers).toHaveLength(0);
+    expect(curlCommands(sandbox)).toHaveLength(1);
+  },
+);
+
+it.each([
+  [
+    "a plain HTTP URL",
+    "http://files.example.com/bucket/report.pdf",
+    {},
+    "url_not_pinnable",
+  ],
+  [
+    "a workspace without a network description",
+    file.url,
+    { getInfo: undefined },
+    "get_info_missing",
+  ],
+])(
+  "records a skipped pin for %s without reading the network or resolving",
+  async (_, url, override, decision) => {
+    const sandbox = cloudSandbox({ failure: exit(28, RESOLVING) });
+    const getInfo = sandbox.getInfo;
+    Object.assign(sandbox, override);
+    const result = await uploadSandboxFiles(
+      [{ ...file, url }],
+      async () => sandbox,
+    );
+
+    expectOriginalResolvingFailure(result);
+    expectDnsFallback(result, decision, "not_attempted");
+    expect(getInfo).not.toHaveBeenCalled();
+    expect(mockDns.resolvers).toHaveLength(0);
+    expect(curlCommands(sandbox)).toHaveLength(1);
+  },
+);
 
 it.each([
   ["a private address", ["10.0.0.5"]],
@@ -318,6 +416,7 @@ it.each([
   const result = await uploadSandboxFiles([file], async () => sandbox);
 
   expectOriginalResolvingFailure(result);
+  expectDnsFallback(result, "address_not_public", "not_attempted");
   expect(mockDns.resolvers).toHaveLength(1);
   expect(curlCommands(sandbox)).toHaveLength(1);
 });
@@ -333,16 +432,22 @@ it("keeps the original failure when the worker cannot resolve the host", async (
   const result = await uploadSandboxFiles([file], async () => sandbox);
 
   expectOriginalResolvingFailure(result);
+  expectDnsFallback(result, "resolution_unavailable", "not_attempted");
   expect(curlCommands(sandbox)).toHaveLength(1);
   expect(JSON.stringify(result)).not.toContain("private resolver detail");
 });
 
 it.each([
-  ["the network description", () => ({ info: new Promise(() => {}) }), 5_000],
-  ["the lookup", () => ({}), 3_000],
+  [
+    "the network description",
+    () => ({ info: new Promise(() => {}) }),
+    5_000,
+    "network_info_unavailable",
+  ],
+  ["the lookup", () => ({}), 3_000, "resolution_unavailable"],
 ])(
   "bounds a stalled %s, cancels it and keeps the original failure",
-  async (_, stall, deadlineMs) => {
+  async (_, stall, deadlineMs, decision) => {
     jest.useFakeTimers();
     mockDns.answer = () => {};
     const sandbox = cloudSandbox({ failure: exit(28, RESOLVING) });
@@ -356,6 +461,7 @@ it.each([
     await jest.advanceTimersByTimeAsync(1);
     expect(settled).toHaveBeenCalledTimes(1);
     expectOriginalResolvingFailure(settled.mock.calls[0][0]);
+    expectDnsFallback(settled.mock.calls[0][0], decision, "not_attempted");
     expect(curlCommands(sandbox)).toHaveLength(1);
     if (stalled.info)
       expect(sandbox.getInfo.mock.calls[0][0].signal.aborted).toBe(true);
@@ -380,29 +486,44 @@ it("treats a failed pinned request as final without another attempt or reconnect
     upload_failure_reason: "attachment_transfer_failed",
     attachment_download_exit_code: 7,
   });
+  // Recorded on the pinned failure that replaced the original result.
+  expectDnsFallback(result, "pin_available", "nonzero");
   expect(pinnedCommands(sandbox)).toHaveLength(1);
   expect(curlCommands(sandbox)).toHaveLength(2);
   expect(ensure).toHaveBeenCalledTimes(1);
 });
 
-it("keeps the original failure when the pinned request yields no process result", async () => {
-  const sandbox = cloudSandbox({
-    failure: exit(28, RESOLVING),
-    pinned: Object.assign(
-      new Error("[deadline_exceeded] the operation timed out"),
-      { name: "TimeoutError" },
-    ),
-  });
-  const ensure = jest.fn(async () => sandbox);
-  const result = await uploadSandboxFiles([file], ensure, {
-    signal: new AbortController().signal,
-    retryAfterReconnectOnTransientFailure: true,
-  });
+it.each([
+  [
+    "no process result",
+    Object.assign(new Error("[deadline_exceeded] the operation timed out"), {
+      name: "TimeoutError",
+    }),
+    "threw",
+  ],
+  [
+    "an exit known only from message text",
+    new Error("curl: (7) Failed to connect"),
+    "unobserved",
+  ],
+])(
+  "keeps the original failure when the pinned request yields %s",
+  async (_, pinned, retryResult) => {
+    const sandbox = cloudSandbox({ failure: exit(28, RESOLVING), pinned });
+    const ensure = jest.fn(async () => sandbox);
+    const result = await uploadSandboxFiles([file], ensure, {
+      signal: new AbortController().signal,
+      retryAfterReconnectOnTransientFailure: true,
+    });
 
-  expectOriginalResolvingFailure(result);
-  expect(pinnedCommands(sandbox)).toHaveLength(1);
-  expect(ensure).toHaveBeenCalledTimes(1);
-});
+    expectOriginalResolvingFailure(result);
+    expectDnsFallback(result, "pin_available", retryResult);
+    expect(pinnedCommands(sandbox)).toHaveLength(1);
+    expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
+    expect(mockDns.resolvers).toHaveLength(1);
+    expect(ensure).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("cancels the lookup on Stop and starts no pinned request", async () => {
   const controller = new AbortController();
@@ -417,6 +538,10 @@ it("cancels the lookup on Stop and starts no pinned request", async () => {
   ).rejects.toBe(stop);
   expect(mockDns.resolvers[0].cancelled).toBe(true);
   expect(pinnedCommands(sandbox)).toHaveLength(0);
+  // Stop keeps its own reason; no DNS fallback record is forced onto it.
+  expect(dnsFallbackFields(getAttachmentDownloadFailureContext(stop))).toEqual(
+    {},
+  );
 });
 
 it("stops while reading the network description without resolving", async () => {
@@ -449,15 +574,37 @@ it("does not start a lookup when Stop arrives between the network read and looku
       },
     },
   });
+  const onDecision = jest.fn();
 
   await expect(
     resolveCloudAttachmentDnsPin(
       sandbox as unknown as AnySandbox,
       file.url,
       controller.signal,
+      onDecision,
     ),
   ).rejects.toBe(stop);
   expect(mockDns.resolvers).toHaveLength(0);
+  expect(onDecision).not.toHaveBeenCalled();
+});
+
+it("returns the same pin when its decision observer throws", async () => {
+  const sandbox = cloudSandbox({ failure: exit(28, RESOLVING) });
+  const onDecision = jest.fn(() => {
+    throw new Error("observer failure");
+  });
+
+  await expect(
+    resolveCloudAttachmentDnsPin(
+      sandbox as unknown as AnySandbox,
+      file.url,
+      undefined,
+      onDecision,
+    ),
+  ).resolves.toBe(PIN);
+  expect(onDecision.mock.calls).toEqual([["pin_available"]]);
+  expect(sandbox.getInfo).toHaveBeenCalledTimes(1);
+  expect(mockDns.resolvers).toHaveLength(1);
 });
 
 it.each([
@@ -487,6 +634,11 @@ it.each([
       await expect(pending).rejects.toBeInstanceOf(
         AttachmentCommandCleanupError,
       );
+    // Stopping the pinned request is not reported as a failed retry.
+    const rejection = await pending.catch((error: unknown) => error);
+    expect(
+      dnsFallbackFields(getAttachmentDownloadFailureContext(rejection)),
+    ).toEqual({});
     // The ordinary request exited on its own; only the pinned one is killed.
     expect(kill).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(102, { requestTimeoutMs: 5_000 });
@@ -516,11 +668,15 @@ it.each([
 
 it("does not pin for a sandbox that is not an E2B workspace", async () => {
   const getInfo = jest.fn(async () => ({ network: OPEN_NETWORK }));
+  const onDecision = jest.fn();
   await expect(
     resolveCloudAttachmentDnsPin(
       { sandboxKind: "centrifugo", getInfo } as unknown as AnySandbox,
       file.url,
+      undefined,
+      onDecision,
     ),
   ).resolves.toBeNull();
   expect(getInfo).not.toHaveBeenCalled();
+  expect(onDecision.mock.calls).toEqual([["sandbox_unsupported"]]);
 });
