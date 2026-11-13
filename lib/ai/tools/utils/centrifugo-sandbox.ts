@@ -2863,11 +2863,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
+      // cmd.exe treats the rest of the line as the IF body; group it so an
+      // existing directory cannot also skip the copy.
       const mkdirPart = !dir
         ? ""
         : destCtx.useBash
           ? `mkdir -p ${destCtx.escapePath(dir)} &&`
-          : `if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)} &&`;
+          : `(if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)}) &&`;
       const copyPart = destCtx.useBash
         ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
         : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
@@ -3001,11 +3003,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         // ensuring the directory exists in the same shell session as the download.
         // Skip mkdir entirely for root-level destinations (parentDir returns "")
         // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
+        // Group cmd's IF so an existing directory cannot skip the download.
         const mkdirPart = !dir
           ? ""
           : useBash
             ? `mkdir -p ${escapedDir} &&`
-            : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
+            : `(if not exist ${escapedDir} mkdir ${escapedDir}) &&`;
         let downloadPart: string;
         if (httpClient === "curl") {
           phase = "curl_capabilities";
