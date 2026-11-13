@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { workos } from "@/app/api/workos";
 import { getUserID } from "@/lib/auth/get-user-id";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export async function POST(req: NextRequest) {
+  const rejection = rejectUnsafeRequest(req);
+  if (rejection) return rejection;
   try {
     // Get the current user ID
     const userId = await getUserID(req);

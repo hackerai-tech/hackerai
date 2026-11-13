@@ -5,6 +5,7 @@ import { workos } from "../../../../workos";
 import { requireAdminOrg } from "../../../team-auth";
 import { z } from "zod";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 const memberSettingsSchema = z.object({
   monthlyLimitDollars: z.number().finite().nullable().optional(),
@@ -20,6 +21,8 @@ export const PATCH = async (
   req: NextRequest,
   { params }: { params: Promise<{ userId: string }> },
 ) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;

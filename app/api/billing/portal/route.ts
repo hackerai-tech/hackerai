@@ -3,10 +3,16 @@ import { NextResponse } from "next/server";
 
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
+  // The default portal action intentionally sends no body or content type.
+  const rejection = rejectUnsafeRequest(request, {
+    jsonBody: request.headers.has("content-type"),
+  });
+  if (rejection) return rejection;
   try {
     const body = (await request.json().catch(() => null)) as {
       flow?: unknown;

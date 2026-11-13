@@ -4,6 +4,7 @@ import { NextResponse, after } from "next/server";
 import downgradeSubscription from "@/lib/actions/downgrade-subscription";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
 import { phLogger } from "@/lib/posthog/server";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,8 @@ function parseDowngradeSubscriptionInput(
 
 /** Accept the retention "switch to a cheaper plan" offer instead of cancelling. */
 export async function POST(request: NextRequest) {
+  const rejection = rejectUnsafeRequest(request, { jsonBody: true });
+  if (rejection) return rejection;
   after(() => phLogger.flush());
   try {
     const body = await request.json().catch(() => null);

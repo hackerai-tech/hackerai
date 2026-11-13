@@ -42,6 +42,11 @@ jest.mock("next/server", () => ({
 
 function request(body: unknown) {
   return {
+    url: "https://hackerai.example/api/billing/test",
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
     json: async () => body,
   };
 }
@@ -158,7 +163,7 @@ describe("retention offer API routes", () => {
     } as never);
     const { POST } = await import("../resume/route");
 
-    const response = await POST();
+    const response = await POST(request(null) as never);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       resumed: true,
@@ -169,7 +174,7 @@ describe("retention offer API routes", () => {
     mockResumeSubscription.mockRejectedValue(
       new Error(BILLING_ERRORS.resumePaymentFailed) as never,
     );
-    const failed = await POST();
+    const failed = await POST(request(null) as never);
     expect(failed.status).toBe(402);
   });
 });

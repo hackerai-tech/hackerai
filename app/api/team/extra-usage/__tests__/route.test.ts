@@ -24,7 +24,15 @@ jest.mock("../../../workos", () => ({
 }));
 
 const mutation = jest.fn();
-const request = (body: unknown) => ({ json: async () => body }) as never;
+const request = (body: unknown) =>
+  ({
+    url: "https://hackerai.example/api/team/extra-usage",
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
+    json: async () => body,
+  }) as never;
 beforeEach(() => {
   (requireAdminOrg as jest.Mock).mockResolvedValue({
     ok: true,
@@ -33,6 +41,27 @@ beforeEach(() => {
   });
   (getConvexClient as jest.Mock).mockReturnValue({ mutation });
   mutation.mockReset();
+});
+
+it("rejects sibling-origin team changes before the admin check", async () => {
+  const unsafe = request({ enabled: true }) as {
+    headers: Headers;
+  };
+  unsafe.headers.set("origin", "https://evil.hackerai.example");
+  unsafe.headers.set("content-type", "text/plain");
+
+  expect((await POST(unsafe as never)).status).toBe(403);
+  expect(
+    (
+      await PATCH(unsafe as never, {
+        params: Promise.resolve({ userId: "user" }),
+      })
+    ).status,
+  ).toBe(403);
+  const { POST: purchase } = await import("../purchase/route");
+  expect((await purchase(unsafe as never)).status).toBe(403);
+  expect(requireAdminOrg).not.toHaveBeenCalled();
+  expect(mutation).not.toHaveBeenCalled();
 });
 
 it.each([{ enabled: "true" }, { monthlyCapDollars: [] }, null, [true]])(

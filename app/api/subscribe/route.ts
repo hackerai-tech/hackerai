@@ -1,4 +1,5 @@
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
 import {
   attributeInfluencer,
@@ -260,6 +261,8 @@ async function findReusableCheckoutSession({
 }
 
 const handleSubscribe = async (req: NextRequest) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   const requestId = req.headers.get("x-vercel-id") ?? "unknown";
   let shouldClearReferralCookies = false;
   const json = (body: unknown, init?: ResponseInit) => {
