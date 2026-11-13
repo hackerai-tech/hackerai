@@ -45,12 +45,37 @@ jest.mock("@/app/components/DataStreamProvider", () => ({
   }),
 }));
 
-jest.mock("@/lib/analytics/client", () => ({
-  getIdentifiedAnalyticsUserId: () => "test-user",
-  captureQueuedAuthenticatedEvent: (...args: unknown[]) =>
-    mockCaptureCancellationEvent(...args),
-  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
-}));
+jest.mock("@/lib/analytics/client", () => {
+  const { sanitizeAgentCancellationEvent } = jest.requireActual<
+    typeof import("@/lib/analytics/agent-cancellation-privacy")
+  >("@/lib/analytics/agent-cancellation-privacy");
+  return {
+    getIdentifiedAnalyticsUserId: () => "test-user",
+    // Deliver through the privacy filter PostHog's before_send applies after
+    // SDK enrichment, so assertions see what would actually leave the browser.
+    captureQueuedAuthenticatedEvent: ({
+      event,
+      properties,
+    }: {
+      event: string;
+      properties: Record<string, unknown>;
+    }) =>
+      mockCaptureCancellationEvent(
+        sanitizeAgentCancellationEvent({
+          event,
+          properties: {
+            ...properties,
+            token: "phc_test",
+            distinct_id: "test-user",
+            $current_url: "https://hackerai.co/c/chat-1?q=CANARY",
+            prompt: "CANARY",
+          },
+          $set: { email: "CANARY@example.com" },
+        }),
+      ),
+    captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
+  };
+});
 
 jest.mock("sonner", () => ({
   toast: {
@@ -610,22 +635,33 @@ describe("useChatHandlers regenerate model", () => {
         "iad1::iad1::abcd1-1763049600000-0123456789abcdef",
     };
     expect(getCancellationResponseReceipt(rejection)).toEqual(receipt);
-    const settled = mockCaptureCancellationEvent.mock.calls
-      .map(([event]) => event as { event: string; properties: object })
-      .filter(({ event }) => event === "agent_run_cancellation_settled");
+    const delivered = mockCaptureCancellationEvent.mock.calls.map(
+      ([event]) => event as { event: string; properties: object },
+    );
+    const requested = delivered.filter(
+      ({ event }) => event === "agent_run_cancellation_requested",
+    );
+    const settled = delivered.filter(
+      ({ event }) => event === "agent_run_cancellation_settled",
+    );
+    expect(requested).toHaveLength(1);
     expect(settled).toEqual([
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          schemaVersion: 1,
-          action: "stop",
-          triggerRunId: "run-1",
+      {
+        event: "agent_run_cancellation_settled",
+        properties: {
+          ...requested[0].properties,
           outcome: "error",
+          durationMs: expect.any(Number),
           ...receipt,
-        }),
-      }),
+        },
+      },
     ]);
-    expect(JSON.stringify(settled)).not.toContain("CANARY");
-    expect(settled[0].properties).not.toHaveProperty("error");
+    expect(requested[0].properties).toMatchObject({
+      schemaVersion: 1,
+      action: "stop",
+      triggerRunId: "run-1",
+    });
+    expect(JSON.stringify(delivered)).not.toContain("CANARY");
   });
 
   it("reconnects to the persisted run after a stale cancellation", async () => {
