@@ -1,3 +1,24 @@
+# Revocation versus suspension
+
+The composer distinguishes two kinds of gate. Revocation is permanent for the
+current source: Escape, acceptance, submission, a mode change, opt-out, goal
+ownership, approvals and waits consume the batch and delete its saved content.
+Suspension is temporary: offline, attachments and uploads, queued or edited
+queued messages, send-disabled computer states, initial loading, and an
+ineligible device only hide the batch. They never start or delete a generation.
+An unsent request is deferred without counting as attempted, while a request
+already sent may settle hidden. Once the condition clears, the same batch
+returns with no new model call. Sending while a turn is still active only
+queues or steers it, so it does not consume that in-flight parent; a submission
+from the ready state still does. Server latest-assistant fences still decide
+whether a source can be generated or restored, so a newer, failed or canceled
+turn never revives an older hint.
+
+Suggestions are offered only when `(min-width: 768px) and (any-pointer: fine)`
+matches. Hybrid touch devices with a mouse or trackpad qualify; touch-only
+devices do not. Browsers that do not support `any-pointer` never match, and
+the server-rendered snapshot is ineligible until the browser reports a match.
+
 # Delivery diagnostics
 
 `contextual_next_actions_settled` remains one browser-request lifecycle event, not

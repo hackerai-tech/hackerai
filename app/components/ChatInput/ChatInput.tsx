@@ -79,6 +79,7 @@ import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
@@ -398,6 +399,11 @@ const ChatInputContent = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
+  // Tab suggestions need a large viewport and a fine pointer (including hybrid
+  // touch devices with a mouse or trackpad). Unsupported queries never match.
+  const predictionCapable = useMediaQuery(
+    "(min-width: 768px) and (any-pointer: fine)",
+  );
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
@@ -1136,14 +1142,16 @@ const ChatInputContent = ({
       goalMode ||
       hasActiveGoalRun ||
       pauseGoalOnSend ||
-      isMobile !== false ||
+      !!approvalRequest ||
+      isWaitingForReply,
+    // Temporary conditions hide the same batch without consuming it.
+    suspended:
+      !predictionCapable ||
       isOffline ||
       !!effectiveSendDisabledReason ||
       isResolvingInitialState ||
       isUploadingFiles ||
       uploadedFiles.length > 0 ||
-      !!approvalRequest ||
-      isWaitingForReply ||
       !!editingQueuedMessageId ||
       messageQueue.length > 0,
   });
