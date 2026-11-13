@@ -22,6 +22,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "findings",
     "finding_sources",
     "finding_agent_retest_runs",
+    "finding_variant_hunts",
     "finding_retest_recipes",
     "finding_retest_runs",
     "task_outcome_surveys",
@@ -478,6 +479,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "finding_agent_retest_runs", "by_user_and_started", (q) =>
     q.eq("user_id", userId),
   );
+  const findingVariantHuntsBatch = await collectByIndexBatch<
+    Doc<"finding_variant_hunts">
+  >(ctx, budget, "finding_variant_hunts", "by_user_and_started", (q) =>
+    q.eq("user_id", userId),
+  );
   const findingRetestRecipesBatch = await collectByIndexBatch<
     Doc<"finding_retest_recipes">
   >(ctx, budget, "finding_retest_recipes", "by_user", (q) =>
@@ -590,6 +596,7 @@ async function cleanupUserDataForUser(
     findingsBatch,
     findingSourcesBatch,
     findingAgentRetestsBatch,
+    findingVariantHuntsBatch,
     findingRetestRecipesBatch,
     findingRetestRunsBatch,
     notesBatch,
@@ -723,6 +730,13 @@ async function cleanupUserDataForUser(
     stats,
     "finding_agent_retest_runs",
     findingAgentRetestsBatch.docs,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "finding_variant_hunts",
+    findingVariantHuntsBatch.docs,
     mode,
   );
   await deleteDocs(

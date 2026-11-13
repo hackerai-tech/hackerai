@@ -12,13 +12,17 @@ const privateInput = {
 };
 
 describe("public finding sanitizer", () => {
-  it("removes retest observations from shared chats and forks in every tool state", () => {
+  it("removes retest and hunt observations from shared chats and forks in every tool state", () => {
     const parts = [
       "get_finding_retests",
       "start_finding_retest",
       "complete_finding_retest",
       "get_http_retest_recipe",
       "save_http_retest_recipe",
+      "get_finding_hunts",
+      "start_finding_hunt",
+      "record_finding_hunt_candidate",
+      "complete_finding_hunt",
     ].flatMap((toolName) =>
       [
         "input-streaming",
@@ -43,6 +47,39 @@ describe("public finding sanitizer", () => {
     );
     expect(sanitizeFindingPartsForShare(parts)).toEqual([]);
   });
+  it("strips a saved hunt completion receipt, static or dynamic", () => {
+    const savedHunt = {
+      success: true,
+      hunt_id: "private-hunt-id",
+      duplicate: false,
+      counts: { reproduced: 1, ruled_out: 0, inconclusive: 0, not_examined: 0 },
+      saved_hunt: {
+        hunt_id: "private-hunt-id",
+        finding_id: "private-finding-id",
+        target: "http://private.example.test:40117",
+        summary: "private saved summary",
+        limitations: ["private limitation"],
+      },
+    };
+    expect(
+      sanitizeFindingPartsForShare([
+        {
+          type: "tool-complete_finding_hunt",
+          toolCallId: "t1",
+          state: "output-available",
+          input: { finding_id: "private-finding-id" },
+          output: savedHunt,
+        },
+        {
+          type: "dynamic-tool",
+          toolName: "complete_finding_hunt",
+          state: "output-available",
+          output: savedHunt,
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it("replaces a successful tool part with compact safe metadata", () => {
     const [part] = sanitizeFindingPartsForShare([
       {

@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   FindingExportMenu,
@@ -60,6 +61,35 @@ it("does not export partial selections after an unavailable record", async () =>
     ),
   );
   expect(downloadFindingsReport).not.toHaveBeenCalled();
+});
+it("blocks a second export and announces progress until the first finishes", async () => {
+  let finish!: (value: { outcome: "success" }) => void;
+  jest.mocked(downloadFindingsReport).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  render(<FindingExportMenu getFindings={async () => [record]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: /PDF/ }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /Exporting…/ })).toBeDisabled(),
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Preparing export…");
+  // Every format is disabled while busy, and a second selection does nothing.
+  const items = screen.queryAllByRole("menuitem");
+  for (const item of items)
+    expect(item).toHaveAttribute("aria-disabled", "true");
+  if (items[0]) await userEvent.click(items[0]);
+  await userEvent.click(screen.getByRole("button", { name: /Exporting…/ }));
+  expect(downloadFindingsReport).toHaveBeenCalledTimes(1);
+
+  await act(async () => finish({ outcome: "success" }));
+  // Formats become available again once the first export settles.
+  expect(screen.getAllByRole("menuitem")).toHaveLength(5);
+  for (const item of screen.getAllByRole("menuitem"))
+    expect(item).not.toHaveAttribute("aria-disabled");
+  expect(screen.getByRole("status")).toHaveTextContent("");
 });
 it("records cancellation without calling it a successful export", async () => {
   jest

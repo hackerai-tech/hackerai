@@ -1,5 +1,6 @@
 import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import { isFindingHuntsEnabled } from "@/lib/findings/hunt-policy";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -691,6 +692,10 @@ export const createChatHandler = () => {
       const findingRetestAssignment = isAgentMode(mode)
         ? isFindingRetestsEnabled(userId)
         : Promise.resolve(false);
+      // Ask never receives hunt tools.
+      const findingHuntAssignment = isAgentMode(mode)
+        ? isFindingHuntsEnabled(userId)
+        : Promise.resolve(false);
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -1014,6 +1019,7 @@ export const createChatHandler = () => {
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
                 findingRetestToolsEnabled: await findingRetestAssignment,
+                findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
               },
             );

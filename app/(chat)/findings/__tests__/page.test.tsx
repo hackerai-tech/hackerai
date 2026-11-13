@@ -506,6 +506,7 @@ describe("FindingsPage", () => {
       "backdrop-blur-sm",
     );
     expect(screen.getByText(mockFinding.description)).toBeVisible();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Report" }));
     expect(
       screen.getByRole("link", {
         name: "Open source message in Invoice test",
@@ -536,7 +537,10 @@ describe("FindingsPage", () => {
     expect(
       screen.getByRole("button", { name: "Close vulnerability report" }),
     ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Close Finding" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(mockCapture).toHaveBeenCalledWith("finding_viewed", {
       surface: "findings_page",
     });
