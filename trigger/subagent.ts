@@ -169,6 +169,7 @@ import {
   createActiveRuntimeBudget,
   type ActiveRuntimeBudget,
 } from "@/lib/chat/active-runtime-budget";
+import { createAgentApprovalSessionWaits } from "@/lib/chat/agent-approval-session-waits";
 import {
   AgentAutoReviewEntitlementRevalidationUnavailableError,
   buildAgentToolApprovalRequester,
@@ -583,6 +584,7 @@ export const subagentTask = task({
     }
 
     const activeAbort = new AbortController();
+    const approvalSessionWaits = createAgentApprovalSessionWaits();
     let activeTimedOut = false;
     let spendCapExceeded = false;
     let freeMonthlyCostLimitExceeded = false;
@@ -1084,6 +1086,7 @@ export const subagentTask = task({
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode: permissionMode,
               approvalSessionId,
+              approvalSessionWaits,
               writer,
               chatId: row.chat_id,
               userId: row.user_id,
@@ -2409,6 +2412,9 @@ export const subagentTask = task({
         .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
+      // A stopped stream can stop awaiting a tool callback that still holds a
+      // Session waitpoint. Settle it before the task returns.
+      await approvalSessionWaits.finish();
       providerHistory.flush(activeAbort.signal.aborted);
       activeRuntimeBudget.dispose();
       triggerSignal.removeEventListener("abort", abortFromParent);
