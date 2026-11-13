@@ -1,4 +1,7 @@
-import { getAttachmentDownloadFailureContext } from "../attachment-download-diagnostics";
+import {
+  getAttachmentDownloadFailureContext,
+  recordAttachmentDownloadFailure,
+} from "../attachment-download-diagnostics";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { phLogger } from "@/lib/posthog/server";
 import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
@@ -4893,6 +4896,147 @@ describe("CentrifugoSandbox", () => {
       ).toBeUndefined();
       expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
     });
+
+    const directoryKeys = [
+      "attachment_download_directory_probe_version",
+      "attachment_download_directory_probe_state",
+      "attachment_download_target_dir_exists",
+      "attachment_download_target_dir_writable",
+      "attachment_download_directory_probe_truncated",
+    ];
+    const notFound = {
+      stdout: "",
+      stderr: "curl: (22) The requested URL returned error: 404",
+      exitCode: 22,
+    };
+    const failureMessage = (diagnostics: string) =>
+      `Failed to download file: ${notFound.stderr}\n` +
+      `  source: [redacted-url]\n` +
+      `  destination: [redacted-destination-path]\n` +
+      `  command: curl\n` +
+      `  exitCode: 22\n` +
+      `  diagnostics: ${diagnostics}`;
+    const dfPrivate =
+      "Filesystem Size Used Avail Use% Mounted on\n/dev/private-disk 10G 9G 1G 90% /private-mount\n";
+
+    it.each([
+      [
+        `target_dir_exists=true\ntarget_dir_writable=false\n${dfPrivate}`,
+        { exists: true, writable: false, truncated: false },
+      ],
+      // Original stdout beyond the existing 1024 bound is reported as cut.
+      [
+        `target_dir_exists=false\n${"x".repeat(2000)}\ntarget_dir_writable=true\n`,
+        { exists: false, writable: null, truncated: true },
+      ],
+    ])(
+      "records the returned directory probe without changing the failure: %#",
+      async (stdout, expected) => {
+        const sandbox = downloadSandbox();
+        (sandbox.commands.run as jest.Mock)
+          .mockResolvedValueOnce(notFound)
+          .mockResolvedValueOnce({ stdout, stderr: "", exitCode: 0 });
+        const failure = await sandbox.files
+          .downloadFromUrl(
+            "https://private.example/secret?token=hidden",
+            "/tmp/private-dir/file",
+          )
+          .catch((error) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.message).toBe(failureMessage(stdout.slice(0, 1024)));
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        expect(sandbox.commands.run).toHaveBeenLastCalledWith(
+          expect.stringContaining("df -h /tmp 2>&1 | sed -n '1,2p'"),
+          { displayName: "", timeoutMs: 5_000, signal: undefined },
+        );
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_exit_code: 22,
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_attempt: 1,
+          attachment_download_result_state: "nonzero",
+          attachment_download_directory_probe_version: 1,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: expected.exists,
+          attachment_download_target_dir_writable: expected.writable,
+          attachment_download_directory_probe_truncated: expected.truncated,
+        });
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|secret|hidden|Filesystem|Mounted|dev\/|=true|=false/,
+        );
+      },
+    );
+
+    it("keeps a rejected directory probe unmeasured rather than false", async () => {
+      const sandbox = downloadSandbox();
+      (sandbox.commands.run as jest.Mock)
+        .mockResolvedValueOnce(notFound)
+        .mockRejectedValueOnce(new Error("private probe relay failure"));
+      const failure = await sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      expect(failure.message).toBe(failureMessage("unavailable"));
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      const context = getAttachmentDownloadFailureContext(failure)!;
+      expect(context).toMatchObject({
+        attachment_download_phase: "failure_diagnostics",
+        attachment_download_directory_probe_version: 1,
+        attachment_download_directory_probe_state: "unavailable",
+      });
+      for (const key of directoryKeys.slice(2))
+        expect(context[key as keyof typeof context]).toBeNull();
+    });
+
+    it.each(["resolves", "rejects"])(
+      "preserves cancellation when the directory probe %s after abort",
+      async (outcome) => {
+        const sandbox = downloadSandbox();
+        const controller = new AbortController();
+        const reason = Object.freeze(new Error("private stop reason"));
+        (sandbox.commands.run as jest.Mock)
+          .mockResolvedValueOnce(notFound)
+          .mockImplementationOnce(async () => {
+            controller.abort(reason);
+            if (outcome === "rejects") throw reason;
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          });
+        await expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/file",
+            "/tmp/file",
+            {
+              signal: controller.signal,
+            },
+          ),
+        ).rejects.toBe(reason);
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        const context = getAttachmentDownloadFailureContext(reason);
+        expect(context).toMatchObject({
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_result_state: "nonzero",
+          attachment_download_result_context_present: false,
+        });
+        for (const key of directoryKeys)
+          expect(context).not.toHaveProperty(key);
+      },
+    );
+
+    it("adds no directory probe to a successful download", async () => {
+      const sandbox = downloadSandbox();
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file",
+      );
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+        expect.stringContaining("target_dir_exists"),
+        expect.anything(),
+      );
+    });
   });
 
   describe("git-bash on Windows", () => {
@@ -5936,7 +6080,13 @@ describe("CentrifugoSandbox", () => {
           attachment_download_attempt: 3,
           attachment_download_result_state: "nonzero",
           attachment_download_result_context_present: true,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: true,
+          attachment_download_directory_probe_truncated: false,
         });
+        // Three download attempts plus the one existing directory probe.
+        expect((sandbox as any).commands.run).toHaveBeenCalledTimes(4);
         if (exitCode === 28)
           expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
             attachment_download_timeout_version: 1,
@@ -6520,11 +6670,14 @@ describe("CentrifugoSandbox", () => {
         .spyOn(console, "warn")
         .mockImplementation(() => {});
       const { sandbox, runs } = createWindowsCmdSandbox();
+      // Synthetic cmd-shaped lines: CRLF and the space echo keeps before `||`.
+      const probeOutput =
+        "target_dir_exists=true\r\ntarget_dir_writable=true \r\n";
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         runs.push(cmd);
         if (cmd.includes("target_dir_exists")) {
           return {
-            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+            stdout: probeOutput,
             stderr: "",
             exitCode: 0,
           };
@@ -6537,24 +6690,167 @@ describe("CentrifugoSandbox", () => {
       });
 
       try {
-        const assertion = expect(
-          sandbox.files.downloadFromUrl(
+        const failure = sandbox.files
+          .downloadFromUrl(
             "https://example.com/image.png",
             "/tmp/hackerai-upload/image.png",
-          ),
-        ).rejects.toThrow("Failed to download file");
+          )
+          .catch((error: unknown) => error);
         await jest.advanceTimersByTimeAsync(5_000);
-        await assertion;
+        const error = (await failure) as Error;
+        expect(error.message).toMatch(/^Failed to download file/);
+        expect(error.message.endsWith(`  diagnostics: ${probeOutput}`)).toBe(
+          true,
+        );
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_shell: "cmd",
+          attachment_download_attempt: 3,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: true,
+          attachment_download_directory_probe_truncated: false,
+        });
 
         const diagCmd = runs[runs.length - 1];
         expect(diagCmd).toContain("target_dir_exists");
         expect(diagCmd).toContain("target_dir_writable");
         expect(diagCmd).toContain("pushd");
         expect(diagCmd).not.toContain("dir ");
+        expect(
+          runs.filter((cmd) => cmd.includes("target_dir_exists")),
+        ).toHaveLength(1);
       } finally {
         consoleWarnSpy.mockRestore();
       }
     });
+
+    const runRealCmd = async (command: string) => {
+      const shell = windowsSystemExecutable("cmd.exe");
+      const spec = buildShellSpawn(shell, "/c", command);
+      return promisify(execFile)(shell, spec.args, {
+        ...spec.options,
+        timeout: 10_000,
+      }).then(
+        (result) => ({
+          stdout: String(result.stdout),
+          stderr: String(result.stderr),
+          exitCode: 0,
+        }),
+        (error) => ({
+          stdout: String(error.stdout ?? ""),
+          stderr: String(error.stderr ?? ""),
+          exitCode: Number(error.code) || -1,
+        }),
+      );
+    };
+
+    (process.platform === "win32" ? it : it.skip)(
+      "records the actual cmd.exe directory probe for a writable Windows file destination",
+      async () => {
+        jest.useRealTimers();
+        mkdirSync("C:\\temp", { recursive: true });
+        const directory = mkdtempSync("C:\\temp\\hackerai-download-probe-");
+        const { sandbox } = createWindowsCmdSandbox();
+        const calls: Array<[string, unknown]> = [];
+        let probeStdout = "";
+        (sandbox as any).commands.run = jest.fn(
+          async (command: string, options?: unknown) => {
+            calls.push([command, options]);
+            // Inject only the preceding nonzero download; the existing
+            // diagnostic command runs unchanged in the actual cmd.exe.
+            if (!command.includes("target_dir_exists"))
+              return {
+                stdout: "",
+                stderr: "curl: (22) The requested URL returned error: 404",
+                exitCode: 22,
+              };
+            const result = await runRealCmd(command);
+            probeStdout = result.stdout;
+            return result;
+          },
+        );
+        try {
+          const error = (await sandbox.files
+            .downloadFromUrl(
+              "https://example.com/image.png",
+              win32.join(directory, "image.png"),
+            )
+            .catch((failure: unknown) => failure)) as Error;
+          expect(calls).toEqual([
+            [
+              expect.stringContaining("curl -fsSL"),
+              { displayName: "Downloading: image.png", timeoutMs: 120_000 },
+            ],
+            [
+              expect.stringContaining("target_dir_writable"),
+              { displayName: "", timeoutMs: 5_000, signal: undefined },
+            ],
+          ]);
+          // Closed observations of the existing cmd branch shape. A writable
+          // line the command does not emit stays unmeasured, never false.
+          const observations: Record<string, boolean | null> = {
+            "target_dir_exists=true\r\n": null,
+            "target_dir_exists=true\r\ntarget_dir_writable=true\r\n": true,
+            "target_dir_exists=true\r\ntarget_dir_writable=true \r\n": true,
+          };
+          expect(Object.keys(observations)).toContain(probeStdout);
+          expect(error.message.endsWith(`  diagnostics: ${probeStdout}`)).toBe(
+            true,
+          );
+          const context = getAttachmentDownloadFailureContext(error);
+          expect(context).toMatchObject({
+            attachment_download_shell: "cmd",
+            attachment_download_exit_code: 22,
+            attachment_download_attempt: 1,
+            attachment_download_directory_probe_state: "returned",
+            attachment_download_target_dir_exists: true,
+            attachment_download_target_dir_writable: observations[probeStdout],
+            attachment_download_directory_probe_truncated: false,
+          });
+          expect(JSON.stringify(context)).not.toContain(
+            win32.basename(directory),
+          );
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+      30_000,
+    );
+
+    (process.platform === "win32" ? it : it.skip)(
+      "keeps the space cmd.exe echoes before || in Windows file directory probe lines",
+      async () => {
+        jest.useRealTimers();
+        // The existing probe's `echo flag || echo fallback` idiom, fixed values.
+        const { stdout, exitCode } = await runRealCmd(
+          "(echo target_dir_exists=true || echo target_dir_exists=false) & (echo target_dir_writable=false || echo target_dir_writable=true)",
+        );
+        expect({ stdout, exitCode }).toEqual({
+          stdout: "target_dir_exists=true \r\ntarget_dir_writable=false \r\n",
+          exitCode: 0,
+        });
+        expect(
+          getAttachmentDownloadFailureContext(
+            recordAttachmentDownloadFailure(new Error(), {
+              platform: "windows",
+              shell: "cmd",
+              httpClient: "curl",
+              exitCode: 23,
+              stderr: "",
+              directoryProbe: {
+                state: "returned",
+                output: stdout,
+                truncated: false,
+              },
+            }),
+          ),
+        ).toMatchObject({
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: false,
+        });
+      },
+      30_000,
+    );
 
     it("downloadFromUrl retries local command wrapper timeouts", async () => {
       const { sandbox } = createWindowsBashSandbox();

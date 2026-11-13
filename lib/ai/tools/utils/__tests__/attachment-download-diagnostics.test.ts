@@ -814,3 +814,155 @@ it("retains the command hint through existing boundary and copy propagation", ()
   ).toBe("selected_client_not_found");
   expect(Object.keys(original)).toEqual([]);
 });
+
+const directoryKeys = [
+  "attachment_download_directory_probe_version",
+  "attachment_download_directory_probe_state",
+  "attachment_download_target_dir_exists",
+  "attachment_download_target_dir_writable",
+  "attachment_download_directory_probe_truncated",
+];
+const probeFields = (
+  directoryProbe: Parameters<
+    typeof recordAttachmentDownloadFailure
+  >[1]["directoryProbe"],
+) =>
+  getAttachmentDownloadFailureContext(
+    recordAttachmentDownloadFailure(Object.freeze(new Error("private")), {
+      ...input,
+      exitCode: 23,
+      directoryProbe,
+    }),
+  );
+const dfPrivate =
+  "Filesystem Size Used Avail Use% Mounted on\n/dev/private-disk 10G 9G 1G 90% /private-mount\n";
+
+it("omits directory probe fields when the caller supplied no observation", () => {
+  const fields = probeFields(undefined);
+  expect(fields).toHaveProperty("attachment_download_exit_code", 23);
+  for (const key of directoryKeys) expect(fields).not.toHaveProperty(key);
+});
+
+it("keeps an unavailable directory probe unmeasured rather than false", () => {
+  const fields = probeFields({ state: "unavailable" })!;
+  expect(fields).toMatchObject({
+    attachment_download_directory_probe_version: 1,
+    attachment_download_directory_probe_state: "unavailable",
+  });
+  for (const key of [
+    "attachment_download_target_dir_exists",
+    "attachment_download_target_dir_writable",
+    "attachment_download_directory_probe_truncated",
+  ])
+    expect(fields[key as keyof typeof fields]).toBeNull();
+});
+
+it.each([
+  [
+    `target_dir_exists=true\ntarget_dir_writable=false\n${dfPrivate}`,
+    true,
+    false,
+  ],
+  ["target_dir_exists=false\ntarget_dir_writable=false", false, false],
+  // cmd.exe output uses CRLF and keeps the space echoed before `||`.
+  ["target_dir_exists=true\r\ntarget_dir_writable=true \r\n", true, true],
+  // Each flag is independent; a missing one is never inferred.
+  ["target_dir_exists=true\n", true, null],
+  [`target_dir_writable=false\n${dfPrivate}`, null, false],
+  ["", null, null],
+  // Same valid duplicate is kept; a conflicting duplicate is unknown.
+  ["target_dir_exists=true\ntarget_dir_exists=true\n", true, null],
+  [
+    "target_dir_exists=true\ntarget_dir_writable=true\ntarget_dir_exists=false\n",
+    null,
+    true,
+  ],
+  // Only complete exact anchored lines count.
+  ["target_dir_exists=TRUE\ntarget_dir_writable=yes\n", null, null],
+  [" target_dir_exists=true\nprivate target_dir_writable=true\n", null, null],
+  ["target_dir_exists=true private\nxtarget_dir_writable=true\n", null, null],
+  ["target_dir_exists=true\rtarget_dir_writable=true\n", null, null],
+  ["\ttarget_dir_exists=true\ntarget_dir_writable=\ttrue\n", null, null],
+])(
+  "parses only closed directory probe lines: %j",
+  (output, exists, writable) => {
+    const fields = probeFields({ state: "returned", output, truncated: false });
+    expect(fields).toMatchObject({
+      attachment_download_directory_probe_version: 1,
+      attachment_download_directory_probe_state: "returned",
+      attachment_download_target_dir_exists: exists,
+      attachment_download_target_dir_writable: writable,
+      attachment_download_directory_probe_truncated: false,
+    });
+    expect(JSON.stringify(fields)).not.toMatch(
+      /private|Filesystem|Mounted|dev\/|90%|=true|=false/,
+    );
+  },
+);
+
+it.each([
+  // The scan-cut final line may continue past the existing budget.
+  [`target_dir_exists=true\ntarget_dir_writable=true`, true, true, null],
+  [`target_dir_exists=false\ntarget_dir_writable=false\n`, true, false, false],
+  ["target_dir_exists=true", true, null, null],
+  // The helper caps independently even if the caller did not report a cut.
+  [
+    `target_dir_exists=true\n${"x".repeat(1100)}\ntarget_dir_writable=false\n`,
+    false,
+    true,
+    null,
+  ],
+  [
+    `target_dir_exists=false\n${"x".repeat(1024 - "target_dir_exists=false\n".length - "\ntarget_dir_writable=true".length)}\ntarget_dir_writable=true more`,
+    false,
+    false,
+    null,
+  ],
+])(
+  "drops only the incomplete scan tail of a truncated directory probe (%#)",
+  (output, truncated, exists, writable) => {
+    expect(probeFields({ state: "returned", output, truncated })).toMatchObject(
+      {
+        attachment_download_directory_probe_state: "returned",
+        attachment_download_target_dir_exists: exists,
+        attachment_download_target_dir_writable: writable,
+        attachment_download_directory_probe_truncated: true,
+      },
+    );
+  },
+);
+
+it("retains directory probe fields through existing boundary and copy propagation", () => {
+  const original = recordAttachmentDownloadFailure(
+    Object.freeze(new Error("private original")),
+    {
+      ...input,
+      exitCode: 23,
+      directoryProbe: {
+        state: "returned",
+        output: `target_dir_exists=true\r\ntarget_dir_writable=false\r\n${dfPrivate}`,
+        truncated: false,
+      },
+    },
+  );
+  recordAttachmentDownloadBoundary(original, {
+    phase: "failure_diagnostics",
+    attempt: 3,
+    resultState: "nonzero",
+  });
+  const fields = getAttachmentDownloadFailureContext(
+    copyAttachmentDownloadFailureContext(
+      original,
+      new Error("private wrapper"),
+    ),
+  )!;
+  expect(fields).toMatchObject({
+    attachment_download_directory_probe_state: "returned",
+    attachment_download_target_dir_exists: true,
+    attachment_download_target_dir_writable: false,
+    attachment_download_attempt: 3,
+    attachment_download_result_context_present: true,
+  });
+  expect(JSON.stringify(fields)).not.toMatch(/private|Filesystem|dev\//);
+  expect(Object.keys(original)).toEqual([]);
+});

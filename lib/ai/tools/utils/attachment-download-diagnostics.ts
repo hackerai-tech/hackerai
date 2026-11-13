@@ -4,6 +4,11 @@ type DownloadInput = {
   httpClient: "curl" | "wget" | "powershell";
   exitCode: number;
   stderr: string;
+  /** The already-run failure diagnostic command; `truncated` reports original
+   * stdout beyond the existing bound. Omitted by callers that never probe. */
+  directoryProbe?:
+    | { state: "returned"; output: string; truncated: boolean }
+    | { state: "unavailable" };
 };
 
 const contexts = new WeakMap<object, AttachmentDownloadFailureContext>();
@@ -121,6 +126,51 @@ function commandHint(
     : (hints.values().next().value ?? "unclassified");
 }
 
+/** One complete own flag line. cmd.exe keeps the space echoed before `||`;
+ * conflicting or missing lines stay unknown and one flag never implies another. */
+function directoryFlag(lines: string[], pattern: RegExp) {
+  let value: boolean | null = null;
+  for (const line of lines) {
+    const match = pattern.exec(line)?.[1];
+    if (match === undefined) continue;
+    if (value !== null && value !== (match === "true")) return null;
+    value = match === "true";
+  }
+  return value;
+}
+
+/** Probe-time observations from the existing diagnostic, not download-time errno,
+ * filesystem capacity or recovery. Raw output (paths, df, mounts) is never kept. */
+function directoryProbeContext(
+  probe: NonNullable<DownloadInput["directoryProbe"]>,
+) {
+  if (probe.state !== "returned")
+    return {
+      attachment_download_directory_probe_version: 1 as const,
+      attachment_download_directory_probe_state: "unavailable" as const,
+      attachment_download_target_dir_exists: null,
+      attachment_download_target_dir_writable: null,
+      attachment_download_directory_probe_truncated: null,
+    };
+  const truncated = probe.truncated === true || probe.output.length > 1024;
+  const lines = probe.output.slice(0, 1024).split(/\r?\n/);
+  // A truncated final segment may continue past the scan budget.
+  const complete = truncated ? lines.slice(0, -1) : lines;
+  return {
+    attachment_download_directory_probe_version: 1 as const,
+    attachment_download_directory_probe_state: "returned" as const,
+    attachment_download_target_dir_exists: directoryFlag(
+      complete,
+      /^target_dir_exists=(true|false) *$/,
+    ),
+    attachment_download_target_dir_writable: directoryFlag(
+      complete,
+      /^target_dir_writable=(true|false) *$/,
+    ),
+    attachment_download_directory_probe_truncated: truncated,
+  };
+}
+
 /** Selected client/shell and reported OS are not executable identity. The shell
  * command can fail in mkdir before its client runs; stderr hints are not cause proof. */
 function summarize(input: DownloadInput) {
@@ -190,6 +240,9 @@ function summarize(input: DownloadInput) {
             input.httpClient,
           ),
         }
+      : {}),
+    ...(input.directoryProbe
+      ? directoryProbeContext(input.directoryProbe)
       : {}),
   };
 }
