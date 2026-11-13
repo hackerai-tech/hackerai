@@ -22,7 +22,15 @@ type BrowserSession = {
   registration?: Promise<void>;
   preparationReason: BrowserPreparationReason;
   preparationReported?: boolean;
+  /** Start of the latest held-browser keepalive, including failed attempts. */
+  keepaliveAt?: number;
+  keepalive?: Promise<void>;
 };
+
+// The native daemon closes a browser after 15 idle minutes, well inside the
+// owner's lifetime. Only states where a human holds the page are kept alive.
+const HANDOFF_KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
+const HANDOFF_KEEPALIVE_STATES = new Set(["waiting", "human", "recovery"]);
 
 type BrowserPreparationReason =
   "gate_only" | "recognized_browser_command" | "interactive_shell" | "internal";
@@ -407,6 +415,37 @@ export class BrowserSessions {
     };
   }
 
+  /**
+   * Touch each held browser's owned daemon so its idle timeout cannot discard
+   * the user's page. Status never launches a browser and its result never
+   * changes control. Waiters share one attempt bounded by its own deadline.
+   */
+  private async keepHandoffBrowsersAlive(
+    sessions: BrowserSession[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.closed || Date.now() >= this.expiresAt) return;
+    const attempts = sessions.map((session) => {
+      if (
+        !session.keepalive &&
+        Date.now() - (session.keepaliveAt ?? -Infinity) >=
+          HANDOFF_KEEPALIVE_INTERVAL_MS
+      ) {
+        session.keepaliveAt = Date.now();
+        const clear = () => {
+          session.keepalive = undefined;
+        };
+        session.keepalive = this.probeHandoffBrowser(session).then(
+          clear,
+          clear,
+        );
+      }
+      return session.keepalive;
+    });
+    await withCancellation(Promise.all(attempts), signal);
+  }
+
   /** Cap optional telemetry independently of required availability checks. */
   private reportHandoffAdmission(
     session: BrowserSession,
@@ -564,18 +603,29 @@ export class BrowserSessions {
       signal?.throwIfAborted();
       // Replaced sandboxes remain in our map for cleanup. Only the latest
       // registered owner can authorize work; stale rows must not block it.
-      const currentStates = states.filter((state) => state?.runActive);
-      if (states.length > 0 && currentStates.length === 0) {
+      const current = sessions.flatMap((session, index) => {
+        const state = states[index];
+        return state?.runActive ? [{ session, state }] : [];
+      });
+      if (states.length > 0 && current.length === 0) {
         // Fail closed before any action, but let the owning worker settle its
         // already-produced output/usage as cancellation instead of provider error.
         this.onOwnershipLost?.();
         signal?.throwIfAborted();
         throw new Error("Browser session ownership has ended.");
       }
-      if (currentStates.every((state) => state?.state === "agent"))
-        return waited;
+      if (current.every(({ state }) => state.state === "agent")) return waited;
       // Expired grants become recovery, which still requires an explicit resume.
       waited = true;
+      await this.keepHandoffBrowsersAlive(
+        current.flatMap(({ session, state }) =>
+          HANDOFF_KEEPALIVE_STATES.has(state.state) &&
+          isE2BSandbox(session.sandbox)
+            ? [session]
+            : [],
+        ),
+        signal,
+      );
       await abortableDelay(1000, signal);
     }
   }

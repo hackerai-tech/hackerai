@@ -407,7 +407,13 @@ it("waits through takeover and resumes within one check without a sandbox sleep"
   expect(finished).toHaveBeenCalledWith(
     expect.objectContaining({ status: "resumed" }),
   );
-  expect(run).toHaveBeenCalledTimes(2); // preparation and bounded observation, no foreground wait
+  // Preparation, bounded observation and one held-browser keepalive status;
+  // no foreground wait.
+  expect(run).toHaveBeenCalledTimes(3);
+  expect(run).toHaveBeenLastCalledWith(
+    expect.stringContaining("'status' '/dev/shm/hackerai-browser-"),
+    expect.objectContaining({ timeoutMs: 2_000 }),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -517,7 +523,12 @@ it("Stop interrupts a paused Agent and cleanup remains available", async () => {
   controller.abort(new Error("Stopped by user"));
   await rejected;
   await sessions.cleanup();
-  expect(run).toHaveBeenCalledTimes(2);
+  // Preparation, the held browser's first keepalive status, then cleanup.
+  expect(run).toHaveBeenCalledTimes(3);
+  expect(run).toHaveBeenLastCalledWith(
+    expect.stringContaining("'cleanup' '/dev/shm/hackerai-browser-"),
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
