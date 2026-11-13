@@ -352,7 +352,6 @@ describe("typed Agent service-unavailable receipts", () => {
   test.each([
     "bad_request",
     "unauthorized",
-    "forbidden",
     "not_found",
     "rate_limit",
   ] as const)("does not add a service-unavailable receipt for %s", (type) => {
@@ -367,6 +366,184 @@ describe("typed Agent service-unavailable receipts", () => {
         fallbackMessage: "fallback",
       }),
     ).toBe(original);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("typed Agent start forbidden receipts", () => {
+  const previousBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (previousBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+    else process.env.VERCEL_GIT_COMMIT_SHA = previousBuild;
+  });
+
+  const forbidden = (
+    endpoint: string,
+    action: Parameters<typeof handleAgentRouteError>[0]["action"],
+    context: Record<string, unknown> = {},
+    error = new ChatSDKError("forbidden:chat", "PRIVATE_CAUSE", {
+      suspensionCategory: "PRIVATE_METADATA",
+    }),
+  ) => {
+    const original = error.toResponse();
+    const toResponse = jest
+      .spyOn(error, "toResponse")
+      .mockReturnValue(original);
+    const response = handleAgentRouteError({
+      error,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "PRIVATE_FALLBACK",
+      context: context as any,
+    });
+    expect(response).toBe(original);
+    expect(toResponse).toHaveBeenCalledTimes(1);
+    return response;
+  };
+
+  test.each([
+    ["/api/agent", "A".repeat(40), { web_build_commit: "a".repeat(40) }],
+    ["/api/agent-long", "PRIVATE_BUILD", {}],
+  ] as const)(
+    "records one bounded receipt for a returned %s start403",
+    async (endpoint, build, buildField) => {
+      process.env.VERCEL_GIT_COMMIT_SHA = build;
+      const response = forbidden(endpoint, "start", {
+        requestId: "sin1::abcde-1794139010452-8943ba28f213",
+        stage: "load_chat_and_preferences",
+        guardBoundary: "chat_owner_gate",
+        userId: "PRIVATE_USER",
+        chatId: "PRIVATE_CHAT",
+        runId: "PRIVATE_RUN",
+        approvalSessionId: "PRIVATE_APPROVAL",
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        code: "forbidden:chat",
+        cause: "PRIVATE_CAUSE",
+        metadata: { suspensionCategory: "PRIVATE_METADATA" },
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(fields).toEqual({
+        timestamp: expect.any(String),
+        level: "warn",
+        event: "agent_start_forbidden_context",
+        service: "hackerai-web",
+        agent_start_forbidden_diagnostic_version: 1,
+        http_status: 403,
+        endpoint,
+        action: "start",
+        stage: "load_chat_and_preferences",
+        guard_boundary: "chat_owner_gate",
+        error_code: "forbidden:chat",
+        request_id_kind: "vercel",
+        request_id: "sin1::abcde-1794139010452-8943ba28f213",
+        ...buildField,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  const accessor = jest.fn(() => "chat_owner_gate");
+  test.each([
+    ["absent", {}, "other"],
+    ["cleared", { guardBoundary: undefined }, "other"],
+    [
+      "outside the closed set",
+      { guardBoundary: "PRIVATE_LABEL" },
+      "unreadable",
+    ],
+    [
+      "an accessor",
+      Object.defineProperty({}, "guardBoundary", { get: accessor }),
+      "unreadable",
+    ],
+    [
+      "a throwing proxy",
+      new Proxy(
+        { stage: "access_gates" },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            if (key === "guardBoundary") throw new Error("PRIVATE_TRAP");
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        },
+      ),
+      "unreadable",
+    ],
+  ])(
+    "projects a guard marker that is %s without guessing",
+    (_label, context, expected) => {
+      forbidden("/api/agent", "start", context as Record<string, unknown>);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(fields.guard_boundary).toBe(expected);
+      expect(fields.stage).toBe(
+        "stage" in context ? "access_gates" : "unknown",
+      );
+      expect(accessor).not.toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  test("bounds an unrecognized stage instead of logging it", () => {
+    forbidden("/api/agent", "start", {
+      stage: "PRIVATE_STAGE",
+      requestId: "https://PRIVATE_TARGET/path",
+    });
+    const fields = JSON.parse(warn.mock.calls[0][0]);
+    expect(fields).toMatchObject({
+      stage: "unknown",
+      request_id_kind: "unavailable",
+    });
+    expect(fields).not.toHaveProperty("request_id");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  test("returns the original response when the context or sink throws", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("PRIVATE_TRAP");
+        },
+      },
+    );
+    expect(forbidden("/api/agent", "start", hostile).status).toBe(403);
+    warn.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    expect(
+      forbidden("/api/agent-long", "start", {
+        guardBoundary: "account_access_gate",
+      }).status,
+    ).toBe(403);
+  });
+
+  test.each([
+    ["/api/agent", "status"],
+    ["/api/agent-long", "resume"],
+    ["/api/agent", "cancel"],
+    ["/api/agent", "approve"],
+    ["/api/agent", "reply"],
+    ["/api/chat", "start"],
+  ] as const)("does not record a 403 from %s %s", (endpoint, action) => {
+    expect(
+      forbidden(endpoint, action, { guardBoundary: "chat_owner_gate" }).status,
+    ).toBe(403);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("uses the actual returned status rather than the error type", () => {
+    const relabeled = new ChatSDKError("forbidden:chat");
+    relabeled.statusCode = 400;
+    expect(forbidden("/api/agent", "start", {}, relabeled).status).toBe(400);
     expect(warn).not.toHaveBeenCalled();
   });
 });
