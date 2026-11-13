@@ -77,6 +77,11 @@ const active = () => ({
 });
 const request = (extra = {}) =>
   ({
+    url: "https://hackerai.example/api/billing/annual-switch",
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
     json: async () => ({
       plan: "pro-yearly-plan",
       checkoutAttemptId: "ca_12345678-1234-1234-1234-123456789012",

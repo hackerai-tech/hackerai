@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../team-auth";
 import { z } from "zod";
 import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 const settingsSchema = z.object({
   enabled: z.boolean().optional(),
@@ -88,6 +89,8 @@ export const GET = async (req: NextRequest) => {
  *         autoReloadThresholdDollars?, autoReloadAmountDollars? }
  */
 export const POST = async (req: NextRequest) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;

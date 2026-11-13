@@ -42,16 +42,28 @@ jest.mock("next/server", () => ({
 
 function request(body: unknown) {
   return {
+    url: "https://hackerai.example/api/billing/test",
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
     json: async () => body,
   };
 }
 
 function unreadableJsonRequest() {
   return {
+    ...request(null),
     json: async () => {
       throw new SyntaxError("Invalid JSON");
     },
   };
+}
+
+function bodylessRequest() {
+  const result = request(null);
+  result.headers.delete("content-type");
+  return result;
 }
 
 describe("billing API routes", () => {
@@ -59,12 +71,39 @@ describe("billing API routes", () => {
     jest.clearAllMocks();
   });
 
+  it.each(["https://evil.hackerai.example", "https://other.example", null])(
+    "rejects billing mutations from origin %s before side effects",
+    async (origin) => {
+      const unsafe = request({
+        cancellationReason: { reasonCategory: "other" },
+      });
+      if (origin) unsafe.headers.set("origin", origin);
+      else unsafe.headers.delete("origin");
+
+      const { POST: cancel } = await import("../cancel/route");
+      const { POST: keep } = await import("../keep/route");
+      expect((await cancel(unsafe as never)).status).toBe(403);
+      expect((await keep(unsafe as never)).status).toBe(403);
+      expect(mockCancelSubscription).not.toHaveBeenCalled();
+      expect(mockKeepSubscription).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a simple text/plain cancellation even when its body is JSON", async () => {
+    const unsafe = request({ cancellationReason: { reasonCategory: "other" } });
+    unsafe.headers.set("content-type", "text/plain");
+
+    const { POST } = await import("../cancel/route");
+    expect((await POST(unsafe as never)).status).toBe(415);
+    expect(mockCancelSubscription).not.toHaveBeenCalled();
+  });
+
   it("returns a retryable conflict instead of reporting success for an overlapping keep", async () => {
     mockKeepSubscription.mockRejectedValue(
       new Error(BILLING_ERRORS.subscriptionChangeInProgress) as never,
     );
     const { POST } = await import("../keep/route");
-    const response = await POST();
+    const response = await POST(request(null) as never);
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
       error: BILLING_ERRORS.subscriptionChangeInProgress,
@@ -76,7 +115,7 @@ describe("billing API routes", () => {
       "https://invoice.stripe.com/i/current" as never,
     );
     const { POST } = await import("../renewal-invoice/route");
-    const response = await POST();
+    const response = await POST(request(null) as never);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       url: "https://invoice.stripe.com/i/current",
@@ -92,7 +131,7 @@ describe("billing API routes", () => {
     async (message, status) => {
       mockOpenRenewalInvoice.mockRejectedValue(new Error(message) as never);
       const { POST } = await import("../renewal-invoice/route");
-      expect((await POST()).status).toBe(status);
+      expect((await POST(request(null) as never)).status).toBe(status);
     },
   );
 
@@ -124,7 +163,7 @@ describe("billing API routes", () => {
     );
     const { POST } = await import("../portal/route");
 
-    const response = await POST(request(null) as never);
+    const response = await POST(bodylessRequest() as never);
 
     await expect(response.json()).resolves.toEqual({
       url: "https://billing.stripe.com/session",
@@ -199,7 +238,7 @@ describe("billing API routes", () => {
     } as never);
     const { POST } = await import("../keep/route");
 
-    const response = await POST();
+    const response = await POST(request(null) as never);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
