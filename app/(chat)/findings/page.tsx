@@ -191,8 +191,18 @@ const updateFindingsHistory = (
   href: string,
   method: "push" | "replace" = "replace",
 ) => {
+  const state = { ...window.history.state };
+  // Let Next's patched history API copy its internal state and update URL
+  // hooks. Passing its internal markers would bypass that synchronization.
+  delete state.__NA;
+  delete state._N;
+  if (!new URL(href, window.location.origin).searchParams.has("finding")) {
+    delete state.hackeraiFindingEntry;
+  } else if (method === "push") {
+    state.hackeraiFindingEntry = true;
+  }
   window.history[method === "push" ? "pushState" : "replaceState"](
-    null,
+    state,
     "",
     href,
   );
@@ -252,6 +262,7 @@ function FindingsPageContent() {
     () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
+  const closingFindingHistory = useRef(false);
   const findingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -306,6 +317,7 @@ function FindingsPageContent() {
 
   useEffect(() => {
     const syncFromBrowserHistory = () => {
+      closingFindingHistory.current = false;
       const params = new URLSearchParams(window.location.search);
       if (params.has("chat")) {
         params.delete("chat");
@@ -542,6 +554,15 @@ function FindingsPageContent() {
   };
 
   const clearSelectedFinding = () => {
+    if (closingFindingHistory.current) return;
+    // Consume the entry opened from this list. A deep link has no owned list
+    // entry behind it, so close it in place instead. State survives reload and
+    // Forward, unlike an in-memory "opened here" flag.
+    if (window.history.state?.hackeraiFindingEntry === true) {
+      closingFindingHistory.current = true;
+      window.history.back();
+      return;
+    }
     setSelectedFindingId(null);
     updateFindingsHistory(getHref({ findingId: null }));
   };

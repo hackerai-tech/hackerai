@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { ChevronRight, LoaderCircle } from "lucide-react";
 import {
   Collapsible,
@@ -35,91 +34,39 @@ import {
   type OutcomeTone,
 } from "./FindingAssessment";
 import { FindingRelativeTime } from "./FindingTime";
-
-const POLL_INTERVAL_MS = 5_000;
+import {
+  useFindingHistoryState,
+  type FindingHistorySource,
+} from "./useFindingHistoryState";
 
 export type EnabledHuntState = Extract<FindingHuntState, { enabled: true }>;
 
-async function fetchHuntState(
-  findingId: string,
-): Promise<FindingHuntState | null> {
-  try {
-    const response = await fetch(
-      `/api/finding-hunts?findingId=${encodeURIComponent(findingId)}`,
-      { cache: "no-store" },
-    );
-    return response.ok ? ((await response.json()) as FindingHuntState) : null;
-  } catch {
-    return null;
-  }
-}
-
-const isRunning = (state: FindingHuntState | undefined) =>
-  state?.enabled === true &&
-  state.hunts.some((hunt) => hunt.status === "running");
+const HUNT_HISTORY: FindingHistorySource<EnabledHuntState> = {
+  load: async (findingId) => {
+    try {
+      const response = await fetch(
+        `/api/finding-hunts?findingId=${encodeURIComponent(findingId)}`,
+        { cache: "no-store" },
+      );
+      return response.ok ? ((await response.json()) as FindingHuntState) : null;
+    } catch {
+      return null;
+    }
+  },
+  isRunning: (state) => state.hunts.some((hunt) => hunt.status === "running"),
+  // A hunt tool that succeeds in this tab refreshes its finding at once.
+  subscribe: subscribeFindingHuntChanges,
+};
 
 /**
  * Hunt history for a finding. `undefined` while loading, so no hunt action is
  * offered before the rollout is known; a failed first read resolves to
- * disabled. A failed refresh keeps the last good state.
- *
- * Reads never overlap: the next poll is scheduled only after a read settles,
- * and polling runs only while a hunt is recorded running. A hunt tool that
- * succeeds in this tab triggers a refresh for its finding; one arriving during
- * a read queues a single follow-up read, because the in-flight response may
- * predate the change. Responses for a previously viewed finding or after
- * unmount are discarded.
+ * disabled.
  */
-export function useFindingHuntState(
+export const useFindingHuntState = (
   findingId: string | undefined,
-): FindingHuntState | undefined {
-  const [loaded, setLoaded] = useState<{
-    findingId: string;
-    state: FindingHuntState;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!findingId) return;
-    let active = true;
-    let inFlight = false;
-    let readAgain = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let current: FindingHuntState | undefined;
-
-    const read = async () => {
-      if (inFlight) {
-        readAgain = true;
-        return;
-      }
-      inFlight = true;
-      clearTimeout(timer);
-      timer = undefined;
-      const next = await fetchHuntState(findingId);
-      inFlight = false;
-      if (!active) return;
-      current = next ?? current ?? { enabled: false };
-      setLoaded({ findingId, state: current });
-      if (readAgain) {
-        readAgain = false;
-        void read();
-      } else if (isRunning(current)) {
-        timer = setTimeout(() => void read(), POLL_INTERVAL_MS);
-      }
-    };
-
-    void read();
-    const unsubscribe = subscribeFindingHuntChanges((changed) => {
-      if (changed === findingId) void read();
-    });
-    return () => {
-      active = false;
-      clearTimeout(timer);
-      unsubscribe();
-    };
-  }, [findingId]);
-
-  return loaded && loaded.findingId === findingId ? loaded.state : undefined;
-}
+): FindingHuntState | undefined =>
+  useFindingHistoryState(HUNT_HISTORY, findingId);
 
 export const HUNT_OUTCOMES: Record<
   HuntCandidateOutcome,
