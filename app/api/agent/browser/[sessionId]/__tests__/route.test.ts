@@ -1023,6 +1023,20 @@ it.each(["take", "resume", "release"])(
     mockFailure = "";
     const original = new Error("PRIVATE relay await failure");
     mockStopRelay.mockRejectedValueOnce(original);
+    const receipt = {
+      relay_stop_diagnostic_version: 1,
+      relay_stop_error_kind: "command_exit",
+      relay_stop_http_status: "none",
+      relay_stop_command_exit_code: 1,
+      relay_stop_receipt_version: 1,
+      relay_stop_receipt_status: "recorded",
+      relay_stop_first_failure: "filesystem",
+      relay_stop_first_filesystem_stage: "write_revoked",
+      relay_stop_first_filesystem_code: "permission",
+      relay_stop_drain_deadline_count: 0,
+      relay_stop_filesystem_failure_count: 1,
+    };
+    mockStopContext.mockReturnValueOnce(receipt);
     const response = await diagnosticPost({
       action,
       browserSessionName: "default",
@@ -1043,10 +1057,7 @@ it.each(["take", "resume", "release"])(
       expect.objectContaining({
         action,
         failure_stage: "drain_relays",
-        relay_stop_diagnostic_version: 1,
-        relay_stop_error_kind: "command_exit",
-        relay_stop_http_status: "none",
-        relay_stop_command_exit_code: 1,
+        ...receipt,
       }),
     );
     expect(
