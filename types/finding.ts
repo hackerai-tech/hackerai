@@ -108,6 +108,46 @@ export type FindingRetestState =
       retests: FindingAgentRetestView[];
     };
 
+/** One individually saved hunt candidate. Agent judgment, never a finding. */
+export type FindingHuntCandidateView = {
+  candidate_key: string;
+  surface: string;
+  rationale: string;
+  outcome: import("@/lib/findings/variant-hunt").HuntCandidateOutcome;
+  evidence_basis?: import("@/lib/findings/variant-hunt").HuntEvidenceBasis;
+  reproduction_steps: string[];
+  expected_result?: string;
+  observed_result?: string;
+  evidence_refs: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+  limitations: string[];
+  recorded_at: number;
+};
+
+/** One hunt. `interrupted` hunts ended early; saved candidates are kept. */
+export type FindingHuntView = {
+  hunt_id: string;
+  chat_id: string;
+  assistant_message_id: string;
+  status: "running" | "finished";
+  started_at: number;
+  finished_at?: number;
+  interrupted?: boolean;
+  summary?: string;
+  limitations?: string[];
+  environment?: { kind: "cloud" | "local" | "desktop"; name?: string };
+  candidates: FindingHuntCandidateView[];
+};
+
+/** Response of GET /api/finding-hunts. */
+export type FindingHuntState =
+  | { enabled: false }
+  | {
+      enabled: true;
+      chat_title: string;
+      hunts: FindingHuntView[];
+    };
+
 export interface FindingSourceChat {
   chat_id: string;
   chat_title: string;

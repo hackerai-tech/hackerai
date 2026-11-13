@@ -351,6 +351,26 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         started_at: 1,
       },
     ],
+    finding_variant_hunts: [
+      {
+        _id: "variant-hunt-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: "message-user",
+        started_at: 1,
+        candidates: [],
+      },
+      {
+        _id: "variant-hunt-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+        candidates: [],
+      },
+    ],
     finding_retest_recipes: [
       {
         _id: "retest-recipe-user",
@@ -932,6 +952,12 @@ describe("userDeletion", () => {
     ).toMatchObject({ attempts: 2 });
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(
+      row(tables, "finding_variant_hunts", "variant-hunt-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "finding_variant_hunts", "variant-hunt-other"),
+    ).toMatchObject({ user_id: "user_other" });
+    expect(
       row(tables, "local_sandbox_heartbeats", "heartbeat-other"),
     ).toMatchObject({
       user_id: "user_other",
@@ -1507,6 +1533,63 @@ describe("userDeletion", () => {
     expect(tables.feedback).toHaveLength(0);
     expect(thirdBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it("dry-runs and then deletes a user's variant hunts in bounded batches", async () => {
+    const { cleanupDeletedUserResidue, deleteAllUserDataByService } =
+      await import("../userDeletion");
+    const tables = seedTables();
+    tables.finding_variant_hunts = [
+      ...Array.from({ length: 150 }, (_, index) => ({
+        _id: `hunt-user-${index}`,
+        user_id: "user_123",
+        chat_id: "chat-1",
+        finding_id: "finding-1",
+        assistant_message_id: `message-${index}`,
+        started_at: index,
+        candidates: [],
+      })),
+      {
+        _id: "hunt-other",
+        user_id: "user_other",
+        chat_id: "chat-other-id",
+        finding_id: "finding-other",
+        assistant_message_id: "message-other",
+        started_at: 1,
+        candidates: [],
+      },
+    ];
+    const { ctx, readCounter } = createMockCtx(tables);
+    const userHunts = () =>
+      tables.finding_variant_hunts.filter(
+        (candidate) => candidate.user_id === "user_123",
+      );
+
+    const dryRun = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      userIds: ["user_123"],
+    });
+    expect(dryRun.deleted.finding_variant_hunts).toBeGreaterThan(0);
+    expect(dryRun.hasMore).toBe(true);
+    expect(userHunts()).toHaveLength(150);
+
+    let previousReads = readCounter.value;
+    let batches = 0;
+    for (let done = false; !done && batches < 20; batches += 1) {
+      const result = await deleteAllUserDataByService.handler(ctx as any, {
+        serviceKey: "service_key",
+        userId: "user_123",
+      });
+      // Hunts share the cleanup pass's document budget.
+      expect(readCounter.value - previousReads).toBeLessThanOrEqual(100);
+      previousReads = readCounter.value;
+      done = !result.hasMore;
+    }
+    expect(batches).toBeGreaterThan(1);
+    expect(userHunts()).toHaveLength(0);
+    expect(row(tables, "finding_variant_hunts", "hunt-other")).toMatchObject({
+      user_id: "user_other",
+    });
   });
 
   it("makes progress deleting near-limit chats with stable ownership records", async () => {

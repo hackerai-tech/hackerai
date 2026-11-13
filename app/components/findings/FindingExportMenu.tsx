@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
@@ -38,25 +41,23 @@ const EXPORT_FORMATS: Array<{
   { format: "sarif", label: "SARIF 2.1", hint: "For code scanning tools" },
 ];
 
-export function FindingExportMenu({
-  getFindings,
-  label = "Export report",
-  disabled = false,
-  variant = "outline",
-  align = "start",
-}: {
-  getFindings: () => Promise<FindingDetailRecord[]>;
-  label?: string;
-  disabled?: boolean;
-  variant?: "outline" | "default";
-  align?: "start" | "end";
-}) {
+/**
+ * The one export flow for findings: download, telemetry, errors and a busy
+ * guard. Keep the hook in a component that stays mounted while a menu closes,
+ * so every entry point shares the guard and the status announcement.
+ */
+export function useFindingExport(
+  getFindings: () => Promise<FindingDetailRecord[]>,
+) {
   const [busyFormat, setBusyFormat] = useState<FindingExportFormat | null>(
     null,
   );
+  // A ref closes the double-submit window before the busy state re-renders.
+  const busy = useRef(false);
 
-  const handleExport = async (format: FindingExportFormat) => {
-    if (busyFormat) return;
+  const exportAs = async (format: FindingExportFormat) => {
+    if (busy.current) return;
+    busy.current = true;
     setBusyFormat(format);
     captureFindingEvent({
       operation: "export",
@@ -99,11 +100,81 @@ export function FindingExportMenu({
           : "Could not export report. Try again.",
       );
     } finally {
+      busy.current = false;
       setBusyFormat(null);
     }
   };
 
-  const isBusy = busyFormat !== null;
+  return { busyFormat, isBusy: busyFormat !== null, exportAs };
+}
+
+export type FindingExporter = ReturnType<typeof useFindingExport>;
+
+export function FindingExportStatus({
+  exporter,
+}: {
+  exporter: FindingExporter;
+}) {
+  return (
+    <span className="sr-only" role="status" aria-live="polite">
+      {exporter.isBusy ? "Preparing export…" : ""}
+    </span>
+  );
+}
+
+const FormatItems = ({ exporter }: { exporter: FindingExporter }) =>
+  EXPORT_FORMATS.map((item) => (
+    <DropdownMenuItem
+      key={item.format}
+      disabled={exporter.isBusy}
+      onSelect={() => void exporter.exportAs(item.format)}
+      className="flex items-baseline justify-between gap-4"
+    >
+      <span className="font-medium">{item.label}</span>
+      <span className="text-xs text-muted-foreground">{item.hint}</span>
+    </DropdownMenuItem>
+  ));
+
+/** Export formats as a submenu of another menu, sharing an exporter. */
+export function FindingExportSubmenu({
+  exporter,
+  label = "Export",
+}: {
+  exporter: FindingExporter;
+  label?: string;
+}) {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger disabled={exporter.isBusy}>
+        <Download className="size-4" aria-hidden="true" />
+        {exporter.isBusy ? "Exporting…" : label}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="min-w-56">
+        <FormatItems exporter={exporter} />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
+export function FindingExportMenu({
+  getFindings,
+  label = "Export report",
+  disabled = false,
+  variant = "outline",
+  align = "start",
+  exporter: sharedExporter,
+}: {
+  getFindings: () => Promise<FindingDetailRecord[]>;
+  label?: string;
+  disabled?: boolean;
+  variant?: "outline" | "default";
+  align?: "start" | "end";
+  /** Share busy state with another export entry point; its owner announces status. */
+  exporter?: FindingExporter;
+}) {
+  const ownExporter = useFindingExport(getFindings);
+  const exporter = sharedExporter ?? ownExporter;
+  const { isBusy } = exporter;
 
   return (
     <>
@@ -132,22 +203,10 @@ export function FindingExportMenu({
             Download as
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {EXPORT_FORMATS.map((item) => (
-            <DropdownMenuItem
-              key={item.format}
-              disabled={isBusy}
-              onSelect={() => void handleExport(item.format)}
-              className="flex items-baseline justify-between gap-4"
-            >
-              <span className="font-medium">{item.label}</span>
-              <span className="text-xs text-muted-foreground">{item.hint}</span>
-            </DropdownMenuItem>
-          ))}
+          <FormatItems exporter={exporter} />
         </DropdownMenuContent>
       </DropdownMenu>
-      <span className="sr-only" role="status" aria-live="polite">
-        {isBusy ? "Preparing export…" : ""}
-      </span>
+      {sharedExporter ? null : <FindingExportStatus exporter={exporter} />}
     </>
   );
 }

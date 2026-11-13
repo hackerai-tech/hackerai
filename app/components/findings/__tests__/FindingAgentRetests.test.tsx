@@ -1,34 +1,9 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { FindingAgentRetests } from "../FindingAgentRetests";
-import { getDraftContentById } from "@/lib/utils/client-storage";
 import type {
   FindingAgentRetestView,
-  FindingDetailRecord,
   FindingRetestState,
 } from "@/types/finding";
-
-const push = jest.fn();
-const setChatMode = jest.fn();
-jest.mock("next/navigation", () => ({
-  useRouter: () => ({ push }),
-  usePathname: () => "/findings",
-}));
-jest.mock("@/app/contexts/GlobalState", () => ({
-  useGlobalState: () => ({ closeSidebar: jest.fn(), setChatMode }),
-}));
-jest.mock("@/app/contexts/ComposerState", () => ({
-  useComposerActions: () => ({ getInput: () => "", setInput: jest.fn() }),
-}));
-jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
-}));
-
-const finding = {
-  finding_id: "finding-1",
-  chat_id: "chat-1",
-  updated_at: 10,
-  status: "active",
-} as FindingDetailRecord;
 
 const retest = (
   overrides: Partial<FindingAgentRetestView> = {},
@@ -62,15 +37,9 @@ const state = (
   retests,
 });
 
-beforeEach(() => {
-  jest.clearAllMocks();
-  localStorage.clear();
-});
-
-it("shows the latest Agent assessment with evidence, limits and source links", () => {
+it("keeps every retest in compact history and shows evidence, limits and source on demand", () => {
   render(
     <FindingAgentRetests
-      finding={finding}
       state={state([
         retest(),
         retest({
@@ -82,10 +51,20 @@ it("shows the latest Agent assessment with evidence, limits and source links", (
       ])}
     />,
   );
-  const latest = screen.getByRole("article", {
-    name: "Latest Agent assessment: Reproduced",
-  });
-  expect(within(latest).getByText("Agent assessment · latest")).toBeVisible();
+  expect(
+    screen.getByText("Tester could still read another account's invoice."),
+  ).toBeVisible();
+  expect(screen.getByText("Cross-account read was denied.")).toBeVisible();
+  expect(screen.getByText(/not independent certification/)).toBeVisible();
+  // Collapsed by default.
+  expect(screen.queryByText("Load the other invoice")).toBeNull();
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Reproduced retest details" }),
+  );
+  const latest = screen
+    .getByRole("button", { name: "Reproduced retest details" })
+    .closest("li")!;
   expect(within(latest).getByText("Load the other invoice")).toBeVisible();
   expect(
     within(latest).getByText("200 with owner_id usr_victim_a"),
@@ -94,35 +73,37 @@ it("shows the latest Agent assessment with evidence, limits and source links", (
   expect(
     within(latest).getByText("Write endpoints were not retested."),
   ).toBeVisible();
+  expect(within(latest).getByText("Local sandbox (MacBook Pro)")).toBeVisible();
   expect(
     within(latest).getByRole("link", { name: /Open in task/ }),
   ).toHaveAttribute("href", "/c/chat-1#message=message-1");
-  expect(screen.getByText("Retest history")).toBeVisible();
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Not reproduced retest details" }),
+  );
   expect(
-    screen.getByRole("link", { name: "View Not reproduced in task" }),
-  ).toHaveAttribute("href", "/c/chat-1#message=message-0");
-  expect(screen.getByText(/not independent/)).toBeVisible();
-  // Agent-only: no HTTP recipe, request editor or credential inputs.
+    screen
+      .getAllByRole("link", { name: /Open in task/ })
+      .map((link) => link.getAttribute("href")),
+  ).toContain("/c/chat-1#message=message-0");
+  // Agent-only: no HTTP recipe, request editor, credential input or CTA here.
   expect(screen.queryByText(/recipe/i)).toBeNull();
   expect(document.querySelector("input")).toBeNull();
-  expect(screen.getAllByRole("button")).toHaveLength(1);
+  expect(
+    screen.queryByRole("button", { name: /Retest with Agent/ }),
+  ).toBeNull();
 });
 
-it("prepares a recorded retest draft in the source task without sending it", () => {
-  render(<FindingAgentRetests finding={finding} state={state([])} />);
+it("explains an empty history without its own action", () => {
+  render(<FindingAgentRetests state={state([])} />);
   expect(screen.getByText("No retests yet")).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Retest with Agent" }));
-  const draft = getDraftContentById("chat-1") ?? "";
-  expect(draft).toContain("start_finding_retest");
-  expect(draft).toContain("complete_finding_retest");
-  expect(push).toHaveBeenCalledWith("/c/chat-1");
-  expect(setChatMode).toHaveBeenCalledWith("agent");
+  expect(screen.getByText(/never as fixed/)).toBeVisible();
+  expect(screen.queryByRole("button")).toBeNull();
 });
 
-it("shows running only for a recorded live run and blocks a second retest", () => {
+it("shows running only for a recorded live run with a watch link", () => {
   render(
     <FindingAgentRetests
-      finding={finding}
       state={state([
         retest({
           status: "running",
@@ -132,10 +113,9 @@ it("shows running only for a recorded live run and blocks a second retest", () =
       ])}
     />,
   );
-  expect(screen.getByRole("status")).toHaveTextContent("Agent is retesting");
-  expect(
-    screen.getByRole("button", { name: "Retest running…" }),
-  ).toBeDisabled();
+  const row = screen.getByRole("button", { name: "Running retest details" });
+  expect(row).toHaveTextContent("Agent is retesting");
+  fireEvent.click(row);
   expect(screen.getByRole("link", { name: /Watch in task/ })).toHaveAttribute(
     "href",
     "/c/chat-1",
@@ -145,7 +125,6 @@ it("shows running only for a recorded live run and blocks a second retest", () =
 it("presents an interrupted run as inconclusive, never as fixed", () => {
   render(
     <FindingAgentRetests
-      finding={finding}
       state={state([
         retest({
           outcome: "inconclusive",
@@ -161,11 +140,7 @@ it("presents an interrupted run as inconclusive, never as fixed", () => {
       ])}
     />,
   );
-  const latest = screen.getByRole("article", {
-    name: "Latest Agent assessment: Inconclusive",
-  });
-  expect(latest).toHaveTextContent("doesn't show the issue is fixed");
   expect(
-    screen.getByRole("button", { name: "Retest with Agent" }),
-  ).toBeEnabled();
+    screen.getByRole("button", { name: "Inconclusive retest details" }),
+  ).toHaveTextContent("doesn't show the issue is fixed");
 });

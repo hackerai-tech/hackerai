@@ -12,13 +12,17 @@ const privateInput = {
 };
 
 describe("public finding sanitizer", () => {
-  it("removes retest observations from shared chats and forks in every tool state", () => {
+  it("removes retest and hunt observations from shared chats and forks in every tool state", () => {
     const parts = [
       "get_finding_retests",
       "start_finding_retest",
       "complete_finding_retest",
       "get_http_retest_recipe",
       "save_http_retest_recipe",
+      "get_finding_hunts",
+      "start_finding_hunt",
+      "record_finding_hunt_candidate",
+      "complete_finding_hunt",
     ].flatMap((toolName) =>
       [
         "input-streaming",
