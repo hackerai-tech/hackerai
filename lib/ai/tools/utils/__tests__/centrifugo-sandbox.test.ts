@@ -27,6 +27,7 @@ import {
 import { Centrifuge } from "centrifuge";
 import { win32 } from "node:path";
 import {
+  chmodSync,
   existsSync,
   statSync,
   readFileSync,
@@ -5174,7 +5175,7 @@ describe("CentrifugoSandbox", () => {
 
       expect(runs[0]).toBe("echo $BASH_VERSION");
       expect(runs[1]).toContain(
-        'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload"',
+        '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && curl ',
       );
       expect(runs[1]).toContain(
         '"https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque"',
@@ -5241,6 +5242,213 @@ describe("CentrifugoSandbox", () => {
       expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
       expect(runs[1]).not.toContain("if not exist");
       expect(sandbox.isWindows()).toBe(false);
+    });
+
+    // Desktop 0.0.74 registers Rust's `windows`; its relay may run either shell.
+    it.each([
+      {
+        shell: "cmd",
+        probe: "$BASH_VERSION\r\n",
+        copy: '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && copy /Y "C:\\Users\\qa\\source.pdf" "C:\\temp\\hackerai-upload\\dest.pdf" >nul',
+      },
+      {
+        shell: "Git Bash",
+        probe: "5.2.37(1)-release\n",
+        copy: "mkdir -p '/c/Users/qa/AppData/Local/Temp/hackerai-upload' && cp -f '/c/Users/qa/source.pdf' '/c/Users/qa/AppData/Local/Temp/hackerai-upload/dest.pdf'",
+      },
+    ])(
+      "probes a raw Rust windows host before copying through $shell",
+      async ({ probe, copy }) => {
+        const sandbox = createDesktopSandbox(undefined, "windows");
+        const runs: string[] = [];
+        jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            runs.push(command);
+            return {
+              stdout:
+                command === "echo $BASH_VERSION"
+                  ? probe
+                  : command ===
+                      "/usr/bin/cygpath -w -- '/tmp/hackerai-upload/dest.pdf'"
+                    ? "C:\\Users\\qa\\AppData\\Local\\Temp\\hackerai-upload\\dest.pdf\n"
+                    : "",
+              stderr: "",
+              exitCode: 0,
+            };
+          });
+
+        await sandbox.files.copyLocal(
+          "C:\\Users\\qa\\source.pdf",
+          "/tmp/hackerai-upload/dest.pdf",
+        );
+
+        expect(sandbox.isWindows()).toBe(true);
+        expect(runs[0]).toBe("echo $BASH_VERSION");
+        expect(runs.at(-1)).toBe(copy);
+      },
+    );
+
+    // Required Windows CI selects these by the "Windows file" name.
+    describe("real cmd Windows file transfers", () => {
+      const windowsTest = process.platform === "win32" ? it : it.skip;
+      // Desktop/local cmd launch: verbatim arguments wrapped in outer quotes.
+      const runCmd = (env?: NodeJS.ProcessEnv) => async (command: string) => {
+        const shell = windowsSystemExecutable("cmd.exe");
+        const spec = buildShellSpawn(shell, "/C", command);
+        return promisify(execFile)(shell, spec.args, {
+          ...spec.options,
+          timeout: 10_000,
+          ...(env && { env }),
+        }).then(
+          (result) => ({
+            stdout: String(result.stdout),
+            stderr: String(result.stderr),
+            exitCode: 0,
+          }),
+          (error) => ({
+            stdout: String(error.stdout ?? ""),
+            stderr: String(error.stderr ?? ""),
+            exitCode: Number(error.code) || -1,
+          }),
+        );
+      };
+      const realCmdSandbox = (env?: NodeJS.ProcessEnv) => {
+        // Rust's raw OS name; the adapter must discover cmd with its probe.
+        const sandbox = createDesktopSandbox(undefined, "windows");
+        jest.spyOn(sandbox.commands, "run").mockImplementation(runCmd(env));
+        return sandbox;
+      };
+
+      windowsTest(
+        "copies into new and existing directories and rejects failed copies",
+        async () => {
+          jest.useRealTimers();
+          mkdirSync("C:\\temp", { recursive: true });
+          const base = mkdtempSync("C:\\temp\\hackerai-cmd-copy-");
+          const source = win32.join(base, "source report.txt");
+          // POSIX /tmp maps to C:\temp under cmd; `)` must stay quoted.
+          const destination = `/tmp/${win32.basename(base)}/out (1)/copy.txt`;
+          const copied = win32.join(base, "out (1)", "copy.txt");
+          const sandbox = realCmdSandbox();
+          try {
+            writeFileSync(source, "first");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("first");
+
+            // The directory exists now; an IF-scoped copy would be skipped.
+            writeFileSync(source, "second λ");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("second λ");
+
+            await expect(
+              sandbox.files.copyLocal(
+                win32.join(base, "missing.txt"),
+                destination,
+              ),
+            ).rejects.toThrow("Failed to prepare local file");
+            chmodSync(copied, 0o444);
+            writeFileSync(source, "blocked");
+            await expect(
+              sandbox.files.copyLocal(source, destination),
+            ).rejects.toThrow("Failed to prepare local file");
+            expect(readFileSync(copied, "utf8")).toBe("second λ");
+
+            writeFileSync(win32.join(base, "blocker"), "");
+            await expect(
+              sandbox.files.copyLocal(
+                source,
+                win32.join(base, "blocker", "sub", "copy.txt"),
+              ),
+            ).rejects.toThrow("Failed to prepare local file");
+
+            chmodSync(copied, 0o666);
+            writeFileSync(source, "recovered");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("recovered");
+          } finally {
+            if (existsSync(copied)) chmodSync(copied, 0o666);
+            rmSync(base, { recursive: true, force: true });
+          }
+        },
+        30_000,
+      );
+
+      windowsTest(
+        "downloads into new and existing directories and skips the download after mkdir fails",
+        async () => {
+          jest.useRealTimers();
+          mkdirSync("C:\\temp", { recursive: true });
+          const base = mkdtempSync("C:\\temp\\hackerai-cmd-download-");
+          const bin = win32.join(base, "bin");
+          const fixture = win32.join(base, "fixture.bin");
+          const log = win32.join(base, "downloads.log");
+          mkdirSync(bin);
+          // Synthetic downloader at the network boundary. cmd resolves `curl`
+          // from PATH, so the adapter's command line runs unchanged.
+          writeFileSync(
+            win32.join(bin, "curl.cmd"),
+            [
+              "@echo off",
+              `>>"${log}" echo invoked`,
+              ":next",
+              'if "%~1"=="" exit /b 2',
+              'if "%~1"=="-o" goto write',
+              "shift",
+              "goto next",
+              ":write",
+              `copy /b /y "${fixture}" "%~2" >nul`,
+              "exit /b",
+              "",
+            ].join("\r\n"),
+          );
+          const sandbox = realCmdSandbox({
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(
+                ([key]) => key.toUpperCase() !== "PATH",
+              ),
+            ),
+            PATH: `${bin};${process.env.PATH ?? ""}`,
+          });
+          (sandbox as any).httpClient = "curl";
+          (sandbox as any).curlCaps = {
+            retryAllErrors: true,
+            retryConnrefused: true,
+            sslNoRevoke: true,
+          };
+          const url = "https://example.com/synthetic.bin";
+          const destination = `/tmp/${win32.basename(base)}/out (1)/download.bin`;
+          const downloaded = win32.join(base, "out (1)", "download.bin");
+          const invocations = () =>
+            existsSync(log)
+              ? readFileSync(log, "utf8").trim().split(/\r?\n/).length
+              : 0;
+          try {
+            writeFileSync(fixture, "first");
+            await sandbox.files.downloadFromUrl(url, destination);
+            expect(readFileSync(downloaded, "utf8")).toBe("first");
+
+            // The directory exists now; an IF-scoped download would be skipped.
+            const updated = Buffer.from([0, 255, 13, 10, 0x6c]);
+            writeFileSync(fixture, updated);
+            await sandbox.files.downloadFromUrl(url, destination);
+            expect(readFileSync(downloaded)).toEqual(updated);
+            expect(invocations()).toBe(2);
+
+            writeFileSync(win32.join(base, "blocker"), "");
+            await expect(
+              sandbox.files.downloadFromUrl(
+                url,
+                win32.join(base, "blocker", "sub", "download.bin"),
+              ),
+            ).rejects.toThrow("Failed to download file");
+            expect(invocations()).toBe(2);
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        },
+        30_000,
+      );
     });
 
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
@@ -7110,7 +7318,7 @@ describe("CentrifugoSandbox", () => {
         category: "shell_syntax",
         pathShape: "windows_drive_absolute",
         command:
-          'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload" && copy /Y "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf" "C:\\temp\\hackerai-upload\\PRIVATE_DEST.pdf" >nul',
+          '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && copy /Y "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf" "C:\\temp\\hackerai-upload\\PRIVATE_DEST.pdf" >nul',
       },
     ])(
       "carries the actual $shell copy receipt and classified stderr to existing staging sinks",
@@ -7506,28 +7714,31 @@ describe("CentrifugoSandbox", () => {
       expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     });
 
-    it("uses a cmd-compatible browser probe on Windows", () => {
-      const sandbox = createSandbox({
-        osInfo: {
-          platform: "win32",
-          arch: "x86_64",
-          release: "11",
-          hostname: "windows-box",
-        },
-      });
+    it.each(["win32", "windows"])(
+      "uses a cmd-compatible browser probe on Windows (%s)",
+      (platform) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform,
+            arch: "x86_64",
+            release: "11",
+            hostname: "windows-box",
+          },
+        });
 
-      const context = sandbox.getSandboxContext();
+        const context = sandbox.getSandboxContext();
 
-      expect(context).toContain(
-        "where agent-browser && agent-browser --version",
-      );
-      expect(context).not.toContain("command -v agent-browser");
-      expect(context).toContain(
-        "Git Bash when available, otherwise cmd.exe /C",
-      );
-      expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
-      expect(context).not.toContain("Commands are invoked via cmd.exe /C");
-    });
+        expect(context).toContain(
+          "where agent-browser && agent-browser --version",
+        );
+        expect(context).not.toContain("command -v agent-browser");
+        expect(context).toContain(
+          "Git Bash when available, otherwise cmd.exe /C",
+        );
+        expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
+        expect(context).not.toContain("Commands are invoked via cmd.exe /C");
+      },
+    );
 
     it("safely serializes project folders before adding them to the prompt", () => {
       const sandbox = createDesktopSandbox(
