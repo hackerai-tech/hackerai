@@ -244,11 +244,65 @@ process.stdin.on('end', async () => {
 });
 `;
 
+// The failing STOP program's only output, read solely from that invocation's
+// result: first failure, then aggregate counts capped at 16, never per-relay
+// results, paths or messages. Stage and code are 1-based indexes into these
+// lists; a drain deadline uses 0 0.
+export const RELAY_STOP_RECEIPT_STAGES = [
+  "scan_root",
+  "write_revoked",
+  "drain_check",
+  "write_closed",
+] as const;
+export const RELAY_STOP_RECEIPT_CODES = [
+  "missing",
+  "permission",
+  "not_directory",
+  "is_directory",
+  "read_only",
+  "no_space",
+  "fd_limit",
+  "other",
+] as const;
+const RELAY_STOP_ERRNO_CODES: ReadonlyArray<
+  [string, (typeof RELAY_STOP_RECEIPT_CODES)[number]]
+> = [
+  ["ENOENT", "missing"],
+  ["EACCES", "permission"],
+  ["EPERM", "permission"],
+  ["ENOTDIR", "not_directory"],
+  ["EISDIR", "is_directory"],
+  ["EROFS", "read_only"],
+  ["ENOSPC", "no_space"],
+  ["EDQUOT", "no_space"],
+  ["EMFILE", "fd_limit"],
+  ["ENFILE", "fd_limit"],
+];
+const relayStopErrnoIndexes = JSON.stringify(
+  RELAY_STOP_ERRNO_CODES.map(([errno, code]) => [
+    errno,
+    RELAY_STOP_RECEIPT_CODES.indexOf(code) + 1,
+  ]),
+);
+
 // Live relays must acknowledge their ordered socket close. A confirmed dead
 // process cannot accept more input and must not permanently block recovery.
 export const RELAY_STOP_PROGRAM = String.raw`
 const fs = require('node:fs');
 const root = process.argv[1], only = process.argv[2];
+const errnoCodes = new Map(${relayStopErrnoIndexes});
+let first, deadlines = 0, failures = 0;
+function failed(stage, error) {
+  let code = ${RELAY_STOP_RECEIPT_CODES.length};
+  try { code = errnoCodes.get(error.code) || code; } catch {}
+  failures++;
+  if (first === undefined) first = '1 ' + stage + ' ' + code;
+}
+process.on('exit', exitCode => {
+  if (exitCode === 0 || first === undefined) return;
+  const cap = count => Math.min(count, 16);
+  try { fs.writeSync(1, 'relay-stop-receipt/1 ' + first + ' ' + cap(deadlines) + ' ' + cap(failures) + '\n'); } catch {}
+});
 function alive(directory) {
   let pid;
   try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch { return true; }
@@ -262,18 +316,28 @@ function alive(directory) {
   return true;
 }
 (async () => {
-  const dirs = only ? [only] : fs.readdirSync(root).filter(n => /^relay-[a-f0-9]{24}$/.test(n)).map(n => root + '/' + n);
+  let dirs;
+  try {
+    dirs = only ? [only] : fs.readdirSync(root).filter(n => /^relay-[a-f0-9]{24}$/.test(n)).map(n => root + '/' + n);
+  } catch (error) { failed(1, error); throw error; }
   await Promise.all(dirs.map(async directory => {
-    if (!fs.existsSync(directory)) return;
-    fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
-    for (let i = 0; i < 100; i++) {
-      if (fs.existsSync(directory + '/closed')) return;
-      if (!alive(directory)) {
-        fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
-        return;
+    let stage = 2;
+    try {
+      if (!fs.existsSync(directory)) return;
+      fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
+      stage = 3;
+      for (let i = 0; i < 100; i++) {
+        if (fs.existsSync(directory + '/closed')) return;
+        if (!alive(directory)) {
+          stage = 4;
+          fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    } catch (error) { failed(stage, error); throw error; }
+    deadlines++;
+    if (first === undefined) first = '0 0 0';
     process.exitCode = 1;
   }));
 })().catch(() => { process.exitCode = 1; });

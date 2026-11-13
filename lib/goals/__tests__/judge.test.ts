@@ -216,7 +216,21 @@ describe("independent goal completion check", () => {
         }),
         usage: {},
       }));
-      const result = await judgeGoalCompletion(goal, messages, "r1", jest.fn());
+      const questionMessages = [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "Which scope should I use?" },
+          ],
+        },
+      ] as UIMessage[];
+      const result = await judgeGoalCompletion(
+        goal,
+        questionMessages,
+        "r1",
+        jest.fn(),
+      );
       expect(result).toMatchObject({
         verdict: "needs_input",
         reason: "Choose the next scope",
@@ -224,6 +238,225 @@ describe("independent goal completion check", () => {
       });
       expect(result).not.toHaveProperty("questions");
       expect(generate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not pause for input when the assistant made no user-facing request", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Need input",
+        responseOnly: false,
+        questions: null,
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "The marker is ready." },
+          ],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+    expect(result?.verdict).toBe("continue");
+    expect(result).not.toHaveProperty("questions");
+  });
+
+  it("keeps a direct request for input even without a question mark", async () => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Waiting for scope",
+        responseOnly: false,
+        questions: null,
+        evidence: [],
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    const result = await judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [
+            ...messages[0].parts,
+            { type: "text", text: "Please choose the scope." },
+          ],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+    expect(result?.verdict).toBe("needs_input");
+  });
+
+  const judgeInputRequest = (text: string, questions: unknown = null) => {
+    generate.mockResolvedValue({
+      output: {
+        verdict: "needs_input",
+        reason: "Waiting for the user",
+        responseOnly: false,
+        questions,
+        evidence: goal.checkpoint!.evidence,
+        waitSeconds: null,
+      },
+      usage: {},
+    });
+    return judgeGoalCompletion(
+      goal,
+      [
+        {
+          ...messages[0],
+          parts: [...messages[0].parts, { type: "text", text }],
+        },
+      ] as UIMessage[],
+      "r1",
+      jest.fn(),
+    );
+  };
+
+  it.each([
+    "Provide the target URL.",
+    "Send the required scope before I can proceed.",
+    "Marker checks passed.\n\n- Confirm which host is in scope.",
+    "**Provide** the target URL.",
+    "Please **provide** the target URL.",
+    "Should I scan https://example.com/login?next=/admin?",
+    "1. Set the scope.\n    Provide the target URL.",
+    "- Check the marker.\n    - Provide the target URL.",
+    "The delimiter is a ` character.\n\nProvide the target URL.\n\nThen type ` again.",
+    "Use the ``` marker.\nProvide the target URL.\nSee `x`.",
+    "~~The marker failed.~~ Provide the target URL.",
+  ])("keeps an imperative request for input: %j", async (text) => {
+    const result = await judgeInputRequest(text);
+    expect(result).toMatchObject({
+      verdict: "needs_input",
+      evidence: [expect.objectContaining({ toolCallId: "cmd", runId: "r1" })],
+    });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a request in another language when its question is in the response", async () => {
+    const questions = [
+      {
+        id: "target",
+        header: "Ziel",
+        question: "Nennen Sie die Ziel-URL.",
+        options: [],
+      },
+    ];
+    const result = await judgeInputRequest(
+      "Der Marker existiert.\nNennen Sie die Ziel-URL.",
+      questions,
+    );
+    expect(result).toMatchObject({ verdict: "needs_input", questions });
+  });
+
+  it.each([
+    {
+      text: "Der Marker existiert.\n**Nennen Sie** die Ziel-URL.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      text: "**Provide** the target URL.",
+      question: "Provide the target URL.",
+    },
+    {
+      text: 'Der Marker existiert. Wählen Sie "staging" oder "production".',
+      question: 'Wählen Sie "staging" oder "production".',
+    },
+  ])(
+    "keeps a grounded structured request despite markup: $text",
+    async ({ text, question }) => {
+      const questions = [{ id: "q", header: "Input", question, options: [] }];
+      const result = await judgeInputRequest(text, questions);
+      expect(result).toMatchObject({ verdict: "needs_input", questions });
+    },
+  );
+
+  it.each([
+    {
+      name: "invented question",
+      text: "The marker is ready.",
+      question: "Which port should I scan next?",
+    },
+    {
+      name: "question only inside a code example",
+      text: "The marker is ready.\n```\nNennen Sie die Ziel-URL.\n```",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      name: "question with different quoted choices",
+      text: 'Der Marker existiert. Wählen Sie "staging" oder "production".',
+      question: 'Wählen Sie "dev" oder "prod".',
+    },
+    {
+      name: "question only inside a quoted example",
+      text: 'The marker is ready. Its help text reads "Which scope should I use?"',
+      question: "Which scope should I use?",
+    },
+    {
+      name: "question only inside indented code",
+      text: "The marker is ready.\n\n    Nennen Sie die Ziel-URL.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      name: "withdrawn question",
+      text: "~~Nennen Sie die Ziel-URL.~~ I found it; no reply is needed.",
+      question: "Nennen Sie die Ziel-URL.",
+    },
+    {
+      name: "code-only question",
+      text: "The marker is ready.",
+      question: "`scope`",
+    },
+    {
+      name: "quote-only question",
+      text: 'The marker is ready. Mode is "staging".',
+      question: '"staging"',
+    },
+  ])(
+    "does not pause for an ungrounded structured $name",
+    async ({ text, question }) => {
+      const result = await judgeInputRequest(text, [
+        { id: "q", header: "Input", question, options: [] },
+      ]);
+      expect(result?.verdict).toBe("continue");
+      expect(result).not.toHaveProperty("questions");
+    },
+  );
+
+  it.each([
+    "The marker is ready. Example usage:\n```\nProvide the target URL.\n```",
+    "The marker is ready. Run `Send the scope?` to test the prompt.",
+    "The marker is ready. The README says:\n> Which target URL should I scan?",
+    'The marker is ready. Its help text reads "Which scope should I use?"',
+    "The marker is ready.\n~~~text\nProvide the target URL.\n~~~",
+    "The marker is ready.\n````md\n```\nProvide the target URL.\n```\n````",
+    "The marker is ready. Example:\n```\nProvide the target URL.",
+    "The report is available at /reports?run=1.",
+    "Results: https://example.com/search?q=marker&page=2",
+    "The marker is ready.\n\n    Provide the target URL.",
+    "    Provide the target URL.",
+    "The marker is ready.\n\n\tSend the required scope.",
+    "The marker is ready. Example: `\nProvide the target URL.\n`",
+    "The marker is ready. Example: ``\nProvide the `target` URL.\n``",
+    "~~Provide the target URL.~~ I found it; no reply is needed.",
+  ])(
+    "does not pause for code examples, quoted instructions or URLs: %j",
+    async (text) => {
+      const result = await judgeInputRequest(text);
+      expect(result?.verdict).toBe("continue");
     },
   );
 
@@ -312,6 +545,57 @@ describe("independent goal completion check", () => {
       expect(cost.mock.calls.map(([value]) => value)).toEqual([0.004, 0.004]);
     },
   );
+  it("retries a timed-out consistency check without repeating Agent work", async () => {
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const completed = [
+      {
+        ...messages[0],
+        parts: [
+          ...messages[0].parts,
+          { type: "text", text: "The marker is present." },
+        ],
+      },
+    ] as UIMessage[];
+    generate
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "continue",
+          reason: "Check again",
+          responseOnly: false,
+          evidence: goal.checkpoint!.evidence,
+        },
+        usage: {},
+      })
+      .mockRejectedValueOnce(new DOMException("Timed out", "TimeoutError"))
+      .mockResolvedValueOnce({
+        output: {
+          verdict: "done",
+          reason: "Saved results prove completion",
+          responseOnly: false,
+          evidence: goal.checkpoint!.evidence,
+        },
+        usage: {},
+      });
+
+    const judgment = await judgeGoalCompletion(
+      goal,
+      completed,
+      "r1",
+      jest.fn(),
+    );
+    expect(judgment?.verdict).toBe("done");
+    expect(generate).toHaveBeenCalledTimes(3);
+    expect(warning).toHaveBeenCalledWith(
+      "Goal completion verification failed",
+      expect.objectContaining({
+        stage: "completion",
+        failure_class: "timeout",
+        attempt: 1,
+        retrying: true,
+      }),
+    );
+    warning.mockRestore();
+  });
   it("continues genuinely unfinished work without a redundant verification pass", async () => {
     generate.mockResolvedValue({
       output: {
@@ -399,7 +683,7 @@ describe("independent goal completion check", () => {
       expect(judgment?.verdict).toBe(
         outcome === "unfinished" ? "continue" : "blocked",
       );
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(outcome === "unavailable" ? 3 : 2);
       if (outcome === "unfinished")
         expect(judgment?.evidence).toEqual(goal.checkpoint!.evidence);
     },

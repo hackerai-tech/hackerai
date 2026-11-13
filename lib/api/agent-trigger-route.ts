@@ -41,7 +41,10 @@ import {
   AGENT_TRIGGER_TASK_ID,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
-import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
+import {
+  handleAgentRouteError,
+  type AgentStartGuardBoundary,
+} from "@/lib/api/agent-route-errors";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
@@ -646,6 +649,8 @@ export const createAgentTriggerPost = ({
       | "upload_files"
       | "close_sandbox"
       | undefined;
+    // Observational only: names the existing guard callsite still in progress.
+    let guardBoundary: AgentStartGuardBoundary | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -738,28 +743,34 @@ export const createAgentTriggerPost = ({
           subscription,
         );
       stage = "access_gates";
+      guardBoundary = "account_access_gate";
       await assertUserCanMakeCostIncurringRequest(userId, {
         retryNetworkFailure: true,
         signal: req.signal,
       });
+      guardBoundary = undefined;
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
+      guardBoundary = "regional_subscription_gate";
       await enforceRegionalSubscriptionFirst({
         userId,
         subscription,
         country: regionalSubscriptionCountry,
         surface: "agent",
       });
+      guardBoundary = undefined;
       const userLocation = geolocation(req);
       const { triggerRegion: requestTriggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
       const genericDelegationEnabled = true;
 
+      guardBoundary = "free_agent_sandbox_gate";
       assertFreeAgentGates({
         mode: "agent",
         subscription,
         sandboxPreference,
       });
+      guardBoundary = undefined;
 
       stage = "workspace_routing";
       const triggerRegion =
@@ -831,13 +842,17 @@ export const createAgentTriggerPost = ({
           (regenerate &&
             (goalRequest.action !== "resume" ||
               goalRequest.expectedGeneration === undefined)))
-      )
+      ) {
+        guardBoundary = "persistent_goal_request_gate";
         throw new ChatSDKError(
           "forbidden:chat",
           "Persistent goals are unavailable for this request.",
         );
-      if (existingChat && existingChat.user_id !== userId)
+      }
+      if (existingChat && existingChat.user_id !== userId) {
+        guardBoundary = "chat_owner_gate";
         throw new ChatSDKError("forbidden:chat");
+      }
       stage = "reconcile_goal";
       const existingGoal = existingChat
         ? await reconcileGoal(chatId, userId)
@@ -1347,7 +1362,12 @@ export const createAgentTriggerPost = ({
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
-        context: { ...diagnosticContext, stage, initialPersistenceStep },
+        context: {
+          ...diagnosticContext,
+          stage,
+          initialPersistenceStep,
+          guardBoundary,
+        },
       });
     } finally {
       clearInterval(slowRequestInterval);

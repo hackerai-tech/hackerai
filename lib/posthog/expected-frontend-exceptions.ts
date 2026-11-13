@@ -623,6 +623,52 @@ function nearbyDispatchGroup(
   }
 }
 
+const getExceptionListShape = (list: unknown): string => {
+  if (list === undefined) return "missing";
+  if (list === null) return "null";
+  if (Array.isArray(list)) {
+    if (list.length === 0) return "array_empty";
+    return list.length === 1 ? "array_one" : "array_many";
+  }
+  // A serialized list stays "string"; parsing it would describe another schema.
+  if (typeof list === "string") return "string";
+  return typeof list === "object" ? "object" : "other";
+};
+
+const getFrameSourceCountBucket = (count: number): string => {
+  if (count <= 1) return String(count);
+  if (count <= 5) return "2_5";
+  return count <= 16 ? "6_16" : "over16";
+};
+
+/** Reuse the filters' own predicates; a family never claims first-party authorship. */
+const getFrameSourceFamily = (frameSources: string[]): string => {
+  if (frameSources.length === 0) return "none";
+  if (frameSources.every((source) => source === "")) return "all_empty";
+  if (hasOnlyInjectedThirdPartyFrames(frameSources)) return "injected_only";
+  if (hasOnlyExpectedNextServerActionFrames(frameSources))
+    return "next_pattern_only";
+  return "other";
+};
+
+/** Closed capture-time structure of the inputs the filters just evaluated. */
+const getExceptionCaptureStructure = (
+  properties: Record<string, unknown>,
+  strings: string[],
+  frameSources: string[],
+) => ({
+  hackerai_exception_capture_version: 1,
+  hackerai_exception_capture_list_shape: getExceptionListShape(
+    properties.$exception_list,
+  ),
+  hackerai_exception_capture_frame_source_count_bucket:
+    getFrameSourceCountBucket(frameSources.length),
+  hackerai_exception_capture_frame_source_family:
+    getFrameSourceFamily(frameSources),
+  hackerai_exception_capture_exact_transport_message:
+    hasBrowserFetchTransportMessage(strings),
+});
+
 /** Enrich retained exceptions with bounded build and recent-context diagnostics. */
 export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event: T,
@@ -635,7 +681,8 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
     if (
       key.startsWith("hackerai_recent_rejection_") ||
       key.startsWith("hackerai_recent_formatter_") ||
-      key.startsWith("hackerai_nearby_dispatch_")
+      key.startsWith("hackerai_nearby_dispatch_") ||
+      key.startsWith("hackerai_exception_capture_")
     )
       delete properties[key];
   }
@@ -650,6 +697,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
+    ...getExceptionCaptureStructure(properties, strings, frameSources),
     ...(category === "stack_overflow"
       ? getRecentMessageTimestampDiagnostics()
       : {}),

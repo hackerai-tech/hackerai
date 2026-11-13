@@ -31,6 +31,8 @@ import {
   RELAY_RENEW_FAILURE_CODES,
   RELAY_RENEW_PROGRAM,
   RELAY_STOP_PROGRAM,
+  RELAY_STOP_RECEIPT_CODES,
+  RELAY_STOP_RECEIPT_STAGES,
 } from "./relay-program";
 
 export type BrowserSessionLocation = {
@@ -107,6 +109,172 @@ export function browserRelayRenewFailureContext(error: unknown) {
     relay_renew_command_exit_code: exitCode,
     ...(reason === undefined ? {} : { relay_renew_failure_reason: reason }),
   };
+}
+
+const returnedRelayStopExits = new WeakMap<object, number | "other">();
+const exitStatus = (value: unknown) =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 0 &&
+  value <= 255
+    ? value
+    : "other";
+
+type RelayStopReceiptContext = {
+  relay_stop_receipt_version: 1;
+  // Absent: no output (including an older program); invalid: anything but
+  // the exact bounded receipt for this exit; unreadable: non-data properties.
+  relay_stop_receipt_status: "recorded" | "absent" | "invalid" | "unreadable";
+  // The first failure across the invocation's relays, not each relay's result.
+  relay_stop_first_failure?: "drain_deadline" | "filesystem";
+  relay_stop_first_filesystem_stage?: (typeof RELAY_STOP_RECEIPT_STAGES)[number];
+  relay_stop_first_filesystem_code?: (typeof RELAY_STOP_RECEIPT_CODES)[number];
+  // Aggregate counts, capped at 16 (meaning 16 or more).
+  relay_stop_drain_deadline_count?: number;
+  relay_stop_filesystem_failure_count?: number;
+};
+
+export type BrowserRelayStopFailureContext = {
+  relay_stop_diagnostic_version: 1;
+  relay_stop_error_kind: string;
+  relay_stop_http_status: number | "none" | "other";
+  relay_stop_command_exit_code: number | "none" | "other";
+  relay_stop_type_error_signal?:
+    "fetch_failed" | "other_type_error" | "unreadable";
+  relay_stop_transport_code?: string;
+} & Partial<RelayStopReceiptContext>;
+
+// Keyed by the stop invocation's own failure, never a similar error elsewhere.
+const relayStopReceipts = new WeakMap<object, RelayStopReceiptContext>();
+const RELAY_STOP_RECEIPT =
+  /^relay-stop-receipt\/1 ([01]) ([0-4]) ([0-8]) (1[0-6]|[0-9]) (1[0-6]|[0-9])\n?$/;
+
+const receiptStatus = (
+  status: "absent" | "invalid" | "unreadable",
+): RelayStopReceiptContext => ({
+  relay_stop_receipt_version: 1,
+  relay_stop_receipt_status: status,
+});
+
+/** Accept only the exact receipt written by a failing STOP program. */
+function relayStopReceipt(
+  exitCode: unknown,
+  stdout: unknown,
+): RelayStopReceiptContext {
+  if (stdout === undefined || stdout === "") return receiptStatus("absent");
+  // The receipt is at most 33 characters; never match against longer output.
+  if (typeof stdout !== "string" || stdout.length > 64 || exitCode !== 1)
+    return receiptStatus("invalid");
+  const match = RELAY_STOP_RECEIPT.exec(stdout);
+  if (!match) return receiptStatus("invalid");
+  const [first, stage, code, deadlines, failures] = match.slice(1).map(Number);
+  const consistent =
+    first === 0
+      ? stage === 0 && code === 0 && deadlines >= 1
+      : stage >= 1 &&
+        code >= 1 &&
+        failures >= 1 &&
+        // A failed root scan precedes every relay.
+        (stage !== 1 || (deadlines === 0 && failures === 1));
+  if (!consistent) return receiptStatus("invalid");
+  return {
+    relay_stop_receipt_version: 1,
+    relay_stop_receipt_status: "recorded",
+    relay_stop_first_failure: first === 0 ? "drain_deadline" : "filesystem",
+    ...(first === 1 && {
+      relay_stop_first_filesystem_stage: RELAY_STOP_RECEIPT_STAGES[stage - 1],
+      relay_stop_first_filesystem_code: RELAY_STOP_RECEIPT_CODES[code - 1],
+    }),
+    relay_stop_drain_deadline_count: deadlines,
+    relay_stop_filesystem_failure_count: failures,
+  };
+}
+
+/** Read an own data property of a result; anything else throws to the caller. */
+function ownResultValue(result: unknown, key: "exitCode" | "stdout") {
+  if (typeof result !== "object" || result === null)
+    throw new TypeError("Unreadable command result");
+  const descriptor = Object.getOwnPropertyDescriptor(result, key);
+  if (descriptor && !("value" in descriptor))
+    throw new TypeError("Unreadable command result");
+  return descriptor?.value as unknown;
+}
+
+/** Record only this stop invocation's bounded receipt; never throws. */
+function recordRelayStopReceipt(
+  failure: object,
+  result: () => { exitCode: unknown; stdout: unknown },
+) {
+  let receipt: RelayStopReceiptContext;
+  try {
+    const { exitCode, stdout } = result();
+    receipt = relayStopReceipt(exitCode, stdout);
+  } catch {
+    receipt = receiptStatus("unreadable");
+  }
+  relayStopReceipts.set(failure, receipt);
+}
+
+/**
+ * Project a failed relay drain from closed SDK classes and own numeric data,
+ * plus any receipt validated when that stop invocation failed. Never reads
+ * command output or invokes accessors, and never throws.
+ */
+export function browserRelayStopFailureContext(
+  error: unknown,
+): BrowserRelayStopFailureContext {
+  try {
+    const cloud = checkpointCloudErrorContext(error);
+    let kind = cloud.cloud_error_kind;
+    let exitCode: number | "none" | "other" = "none";
+    try {
+      const returnedExit =
+        typeof error === "object" && error !== null
+          ? returnedRelayStopExits.get(error)
+          : undefined;
+      if (returnedExit !== undefined) {
+        kind = "command_exit";
+        exitCode = returnedExit;
+      } else if (error instanceof CommandExitError) {
+        kind = "command_exit";
+        const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+        exitCode = exitStatus(
+          result && typeof result === "object"
+            ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
+            : undefined,
+        );
+      } else if (error instanceof TimeoutError) kind = "timeout";
+      else if (error instanceof BrowserPreviewUnavailable)
+        kind = "preview_unavailable";
+    } catch {
+      kind = "unreadable";
+      exitCode = "other";
+    }
+    const receipt =
+      typeof error === "object" && error !== null
+        ? relayStopReceipts.get(error)
+        : undefined;
+    return {
+      relay_stop_diagnostic_version: 1,
+      relay_stop_error_kind: kind,
+      relay_stop_http_status: cloud.cloud_http_status,
+      relay_stop_command_exit_code: exitCode,
+      ...(cloud.cloud_type_error_signal === undefined
+        ? {}
+        : {
+            relay_stop_type_error_signal: cloud.cloud_type_error_signal,
+            relay_stop_transport_code: cloud.cloud_transport_code,
+          }),
+      ...receipt,
+    };
+  } catch {
+    return {
+      relay_stop_diagnostic_version: 1,
+      relay_stop_error_kind: "unreadable",
+      relay_stop_http_status: "other",
+      relay_stop_command_exit_code: "other",
+    };
+  }
 }
 
 /** Read optional diagnostics without adding error properties to HTTP responses. */
@@ -310,15 +478,43 @@ export async function stopBrowserRelays(
 ) {
   // A permanent tombstone prevents a late heartbeat from resurrecting control.
   // Wait for the stream close handshake to drain accepted input before resume.
-  const result = await sandbox.commands.run(
-    `node -e ${quote(RELAY_STOP_PROGRAM)} ${quote(session.directory)}${grant ? ` ${quote(relayDirectory(session, grant))}` : ""}`,
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      timeoutMs: 7000,
-    },
-  );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  let result: Awaited<ReturnType<Sandbox["commands"]["run"]>>;
+  try {
+    result = await sandbox.commands.run(
+      `node -e ${quote(RELAY_STOP_PROGRAM)} ${quote(session.directory)}${grant ? ` ${quote(relayDirectory(session, grant))}` : ""}`,
+      {
+        ...buildSandboxCommandOptions(sandbox),
+        timeoutMs: 7000,
+      },
+    );
+  } catch (error) {
+    try {
+      if (error instanceof CommandExitError)
+        recordRelayStopReceipt(error, () => {
+          // The SDK stores CommandResult as own data; never invoke its getters.
+          const descriptor = Object.getOwnPropertyDescriptor(error, "result");
+          if (!descriptor || !("value" in descriptor))
+            throw new TypeError("Unreadable command result");
+          return {
+            exitCode: ownResultValue(descriptor.value, "exitCode"),
+            stdout: ownResultValue(descriptor.value, "stdout"),
+          };
+        });
+    } catch {
+      // Optional diagnostics cannot replace the original rejection.
+    }
+    throw error;
+  }
+  const exitCode = result.exitCode;
+  if (exitCode !== 0) {
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    returnedRelayStopExits.set(unavailable, exitStatus(exitCode));
+    recordRelayStopReceipt(unavailable, () => ({
+      exitCode,
+      stdout: ownResultValue(result, "stdout"),
+    }));
+    throw unavailable;
+  }
 }
 
 type FrameDecodeDiagnostic = {

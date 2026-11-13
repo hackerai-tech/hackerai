@@ -31,6 +31,7 @@ import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
 } from "./attachment-command";
+import { recordLocalCopyFailure } from "./local-copy-failure-context";
 import { abortableDelay } from "@/lib/utils/abortable-delay";
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
@@ -479,6 +480,11 @@ export class CentrifugoSandbox extends EventEmitter {
 
   supportsOperationChannels(): boolean {
     return this.connectionInfo.capabilities?.operationChannels === true;
+  }
+
+  /** Selected connection mode for diagnostics, not the physical host OS. */
+  private receiverMode(): NativePathReceiverMode {
+    return `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
   }
 
   supportsCommandStdin(): boolean {
@@ -1902,7 +1908,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         const receipt = this.commandReceipts.get(result);
         let receiverMode: NativePathReceiverMode | undefined;
         try {
-          receiverMode = `${this.connectionInfo.isDesktop === true ? "desktop" : this.connectionInfo.isDesktop === false ? "local" : "unknown"}_${this.supportsOperationChannels() ? "isolated" : "shared"}`;
+          receiverMode = this.receiverMode();
         } catch {
           /* Optional mode context cannot replace the guarded path failure. */
         }
@@ -2857,11 +2863,13 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       const fileName = getSandboxFileName(destCtx.path, this.isWindows());
       const dir = this.parentDir(destCtx.path);
 
+      // cmd.exe treats the rest of the line as the IF body; group it so an
+      // existing directory cannot also skip the copy.
       const mkdirPart = !dir
         ? ""
         : destCtx.useBash
           ? `mkdir -p ${destCtx.escapePath(dir)} &&`
-          : `if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)} &&`;
+          : `(if not exist ${destCtx.escapePath(dir)} mkdir ${destCtx.escapePath(dir)}) &&`;
       const copyPart = destCtx.useBash
         ? `cp -f ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)}`
         : `copy /Y ${sourceCtx.escapePath(sourceCtx.path)} ${destCtx.escapePath(destCtx.path)} >nul`;
@@ -2878,9 +2886,20 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
       if (result.exitCode !== 0) {
         const failureDetail =
           result.stderr || result.stdout || `exit status ${result.exitCode}`;
-        throw Object.assign(
-          new Error(`Failed to prepare local file: ${failureDetail}`),
-          { exitCode: result.exitCode },
+        throw recordLocalCopyFailure(
+          Object.assign(
+            new Error(`Failed to prepare local file: ${failureDetail}`),
+            { exitCode: result.exitCode },
+          ),
+          {
+            shell: destCtx.useBash ? "bash" : "cmd",
+            receiverMode: () => this.receiverMode(),
+            sourcePath: sourceCtx.path,
+            destinationPath: destCtx.path,
+            stderr: result.stderr,
+            // Only this relay's returned result has a receipt.
+            receipt: this.commandReceipts.get(result),
+          },
         );
       }
     },
@@ -2984,11 +3003,12 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
         // ensuring the directory exists in the same shell session as the download.
         // Skip mkdir entirely for root-level destinations (parentDir returns "")
         // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
+        // Group cmd's IF so an existing directory cannot skip the download.
         const mkdirPart = !dir
           ? ""
           : useBash
             ? `mkdir -p ${escapedDir} &&`
-            : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
+            : `(if not exist ${escapedDir} mkdir ${escapedDir}) &&`;
         let downloadPart: string;
         if (httpClient === "curl") {
           phase = "curl_capabilities";
@@ -3117,6 +3137,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
               : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
             let diagnosticOutput = "unavailable";
+            let directoryProbe: Parameters<
+              typeof recordAttachmentDownloadFailure
+            >[1]["directoryProbe"] = { state: "unavailable" };
             try {
               const diag = await this.commands.run(diagCmd, {
                 displayName: "",
@@ -3124,6 +3147,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 signal,
               });
               diagnosticOutput = diag.stdout.slice(0, 1024);
+              directoryProbe = {
+                state: "returned",
+                output: diagnosticOutput,
+                truncated: diag.stdout.length > 1024,
+              };
             } catch (error) {
               throwIfAttachmentAborted(signal, error);
             }
@@ -3154,6 +3182,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 httpClient,
                 exitCode: result.exitCode,
                 stderr: result.stderr,
+                directoryProbe,
               },
             );
           }

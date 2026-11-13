@@ -253,7 +253,8 @@ it("admits a connected browser and still waits for the owner's resume", async ()
   });
   await jest.advanceTimersByTimeAsync(0);
   expect(resumed).toBe(false);
-  expect(run).toHaveBeenCalledTimes(1);
+  // The admission check, then the waiting browser's first keepalive status.
+  expect(run).toHaveBeenCalledTimes(2);
   expect(mockMutation).toHaveBeenCalledTimes(1);
   expect(phLogger.info).toHaveBeenCalledWith(
     "browser_handoff_admission_diagnostics",

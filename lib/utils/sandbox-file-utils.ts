@@ -33,6 +33,11 @@ import {
   copyAttachmentCommandFailureContext,
   type AttachmentCommandFailureContext,
 } from "@/lib/ai/tools/utils/attachment-command";
+import {
+  copyLocalCopyFailureContext,
+  getLocalCopyFailureContext,
+  type LocalCopyFailureContext,
+} from "@/lib/ai/tools/utils/local-copy-failure-context";
 
 import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
@@ -154,6 +159,7 @@ type SandboxUploadFailureDetail = {
   readinessProbeReason?: SandboxUploadReadinessProbeReason;
   commandFailureContext?: AttachmentCommandFailureContext;
   downloadFailureContext?: AttachmentDownloadFailureContext;
+  localCopyFailureContext?: LocalCopyFailureContext;
   sandboxProvider?: "e2b";
   errorName?: string;
   acquisitionStage?: CloudAcquisitionStage;
@@ -1377,6 +1383,8 @@ const stageSandboxFile = async (
       copyAttachmentCommandFailureContext(fallbackError, combinedError);
       copyAttachmentDownloadFailureContext(fallbackError, combinedError);
       if (file.kind === "localPath") {
+        // Final attempt only: a thrown retry has no returned-copy context.
+        copyLocalCopyFailureContext(fallbackError, combinedError);
         finalLocalCopyReasons.set(
           combinedError,
           classifyLocalCopyFailure(fallbackError),
@@ -1466,6 +1474,10 @@ const summarizeSandboxUploadFailure = (
       : undefined;
   const commandFailureContext = getAttachmentCommandFailureContext(error);
   const downloadFailureContext = getAttachmentDownloadFailureContext(error);
+  const localCopyFailureContext =
+    file.kind === "localPath" && phase === "transfer"
+      ? getLocalCopyFailureContext(error)
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1495,6 +1507,7 @@ const summarizeSandboxUploadFailure = (
     }),
     ...(commandFailureContext && { commandFailureContext }),
     ...(downloadFailureContext && { downloadFailureContext }),
+    ...(localCopyFailureContext && { localCopyFailureContext }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1667,6 +1680,7 @@ const uploadSandboxFilesOnce = async (
         readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...primaryFailure.commandFailureContext,
         ...primaryFailure.downloadFailureContext,
+        ...primaryFailure.localCopyFailureContext,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1710,6 +1724,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         ...primaryFailure.commandFailureContext,
         ...primaryFailure.downloadFailureContext,
+        ...primaryFailure.localCopyFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1752,6 +1767,7 @@ const uploadSandboxFilesOnce = async (
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         ...primaryFailure.commandFailureContext,
         ...primaryFailure.downloadFailureContext,
+        ...primaryFailure.localCopyFailureContext,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
         error_http_status: primaryFailure.errorHttpStatus ?? null,
@@ -1799,6 +1815,7 @@ export const getSandboxUploadFailureMetadata = (
   return {
     ...failure?.commandFailureContext,
     ...failure?.downloadFailureContext,
+    ...failure?.localCopyFailureContext,
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(acquisitionStage
