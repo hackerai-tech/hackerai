@@ -103,7 +103,7 @@ async function checkFiles(
   // adapter. Preserve refs for retry instead of guessing shell or filesystem state.
   if (isCentrifugoSandbox(sandbox) && sandbox.isWindows())
     return paths.map(() => "unavailable");
-  const command = `python3 - <<'HACKERAI_EVIDENCE_STAT'\n${EVIDENCE_STAT_SCRIPT}\nHACKERAI_EVIDENCE_STAT`;
+  const command = `python3 -I - <<'HACKERAI_EVIDENCE_STAT'\n${EVIDENCE_STAT_SCRIPT}\nHACKERAI_EVIDENCE_STAT`;
   try {
     const result = await sandbox.commands.run(command, {
       ...buildSandboxCommandOptions(sandbox, undefined, {
