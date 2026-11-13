@@ -109,6 +109,81 @@ export function browserRelayRenewFailureContext(error: unknown) {
   };
 }
 
+const returnedRelayStopExits = new WeakMap<object, number | "other">();
+const exitStatus = (value: unknown) =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= 0 &&
+  value <= 255
+    ? value
+    : "other";
+
+export type BrowserRelayStopFailureContext = {
+  relay_stop_diagnostic_version: 1;
+  relay_stop_error_kind: string;
+  relay_stop_http_status: number | "none" | "other";
+  relay_stop_command_exit_code: number | "none" | "other";
+  relay_stop_type_error_signal?:
+    "fetch_failed" | "other_type_error" | "unreadable";
+  relay_stop_transport_code?: string;
+};
+
+/**
+ * Project a failed relay drain from closed SDK classes and own numeric data.
+ * Never reads command output or invokes accessors, and never throws.
+ */
+export function browserRelayStopFailureContext(
+  error: unknown,
+): BrowserRelayStopFailureContext {
+  try {
+    const cloud = checkpointCloudErrorContext(error);
+    let kind = cloud.cloud_error_kind;
+    let exitCode: number | "none" | "other" = "none";
+    try {
+      const returnedExit =
+        typeof error === "object" && error !== null
+          ? returnedRelayStopExits.get(error)
+          : undefined;
+      if (returnedExit !== undefined) {
+        kind = "command_exit";
+        exitCode = returnedExit;
+      } else if (error instanceof CommandExitError) {
+        kind = "command_exit";
+        const result = Object.getOwnPropertyDescriptor(error, "result")?.value;
+        exitCode = exitStatus(
+          result && typeof result === "object"
+            ? Object.getOwnPropertyDescriptor(result, "exitCode")?.value
+            : undefined,
+        );
+      } else if (error instanceof TimeoutError) kind = "timeout";
+      else if (error instanceof BrowserPreviewUnavailable)
+        kind = "preview_unavailable";
+    } catch {
+      kind = "unreadable";
+      exitCode = "other";
+    }
+    return {
+      relay_stop_diagnostic_version: 1,
+      relay_stop_error_kind: kind,
+      relay_stop_http_status: cloud.cloud_http_status,
+      relay_stop_command_exit_code: exitCode,
+      ...(cloud.cloud_type_error_signal === undefined
+        ? {}
+        : {
+            relay_stop_type_error_signal: cloud.cloud_type_error_signal,
+            relay_stop_transport_code: cloud.cloud_transport_code,
+          }),
+    };
+  } catch {
+    return {
+      relay_stop_diagnostic_version: 1,
+      relay_stop_error_kind: "unreadable",
+      relay_stop_http_status: "other",
+      relay_stop_command_exit_code: "other",
+    };
+  }
+}
+
 /** Read optional diagnostics without adding error properties to HTTP responses. */
 export function browserSessionReadFailureContext(error: unknown) {
   const context =
@@ -317,8 +392,12 @@ export async function stopBrowserRelays(
       timeoutMs: 7000,
     },
   );
-  if (result.exitCode !== 0)
-    throw new BrowserPreviewUnavailable("disconnected");
+  const exitCode = result.exitCode;
+  if (exitCode !== 0) {
+    const unavailable = new BrowserPreviewUnavailable("disconnected");
+    returnedRelayStopExits.set(unavailable, exitStatus(exitCode));
+    throw unavailable;
+  }
 }
 
 type FrameDecodeDiagnostic = {
