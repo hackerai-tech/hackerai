@@ -39,10 +39,20 @@ export type AgentApprovalSessionWaits = {
   finish(): Promise<void>;
 };
 
-const isSessionCloseRecord = (value: unknown): boolean =>
+const isCloseTrigger = (value: unknown): boolean =>
   typeof value === "object" &&
   value !== null &&
   (value as { trigger?: unknown }).trigger === "close";
+
+// Closing a Session notifies its live run with a message envelope, which
+// `in.wait()` returns unchanged: `{ kind: "message", payload: { trigger:
+// "close", ... } }`. Also accept the flat `{ trigger: "close" }` record.
+const isSessionCloseRecord = (value: unknown): boolean =>
+  isCloseTrigger(value) ||
+  (typeof value === "object" &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === "message" &&
+    isCloseTrigger((value as { payload?: unknown }).payload));
 
 /**
  * Owns every approval Session wait and slot delay started by one Trigger task.

@@ -315,37 +315,55 @@ describe("buildAgentToolApprovalRequester session waits", () => {
     expect(revalidateAfterSuspend).not.toHaveBeenCalled();
   });
 
-  it("treats a Session close record as closed and never waits on that Session again", async () => {
-    const approvalSessionWaits = createAgentApprovalSessionWaits();
-    const { requester, writer } = buildRequester({ approvalSessionWaits });
+  it.each([
+    ["flat close record", { trigger: "close" }],
+    [
+      "Session close message envelope",
+      {
+        kind: "message",
+        payload: {
+          chatId: "chat-1",
+          trigger: "close",
+          closedReason: "agent-run-ended",
+        },
+      },
+    ],
+  ])(
+    "treats a %s as closed and never waits on that Session again",
+    async (_label, closeRecord) => {
+      const approvalSessionWaits = createAgentApprovalSessionWaits();
+      const { requester, writer } = buildRequester({ approvalSessionWaits });
 
-    const first = track(requester(request));
-    const queued = track(requester({ ...request, toolCallId: "tool-call-2" }));
-    await flush();
-    expect(mockSessionWait).toHaveBeenCalledTimes(1);
+      const first = track(requester(request));
+      const queued = track(
+        requester({ ...request, toolCallId: "tool-call-2" }),
+      );
+      await flush();
+      expect(mockSessionWait).toHaveBeenCalledTimes(1);
 
-    mockSessionWaits[0].resolve({ ok: true, output: { trigger: "close" } });
-    await flush();
+      mockSessionWaits[0].resolve({ ok: true, output: closeRecord });
+      await flush();
 
-    const closedDenial = {
-      approved: false,
-      approvalId: expect.any(String),
-      reason: "The approval session closed before the tool could run.",
-    };
-    expect(first.value).toEqual(closedDenial);
-    expect(queued.value).toEqual(closedDenial);
+      const closedDenial = {
+        approved: false,
+        approvalId: expect.any(String),
+        reason: "The approval session closed before the tool could run.",
+      };
+      expect(first.value).toEqual(closedDenial);
+      expect(queued.value).toEqual(closedDenial);
 
-    // A fallback stream's requester shares the task's wait owner.
-    const { requester: fallbackRequester } = buildRequester({
-      approvalSessionWaits,
-    });
-    await expect(fallbackRequester(request)).resolves.toEqual(closedDenial);
+      // A fallback stream's requester shares the task's wait owner.
+      const { requester: fallbackRequester } = buildRequester({
+        approvalSessionWaits,
+      });
+      await expect(fallbackRequester(request)).resolves.toEqual(closedDenial);
 
-    expect(mockSessionWait).toHaveBeenCalledTimes(1);
-    expect(approvalRequestsWritten(writer)).toBe(1);
-    expect(mockSessionSend).not.toHaveBeenCalled();
-    await expect(approvalSessionWaits.finish()).resolves.toBeUndefined();
-  });
+      expect(mockSessionWait).toHaveBeenCalledTimes(1);
+      expect(approvalRequestsWritten(writer)).toBe(1);
+      expect(mockSessionSend).not.toHaveBeenCalled();
+      await expect(approvalSessionWaits.finish()).resolves.toBeUndefined();
+    },
+  );
 
   it("ignores unrelated and cancellation records, then applies the user's signed approval", async () => {
     const { requester, revalidateAfterSuspend } = buildRequester();

@@ -209,13 +209,26 @@ describe("createAgentApprovalSessionWaits", () => {
     expect(unhandledRejections).toEqual([]);
   });
 
-  it("remembers a consumed Session close record for later waits", async () => {
+  it.each([
+    ["flat close record", { trigger: "close" }],
+    [
+      "Session close message envelope",
+      {
+        kind: "message",
+        payload: {
+          chatId: "chat-1",
+          trigger: "close",
+          closedReason: "agent-run-ended",
+        },
+      },
+    ],
+  ])("remembers a consumed %s for later waits", async (_label, record) => {
     const waits = createAgentApprovalSessionWaits();
     const { input, resolveWait } = createControlledInput();
     const signal = new AbortController().signal;
 
     const first = track(waits.waitForApprovalInput(input, signal));
-    resolveWait({ ok: true, output: { trigger: "close" } });
+    resolveWait({ ok: true, output: record });
     await flush();
 
     expect(first.value).toEqual({ status: "closed" });
@@ -227,19 +240,39 @@ describe("createAgentApprovalSessionWaits", () => {
     expect(input.send).not.toHaveBeenCalled();
   });
 
-  it("returns ordinary records to the caller", async () => {
+  it.each([
+    ["an unrelated record", { type: "unrelated" }],
+    [
+      "a message with another trigger",
+      { kind: "message", payload: { trigger: "message" } },
+    ],
+    [
+      "a non-message envelope",
+      { kind: "control", payload: { trigger: "close" } },
+    ],
+    ["an envelope without kind", { payload: { trigger: "close" } }],
+    ["a message without payload", { kind: "message", payload: null }],
+    ["a string payload", { kind: "message", payload: "close" }],
+    [
+      "a doubly nested message",
+      {
+        kind: "message",
+        payload: { kind: "message", payload: { trigger: "close" } },
+      },
+    ],
+  ])("returns %s to the caller", async (_label, record) => {
     const waits = createAgentApprovalSessionWaits();
     const { input, resolveWait } = createControlledInput();
 
     const outcome = track(
       waits.waitForApprovalInput(input, new AbortController().signal),
     );
-    resolveWait({ ok: true, output: { type: "unrelated" } });
+    resolveWait({ ok: true, output: record });
     await flush();
 
     expect(outcome.value).toEqual({
       status: "input",
-      result: { ok: true, output: { type: "unrelated" } },
+      result: { ok: true, output: record },
     });
     expect(waits.isSessionClosed()).toBe(false);
   });
