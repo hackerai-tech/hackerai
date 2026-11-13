@@ -78,6 +78,20 @@ const setNavigatorOnline = (isOnline: boolean) => {
   });
 };
 
+const originalMatchMedia = window.matchMedia;
+const mockPredictionCapability = (capable: boolean) => {
+  window.matchMedia = ((query: string) => ({
+    matches: capable && query === "(min-width: 768px) and (any-pointer: fine)",
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+};
+
 // Keep real providers; stub external services and sandbox lifecycle snapshots.
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
@@ -292,6 +306,7 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+    window.matchMedia = originalMatchMedia;
   });
 
   describe("Keyboard and draft edge cases", () => {
@@ -3809,9 +3824,25 @@ describe("ChatInput - Integration Tests", () => {
       preference: true,
       requests: 0,
     },
+    // A large touch-only screen, or a browser without `any-pointer`, never
+    // matches the combined capability query.
+    {
+      hasActiveGoalRun: false,
+      pauseGoalOnSend: false,
+      preference: true,
+      capable: false,
+      requests: 0,
+    },
   ])(
-    "gates next-message predictions on preference readiness and goal ownership: %j",
-    async ({ hasActiveGoalRun, pauseGoalOnSend, requests, preference }) => {
+    "gates next-message predictions on capability, preference readiness and goal ownership: %j",
+    async ({
+      hasActiveGoalRun,
+      pauseGoalOnSend,
+      requests,
+      preference,
+      capable = true,
+    }) => {
+      mockPredictionCapability(capable);
       mockUseQuery.mockImplementation((query) =>
         getFunctionName(query) ===
           "userCustomization:getPredictionPreference" &&
@@ -3861,6 +3892,124 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnSubmit).not.toHaveBeenCalled();
     },
   );
+
+  it("hides a suggestion while offline or attached and restores the same batch without regeneration", async () => {
+    const suggestion = "Show me the response headers.";
+    const attachment: UploadedFileState = {
+      file: new File(["pasted"], "pasted-text.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: true,
+      storage: "s3",
+      fileId: "file_pasted",
+    };
+    mockPredictionCapability(true);
+    const observerDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "IntersectionObserver",
+    );
+    Object.defineProperty(window, "IntersectionObserver", {
+      configurable: true,
+      writable: true,
+      value: class {
+        observe() {}
+        disconnect() {}
+      },
+    });
+    try {
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "userCustomization:getPredictionPreference"
+          ? { enabled: true }
+          : undefined,
+      );
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "prediction-user" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "ask",
+        subscription: "pro",
+        isCheckingProPlan: false,
+      };
+      sessionStorage.clear();
+      mockFetch.mockImplementation(async (url, init) => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () =>
+          url === "/api/chat/next-actions" &&
+          (init as RequestInit | undefined)?.method === "POST"
+            ? {
+                batchId: "transient-batch",
+                messageId: "answer",
+                mode: "ask",
+                suggestions: [suggestion],
+              }
+            : { assignment: null },
+      }));
+      const predictionCalls = (method: string) =>
+        mockFetch.mock.calls.filter(
+          ([url, init]) =>
+            url === "/api/chat/next-actions" &&
+            (init as RequestInit | undefined)?.method === method,
+        );
+      render(
+        <TestWrapper>
+          <UploadedFilesSetter files={[attachment]} label="Attach text" />
+          <UploadedFilesSetter files={[]} label="Remove text" />
+          <ChatInput
+            chatId="transient-chat"
+            completedPredictionTurn={{
+              chatId: "transient-chat",
+              messageId: "answer",
+            }}
+            latestMessageId="answer"
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>,
+      );
+      const input = await screen.findByRole("textbox");
+      await waitFor(
+        () => expect(input).toHaveAttribute("placeholder", suggestion),
+        { timeout: 2_000 },
+      );
+
+      act(() => {
+        setNavigatorOnline(false);
+        window.dispatchEvent(new Event("offline"));
+      });
+      expect(input).not.toHaveAttribute("placeholder", suggestion);
+      act(() => {
+        setNavigatorOnline(true);
+        window.dispatchEvent(new Event("online"));
+      });
+      expect(input).toHaveAttribute("placeholder", suggestion);
+
+      fireEvent.click(screen.getByText("Attach text"));
+      expect(input).not.toHaveAttribute("placeholder", suggestion);
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(input).toHaveValue("");
+      fireEvent.click(screen.getByText("Remove text"));
+      await waitFor(() =>
+        expect(input).toHaveAttribute("placeholder", suggestion),
+      );
+
+      expect(predictionCalls("POST")).toHaveLength(1);
+      expect(predictionCalls("DELETE")).toHaveLength(0);
+      fireEvent.keyDown(input, { key: "Tab" });
+      expect(input).toHaveValue(suggestion);
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    } finally {
+      if (observerDescriptor)
+        Object.defineProperty(
+          window,
+          "IntersectionObserver",
+          observerDescriptor,
+        );
+      else Reflect.deleteProperty(window, "IntersectionObserver");
+    }
+  });
 
   it.each([false, true])(
     "restores a goal draft on reload and submits it as a goal (mobile=%s)",

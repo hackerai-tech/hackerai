@@ -41,6 +41,7 @@ const base = () => ({
   latestMessageId: "answer",
   status: "ready",
   blocked: false,
+  suspended: false,
   input,
   getInput: () => input,
   setInput,
@@ -156,21 +157,136 @@ test("restoration has its own request kind and never claims a new generation", a
   });
 });
 
-test("a retry revoked by the synchronous attachment guard settles as aborted", async () => {
-  jest.mocked(fetch).mockResolvedValue({ ok: false, status: 409 } as Response);
-  renderHook(() => useNextActions(base()));
+test("an attachment during a sent retry settles the same source hidden, then restores it", async () => {
+  jest
+    .mocked(fetch)
+    .mockResolvedValueOnce({ ok: false, status: 409 } as Response);
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
   await settle();
   // Attachment state can change before React commits the next render.
   attachments = true;
   await act(async () => jest.advanceTimersByTimeAsync(1000));
-  expect(generationCalls()).toHaveLength(1);
+  expect(generationCalls()).toHaveLength(2);
   expect(settledEvents()).toHaveLength(1);
   expect(settledEvents()[0].properties).toMatchObject({
-    outcome: "aborted",
-    elapsed_ms: 1500,
+    outcome: "ready",
+    http_attempts: 2,
   });
+  act(() => {
+    expect(result.current.accept(0, "keyboard")).toBe(false);
+  });
+  rerender({ ...base(), suspended: true });
+  expect(result.current.batch).toBeNull();
+  attachments = false;
+  rerender({ ...base(), suspended: false });
+  expect(result.current.batch).toEqual(batch);
+  expect(setInput).not.toHaveBeenCalled();
   await act(async () => jest.advanceTimersByTimeAsync(20_000));
-  expect(settledEvents()).toHaveLength(1);
+  expect(generationCalls()).toHaveLength(2);
+  expect(deletions()).toHaveLength(0);
+});
+
+test("temporary suspension hides the same batch without consumption and blocks hidden acceptance", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  expect(result.current.batch).toEqual(batch);
+  const exposedEvents = () =>
+    jest
+      .mocked(captureQueuedAuthenticatedEvent)
+      .mock.calls.filter(
+        ([event]) => event.event === "contextual_next_actions_exposed",
+      );
+  rerender({ ...base(), suspended: true });
+  expect(result.current.batch).toBeNull();
+  act(() => {
+    result.current.exposed();
+    expect(result.current.accept(0, "keyboard")).toBe(false);
+  });
+  expect(exposedEvents()).toHaveLength(0);
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  rerender({ ...base(), suspended: false });
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+  expect(deletions()).toHaveLength(0);
+  expect(setInput).not.toHaveBeenCalled();
+  act(() => {
+    expect(result.current.accept(0, "keyboard")).toBe(true);
+  });
+  expect(input).toBe(batch.suggestions[0]);
+});
+
+test("suspension before the first send defers it and later sends exactly one request", async () => {
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  // Suspended while the delayed request is scheduled but not yet sent.
+  rerender({ ...base(), suspended: true });
+  await settle();
+  await act(async () => jest.advanceTimersByTimeAsync(20_000));
+  expect(fetch).not.toHaveBeenCalled();
+  expect(settledEvents()).toHaveLength(0);
+  rerender({ ...base(), suspended: false });
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  expect(result.current.batch).toEqual(batch);
+  rerender({ ...base(), suspended: true });
+  rerender({ ...base(), suspended: false });
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  expect(deletions()).toHaveLength(0);
+});
+
+test("a sent request settles hidden during suspension and appears when it clears", async () => {
+  let resolve!: (value: Response) => void;
+  jest
+    .mocked(fetch)
+    .mockReturnValueOnce(new Promise<Response>((done) => (resolve = done)));
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  rerender({ ...base(), suspended: true });
+  await act(async () => {
+    resolve(response() as unknown as Response);
+  });
+  expect(result.current.batch).toBeNull();
+  expect(settledEvents()[0].properties).toMatchObject({ outcome: "ready" });
+  rerender({ ...base(), suspended: false });
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+  expect(deletions()).toHaveLength(0);
+});
+
+test("dismissal stays dismissed across suspension, while hard blockers still revoke", async () => {
+  const dismissed = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  act(() => dismissed.result.current.dismiss());
+  dismissed.rerender({ ...base(), suspended: true });
+  dismissed.rerender({ ...base(), suspended: false });
+  await settle();
+  expect(dismissed.result.current.batch).toBeNull();
+  expect(generationCalls()).toHaveLength(1);
+  expect(deletions()).toHaveLength(1);
+  dismissed.unmount();
+  sessionStorage.clear();
+  const revoked = renderHook((props) => useNextActions(props), {
+    initialProps: base(),
+  });
+  await settle();
+  expect(revoked.result.current.batch).toEqual(batch);
+  revoked.rerender({ ...base(), blocked: true });
+  revoked.rerender({ ...base(), blocked: false });
+  await settle();
+  expect(revoked.result.current.batch).toBeNull();
+  expect(generationCalls()).toHaveLength(2);
+  expect(deletions()).toHaveLength(2);
 });
 
 test.each(["empty", "failed", "timeout"])(
@@ -352,11 +468,18 @@ test("dismissal survives remount, and existing drafts/attachments prevent genera
   input = "";
   const fourth = renderHook(() => useNextActions(base()));
   await settle();
+  const deletionsBefore = deletions().length;
   attachments = true; // synchronous race before React rerenders
   act(() => {
     expect(fourth.result.current.accept(0, "pointer")).toBe(false);
   });
   expect(setInput).not.toHaveBeenCalled();
+  // The refused acceptance keeps the batch for when the attachment is removed.
+  expect(deletions()).toHaveLength(deletionsBefore);
+  attachments = false;
+  fourth.rerender();
+  expect(fourth.result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(2);
 });
 
 test("persistence lag retries are bounded and failures stay silent", async () => {
@@ -783,17 +906,30 @@ test("dismissal is persisted separately from generation and no saved content is 
   expect(JSON.stringify(deletion)).not.toContain(batch.suggestions[0]);
 });
 
-test("a small screen does not fetch or consume a previously saved suggestion", async () => {
-  renderHook(() =>
-    useNextActions({
-      ...base(),
-      completedTurn: null,
-      latestMessageIsAssistant: true,
-      blocked: true,
-    }),
-  );
+test("an ineligible screen does not fetch or consume a saved suggestion, which restores once capable", async () => {
+  const reloaded = {
+    ...base(),
+    completedTurn: null,
+    latestMessageIsAssistant: true,
+  };
+  const { result, rerender } = renderHook((props) => useNextActions(props), {
+    initialProps: { ...reloaded, suspended: true },
+  });
   await settle();
   expect(fetch).not.toHaveBeenCalled();
+  rerender(reloaded);
+  await settle();
+  expect(generationCalls()).toHaveLength(1);
+  expect(JSON.parse(String(generationCalls()[0][1]?.body)).restoreOnly).toBe(
+    true,
+  );
+  expect(result.current.batch).toEqual(batch);
+  rerender({ ...reloaded, suspended: true });
+  expect(result.current.batch).toBeNull();
+  rerender(reloaded);
+  expect(result.current.batch).toEqual(batch);
+  expect(generationCalls()).toHaveLength(1);
+  expect(deletions()).toHaveLength(0);
 });
 
 test("navigating to a chat with a different mode does not consume its saved batch", async () => {
@@ -964,14 +1100,15 @@ test("a queued message removed before execution leaves the completing answer eli
     status: "streaming",
     completedTurn: null,
     latestMessageIsAssistant: true,
-    blocked: true,
+    suspended: true,
   };
   jest.mocked(fetch).mockResolvedValueOnce(conflict("source_active"));
-  const { result, rerender } = renderHook((props) => useNextActions(props), {
-    initialProps: streaming,
-  });
+  const { result, rerender, unmount } = renderHook(
+    (props) => useNextActions(props),
+    { initialProps: streaming },
+  );
   await settle();
-  rerender({ ...streaming, blocked: false });
+  rerender({ ...streaming, suspended: false });
   await settle();
   expect(fetch).not.toHaveBeenCalled();
   rerender({ ...base(), latestMessageIsAssistant: true });
@@ -990,16 +1127,35 @@ test("a queued message removed before execution leaves the completing answer eli
   });
   expect(deletions()).toHaveLength(0);
   expect(setInput).not.toHaveBeenCalled();
+  // Reload restores the completed parent's batch without a new generation.
+  unmount();
+  const reloaded = renderHook(() =>
+    useNextActions({
+      ...base(),
+      completedTurn: null,
+      latestMessageIsAssistant: true,
+    }),
+  );
+  await settle();
+  expect(reloaded.result.current.batch).toEqual(batch);
+  expect(
+    JSON.parse(String(generationCalls().at(-1)?.[1]?.body)).restoreOnly,
+  ).toBe(true);
+  expect(deletions()).toHaveLength(0);
 });
 
 test("removing a queued message after the turn finished offers that answer, while an executed queue never revives it", async () => {
-  const finished = { ...base(), latestMessageIsAssistant: true, blocked: true };
+  const finished = {
+    ...base(),
+    latestMessageIsAssistant: true,
+    suspended: true,
+  };
   const { result, rerender } = renderHook((props) => useNextActions(props), {
     initialProps: finished,
   });
   await settle();
   expect(fetch).not.toHaveBeenCalled();
-  rerender({ ...finished, blocked: false });
+  rerender({ ...finished, suspended: false });
   await settle();
   expect(result.current.batch).toEqual(batch);
   expect(generationCalls()).toHaveLength(1);
@@ -1032,13 +1188,13 @@ test("a stopped turn whose queued message is removed restores once and cannot re
     completedTurn: null,
     interruptedTurn: { chatId: "chat" },
     latestMessageIsAssistant: true,
-    blocked: true,
+    suspended: true,
   };
   const { result, rerender } = renderHook((props) => useNextActions(props), {
     initialProps: stopped,
   });
   await settle();
-  rerender({ ...stopped, blocked: false });
+  rerender({ ...stopped, suspended: false });
   await act(async () => jest.advanceTimersByTimeAsync(20_000));
   expect(generationCalls()).toHaveLength(1);
   expect(JSON.parse(String(generationCalls()[0][1]?.body)).restoreOnly).toBe(
