@@ -157,4 +157,18 @@ describe("NotesToolHandler", () => {
       }),
     ).toEqual(["alpha.example", expect.stringMatching(/^Observed /)]);
   });
+
+  it("preserves date-only observations and UTC day boundaries in every timezone", () => {
+    expect(
+      getNoteMetaSegments({
+        note_id: "date-only",
+        title: "Historical observation",
+        content: "Recheck before relying on this.",
+        category: "findings",
+        tags: [],
+        observed_at: Date.parse("2026-11-01"),
+        updated_at: Date.parse("2026-11-02T00:01:00Z"),
+      }),
+    ).toEqual(["Observed 2026-11-01", "Edited 2026-11-02"]);
+  });
 });

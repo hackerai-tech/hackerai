@@ -202,18 +202,13 @@ export function buildNotesSidebarContent({
   };
 }
 
-const formatNoteDate = (value: number) => {
-  const date = new Date(value);
-  const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    ...(sameYear ? {} : { year: "numeric" }),
-  });
-};
+// Date-only observations are stored at UTC midnight. Use the same UTC date
+// as the model-facing metadata so local timezones cannot shift the evidence day.
+const formatNoteDate = (value: number) =>
+  new Date(value).toISOString().slice(0, 10);
 
 const sameDay = (a: number, b: number) =>
-  new Date(a).toDateString() === new Date(b).toDateString();
+  formatNoteDate(a) === formatNoteDate(b);
 
 /**
  * Inline metadata segments: target, observation date and edit date. Missing
