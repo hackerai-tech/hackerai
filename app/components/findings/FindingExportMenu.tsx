@@ -161,7 +161,7 @@ export function FindingExportDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="gap-4 sm:max-w-sm"
+        className="max-h-[calc(100dvh-2rem)] gap-4 overflow-y-auto overscroll-contain sm:max-w-sm"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           firstFormat.current?.focus();
