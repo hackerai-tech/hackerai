@@ -12,7 +12,7 @@ const MAX_ERROR_FIELD_LENGTH = 1000;
 const MAX_STACK_FIELD_LENGTH = 2000;
 
 // These stages belong to the start/status callers, not arbitrary request data.
-const SERVICE_UNAVAILABLE_STAGES = [
+const AGENT_START_STAGES = [
   "parse_request",
   "authenticate",
   "access_gates",
@@ -26,6 +26,10 @@ const SERVICE_UNAVAILABLE_STAGES = [
   "sessions.start",
   "tasks.trigger",
   "create_tokens_and_associate_run",
+] as const;
+
+const SERVICE_UNAVAILABLE_STAGES = [
+  ...AGENT_START_STAGES,
   "read_request",
   "get_chat",
   "retrieve_trigger_run",
@@ -35,6 +39,17 @@ const SERVICE_UNAVAILABLE_STAGES = [
   "clear_missing_trigger_run",
 ] as const;
 
+/** Existing Agent start callsites that may deny a request; not policy reasons. */
+const AGENT_START_GUARD_BOUNDARIES = [
+  "account_access_gate",
+  "regional_subscription_gate",
+  "free_agent_sandbox_gate",
+  "persistent_goal_request_gate",
+  "chat_owner_gate",
+] as const;
+export type AgentStartGuardBoundary =
+  (typeof AGENT_START_GUARD_BOUNDARIES)[number];
+
 type AgentRouteErrorContext = {
   requestId?: string;
   userId?: string;
@@ -43,6 +58,85 @@ type AgentRouteErrorContext = {
   approvalSessionId?: string;
   stage?: string;
   initialPersistenceStep?: InitialChatPersistenceStep;
+  guardBoundary?: AgentStartGuardBoundary;
+};
+
+const getRequestIdKind = (requestId: unknown) =>
+  typeof requestId !== "string" || requestId.length > 256
+    ? "unavailable"
+    : /^(?:[a-z]{3}[0-9]::){0,3}[a-z0-9]{3,16}-[0-9]{10,17}-[a-f0-9]{8,64}$/.test(
+          requestId,
+        )
+      ? "vercel"
+      : /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requestId)
+        ? "uuid"
+        : "unavailable";
+
+const getTypedErrorCode = (error: ChatSDKError) => {
+  const type = Object.getOwnPropertyDescriptor(error, "type")?.value;
+  const surface = Object.getOwnPropertyDescriptor(error, "surface")?.value;
+  return ERROR_TYPES.some((value) => value === type) &&
+    ERROR_SURFACES.some((value) => value === surface)
+    ? `${type}:${surface}`
+    : "unrecognized";
+};
+
+// The marker records which existing callsite was active, never why it denied.
+const getGuardBoundary = (context: AgentRouteErrorContext) => {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      context,
+      "guardBoundary",
+    );
+    if (
+      !descriptor ||
+      ("value" in descriptor && descriptor.value === undefined)
+    )
+      return "other";
+    return "value" in descriptor &&
+      AGENT_START_GUARD_BOUNDARIES.some((value) => value === descriptor.value)
+      ? (descriptor.value as AgentStartGuardBoundary)
+      : "unreadable";
+  } catch {
+    return "unreadable";
+  }
+};
+
+/** A receipt for this returned 403, not proof the denial was legitimate. */
+const logAgentStartForbidden = (
+  error: ChatSDKError,
+  endpoint: AgentApiEndpoint,
+  context: AgentRouteErrorContext,
+) => {
+  const stage = Object.getOwnPropertyDescriptor(context, "stage")?.value;
+  const requestId = Object.getOwnPropertyDescriptor(
+    context,
+    "requestId",
+  )?.value;
+  const requestIdKind = getRequestIdKind(requestId);
+  const build = process.env.VERCEL_GIT_COMMIT_SHA;
+  console.warn(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "agent_start_forbidden_context",
+      service: "hackerai-web",
+      agent_start_forbidden_diagnostic_version: 1,
+      http_status: 403,
+      endpoint,
+      action: "start",
+      stage: AGENT_START_STAGES.some((value) => value === stage)
+        ? stage
+        : "unknown",
+      guard_boundary: getGuardBoundary(context),
+      error_code: getTypedErrorCode(error),
+      request_id_kind: requestIdKind,
+      ...(requestIdKind !== "unavailable" ? { request_id: requestId } : {}),
+      ...(typeof build === "string" && /^[a-f0-9]{40}$/i.test(build)
+        ? { web_build_commit: build.toLowerCase() }
+        : {}),
+    }),
+  );
 };
 
 const truncate = (value: string, maxLength: number): string =>
@@ -96,7 +190,7 @@ const serializeRouteError = (error: unknown) => {
   };
 };
 
-/** Preserve typed responses; optional 503 diagnostics must never change delivery. */
+/** Preserve typed responses; optional 503/403 receipts must never change delivery. */
 export function handleAgentRouteError({
   error,
   endpoint,
@@ -124,21 +218,7 @@ export function handleAgentRouteError({
           context,
           "requestId",
         )?.value;
-        const type = Object.getOwnPropertyDescriptor(error, "type")?.value;
-        const surface = Object.getOwnPropertyDescriptor(
-          error,
-          "surface",
-        )?.value;
-        const requestIdKind =
-          typeof requestId !== "string" || requestId.length > 256
-            ? "unavailable"
-            : /^(?:[a-z]{3}[0-9]::){0,3}[a-z0-9]{3,16}-[0-9]{10,17}-[a-f0-9]{8,64}$/.test(
-                  requestId,
-                )
-              ? "vercel"
-              : /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(requestId)
-                ? "uuid"
-                : "unavailable";
+        const requestIdKind = getRequestIdKind(requestId);
         // A receipt for this returned response, not proof of provider cause,
         // request execution elsewhere, persistence or customer recovery.
         console.warn(
@@ -154,17 +234,20 @@ export function handleAgentRouteError({
             stage: SERVICE_UNAVAILABLE_STAGES.some((value) => value === stage)
               ? stage
               : "unknown",
-            error_code:
-              ERROR_TYPES.some((value) => value === type) &&
-              ERROR_SURFACES.some((value) => value === surface)
-                ? `${type}:${surface}`
-                : "unrecognized",
+            error_code: getTypedErrorCode(error),
             request_id_kind: requestIdKind,
             ...(requestIdKind !== "unavailable"
               ? { request_id: requestId }
               : {}),
           }),
         );
+      } else if (
+        action === "start" &&
+        (endpoint === AGENT_API_ENDPOINT ||
+          endpoint === LEGACY_AGENT_API_ENDPOINT) &&
+        response.status === 403
+      ) {
+        logAgentStartForbidden(error, endpoint, context);
       }
     } catch {
       // Optional diagnostics must preserve the exact original response.
