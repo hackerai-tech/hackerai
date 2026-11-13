@@ -3134,6 +3134,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
               ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
               : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
             let diagnosticOutput = "unavailable";
+            let directoryProbe: Parameters<
+              typeof recordAttachmentDownloadFailure
+            >[1]["directoryProbe"] = { state: "unavailable" };
             try {
               const diag = await this.commands.run(diagCmd, {
                 displayName: "",
@@ -3141,6 +3144,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 signal,
               });
               diagnosticOutput = diag.stdout.slice(0, 1024);
+              directoryProbe = {
+                state: "returned",
+                output: diagnosticOutput,
+                truncated: diag.stdout.length > 1024,
+              };
             } catch (error) {
               throwIfAttachmentAborted(signal, error);
             }
@@ -3171,6 +3179,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 httpClient,
                 exitCode: result.exitCode,
                 stderr: result.stderr,
+                directoryProbe,
               },
             );
           }

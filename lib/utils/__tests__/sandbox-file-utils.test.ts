@@ -3079,3 +3079,137 @@ it.each([
     }
   },
 );
+
+it.each([
+  {
+    directoryProbe: {
+      state: "returned" as const,
+      output:
+        "target_dir_exists=true\ntarget_dir_writable=false\nFilesystem Size Used Avail Use% Mounted on\n/dev/private-disk 10G 9G 1G 90% /private-mount\n",
+      truncated: false,
+    },
+    expected: {
+      attachment_download_directory_probe_state: "returned",
+      attachment_download_target_dir_exists: true,
+      attachment_download_target_dir_writable: false,
+      attachment_download_directory_probe_truncated: false,
+    },
+  },
+  {
+    directoryProbe: { state: "unavailable" as const },
+    expected: {
+      attachment_download_directory_probe_state: "unavailable",
+      attachment_download_target_dir_exists: null,
+      attachment_download_target_dir_writable: null,
+      attachment_download_directory_probe_truncated: null,
+    },
+  },
+])(
+  "retains the $directoryProbe.state directory probe through staging diagnostics and image bypass",
+  async ({ directoryProbe, expected: probe }) => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const url = "https://private.example/secret.png?signature=secret";
+    const path = "/home/user/upload/private-image.png";
+    const rejection = recordAttachmentDownloadFailure(
+      new Error("Failed to download file: curl: (23) private detail"),
+      {
+        platform: "posix",
+        shell: "bash",
+        httpClient: "curl",
+        exitCode: 23,
+        stderr: "curl: (23) private detail",
+        directoryProbe,
+      },
+    );
+    recordAttachmentDownloadBoundary(rejection, {
+      phase: "failure_diagnostics",
+      attempt: 3,
+      resultState: "nonzero",
+    });
+    const sandbox = {
+      sandboxKind: "centrifugo",
+      getConnectionInfo: () => ({ isDesktop: true }),
+      files: { downloadFromUrl: jest.fn().mockRejectedValue(rejection) },
+      commands: {
+        run: jest.fn(async () => ({
+          stdout: "/tmp/fallback-image.png",
+          stderr: "",
+          exitCode: 0,
+        })),
+      },
+    };
+    try {
+      const result = await uploadSandboxFiles(
+        [{ kind: "url", url, localPath: path }],
+        async () => sandbox,
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run-diag",
+            userId: "opaque-user",
+            chatId: "opaque-chat",
+          },
+        },
+      );
+      expect(result.failedCount).toBe(1);
+      const expected = {
+        ...probe,
+        attachment_download_directory_probe_version: 1,
+        attachment_download_exit_code: 23,
+        attachment_download_attempt: 3,
+        attachment_download_route: "native_method",
+      };
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject(expected);
+      for (const name of [
+        "sandbox_attachment_failure_diagnostics",
+        "sandbox_attachment_staging_failed",
+      ])
+        expect(event).toHaveBeenCalledWith(
+          name,
+          expect.objectContaining(expected),
+        );
+      expect(
+        recoverProviderVisibleImagesAfterSandboxUploadFailure(
+          [
+            {
+              id: "m1",
+              role: "user",
+              parts: [{ type: "file", url, mediaType: "image/png" }],
+            },
+          ] as UIMessage[],
+          [{ kind: "url", url, localPath: path }],
+          result,
+          {
+            service: "agent-long",
+            userId: "opaque-user",
+            chatId: "opaque-chat",
+          },
+        ),
+      ).not.toBeNull();
+      const bypass = warn.mock.calls
+        .map(([line]) =>
+          typeof line === "string" && line.startsWith("{")
+            ? JSON.parse(line)
+            : null,
+        )
+        .find((x) => x?.event === "sandbox_image_attachment_staging_bypassed");
+      expect(bypass).toMatchObject(expected);
+      expect(
+        JSON.stringify([
+          event.mock.calls,
+          bypass,
+          Object.keys(expected).map((key) => [
+            key,
+            getSandboxUploadFailureMetadata(result)![key],
+          ]),
+        ]),
+      ).not.toMatch(/private-disk|private-mount|Filesystem|Mounted on|90%/);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+      event.mockRestore();
+    }
+  },
+);
