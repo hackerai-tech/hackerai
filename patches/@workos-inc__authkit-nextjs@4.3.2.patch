@@ -1,8 +1,8 @@
 diff --git a/dist/esm/actions.js b/dist/esm/actions.js
-index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7cefc395045 100644
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf626c5ba7c 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
-@@ -13,6 +13,175 @@ function sanitize(value) {
+@@ -13,6 +13,210 @@ function sanitize(value) {
      const { accessToken, ...sanitized } = value;
      return sanitized;
  }
@@ -113,6 +113,23 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
 +        return ['unreadable', null, 'unreadable', 'unreadable'];
 +    }
 +};
++// Opaque WorkOS response correlation IDs: a canonical UUID or ULID with an
++// optional fixed prefix. Unknown formats are dropped rather than forwarded.
++const RATE_LIMIT_REQUEST_ID = /^(?:req_|request_)?(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-7][0-9A-HJKMNP-TV-Z]{25})$/;
++const isRateLimitRequestId = (value) => typeof value === 'string' && value.length <= 64 && RATE_LIMIT_REQUEST_ID.test(value);
++const isRateLimitRetryAfter = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 86400;
++const readRateLimitField = (record, key, isValid, emptyValue) => {
++    try {
++        const value = record[key];
++        if (value == null || value === emptyValue)
++            return [null, 'absent'];
++        return isValid(value) ? [value, 'valid'] : [null, 'invalid'];
++    }
++    catch {
++        return [null, 'unreadable'];
++    }
++};
++const isRateLimitFailure = ([kind, status]) => kind === 'RateLimitExceededException' && status === 429;
 +/**
 + * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
 + * Reads the thrown value and at most one cause; never copies provider text.
@@ -121,10 +138,11 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
 +    const root = describeRefreshFailure(error);
 +    const record = error && typeof error === 'object' ? error : null;
 +    let cause = ['none', null, 'absent', 'none'];
++    let firstCause;
 +    let isTransient = 'absent';
 +    if (record) {
 +        try {
-+            const firstCause = record.cause;
++            firstCause = record.cause;
 +            if (firstCause != null && firstCause !== error)
 +                cause = describeRefreshFailure(firstCause);
 +        }
@@ -139,6 +157,22 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
 +            isTransient = 'unreadable';
 +        }
 +    }
++    // Only an already-projected WorkOS 429, preferring the immediate cause.
++    const rateLimited = isRateLimitFailure(cause) ? firstCause : isRateLimitFailure(root) ? error : null;
++    let rateLimit = {};
++    if (rateLimited) {
++        const rateLimitRecord = rateLimited;
++        // WorkOS sets requestID to '' when the response has no X-Request-ID.
++        const [requestId, requestIdShape] = readRateLimitField(rateLimitRecord, 'requestID', isRateLimitRequestId, '');
++        const [retryAfter, retryAfterShape] = readRateLimitField(rateLimitRecord, 'retryAfter', isRateLimitRetryAfter);
++        rateLimit = {
++            auth_action_refresh_rate_limit_diagnostic_version: 1,
++            auth_action_refresh_rate_limit_request_id: requestId,
++            auth_action_refresh_rate_limit_request_id_shape: requestIdShape,
++            auth_action_refresh_rate_limit_retry_after_seconds: retryAfter,
++            auth_action_refresh_rate_limit_retry_after_shape: retryAfterShape,
++        };
++    }
 +    return JSON.stringify({
 +        event: 'auth.access_token_refresh_failed',
 +        boundary: 'server_action',
@@ -152,6 +186,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
 +        auth_action_refresh_cause_status_shape: cause[2],
 +        auth_action_refresh_cause_code: cause[3],
 +        auth_action_refresh_is_transient: isTransient,
++        ...rateLimit,
 +    });
 +};
 +/**
@@ -178,7 +213,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -29,7 +198,7 @@ export const getOrganizationAction = async (organizationId) => {
+@@ -29,7 +233,7 @@ export const getOrganizationAction = async (organizationId) => {
      // authenticated within. The WorkOS client uses the app's API key, which can
      // read any organization in the environment, so without this check any caller
      // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -187,7 +222,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
      if (!user || sessionOrganizationId !== organizationId) {
          return null;
      }
-@@ -43,7 +212,7 @@ export const getAuthAction = async (options) => {
+@@ -43,7 +247,7 @@ export const getAuthAction = async (options) => {
      // would call redirect() to an external URL, which causes CORS errors when
      // invoked via a client-side fetch. Instead, return the sign-in URL so the
      // client can redirect via window.location.href.
@@ -196,7 +231,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
      const sanitized = sanitize(auth);
      if (options?.ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -51,10 +220,11 @@ export const getAuthAction = async (options) => {
+@@ -51,10 +255,11 @@ export const getAuthAction = async (options) => {
      }
      return sanitized;
  };
@@ -210,7 +245,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
      const sanitized = sanitize(auth);
      if (ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -63,14 +233,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+@@ -63,14 +268,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
      return sanitized;
  };
  export const switchToOrganizationAction = async (organizationId, options) => {
@@ -227,7 +262,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..fce1cf6fae317bd24e4ff0b66256a7ce
      return auth.accessToken;
  }
  /**
-@@ -86,7 +256,14 @@ export async function refreshAccessTokenAction() {
+@@ -86,7 +291,14 @@ export async function refreshAccessTokenAction() {
          return { accessToken: auth.accessToken };
      }
      catch (error) {
@@ -279,10 +314,10 @@ index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b66
        const params = { ensureSignedIn: false, organizationId: 'org_123' };
        const result = await refreshAuthAction(params);
 diff --git a/src/actions.ts b/src/actions.ts
-index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e796f0a60a 100644
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92c581100e 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
-@@ -22,6 +22,185 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
+@@ -22,6 +22,234 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
    return sanitized;
  }
  
@@ -405,6 +440,37 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
 +  }
 +};
 +
++// Opaque WorkOS response correlation IDs: a canonical UUID or ULID with an
++// optional fixed prefix. Unknown formats are dropped rather than forwarded.
++const RATE_LIMIT_REQUEST_ID =
++  /^(?:req_|request_)?(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-7][0-9A-HJKMNP-TV-Z]{25})$/;
++
++const isRateLimitRequestId = (value: unknown): value is string =>
++  typeof value === 'string' && value.length <= 64 && RATE_LIMIT_REQUEST_ID.test(value);
++
++const isRateLimitRetryAfter = (value: unknown): value is number =>
++  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 86400;
++
++type RateLimitField<T> = [value: T | null, shape: 'absent' | 'valid' | 'invalid' | 'unreadable'];
++
++const readRateLimitField = <T>(
++  record: Record<string, unknown>,
++  key: string,
++  isValid: (value: unknown) => value is T,
++  emptyValue?: unknown,
++): RateLimitField<T> => {
++  try {
++    const value = record[key];
++    if (value == null || value === emptyValue) return [null, 'absent'];
++    return isValid(value) ? [value, 'valid'] : [null, 'invalid'];
++  } catch {
++    return [null, 'unreadable'];
++  }
++};
++
++const isRateLimitFailure = ([kind, status]: RefreshFailureDescription): boolean =>
++  kind === 'RateLimitExceededException' && status === 429;
++
 +/**
 + * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
 + * Reads the thrown value and at most one cause; never copies provider text.
@@ -413,10 +479,11 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
 +  const root = describeRefreshFailure(error);
 +  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null;
 +  let cause: RefreshFailureDescription = ['none', null, 'absent', 'none'];
++  let firstCause: unknown;
 +  let isTransient: boolean | string = 'absent';
 +  if (record) {
 +    try {
-+      const firstCause = record.cause;
++      firstCause = record.cause;
 +      if (firstCause != null && firstCause !== error) cause = describeRefreshFailure(firstCause);
 +    } catch {
 +      cause = ['unreadable', null, 'unreadable', 'unreadable'];
@@ -427,6 +494,22 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
 +    } catch {
 +      isTransient = 'unreadable';
 +    }
++  }
++  // Only an already-projected WorkOS 429, preferring the immediate cause.
++  const rateLimited = isRateLimitFailure(cause) ? firstCause : isRateLimitFailure(root) ? error : null;
++  let rateLimit = {};
++  if (rateLimited) {
++    const rateLimitRecord = rateLimited as Record<string, unknown>;
++    // WorkOS sets requestID to '' when the response has no X-Request-ID.
++    const [requestId, requestIdShape] = readRateLimitField(rateLimitRecord, 'requestID', isRateLimitRequestId, '');
++    const [retryAfter, retryAfterShape] = readRateLimitField(rateLimitRecord, 'retryAfter', isRateLimitRetryAfter);
++    rateLimit = {
++      auth_action_refresh_rate_limit_diagnostic_version: 1,
++      auth_action_refresh_rate_limit_request_id: requestId,
++      auth_action_refresh_rate_limit_request_id_shape: requestIdShape,
++      auth_action_refresh_rate_limit_retry_after_seconds: retryAfter,
++      auth_action_refresh_rate_limit_retry_after_shape: retryAfterShape,
++    };
 +  }
 +  return JSON.stringify({
 +    event: 'auth.access_token_refresh_failed',
@@ -441,6 +524,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
 +    auth_action_refresh_cause_status_shape: cause[2],
 +    auth_action_refresh_cause_code: cause[3],
 +    auth_action_refresh_is_transient: isTransient,
++    ...rateLimit,
 +  });
 +};
 +
@@ -468,7 +552,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -40,7 +219,10 @@ export const getOrganizationAction = async (organizationId: string) => {
+@@ -40,7 +268,10 @@ export const getOrganizationAction = async (organizationId: string) => {
    // authenticated within. The WorkOS client uses the app's API key, which can
    // read any organization in the environment, so without this check any caller
    // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -480,7 +564,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
    if (!user || sessionOrganizationId !== organizationId) {
      return null;
    }
-@@ -56,7 +238,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -56,7 +287,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    // would call redirect() to an external URL, which causes CORS errors when
    // invoked via a client-side fetch. Instead, return the sign-in URL so the
    // client can redirect via window.location.href.
@@ -489,7 +573,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
    const sanitized = sanitize(auth);
  
    if (options?.ensureSignedIn && !auth.user) {
-@@ -67,16 +249,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -67,16 +298,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    return sanitized;
  };
  
@@ -515,7 +599,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
    const sanitized = sanitize(auth);
  
    if (ensureSignedIn && !auth.user) {
-@@ -88,7 +273,10 @@ export const refreshAuthAction = async ({
+@@ -88,7 +322,10 @@ export const refreshAuthAction = async ({
  };
  
  export const switchToOrganizationAction = async (organizationId: string, options?: SwitchToOrganizationOptions) => {
@@ -527,7 +611,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
  };
  
  /**
-@@ -96,7 +284,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
+@@ -96,7 +333,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
   * It is used to fetch the access token from the server.
   */
  export async function getAccessTokenAction() {
@@ -536,7 +620,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..5a006db7054312c7cb56c0b8a88bb5e7
    return auth.accessToken;
  }
  
-@@ -112,7 +300,18 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
+@@ -112,7 +349,18 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
      const auth = await refreshSession();
      return { accessToken: auth.accessToken };
    } catch (error) {
