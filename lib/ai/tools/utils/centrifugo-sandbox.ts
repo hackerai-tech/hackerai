@@ -147,6 +147,39 @@ function nativePathOutputShape(value: string) {
   return "relative_or_other";
 }
 
+type NativeReceiverErrorClass =
+  | "authorization_invalid"
+  | "origin_unavailable_or_denied"
+  | "authorization_client_unavailable"
+  | "authorization_send_unavailable"
+  | "authorization_denied"
+  | "authorization_response_invalid"
+  | "other";
+
+// Exact public authorization errors from the Desktop native file command
+// (packages/desktop/src-tauri/src/lib.rs). Never log the message itself.
+const NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
+  string,
+  NativeReceiverErrorClass
+> = new Map([
+  ["Invalid Desktop operation authorization", "authorization_invalid"],
+  ["Desktop origin is unavailable", "origin_unavailable_or_denied"],
+  [
+    "Desktop origin is not allowed for native authorization",
+    "origin_unavailable_or_denied",
+  ],
+  [
+    "Desktop authorization client unavailable",
+    "authorization_client_unavailable",
+  ],
+  [
+    "Desktop operation authorization unavailable",
+    "authorization_send_unavailable",
+  ],
+  ["Desktop operation was not authorized", "authorization_denied"],
+  ["Invalid Desktop authorization response", "authorization_response_invalid"],
+]);
+
 type HttpClient = "curl" | "wget" | "powershell";
 
 const getErrorMessage = (error: unknown): string =>
@@ -444,6 +477,7 @@ export class CentrifugoSandbox extends EventEmitter {
     const deadline = setTimeout(() => controller.abort(), 3000);
     let failure: string | undefined;
     let fileFailure: DesktopFileFailure | undefined;
+    let receiverErrorClass: NativeReceiverErrorClass | undefined;
     try {
       await this.dispatchFileRequest<FileStatResultMessage>(
         { type: "file_stat", path: "." },
@@ -458,6 +492,14 @@ export class CentrifugoSandbox extends EventEmitter {
         : getLocalFileRequestFailure(error);
       fileFailure =
         error instanceof LocalFileRequestError ? error.fileFailure : undefined;
+      // Only the matched file_error's own text; unrecognized text stays "other".
+      if (
+        failure === "native_error" &&
+        fileFailure === "unknown" &&
+        error instanceof LocalFileRequestError
+      )
+        receiverErrorClass =
+          NATIVE_RECEIVER_ERROR_CLASSES.get(error.message) ?? "other";
     } finally {
       clearTimeout(deadline);
     }
@@ -470,6 +512,7 @@ export class CentrifugoSandbox extends EventEmitter {
         outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
         failure,
         file_failure: fileFailure,
+        receiver_error_class: receiverErrorClass,
       }),
     );
     if (!this.nativeFileRelayConfirmed) {
