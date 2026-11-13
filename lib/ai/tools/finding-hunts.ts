@@ -160,7 +160,7 @@ Use reproduced only for a runtime check that observed the flaw now. Source-only 
 });
 
 const completeFindingHuntTool = tool({
-  description: `Finish the hunt started with start_finding_hunt in this response with a short summary and its limitations. Counts come from the saved candidates. The completed hunt is immutable. It never changes, closes or duplicates the report; an independent defect needs its own report through the normal report flow with its own evidence and duplicate check.`,
+  description: `Finish the hunt started with start_finding_hunt in this response with a short summary and its limitations. Counts come from the saved candidates. It returns saved_hunt, the record as actually saved; base your final answer on it. The completed hunt is immutable. It never changes, closes or duplicates the report; an independent defect needs its own report through the normal report flow with its own evidence and duplicate check.`,
   inputSchema: completeFindingHuntInputSchema,
 });
 
@@ -531,10 +531,12 @@ export const createCompleteFindingHunt = (
                 ),
               },
             );
+          // saved_hunt is read back from the saved row. Analytics above get
+          // counts only, never its contents.
           return {
             ...result,
             message:
-              "Hunt saved to the report's history. The report itself was not changed and no findings were created.",
+              "Hunt saved to the report's history. The report itself was not changed and no findings were created. In your final answer, describe only what saved_hunt and counts show: its target, hunt_id, finding_id, counts and summary. Do not mention any other target, scope, ID or saved record.",
           };
         } catch (error) {
           if (abortSignal?.aborted) throw error;

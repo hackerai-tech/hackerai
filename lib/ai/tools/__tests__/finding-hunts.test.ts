@@ -76,6 +76,13 @@ const savedHunt = {
   hunt_id: "h1",
   duplicate: false,
   counts: { reproduced: 1, ruled_out: 0, inconclusive: 1, not_examined: 0 },
+  saved_hunt: {
+    hunt_id: "h1",
+    finding_id: "finding-1",
+    target: "http://127.0.0.1:40117/api/invoices/{invoice-id}",
+    summary: "One sibling invoice endpoint reproduced; export needs admin.",
+    limitations: ["History endpoint not reached"],
+  },
 };
 
 describe("Finding hunt tools", () => {
@@ -243,6 +250,26 @@ describe("Finding hunt tools", () => {
     });
   });
 
+  it("grounds the model's final answer in the saved receipt", async () => {
+    complete.mockResolvedValue(savedHunt);
+    const { createCompleteFindingHunt } = await tools();
+    const tool = createCompleteFindingHunt(context);
+    const result = (await tool.execute!(completion, options)) as any;
+    expect(result.saved_hunt).toEqual(savedHunt.saved_hunt);
+    expect(result.message).toMatch(/final answer.*saved_hunt/);
+    expect(result.message).toMatch(/Do not mention any other target/);
+    // The model receives the receipt verbatim, as returned by the backend.
+    const modelOutput = (tool as any).toModelOutput({ output: result });
+    expect(JSON.parse(modelOutput.value).saved_hunt).toEqual(
+      savedHunt.saved_hunt,
+    );
+    // An exact retry carries the stored receipt too.
+    complete.mockResolvedValue({ ...savedHunt, duplicate: true });
+    expect(
+      ((await tool.execute!(completion, options)) as any).saved_hunt,
+    ).toEqual(savedHunt.saved_hunt);
+  });
+
   it("reports only content-free counts and outcomes in analytics", async () => {
     record.mockResolvedValue(savedCandidate);
     complete.mockResolvedValue(savedHunt);
@@ -266,8 +293,9 @@ describe("Finding hunt tools", () => {
       not_examined: 0,
       candidate_count: 2,
     });
+    // Neither the input nor the saved receipt reaches analytics.
     expect(JSON.stringify(logEvent.mock.calls)).not.toMatch(
-      /invoice|export|finding-1|admin|sibling/i,
+      /invoice|export|finding-1|admin|sibling|40117|h1|History/i,
     );
     // Duplicate retries are not counted twice.
     logEvent.mockClear();

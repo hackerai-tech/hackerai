@@ -106,9 +106,9 @@ function failureContent(
   };
 }
 
-const findingHref = (input: any) =>
-  typeof input?.finding_id === "string"
-    ? `/findings?finding=${encodeURIComponent(input.finding_id)}`
+const findingHref = (findingId: unknown) =>
+  typeof findingId === "string" && findingId
+    ? `/findings?finding=${encodeURIComponent(findingId)}`
     : null;
 
 function FindingLink({ href }: { href: string }) {
@@ -201,35 +201,61 @@ export const FindingHuntToolHandler = memo(function FindingHuntToolHandler({
     return <ToolBlock icon={icon} action="Candidate saved" target={outcome} />;
   }
 
+  // The saved result card: what the backend actually saved, shown outside
+  // collapsed work so it can be checked against the Agent's prose. Outputs
+  // from before saved_hunt existed omit the target and link from the input.
   const counts = result.counts ?? {};
-  const href = findingHref(input);
+  const saved = result.saved_hunt;
+  const savedTarget = typeof saved?.target === "string" ? saved.target : null;
+  const href = findingHref(
+    typeof saved?.finding_id === "string"
+      ? saved.finding_id
+      : input?.finding_id,
+  );
   const tally = COUNT_ORDER.filter((key) => (counts[key] ?? 0) > 0);
   return (
-    <div className="space-y-2">
-      <ToolBlock icon={icon} action="Hunt saved" />
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-lg border border-border px-3 py-2.5 text-sm">
-        <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          {tally.length === 0 ? (
-            <span className="text-muted-foreground">No candidates saved</span>
-          ) : (
-            tally.map((key) => (
-              <span key={key} className="inline-flex items-center gap-1.5">
-                <span
-                  className={`size-2 shrink-0 rounded-full ${OUTCOME_DOTS[key]}`}
-                  aria-hidden="true"
-                />
-                <span className="text-foreground">
-                  {counts[key]} {HUNT_OUTCOME_LABELS[key].toLowerCase()}
-                </span>
-              </span>
-            ))
-          )}
-          <span className="text-muted-foreground">
-            Agent&apos;s judgment. Not findings; the report wasn&apos;t changed.
-          </span>
+    <section
+      aria-label="Saved hunt results"
+      className="not-prose space-y-2 rounded-lg border border-border px-3 py-2.5 text-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <span className="inline-flex items-center gap-2 font-medium text-foreground">
+          <ScanSearch
+            className="size-4 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
+          Saved hunt results
         </span>
         {href ? <FindingLink href={href} /> : null}
       </div>
-    </div>
+      {savedTarget ? (
+        <p
+          className="break-all font-mono text-xs leading-5 text-muted-foreground"
+          translate="no"
+        >
+          {savedTarget}
+        </p>
+      ) : null}
+      <p className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        {tally.length === 0 ? (
+          <span className="text-muted-foreground">No candidates saved</span>
+        ) : (
+          tally.map((key) => (
+            <span key={key} className="inline-flex items-center gap-1.5">
+              <span
+                className={`size-2 shrink-0 rounded-full ${OUTCOME_DOTS[key]}`}
+                aria-hidden="true"
+              />
+              <span className="text-foreground">
+                {counts[key]} {HUNT_OUTCOME_LABELS[key].toLowerCase()}
+              </span>
+            </span>
+          ))
+        )}
+      </p>
+      <p className="text-muted-foreground">
+        Agent&apos;s judgment. Not findings; the report wasn&apos;t changed.
+      </p>
+    </section>
   );
 });

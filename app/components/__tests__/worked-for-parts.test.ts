@@ -78,6 +78,81 @@ describe("splitWorkedForParts", () => {
   });
 });
 
+describe("saved hunt results", () => {
+  const completion = (extra: Record<string, unknown> = {}) =>
+    part("tool-complete_finding_hunt", {
+      toolCallId: "complete-1",
+      state: "output-available",
+      input: { finding_id: "finding-1" },
+      output: {
+        success: true,
+        hunt_id: "h1",
+        counts: {
+          reproduced: 1,
+          ruled_out: 0,
+          inconclusive: 0,
+          not_examined: 0,
+        },
+      },
+      ...extra,
+    });
+
+  it("keeps a saved completion out of the work, with its original index", () => {
+    const file = part("file", { url: "https://example.com/file.txt" });
+    const step = part("step-start");
+    const start = part("tool-start_finding_hunt", {
+      toolCallId: "start-1",
+      state: "output-available",
+      output: { success: true },
+    });
+    const saved = completion();
+    const text = part("text", { text: "final answer" });
+    const parts = [file, step, start, saved, text];
+
+    const result = splitWorkedForParts(parts);
+
+    expect(result.savedHuntResults).toEqual([{ part: saved, partIndex: 3 }]);
+    expect(result.workParts).toEqual([step, start]);
+    expect(result.workPartIndexes).toEqual([1, 2]);
+    expect(result.trailingTextParts).toEqual([text]);
+    // Final text keeps the offset it had before results were separated.
+    expect(result.trailingTextOffset).toBe(3);
+    // Neither projection shows it, so it renders exactly once elsewhere.
+    const projection = projectAgentWorkParts(parts, result.workPartIndexes);
+    expect(projection.activities.map(({ part: p }) => p)).toEqual([start]);
+    const items = projectAgentWorkTimelineItems({
+      activities: projection.activities,
+      messageSettled: true,
+      parts,
+      workPartIndexes: result.workPartIndexes,
+    });
+    expect(JSON.stringify(items)).not.toContain("complete-1");
+  });
+
+  it("treats a legacy wrapped success the same and keeps results without final text", () => {
+    const saved = completion({
+      output: { result: { success: true, hunt_id: "h1", counts: {} } },
+    });
+    const result = splitWorkedForParts([saved]);
+    expect(result.savedHuntResults).toEqual([{ part: saved, partIndex: 0 }]);
+    expect(result.workParts).toEqual([]);
+    expect(result.trailingTextParts).toEqual([]);
+  });
+
+  it.each([
+    ["pending", { state: "input-available", output: undefined }],
+    ["refused", { output: { success: false, error: "conflict" } }],
+    ["errored", { state: "output-error", errorText: "failed" }],
+  ])("leaves a %s completion in the work", (_label, extra) => {
+    const unsaved = completion(extra);
+    const text = part("text", { text: "final answer" });
+    const result = splitWorkedForParts([unsaved, text]);
+    expect(result.savedHuntResults).toEqual([]);
+    expect(result.workParts).toEqual([unsaved]);
+    expect(result.workPartIndexes).toEqual([0]);
+  });
+});
+
 describe("isExpandableWorkedForPart", () => {
   it("treats tool parts and rendered tool output as expandable work", () => {
     expect(isExpandableWorkedForPart(part("tool-shell"))).toBe(true);

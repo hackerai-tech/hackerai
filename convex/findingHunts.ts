@@ -513,6 +513,27 @@ const countsValidator = v.object({
   not_examined: v.number(),
 });
 
+// What was actually saved, read from the hunt row: the model's final answer
+// is grounded in this rather than in its own recollection of the run.
+const savedHuntValidator = v.object({
+  hunt_id: v.string(),
+  finding_id: v.string(),
+  target: v.string(),
+  summary: v.string(),
+  limitations: v.array(v.string()),
+});
+
+const savedHuntOf = (
+  hunt: Hunt,
+  completion: { summary: string; limitations: string[] },
+): Infer<typeof savedHuntValidator> => ({
+  hunt_id: hunt._id as string,
+  finding_id: hunt.finding_id,
+  target: hunt.target,
+  summary: completion.summary,
+  limitations: completion.limitations,
+});
+
 export const completeForBackend = mutation({
   args: {
     ...provenanceArgs,
@@ -526,6 +547,7 @@ export const completeForBackend = mutation({
       hunt_id: v.string(),
       duplicate: v.boolean(),
       counts: countsValidator,
+      saved_hunt: savedHuntValidator,
     }),
     v.object({
       success: v.literal(false),
@@ -566,12 +588,17 @@ export const completeForBackend = mutation({
           "interrupted",
           "This hunt was already recorded as stopped early. Its saved candidates were kept.",
         );
+      // An exact retry reports the stored row, not the resubmitted text.
       return hunt.result_key === key
         ? {
             success: true as const,
             hunt_id: hunt._id as string,
             duplicate: true,
             counts,
+            saved_hunt: savedHuntOf(hunt, {
+              summary: hunt.summary ?? parsed.value.summary,
+              limitations: hunt.limitations ?? parsed.value.limitations,
+            }),
           }
         : failure(
             "conflict",
@@ -612,6 +639,7 @@ export const completeForBackend = mutation({
       hunt_id: hunt._id as string,
       duplicate: false,
       counts,
+      saved_hunt: savedHuntOf(hunt, parsed.value),
     };
   },
 });

@@ -297,6 +297,43 @@ describe("Finding variant hunt records", () => {
     expect(tables.findings).toHaveLength(2);
   });
 
+  it("returns a receipt of what was saved, from the stored row, on completion and exact retry", async () => {
+    await start();
+    await record();
+    const first = await complete();
+    expect(first).toMatchObject({ success: true, duplicate: false });
+    const huntId = hunts()[0]._id;
+    const receipt = {
+      hunt_id: huntId,
+      finding_id: "finding-1",
+      // The target pinned when the hunt started, not a model-supplied one.
+      target: "https://app.example.test",
+      summary: "Two sibling endpoints share the ownership gap.",
+      limitations: ["Export needs an admin role that was not available."],
+    };
+    expect(first.saved_hunt).toEqual(receipt);
+    expect(first.hunt_id).toBe(huntId);
+
+    // An exact retry reports the stored row even if the finding moved on.
+    tables.findings[0].target = "https://elsewhere.example.test";
+    tables.findings[0].title = "Renamed finding";
+    const retry = await complete();
+    expect(retry).toMatchObject({ success: true, duplicate: true });
+    expect(retry.saved_hunt).toEqual(receipt);
+    expect(hunts()[0]).toMatchObject({
+      summary: receipt.summary,
+      limitations: receipt.limitations,
+    });
+
+    // A conflicting or refused completion never gets a receipt.
+    const conflict = await complete({ summary: "Something else" });
+    expect(conflict).toMatchObject({ success: false, error: "conflict" });
+    expect(conflict).not.toHaveProperty("saved_hunt");
+    expect(
+      await complete({ assistantMessageId: "message-2" }),
+    ).not.toHaveProperty("saved_hunt");
+  });
+
   it("keeps saved candidates when the run stops and refuses late writes", async () => {
     await start();
     await record();

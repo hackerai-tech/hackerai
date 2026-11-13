@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { beforeEach, expect, it, jest } from "@jest/globals";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 const mockContent = jest.fn();
 jest.mock("@/app/hooks/useToolSidebar", () => ({
   useToolSidebar: ({ content }: any) => {
@@ -49,7 +49,14 @@ it("shows a saved candidate's outcome without dumping its content", () => {
   expect(screen.queryByText(/private/)).toBeNull();
 });
 
-it("summarizes a completed hunt with server counts and links to its finding", () => {
+const savedCounts = {
+  reproduced: 2,
+  ruled_out: 1,
+  inconclusive: 0,
+  not_examined: 1,
+};
+
+it("shows the saved hunt's pinned target, server counts and finding link", () => {
   render(
     <FindingHuntToolHandler
       status="ready"
@@ -58,7 +65,7 @@ it("summarizes a completed hunt with server counts and links to its finding", ()
         toolCallId: "t1",
         state: "output-available",
         input: {
-          finding_id: "finding-1",
+          finding_id: "model-said-finding",
           summary: "private summary",
           limitations: ["private"],
         },
@@ -66,26 +73,85 @@ it("summarizes a completed hunt with server counts and links to its finding", ()
           success: true,
           hunt_id: "h1",
           duplicate: false,
-          counts: {
-            reproduced: 2,
-            ruled_out: 1,
-            inconclusive: 0,
-            not_examined: 1,
+          counts: savedCounts,
+          saved_hunt: {
+            hunt_id: "h1",
+            finding_id: "finding-1",
+            target: "http://127.0.0.1:40117/api/invoices/{invoice-id}",
+            summary: "private saved summary",
+            limitations: ["private saved limitation"],
           },
         },
       }}
     />,
   );
-  expect(screen.getByText("Hunt saved")).toBeVisible();
-  expect(screen.getByText("2 reproduced")).toBeVisible();
-  expect(screen.getByText("1 not examined")).toBeVisible();
-  expect(screen.queryByText(/inconclusive/)).toBeNull();
-  expect(screen.getByText(/Not findings; the report wasn.t/)).toBeVisible();
-  expect(screen.getByRole("link", { name: /View finding/ })).toHaveAttribute(
-    "href",
-    "/findings?finding=finding-1",
-  );
+  const card = screen.getByRole("region", { name: "Saved hunt results" });
+  expect(
+    within(card).getByText("http://127.0.0.1:40117/api/invoices/{invoice-id}"),
+  ).toBeVisible();
+  expect(within(card).getByText("2 reproduced")).toBeVisible();
+  expect(within(card).getByText("1 not examined")).toBeVisible();
+  expect(within(card).queryByText(/inconclusive/)).toBeNull();
+  expect(
+    within(card).getByText(/Not findings; the report wasn.t/),
+  ).toBeVisible();
+  // The link follows the server receipt, not the model's input.
+  expect(
+    within(card).getByRole("link", { name: /View finding/ }),
+  ).toHaveAttribute("href", "/findings?finding=finding-1");
+  // Long prose stays in the finding's tab, not in chat.
   expect(screen.queryByText(/private/)).toBeNull();
+});
+
+it("keeps older saved outputs readable without a receipt, omitting the target", () => {
+  render(
+    <FindingHuntToolHandler
+      status="ready"
+      toolName="complete_finding_hunt"
+      part={{
+        toolCallId: "t1",
+        state: "output-available",
+        input: { finding_id: "finding-1", summary: "private", limitations: [] },
+        output: { success: true, hunt_id: "h1", counts: savedCounts },
+      }}
+    />,
+  );
+  const card = screen.getByRole("region", { name: "Saved hunt results" });
+  expect(within(card).getByText("2 reproduced")).toBeVisible();
+  expect(within(card).queryByText(/127\.0\.0\.1|https?:/)).toBeNull();
+  expect(
+    within(card).getByRole("link", { name: /View finding/ }),
+  ).toHaveAttribute("href", "/findings?finding=finding-1");
+});
+
+it("never shows a saved results card for a refused or pending completion", () => {
+  const { rerender } = render(
+    <FindingHuntToolHandler
+      status="ready"
+      toolName="complete_finding_hunt"
+      part={{
+        toolCallId: "t1",
+        state: "output-available",
+        input: { finding_id: "finding-1" },
+        output: { success: false, error: "conflict", message: "private" },
+      }}
+    />,
+  );
+  expect(screen.getByText("Hunt summary wasn't saved")).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: "Saved hunt results" }),
+  ).toBeNull();
+  rerender(
+    <FindingHuntToolHandler
+      status="streaming"
+      toolName="complete_finding_hunt"
+      part={{ state: "input-available", input: { finding_id: "finding-1" } }}
+    />,
+  );
+  expect(screen.getByText("Saving hunt summary")).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: "Saved hunt results" }),
+  ).toBeNull();
 });
 
 it("shows a started hunt as pending, never as a result", () => {
