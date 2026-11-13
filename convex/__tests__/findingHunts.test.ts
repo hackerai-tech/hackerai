@@ -259,13 +259,15 @@ describe("Finding variant hunt records", () => {
         candidate_key: "invoice-attachments",
         surface: "GET /api/invoices/{id}/attachments/{file}",
         outcome: "ruled_out",
-        observed_result: "404 for tester B's attachment",
+        authorized_control_succeeded: true,
+        observed_result: "200 for own attachment; 404 for tester B's",
         limitations: ["One pair of accounts"],
       }),
     ).toMatchObject({ success: true, candidate_count: 3 });
     expect(hunts()[0].candidates[2]).toMatchObject({
       outcome: "ruled_out",
       evidence_basis: "runtime_check",
+      authorized_control_succeeded: true,
     });
     expect(hunts()[0].candidates[2]).not.toHaveProperty("evidence_status");
     expect(hunts()[0].candidates.map((c: any) => c.outcome)).toEqual([
@@ -369,6 +371,67 @@ describe("Finding variant hunt records", () => {
       error: "validation",
     });
     expect(hunts()[0].candidates).toHaveLength(0);
+  });
+
+  it("saves blocked access as inconclusive, never as a runtime rule-out", async () => {
+    await start();
+    const editorPreview = {
+      candidate_key: "editor-preview",
+      surface: "GET /api/invoices/{id}/editor-preview",
+      outcome: "ruled_out",
+      observed_result: "403 for own and tester B's invoice; no editor role",
+      limitations: ["No editor account available"],
+    };
+    for (const authorized_control_succeeded of [undefined, false]) {
+      const result = await record({
+        ...editorPreview,
+        authorized_control_succeeded,
+      });
+      expect(result).toMatchObject({ success: false, error: "validation" });
+      expect(result.message).toMatch(/inconclusive/);
+    }
+    expect(hunts()[0].candidates).toHaveLength(0);
+
+    expect(
+      await record({
+        ...editorPreview,
+        outcome: "inconclusive",
+        authorized_control_succeeded: false,
+      }),
+    ).toMatchObject({ success: true, candidate_count: 1 });
+    // A source review that shows the control needs no runtime access.
+    expect(
+      await record({
+        ...editorPreview,
+        candidate_key: "editor-preview-source",
+        evidence_basis: "source_review_only",
+        observed_result: "Handler loads the invoice by id and owner_id",
+      }),
+    ).toMatchObject({ success: true, candidate_count: 2 });
+    expect(hunts()[0].candidates[0]).toMatchObject({
+      outcome: "inconclusive",
+      authorized_control_succeeded: false,
+    });
+    expect(hunts()[0].candidates[1]).not.toHaveProperty(
+      "authorized_control_succeeded",
+    );
+    // The control claim is part of the saved content: changing it on retry
+    // conflicts instead of silently matching.
+    expect(
+      await record({
+        ...editorPreview,
+        outcome: "inconclusive",
+        authorized_control_succeeded: true,
+      }),
+    ).toMatchObject({ success: false, error: "conflict" });
+    expect(
+      await record({
+        ...editorPreview,
+        outcome: "inconclusive",
+        authorized_control_succeeded: false,
+      }),
+    ).toMatchObject({ success: true, duplicate: true });
+    expect(hunts()[0].candidates).toHaveLength(2);
   });
 
   it("caps candidates per hunt and hunts per hour", async () => {

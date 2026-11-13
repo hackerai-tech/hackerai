@@ -133,6 +133,55 @@ it.each([
   },
 );
 
+it("tells a mounted finding view only about hunt writes that actually saved", () => {
+  const { subscribeFindingHuntChanges } = require("@/lib/findings/hunt-events");
+  const changed = jest.fn();
+  const unsubscribe = subscribeFindingHuntChanges(changed);
+  try {
+    const part = (state: string, output?: unknown) => ({
+      toolCallId: "t1",
+      state,
+      input: { finding_id: "finding-1", expected_updated_at: 1 },
+      output,
+    });
+    const { rerender } = render(
+      <FindingHuntToolHandler
+        status="streaming"
+        toolName="start_finding_hunt"
+        part={part("input-available")}
+      />,
+    );
+    expect(changed).not.toHaveBeenCalled();
+    rerender(
+      <FindingHuntToolHandler
+        status="ready"
+        toolName="start_finding_hunt"
+        part={part("output-available", { success: true, hunt_id: "h1" })}
+      />,
+    );
+    // Only the finding ID is shared.
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledWith("finding-1");
+
+    changed.mockClear();
+    for (const [toolName, output] of [
+      ["start_finding_hunt", { success: false, error: "busy" }],
+      ["record_finding_hunt_candidate", { success: false, error: "general" }],
+      ["get_finding_hunts", { success: true, hunts: [] }],
+    ] as const)
+      render(
+        <FindingHuntToolHandler
+          status="ready"
+          toolName={toolName}
+          part={part("output-available", output)}
+        />,
+      );
+    expect(changed).not.toHaveBeenCalled();
+  } finally {
+    unsubscribe();
+  }
+});
+
 it("shows progress only while streaming", () => {
   const { rerender } = render(
     <FindingHuntToolHandler

@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import { ArrowUpRight, ScanSearch } from "lucide-react";
+import { notifyFindingHuntChanged } from "@/lib/findings/hunt-events";
 import type { ChatStatus, SidebarToolError } from "@/types/chat";
 import ToolBlock from "@/components/ui/tool-block";
 import { ToolErrorHandler } from "./ToolErrorHandler";
@@ -137,6 +138,20 @@ export const FindingHuntToolHandler = memo(function FindingHuntToolHandler({
   const { toolCallId = "", state, input, output } = part;
   const result = output?.result ?? output;
   const icon = <ScanSearch aria-hidden="true" />;
+
+  // A saved start, candidate or completion changes the finding's hunt
+  // history; let a mounted finding view refresh. A remounted historical part
+  // may notify once more, which only causes one harmless read.
+  const changedFindingId =
+    toolName !== "get_finding_hunts" &&
+    state === "output-available" &&
+    result?.success === true &&
+    typeof input?.finding_id === "string"
+      ? (input.finding_id as string)
+      : null;
+  useEffect(() => {
+    if (changedFindingId) notifyFindingHuntChanged(changedFindingId);
+  }, [changedFindingId, toolCallId]);
 
   if (state === "input-streaming" || state === "input-available")
     return status === "streaming" ? (

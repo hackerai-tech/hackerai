@@ -77,6 +77,9 @@ export const huntCandidateSchema = z
     rationale: text(HUNT_LIMITS.rationale),
     outcome: z.enum(HUNT_CANDIDATE_OUTCOMES),
     evidence_basis: z.enum(HUNT_EVIDENCE_BASES).optional(),
+    // The Agent's claim that an authorized positive control reached the same
+    // protected surface. Never inferred from prose or status codes.
+    authorized_control_succeeded: z.boolean().optional(),
     reproduction_steps: list(HUNT_LIMITS.step, HUNT_LIMITS.maxSteps),
     expected_result: text(HUNT_LIMITS.expected).optional(),
     observed_result: text(HUNT_LIMITS.observed).optional(),
@@ -109,6 +112,17 @@ export const huntCandidateSchema = z
       issue(
         "evidence_basis",
         "Reproduced requires a runtime check. Source-only suspicion is inconclusive.",
+      );
+    // Identical denials for own and cross-account records prove only blocked
+    // access, so a runtime ruled_out needs a working control on this surface.
+    if (
+      outcome === "ruled_out" &&
+      basis === "runtime_check" &&
+      candidate.authorized_control_succeeded !== true
+    )
+      issue(
+        "authorized_control_succeeded",
+        "A runtime ruled_out requires an authorized positive control that succeeded on this same surface. If your own and cross-account requests were both blocked (same 401/403, login redirect or missing role), access was blocked, not controlled: save this candidate as inconclusive.",
       );
     if (
       (outcome === "reproduced" || outcome === "ruled_out") &&
@@ -187,6 +201,10 @@ export function huntCandidateKey(candidate: HuntCandidate): string {
     candidate.observed_result ?? null,
     [...new Set(candidate.evidence_refs)].sort(),
     candidate.limitations,
+    // Appended only when stated, so keys saved before this field still match.
+    ...(candidate.authorized_control_succeeded === undefined
+      ? []
+      : [candidate.authorized_control_succeeded]),
   ]);
 }
 

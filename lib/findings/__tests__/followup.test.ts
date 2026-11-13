@@ -68,6 +68,10 @@ it("asks a hunt to start first, save candidates one by one and never touch the r
   expect(hunt).toContain(
     "evidence_basis (runtime_check or source_review_only)",
   );
+  expect(hunt).toContain(
+    "A runtime ruled_out needs a successful same-surface authorized control (authorized_control_succeeded: true)",
+  );
+  expect(hunt).toContain("blocked access, so inconclusive");
   expect(hunt).toContain("even if you stop early");
   expect(hunt).toContain("do not create reports");
   expect(hunt).toContain("do not start another hunt");

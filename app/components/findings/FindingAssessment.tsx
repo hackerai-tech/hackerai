@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useId } from "react";
 import { ArrowUpRight, ChevronDown, LoaderCircle } from "lucide-react";
 import {
   Collapsible,
@@ -58,6 +59,9 @@ export function OutcomeLabel({
 /**
  * A collapsed row: outcome, primary text and an optional trailing meta. The
  * whole trigger is one button; links live only in the expanded details.
+ * Narrow: outcome and meta share the first line, primary text wraps below.
+ * Wide: outcome | primary | meta. Every cell is placed explicitly, because
+ * auto-placement puts a row-locked cell into the first free column.
  */
 export function AssessmentRow({
   outcome,
@@ -72,21 +76,30 @@ export function AssessmentRow({
   label: string;
   children: React.ReactNode;
 }) {
+  // aria-label replaces the visible text as the name, so the visible summary
+  // and time are linked back as the description.
+  const id = useId();
   return (
     <Collapsible asChild>
-      <li className="group">
+      <li>
         <CollapsibleTrigger
           aria-label={label}
-          className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset @min-[640px]:grid-cols-[8rem_minmax(0,1fr)_auto]"
+          aria-describedby={meta ? `${id}-primary ${id}-meta` : `${id}-primary`}
+          className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-1 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset @min-[640px]:grid-cols-[9rem_minmax(0,1fr)_auto]"
         >
-          <span className="flex min-h-5 items-center">{outcome}</span>
-          <span className="col-span-2 row-start-2 min-w-0 text-[13px] leading-5 text-foreground @min-[640px]:col-span-1 @min-[640px]:row-start-auto">
+          <span className="col-start-1 row-start-1 flex min-h-5 min-w-0 items-center">
+            {outcome}
+          </span>
+          <span
+            id={`${id}-primary`}
+            className="col-span-2 col-start-1 row-start-2 min-w-0 break-words text-[13px] leading-5 text-foreground @min-[640px]:col-span-1 @min-[640px]:col-start-2 @min-[640px]:row-start-1"
+          >
             {primary}
           </span>
-          <span className="col-start-2 row-start-1 flex min-h-5 items-center gap-3 text-xs text-muted-foreground @min-[640px]:col-start-auto">
-            {meta}
+          <span className="col-start-2 row-start-1 flex min-h-5 items-center gap-3 text-xs text-muted-foreground @min-[640px]:col-start-3">
+            {meta ? <span id={`${id}-meta`}>{meta}</span> : null}
             <ChevronDown
-              className="size-4 shrink-0 transition-transform group-data-[state=open]:rotate-180"
+              className="size-4 shrink-0 transition-transform [[data-state=open]>*>&]:rotate-180"
               aria-hidden="true"
             />
           </span>
@@ -114,7 +127,7 @@ export function AssessmentDetails({ fields }: { fields: AssessmentField[] }) {
       {fields.map((field) => (
         <div
           key={field.label}
-          className="grid gap-0.5 @min-[640px]:grid-cols-[8rem_minmax(0,1fr)] @min-[640px]:gap-x-4"
+          className="grid gap-0.5 @min-[640px]:grid-cols-[9rem_minmax(0,1fr)] @min-[640px]:gap-x-4"
         >
           <dt className="text-[13px] leading-[22px] text-muted-foreground">
             {field.label}

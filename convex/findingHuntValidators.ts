@@ -32,6 +32,7 @@ export const huntCandidateInputValidator = v.object({
   rationale: v.string(),
   outcome: huntCandidateOutcomeValidator,
   evidence_basis: v.optional(huntEvidenceBasisValidator),
+  authorized_control_succeeded: v.optional(v.boolean()),
   reproduction_steps: v.array(v.string()),
   expected_result: v.optional(v.string()),
   observed_result: v.optional(v.string()),
@@ -45,6 +46,9 @@ const candidateFields = {
   rationale: v.string(),
   outcome: huntCandidateOutcomeValidator,
   evidence_basis: v.optional(huntEvidenceBasisValidator),
+  // Optional for rows saved before the field; required by the domain parser
+  // for every new runtime ruled_out write.
+  authorized_control_succeeded: v.optional(v.boolean()),
   reproduction_steps: v.array(v.string()),
   expected_result: v.optional(v.string()),
   observed_result: v.optional(v.string()),

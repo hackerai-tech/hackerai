@@ -14,7 +14,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { Tabs } from "radix-ui";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -313,20 +313,30 @@ function AgentCheckRow({
   onOpen: () => void;
   children: React.ReactNode;
 }) {
+  // The visible status is the button's description; aria-label names it.
+  const statusId = useId();
   return (
     <li>
       <button
         type="button"
         onClick={onOpen}
         aria-label={`Open ${label}`}
+        aria-describedby={statusId}
+        // Cells are placed explicitly; auto-placement would move the
+        // row-locked chevron into the first column on wide panels.
         className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1.5 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset @min-[520px]:grid-cols-[8rem_minmax(0,1fr)_auto]"
       >
-        <span className="text-sm font-medium text-foreground">{label}</span>
-        <span className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1 text-sm text-foreground @min-[520px]:col-span-1 @min-[520px]:row-start-auto">
+        <span className="col-start-1 row-start-1 text-sm font-medium text-foreground">
+          {label}
+        </span>
+        <span
+          id={statusId}
+          className="col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1 text-sm text-foreground @min-[520px]:col-span-1 @min-[520px]:col-start-2 @min-[520px]:row-start-1"
+        >
           {children}
         </span>
         <ChevronRight
-          className="col-start-2 row-start-1 size-4 text-muted-foreground @min-[520px]:col-start-auto"
+          className="col-start-2 row-start-1 size-4 text-muted-foreground @min-[520px]:col-start-3"
           aria-hidden="true"
         />
       </button>
@@ -345,7 +355,9 @@ const TabTrigger = ({
 }) => (
   <Tabs.Trigger
     value={value}
-    className="-mb-px inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=active]:border-foreground data-[state=active]:text-foreground"
+    // Inset ring inside px-1.5 padding: never clipped by the scrolling list
+    // and never drawn over the label or count.
+    className="-mb-px inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent px-1.5 pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[state=active]:border-foreground data-[state=active]:text-foreground"
   >
     {label}
     {count ? (
@@ -354,6 +366,19 @@ const TabTrigger = ({
       </span>
     ) : null}
   </Tabs.Trigger>
+);
+
+const MetaItem = ({
+  title,
+  children,
+}: {
+  title?: string;
+  children: React.ReactNode;
+}) => (
+  <span className="inline-flex items-center gap-2">
+    <span aria-hidden="true">·</span>
+    <span title={title}>{children}</span>
+  </span>
 );
 
 /** Content-free, best-effort exposure capture. */
@@ -595,7 +620,7 @@ export function FindingDetail({
               type="button"
               variant="ghost"
               size="sm"
-              className="-ml-3 text-muted-foreground hover:text-foreground"
+              className="-ml-3 hidden text-muted-foreground hover:text-foreground sm:inline-flex"
               onClick={onRequestClose}
             >
               <ArrowLeft className="size-4" aria-hidden="true" />
@@ -618,15 +643,15 @@ export function FindingDetail({
                   {finding.cvss_score.toFixed(1)}
                 </span>
               </span>
-              <span aria-hidden="true">·</span>
-              <span>{finding.status === "active" ? "Active" : "Closed"}</span>
-              <span aria-hidden="true">·</span>
-              <span>{FINDING_CATEGORY_LABELS[finding.category]}</span>
-              <span aria-hidden="true">·</span>
-              <span title={FINDING_EVIDENCE_BASIS_NOTE}>
+              {/* Each separator wraps with the value after it, never alone. */}
+              <MetaItem>
+                {finding.status === "active" ? "Active" : "Closed"}
+              </MetaItem>
+              <MetaItem>{FINDING_CATEGORY_LABELS[finding.category]}</MetaItem>
+              <MetaItem title={FINDING_EVIDENCE_BASIS_NOTE}>
                 <span className="sr-only">Evidence basis: </span>
                 {findingEvidenceLabel(finding.evidence_status)}
-              </span>
+              </MetaItem>
             </p>
             <h2 className="text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground @min-[760px]:text-[28px] @min-[760px]:leading-[34px]">
               {finding.title}
@@ -668,7 +693,8 @@ export function FindingDetail({
         >
           <Tabs.List
             aria-label="Finding sections"
-            className="flex gap-5 overflow-x-auto border-b border-border @min-[520px]:gap-6"
+            // -mx-1.5 offsets the triggers' padding so labels stay aligned.
+            className="-mx-1.5 flex gap-2 overflow-x-auto border-b border-border @min-[520px]:gap-3"
           >
             <TabTrigger value="overview" label="Overview" />
             <TabTrigger value="report" label="Report" />

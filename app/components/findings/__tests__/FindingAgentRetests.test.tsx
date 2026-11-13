@@ -58,6 +58,12 @@ it("keeps every retest in compact history and shows evidence, limits and source 
   expect(screen.getByText(/not independent certification/)).toBeVisible();
   // Collapsed by default.
   expect(screen.queryByText("Load the other invoice")).toBeNull();
+  // The row's name is concise; its visible summary stays its description.
+  expect(
+    screen.getByRole("button", { name: "Reproduced retest details" }),
+  ).toHaveAccessibleDescription(
+    /^Tester could still read another account's invoice\. .+/,
+  );
 
   fireEvent.click(
     screen.getByRole("button", { name: "Reproduced retest details" }),
@@ -140,7 +146,10 @@ it("presents an interrupted run as inconclusive, never as fixed", () => {
       ])}
     />,
   );
-  expect(
-    screen.getByRole("button", { name: "Inconclusive retest details" }),
-  ).toHaveTextContent("doesn't show the issue is fixed");
+  const row = screen.getByRole("button", {
+    name: "Inconclusive retest details",
+  });
+  expect(row).toHaveTextContent("doesn't show the issue is fixed");
+  // The interrupted warning is announced, not just painted.
+  expect(row).toHaveAccessibleDescription(/doesn't show the issue is fixed/);
 });

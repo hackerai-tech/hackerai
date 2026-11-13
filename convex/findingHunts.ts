@@ -474,6 +474,10 @@ export const recordCandidateForBackend = mutation({
           ...(candidate.evidence_basis && {
             evidence_basis: candidate.evidence_basis,
           }),
+          ...(candidate.authorized_control_succeeded !== undefined && {
+            authorized_control_succeeded:
+              candidate.authorized_control_succeeded,
+          }),
           reproduction_steps: candidate.reproduction_steps,
           ...(candidate.expected_result && {
             expected_result: candidate.expected_result,

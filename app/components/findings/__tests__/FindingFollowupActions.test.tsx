@@ -1,5 +1,12 @@
 import "@testing-library/jest-dom";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FindingFollowupActions } from "../FindingFollowupActions";
 import { getDraftContentById, upsertDraft } from "@/lib/utils/client-storage";
@@ -202,7 +209,7 @@ it.each(["findings_page", "computer_sidebar"] as const)(
   },
 );
 
-it("exports from the More submenu through the shared flow and blocks duplicates while busy", async () => {
+it("exports from More through a format dialog that shares the toolbar flow and blocks duplicates", async () => {
   let finish!: (value: { outcome: "success" }) => void;
   mockDownload.mockReturnValue(
     new Promise((resolve) => {
@@ -210,22 +217,35 @@ it("exports from the More submenu through the shared flow and blocks duplicates 
     }),
   );
   renderActions();
-  await userEvent.click(screen.getByRole("button", { name: "More actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: /Export/ }));
-  await userEvent.click(screen.getByRole("menuitem", { name: /Markdown/ }));
+  const more = screen.getByRole("button", { name: "More actions" });
+  await userEvent.click(more);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Export…" }));
 
+  // A top-level dialog, not a nested flyout, starting on the first format.
+  const dialog = screen.getByRole("dialog", { name: "Export report" });
+  const formats = within(dialog).getAllByRole("button", {
+    name: /^(Markdown|PDF|HTML|JSON|SARIF 2\.1)/,
+  });
+  expect(formats).toHaveLength(5);
+  await waitFor(() => expect(formats[0]).toHaveFocus());
+
+  await userEvent.click(formats[0]);
   expect(mockDownload).toHaveBeenCalledTimes(1);
   expect(mockDownload).toHaveBeenCalledWith([finding], "markdown");
-  expect(screen.getByRole("status")).toHaveTextContent("Preparing export…");
-  // The toolbar export shares the busy state.
-  const toolbar = screen.getByRole("button", { name: /Exporting…/ });
-  expect(toolbar).toBeDisabled();
-  await userEvent.click(screen.getByRole("button", { name: "More actions" }));
-  expect(screen.getByRole("menuitem", { name: /Exporting…/ })).toHaveAttribute(
-    "aria-disabled",
-    "true",
+  expect(within(dialog).getByRole("status")).toHaveTextContent(
+    "Preparing export…",
   );
+  // Rows stay focusable but inert while busy; a second pick does nothing.
+  for (const format of formats)
+    expect(format).toHaveAttribute("aria-disabled", "true");
+  await userEvent.click(formats[1]);
+  await userEvent.keyboard("{Enter}");
   expect(mockDownload).toHaveBeenCalledTimes(1);
+  // The toolbar export (hidden from assistive tech behind the modal) shares
+  // the same busy state.
+  expect(
+    screen.getByRole("button", { name: /Exporting…/, hidden: true }),
+  ).toBeDisabled();
 
   await act(async () => finish({ outcome: "success" }));
   expect(mockCaptureFinding).toHaveBeenCalledWith(
@@ -237,7 +257,42 @@ it("exports from the More submenu through the shared flow and blocks duplicates 
       finding_id: "finding-1",
     }),
   );
+  // The dialog closes when the export settles and focus returns to More.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(more).toHaveFocus());
   expect(screen.getByRole("status")).toHaveTextContent("");
+});
+
+it("closes the export dialog with Escape, returning focus to More without exporting", async () => {
+  renderActions();
+  const more = screen.getByRole("button", { name: "More actions" });
+  await userEvent.click(more);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Export…" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /^Markdown/ })).toHaveFocus(),
+  );
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(more).toHaveFocus());
+  expect(mockDownload).not.toHaveBeenCalled();
+});
+
+it("offers Export in More only when the toolbar export is hidden", async () => {
+  // jsdom has no layout; a non-null offsetParent stands in for a visible
+  // toolbar export at wide container widths.
+  const visible = jest
+    .spyOn(HTMLElement.prototype, "offsetParent", "get")
+    .mockReturnValue(document.body);
+  try {
+    renderActions();
+    await userEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(
+      screen.getByRole("menuitem", { name: /Verify with Agent/ }),
+    ).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: /Export/ })).toBeNull();
+  } finally {
+    visible.mockRestore();
+  }
 });
 
 it("omits source and closure where they don't apply", async () => {

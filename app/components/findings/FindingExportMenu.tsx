@@ -5,14 +5,18 @@ import { ChevronDown, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
@@ -135,24 +139,74 @@ const FormatItems = ({ exporter }: { exporter: FindingExporter }) =>
     </DropdownMenuItem>
   ));
 
-/** Export formats as a submenu of another menu, sharing an exporter. */
-export function FindingExportSubmenu({
+/**
+ * Export formats in a small dialog, for narrow panels where a nested menu
+ * flyout can't fit. Shares the caller's exporter; it stays open while the
+ * export runs and closes when it settles. `returnFocusTo` receives focus on
+ * close, because the menu item that opened the dialog no longer exists.
+ */
+export function FindingExportDialog({
   exporter,
-  label = "Export",
+  open,
+  onOpenChange,
+  returnFocusTo,
 }: {
   exporter: FindingExporter;
-  label?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  returnFocusTo?: React.RefObject<HTMLElement | null>;
 }) {
+  const firstFormat = useRef<HTMLButtonElement>(null);
+  const { isBusy } = exporter;
   return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger disabled={exporter.isBusy}>
-        <Download className="size-4" aria-hidden="true" />
-        {exporter.isBusy ? "Exporting…" : label}
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="min-w-56">
-        <FormatItems exporter={exporter} />
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="gap-4 sm:max-w-sm"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          firstFormat.current?.focus();
+        }}
+        onCloseAutoFocus={(event) => {
+          if (!returnFocusTo?.current) return;
+          event.preventDefault();
+          returnFocusTo.current.focus();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>Export report</DialogTitle>
+          <DialogDescription>Download this finding as:</DialogDescription>
+        </DialogHeader>
+        <ul className="-mx-2">
+          {EXPORT_FORMATS.map((item, index) => (
+            <li key={item.format}>
+              {/* aria-disabled keeps focus on the row while an export runs. */}
+              <button
+                ref={index === 0 ? firstFormat : undefined}
+                type="button"
+                aria-disabled={isBusy || undefined}
+                onClick={() => {
+                  if (isBusy) return;
+                  void exporter
+                    .exportAs(item.format)
+                    .then(() => onOpenChange(false));
+                }}
+                className="flex min-h-11 w-full items-baseline justify-between gap-4 rounded-md px-2 py-2.5 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+              >
+                <span className="font-medium text-foreground">
+                  {item.label}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {item.hint}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <p className="min-h-5 text-sm text-muted-foreground" role="status">
+          {isBusy ? "Preparing export…" : ""}
+        </p>
+      </DialogContent>
+    </Dialog>
   );
 }
 

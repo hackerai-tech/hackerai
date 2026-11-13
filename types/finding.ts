@@ -115,6 +115,8 @@ export type FindingHuntCandidateView = {
   rationale: string;
   outcome: import("@/lib/findings/variant-hunt").HuntCandidateOutcome;
   evidence_basis?: import("@/lib/findings/variant-hunt").HuntEvidenceBasis;
+  /** Agent's claim of a successful same-surface authorized control. Older rows omit it. */
+  authorized_control_succeeded?: boolean;
   reproduction_steps: string[];
   expected_result?: string;
   observed_result?: string;

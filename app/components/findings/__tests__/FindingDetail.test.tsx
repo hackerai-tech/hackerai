@@ -550,6 +550,13 @@ describe("Agent check rollouts", () => {
       name: "Agent checks",
     }).parentElement!;
     expect(within(checks).getByText("2 reproduced")).toBeVisible();
+    // The concise button names keep their visible status as a description.
+    expect(
+      within(checks).getByRole("button", { name: "Open Similar issues" }),
+    ).toHaveAccessibleDescription(/2 reproduced/);
+    expect(
+      within(checks).getByRole("button", { name: "Open Retest" }),
+    ).toHaveAccessibleDescription(/Reproduced .*ago/);
     // Results stay compact until the tab is opened.
     expect(screen.queryByText("GET /api/invoices/{id}/pdf")).toBeNull();
 

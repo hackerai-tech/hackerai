@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronRight, LoaderCircle } from "lucide-react";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { subscribeFindingHuntChanges } from "@/lib/findings/hunt-events";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import {
   countHuntOutcomes,
@@ -53,11 +54,21 @@ async function fetchHuntState(
   }
 }
 
+const isRunning = (state: FindingHuntState | undefined) =>
+  state?.enabled === true &&
+  state.hunts.some((hunt) => hunt.status === "running");
+
 /**
  * Hunt history for a finding. `undefined` while loading, so no hunt action is
  * offered before the rollout is known; a failed first read resolves to
- * disabled. A failed refresh keeps the last good state, a stale response never
- * replaces a newer one, and polling runs only while a hunt is recorded running.
+ * disabled. A failed refresh keeps the last good state.
+ *
+ * Reads never overlap: the next poll is scheduled only after a read settles,
+ * and polling runs only while a hunt is recorded running. A hunt tool that
+ * succeeds in this tab triggers a refresh for its finding; one arriving during
+ * a read queues a single follow-up read, because the in-flight response may
+ * predate the change. Responses for a previously viewed finding or after
+ * unmount are discarded.
  */
 export function useFindingHuntState(
   findingId: string | undefined,
@@ -66,49 +77,48 @@ export function useFindingHuntState(
     findingId: string;
     state: FindingHuntState;
   } | null>(null);
-  const readSequence = useRef(0);
-
-  const read = useCallback((id: string, isCurrent: () => boolean) => {
-    const sequence = ++readSequence.current;
-    return fetchHuntState(id).then((next) => {
-      if (!isCurrent() || sequence !== readSequence.current) return;
-      setLoaded((prev) => ({
-        findingId: id,
-        state:
-          next ??
-          (prev?.findingId === id ? prev.state : { enabled: false as const }),
-      }));
-    });
-  }, []);
 
   useEffect(() => {
     if (!findingId) return;
-    let current = true;
-    void read(findingId, () => current);
-    return () => {
-      current = false;
-    };
-  }, [findingId, read]);
+    let active = true;
+    let inFlight = false;
+    let readAgain = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let current: FindingHuntState | undefined;
 
-  const state =
-    loaded && loaded.findingId === findingId ? loaded.state : undefined;
-  const running =
-    state?.enabled === true &&
-    state.hunts.some((hunt) => hunt.status === "running");
-  useEffect(() => {
-    if (!findingId || !running) return;
-    let current = true;
-    const timer = setInterval(
-      () => void read(findingId, () => current),
-      POLL_INTERVAL_MS,
-    );
-    return () => {
-      current = false;
-      clearInterval(timer);
+    const read = async () => {
+      if (inFlight) {
+        readAgain = true;
+        return;
+      }
+      inFlight = true;
+      clearTimeout(timer);
+      timer = undefined;
+      const next = await fetchHuntState(findingId);
+      inFlight = false;
+      if (!active) return;
+      current = next ?? current ?? { enabled: false };
+      setLoaded({ findingId, state: current });
+      if (readAgain) {
+        readAgain = false;
+        void read();
+      } else if (isRunning(current)) {
+        timer = setTimeout(() => void read(), POLL_INTERVAL_MS);
+      }
     };
-  }, [findingId, running, read]);
 
-  return state;
+    void read();
+    const unsubscribe = subscribeFindingHuntChanges((changed) => {
+      if (changed === findingId) void read();
+    });
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [findingId]);
+
+  return loaded && loaded.findingId === findingId ? loaded.state : undefined;
 }
 
 export const HUNT_OUTCOMES: Record<
@@ -268,7 +278,8 @@ function HuntBody({ hunt }: { hunt: FindingHuntView }) {
             {phase === "running" ? "Watch in task" : "Open in task"}
           </TaskLink>
         </div>
-        {description ? (
+        {/* A completed hunt leads with its candidates; its summary follows. */}
+        {description && phase !== "complete" ? (
           <p
             className="text-[15px] leading-[26px] text-foreground"
             {...(phase === "running" && { role: "status" })}
@@ -276,33 +287,65 @@ function HuntBody({ hunt }: { hunt: FindingHuntView }) {
             {description}
           </p>
         ) : null}
-        {phase === "complete" && hunt.limitations?.length ? (
-          <TextList items={hunt.limitations} />
-        ) : null}
       </div>
       {saved > 0 ? <CandidateRows hunt={hunt} /> : null}
+      {phase === "complete" && (description || hunt.limitations?.length) ? (
+        <div className="space-y-3">
+          {description ? (
+            <p className="text-[15px] leading-[26px] text-foreground">
+              {description}
+            </p>
+          ) : null}
+          {hunt.limitations?.length ? (
+            <Disclosure
+              label={`Not covered (${hunt.limitations.length})`}
+              contentClassName="mt-2 text-sm leading-6"
+            >
+              <TextList items={hunt.limitations} />
+            </Disclosure>
+          ) : null}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function Disclosure({
+  label,
+  contentClassName,
+  children,
+}: {
+  label: string;
+  contentClassName: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="inline-flex min-h-8 items-center gap-2 rounded text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {/* Keyed to this trigger, so a nested disclosure doesn't rotate it. */}
+        <ChevronRight
+          className="size-3.5 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90"
+          aria-hidden="true"
+        />
+        <span className="font-medium text-foreground">{label}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className={contentClassName}>
+        {children}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
 function EarlierHunts({ hunts }: { hunts: FindingHuntView[] }) {
   return (
-    <Collapsible className="group">
-      <CollapsibleTrigger className="inline-flex min-h-8 items-center gap-2 rounded text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <ChevronRight
-          className="size-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-90"
-          aria-hidden="true"
-        />
-        <span className="font-medium text-foreground">
-          {hunts.length} earlier {hunts.length === 1 ? "hunt" : "hunts"}
-        </span>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-4 space-y-8">
-        {hunts.map((hunt) => (
-          <HuntBody key={hunt.hunt_id} hunt={hunt} />
-        ))}
-      </CollapsibleContent>
-    </Collapsible>
+    <Disclosure
+      label={`${hunts.length} earlier ${hunts.length === 1 ? "hunt" : "hunts"}`}
+      contentClassName="mt-4 space-y-8"
+    >
+      {hunts.map((hunt) => (
+        <HuntBody key={hunt.hunt_id} hunt={hunt} />
+      ))}
+    </Disclosure>
   );
 }
 

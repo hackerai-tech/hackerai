@@ -28,17 +28,26 @@ describe("variant hunt candidate rules", () => {
       parseHuntCandidate(candidate({ evidence_basis: "source_review_only" })),
     ).toMatchObject({ success: false, message: /evidence_basis/ });
     // A runtime check can rule a surface out as well as reproduce it.
-    for (const evidence_basis of ["runtime_check", "source_review_only"])
-      expect(
-        parseHuntCandidate(
-          candidate({
-            outcome: "ruled_out",
-            evidence_basis,
-            observed_result: "403 for tester B's PDF",
-            limitations: ["One pair of accounts"],
-          }),
-        ).success,
-      ).toBe(true);
+    expect(
+      parseHuntCandidate(
+        candidate({
+          outcome: "ruled_out",
+          authorized_control_succeeded: true,
+          observed_result: "200 for own PDF; 403 for tester B's PDF",
+          limitations: ["One pair of accounts"],
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      parseHuntCandidate(
+        candidate({
+          outcome: "ruled_out",
+          evidence_basis: "source_review_only",
+          observed_result: "Loader filters by owner_id",
+          limitations: ["Not exercised at runtime"],
+        }),
+      ).success,
+    ).toBe(true);
     // Inconclusive is an outcome, not a method: either method plus limits.
     for (const evidence_basis of ["runtime_check", "source_review_only"])
       expect(
@@ -68,6 +77,73 @@ describe("variant hunt candidate rules", () => {
       parseHuntCandidate(candidate({ outcome: "ruled_out", limitations: [] }))
         .success,
     ).toBe(false);
+  });
+
+  it("rules out at runtime only after a successful same-surface control", () => {
+    // Own and cross-account requests both 403 without an editor role.
+    const blocked = candidate({
+      candidate_key: "editor-preview",
+      surface: "GET /api/invoices/{id}/editor-preview",
+      outcome: "ruled_out",
+      observed_result: "403 for own and tester B's invoice",
+      limitations: ["No editor account available"],
+    });
+    for (const authorized_control_succeeded of [undefined, false]) {
+      const result = parseHuntCandidate({
+        ...blocked,
+        authorized_control_succeeded,
+      });
+      expect(result).toMatchObject({
+        success: false,
+        message: expect.stringMatching(
+          /^authorized_control_succeeded: .*blocked.*save this candidate as inconclusive/,
+        ),
+      });
+    }
+    // The same blocked observation is honestly saved as inconclusive.
+    expect(
+      parseHuntCandidate({
+        ...blocked,
+        outcome: "inconclusive",
+        authorized_control_succeeded: false,
+      }).success,
+    ).toBe(true);
+    expect(
+      parseHuntCandidate({ ...blocked, outcome: "inconclusive" }).success,
+    ).toBe(true);
+    // A source review that shows the control needs no runtime access.
+    expect(
+      parseHuntCandidate({
+        ...blocked,
+        evidence_basis: "source_review_only",
+      }).success,
+    ).toBe(true);
+    // A claim is a boolean judgment, never prose to be parsed.
+    expect(
+      parseHuntCandidate({ ...blocked, authorized_control_succeeded: "yes" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("changes the retry key when the control claim changes", () => {
+    const keyOf = (overrides: Record<string, unknown>) => {
+      const parsed = parseHuntCandidate(
+        candidate({
+          outcome: "inconclusive",
+          limitations: ["No editor account"],
+          ...overrides,
+        }),
+      );
+      if (!parsed.success) throw new Error(parsed.message);
+      return huntCandidateKey(parsed.value);
+    };
+    const keys = [
+      keyOf({}),
+      keyOf({ authorized_control_succeeded: false }),
+      keyOf({ authorized_control_succeeded: true }),
+    ];
+    expect(new Set(keys).size).toBe(3);
+    expect(keyOf({ authorized_control_succeeded: true })).toBe(keys[2]);
   });
 
   it("labels the method honestly in candidate detail", () => {

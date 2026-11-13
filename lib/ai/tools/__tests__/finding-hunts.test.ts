@@ -187,6 +187,36 @@ describe("Finding hunt tools", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
+  it("requires a successful same-surface control before a runtime rule-out", async () => {
+    record.mockResolvedValue(savedCandidate);
+    const { createRecordFindingHuntCandidate } = await tools();
+    const tool = createRecordFindingHuntCandidate(context);
+    const blocked = candidate({
+      candidate_key: "editor-preview",
+      outcome: "ruled_out",
+      observed_result: "403 for own and tester B's invoice",
+    });
+    for (const authorized_control_succeeded of [undefined, false]) {
+      const result = (await tool.execute!(
+        { ...blocked, authorized_control_succeeded },
+        options,
+      )) as any;
+      expect(result).toMatchObject({ success: false, error: "validation" });
+      expect(result.message).toMatch(/inconclusive/);
+    }
+    expect(record).not.toHaveBeenCalled();
+    expect(
+      await tool.execute!(
+        { ...blocked, authorized_control_succeeded: true },
+        options,
+      ),
+    ).toMatchObject({ success: true });
+    expect((record.mock.calls[0][0] as any).candidate).toMatchObject({
+      outcome: "ruled_out",
+      authorized_control_succeeded: true,
+    });
+  });
+
   it("keeps file evidence unverified when no sandbox is connected", async () => {
     record.mockResolvedValue(savedCandidate);
     const { createRecordFindingHuntCandidate } = await tools();
@@ -247,6 +277,131 @@ describe("Finding hunt tools", () => {
       options,
     );
     expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  describe("write order within one Agent response", () => {
+    const deferred = <T>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const withCandidate = {
+      ...savedHunt,
+      counts: { reproduced: 0, ruled_out: 0, inconclusive: 1, not_examined: 0 },
+    };
+
+    it("never lets a completion overtake a candidate still being saved", async () => {
+      const save = deferred<typeof savedCandidate>();
+      record.mockReturnValue(save.promise);
+      complete.mockResolvedValue(withCandidate);
+      const { createRecordFindingHuntCandidate, createCompleteFindingHunt } =
+        await tools();
+      // The SDK starts both calls concurrently, in the model's order.
+      const recording = createRecordFindingHuntCandidate(context).execute!(
+        candidate(),
+        options,
+      );
+      const completing = createCompleteFindingHunt(context).execute!(
+        completion,
+        options,
+      );
+      await settle();
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(complete).not.toHaveBeenCalled();
+
+      save.resolve(savedCandidate);
+      expect(await recording).toMatchObject({ success: true });
+      expect(await completing).toMatchObject({
+        success: true,
+        counts: { inconclusive: 1 },
+      });
+      expect(complete).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps later writes going after an earlier one fails", async () => {
+      record.mockRejectedValueOnce(new Error("save failed"));
+      record.mockResolvedValueOnce(savedCandidate);
+      complete.mockResolvedValue(withCandidate);
+      const { createRecordFindingHuntCandidate, createCompleteFindingHunt } =
+        await tools();
+      const failing = createRecordFindingHuntCandidate(context).execute!(
+        candidate(),
+        options,
+      );
+      const retry = createRecordFindingHuntCandidate(context).execute!(
+        candidate(),
+        options,
+      );
+      const completing = createCompleteFindingHunt(context).execute!(
+        completion,
+        options,
+      );
+      expect(await failing).toMatchObject({ success: false, error: "general" });
+      expect(await retry).toMatchObject({ success: true });
+      expect(await completing).toMatchObject({ success: true });
+    });
+
+    it("doesn't block other findings or other responses", async () => {
+      const save = deferred<typeof savedCandidate>();
+      record.mockReturnValue(save.promise);
+      complete.mockResolvedValue(savedHunt);
+      const { createRecordFindingHuntCandidate, createCompleteFindingHunt } =
+        await tools();
+      const recording = createRecordFindingHuntCandidate(context).execute!(
+        candidate(),
+        options,
+      );
+      await settle();
+      // Another finding in this response.
+      expect(
+        await createCompleteFindingHunt(context).execute!(
+          { ...completion, finding_id: "finding-2" },
+          options,
+        ),
+      ).toMatchObject({ success: true });
+      // The same finding from another response.
+      expect(
+        await createCompleteFindingHunt({ ...context }).execute!(
+          completion,
+          options,
+        ),
+      ).toMatchObject({ success: true });
+      expect(complete).toHaveBeenCalledTimes(2);
+      save.resolve(savedCandidate);
+      await recording;
+    });
+
+    it("drops a queued write cancelled while it waited, without saving it", async () => {
+      const save = deferred<typeof savedCandidate>();
+      record.mockReturnValue(save.promise);
+      const { createRecordFindingHuntCandidate, createCompleteFindingHunt } =
+        await tools();
+      const recording = createRecordFindingHuntCandidate(context).execute!(
+        candidate(),
+        options,
+      );
+      const controller = new AbortController();
+      const completing = Promise.resolve(
+        createCompleteFindingHunt(context).execute!(completion, {
+          ...options,
+          abortSignal: controller.signal,
+        }),
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      controller.abort();
+      save.resolve(savedCandidate);
+      await recording;
+      expect(await completing).toBe(controller.signal.reason);
+      expect(complete).not.toHaveBeenCalled();
+      expect(logError).not.toHaveBeenCalled();
+    });
   });
 
   it("reads history only for reports in the current chat", async () => {

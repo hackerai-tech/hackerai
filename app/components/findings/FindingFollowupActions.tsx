@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Download,
   LoaderCircle,
   LockKeyhole,
   MessageSquareText,
@@ -45,9 +46,9 @@ import type {
   FindingRetestState,
 } from "@/types/finding";
 import {
+  FindingExportDialog,
   FindingExportMenu,
   FindingExportStatus,
-  FindingExportSubmenu,
   useFindingExport,
 } from "./FindingExportMenu";
 
@@ -172,9 +173,17 @@ export function FindingFollowupActions({
   onCloseFinding?: () => void;
 }) {
   const { prepare, dialog } = useFindingFollowupDraft(finding);
-  // One exporter for the toolbar menu and the More submenu: shared busy guard
+  // One exporter for the toolbar menu and the export dialog: shared busy guard
   // and status, kept here so it survives the More menu closing.
   const exporter = useFindingExport(async () => [finding]);
+  const toolbarExport = useRef<HTMLDivElement>(null);
+  const moreTrigger = useRef<HTMLButtonElement>(null);
+  // The More menu is portaled outside the container query, so it offers
+  // Export only when the toolbar export is actually hidden when it opens.
+  const [exportInMore, setExportInMore] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  // Set synchronously on select: the closing menu reads it before re-render.
+  const openingExportDialog = useRef(false);
   const retestRunning =
     retestState?.enabled === true &&
     retestState.retests[0]?.status === "running";
@@ -224,16 +233,22 @@ export function FindingFollowupActions({
             {huntRunning ? "Hunting…" : "Hunt similar"}
           </Button>
         ) : null}
-        <div className="hidden @min-[520px]:block">
+        <div ref={toolbarExport} className="hidden @min-[520px]:block">
           <FindingExportMenu
             label="Export"
             getFindings={async () => [finding]}
             exporter={exporter}
           />
         </div>
-        <DropdownMenu>
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open)
+              setExportInMore(toolbarExport.current?.offsetParent === null);
+          }}
+        >
           <DropdownMenuTrigger asChild>
             <Button
+              ref={moreTrigger}
               variant="outline"
               size="icon"
               className="size-11 shrink-0 @min-[520px]:size-8"
@@ -242,12 +257,32 @@ export function FindingFollowupActions({
               <MoreHorizontal className="size-4" aria-hidden="true" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-52">
+          <DropdownMenuContent
+            align="end"
+            className="min-w-52"
+            // Opening the export dialog: let it take focus, not the trigger.
+            onCloseAutoFocus={(event) => {
+              if (!openingExportDialog.current) return;
+              openingExportDialog.current = false;
+              event.preventDefault();
+            }}
+          >
             <DropdownMenuItem onSelect={() => prepare("verify")}>
               <ShieldCheck className="size-4" aria-hidden="true" />
               Verify with Agent
             </DropdownMenuItem>
-            <FindingExportSubmenu exporter={exporter} />
+            {exportInMore ? (
+              <DropdownMenuItem
+                disabled={exporter.isBusy}
+                onSelect={() => {
+                  openingExportDialog.current = true;
+                  setExportDialogOpen(true);
+                }}
+              >
+                <Download className="size-4" aria-hidden="true" />
+                {exporter.isBusy ? "Exporting…" : "Export…"}
+              </DropdownMenuItem>
+            ) : null}
             {showSource ? (
               <DropdownMenuItem asChild>
                 <Link
@@ -282,6 +317,12 @@ export function FindingFollowupActions({
         </DropdownMenu>
       </div>
       <FindingExportStatus exporter={exporter} />
+      <FindingExportDialog
+        exporter={exporter}
+        open={exportDialogOpen}
+        onOpenChange={setExportDialogOpen}
+        returnFocusTo={moreTrigger}
+      />
       {dialog}
     </>
   );

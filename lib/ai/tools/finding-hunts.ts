@@ -74,13 +74,19 @@ const recordCandidateInputSchema = z
     outcome: z
       .enum(HUNT_CANDIDATE_OUTCOMES)
       .describe(
-        "reproduced: you observed the same flaw at runtime now. ruled_out: a completed check (a runtime check with working authorized access, or a source review that shows the control) showed this surface is not affected; it says nothing about other surfaces. inconclusive: anything else, including missing or expired access, source-only suspicion of the flaw, unreachable targets or partial checks. not_examined: identified but not assessed.",
+        "reproduced: you observed the same flaw at runtime now. ruled_out: a completed check (a runtime check whose authorized positive control succeeded on this same surface, or a source review that shows the control) showed this surface is not affected; it says nothing about other surfaces. inconclusive: anything else, including missing or expired access, source-only suspicion of the flaw, unreachable targets or partial checks. not_examined: identified but not assessed.",
       ),
     evidence_basis: z
       .enum(HUNT_EVIDENCE_BASES)
       .optional()
       .describe(
         "How you checked this surface, separate from the outcome. runtime_check: requests you ran now. source_review_only: reading code only. reproduced requires runtime_check. Omit only for not_examined.",
+      ),
+    authorized_control_succeeded: z
+      .boolean()
+      .optional()
+      .describe(
+        "Your own judgment, required true for a runtime_check ruled_out. true only when an account authorized for the matching resource made a positive-control request that successfully reached the SAME protected surface. The same 401/403 for your own and the cross-account record, a missing role, or only a login redirect is blocked access, never a successful control. A reachable service, or your own control on a DIFFERENT surface, is not enough. Example: an editor-preview endpoint needs an editor account; without editor access, use inconclusive. Not required for source_review_only.",
       ),
     reproduction_steps: lines(HUNT_LIMITS.step, HUNT_LIMITS.maxSteps)
       .optional()
@@ -149,7 +155,7 @@ Save each candidate with record_finding_hunt_candidate as soon as you assess it,
 
 const recordCandidateTool = tool({
   description: `Save your assessment of ONE candidate surface in the hunt started with start_finding_hunt in this response. Call it once per candidate, right after assessing it, so partial results survive an interruption. Saved candidates are immutable and labelled as the Agent's judgment. They are not findings: they never create or change reports.
-Use reproduced only for a runtime check that observed the flaw now. Source-only suspicion, missing or expired access and partial checks are inconclusive, never ruled_out. Set evidence_basis to how you checked (runtime_check or source_review_only), independent of the outcome. Record redacted observations only: no tokens, cookies, API keys or full response bodies. At most ${HUNT_LIMITS.maxCandidates} candidates per hunt.`,
+Use reproduced only for a runtime check that observed the flaw now. Source-only suspicion, missing or expired access and partial checks are inconclusive, never ruled_out. A runtime ruled_out needs authorized_control_succeeded: true; if your own and cross-account requests were both blocked, save inconclusive. Set evidence_basis to how you checked (runtime_check or source_review_only), independent of the outcome. Record redacted observations only: no tokens, cookies, API keys or full response bodies. At most ${HUNT_LIMITS.maxCandidates} candidates per hunt.`,
   inputSchema: recordCandidateInputSchema,
 });
 
@@ -251,6 +257,39 @@ const toText = ({ output }: { output: unknown }) => ({
   value: JSON.stringify(output),
 });
 
+// The SDK runs a response's tool calls concurrently, so a completion could
+// persist while a candidate is still preparing evidence and the candidate
+// would then be rejected as already finished. Writes for one finding within
+// one Agent response (the ToolContext shared by its hunt tools) run in call
+// order instead. Other findings and responses stay independent; the backend's
+// live-run guards and immutable completion remain authoritative.
+const huntWriteTails = new WeakMap<ToolContext, Map<string, Promise<void>>>();
+
+/** Must be called before the tool's first await to keep call order. */
+function inHuntWriteOrder<T>(
+  context: ToolContext,
+  findingId: string,
+  write: () => Promise<T>,
+): Promise<T> {
+  let tails = huntWriteTails.get(context);
+  if (!tails) {
+    tails = new Map();
+    huntWriteTails.set(context, tails);
+  }
+  const queue = tails;
+  const result = (queue.get(findingId) ?? Promise.resolve()).then(write);
+  // A failed write must not block the ones queued after it.
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  queue.set(findingId, tail);
+  void tail.then(() => {
+    if (queue.get(findingId) === tail) queue.delete(findingId);
+  });
+  return result;
+}
+
 const provenanceOf = (context: ToolContext, findingId: string) => ({
   userId: context.userID,
   chatId: context.chatId,
@@ -310,45 +349,47 @@ export const createGetFindingHunts = (context: ToolContext) =>
 export const createStartFindingHunt = (context: ToolContext) =>
   tool({
     ...startFindingHuntTool,
-    execute: async (
+    execute: (
       { finding_id, expected_updated_at }: StartFindingHuntInput,
       { abortSignal },
-    ) => {
-      if (!context.assistantMessageId) return noProvenance;
-      let stage: HuntToolStage = "flag_check";
-      try {
-        // Re-checked here so a stale assignment can't start a new hunt.
-        if (!(await isFindingHuntsEnabled(context.userID))) return unavailable;
-        abortSignal?.throwIfAborted();
-        stage = "start_save";
-        const result = await startFindingHunt({
-          ...provenanceOf(context, finding_id),
-          expectedUpdatedAt: expected_updated_at,
-        });
-        if (!result.success) return result;
-        if (!result.duplicate)
-          recordSuccess(
-            context,
-            "start_finding_hunt",
-            "finding_hunt_started",
-            {},
-          );
-        return {
-          ...result,
-          message:
-            "Hunt recorded as running. Save each candidate with record_finding_hunt_candidate as you assess it, then call complete_finding_hunt in this response.",
-        };
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        reportToolFailure(context, "start_finding_hunt", stage, error);
-        return {
-          success: false as const,
-          error: "general" as const,
-          message:
-            "The hunt could not be recorded. Call start_finding_hunt again once; it is safe to retry.",
-        };
-      }
-    },
+    ) =>
+      inHuntWriteOrder(context, finding_id, async () => {
+        if (!context.assistantMessageId) return noProvenance;
+        let stage: HuntToolStage = "flag_check";
+        try {
+          // Re-checked here so a stale assignment can't start a new hunt.
+          if (!(await isFindingHuntsEnabled(context.userID)))
+            return unavailable;
+          abortSignal?.throwIfAborted();
+          stage = "start_save";
+          const result = await startFindingHunt({
+            ...provenanceOf(context, finding_id),
+            expectedUpdatedAt: expected_updated_at,
+          });
+          if (!result.success) return result;
+          if (!result.duplicate)
+            recordSuccess(
+              context,
+              "start_finding_hunt",
+              "finding_hunt_started",
+              {},
+            );
+          return {
+            ...result,
+            message:
+              "Hunt recorded as running. Save each candidate with record_finding_hunt_candidate as you assess it, then call complete_finding_hunt in this response.",
+          };
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          reportToolFailure(context, "start_finding_hunt", stage, error);
+          return {
+            success: false as const,
+            error: "general" as const,
+            message:
+              "The hunt could not be recorded. Call start_finding_hunt again once; it is safe to retry.",
+          };
+        }
+      }),
     toModelOutput: toText,
   });
 
@@ -360,86 +401,89 @@ export const createRecordFindingHuntCandidate = (
 ) =>
   tool({
     ...recordCandidateTool,
-    execute: async (
+    // Evidence preparation runs inside the ordered write, so a completion
+    // called later in the response can't overtake this candidate.
+    execute: (
       { finding_id, ...input }: RecordCandidateInput,
       { abortSignal },
-    ) => {
-      if (!context.assistantMessageId) return noProvenance;
-      let stage: HuntToolStage = "input_validation";
-      try {
-        const parsed = parseHuntCandidate({
-          ...input,
-          reproduction_steps: input.reproduction_steps ?? [],
-          evidence_refs: input.evidence_refs ?? [],
-        });
-        if (!parsed.success)
+    ) =>
+      inHuntWriteOrder(context, finding_id, async () => {
+        if (!context.assistantMessageId) return noProvenance;
+        let stage: HuntToolStage = "input_validation";
+        try {
+          const parsed = parseHuntCandidate({
+            ...input,
+            reproduction_steps: input.reproduction_steps ?? [],
+            evidence_refs: input.evidence_refs ?? [],
+          });
+          if (!parsed.success)
+            return {
+              success: false as const,
+              error: "validation" as const,
+              message: parsed.message,
+            };
+          abortSignal?.throwIfAborted();
+          stage = "evidence_preparation";
+          const prepared = await prepareFindingEvidence(
+            { evidence_refs: parsed.value.evidence_refs },
+            getCurrentSandbox,
+            abortSignal,
+          );
+          if (!prepared.accepted)
+            return {
+              success: false as const,
+              error: "validation" as const,
+              message: prepared.error,
+            };
+          abortSignal?.throwIfAborted();
+          stage = "environment_derivation";
+          const environment = environmentFor(getCurrentSandbox());
+          stage = "candidate_save";
+          const result = await recordFindingHuntCandidate({
+            ...provenanceOf(context, finding_id),
+            candidate: parsed.value,
+            retainedEvidenceRefs: prepared.report.evidence_refs ?? [],
+            ...(prepared.evidenceVerification && {
+              evidenceVerification: prepared.evidenceVerification,
+            }),
+            environment,
+          });
+          if (!result.success) return result;
+          if (!result.duplicate)
+            recordSuccess(
+              context,
+              "record_finding_hunt_candidate",
+              "finding_hunt_candidate_saved",
+              {
+                outcome: parsed.value.outcome,
+                candidate_count: result.candidate_count,
+              },
+            );
           return {
-            success: false as const,
-            error: "validation" as const,
-            message: parsed.message,
+            ...result,
+            outcome: parsed.value.outcome,
+            message:
+              "Candidate saved to the report's hunt history. It is not a finding and the report was not changed.",
+            ...(prepared.evidenceVerification?.warning && {
+              evidence_warning: prepared.evidenceVerification.warning,
+            }),
           };
-        abortSignal?.throwIfAborted();
-        stage = "evidence_preparation";
-        const prepared = await prepareFindingEvidence(
-          { evidence_refs: parsed.value.evidence_refs },
-          getCurrentSandbox,
-          abortSignal,
-        );
-        if (!prepared.accepted)
-          return {
-            success: false as const,
-            error: "validation" as const,
-            message: prepared.error,
-          };
-        abortSignal?.throwIfAborted();
-        stage = "environment_derivation";
-        const environment = environmentFor(getCurrentSandbox());
-        stage = "candidate_save";
-        const result = await recordFindingHuntCandidate({
-          ...provenanceOf(context, finding_id),
-          candidate: parsed.value,
-          retainedEvidenceRefs: prepared.report.evidence_refs ?? [],
-          ...(prepared.evidenceVerification && {
-            evidenceVerification: prepared.evidenceVerification,
-          }),
-          environment,
-        });
-        if (!result.success) return result;
-        if (!result.duplicate)
-          recordSuccess(
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          reportToolFailure(
             context,
             "record_finding_hunt_candidate",
-            "finding_hunt_candidate_saved",
-            {
-              outcome: parsed.value.outcome,
-              candidate_count: result.candidate_count,
-            },
+            stage,
+            error,
           );
-        return {
-          ...result,
-          outcome: parsed.value.outcome,
-          message:
-            "Candidate saved to the report's hunt history. It is not a finding and the report was not changed.",
-          ...(prepared.evidenceVerification?.warning && {
-            evidence_warning: prepared.evidenceVerification.warning,
-          }),
-        };
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        reportToolFailure(
-          context,
-          "record_finding_hunt_candidate",
-          stage,
-          error,
-        );
-        return {
-          success: false as const,
-          error: "general" as const,
-          message:
-            "The candidate could not be confirmed. Call record_finding_hunt_candidate again with identical content; it is safe to retry.",
-        };
-      }
-    },
+          return {
+            success: false as const,
+            error: "general" as const,
+            message:
+              "The candidate could not be confirmed. Call record_finding_hunt_candidate again with identical content; it is safe to retry.",
+          };
+        }
+      }),
     toModelOutput: toText,
   });
 
@@ -449,58 +493,59 @@ export const createCompleteFindingHunt = (
 ) =>
   tool({
     ...completeFindingHuntTool,
-    execute: async (
+    execute: (
       { finding_id, ...input }: CompleteFindingHuntInput,
       { abortSignal },
-    ) => {
-      if (!context.assistantMessageId) return noProvenance;
-      let stage: HuntToolStage = "input_validation";
-      try {
-        const parsed = parseHuntCompletion(input);
-        if (!parsed.success)
+    ) =>
+      inHuntWriteOrder(context, finding_id, async () => {
+        if (!context.assistantMessageId) return noProvenance;
+        let stage: HuntToolStage = "input_validation";
+        try {
+          const parsed = parseHuntCompletion(input);
+          if (!parsed.success)
+            return {
+              success: false as const,
+              error: "validation" as const,
+              message: parsed.message,
+            };
+          abortSignal?.throwIfAborted();
+          stage = "environment_derivation";
+          const environment = environmentFor(getCurrentSandbox());
+          stage = "complete_save";
+          const result = await completeFindingHunt({
+            ...provenanceOf(context, finding_id),
+            completion: parsed.value,
+            environment,
+          });
+          if (!result.success) return result;
+          if (!result.duplicate)
+            recordSuccess(
+              context,
+              "complete_finding_hunt",
+              "finding_hunt_completed",
+              {
+                ...result.counts,
+                candidate_count: Object.values(result.counts).reduce(
+                  (total, count) => total + count,
+                  0,
+                ),
+              },
+            );
+          return {
+            ...result,
+            message:
+              "Hunt saved to the report's history. The report itself was not changed and no findings were created.",
+          };
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          reportToolFailure(context, "complete_finding_hunt", stage, error);
           return {
             success: false as const,
-            error: "validation" as const,
-            message: parsed.message,
+            error: "general" as const,
+            message:
+              "The hunt could not be confirmed. Call complete_finding_hunt again with identical content; it is safe to retry.",
           };
-        abortSignal?.throwIfAborted();
-        stage = "environment_derivation";
-        const environment = environmentFor(getCurrentSandbox());
-        stage = "complete_save";
-        const result = await completeFindingHunt({
-          ...provenanceOf(context, finding_id),
-          completion: parsed.value,
-          environment,
-        });
-        if (!result.success) return result;
-        if (!result.duplicate)
-          recordSuccess(
-            context,
-            "complete_finding_hunt",
-            "finding_hunt_completed",
-            {
-              ...result.counts,
-              candidate_count: Object.values(result.counts).reduce(
-                (total, count) => total + count,
-                0,
-              ),
-            },
-          );
-        return {
-          ...result,
-          message:
-            "Hunt saved to the report's history. The report itself was not changed and no findings were created.",
-        };
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        reportToolFailure(context, "complete_finding_hunt", stage, error);
-        return {
-          success: false as const,
-          error: "general" as const,
-          message:
-            "The hunt could not be confirmed. Call complete_finding_hunt again with identical content; it is safe to retry.",
-        };
-      }
-    },
+        }
+      }),
     toModelOutput: toText,
   });

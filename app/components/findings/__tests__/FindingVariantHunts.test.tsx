@@ -12,6 +12,7 @@ import {
   FindingVariantHunts,
   useFindingHuntState,
 } from "../FindingVariantHunts";
+import { notifyFindingHuntChanged } from "@/lib/findings/hunt-events";
 import type {
   FindingHuntCandidateView,
   FindingHuntState,
@@ -73,12 +74,26 @@ const state = (
   hunts,
 });
 
-it("shows the summary and compact candidate rows, with evidence only on demand", () => {
+it("leads a completed hunt with its candidates, then the summary, with limits behind Not covered", () => {
   render(<FindingVariantHunts state={state([hunt()])} />);
   expect(screen.getByText("Hunt complete")).toBeVisible();
+  const summary = screen.getByText(
+    "The ownership gap is on 2 sibling endpoints.",
+  );
+  expect(summary).toBeVisible();
+  // Candidate rows are reachable without opening any disclosure, and come
+  // before the summary.
+  const firstRow = screen.getByRole("button", { name: /^Reproduced:/ });
   expect(
-    screen.getByText("The ownership gap is on 2 sibling endpoints."),
-  ).toBeVisible();
+    firstRow.compareDocumentPosition(summary) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  // The hunt's limitations stay complete but collapsed under a label.
+  expect(screen.queryByText("History endpoint was not reached.")).toBeNull();
+  const notCovered = screen.getByRole("button", { name: "Not covered (1)" });
+  expect(notCovered).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(notCovered);
+  expect(notCovered).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText("History endpoint was not reached.")).toBeVisible();
   expect(screen.getByText(/not certification/)).toBeVisible();
   expect(screen.getByRole("link", { name: /Open in task/ })).toHaveAttribute(
@@ -292,6 +307,101 @@ describe("useFindingHuntState", () => {
       await jest.advanceTimersByTimeAsync(20_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes a mounted idle finding when a hunt write for it succeeds, then polls while running", async () => {
+    jest.useFakeTimers();
+    const idle = state([]);
+    const running = state([hunt({ status: "running", candidates: [] })]);
+    fetchMock.mockReturnValueOnce(response(idle));
+    const { result, unmount } = renderHook(() =>
+      useFindingHuntState("finding-1"),
+    );
+    await act(async () => {});
+    expect(result.current).toEqual(idle);
+    // Idle findings don't poll.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Another finding's hunt changes nothing here.
+    act(() => notifyFindingHuntChanged("finding-2"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockReturnValueOnce(response(running));
+    await act(async () => notifyFindingHuntChanged("finding-1"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current).toEqual(running);
+    fetchMock.mockReturnValueOnce(response(running));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    unmount();
+    act(() => notifyFindingHuntChanged("finding-1"));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(20_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("never overlaps reads: a response slower than the interval still lands", async () => {
+    jest.useFakeTimers();
+    const running = state([hunt({ status: "running", candidates: [] })]);
+    let resolveSlow!: (value: Response) => void;
+    fetchMock.mockReturnValueOnce(response(running)).mockReturnValueOnce(
+      new Promise<Response>((resolve) => {
+        resolveSlow = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useFindingHuntState("finding-1"));
+    await act(async () => {});
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The read takes longer than the interval; no second read starts.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(15_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const finished = state([hunt()]);
+    await act(async () => {
+      resolveSlow({ ok: true, json: async () => finished } as Response);
+    });
+    expect(result.current).toEqual(finished);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(20_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues one follow-up read when a hunt starts during an in-flight idle read", async () => {
+    let resolveIdle!: (value: Response) => void;
+    const running = state([hunt({ status: "running", candidates: [] })]);
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise<Response>((resolve) => {
+          resolveIdle = resolve;
+        }),
+      )
+      .mockReturnValueOnce(response(running));
+    const { result } = renderHook(() => useFindingHuntState("finding-1"));
+    // The start lands while the first read is still in flight.
+    act(() => {
+      notifyFindingHuntChanged("finding-1");
+      notifyFindingHuntChanged("finding-1");
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveIdle({ ok: true, json: async () => state([]) } as Response);
+    });
+    // The pre-start idle response isn't the last word.
+    await waitFor(() => expect(result.current).toEqual(running));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("ignores a stale response for a previously viewed finding", async () => {
