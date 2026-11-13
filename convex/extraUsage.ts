@@ -294,10 +294,11 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
  * both pass the pre-check and both run side effects before either landed the
  * mark.
  *
- * Returns one of three states atomically:
- *   - "acquired"          : caller now owns the claim; run handler then call
- *                           finalizeWebhookProcessing on success
+ * Returns one of four states atomically:
+ *   - "acquired"          : caller now owns the claim; run handler, mark it
+ *                           handled, then finalize on success
  *   - "already_processed" : event was finalized previously; skip with 200
+ *   - "handler_completed": side effects finished; retry only finalization
  *   - "claim_held"        : another worker is currently processing this event;
  *                           return a retryable non-2xx response so a failed
  *                           holder does not lose the provider delivery
@@ -315,6 +316,7 @@ export const claimWebhookProcessing = mutation({
     state: v.union(
       v.literal("acquired"),
       v.literal("already_processed"),
+      v.literal("handler_completed"),
       v.literal("claim_held"),
     ),
   }),
@@ -346,6 +348,9 @@ export const claimWebhookProcessing = mutation({
     if (status === "completed") {
       return { state: "already_processed" as const };
     }
+    if (status === "handled") {
+      return { state: "handler_completed" as const };
+    }
 
     const claimedAt = existing.claimed_at ?? existing.processed_at;
     if (now - claimedAt < STALE_CLAIM_MS) {
@@ -358,6 +363,31 @@ export const claimWebhookProcessing = mutation({
       claimed_at: now,
     });
     return { state: "acquired" as const };
+  },
+});
+
+/** Persist successful side effects before the separate finalization step. */
+export const markWebhookHandled = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (!existing)
+      throw new Error("Webhook claim missing before handler completion");
+    if (existing.status === "pending") {
+      await ctx.db.patch(existing._id, {
+        status: "handled",
+        processed_at: Date.now(),
+      });
+    }
+    return null;
   },
 });
 

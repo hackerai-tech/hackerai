@@ -16,7 +16,6 @@ jest.mock("convex/values", () => ({
   v: {
     string: jest.fn(() => "string"),
     number: jest.fn(() => "number"),
-    boolean: jest.fn(() => "boolean"),
     optional: jest.fn(() => "optional"),
     union: jest.fn(() => "union"),
     literal: jest.fn(() => "literal"),
@@ -268,32 +267,6 @@ describe("userSuspensions", () => {
       resolved_at: undefined,
       resolved_reason: undefined,
     });
-  });
-
-  it("preserves a support-resolved Stripe source during a webhook retry", async () => {
-    const { upsertActive } = await import("../userSuspensions");
-    const resolved = {
-      _id: "id-1",
-      user_id: "user_123",
-      status: "resolved",
-      category: "dispute_fraudulent",
-      source: "stripe",
-      source_id: "dp_123",
-      stripe_customer_id: "cus_123",
-      created_at: 5_000,
-      updated_at: 8_000,
-      resolved_at: 8_000,
-      resolved_reason: "support_review",
-    };
-    const { ctx, rows } = makeMockCtx([resolved]);
-
-    await expect(
-      (upsertActive as any).handler(ctx, {
-        ...baseArgs,
-        preserveResolved: true,
-      }),
-    ).resolves.toBeNull();
-    expect(rows[0]).toEqual(resolved);
   });
 
   it("returns the newest active suspension for a user", async () => {

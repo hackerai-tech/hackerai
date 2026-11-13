@@ -57,7 +57,7 @@ type Row = {
   _id: string;
   event_id: string;
   processed_at: number;
-  status?: "pending" | "completed";
+  status?: "pending" | "handled" | "completed";
   claimed_at?: number;
 };
 
@@ -124,6 +124,14 @@ async function callFinalize(ctx: any) {
   });
 }
 
+async function callMarkHandled(ctx: any) {
+  const { markWebhookHandled } = await import("../extraUsage");
+  return (markWebhookHandled as any).handler(ctx, {
+    serviceKey: SERVICE_KEY,
+    eventId: EVENT_ID,
+  });
+}
+
 describe("claimWebhookProcessing", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -164,6 +172,16 @@ describe("claimWebhookProcessing", () => {
     expect(result).toEqual({ state: "already_processed" });
     expect(rows).toHaveLength(1);
     expect(ctx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("records successful side effects and allows a retry to finalize only", async () => {
+    const { ctx, rows } = makeMockCtx();
+    expect(await callClaim(ctx)).toEqual({ state: "acquired" });
+    await callMarkHandled(ctx);
+    expect(rows[0].status).toBe("handled");
+    expect(await callClaim(ctx)).toEqual({ state: "handler_completed" });
+    await callFinalize(ctx);
+    expect(rows[0].status).toBe("completed");
   });
 
   it("treats legacy rows without status as completed (back-compat)", async () => {

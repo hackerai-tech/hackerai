@@ -234,29 +234,22 @@ async function suspendCustomerUsers({
   sourceReason?: string;
   chargeId?: string | null;
   sourceCreatedUnix: number;
-}): Promise<boolean> {
+}): Promise<void> {
   const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
-  let supportResolved = false;
 
   for (const userId of userIds) {
-    const suspensionId = await getConvexClient().mutation(
-      api.userSuspensions.upsertActive,
-      {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        category,
-        sourceId,
-        preserveResolved: true,
-        sourceReason,
-        stripeCustomerId: customerId,
-        stripeChargeId: chargeId ?? undefined,
-        workosOrganizationId: orgId ?? undefined,
-        sourceCreatedAt: sourceCreatedUnix * 1000,
-      },
-    );
-    if (suspensionId === null) supportResolved = true;
+    await getConvexClient().mutation(api.userSuspensions.upsertActive, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userId,
+      category,
+      sourceId,
+      sourceReason,
+      stripeCustomerId: customerId,
+      stripeChargeId: chargeId ?? undefined,
+      workosOrganizationId: orgId ?? undefined,
+      sourceCreatedAt: sourceCreatedUnix * 1000,
+    });
   }
-  return !supportResolved;
 }
 
 /**
@@ -286,7 +279,7 @@ async function blockFraudulentUser(
 ): Promise<void> {
   // Suspend first so a customer deleted during Stripe cleanup cannot prevent
   // the local safety control from being applied. The upsert is replay-safe.
-  const shouldCleanUp = await suspendCustomerUsers({
+  await suspendCustomerUsers({
     customerId,
     category: suspension.category,
     sourceId: suspension.sourceId,
@@ -294,12 +287,6 @@ async function blockFraudulentUser(
     chargeId,
     sourceCreatedUnix,
   });
-  if (!shouldCleanUp) {
-    console.log(
-      `[Fraud Webhook] Skipped cleanup for resolved source ${suspension.sourceId}`,
-    );
-    return;
-  }
   await expireOpenCheckoutSessions(customerId);
   await cancelAllSubscriptions(customerId);
   await detachAllPaymentMethods(customerId);
@@ -420,7 +407,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // AND detach payment methods. Don't mark the Stripe customer as a fraud
     // actor, but keep the Convex billing hold authoritative: every app billing
     // path rejects new transactions until support resolves the suspension.
-    const shouldCleanUp = await suspendCustomerUsers({
+    await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
       sourceId: dispute.id,
@@ -428,12 +415,6 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
-    if (!shouldCleanUp) {
-      console.log(
-        `[Fraud Webhook] Skipped cleanup for resolved source ${dispute.id}`,
-      );
-      return;
-    }
     await expireOpenCheckoutSessions(customerId);
     await cancelAllSubscriptions(customerId);
     await detachAllPaymentMethods(customerId);
@@ -509,7 +490,8 @@ export async function POST(req: NextRequest) {
   // a `pending` row in a single transaction; only one caller wins.
   // Stale `pending` claims (>10 min) are reclaimable so a crashed first
   // attempt doesn't permanently block Stripe's retries.
-  let claimState: "acquired" | "already_processed" | "claim_held";
+  let claimState:
+    "acquired" | "already_processed" | "handler_completed" | "claim_held";
   try {
     const result = await getConvexClient().mutation(
       api.extraUsage.claimWebhookProcessing,
@@ -542,29 +524,49 @@ export async function POST(req: NextRequest) {
   // Handle events. If the handler throws, return 500 WITHOUT finalizing —
   // the `pending` claim will become reclaimable after STALE_CLAIM_MS so a
   // future Stripe retry can drive completion.
-  try {
-    switch (event.type) {
-      case "radar.early_fraud_warning.created": {
-        await handleEarlyFraudWarning(
-          event.data.object as Stripe.Radar.EarlyFraudWarning,
-        );
-        break;
+  if (claimState === "acquired") {
+    try {
+      switch (event.type) {
+        case "radar.early_fraud_warning.created": {
+          await handleEarlyFraudWarning(
+            event.data.object as Stripe.Radar.EarlyFraudWarning,
+          );
+          break;
+        }
+        case "charge.dispute.created": {
+          await handleDisputeCreated(event.data.object as Stripe.Dispute);
+          break;
+        }
       }
-      case "charge.dispute.created": {
-        await handleDisputeCreated(event.data.object as Stripe.Dispute);
-        break;
-      }
+    } catch (error) {
+      console.error(
+        `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
+        error,
+      );
+      return NextResponse.json({ error: "Handler failed" }, { status: 500 });
     }
-  } catch (error) {
-    console.error(
-      `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
-      error,
-    );
-    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
+
+    // If finalization fails later, a retry sees `handled` and never repeats
+    // Stripe cleanup after support has reviewed or restored this customer.
+    try {
+      await getConvexClient().mutation(api.extraUsage.markWebhookHandled, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+      });
+    } catch (error) {
+      console.error(
+        `[Fraud Webhook] Failed to record handler completion for ${event.id}:`,
+        error,
+      );
+      return NextResponse.json(
+        { error: "Handler completion failed" },
+        { status: 500 },
+      );
+    }
   }
 
-  // A failed finalize leaves the claim pending. Keep the delivery retryable
-  // so Stripe can drive a replay after the claim becomes stale.
+  // A failed finalize leaves a handled record. Keep the delivery retryable;
+  // the next delivery finalizes it without repeating external side effects.
   try {
     await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
