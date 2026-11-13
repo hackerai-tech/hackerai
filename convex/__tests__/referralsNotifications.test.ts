@@ -337,7 +337,7 @@ describe("referral reward notifications", () => {
     expect(tables.extra_usage).toMatchObject([
       {
         user_id: USER_ID,
-        balance_points: 120_000,
+        balance_points: 86_666,
         auto_reload_enabled: false,
       },
     ]);
@@ -404,7 +404,7 @@ describe("referral reward notifications", () => {
     });
 
     expect(tables.extra_usage[0]).toMatchObject({
-      balance_points: 120_000,
+      balance_points: 86_666,
       auto_reload_enabled: true,
     });
     expect(tables.user_customization[0].extra_usage_enabled).toBe(true);
@@ -515,7 +515,7 @@ describe("referral reward notifications", () => {
     expect(tables.extra_usage).toMatchObject([
       {
         user_id: USER_ID,
-        balance_points: 100_000,
+        balance_points: 66_666,
       },
     ]);
     expect(tables.user_customization).toMatchObject([
@@ -524,5 +524,64 @@ describe("referral reward notifications", () => {
         extra_usage_enabled: true,
       },
     ]);
+  });
+
+  it("credits a team referral using the shared Extra Usage dollar value", async () => {
+    const { awardConversionReward } = await import("../referrals");
+    const { ctx, tables } = makeMockCtx({
+      referral_attributions: [
+        {
+          _id: "attribution_team",
+          referred_user_id: REFERRED_USER_ID,
+          referrer_user_id: USER_ID,
+          referral_code: "TEAM123",
+          referrer_subscription_tier: "team",
+          referrer_organization_id: "org_team",
+          status: "attributed",
+          sign_up_reward_status: "awarded",
+          conversion_reward_status: "pending",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      referral_codes: [
+        {
+          _id: "code_team",
+          user_id: USER_ID,
+          code: "TEAM123",
+          status: "active",
+          referrer_subscription_tier: "team",
+          referrer_organization_id: "org_team",
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      team_extra_usage: [
+        {
+          _id: "team_wallet",
+          organization_id: "org_team",
+          enabled: true,
+          balance_points: 20_000,
+          updated_at: 1,
+        },
+      ],
+    });
+
+    const result = await awardConversionReward.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      referrerRewardDollars: 10,
+      referredUserId: REFERRED_USER_ID,
+      stripeCustomerId: "cus_team",
+      stripeSubscriptionId: "sub_team",
+      stripeInvoiceId: "in_team",
+      plan: "team-monthly-plan",
+      tier: "team",
+    });
+
+    expect(result.status).toBe("awarded");
+    expect(tables.team_extra_usage).toMatchObject([
+      { organization_id: "org_team", enabled: true, balance_points: 86_666 },
+    ]);
+    expect(tables.extra_usage).toEqual([]);
   });
 });

@@ -8,8 +8,10 @@ import { ConvexError, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import type { Id } from "./_generated/dataModel";
-
-const POINTS_PER_DOLLAR = 10_000;
+import {
+  extraUsageDollarsToPoints,
+  extraUsagePointsToDollars,
+} from "./lib/extraUsagePricing";
 
 const paidTierValidator = v.union(
   v.literal("pro"),
@@ -96,11 +98,6 @@ const deactivateReferralCode = async (
   });
 };
 
-const dollarsToPoints = (dollars: number): number =>
-  Math.round(dollars * POINTS_PER_DOLLAR);
-
-const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
-
 async function getReferralStats(ctx: QueryCtx | MutationCtx, userId: string) {
   const attributions = await ctx.db
     .query("referral_attributions")
@@ -133,7 +130,7 @@ async function addPersonalCredits(
   now: number,
   options?: { activateForPaidUse?: boolean },
 ) {
-  const amountPoints = dollarsToPoints(amountDollars);
+  const amountPoints = extraUsageDollarsToPoints(amountDollars);
   const customization = options?.activateForPaidUse
     ? await ctx.db
         .query("user_customization")
@@ -178,7 +175,7 @@ async function addPersonalCredits(
     }
   }
 
-  return pointsToDollars(newBalancePoints);
+  return extraUsagePointsToDollars(newBalancePoints);
 }
 
 async function addTeamCredits(
@@ -187,7 +184,7 @@ async function addTeamCredits(
   amountDollars: number,
   now: number,
 ) {
-  const amountPoints = dollarsToPoints(amountDollars);
+  const amountPoints = extraUsageDollarsToPoints(amountDollars);
   const row = await ctx.db
     .query("team_extra_usage")
     .withIndex("by_org", (q) => q.eq("organization_id", organizationId))
@@ -207,7 +204,7 @@ async function addTeamCredits(
     });
   }
 
-  return pointsToDollars(newBalancePoints);
+  return extraUsagePointsToDollars(newBalancePoints);
 }
 
 async function insertRewardLog(
