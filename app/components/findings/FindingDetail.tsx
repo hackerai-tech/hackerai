@@ -357,7 +357,7 @@ const TabTrigger = ({
     value={value}
     // Inset ring inside px-1.5 padding: never clipped by the scrolling list
     // and never drawn over the label or count.
-    className="-mb-px inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent px-1.5 pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[state=active]:border-foreground data-[state=active]:text-foreground"
+    className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent px-1.5 pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[state=active]:border-foreground data-[state=active]:text-foreground"
   >
     {label}
     {count ? (
