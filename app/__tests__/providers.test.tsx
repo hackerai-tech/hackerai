@@ -1560,4 +1560,68 @@ describe("Desktop runtime identity", () => {
     expect(withdrawn.before_send(exception("Desktop failure"))).toBeNull();
     expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
   });
+
+  it("adds closed capture structure only to retained exceptions behind the existing guards", async () => {
+    const { posthog, view, beforeSend } = await renderDesktop();
+    const transport = (url: string, frames?: unknown[]) => ({
+      event: "$exception",
+      properties: {
+        $current_url: url,
+        $exception_list: [
+          {
+            type: "TypeError",
+            value: "Load failed",
+            mechanism: { handled: false, synthetic: false },
+            ...(frames ? { stacktrace: { frames } } : {}),
+          },
+        ],
+        hackerai_exception_capture_list_shape: "PRIVATE",
+        hackerai_exception_capture_raw_value: "PRIVATE",
+      },
+    });
+    const appFrames = [
+      { source: "turbopack:///[project]/app/components/chat.tsx" },
+    ];
+
+    // Existing bare transport noise still drops before enrichment.
+    expect(beforeSend(transport("https://hackerai.co/c/chat"))).toBeNull();
+
+    const retained = beforeSend(
+      transport("https://hackerai.co/c/chat?token=PRIVATE", appFrames),
+    );
+    expect(
+      Object.fromEntries(
+        Object.entries(retained?.properties ?? {}).filter(([key]) =>
+          key.startsWith("hackerai_exception_capture_"),
+        ),
+      ),
+    ).toEqual({
+      hackerai_exception_capture_version: 1,
+      hackerai_exception_capture_list_shape: "array_one",
+      hackerai_exception_capture_frame_source_count_bucket: "1",
+      hackerai_exception_capture_frame_source_family: "other",
+      hackerai_exception_capture_exact_transport_message: true,
+    });
+    expect(retained?.properties).toMatchObject({
+      ...identity,
+      $current_url: "https://hackerai.co/c/chat",
+    });
+    expect(JSON.stringify(retained)).not.toContain("PRIVATE");
+
+    expect(
+      beforeSend(transport("https://hackerai.co/abuse/report", appFrames)),
+    ).toBeNull();
+
+    posthog.__loaded = true;
+    mockGetPostHogClient.mockReturnValue(posthog);
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    const withdrawn = posthog.set_config.mock.calls.at(-1)![0] as {
+      before_send: BeforeSend;
+    };
+    expect(
+      withdrawn.before_send(transport("https://hackerai.co/c/chat", appFrames)),
+    ).toBeNull();
+  });
 });
