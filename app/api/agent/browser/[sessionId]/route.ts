@@ -18,6 +18,7 @@ import {
   connectBrowserSandbox,
   getActiveBrowserSessionName,
   browserRelayRenewFailureContext,
+  browserRelayStopFailureContext,
   browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
@@ -234,6 +235,14 @@ const unavailablePost = (
         // Keep the existing event and response if optional projection fails.
       }
     }
+    let relayStopContext = {};
+    if (stage === "drain_relays") {
+      try {
+        relayStopContext = browserRelayStopFailureContext(error);
+      } catch {
+        // Optional stop diagnostics cannot discard the existing event or response.
+      }
+    }
     phLogger.info("agent_browser_preview_post_unavailable", {
       diagnostic_version: 1,
       action:
@@ -267,6 +276,7 @@ const unavailablePost = (
         ...failureDiagnostic?.inputContext,
       }),
       ...streamPortContext,
+      ...relayStopContext,
       ...(action === "heartbeat" && stage === "renew_relay"
         ? browserRelayRenewFailureContext(error)
         : {}),

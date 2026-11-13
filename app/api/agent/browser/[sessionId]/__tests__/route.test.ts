@@ -36,6 +36,12 @@ const mockRenewContext = jest.fn(
     relay_renew_failure_reason: "lock_busy",
   }),
 );
+const mockStopContext = jest.fn((_error: unknown): Record<string, unknown> => ({
+  relay_stop_diagnostic_version: 1,
+  relay_stop_error_kind: "command_exit",
+  relay_stop_http_status: "none",
+  relay_stop_command_exit_code: 1,
+}));
 const mockSessionId = "a".repeat(32);
 let mockState = "recovery";
 let mockRunActive = true;
@@ -106,6 +112,7 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), info: jest.fn(), flush: jest.fn() },
 }));
 jest.mock("@/lib/ai/browser-handoff/server", () => ({
+  browserRelayStopFailureContext: (error: unknown) => mockStopContext(error),
   browserRelayRenewFailureContext: (error: unknown) => mockRenewContext(error),
   browserSessionReadFailureContext: () =>
     mockFailure === "read-active"
@@ -989,6 +996,14 @@ it.each([
                 "relay_renew_failure_reason",
               ]
             : [],
+          failure === "relay-stop"
+            ? [
+                "relay_stop_diagnostic_version",
+                "relay_stop_error_kind",
+                "relay_stop_http_status",
+                "relay_stop_command_exit_code",
+              ]
+            : [],
         )
         .sort(),
     );
@@ -1001,6 +1016,80 @@ it.each([
     expect(JSON.stringify(fields)).not.toMatch(/PRIVATE|default/);
   },
 );
+
+it.each(["take", "resume", "release"])(
+  "records bounded relay stop context on %s without changing its recovery response",
+  async (action) => {
+    mockFailure = "";
+    const original = new Error("PRIVATE relay await failure");
+    mockStopRelay.mockRejectedValueOnce(original);
+    const response = await diagnosticPost({
+      action,
+      browserSessionName: "default",
+      grant: "PRIVATE_GRANT".repeat(3),
+      requestId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      state: action === "release" ? "recovery" : "disconnected",
+    });
+    expect(mockStopContext).toHaveBeenCalledTimes(1);
+    expect(mockStopContext).toHaveBeenCalledWith(original);
+    // Take's existing rollback drains the attempted grant a second time.
+    expect(mockStopRelay).toHaveBeenCalledTimes(action === "take" ? 2 : 1);
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "agent_browser_preview_post_unavailable",
+      expect.objectContaining({
+        action,
+        failure_stage: "drain_relays",
+        relay_stop_diagnostic_version: 1,
+        relay_stop_error_kind: "command_exit",
+        relay_stop_http_status: "none",
+        relay_stop_command_exit_code: 1,
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.info).mock.calls[0][1]),
+    ).not.toContain("PRIVATE");
+  },
+);
+
+it("preserves the original unavailable event when optional stop projection throws", async () => {
+  mockFailure = "relay-stop";
+  mockStopContext.mockImplementationOnce(() => {
+    throw new Error("PRIVATE observer");
+  });
+  const response = await diagnosticPost({
+    action: "release",
+    grant: "PRIVATE_GRANT".repeat(3),
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ state: "recovery" });
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "agent_browser_preview_post_unavailable",
+    expect.objectContaining({
+      failure_stage: "drain_relays",
+      action: "release",
+    }),
+  );
+  const fields = jest.mocked(phLogger.info).mock.calls[0][1];
+  expect(fields).not.toHaveProperty("relay_stop_diagnostic_version");
+  expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+});
+
+it("does not project stop context for a different await failure", async () => {
+  mockFailure = "connect";
+  const response = await diagnosticPost({
+    action: "take",
+    browserSessionName: "default",
+  });
+  expect(response.status).toBe(503);
+  expect(mockStopContext).not.toHaveBeenCalled();
+  expect(jest.mocked(phLogger.info).mock.calls[0][1]).not.toHaveProperty(
+    "relay_stop_diagnostic_version",
+  );
+});
 
 it.each(["auth", "identity", "missing"])(
   "does not report non503 POST %s as unavailable",
