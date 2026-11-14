@@ -1828,6 +1828,63 @@ describe("CentrifugoSandbox", () => {
     });
 
     it.each([
+      ["timeout", "timeout"],
+      ["resolved_published_legacy", "resolved_published_legacy"],
+      // A raw version or unknown value is dropped; the stage group survives.
+      ["a raw native version", "0.0.72"],
+      ["an arbitrary value", "PRIVATE_C:\\Users\\private"],
+    ])(
+      "records the matched receiver version lookup from %s only when closed",
+      async (_name, nativeVersionLookup) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply } = await dispatchProbe(sandbox);
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: "PRIVATE_OTHER",
+            receiverDiagnostic: {
+              ...receiverDiagnostic,
+              nativeVersionLookup: "rejected",
+            },
+          },
+        });
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message: "PRIVATE_NATIVE_FAILURE",
+            receiverDiagnostic: { ...receiverDiagnostic, nativeVersionLookup },
+          },
+        });
+        expect(await pending).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+
+        const closed = !/\d|PRIVATE/.test(nativeVersionLookup);
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: "other",
+            receiver_stage_version: 1,
+            receiver_stage: "native_invoke",
+            receiver_adapter: "published_legacy_native",
+            ...(closed && {
+              receiver_native_version_lookup: nativeVersionLookup,
+            }),
+          },
+        ]);
+        const logs = JSON.stringify(receiverLog.mock.calls);
+        expect(logs).not.toContain("PRIVATE");
+        expect(logs).not.toContain("0.0.72");
+      },
+    );
+
+    it.each([
       ["an old producer", undefined],
       ["an unknown version", { ...receiverDiagnostic, version: 2 }],
       [

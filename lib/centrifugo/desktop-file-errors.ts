@@ -47,11 +47,35 @@ export type DesktopFileReceiverAdapter =
   | "compatibility_native"
   | "legacy_loopback";
 
+/**
+ * How this bridge's own 500ms native version lookup settled, never the raw
+ * version. Analytics enrichment can report a different device version.
+ */
+export type DesktopNativeVersionLookup =
+  | "resolved_published_legacy"
+  | "resolved_other"
+  | "timeout"
+  | "rejected"
+  | "invalid"
+  | "unobserved";
+
 export interface DesktopFileReceiverDiagnostic {
   version: 1;
   stage: DesktopFileReceiverStage;
   adapter: DesktopFileReceiverAdapter;
+  /** Optional within version 1; older readers drop it, older senders omit it. */
+  nativeVersionLookup?: DesktopNativeVersionLookup;
 }
+
+const NATIVE_VERSION_LOOKUPS: ReadonlySet<unknown> =
+  new Set<DesktopNativeVersionLookup>([
+    "resolved_published_legacy",
+    "resolved_other",
+    "timeout",
+    "rejected",
+    "invalid",
+    "unobserved",
+  ]);
 
 const RECEIVER_ADAPTERS: ReadonlySet<unknown> =
   new Set<DesktopFileReceiverAdapter>([
@@ -96,7 +120,8 @@ function ownDataValue(value: unknown, key: string): unknown {
 /**
  * Read a file_error's optional receiver diagnostic as a fresh closed copy.
  * Accessors, inherited or unknown values and inconsistent groups are ignored,
- * and reading can never throw into the original failure.
+ * and reading can never throw into the original failure. An unusable optional
+ * version lookup is omitted without discarding a valid stage and adapter.
  */
 export function readDesktopFileReceiverDiagnostic(
   fileError: unknown,
@@ -111,10 +136,14 @@ export function readDesktopFileReceiverDiagnostic(
     const allowed = RECEIVER_STAGE_ADAPTERS.get(stage);
     if (allowed && !allowed.has(adapter as DesktopFileReceiverAdapter))
       return undefined;
+    const nativeVersionLookup = ownDataValue(diagnostic, "nativeVersionLookup");
     return {
       version: 1,
       stage: stage as DesktopFileReceiverStage,
       adapter: adapter as DesktopFileReceiverAdapter,
+      ...(NATIVE_VERSION_LOOKUPS.has(nativeVersionLookup) && {
+        nativeVersionLookup: nativeVersionLookup as DesktopNativeVersionLookup,
+      }),
     };
   } catch {
     return undefined;
