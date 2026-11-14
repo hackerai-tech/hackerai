@@ -236,7 +236,11 @@ export function useAuthFromAuthKit(
         settle("null");
       } catch {
         // A transport/provider failure is not evidence of sign-out.
-        settle("exception_fallback");
+        settle(
+          cancelled || authContextRef.current !== recovery?.context
+            ? "context_superseded"
+            : "exception_fallback",
+        );
       } finally {
         pending = false;
       }
