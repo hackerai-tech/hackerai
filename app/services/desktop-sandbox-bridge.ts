@@ -34,6 +34,9 @@ import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   readClosedConvexAuthProviderState,
+  readClosedConvexAuthTokenDecision,
+  readConvexAuthTokenDecision,
+  type ClosedConvexAuthTokenDecision,
   type ConvexAuthProviderState,
 } from "@/lib/auth/convex-auth-diagnostics";
 import {
@@ -310,27 +313,46 @@ function readNativeAuthFrontendState(
   }
 }
 
-// State read immediately before the app invokes one heartbeat/token callback.
-// This is app-level callback invocation, not network dispatch: Convex may queue
-// the mutation, so it does not prove what the backend saw or why it failed.
+// State read immediately before the app invokes one registration, heartbeat or
+// token callback. This is app-level callback invocation, not network dispatch:
+// Convex may queue the mutation, so it does not prove what the backend saw or
+// why it failed.
 type NativeAuthInvocation = {
   convexFunction:
+    | "localSandbox:connectDesktop"
     | "localSandbox:heartbeatDesktop"
     | "localSandbox:refreshCentrifugoTokenDesktop";
   frontendState: NativeAuthFrontendState;
   providerState: ConvexAuthProviderState;
+  tokenDecision: ClosedConvexAuthTokenDecision;
 };
 
-// Join an existing auth-stop event to its backend failure without copying error
-// text. SDK formats may change; missing/malformed markers simply omit the ID.
+// The committed provider's latest token attempt is telemetry context only: it
+// does not identify the token a heartbeat/token callback actually carried.
+function readNativeAuthTokenDecision(
+  read: (() => unknown) | undefined,
+): ClosedConvexAuthTokenDecision {
+  return readClosedConvexAuthTokenDecision(read ?? readConvexAuthTokenDecision);
+}
+
+// Join an existing auth-stop (or registration rejection) event to its backend
+// failure without copying error text. SDK formats may change; missing or
+// malformed markers simply omit the ID.
 function nativeAuthDiagnostics(
   error: unknown,
-  { convexFunction, frontendState, providerState }: NativeAuthInvocation,
+  {
+    convexFunction,
+    frontendState,
+    providerState,
+    tokenDecision,
+  }: NativeAuthInvocation,
   {
     readNativeAuthFrontendState: readFrontendState,
     readNativeAuthProviderState: readProviderState,
+    readNativeAuthTokenDecision: readTokenDecision,
   }: NativeAuthStateReaders,
 ): Record<string, string | number> {
+  const stopTokenDecision = readNativeAuthTokenDecision(readTokenDecision);
   const diagnostics: Record<string, string | number> = {
     native_auth_diagnostic_version: 1,
     // Distinguish this pending-heartbeat guard from older loaded bridges.
@@ -348,6 +370,25 @@ function nativeAuthDiagnostics(
     native_auth_request_provider_state: providerState,
     native_auth_provider_state:
       readClosedConvexAuthProviderState(readProviderState),
+    // The provider's latest token attempt at invocation and again at the stop.
+    // "same" means the invocation's attempt was still the latest at the stop.
+    native_auth_token_decision_version: 1,
+    native_auth_request_token_mode: tokenDecision.mode,
+    native_auth_request_token_outcome: tokenDecision.outcome,
+    native_auth_request_token_result: tokenDecision.result,
+    native_auth_request_token_age: tokenDecision.age,
+    native_auth_request_token_context: tokenDecision.context,
+    native_auth_token_mode: stopTokenDecision.mode,
+    native_auth_token_outcome: stopTokenDecision.outcome,
+    native_auth_token_result: stopTokenDecision.result,
+    native_auth_token_age: stopTokenDecision.age,
+    native_auth_token_context: stopTokenDecision.context,
+    native_auth_token_attempt:
+      tokenDecision.attempt && stopTokenDecision.attempt
+        ? tokenDecision.attempt === stopTokenDecision.attempt
+          ? "same"
+          : "changed"
+        : "unavailable",
   };
   try {
     const message = error instanceof Error ? error.message : undefined;
@@ -356,7 +397,7 @@ function nativeAuthDiagnostics(
         ? message
             .slice(0, 512)
             .match(
-              /^\[CONVEX M\((localSandbox:(?:heartbeatDesktop|refreshCentrifugoTokenDesktop))\)\] \[Request ID: ([a-f0-9]{16})\]/,
+              /^\[CONVEX M\((localSandbox:(?:connectDesktop|heartbeatDesktop|refreshCentrifugoTokenDesktop))\)\] \[Request ID: ([a-f0-9]{16})\]/,
             )
         : null;
     if (match?.[1] === convexFunction) diagnostics.convex_request_id = match[2];
@@ -404,15 +445,19 @@ interface DesktopBridgeConfig {
     environmentId?: string,
   ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
-  // Read before each heartbeat/token callback invocation and again at the stop;
-  // reported only when that callback's authentication failure stops this bridge.
+  // Read before each registration/heartbeat/token callback invocation and again
+  // at its catch; reported only for that callback's authentication failure.
   readNativeAuthFrontendState?: () => NativeAuthFrontendState;
   readNativeAuthProviderState?: () => ConvexAuthProviderState;
+  // Defaults to the committed provider's module state; injectable for tests.
+  readNativeAuthTokenDecision?: () => unknown;
 }
 
 type NativeAuthStateReaders = Pick<
   DesktopBridgeConfig,
-  "readNativeAuthFrontendState" | "readNativeAuthProviderState"
+  | "readNativeAuthFrontendState"
+  | "readNativeAuthProviderState"
+  | "readNativeAuthTokenDecision"
 >;
 
 export class DesktopSandboxBridge {
@@ -502,6 +547,9 @@ export class DesktopSandboxBridge {
       ),
       providerState: readClosedConvexAuthProviderState(
         this.config.readNativeAuthProviderState,
+      ),
+      tokenDecision: readNativeAuthTokenDecision(
+        this.config.readNativeAuthTokenDecision,
       ),
     };
   }
@@ -729,8 +777,12 @@ export class DesktopSandboxBridge {
     const commandStdin = await this.probeCommandStdin();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
-    const { connectionId, centrifugoToken, centrifugoWsUrl } =
-      await this.config.connectDesktop({
+    const registration = this.nativeAuthInvocation(
+      "localSandbox:connectDesktop",
+    );
+    let registered: Awaited<ReturnType<DesktopBridgeConfig["connectDesktop"]>>;
+    try {
+      registered = await this.config.connectDesktop({
         ...(environmentId ? { environmentId } : {}),
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
@@ -742,6 +794,25 @@ export class DesktopSandboxBridge {
           ...(commandStdin && { commandStdin: true }),
         },
       });
+    } catch (error) {
+      // Observe only: an authentication rejection before any connection ID
+      // exists. The caller still receives this exact error and owns retries.
+      try {
+        if (!wasStopped() && isUnauthenticatedConvexError(error)) {
+          this.logRelayState("error", {
+            source: "registration",
+            errorType: "unauthenticated",
+            native_app_version: this.nativeAppVersion,
+            native_platform: this.nativePlatform,
+            ...nativeAuthDiagnostics(error, registration, this.config),
+          });
+        }
+      } catch {
+        // Diagnostics must not replace the registration error.
+      }
+      throw error;
+    }
+    const { connectionId, centrifugoToken, centrifugoWsUrl } = registered;
 
     if (wasStopped()) {
       // stop() could not see this connection while registration was pending.
