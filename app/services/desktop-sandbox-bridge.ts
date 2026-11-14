@@ -283,13 +283,21 @@ function readNativeAuthFrontendState(
   }
 }
 
+// State read immediately before the app invokes one heartbeat/token callback.
+// This is app-level callback invocation, not network dispatch: Convex may queue
+// the mutation, so it does not prove what the backend saw or why it failed.
+type NativeAuthInvocation = {
+  convexFunction:
+    | "localSandbox:heartbeatDesktop"
+    | "localSandbox:refreshCentrifugoTokenDesktop";
+  frontendState: NativeAuthFrontendState;
+};
+
 // Join an existing auth-stop event to its backend failure without copying error
 // text. SDK formats may change; missing/malformed markers simply omit the ID.
 function nativeAuthDiagnostics(
   error: unknown,
-  convexFunction:
-    | "localSandbox:heartbeatDesktop"
-    | "localSandbox:refreshCentrifugoTokenDesktop",
+  { convexFunction, frontendState }: NativeAuthInvocation,
   readFrontendState: (() => NativeAuthFrontendState) | undefined,
 ): Record<string, string | number> {
   const diagnostics: Record<string, string | number> = {
@@ -298,7 +306,11 @@ function nativeAuthDiagnostics(
     // This identifies the heartbeat policy, not the native binary or build.
     heartbeat_backpressure_version: 1,
     convex_function: convexFunction,
+    // Read at the stop; compare with the invocation value to separate state
+    // present when the callback was invoked from a later transition.
     native_auth_frontend_state: readNativeAuthFrontendState(readFrontendState),
+    native_auth_request_state_version: 1,
+    native_auth_request_frontend_state: frontendState,
   };
   try {
     const message = error instanceof Error ? error.message : undefined;
@@ -355,7 +367,8 @@ interface DesktopBridgeConfig {
     environmentId?: string,
   ) => void;
   onTerminated?: (reason: DesktopBridgeTerminationReason) => void;
-  // Read only when a heartbeat/token authentication failure stops this bridge.
+  // Read before each heartbeat/token callback invocation and again at the stop;
+  // reported only when that callback's authentication failure stops this bridge.
   readNativeAuthFrontendState?: () => NativeAuthFrontendState;
 }
 
@@ -434,6 +447,19 @@ export class DesktopSandboxBridge {
     );
   }
 
+  // Call immediately before invoking the callback; each pending call keeps its
+  // own value so a later invocation or transition cannot overwrite it.
+  private nativeAuthInvocation(
+    convexFunction: NativeAuthInvocation["convexFunction"],
+  ): NativeAuthInvocation {
+    return {
+      convexFunction,
+      frontendState: readNativeAuthFrontendState(
+        this.config.readNativeAuthFrontendState,
+      ),
+    };
+  }
+
   private async sendHeartbeat(): Promise<void> {
     const connectionId = this.connectionId;
     const generation = this.startupGeneration;
@@ -447,6 +473,7 @@ export class DesktopSandboxBridge {
     // Convex queues unresolved mutations across disconnects. Keep the timer from
     // building a heartbeat backlog while the current request is still pending.
     this.heartbeatInFlightGeneration = generation;
+    let invocation = this.nativeAuthInvocation("localSandbox:heartbeatDesktop");
     try {
       const result = await this.config.heartbeatDesktop({ connectionId });
       if (
@@ -458,6 +485,10 @@ export class DesktopSandboxBridge {
       if (!result.success) {
         // The legacy heartbeat response has no reason. Resolve it through the
         // existing token endpoint so a displaced session cannot kick its replacement.
+        // An auth failure here belongs to this callback, not the earlier heartbeat.
+        invocation = this.nativeAuthInvocation(
+          "localSandbox:refreshCentrifugoTokenDesktop",
+        );
         const state = await this.config.refreshCentrifugoTokenDesktop({
           connectionId,
         });
@@ -496,7 +527,7 @@ export class DesktopSandboxBridge {
           reason: "heartbeat_unauthenticated",
           ...nativeAuthDiagnostics(
             error,
-            "localSandbox:heartbeatDesktop",
+            invocation,
             this.config.readNativeAuthFrontendState,
           ),
         });
@@ -694,6 +725,9 @@ export class DesktopSandboxBridge {
           );
         }
         let result: RefreshTokenResult;
+        const invocation = this.nativeAuthInvocation(
+          "localSandbox:refreshCentrifugoTokenDesktop",
+        );
         try {
           result = await this.config.refreshCentrifugoTokenDesktop({
             connectionId: this.connectionId,
@@ -706,7 +740,7 @@ export class DesktopSandboxBridge {
               reason: "unauthenticated" as const,
               ...nativeAuthDiagnostics(
                 error,
-                "localSandbox:refreshCentrifugoTokenDesktop",
+                invocation,
                 this.config.readNativeAuthFrontendState,
               ),
             };
