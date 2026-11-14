@@ -24,14 +24,17 @@ import {
   nativeAuthorizationDiagnostic,
   nativeAuthorizationMitigationDiagnostic,
   nativeAuthorizationResponseDiagnostic,
+  nativeAuthorizationTransportDiagnostic,
   parseNativeAuthorizationResponseMitigation,
   parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendReceipt,
+  parseNativeAuthorizationSendTransport,
   type NativeAuthorizationResponseMitigation,
   type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
   type NativeAuthorizationSendReceipt,
+  type NativeAuthorizationSendTransport,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import {
   isDesktopAckStopSource,
@@ -1381,9 +1384,10 @@ export class DesktopSandboxBridge {
     let terminalExitCode: number | null = null;
     // Invocation-local native send receipts: one callback attempt per channel,
     // closed by settlement, owned by the analytics identity at command start,
-    // and joined only to this invocation's rejection. The cause receipt has its
-    // own channel and latch; neither callback closes the other. The response
-    // receipt likewise has its own channel and latch, independent of both, and
+    // and joined only to this invocation's rejection. The cause receipt and the
+    // transport detail each have their own channel and latch; no callback
+    // closes another, and both join only the v1 receipt. The response receipt
+    // likewise has its own channel and latch, independent of the send ones, and
     // the same response's mitigation marker joins only that response receipt.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
@@ -1394,10 +1398,12 @@ export class DesktopSandboxBridge {
       getIdentifiedAnalyticsUserId() !== receiptOwner;
     let receiptOpen = true;
     let causeOpen = true;
+    let transportOpen = true;
     let responseOpen = true;
     let mitigationOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
+    let sendTransport: NativeAuthorizationSendTransport | null = null;
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
     let invocationRejected = false;
@@ -1418,6 +1424,7 @@ export class DesktopSandboxBridge {
       (settlement) => {
         receiptOpen = false;
         causeOpen = false;
+        transportOpen = false;
         responseOpen = false;
         mitigationOpen = false;
         onSettled(
@@ -1433,6 +1440,10 @@ export class DesktopSandboxBridge {
                 ...(sendCause && {
                   nativeAuthorizationCause:
                     nativeAuthorizationCauseDiagnostic(sendCause),
+                }),
+                ...(sendTransport && {
+                  nativeAuthorizationTransport:
+                    nativeAuthorizationTransportDiagnostic(sendTransport),
                 }),
               }),
             ...(invocationRejected &&
@@ -1456,6 +1467,7 @@ export class DesktopSandboxBridge {
     let causeChannel: object | undefined;
     let responseChannel: object | undefined;
     let mitigationChannel: object | undefined;
+    let transportChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1521,6 +1533,22 @@ export class DesktopSandboxBridge {
             mitigationChannel = undefined;
           }
         }
+        // A transport detail, like the cause, is only ever reported with the
+        // v1 receipt.
+        if (diagnosticChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!transportOpen) return;
+              transportOpen = false;
+              if (receiptFenced()) return;
+              sendTransport = parseNativeAuthorizationSendTransport(value);
+            };
+            transportChannel = channel;
+          } catch {
+            transportChannel = undefined;
+          }
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1560,6 +1588,9 @@ export class DesktopSandboxBridge {
               }),
               ...(mitigationChannel && {
                 onAuthorizationMitigationDiagnostic: mitigationChannel,
+              }),
+              ...(transportChannel && {
+                onAuthorizationTransportDiagnostic: transportChannel,
               }),
             },
           );
@@ -1603,6 +1634,7 @@ export class DesktopSandboxBridge {
         causeChannel,
         responseChannel,
         mitigationChannel,
+        transportChannel,
       ]) {
         try {
           (

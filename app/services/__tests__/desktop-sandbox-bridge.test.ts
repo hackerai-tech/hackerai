@@ -22,6 +22,7 @@ import {
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 import {
@@ -6872,6 +6873,362 @@ describe("native authorization send receipt", () => {
     });
   });
 
+  describe("transport detail", () => {
+    // A refusal: the frozen cause folds it into "other"; the detail names it.
+    const cause = {
+      version: 1,
+      ioKind: "other",
+      sourceDepth: 3,
+      sourceChainTruncated: false,
+    };
+    const transport = {
+      version: 1,
+      ioKindDetail: "connection_refused",
+      nativeTlsSource: false,
+      sourceDepth: 3,
+      sourceChainTruncated: false,
+    };
+    const transportGroup = {
+      native_authorization_transport_version: 1,
+      native_authorization_transport_io_kind_detail: "connection_refused",
+      native_authorization_transport_native_tls_source: false,
+      native_authorization_transport_source_depth: 3,
+      native_authorization_transport_source_chain_truncated: false,
+    };
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+    const transportKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key),
+      );
+    const channels = (call: NativeCall) => ({
+      receipt: call.onAuthorizationDiagnostic as MockChannel,
+      cause: call.onAuthorizationCauseDiagnostic as MockChannel,
+      transport: call.onAuthorizationTransportDiagnostic as MockChannel,
+    });
+
+    it("joins one detail from its own one-shot channel beside the unchanged cause", async () => {
+      const { calls, replies } = await run(async (call) => {
+        const { receipt: v1, cause: v2, transport: v3 } = channels(call);
+        v3.onmessage!({ ...transport, nativeTlsSource: true });
+        // A duplicate cannot replace the first callback attempt.
+        v3.onmessage!(transport);
+        v1.onmessage!(receipt);
+        v2.onmessage!(cause);
+        return Promise.reject(unavailable);
+      });
+
+      expect(calls).toHaveLength(1);
+      const { receipt: v1, cause: v2, transport: v3 } = channels(calls[0]);
+      expect(v3).toBeDefined();
+      for (const other of [calls[0].onEvent, v1, v2])
+        expect(v3).not.toBe(other);
+      expect(Object.keys(calls[0].message as object)).not.toContain(
+        "onAuthorizationTransportDiagnostic",
+      );
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      const expected = {
+        ...transportGroup,
+        native_authorization_transport_native_tls_source: true,
+      };
+      expect(final.properties).toMatchObject({
+        terminalType: "error",
+        native_authorization_send_connect: true,
+        native_authorization_cause_io_kind: "other",
+        ...expected,
+      });
+      const started = captures().find(
+        (event) => event.event === "desktop_ack_command_started",
+      );
+      expect(transportKeys(started?.properties)).toEqual([]);
+      const enriched = sanitizeDesktopAckEvent({
+        ...final,
+        properties: { ...final.properties, $current_url: "PRIVATE" },
+      });
+      expect(enriched.properties).toMatchObject(expected);
+      expect(transportKeys(enriched.properties)).toHaveLength(5);
+      // The frozen groups are unchanged beside it.
+      expect(nativeKeys(enriched.properties)).toHaveLength(8);
+      expect(causeKeys(enriched.properties)).toHaveLength(4);
+      expect(enriched.properties).toMatchObject({
+        native_authorization_cause_io_kind: "other",
+      });
+      const serialized = JSON.stringify([captures(), enriched]);
+      expect(serialized).not.toContain("PRIVATE");
+      expect(serialized).not.toContain(authorizationId);
+      expect(serialized).not.toContain(unavailable);
+    });
+
+    it("keeps the v1 and cause groups unchanged when an older native app sends no detail", async () => {
+      const { calls } = await run((call) => {
+        channels(call).receipt.onmessage!(receipt);
+        channels(call).cause.onmessage!(cause);
+        return reject(unavailable);
+      });
+      expect(calls[0]).toHaveProperty("onAuthorizationTransportDiagnostic");
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toHaveLength(4);
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("reports no detail without the same invocation's v1 receipt", async () => {
+      await run((call) => {
+        channels(call).transport.onmessage!(transport);
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+      expect(nativeKeys(finals()[0].properties)).toEqual([]);
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an extra private field", () => ({ ...transport, message: "PRIVATE" })],
+      ["a missing field", () => ({ ...transport, nativeTlsSource: undefined })],
+      ["another version", () => ({ ...transport, version: 2 })],
+      ["a private kind", () => ({ ...transport, ioKindDetail: "PRIVATE" })],
+      [
+        "a guessed TLS kind",
+        () => ({ ...transport, ioKindDetail: "tls_handshake" }),
+      ],
+      ["a string TLS flag", () => ({ ...transport, nativeTlsSource: "true" })],
+      ["an unbounded depth", () => ({ ...transport, sourceDepth: 9 })],
+      [
+        "a truncated walk shorter than the bound",
+        () => ({ ...transport, sourceDepth: 7, sourceChainTruncated: true }),
+      ],
+      [
+        "an exposed kind without a source link",
+        () => ({ ...transport, sourceDepth: 0 }),
+      ],
+      [
+        "a TLS source without a source link",
+        () => ({
+          ...transport,
+          ioKindDetail: "not_exposed",
+          nativeTlsSource: true,
+          sourceDepth: 0,
+        }),
+      ],
+      ["a cause on the transport channel", () => cause],
+      ["a string", () => "PRIVATE"],
+      [
+        "a class instance",
+        () =>
+          Object.assign(
+            Object.create({ message: "PRIVATE" }) as object,
+            transport,
+          ),
+      ],
+      [
+        "a throwing getter",
+        () =>
+          Object.defineProperty({ ...transport }, "ioKindDetail", {
+            enumerable: true,
+            get() {
+              throw new Error("PRIVATE");
+            },
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          return new Proxy(
+            {},
+            { getPrototypeOf: fail, ownKeys: fail, get: fail },
+          );
+        },
+      ],
+    ])(
+      "drops only the detail for %s and keeps the v1 and cause groups",
+      async (_case, value) => {
+        const { replies } = await run((call) => {
+          const { receipt: v1, cause: v2, transport: v3 } = channels(call);
+          v1.onmessage!(receipt);
+          v2.onmessage!(cause);
+          v3.onmessage!(value());
+          // The malformed first attempt closed the transport latch.
+          v3.onmessage!(transport);
+          return reject(unavailable);
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: unavailable }),
+        ]);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(causeKeys(finals()[0].properties)).toHaveLength(4);
+        expect(transportKeys(finals()[0].properties)).toEqual([]);
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("adds no detail to a successful command", async () => {
+      await run(async (call) => {
+        const { receipt: v1, transport: v3 } = channels(call);
+        v1.onmessage!(receipt);
+        v3.onmessage!(transport);
+        (call.onEvent as MockChannel).onmessage!({ type: "exit", exitCode: 0 });
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a detail after settlement and releases its callback", async () => {
+      let call!: NativeCall;
+      await run((native) => {
+        call = native;
+        channels(call).receipt.onmessage!(receipt);
+        return reject(unavailable);
+      });
+      const { transport: v3 } = channels(call);
+      expect(v3.cleanupCallback).toHaveBeenCalledTimes(1);
+      v3.onmessage!(transport);
+      expect(finals()).toHaveLength(1);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a detail observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run((call) => {
+          const { receipt: v1, transport: v3 } = channels(call);
+          v1.onmessage!(receipt);
+          identity.mockReturnValue("another-user");
+          v3.onmessage!(transport);
+          identity.mockReturnValue("user-456");
+          v3.onmessage!(transport);
+          return reject(unavailable);
+        });
+        expect(finals()).toHaveLength(1);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(transportKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("drops a detail that arrives after the connection is stopped", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          channels(call).receipt.onmessage!(receipt);
+          await pending;
+          channels(call).transport.onmessage!(transport);
+          return reject(unavailable);
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("keeps interleaved invocations' details separate", async () => {
+      let arrived = 0;
+      let release!: () => void;
+      const all = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          const { receipt: v1, transport: v3 } = channels(call);
+          const commandId = (call.message as { commandId: string }).commandId;
+          if (commandId === "refused") v3.onmessage!(transport);
+          if (++arrived === 3) release();
+          await all;
+          v1.onmessage!(receipt);
+          if (commandId === "tls")
+            v3.onmessage!({
+              ...transport,
+              ioKindDetail: "not_exposed",
+              nativeTlsSource: true,
+              sourceDepth: 2,
+            });
+          return reject(unavailable);
+        },
+        { commandIds: ["refused", "tls", "v1-only"] },
+      );
+      const byCommand = Object.fromEntries(
+        finals().map((event) => [
+          event.properties!.commandId,
+          event.properties,
+        ]),
+      );
+      expect(byCommand.refused).toMatchObject(transportGroup);
+      expect(byCommand.tls).toMatchObject({
+        native_authorization_transport_io_kind_detail: "not_exposed",
+        native_authorization_transport_native_tls_source: true,
+        native_authorization_transport_source_depth: 2,
+      });
+      expect(nativeKeys(byCommand["v1-only"])).toHaveLength(8);
+      expect(transportKeys(byCommand["v1-only"])).toEqual([]);
+    });
+
+    it("keeps every other channel when only the transport channel cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const create = jest.mocked(Channel).getMockImplementation()!;
+      jest
+        .mocked(Channel)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+      const { calls, replies } = await run((call) => {
+        channels(call).receipt.onmessage!(receipt);
+        channels(call).cause.onmessage!(cause);
+        return reject(unavailable);
+      });
+      expect(calls).toHaveLength(1);
+      for (const key of [
+        "onEvent",
+        "onAuthorizationDiagnostic",
+        "onAuthorizationCauseDiagnostic",
+        "onAuthorizationResponseDiagnostic",
+        "onAuthorizationMitigationDiagnostic",
+      ])
+        expect(calls[0]).toHaveProperty(key);
+      expect(calls[0]).not.toHaveProperty("onAuthorizationTransportDiagnostic");
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toHaveLength(4);
+      expect(transportKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("never requests a detail without the v1 receipt channel", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      jest.mocked(Channel).mockImplementationOnce(() => {
+        throw new Error("channel unavailable");
+      });
+      const { calls } = await run(() => reject(unavailable));
+      expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationTransportDiagnostic");
+    });
+  });
+
   describe("approval rejection response", () => {
     const vercelId = "iad1::abcde-1700000000000-0123456789ab";
     const rejection = {
@@ -7527,16 +7884,17 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt, cause, response and mitigation channels besides the
-      // output one.
+      // optional receipt, cause, response, mitigation and transport channels
+      // besides the output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 5,
+        options?.version || options?.acknowledged === false ? 1 : 6,
       );
       const optional = [
         "onAuthorizationDiagnostic",
         "onAuthorizationCauseDiagnostic",
         "onAuthorizationResponseDiagnostic",
         "onAuthorizationMitigationDiagnostic",
+        "onAuthorizationTransportDiagnostic",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

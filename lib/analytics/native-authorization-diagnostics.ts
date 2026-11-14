@@ -9,6 +9,13 @@
  * sources. It is a transport class, not the customer's physical network cause,
  * and it is only reported together with a valid v1 receipt.
  *
+ * A newer native app also sends a separate transport detail on its own
+ * channel: the same first IO error's kind without the cause's `other` fold
+ * (`other` is only the IO kind Other itself; `unmapped` is every remaining
+ * kind), and whether a typed native TLS error appeared in the bounded walk.
+ * That presence is not a certificate reason or the failure's origin. It is
+ * likewise only reported together with a valid v1 receipt.
+ *
  * A response receipt is independent of both: the native approval check
  * rejected an answered POST. It holds the HTTP status, a closed approval
  * class, the origin class, the compiled platform and the shape of the
@@ -62,6 +69,38 @@ const CAUSE_KEYS = [
   "sourceChainTruncated",
 ] as const;
 
+const IO_KIND_DETAILS = [
+  "connection_refused",
+  "connection_reset",
+  "connection_aborted",
+  "host_unreachable",
+  "network_unreachable",
+  "network_down",
+  "addr_in_use",
+  "addr_not_available",
+  "broken_pipe",
+  "unexpected_eof",
+  "timed_out",
+  "not_connected",
+  "permission_denied",
+  "invalid_data",
+  "invalid_input",
+  "would_block",
+  "interrupted",
+  "unsupported",
+  "out_of_memory",
+  "other",
+  "unmapped",
+  "not_exposed",
+] as const;
+const TRANSPORT_KEYS = [
+  "version",
+  "ioKindDetail",
+  "nativeTlsSource",
+  "sourceDepth",
+  "sourceChainTruncated",
+] as const;
+
 /** `json_error` covers both an unreadable body and an undecodable one. */
 const APPROVALS = [
   "not_checked",
@@ -103,6 +142,7 @@ const MITIGATION_KEYS = ["version", "mitigation"] as const;
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 type IoKind = (typeof IO_KINDS)[number];
+type IoKindDetail = (typeof IO_KIND_DETAILS)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 type Mitigation = (typeof MITIGATIONS)[number];
@@ -372,6 +412,132 @@ export function readNativeAuthorizationCause(
           sourceDepth,
           sourceChainTruncated,
         } as NativeAuthorizationSendCause)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationSendTransport {
+  readonly ioKindDetail: IoKindDetail;
+  readonly nativeTlsSource: boolean;
+  readonly sourceDepth: number;
+  readonly sourceChainTruncated: boolean;
+}
+
+export interface NativeAuthorizationTransportDiagnostic {
+  readonly native_authorization_transport_version: 1;
+  readonly native_authorization_transport_io_kind_detail: IoKindDetail;
+  /** A typed native TLS error was observed; not a certificate reason. */
+  readonly native_authorization_transport_native_tls_source: boolean;
+  readonly native_authorization_transport_source_depth: number;
+  readonly native_authorization_transport_source_chain_truncated: boolean;
+}
+
+const TRANSPORT_PROPERTIES = [
+  "native_authorization_transport_version",
+  "native_authorization_transport_io_kind_detail",
+  "native_authorization_transport_native_tls_source",
+  "native_authorization_transport_source_depth",
+  "native_authorization_transport_source_chain_truncated",
+] as const satisfies readonly (keyof NativeAuthorizationTransportDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES: ReadonlySet<string> =
+  new Set(TRANSPORT_PROPERTIES);
+
+/** The native walk's invariants: it observes every link up to 8, so only a
+ * walk of all 8 can be truncated, and any finding needs an observed link. */
+const isTransport = (
+  ioKindDetail: unknown,
+  nativeTlsSource: unknown,
+  sourceDepth: unknown,
+  sourceChainTruncated: unknown,
+): boolean =>
+  IO_KIND_DETAILS.some((kind) => kind === ioKindDetail) &&
+  typeof nativeTlsSource === "boolean" &&
+  typeof sourceDepth === "number" &&
+  Number.isSafeInteger(sourceDepth) &&
+  sourceDepth >= 0 &&
+  sourceDepth <= MAX_SOURCE_DEPTH &&
+  typeof sourceChainTruncated === "boolean" &&
+  (!sourceChainTruncated || sourceDepth === MAX_SOURCE_DEPTH) &&
+  ((ioKindDetail === "not_exposed" && !nativeTlsSource) || sourceDepth >= 1);
+
+/** Copy only the closed native transport schema; anything else is dropped. */
+export function parseNativeAuthorizationSendTransport(
+  value: unknown,
+): NativeAuthorizationSendTransport | null {
+  try {
+    const values = readClosedObject(value, TRANSPORT_KEYS);
+    if (!values) return null;
+    const [
+      version,
+      ioKindDetail,
+      nativeTlsSource,
+      sourceDepth,
+      sourceChainTruncated,
+    ] = values;
+    if (
+      version !== 1 ||
+      !isTransport(
+        ioKindDetail,
+        nativeTlsSource,
+        sourceDepth,
+        sourceChainTruncated,
+      )
+    )
+      return null;
+    return Object.freeze({
+      ioKindDetail,
+      nativeTlsSource,
+      sourceDepth,
+      sourceChainTruncated,
+    } as NativeAuthorizationSendTransport);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationTransportDiagnostic(
+  transport: NativeAuthorizationSendTransport,
+): NativeAuthorizationTransportDiagnostic {
+  return Object.freeze({
+    native_authorization_transport_version: 1,
+    native_authorization_transport_io_kind_detail: transport.ioKindDetail,
+    native_authorization_transport_native_tls_source: transport.nativeTlsSource,
+    native_authorization_transport_source_depth: transport.sourceDepth,
+    native_authorization_transport_source_chain_truncated:
+      transport.sourceChainTruncated,
+  });
+}
+
+/** Read the complete transport group from any property bag's own data
+ * properties, or nothing at all. Callers join it only to a valid v1 group. */
+export function readNativeAuthorizationTransport(
+  source: unknown,
+): NativeAuthorizationTransportDiagnostic | null {
+  if (typeof source !== "object" || source === null) return null;
+  try {
+    const [
+      version,
+      ioKindDetail,
+      nativeTlsSource,
+      sourceDepth,
+      sourceChainTruncated,
+    ] = readDataProperties(source, TRANSPORT_PROPERTIES);
+    return version === 1 &&
+      isTransport(
+        ioKindDetail,
+        nativeTlsSource,
+        sourceDepth,
+        sourceChainTruncated,
+      )
+      ? nativeAuthorizationTransportDiagnostic({
+          ioKindDetail,
+          nativeTlsSource,
+          sourceDepth,
+          sourceChainTruncated,
+        } as NativeAuthorizationSendTransport)
       : null;
   } catch {
     return null;
