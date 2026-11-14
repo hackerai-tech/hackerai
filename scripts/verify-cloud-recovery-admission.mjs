@@ -91,6 +91,7 @@ const keys = {
   region: "region",
   selectionHistory: "selection-history",
   recoveryHistory: "recovery-history",
+  resumeFailures: "resume-failures",
 };
 const target = { sandboxId: "original-files", region: "us-east-1" };
 const offered = {
@@ -153,8 +154,14 @@ const claimCleanup = (previous = "") =>
 const finishCleanup = (success, previous = "") =>
   evalLua(
     cleanupFinishLua,
-    [keys.workspace, keys.region, keys.selectionHistory, keys.recoveryHistory],
-    [JSON.stringify(cleanup), previous, success ? "1" : "0", "0"],
+    [
+      keys.workspace,
+      keys.region,
+      keys.selectionHistory,
+      keys.recoveryHistory,
+      keys.resumeFailures,
+    ],
+    [JSON.stringify(cleanup), previous, success ? "1" : "0", "0", ""],
   );
 const reset = () => {
   command("FLUSHDB");
