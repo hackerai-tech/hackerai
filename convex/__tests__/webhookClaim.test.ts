@@ -56,8 +56,9 @@ const EVENT_ID = "evt_test_123";
 type Row = {
   _id: string;
   event_id: string;
+  source_id?: string;
   processed_at: number;
-  status?: "pending" | "completed";
+  status?: "pending" | "handled" | "completed";
   claimed_at?: number;
 };
 
@@ -113,12 +114,21 @@ async function callClaim(ctx: any) {
   return (claimWebhookProcessing as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
     eventId: EVENT_ID,
+    sourceId: "dp_123",
   });
 }
 
 async function callFinalize(ctx: any) {
   const { finalizeWebhookProcessing } = await import("../extraUsage");
   return (finalizeWebhookProcessing as any).handler(ctx, {
+    serviceKey: SERVICE_KEY,
+    eventId: EVENT_ID,
+  });
+}
+
+async function callMarkHandled(ctx: any) {
+  const { markWebhookHandled } = await import("../extraUsage");
+  return (markWebhookHandled as any).handler(ctx, {
     serviceKey: SERVICE_KEY,
     eventId: EVENT_ID,
   });
@@ -143,6 +153,7 @@ describe("claimWebhookProcessing", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       event_id: EVENT_ID,
+      source_id: "dp_123",
       status: "pending",
       claimed_at: 1_000_000,
       processed_at: 1_000_000,
@@ -164,6 +175,16 @@ describe("claimWebhookProcessing", () => {
     expect(result).toEqual({ state: "already_processed" });
     expect(rows).toHaveLength(1);
     expect(ctx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("records successful side effects and allows a retry to finalize only", async () => {
+    const { ctx, rows } = makeMockCtx();
+    expect(await callClaim(ctx)).toEqual({ state: "acquired" });
+    await callMarkHandled(ctx);
+    expect(rows[0].status).toBe("handled");
+    expect(await callClaim(ctx)).toEqual({ state: "handler_completed" });
+    await callFinalize(ctx);
+    expect(rows[0].status).toBe("completed");
   });
 
   it("treats legacy rows without status as completed (back-compat)", async () => {
@@ -192,7 +213,9 @@ describe("claimWebhookProcessing", () => {
 
     expect(result).toEqual({ state: "claim_held" });
     expect(rows[0].claimed_at).toBe(recentClaimAt);
-    expect(ctx.db.patch).not.toHaveBeenCalled();
+    expect(ctx.db.patch).toHaveBeenCalledWith("id-1", {
+      source_id: "dp_123",
+    });
   });
 
   it("takes over a stale pending claim and re-acquires it", async () => {

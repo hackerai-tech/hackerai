@@ -294,13 +294,14 @@ const STALE_CLAIM_MS = 10 * 60 * 1000;
  * both pass the pre-check and both run side effects before either landed the
  * mark.
  *
- * Returns one of three states atomically:
- *   - "acquired"          : caller now owns the claim; run handler then call
- *                           finalizeWebhookProcessing on success
+ * Returns one of four states atomically:
+ *   - "acquired"          : caller now owns the claim; run handler, mark it
+ *                           handled, then finalize on success
  *   - "already_processed" : event was finalized previously; skip with 200
+ *   - "handler_completed": side effects finished; retry only finalization
  *   - "claim_held"        : another worker is currently processing this event;
- *                           skip with 200 (the holder will finalize, or its
- *                           claim will expire and a future retry takes over)
+ *                           return a retryable non-2xx response so a failed
+ *                           holder does not lose the provider delivery
  *
  * If a `pending` row's claim is older than STALE_CLAIM_MS, this mutation
  * reclaims it and returns "acquired" — this is what allows Stripe webhook
@@ -310,11 +311,13 @@ export const claimWebhookProcessing = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    sourceId: v.optional(v.string()),
   },
   returns: v.object({
     state: v.union(
       v.literal("acquired"),
       v.literal("already_processed"),
+      v.literal("handler_completed"),
       v.literal("claim_held"),
     ),
   }),
@@ -332,6 +335,7 @@ export const claimWebhookProcessing = mutation({
     if (!existing) {
       await ctx.db.insert("processed_webhooks", {
         event_id: args.eventId,
+        source_id: args.sourceId,
         processed_at: now,
         status: "pending",
         claimed_at: now,
@@ -343,8 +347,22 @@ export const claimWebhookProcessing = mutation({
     // semantics for events whose lifecycle has already concluded.
     const status = existing.status ?? "completed";
 
+    if (
+      args.sourceId &&
+      existing.source_id &&
+      existing.source_id !== args.sourceId
+    ) {
+      throw new Error("Webhook source changed for existing event");
+    }
+    if (args.sourceId && !existing.source_id && status !== "completed") {
+      await ctx.db.patch(existing._id, { source_id: args.sourceId });
+    }
+
     if (status === "completed") {
       return { state: "already_processed" as const };
+    }
+    if (status === "handled") {
+      return { state: "handler_completed" as const };
     }
 
     const claimedAt = existing.claimed_at ?? existing.processed_at;
@@ -358,6 +376,31 @@ export const claimWebhookProcessing = mutation({
       claimed_at: now,
     });
     return { state: "acquired" as const };
+  },
+});
+
+/** Persist successful side effects before the separate finalization step. */
+export const markWebhookHandled = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (!existing)
+      throw new Error("Webhook claim missing before handler completion");
+    if (existing.status === "pending") {
+      await ctx.db.patch(existing._id, {
+        status: "handled",
+        processed_at: Date.now(),
+      });
+    }
+    return null;
   },
 });
 

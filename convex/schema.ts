@@ -2269,14 +2269,24 @@ export default defineSchema({
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
     event_id: v.string(),
+    // Fraud source IDs let support resolution fence an in-flight delivery.
+    source_id: v.optional(v.string()),
     processed_at: v.number(),
-    // State-machine fields for atomic claim/finalize. Optional for
+    // State-machine fields for atomic claim/handled/finalize. Optional for
     // backwards compatibility — legacy rows (no status) are treated as
     // completed since they were inserted under the old "mark on entry"
     // semantics for events whose lifecycle has already concluded.
-    status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
+    status: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("handled"),
+        v.literal("completed"),
+      ),
+    ),
     claimed_at: v.optional(v.number()),
-  }).index("by_event_id", ["event_id"]),
+  })
+    .index("by_event_id", ["event_id"])
+    .index("by_source_id_and_status", ["source_id", "status"]),
 
   // Durable idempotency records for user-visible checkout session confirms.
   // Unlike webhook retry deduplication, these keys must not be time-purged

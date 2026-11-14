@@ -82,6 +82,7 @@ export const upsertActive = mutation({
     stripeChargeId: v.optional(v.string()),
     workosOrganizationId: v.optional(v.string()),
     sourceCreatedAt: v.optional(v.number()),
+    preserveResolved: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -101,6 +102,9 @@ export const upsertActive = mutation({
         q.eq("user_id", args.userId).eq("source_id", args.sourceId),
       )
       .first();
+
+    // A retry of the same Stripe source cannot undo a support decision.
+    if (args.preserveResolved && existing?.status === "resolved") return null;
 
     const fields = {
       status: "active" as const,
@@ -149,6 +153,19 @@ export const resolveBySource = mutation({
 
     if (!suspension) return { resolved: false };
     await assertNoLiveAbuseOperation(ctx, args.userId, args.sourceId);
+
+    // Do not restore Stripe access while a webhook for this source can still
+    // perform external cleanup. This index read conflicts with a new claim,
+    // so support resolution and claim creation are ordered by Convex.
+    if (suspension.source === "stripe") {
+      const pending = await ctx.db
+        .query("processed_webhooks")
+        .withIndex("by_source_id_and_status", (q) =>
+          q.eq("source_id", args.sourceId).eq("status", "pending"),
+        )
+        .first();
+      if (pending) throw new Error("Fraud webhook is still processing");
+    }
 
     const now = Date.now();
     await ctx.db.patch(suspension._id, {

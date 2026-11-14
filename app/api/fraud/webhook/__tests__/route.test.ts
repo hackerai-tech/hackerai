@@ -62,6 +62,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     extraUsage: {
       claimWebhookProcessing: "extraUsage.claimWebhookProcessing",
+      markWebhookHandled: "extraUsage.markWebhookHandled",
       finalizeWebhookProcessing: "extraUsage.finalizeWebhookProcessing",
     },
     userSuspensions: { upsertActive: "userSuspensions.upsertActive" },
@@ -162,6 +163,157 @@ describe("POST /api/fraud/webhook", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it.each([
+    ["claim_held", 503],
+    ["already_processed", 200],
+  ] as const)(
+    "responds to %s without running side effects",
+    async (state, status) => {
+      mockConvexMutation.mockResolvedValueOnce({ state } as never);
+
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(status);
+      expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+      expect(mockRetrieveCharge).not.toHaveBeenCalled();
+      expect(mockUpdateCustomer).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "extraUsage.finalizeWebhookProcessing",
+        expect.any(Object),
+      );
+    },
+  );
+
+  it("keeps a completed handler retryable when claim finalization fails", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing") {
+        return { state: "acquired" };
+      }
+      if (operation === "extraUsage.finalizeWebhookProcessing") {
+        throw new Error("transient storage failure");
+      }
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(500);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.markWebhookHandled",
+      expect.objectContaining({ eventId: "evt_dispute" }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.finalizeWebhookProcessing",
+      expect.objectContaining({ eventId: "evt_dispute" }),
+    );
+  });
+
+  it("retries finalization without repeating customer cleanup", async () => {
+    let claims = 0;
+    let finalizations = 0;
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing") {
+        claims += 1;
+        return { state: claims === 1 ? "acquired" : "handler_completed" };
+      }
+      if (
+        operation === "extraUsage.finalizeWebhookProcessing" &&
+        ++finalizations === 1
+      ) {
+        throw new Error("transient storage failure");
+      }
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockRetrieveCharge).toHaveBeenCalledTimes(1);
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockRetrieveCharge).toHaveBeenCalledTimes(1);
+    expect(
+      mockConvexMutation.mock.calls.filter(
+        ([operation]) => operation === "extraUsage.markWebhookHandled",
+      ),
+    ).toHaveLength(1);
+    expect(
+      mockConvexMutation.mock.calls.filter(
+        ([operation]) => operation === "extraUsage.finalizeWebhookProcessing",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("does not finalize when recording handler completion fails", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing")
+        return { state: "acquired" };
+      if (operation === "extraUsage.markWebhookHandled")
+        throw new Error("storage failure");
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.finalizeWebhookProcessing",
+      expect.any(Object),
+    );
+  });
+
+  it("does not undo a support-resolved source when a stale claim is retried", async () => {
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing")
+        return { state: "acquired" };
+      if (operation === "userSuspensions.upsertActive") return null;
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.claimWebhookProcessing",
+      expect.objectContaining({
+        eventId: "evt_dispute",
+        sourceId: "dp_fraudulent",
+      }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "userSuspensions.upsertActive",
+      expect.objectContaining({
+        sourceId: "dp_fraudulent",
+        preserveResolved: true,
+      }),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
+    expect(mockUpdateCustomer).not.toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.markWebhookHandled",
+      expect.any(Object),
+    );
+  });
+
+  it("keeps a failed customer lookup retryable before cleanup", async () => {
+    mockResolveUserIdsFromCustomer.mockResolvedValue({
+      userIds: [],
+      orgId: null,
+      reason: "lookup_failed",
+    } as never);
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "userSuspensions.upsertActive",
+      expect.any(Object),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.markWebhookHandled",
+      expect.any(Object),
+    );
   });
 
   it.each<CustomerBoundary>([
