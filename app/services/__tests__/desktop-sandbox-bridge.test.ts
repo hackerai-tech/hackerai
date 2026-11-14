@@ -1807,10 +1807,16 @@ describe("native auth frontend state on authentication stops", () => {
               native_auth_request_provider_state: "unavailable",
               native_auth_provider_state: "unavailable",
             });
-            const captured = JSON.stringify([
-              jest.mocked(captureAuthenticatedEvent).mock.calls,
-              warn.mock.calls,
-            ]);
+            const captured = JSON.stringify(
+              [
+                jest.mocked(captureAuthenticatedEvent).mock.calls,
+                warn.mock.calls,
+              ],
+              (_key, value: unknown) =>
+                value instanceof Error
+                  ? { message: value.message, stack: value.stack }
+                  : value,
+            );
             expect(captured).not.toContain("canary");
             expect(captured).not.toContain("READY");
           } finally {
