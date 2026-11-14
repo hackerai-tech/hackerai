@@ -40,6 +40,7 @@ import {
 } from "@/lib/analytics/desktop-runtime-identity";
 import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
 import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
+import { sanitizeFileActionAuthDiagnosticEvent } from "@/lib/analytics/file-auth-diagnostics";
 import {
   captureXReferralVisit,
   clearXReferralDedupe,
@@ -94,7 +95,8 @@ export function PostHogProvider({
   const pathname = usePathname();
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
-  // Latest committed owner for the server action and navigator diagnostics. A
+  // Latest committed owner for the server action, file action and navigator
+  // diagnostics. A
   // previously installed before_send can run after a commit that withdraws
   // consent, signs out, switches account or enters a private page, but before
   // the passive effect below resets analytics identity.
@@ -240,19 +242,26 @@ export function PostHogProvider({
                 ? owner
                 : null;
             };
-            const sanitizedEvent = sanitizeServerActionClientContextEvent(
-              sanitizeContextFeedbackEvent(
-                sanitizeChatPerformanceEvent(
-                  sanitizeDesktopAckEvent(
-                    sanitizeAgentCancellationEvent(
-                      sanitizeDiffViewEvent(
-                        sanitizeFrontendExceptionUrlProperties(event),
+            const committedDiagnosticExpectation = () => ({
+              owner: committedDiagnosticOwner(),
+              token: posthogKey,
+            });
+            const sanitizedEvent = sanitizeFileActionAuthDiagnosticEvent(
+              sanitizeServerActionClientContextEvent(
+                sanitizeContextFeedbackEvent(
+                  sanitizeChatPerformanceEvent(
+                    sanitizeDesktopAckEvent(
+                      sanitizeAgentCancellationEvent(
+                        sanitizeDiffViewEvent(
+                          sanitizeFrontendExceptionUrlProperties(event),
+                        ),
                       ),
                     ),
                   ),
                 ),
+                committedDiagnosticExpectation,
               ),
-              () => ({ owner: committedDiagnosticOwner(), token: posthogKey }),
+              committedDiagnosticExpectation,
             );
             if (
               !sanitizedEvent ||
