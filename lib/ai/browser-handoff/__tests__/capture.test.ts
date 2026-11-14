@@ -10,7 +10,16 @@ import {
 } from "../server";
 import { CommandExitError, TimeoutError } from "@e2b/code-interpreter";
 import type { Sandbox } from "@e2b/code-interpreter";
+import { runInNewContext } from "node:vm";
+import { EventEmitter } from "node:events";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import { RELAY_RENEW_FAILURE_CODES } from "../relay-program";
+import {
+  BROWSER_DAEMON_PROGRAM,
+  BROWSER_DAEMON_RESPONSE_VALIDATIONS,
+  browserDaemonCommand,
+} from "../daemon-program";
 
 jest.mock("server-only", () => ({}));
 jest.mock("@e2b/code-interpreter", () => ({
@@ -2248,3 +2257,348 @@ it.each([
     expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
   },
 );
+
+/**
+ * Execute the real daemon helper from a sandbox command against an owned socket
+ * that answers with one line. No receipts exist, as for a worker without them.
+ */
+function runDaemonHelper(command: string, line: string) {
+  const payload = /'(\{[^']*\})'$/.exec(command)![1];
+  // The command carries exactly the helper program executed here.
+  expect(command).toBe(
+    browserDaemonCommand(location.directory, "default", JSON.parse(payload)),
+  );
+  const socket = Object.assign(new EventEmitter(), {
+    setEncoding: jest.fn(),
+    write: jest.fn(),
+    destroy: jest.fn(),
+  });
+  const exits: number[] = [];
+  let stdout = "";
+  runInNewContext(BROWSER_DAEMON_PROGRAM, {
+    require: (name: string) => {
+      if (name === "node:path") return path;
+      if (name === "node:crypto") return { createHash };
+      if (name === "node:net") return { createConnection: () => socket };
+      if (name === "node:fs")
+        return {
+          constants: { O_RDONLY: 0, O_NOFOLLOW: 256, O_NONBLOCK: 2048 },
+          lstatSync: (file: string) => {
+            if (file.endsWith(".json"))
+              throw Object.assign(new Error("PRIVATE receipt"), {
+                code: "ENOENT",
+              });
+            return {
+              uid: 1000,
+              mode: 0o700,
+              isDirectory: () => !file.endsWith(".sock"),
+              isSocket: () => file.endsWith("/sockets/default.sock"),
+            };
+          },
+        };
+      throw new Error("Unexpected module");
+    },
+    process: {
+      argv: ["node", location.directory, "default", payload],
+      getuid: () => 1000,
+      platform: "linux",
+      stdout: { write: (text: string) => (stdout += text) },
+      exit: (code: number) => exits.push(code),
+    },
+    Buffer,
+    setTimeout: () => 1,
+    clearTimeout: jest.fn(),
+  });
+  socket.emit("connect");
+  socket.emit("data", line + "\n");
+  expect(exits).toHaveLength(1);
+  expect(socket.write).toHaveBeenCalledTimes(1);
+  return { exitCode: exits[0], stdout };
+}
+
+/** Route one daemon stage's command through the real helper; others use the fixture. */
+function helperSandbox(
+  stage: "stream_status" | "fresh_screenshot",
+  line: string,
+) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const thrown: unknown[] = [];
+  sandbox.commands.run.mockImplementation(async (command: string) => {
+    if (
+      !command.includes(
+        stage === "fresh_screenshot"
+          ? '"action":"screenshot"'
+          : '"action":"stream_status"',
+      )
+    )
+      return run(command);
+    const { exitCode, stdout } = runDaemonHelper(command, line);
+    if (exitCode === 0) return { exitCode, stdout };
+    // The SDK rejects a nonzero exit with the command's result.
+    const error = new CommandExitError({ exitCode, stdout, stderr: "PRIVATE" });
+    thrown.push(error);
+    throw error;
+  });
+  return { sandbox, thrown };
+}
+
+it.each(
+  (
+    [
+      ["invalid JSON", "PRIVATE_BODY", "invalid_json"],
+      ["null", "null", "invalid_envelope"],
+      ["an array", '["hackerai-preview",true]', "invalid_envelope"],
+      ["a primitive", '"PRIVATE"', "invalid_envelope"],
+      ["another ID", '{"id":"PRIVATE","success":true}', "id_mismatch"],
+      [
+        "success false",
+        '{"id":"hackerai-preview","success":false,"error":"PRIVATE"}',
+        "success_false",
+      ],
+      [
+        "a non-boolean success",
+        '{"id":"hackerai-preview","success":"true","data":"PRIVATE"}',
+        "success_other",
+      ],
+    ] as const
+  ).flatMap(([name, line, validation]) =>
+    (["stream_status", "fresh_screenshot"] as const).map(
+      (stage) => [name, stage, line, validation] as const,
+    ),
+  ),
+)(
+  "classifies %s from the real helper at %s exit5 without changing the capture failure",
+  async (_case, stage, line, validation) => {
+    const { sandbox, thrown } = helperSandbox(stage, line);
+    const observed = jest.fn();
+    const failure = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      stage === "fresh_screenshot",
+      undefined,
+      observed,
+    ).catch((error: unknown) => error);
+    expect(thrown).toHaveLength(1);
+    expect(failure).toBe(thrown[0]);
+    expect(observed.mock.calls).toEqual([
+      [
+        {
+          capture_stage: stage,
+          capture_error_kind: "command_exit",
+          capture_command_exit_code: 5,
+          capture_cli_at_prepare_diagnostic_version: 1,
+          capture_cli_at_prepare_status: "unavailable",
+          capture_response_diagnostic_version: 1,
+          capture_response_validation: validation,
+        },
+      ],
+    ]);
+    expect(JSON.stringify(observed.mock.calls)).not.toMatch(
+      /PRIVATE|hackerai-preview/,
+    );
+    // No added request or retry; the fresh path keeps its cleanup.
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(
+      stage === "fresh_screenshot" ? 3 : 1,
+    );
+    expect(sandbox.files.remove).toHaveBeenCalledTimes(
+      stage === "fresh_screenshot" ? 1 : 0,
+    );
+    expect(sandbox.files.read).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["stream_status", "fresh_screenshot"] as const)(
+  "captures unchanged through the real helper's successful %s response",
+  async (stage) => {
+    const { sandbox, thrown } = helperSandbox(
+      stage,
+      '{"id":"hackerai-preview","success":true,"data":{"port":1234}}',
+    );
+    const observed = jest.fn();
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      stage === "fresh_screenshot",
+      undefined,
+      observed,
+    );
+    expect(thrown).toEqual([]);
+    expect(observed).not.toHaveBeenCalled();
+    expect(result.image).toBe(
+      `data:image/jpeg;base64,${(stage === "fresh_screenshot" ? fresh : cached).toString("base64")}`,
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(
+      stage === "fresh_screenshot" ? 3 : 2,
+    );
+  },
+);
+
+it.each([
+  ...BROWSER_DAEMON_RESPONSE_VALIDATIONS.map(
+    (validation, code) => [[1, code], validation] as const,
+  ),
+  [[1, 5], undefined],
+  [[1, -1], undefined],
+  [[1, 1.5], undefined],
+  [[1, "1"], undefined],
+  [[1, "invalid_json"], undefined],
+  [[1, null], undefined],
+  [[2, 1], undefined],
+  [[0, 1], undefined],
+  [[1, 1, 0], undefined],
+  [[1], undefined],
+  [[], undefined],
+  [{ 0: 1, 1: 1, length: 2 }, undefined],
+  ["PRIVATE", undefined],
+  [1, undefined],
+  [null, undefined],
+] as const)(
+  "exports only an exact version1 response tuple at exit5 (%j)",
+  async (tuple, validation) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 5,
+      stdout: JSON.stringify({ r1: tuple, private: "PRIVATE" }),
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    expect(observed).toHaveBeenCalledWith({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 5,
+      ...(validation && {
+        capture_response_diagnostic_version: 1,
+        capture_response_validation: validation,
+      }),
+    });
+    expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  ["stream_status", 2, false],
+  ["stream_status", 3, false],
+  ["stream_status", 4, false],
+  ["stream_status", 6, false],
+  ["stream_status", 1, false],
+  ["fresh_screenshot", 2, false],
+  ["fresh_screenshot", 6, false],
+  ["fresh_screenshot", 5, true],
+  ["frame_bridge", 5, false],
+] as const)(
+  "restricts the response tuple to daemon exit5 (%s exit%s)",
+  async (stage, exitCode, eligible) => {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    const error = new CommandExitError({
+      exitCode,
+      stdout: JSON.stringify({ r1: [1, 3] }),
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockImplementation(async (command: string) => {
+      if (
+        stage === "fresh_screenshot"
+          ? command.includes('"action":"screenshot"')
+          : stage === "stream_status"
+            ? command.includes('"action":"stream_status"')
+            : !command.includes('"action":"stream_status"')
+      )
+        throw error;
+      return run(command);
+    });
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        stage === "fresh_screenshot",
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_stage: stage,
+      capture_command_exit_code: exitCode,
+    });
+    if (eligible)
+      expect(context).toMatchObject({
+        capture_response_diagnostic_version: 1,
+        capture_response_validation: "success_false",
+      });
+    else {
+      expect(context).not.toHaveProperty("capture_response_diagnostic_version");
+      expect(context).not.toHaveProperty("capture_response_validation");
+    }
+  },
+);
+
+it.each([
+  ["an older writer", JSON.stringify({ cv: [1, 0] })],
+  ["empty output", ""],
+  ["an oversized packet", JSON.stringify({ r1: [1, 2], pad: " ".repeat(544) })],
+])(
+  "leaves the response check unmeasured for %s at exit5",
+  async (_case, stdout) => {
+    const sandbox = fixture();
+    const error = new CommandExitError({
+      exitCode: 5,
+      stdout,
+      stderr: "PRIVATE",
+    });
+    sandbox.commands.run.mockRejectedValueOnce(error);
+    const observed = jest.fn();
+    await expect(
+      captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observed,
+      ),
+    ).rejects.toBe(error);
+    const context = observed.mock.calls[0][0];
+    expect(context).toMatchObject({
+      capture_stage: "stream_status",
+      capture_error_kind: "command_exit",
+      capture_command_exit_code: 5,
+    });
+    expect(context).not.toHaveProperty("capture_response_diagnostic_version");
+    expect(context).not.toHaveProperty("capture_response_validation");
+  },
+);
+
+it("keeps the original exit5 rejection when the observer throws on a response refusal", async () => {
+  const { sandbox, thrown } = helperSandbox("fresh_screenshot", "null");
+  const observed = jest.fn(() => {
+    throw new Error("PRIVATE observer");
+  });
+  const failure = await captureBrowserFrame(
+    sandbox as unknown as Sandbox,
+    location,
+    "default",
+    true,
+    undefined,
+    observed,
+  ).catch((error: unknown) => error);
+  expect(failure).toBe(thrown[0]);
+  expect(observed).toHaveBeenCalledTimes(1);
+  expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
+  expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+});

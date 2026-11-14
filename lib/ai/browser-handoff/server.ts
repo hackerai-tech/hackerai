@@ -19,6 +19,7 @@ import {
   BROWSER_WRAPPER_AGES,
   BROWSER_OPEN_IDLE_ENV_VALUES,
   BROWSER_DAEMON_DEADLINE_PHASES,
+  BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   BROWSER_CLI_AT_PREPARE_STATUSES,
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
@@ -643,6 +644,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
     "missing" | "permission" | "not_directory" | "other";
   capture_deadline_diagnostic_version?: 1;
   capture_deadline_phase?: (typeof BROWSER_DAEMON_DEADLINE_PHASES)[number];
+  // Daemon exit5 only: which check refused the first response line, not a cause.
+  // Absent means unmeasured (older writer or budget).
+  capture_response_diagnostic_version?: 1;
+  capture_response_validation?: (typeof BROWSER_DAEMON_RESPONSE_VALIDATIONS)[number];
   capture_cli_at_prepare_diagnostic_version?: 1;
   capture_cli_at_prepare_status?: (typeof BROWSER_CLI_AT_PREPARE_STATUSES)[number];
   capture_cli_at_prepare_major?: number;
@@ -869,6 +874,8 @@ export async function captureBrowserFrame(
         | "capture_wrapper_option_prefix_completed"
         | "capture_deadline_diagnostic_version"
         | "capture_deadline_phase"
+        | "capture_response_diagnostic_version"
+        | "capture_response_validation"
         | "capture_cli_at_prepare_diagnostic_version"
         | "capture_cli_at_prepare_status"
         | "capture_cli_at_prepare_major"
@@ -968,6 +975,20 @@ export async function captureBrowserFrame(
               ) {
                 precondition.capture_deadline_diagnostic_version = 1;
                 precondition.capture_deadline_phase = deadline[1];
+              }
+              const validation = parsed?.r1;
+              if (
+                code === 5 &&
+                Array.isArray(validation) &&
+                validation.length === 2 &&
+                validation[0] === 1 &&
+                Number.isInteger(validation[1]) &&
+                validation[1] >= 0 &&
+                validation[1] < BROWSER_DAEMON_RESPONSE_VALIDATIONS.length
+              ) {
+                precondition.capture_response_diagnostic_version = 1;
+                precondition.capture_response_validation =
+                  BROWSER_DAEMON_RESPONSE_VALIDATIONS[validation[1]];
               }
               const reason = parsed?.diagnostic_reason;
               if (
