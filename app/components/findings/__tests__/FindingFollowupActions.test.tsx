@@ -245,7 +245,7 @@ it("exports from More through a format dialog that shares the toolbar flow and b
   // the same busy state.
   expect(
     screen.getByRole("button", { name: /Exporting…/, hidden: true }),
-  ).toBeDisabled();
+  ).toHaveAttribute("aria-disabled", "true");
 
   await act(async () => finish({ outcome: "success" }));
   expect(mockCaptureFinding).toHaveBeenCalledWith(

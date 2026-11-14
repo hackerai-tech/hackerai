@@ -355,9 +355,10 @@ const TabTrigger = ({
 }) => (
   <Tabs.Trigger
     value={value}
+    data-tab={value}
     // Inset ring inside px-1.5 padding: never clipped by the scrolling list
     // and never drawn over the label or count.
-    className="-mb-px inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent px-1.5 pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[state=active]:border-foreground data-[state=active]:text-foreground"
+    className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-t border-b-2 border-transparent px-1.5 pb-2.5 pt-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset data-[state=active]:border-foreground data-[state=active]:text-foreground"
   >
     {label}
     {count ? (
@@ -367,6 +368,21 @@ const TabTrigger = ({
     ) : null}
   </Tabs.Trigger>
 );
+
+/**
+ * Scrolls only the tab row, so a focused trigger is fully visible on narrow
+ * panels. Browsers leave a partly visible trigger clipped, and scrolling the
+ * trigger into view would also move the report vertically.
+ */
+const revealFocusedTab = (event: React.FocusEvent<HTMLDivElement>) => {
+  const list = event.currentTarget;
+  if (event.target === list) return;
+  const bounds = list.getBoundingClientRect();
+  const trigger = event.target.getBoundingClientRect();
+  if (trigger.left < bounds.left) list.scrollLeft -= bounds.left - trigger.left;
+  else if (trigger.right > bounds.right)
+    list.scrollLeft += trigger.right - bounds.right;
+};
 
 const MetaItem = ({
   title,
@@ -444,6 +460,7 @@ export function FindingDetail({
     findingId?: string;
     tab: FindingTab;
   }>({ tab: "overview" });
+  const tabList = useRef<HTMLDivElement>(null);
 
   // Exposure: once per finding encounter, only when the enabled controls are
   // actually shown in the header. Never from flag reads or hidden tabs.
@@ -605,6 +622,12 @@ export function FindingDetail({
     : "overview";
   const selectTab = (tab: FindingTab) =>
     setTabState({ findingId: finding.finding_id, tab });
+  // An Overview row is replaced by the panel it opens; move focus to that
+  // panel's tab first so keyboard users continue from there.
+  const openTab = (tab: FindingTab) => {
+    selectTab(tab);
+    tabList.current?.querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
+  };
 
   return (
     <div
@@ -692,7 +715,9 @@ export function FindingDetail({
           className="mt-7"
         >
           <Tabs.List
+            ref={tabList}
             aria-label="Finding sections"
+            onFocus={revealFocusedTab}
             // -mx-1.5 offsets the triggers' padding so labels stay aligned.
             className="-mx-1.5 flex gap-2 overflow-x-auto border-b border-border @min-[520px]:gap-3"
           >
@@ -778,7 +803,7 @@ export function FindingDetail({
                   {retestState?.enabled ? (
                     <AgentCheckRow
                       label="Retest"
-                      onOpen={() => selectTab("retests")}
+                      onOpen={() => openTab("retests")}
                     >
                       <RetestCheckStatus state={retestState} />
                     </AgentCheckRow>
@@ -786,7 +811,7 @@ export function FindingDetail({
                   {huntState?.enabled ? (
                     <AgentCheckRow
                       label="Similar issues"
-                      onOpen={() => selectTab("hunts")}
+                      onOpen={() => openTab("hunts")}
                     >
                       <HuntCheckStatus state={huntState} />
                     </AgentCheckRow>

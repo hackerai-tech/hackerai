@@ -585,6 +585,59 @@ describe("Agent check rollouts", () => {
     ]);
   });
 
+  it.each([
+    ["Open Retest", /^Retests/],
+    ["Open Similar issues", /^Similar issues/],
+  ])(
+    "%s by keyboard focuses its tab, then Tab continues into the panel",
+    async (row, tabName) => {
+      (global as any).fetch = respond({ hunts, retests });
+      render(<FindingDetail finding={finding} surface="findings_page" />);
+      (await screen.findByRole("button", { name: row })).focus();
+      await userEvent.keyboard("{Enter}");
+      const tab = screen.getByRole("tab", { name: tabName });
+      expect(tab).toHaveAttribute("aria-selected", "true");
+      // The Overview row is gone; focus must not fall back to the page.
+      expect(tab).toHaveFocus();
+      await userEvent.tab();
+      expect(screen.getByRole("tabpanel")).toHaveFocus();
+      expect(screen.getByRole("tabpanel")).toHaveAttribute(
+        "aria-labelledby",
+        tab.id,
+      );
+    },
+  );
+
+  it("scrolls only the narrow tab row to reveal each keyboard-focused tab", async () => {
+    (global as any).fetch = respond({ hunts, retests });
+    render(<FindingDetail finding={finding} surface="findings_page" />);
+    await screen.findByRole("tab", { name: /Similar issues/ });
+    const list = screen.getByRole("tablist");
+    const box = (left: number, right: number) =>
+      ({ left, right, top: 0, bottom: 44, width: right - left }) as DOMRect;
+    // A 320px row whose last tab overflows to the right.
+    list.getBoundingClientRect = () => box(0, 320);
+    for (const [name, left, right] of [
+      [/^Overview/, 0, 80],
+      [/^Report/, 88, 150],
+      [/^Retests/, 158, 230],
+      [/^Similar issues/, 238, 360],
+    ] as const) {
+      screen.getByRole("tab", { name }).getBoundingClientRect = () =>
+        box(left - list.scrollLeft, right - list.scrollLeft);
+    }
+
+    screen.getByRole("tab", { name: /^Overview/ }).focus();
+    await userEvent.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: /^Similar issues/ })).toHaveFocus();
+    expect(list.scrollLeft).toBe(40);
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(list.scrollLeft).toBe(40);
+    await userEvent.keyboard("{Home}");
+    expect(screen.getByRole("tab", { name: /^Overview/ })).toHaveFocus();
+    expect(list.scrollLeft).toBe(0);
+  });
+
   it("opens another finding on Overview and counts its exposure once", async () => {
     (global as any).fetch = respond({ hunts, retests });
     const { rerender } = render(<FindingDetail finding={finding} />);

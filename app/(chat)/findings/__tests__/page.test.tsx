@@ -489,6 +489,144 @@ describe("FindingsPage", () => {
     });
   });
 
+  it("returns to the existing list entry and preserves unrelated history state", async () => {
+    const nextState = { returnContext: "findings", tree: ["findings"] };
+    window.history.replaceState({}, "", "/c/prior-task");
+    window.history.pushState(nextState, "", "/findings?q=invoice");
+    mockSearchParams.set("q", "invoice");
+    render(<Page />);
+    fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+    expect(window.history.state).toEqual(expect.objectContaining(nextState));
+    const close = screen.getByRole("button", {
+      name: "Close vulnerability report",
+    });
+    fireEvent.click(close);
+    fireEvent.click(close);
+    await waitFor(() => expect(window.location.search).toBe("?q=invoice"));
+    // A second Back must leave the list, rather than consume a duplicate list entry.
+    const back = jest.spyOn(window.history, "back");
+    window.history.back();
+    await waitFor(() => expect(window.location.pathname).toBe("/c/prior-task"));
+    back.mockRestore();
+  });
+
+  it("closes the owned entry after Forward and a remount", async () => {
+    const view = render(<Page />);
+    fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    window.history.forward();
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeVisible());
+    view.unmount();
+    mockSearchParams.set("finding", "finding-1");
+    render(<Page />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(window.location.search).toBe("");
+    });
+  });
+
+  it("retains ownership when app hydration replaces the classic history state", async () => {
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "qa-finding-entry" } },
+    });
+    const back = jest.spyOn(window.history, "back");
+    try {
+      const view = render(<Page />);
+      fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+      // Observed in Preview after reload: the entry key survives, custom state doesn't.
+      window.history.replaceState({}, "", window.location.href);
+      view.unmount();
+      mockSearchParams.set("finding", "finding-1");
+      render(<Page />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      expect(back).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      back.mockRestore();
+      delete (window as any).navigation;
+      window.sessionStorage.removeItem(
+        "hackerai:findings:entry:qa-finding-entry",
+      );
+    }
+  });
+
+  it("does not reuse another entry's ownership for an identical deep link", async () => {
+    window.sessionStorage.setItem("hackerai:findings:entry:old-entry", "1");
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "new-entry" } },
+    });
+    window.history.replaceState({}, "", "/findings?finding=finding-1");
+    mockSearchParams.set("finding", "finding-1");
+    const back = jest.spyOn(window.history, "back");
+    try {
+      render(<Page />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(back).not.toHaveBeenCalled();
+    } finally {
+      back.mockRestore();
+      delete (window as any).navigation;
+      window.sessionStorage.removeItem("hackerai:findings:entry:old-entry");
+    }
+  });
+
+  it("keeps normal open and close working when session storage is blocked", async () => {
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "blocked-entry" } },
+    });
+    const write = jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("Blocked", "SecurityError");
+      });
+    try {
+      render(<Page />);
+      fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      write.mockRestore();
+      delete (window as any).navigation;
+    }
+  });
+
+  it("deep-link close replaces the URL instead of navigating away", async () => {
+    window.history.replaceState(
+      { returnContext: "deep-link" },
+      "",
+      "/findings?finding=finding-1",
+    );
+    mockSearchParams.set("finding", "finding-1");
+    const back = jest.spyOn(window.history, "back");
+    render(<Page />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(back).not.toHaveBeenCalled();
+    expect(window.history.state).toEqual(
+      expect.objectContaining({ returnContext: "deep-link" }),
+    );
+    back.mockRestore();
+  });
+
   it("opens and closes the reusable detail in a focused modal", async () => {
     render(<Page />);
     const findingRow = screen.getByRole("link", {

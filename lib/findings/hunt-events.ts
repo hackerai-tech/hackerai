@@ -1,9 +1,8 @@
 /**
  * Client-only, in-memory signal that a finding's hunt history changed in this
  * tab: a hunt tool part finished successfully. Mounted hunt views for that
- * finding refresh once, so an idle view notices a hunt started from chat
- * without polling every idle finding. Carries only the finding ID; it is
- * never persisted or sent anywhere.
+ * finding refresh at once instead of waiting for their next idle poll.
+ * Carries only the finding ID; it is never persisted or sent anywhere.
  */
 type FindingHuntListener = (findingId: string) => void;
 
