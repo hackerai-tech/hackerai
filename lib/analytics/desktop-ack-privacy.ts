@@ -1,9 +1,11 @@
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
 } from "./native-authorization-diagnostics";
 
@@ -152,13 +154,19 @@ export function sanitizeDesktopAckEvent<
       event.properties.terminalType === "error"
         ? readNativeAuthorizationResponse(event.properties)
         : null;
+    // The mitigation group joins only a valid response group, likewise only
+    // as the validated data copy.
+    const nativeAuthorizationMitigation = nativeAuthorizationResponse
+      ? readNativeAuthorizationMitigation(event.properties)
+      : null;
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
         .filter(
           (key) =>
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
-            !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key),
+            !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -183,6 +191,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, nativeAuthorizationCause);
     if (nativeAuthorizationResponse)
       Object.assign(event.properties, nativeAuthorizationResponse);
+    if (nativeAuthorizationMitigation)
+      Object.assign(event.properties, nativeAuthorizationMitigation);
   }
   delete event.$set;
   delete event.$set_once;

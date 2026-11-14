@@ -14,9 +14,11 @@ import {
 import {
   readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
 } from "./native-authorization-diagnostics";
 
@@ -35,6 +37,8 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
   /** Same-invocation approval rejection; independent of the send groups. */
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
+  /** Same response's mitigation marker; only joined to a valid response. */
+  nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -272,6 +276,11 @@ export class DesktopAckTelemetry {
         result.terminalType === "error"
           ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
           : null;
+      const nativeAuthorizationMitigation = nativeAuthorizationResponse
+        ? readNativeAuthorizationMitigation(
+            result.nativeAuthorizationMitigation,
+          )
+        : null;
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -308,6 +317,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorization,
           ...nativeAuthorizationCause,
           ...nativeAuthorizationResponse,
+          ...nativeAuthorizationMitigation,
         },
         dedupeKey,
       );

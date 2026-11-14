@@ -22,10 +22,13 @@ import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   nativeAuthorizationCauseDiagnostic,
   nativeAuthorizationDiagnostic,
+  nativeAuthorizationMitigationDiagnostic,
   nativeAuthorizationResponseDiagnostic,
+  parseNativeAuthorizationResponseMitigation,
   parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendReceipt,
+  type NativeAuthorizationResponseMitigation,
   type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
   type NativeAuthorizationSendReceipt,
@@ -1380,7 +1383,8 @@ export class DesktopSandboxBridge {
     // closed by settlement, owned by the analytics identity at command start,
     // and joined only to this invocation's rejection. The cause receipt has its
     // own channel and latch; neither callback closes the other. The response
-    // receipt likewise has its own channel and latch, independent of both.
+    // receipt likewise has its own channel and latch, independent of both, and
+    // the same response's mitigation marker joins only that response receipt.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     const receiptFenced = () =>
@@ -1391,9 +1395,11 @@ export class DesktopSandboxBridge {
     let receiptOpen = true;
     let causeOpen = true;
     let responseOpen = true;
+    let mitigationOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
+    let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
     let invocationRejected = false;
     const onSettled = this.ackTelemetry.start({
       connectionId,
@@ -1413,6 +1419,7 @@ export class DesktopSandboxBridge {
         receiptOpen = false;
         causeOpen = false;
         responseOpen = false;
+        mitigationOpen = false;
         onSettled(
           {
             ...settlement,
@@ -1432,6 +1439,10 @@ export class DesktopSandboxBridge {
               responseReceipt && {
                 nativeAuthorizationResponse:
                   nativeAuthorizationResponseDiagnostic(responseReceipt),
+                ...(responseMitigation && {
+                  nativeAuthorizationMitigation:
+                    nativeAuthorizationMitigationDiagnostic(responseMitigation),
+                }),
               }),
           },
           this.commandOutputStopSource,
@@ -1444,6 +1455,7 @@ export class DesktopSandboxBridge {
     let diagnosticChannel: object | undefined;
     let causeChannel: object | undefined;
     let responseChannel: object | undefined;
+    let mitigationChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1493,6 +1505,22 @@ export class DesktopSandboxBridge {
         } catch {
           responseChannel = undefined;
         }
+        // A mitigation marker is only ever reported with the response receipt.
+        if (responseChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!mitigationOpen) return;
+              mitigationOpen = false;
+              if (receiptFenced()) return;
+              responseMitigation =
+                parseNativeAuthorizationResponseMitigation(value);
+            };
+            mitigationChannel = channel;
+          } catch {
+            mitigationChannel = undefined;
+          }
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1529,6 +1557,9 @@ export class DesktopSandboxBridge {
               }),
               ...(responseChannel && {
                 onAuthorizationResponseDiagnostic: responseChannel,
+              }),
+              ...(mitigationChannel && {
+                onAuthorizationMitigationDiagnostic: mitigationChannel,
               }),
             },
           );
@@ -1571,6 +1602,7 @@ export class DesktopSandboxBridge {
         diagnosticChannel,
         causeChannel,
         responseChannel,
+        mitigationChannel,
       ]) {
         try {
           (

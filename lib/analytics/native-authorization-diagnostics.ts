@@ -14,6 +14,12 @@
  * class, the origin class, the compiled platform and the shape of the
  * response's public `x-vercel-id`. That ID is copied only within a strict
  * observed subset; this is not a guarantee of Vercel's format.
+ *
+ * A newer native app also sends a separate mitigation receipt on its own
+ * channel: a closed class of the same response's `x-vercel-mitigated` header,
+ * matched against exact literals and never copied. It is an observed marker,
+ * not an authenticated provider decision, and it is only reported together
+ * with a valid response receipt.
  */
 
 const ORIGIN_CLASSES = [
@@ -84,11 +90,22 @@ const RESPONSE_KEYS = [
   "requestId",
 ] as const;
 
+const MITIGATIONS = [
+  "absent",
+  "challenge",
+  "deny",
+  "rate_limit",
+  "other",
+  "unreadable",
+] as const;
+const MITIGATION_KEYS = ["version", "mitigation"] as const;
+
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 type IoKind = (typeof IO_KINDS)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
+type Mitigation = (typeof MITIGATIONS)[number];
 
 export interface NativeAuthorizationSendReceipt {
   readonly timeout: boolean;
@@ -496,6 +513,71 @@ export function readNativeAuthorizationResponse(
           requestIdShape,
           requestId,
         } as NativeAuthorizationResponseReceipt)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationResponseMitigation {
+  readonly mitigation: Mitigation;
+}
+
+export interface NativeAuthorizationMitigationDiagnostic {
+  readonly native_authorization_response_mitigation_version: 1;
+  /** Observed `x-vercel-mitigated` class, not an authenticated decision. */
+  readonly native_authorization_response_mitigation: Mitigation;
+}
+
+const MITIGATION_PROPERTIES = [
+  "native_authorization_response_mitigation_version",
+  "native_authorization_response_mitigation",
+] as const satisfies readonly (keyof NativeAuthorizationMitigationDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES: ReadonlySet<string> =
+  new Set(MITIGATION_PROPERTIES);
+
+const isMitigation = (value: unknown): value is Mitigation =>
+  MITIGATIONS.some((mitigation) => mitigation === value);
+
+/** Copy only the closed native mitigation schema; anything else is dropped. */
+export function parseNativeAuthorizationResponseMitigation(
+  value: unknown,
+): NativeAuthorizationResponseMitigation | null {
+  try {
+    const values = readClosedObject(value, MITIGATION_KEYS);
+    if (!values) return null;
+    const [version, mitigation] = values;
+    if (version !== 1 || !isMitigation(mitigation)) return null;
+    return Object.freeze({ mitigation });
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationMitigationDiagnostic(
+  receipt: NativeAuthorizationResponseMitigation,
+): NativeAuthorizationMitigationDiagnostic {
+  return Object.freeze({
+    native_authorization_response_mitigation_version: 1,
+    native_authorization_response_mitigation: receipt.mitigation,
+  });
+}
+
+/** Read the complete mitigation group from any property bag's own data
+ * properties, or nothing at all. Callers join it only to a valid response
+ * group. */
+export function readNativeAuthorizationMitigation(
+  source: unknown,
+): NativeAuthorizationMitigationDiagnostic | null {
+  if (typeof source !== "object" || source === null) return null;
+  try {
+    const [version, mitigation] = readDataProperties(
+      source,
+      MITIGATION_PROPERTIES,
+    );
+    return version === 1 && isMitigation(mitigation)
+      ? nativeAuthorizationMitigationDiagnostic({ mitigation })
       : null;
   } catch {
     return null;

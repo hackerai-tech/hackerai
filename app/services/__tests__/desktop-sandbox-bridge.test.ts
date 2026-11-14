@@ -20,6 +20,7 @@ import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
@@ -6992,6 +6993,10 @@ describe("native authorization send receipt", () => {
       expect(calls[0]).toHaveProperty("onAuthorizationDiagnostic");
       expect(calls[0]).toHaveProperty("onAuthorizationCauseDiagnostic");
       expect(calls[0]).not.toHaveProperty("onAuthorizationResponseDiagnostic");
+      // A mitigation marker is never requested without its response receipt.
+      expect(calls[0]).not.toHaveProperty(
+        "onAuthorizationMitigationDiagnostic",
+      );
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: unavailable }),
       ]);
@@ -7178,6 +7183,316 @@ describe("native authorization send receipt", () => {
       expect(nativeKeys(byCommand["send-failure"])).toHaveLength(8);
       expect(responseKeys(byCommand["send-failure"])).toEqual([]);
     });
+
+    describe("mitigation marker", () => {
+      const mitigation = { version: 1, mitigation: "challenge" };
+      const mitigationGroup = {
+        native_authorization_response_mitigation_version: 1,
+        native_authorization_response_mitigation: "challenge",
+      };
+      const mitigationKeys = (properties: Record<string, unknown> = {}) =>
+        Object.keys(properties).filter((key) =>
+          NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
+        );
+      const mitigationChannel = (call: NativeCall) =>
+        call.onAuthorizationMitigationDiagnostic as MockChannel;
+
+      it("joins one same-invocation marker to the response receipt", async () => {
+        const { calls, replies } = await run(async (call) => {
+          mitigationChannel(call).onmessage!(mitigation);
+          // A duplicate cannot replace the first callback attempt.
+          mitigationChannel(call).onmessage!({
+            version: 1,
+            mitigation: "deny",
+          });
+          responseChannel(call).onmessage!(rejection);
+          return Promise.reject(notAuthorized);
+        });
+
+        expect(calls).toHaveLength(1);
+        const channel = mitigationChannel(calls[0]);
+        expect(channel).toBeDefined();
+        for (const other of [
+          calls[0].onEvent,
+          calls[0].onAuthorizationDiagnostic,
+          calls[0].onAuthorizationCauseDiagnostic,
+          calls[0].onAuthorizationResponseDiagnostic,
+        ])
+          expect(channel).not.toBe(other);
+        expect(Object.keys(calls[0].message as object)).not.toContain(
+          "onAuthorizationMitigationDiagnostic",
+        );
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({
+            type: "error",
+            message: notAuthorized,
+            sequence: 0,
+          }),
+        ]);
+        expect(finals()).toHaveLength(1);
+        const final = finals()[0];
+        expect(final.properties).toMatchObject({
+          terminalType: "error",
+          ...responseGroup,
+          ...mitigationGroup,
+        });
+        expect(nativeKeys(final.properties)).toEqual([]);
+        const started = captures().find(
+          (event) => event.event === "desktop_ack_command_started",
+        );
+        expect(mitigationKeys(started?.properties)).toEqual([]);
+        const enriched = sanitizeDesktopAckEvent({
+          ...final,
+          properties: { ...final.properties, $current_url: "PRIVATE" },
+        });
+        // The frozen v1 response group is unchanged beside the new group.
+        expect(responseKeys(enriched.properties)).toHaveLength(7);
+        expect(mitigationKeys(enriched.properties)).toHaveLength(2);
+        expect(enriched.properties).toMatchObject(mitigationGroup);
+        const serialized = JSON.stringify([captures(), enriched]);
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain(authorizationId);
+        expect(serialized).not.toContain(notAuthorized);
+      });
+
+      it("keeps the response receipt unchanged when an older native app sends no marker", async () => {
+        const { calls } = await run((call) => {
+          responseChannel(call).onmessage!(rejection);
+          return reject(notAuthorized);
+        });
+        expect(calls[0]).toHaveProperty("onAuthorizationMitigationDiagnostic");
+        expect(finals()[0].properties).toMatchObject(responseGroup);
+        expect(responseKeys(finals()[0].properties)).toHaveLength(7);
+        expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("reports no orphan marker and keeps the send telemetry", async () => {
+        await run((call) => {
+          mitigationChannel(call).onmessage!(mitigation);
+          (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
+          (call.onAuthorizationCauseDiagnostic as MockChannel).onmessage!({
+            version: 1,
+            ioKind: "connection_reset",
+            sourceDepth: 3,
+            sourceChainTruncated: false,
+          });
+          return reject(unavailable);
+        });
+        const properties = finals()[0].properties;
+        expect(nativeKeys(properties)).toHaveLength(8);
+        expect(
+          Object.keys(properties!).filter((key) =>
+            NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+          ),
+        ).toHaveLength(4);
+        expect(responseKeys(properties)).toEqual([]);
+        expect(mitigationKeys(properties)).toEqual([]);
+      });
+
+      it.each<[string, () => unknown]>([
+        ["an extra private field", () => ({ ...mitigation, raw: "PRIVATE" })],
+        ["a missing version", () => ({ mitigation: "challenge" })],
+        ["another version", () => ({ ...mitigation, version: 2 })],
+        ["an unknown class", () => ({ ...mitigation, mitigation: "PRIVATE" })],
+        [
+          "a non-literal class",
+          () => ({ ...mitigation, mitigation: "Challenge" }),
+        ],
+        ["a raw header string", () => "challenge"],
+        ["a response receipt on the marker channel", () => rejection],
+        [
+          "a class instance",
+          () =>
+            Object.assign(
+              Object.create({ raw: "PRIVATE" }) as object,
+              mitigation,
+            ),
+        ],
+        [
+          "a throwing getter",
+          () =>
+            Object.defineProperty({ ...mitigation }, "mitigation", {
+              enumerable: true,
+              get() {
+                throw new Error("PRIVATE");
+              },
+            }),
+        ],
+        [
+          "a throwing proxy",
+          () => {
+            const fail = () => {
+              throw new Error("PRIVATE");
+            };
+            return new Proxy(
+              {},
+              { getPrototypeOf: fail, ownKeys: fail, get: fail },
+            );
+          },
+        ],
+      ])(
+        "drops the marker for %s and keeps the response receipt",
+        async (_case, value) => {
+          const { calls, replies } = await run((call) => {
+            mitigationChannel(call).onmessage!(value());
+            // The malformed first attempt closed the marker latch.
+            mitigationChannel(call).onmessage!(mitigation);
+            responseChannel(call).onmessage!(rejection);
+            return reject(notAuthorized);
+          });
+          expect(calls).toHaveLength(1);
+          expect(sequencedFrames(replies[0])).toEqual([
+            expect.objectContaining({ type: "error", message: notAuthorized }),
+          ]);
+          expect(finals()).toHaveLength(1);
+          expect(finals()[0].properties).toMatchObject(responseGroup);
+          expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+          expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+        },
+      );
+
+      it("adds no marker to a successful command", async () => {
+        await run(async (call) => {
+          mitigationChannel(call).onmessage!(mitigation);
+          responseChannel(call).onmessage!(rejection);
+          (call.onEvent as MockChannel).onmessage!({
+            type: "exit",
+            exitCode: 0,
+          });
+        });
+        expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+        expect(responseKeys(finals()[0].properties)).toEqual([]);
+        expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("drops a marker after settlement and releases its callback", async () => {
+        let call!: NativeCall;
+        await run((native) => {
+          call = native;
+          responseChannel(native).onmessage!(rejection);
+          return reject(notAuthorized);
+        });
+        const channel = mitigationChannel(call);
+        expect(channel.cleanupCallback).toHaveBeenCalledTimes(1);
+        channel.onmessage!(mitigation);
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject(responseGroup);
+        expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("drops a marker observed under another analytics owner", async () => {
+        const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+        try {
+          await run((call) => {
+            responseChannel(call).onmessage!(rejection);
+            identity.mockReturnValue("another-user");
+            mitigationChannel(call).onmessage!(mitigation);
+            identity.mockReturnValue("user-456");
+            mitigationChannel(call).onmessage!(mitigation);
+            return reject(notAuthorized);
+          });
+          expect(finals()[0].properties).toMatchObject(responseGroup);
+          expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+        } finally {
+          identity.mockReturnValue("user-456");
+        }
+      });
+
+      it("drops a marker that arrives after the connection is stopped", async () => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (call) => {
+            await pending;
+            responseChannel(call).onmessage!(rejection);
+            mitigationChannel(call).onmessage!(mitigation);
+            return reject(notAuthorized);
+          },
+          {
+            beforeAck: async (bridge) => {
+              await bridge.stop();
+              release();
+            },
+          },
+        );
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({
+          outcome: "incomplete",
+          reason: "stopped",
+        });
+        expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("keeps the response channel when only the marker channel cannot be created", async () => {
+        const { Channel } = await import("@tauri-apps/api/core");
+        const create = jest.mocked(Channel).getMockImplementation()!;
+        jest
+          .mocked(Channel)
+          .mockImplementationOnce(create)
+          .mockImplementationOnce(create)
+          .mockImplementationOnce(create)
+          .mockImplementationOnce(() => {
+            throw new Error("channel unavailable");
+          });
+        const { calls, replies } = await run((call) => {
+          responseChannel(call).onmessage!(rejection);
+          return reject(notAuthorized);
+        });
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toHaveProperty("onAuthorizationResponseDiagnostic");
+        expect(calls[0]).not.toHaveProperty(
+          "onAuthorizationMitigationDiagnostic",
+        );
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: notAuthorized }),
+        ]);
+        expect(finals()[0].properties).toMatchObject(responseGroup);
+        expect(mitigationKeys(finals()[0].properties)).toEqual([]);
+      });
+
+      it("keeps interleaved invocations' markers separate", async () => {
+        let arrived = 0;
+        let release!: () => void;
+        const all = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (call) => {
+            const commandId = (call.message as { commandId: string }).commandId;
+            if (commandId === "denied")
+              mitigationChannel(call).onmessage!({
+                version: 1,
+                mitigation: "deny",
+              });
+            if (++arrived === 3) release();
+            await all;
+            if (commandId !== "send-failure")
+              responseChannel(call).onmessage!(rejection);
+            if (commandId === "challenged")
+              mitigationChannel(call).onmessage!(mitigation);
+            return reject(notAuthorized);
+          },
+          { commandIds: ["denied", "challenged", "send-failure"] },
+        );
+        const byCommand = Object.fromEntries(
+          finals().map((event) => [
+            event.properties!.commandId,
+            event.properties,
+          ]),
+        );
+        expect(byCommand.denied).toMatchObject({
+          ...responseGroup,
+          native_authorization_response_mitigation: "deny",
+        });
+        expect(byCommand.challenged).toMatchObject({
+          ...responseGroup,
+          ...mitigationGroup,
+        });
+        expect(mitigationKeys(byCommand["send-failure"])).toEqual([]);
+      });
+    });
   });
 
   it.each<
@@ -7212,10 +7527,17 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt, cause and response channels besides the output one.
+      // optional receipt, cause, response and mitigation channels besides the
+      // output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 4,
+        options?.version || options?.acknowledged === false ? 1 : 5,
       );
+      const optional = [
+        "onAuthorizationDiagnostic",
+        "onAuthorizationCauseDiagnostic",
+        "onAuthorizationResponseDiagnostic",
+        "onAuthorizationMitigationDiagnostic",
+      ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",
       );
@@ -7224,21 +7546,12 @@ describe("native authorization send receipt", () => {
       );
       if (options?.acknowledged === false) {
         expect(authorized).toHaveLength(1);
-        expect(authorized[0]).not.toHaveProperty("onAuthorizationDiagnostic");
-        expect(authorized[0]).not.toHaveProperty(
-          "onAuthorizationCauseDiagnostic",
-        );
-        expect(authorized[0]).not.toHaveProperty(
-          "onAuthorizationResponseDiagnostic",
-        );
+        for (const key of optional)
+          expect(authorized[0]).not.toHaveProperty(key);
       } else {
         expect(legacy).toHaveLength(1);
         expect(legacy[0]).toHaveProperty("onEvent");
-        expect(legacy[0]).not.toHaveProperty("onAuthorizationDiagnostic");
-        expect(legacy[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
-        expect(legacy[0]).not.toHaveProperty(
-          "onAuthorizationResponseDiagnostic",
-        );
+        for (const key of optional) expect(legacy[0]).not.toHaveProperty(key);
         expect(authorized).toHaveLength(options?.version ? 0 : 1);
       }
     },
