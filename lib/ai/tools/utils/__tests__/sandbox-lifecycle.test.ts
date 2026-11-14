@@ -1844,6 +1844,165 @@ describe("E2B sandbox lease lifecycle", () => {
     expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
+  it("attributes a pinned paused connect conflict message without another resume", async () => {
+    process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    const setSandbox = jest.fn();
+    sandboxApi.getInfo.mockResolvedValue({
+      sandboxId: "private-workspace-id",
+      state: "paused",
+      metadata: {
+        userID: "user-1",
+        sandboxVersion: "v12",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+      },
+    });
+    sandboxApi.connect.mockRejectedValue(
+      Object.assign(
+        new SandboxError('409: Sandbox "private-workspace-id" is being paused'),
+        { statusCode: 409 },
+      ),
+    );
+    const expectedDiagnostics = {
+      e2b_phase: "connect",
+      e2b_error_category: "transient",
+      e2b_http_status: 409,
+      e2b_connect_conflict_message_signal_version: 1,
+      e2b_connect_conflict_message_signal: "pausing",
+    };
+    try {
+      const failure = await ensureSandboxConnection(
+        { userID: "user-1", setSandbox },
+        {
+          destinationId: "private-workspace-id",
+          acquisitionId: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+          triggerRegion: "us-east-1",
+        },
+      ).catch((error) => error);
+      expect(failure.diagnostics).toEqual(expectedDiagnostics);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(errorLog.mock.calls[0][0]))).toMatchObject({
+        event: "e2b_sandbox_acquisition_failed",
+        acquisition_id: "7ad19af5-4d14-4d4b-aab7-90734610a6da",
+        ...expectedDiagnostics,
+        e2b_connect_state: "paused",
+        e2b_connect_selection_source: "pinned",
+        e2b_connect_target_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      const serialized = JSON.stringify([errorLog.mock.calls, failure]);
+      for (const privateValue of ["private-workspace-id", "is being paused"])
+        expect(serialized).not.toContain(privateValue);
+      expect(recordResumeFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ uncertain: true, timeoutOnly: false }),
+      );
+      expect(sandboxApi.connect).toHaveBeenCalledTimes(1);
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(sandboxApi.list).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  const conflict = () =>
+    Object.assign(new SandboxError("409: Sandbox is being killed"), {
+      statusCode: 409,
+    });
+  it.each<
+    [
+      string,
+      () => {
+        destinationId?: string;
+        setSandbox?: (sandbox: Sandbox) => void;
+      } | void,
+    ]
+  >([
+    [
+      "a non-conflict connect status",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(
+          Object.assign(new SandboxError("504: is being killed"), {
+            statusCode: 504,
+          }),
+        );
+      },
+    ],
+    [
+      "a 409 status outside the SDK error class",
+      () => {
+        listSandbox({ state: "paused" });
+        sandboxApi.connect.mockRejectedValueOnce(
+          Object.assign(new Error("409: is being killed"), { statusCode: 409 }),
+        );
+      },
+    ],
+    [
+      "a pinned identity lookup conflict before connect",
+      () => {
+        sandboxApi.getInfo.mockRejectedValueOnce(conflict());
+        return { destinationId: "private-workspace-id" };
+      },
+    ],
+    [
+      "an earlier conflict replaced by a different final connect failure",
+      () => {
+        listSandbox({ state: "running" });
+        sandboxApi.connect
+          .mockRejectedValueOnce(conflict())
+          .mockRejectedValueOnce(conflict())
+          .mockRejectedValueOnce(new Error("transport failure"));
+      },
+    ],
+    [
+      "a conflict raised after connect succeeded",
+      () => {
+        listSandbox({ state: "running" });
+        sandboxApi.connect.mockResolvedValueOnce({ sandboxId: "sandbox-1" });
+        return {
+          setSandbox: () => {
+            throw conflict();
+          },
+        };
+      },
+    ],
+    [
+      "a create conflict",
+      () => {
+        sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+        sandboxApi.create.mockRejectedValueOnce(conflict());
+      },
+    ],
+  ])("omits the conflict message signal for %s", async (_label, arrange) => {
+    jest.useFakeTimers();
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { destinationId, setSandbox = jest.fn() } = arrange() ?? {};
+    try {
+      const result = ensureSandboxConnection(
+        { userID: "user-1", setSandbox },
+        { destinationId },
+      ).catch((error) => error);
+      await jest.runAllTimersAsync();
+      const failure = await result;
+      expect(failure.diagnostics).toBeDefined();
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      const logged = JSON.parse(String(errorLog.mock.calls[0][0]));
+      for (const diagnostics of [failure.diagnostics, logged]) {
+        expect(diagnostics).not.toHaveProperty(
+          "e2b_connect_conflict_message_signal",
+        );
+        expect(diagnostics).not.toHaveProperty(
+          "e2b_connect_conflict_message_signal_version",
+        );
+      }
+      expect(sandboxApi.kill).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("does not classify a publication failure as a provider gateway timeout", async () => {
     process.env.E2B_TEMPLATE = "terminal-agent-sandbox";
     listSandbox({

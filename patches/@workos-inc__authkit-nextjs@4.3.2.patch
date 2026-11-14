@@ -2,7 +2,7 @@ diff --git a/dist/esm/actions.js b/dist/esm/actions.js
 index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf626c5ba7c 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
-@@ -13,6 +13,210 @@ function sanitize(value) {
+@@ -13,6 +13,243 @@ function sanitize(value) {
      const { accessToken, ...sanitized } = value;
      return sanitized;
  }
@@ -130,11 +130,39 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
 +    }
 +};
 +const isRateLimitFailure = ([kind, status]) => kind === 'RateLimitExceededException' && status === 429;
++// WorkOS session IDs: a fixed prefix and ULID. Other values are never hashed.
++const RATE_LIMIT_SESSION_ID = /^session_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
++const RATE_LIMIT_SESSION_DOMAIN = 'hackerai:auth-refresh-429-session:v1:';
++/**
++ * One-way fingerprint of the original session the SDK already attached to its
++ * TokenRefreshError. Emits only a truncated SHA-256 digest, never the ID.
++ */
++const getRateLimitSession = async (record) => {
++    let sessionId;
++    try {
++        sessionId = record.sessionId;
++    }
++    catch {
++        return [null, 'unreadable'];
++    }
++    if (sessionId == null)
++        return [null, 'absent'];
++    if (typeof sessionId !== 'string' || !RATE_LIMIT_SESSION_ID.test(sessionId))
++        return [null, 'unrecognized'];
++    try {
++        const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(RATE_LIMIT_SESSION_DOMAIN + sessionId));
++        const hex = Array.from(new Uint8Array(digest, 0, 16), (byte) => byte.toString(16).padStart(2, '0'));
++        return [hex.join(''), 'valid'];
++    }
++    catch {
++        return [null, 'crypto_unavailable'];
++    }
++};
 +/**
 + * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
 + * Reads the thrown value and at most one cause; never copies provider text.
 + */
-+const getRefreshFailureDiagnostics = (error) => {
++const getRefreshFailureDiagnostics = async (error) => {
 +    const root = describeRefreshFailure(error);
 +    const record = error && typeof error === 'object' ? error : null;
 +    let cause = ['none', null, 'absent', 'none'];
@@ -165,12 +193,17 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
 +        // WorkOS sets requestID to '' when the response has no X-Request-ID.
 +        const [requestId, requestIdShape] = readRateLimitField(rateLimitRecord, 'requestID', isRateLimitRequestId, '');
 +        const [retryAfter, retryAfterShape] = readRateLimitField(rateLimitRecord, 'retryAfter', isRateLimitRetryAfter);
++        // Only the SDK's TokenRefreshError carries the original session.
++        const [sessionFingerprint, sessionShape] = root[0] === 'TokenRefreshError' && record ? await getRateLimitSession(record) : [null, 'absent'];
 +        rateLimit = {
 +            auth_action_refresh_rate_limit_diagnostic_version: 1,
 +            auth_action_refresh_rate_limit_request_id: requestId,
 +            auth_action_refresh_rate_limit_request_id_shape: requestIdShape,
 +            auth_action_refresh_rate_limit_retry_after_seconds: retryAfter,
 +            auth_action_refresh_rate_limit_retry_after_shape: retryAfterShape,
++            auth_action_refresh_rate_limit_session_diagnostic_version: 1,
++            auth_action_refresh_rate_limit_session_fingerprint: sessionFingerprint,
++            auth_action_refresh_rate_limit_session_shape: sessionShape,
 +        };
 +    }
 +    return JSON.stringify({
@@ -213,7 +246,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -29,7 +233,7 @@ export const getOrganizationAction = async (organizationId) => {
+@@ -29,7 +266,7 @@ export const getOrganizationAction = async (organizationId) => {
      // authenticated within. The WorkOS client uses the app's API key, which can
      // read any organization in the environment, so without this check any caller
      // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -222,7 +255,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
      if (!user || sessionOrganizationId !== organizationId) {
          return null;
      }
-@@ -43,7 +247,7 @@ export const getAuthAction = async (options) => {
+@@ -43,7 +280,7 @@ export const getAuthAction = async (options) => {
      // would call redirect() to an external URL, which causes CORS errors when
      // invoked via a client-side fetch. Instead, return the sign-in URL so the
      // client can redirect via window.location.href.
@@ -231,7 +264,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
      const sanitized = sanitize(auth);
      if (options?.ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -51,10 +255,11 @@ export const getAuthAction = async (options) => {
+@@ -51,10 +288,11 @@ export const getAuthAction = async (options) => {
      }
      return sanitized;
  };
@@ -245,7 +278,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
      const sanitized = sanitize(auth);
      if (ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -63,14 +268,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+@@ -63,14 +301,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
      return sanitized;
  };
  export const switchToOrganizationAction = async (organizationId, options) => {
@@ -262,7 +295,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
      return auth.accessToken;
  }
  /**
-@@ -86,7 +291,14 @@ export async function refreshAccessTokenAction() {
+@@ -86,7 +324,14 @@ export async function refreshAccessTokenAction() {
          return { accessToken: auth.accessToken };
      }
      catch (error) {
@@ -274,7 +307,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..16215adbe84c15ed7c8cf3ff2b5b6cf6
 +        if (isEndedSessionRefreshError(error)) {
 +            return { accessToken: undefined };
 +        }
-+        console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error), getRefreshFailureDiagnostics(error));
++        console.warn('Failed to refresh access token:', error instanceof Error ? error.message : String(error), await getRefreshFailureDiagnostics(error));
          return {
              accessToken: undefined,
              error: 'Failed to refresh access token',
@@ -317,7 +350,7 @@ diff --git a/src/actions.ts b/src/actions.ts
 index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92c581100e 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
-@@ -22,6 +22,234 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
+@@ -22,6 +22,274 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
    return sanitized;
  }
  
@@ -471,11 +504,45 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
 +const isRateLimitFailure = ([kind, status]: RefreshFailureDescription): boolean =>
 +  kind === 'RateLimitExceededException' && status === 429;
 +
++// WorkOS session IDs: a fixed prefix and ULID. Other values are never hashed.
++const RATE_LIMIT_SESSION_ID = /^session_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
++const RATE_LIMIT_SESSION_DOMAIN = 'hackerai:auth-refresh-429-session:v1:';
++
++type RateLimitSession = [
++  fingerprint: string | null,
++  shape: 'valid' | 'absent' | 'unrecognized' | 'unreadable' | 'crypto_unavailable',
++];
++
++/**
++ * One-way fingerprint of the original session the SDK already attached to its
++ * TokenRefreshError. Emits only a truncated SHA-256 digest, never the ID.
++ */
++const getRateLimitSession = async (record: Record<string, unknown>): Promise<RateLimitSession> => {
++  let sessionId: unknown;
++  try {
++    sessionId = record.sessionId;
++  } catch {
++    return [null, 'unreadable'];
++  }
++  if (sessionId == null) return [null, 'absent'];
++  if (typeof sessionId !== 'string' || !RATE_LIMIT_SESSION_ID.test(sessionId)) return [null, 'unrecognized'];
++  try {
++    const digest = await globalThis.crypto.subtle.digest(
++      'SHA-256',
++      new TextEncoder().encode(RATE_LIMIT_SESSION_DOMAIN + sessionId),
++    );
++    const hex = Array.from(new Uint8Array(digest, 0, 16), (byte) => byte.toString(16).padStart(2, '0'));
++    return [hex.join(''), 'valid'];
++  } catch {
++    return [null, 'crypto_unavailable'];
++  }
++};
++
 +/**
 + * Fixed, primitive-only metadata for the existing nonterminal refresh warning.
 + * Reads the thrown value and at most one cause; never copies provider text.
 + */
-+const getRefreshFailureDiagnostics = (error: unknown): string => {
++const getRefreshFailureDiagnostics = async (error: unknown): Promise<string> => {
 +  const root = describeRefreshFailure(error);
 +  const record = error && typeof error === 'object' ? (error as Record<string, unknown>) : null;
 +  let cause: RefreshFailureDescription = ['none', null, 'absent', 'none'];
@@ -503,12 +570,18 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
 +    // WorkOS sets requestID to '' when the response has no X-Request-ID.
 +    const [requestId, requestIdShape] = readRateLimitField(rateLimitRecord, 'requestID', isRateLimitRequestId, '');
 +    const [retryAfter, retryAfterShape] = readRateLimitField(rateLimitRecord, 'retryAfter', isRateLimitRetryAfter);
++    // Only the SDK's TokenRefreshError carries the original session.
++    const [sessionFingerprint, sessionShape]: RateLimitSession =
++      root[0] === 'TokenRefreshError' && record ? await getRateLimitSession(record) : [null, 'absent'];
 +    rateLimit = {
 +      auth_action_refresh_rate_limit_diagnostic_version: 1,
 +      auth_action_refresh_rate_limit_request_id: requestId,
 +      auth_action_refresh_rate_limit_request_id_shape: requestIdShape,
 +      auth_action_refresh_rate_limit_retry_after_seconds: retryAfter,
 +      auth_action_refresh_rate_limit_retry_after_shape: retryAfterShape,
++      auth_action_refresh_rate_limit_session_diagnostic_version: 1,
++      auth_action_refresh_rate_limit_session_fingerprint: sessionFingerprint,
++      auth_action_refresh_rate_limit_session_shape: sessionShape,
 +    };
 +  }
 +  return JSON.stringify({
@@ -552,7 +625,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -40,7 +268,10 @@ export const getOrganizationAction = async (organizationId: string) => {
+@@ -40,7 +308,10 @@ export const getOrganizationAction = async (organizationId: string) => {
    // authenticated within. The WorkOS client uses the app's API key, which can
    // read any organization in the environment, so without this check any caller
    // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -564,7 +637,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
    if (!user || sessionOrganizationId !== organizationId) {
      return null;
    }
-@@ -56,7 +287,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -56,7 +327,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    // would call redirect() to an external URL, which causes CORS errors when
    // invoked via a client-side fetch. Instead, return the sign-in URL so the
    // client can redirect via window.location.href.
@@ -573,7 +646,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
    const sanitized = sanitize(auth);
  
    if (options?.ensureSignedIn && !auth.user) {
-@@ -67,16 +298,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -67,16 +338,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    return sanitized;
  };
  
@@ -599,7 +672,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
    const sanitized = sanitize(auth);
  
    if (ensureSignedIn && !auth.user) {
-@@ -88,7 +322,10 @@ export const refreshAuthAction = async ({
+@@ -88,7 +362,10 @@ export const refreshAuthAction = async ({
  };
  
  export const switchToOrganizationAction = async (organizationId: string, options?: SwitchToOrganizationOptions) => {
@@ -611,7 +684,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
  };
  
  /**
-@@ -96,7 +333,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
+@@ -96,7 +373,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
   * It is used to fetch the access token from the server.
   */
  export async function getAccessTokenAction() {
@@ -620,7 +693,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
    return auth.accessToken;
  }
  
-@@ -112,7 +349,18 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
+@@ -112,7 +389,18 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
      const auth = await refreshSession();
      return { accessToken: auth.accessToken };
    } catch (error) {
@@ -635,7 +708,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..a212f5dfc931aaff29019181464b0f92
 +    console.warn(
 +      'Failed to refresh access token:',
 +      error instanceof Error ? error.message : String(error),
-+      getRefreshFailureDiagnostics(error),
++      await getRefreshFailureDiagnostics(error),
 +    );
      return {
        accessToken: undefined,

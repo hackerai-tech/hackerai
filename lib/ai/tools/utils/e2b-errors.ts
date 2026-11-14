@@ -71,6 +71,90 @@ export function getE2BErrorKind(error: unknown): E2BErrorKind {
   }
 }
 
+export type E2BConnectConflictMessageSignal =
+  | "resuming"
+  | "pausing"
+  | "killing"
+  | "snapshotting"
+  | "already_running"
+  | "guest_agent_unresponsive"
+  | "busy"
+  | "none"
+  | "multiple"
+  | "unreadable"
+  | "oversized";
+
+const MAX_CONNECT_CONFLICT_MESSAGE_LENGTH = 4096;
+
+// Identifier characters bound each token, so longer words and identifier-like
+// strings such as "unpausing" or "already-running" do not supply a signal.
+const conflictToken = (pattern: string) =>
+  new RegExp(`(?<![a-z0-9_-])${pattern}(?![a-z0-9_-])`, "i");
+
+// Public E2B conflict phrases. They take precedence over standalone words
+// because a phrase can mention another lifecycle word in passing.
+const CONNECT_CONFLICT_PHRASES: ReadonlyArray<
+  readonly [E2BConnectConflictMessageSignal, RegExp]
+> = [
+  ["killing", conflictToken(String.raw`being\s+killed`)],
+  ["pausing", conflictToken(String.raw`being\s+paused`)],
+  ["snapshotting", conflictToken(String.raw`being\s+snapshotted`)],
+  [
+    "snapshotting",
+    conflictToken(String.raw`snapshot\s+is\s+currently\s+being\s+created`),
+  ],
+  ["already_running", conflictToken(String.raw`already\s+running`)],
+  [
+    "guest_agent_unresponsive",
+    conflictToken(String.raw`guest\s+agent\s+(?:was\s+)?not\s+responding`),
+  ],
+  ["busy", conflictToken(String.raw`busy\s+with\s+another\s+operation`)],
+];
+
+const CONNECT_CONFLICT_WORDS: ReadonlyArray<
+  readonly [E2BConnectConflictMessageSignal, RegExp]
+> = (["resuming", "pausing", "killing", "snapshotting"] as const).map(
+  (word) => [word, conflictToken(word)] as const,
+);
+
+/**
+ * Closed projection of an original E2B 409 message for diagnostics. The signal
+ * describes only the message text, never authoritative provider state or the
+ * customer's cause. Matching stays in memory; text is never returned. Any other
+ * error returns undefined without reading its message.
+ */
+export function getE2BConnectConflictMessageSignal(
+  error: unknown,
+): E2BConnectConflictMessageSignal | undefined {
+  try {
+    if (!(error instanceof SandboxError) || error.statusCode !== 409)
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  let message: unknown;
+  try {
+    message = (error as SandboxError).message;
+  } catch {
+    return "unreadable";
+  }
+  if (typeof message !== "string") return "unreadable";
+  if (message.length > MAX_CONNECT_CONFLICT_MESSAGE_LENGTH) return "oversized";
+  const text = message;
+  const matching = (
+    patterns: ReadonlyArray<readonly [E2BConnectConflictMessageSignal, RegExp]>,
+  ) =>
+    new Set(
+      patterns
+        .filter(([, pattern]) => pattern.test(text))
+        .map(([signal]) => signal),
+    );
+  let signals = matching(CONNECT_CONFLICT_PHRASES);
+  if (!signals.size) signals = matching(CONNECT_CONFLICT_WORDS);
+  if (signals.size > 1) return "multiple";
+  return [...signals][0] ?? "none";
+}
+
 /**
  * Classify an error into an E2B error category using instanceof checks
  * against the SDK's error class hierarchy.

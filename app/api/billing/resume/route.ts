@@ -3,11 +3,14 @@ import { NextResponse, after } from "next/server";
 import resumeSubscription from "@/lib/actions/resume-subscription";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
 import { phLogger } from "@/lib/posthog/server";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export const dynamic = "force-dynamic";
 
 /** Resume a paused plan immediately instead of waiting for the resume date. */
-export async function POST() {
+export async function POST(request: Request) {
+  const rejection = rejectUnsafeRequest(request);
+  if (rejection) return rejection;
   try {
     const result = await resumeSubscription();
     after(() => phLogger.flush());

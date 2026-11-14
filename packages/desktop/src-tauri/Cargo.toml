@@ -36,6 +36,8 @@ tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
+# reqwest's own default-tls backend; used only to recognize its error type.
+native-tls = "=0.2.14"
 os_info = "3.14"
 gethostname = "1.1"
 sha2 = "0.10"

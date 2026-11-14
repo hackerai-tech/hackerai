@@ -18,6 +18,7 @@ import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import { useAttachmentDownload } from "../hooks/useAttachmentDownload";
+import { useS3ActionDiagnostics } from "../hooks/useS3ActionDiagnostics";
 
 const FilePartRendererComponent = ({
   part,
@@ -25,7 +26,10 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "inline_image",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   // Use ref to access cache without adding to useEffect dependencies
   // This prevents re-renders from triggering URL refetches

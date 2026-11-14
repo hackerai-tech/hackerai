@@ -1,5 +1,10 @@
 import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import {
+  getLatestUserTaskText,
+  isNotesRelevantRecallEnabled,
+} from "@/lib/notes/recall";
+import { isFindingHuntsEnabled } from "@/lib/findings/hunt-policy";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -477,8 +482,16 @@ export const createChatHandler = () => {
       // overlaps the remaining preflight instead of adding a serial
       // round-trip at the end. getNotes never rejects (it returns [] on error).
       const shouldIncludeNotes = userCustomization?.include_notes ?? true;
+      // Relevant recall uses the same eligibility as the notes tools, so the
+      // free Ask path keeps its existing behavior. Evaluated once per request.
+      const notesRecallAssignment =
+        shouldIncludeNotes && (subscription !== "free" || isAgentMode(mode))
+          ? isNotesRelevantRecallEnabled(userId)
+          : Promise.resolve(false);
       const preloadedNotes = shouldIncludeNotes
-        ? getNotes({ userId, subscription })
+        ? notesRecallAssignment.then((recall) =>
+            recall ? [] : getNotes({ userId, subscription }),
+          )
         : undefined;
 
       const [projectContext, baseExtraUsageConfig] = await Promise.all([
@@ -690,6 +703,10 @@ export const createChatHandler = () => {
         selectedModel = flashRoutingAssignment.modelKey;
       const findingRetestAssignment = isAgentMode(mode)
         ? isFindingRetestsEnabled(userId)
+        : Promise.resolve(false);
+      // Ask never receives hunt tools.
+      const findingHuntAssignment = isAgentMode(mode)
+        ? isFindingHuntsEnabled(userId)
         : Promise.resolve(false);
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
@@ -1014,6 +1031,9 @@ export const createChatHandler = () => {
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
                 findingRetestToolsEnabled: await findingRetestAssignment,
+                notesRelevantRecallEnabled:
+                  notesEnabled && (await notesRecallAssignment),
+                findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
               },
             );
@@ -1269,6 +1289,12 @@ export const createChatHandler = () => {
               userId,
               subscription,
               shouldIncludeNotes,
+              relevantRecall: (await notesRecallAssignment)
+                ? {
+                    taskText: getLatestUserTaskText(truncatedMessages),
+                    projectId: projectContext.projectId,
+                  }
+                : undefined,
             };
             finalMessages = await injectNotesIntoMessages(finalMessages, {
               ...noteInjectionOpts,

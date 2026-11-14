@@ -52,7 +52,7 @@ function Probe() {
 }
 
 describe("selected computer hydration", () => {
-  it("restores the selected computer after its relay session changes", () => {
+  it("does not restore a CLI selection from an untrusted claimed machine ID", () => {
     mockIsTauriEnvironment.mockReturnValue(false);
     mockGlobalState.sandboxPreference = "environment:machine-a";
     mockGlobalState.localConnections = [
@@ -63,7 +63,7 @@ describe("selected computer hydration", () => {
       },
     ];
     const { result, rerender } = renderHook(useSelectedComputerConnection);
-    expect(result.current.selectedComputerUnavailable).toBe(false);
+    expect(result.current.selectedComputerUnavailable).toBe(true);
     mockGlobalState.localConnections = [
       {
         connectionId: "other-session",
@@ -81,7 +81,7 @@ describe("selected computer hydration", () => {
       },
     ];
     rerender();
-    expect(result.current.selectedComputerUnavailable).toBe(false);
+    expect(result.current.selectedComputerUnavailable).toBe(true);
     expect(mockGlobalState.sandboxPreference).toBe("environment:machine-a");
   });
   it("expires a disconnected computer without a database update and recovers on its new heartbeat", () => {
@@ -119,7 +119,7 @@ describe("selected computer hydration", () => {
   it("keeps a healthy CLI session available between hourly token refreshes", () => {
     jest.useFakeTimers();
     mockIsTauriEnvironment.mockReturnValue(false);
-    mockGlobalState.sandboxPreference = "environment:cli-machine";
+    mockGlobalState.sandboxPreference = "cli-session";
     mockGlobalState.localConnections = [
       {
         connectionId: "cli-session",

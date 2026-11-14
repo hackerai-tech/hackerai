@@ -10,7 +10,9 @@ import {
   desktopFileUnavailableMessage,
   getDesktopFileFailure,
   parseDesktopFileFailure,
+  readDesktopFileReceiverDiagnostic,
   type DesktopFileFailure,
+  type DesktopFileReceiverDiagnostic,
 } from "@/lib/centrifugo/desktop-file-errors";
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
@@ -146,6 +148,39 @@ function nativePathOutputShape(value: string) {
   if (/(?:[A-Za-z]:[\\/]|\\\\)/.test(value)) return "embedded_windows_absolute";
   return "relative_or_other";
 }
+
+type NativeReceiverErrorClass =
+  | "authorization_invalid"
+  | "origin_unavailable_or_denied"
+  | "authorization_client_unavailable"
+  | "authorization_send_unavailable"
+  | "authorization_denied"
+  | "authorization_response_invalid"
+  | "other";
+
+// Exact public authorization errors from the Desktop native file command
+// (packages/desktop/src-tauri/src/lib.rs). Never log the message itself.
+const NATIVE_RECEIVER_ERROR_CLASSES: ReadonlyMap<
+  string,
+  NativeReceiverErrorClass
+> = new Map([
+  ["Invalid Desktop operation authorization", "authorization_invalid"],
+  ["Desktop origin is unavailable", "origin_unavailable_or_denied"],
+  [
+    "Desktop origin is not allowed for native authorization",
+    "origin_unavailable_or_denied",
+  ],
+  [
+    "Desktop authorization client unavailable",
+    "authorization_client_unavailable",
+  ],
+  [
+    "Desktop operation authorization unavailable",
+    "authorization_send_unavailable",
+  ],
+  ["Desktop operation was not authorized", "authorization_denied"],
+  ["Invalid Desktop authorization response", "authorization_response_invalid"],
+]);
 
 type HttpClient = "curl" | "wget" | "powershell";
 
@@ -444,6 +479,8 @@ export class CentrifugoSandbox extends EventEmitter {
     const deadline = setTimeout(() => controller.abort(), 3000);
     let failure: string | undefined;
     let fileFailure: DesktopFileFailure | undefined;
+    let receiverErrorClass: NativeReceiverErrorClass | undefined;
+    let receiverDiagnostic: DesktopFileReceiverDiagnostic | undefined;
     try {
       await this.dispatchFileRequest<FileStatResultMessage>(
         { type: "file_stat", path: "." },
@@ -458,6 +495,17 @@ export class CentrifugoSandbox extends EventEmitter {
         : getLocalFileRequestFailure(error);
       fileFailure =
         error instanceof LocalFileRequestError ? error.fileFailure : undefined;
+      // Only the matched file_error's own text; unrecognized text stays "other".
+      if (
+        failure === "native_error" &&
+        fileFailure === "unknown" &&
+        error instanceof LocalFileRequestError
+      )
+        receiverErrorClass =
+          NATIVE_RECEIVER_ERROR_CLASSES.get(error.message) ?? "other";
+      // Observation only: the receiver's last attempted boundary and adapter.
+      if (failure === "native_error" && error instanceof LocalFileRequestError)
+        receiverDiagnostic = error.receiverDiagnostic;
     } finally {
       clearTimeout(deadline);
     }
@@ -470,6 +518,11 @@ export class CentrifugoSandbox extends EventEmitter {
         outcome: this.nativeFileRelayConfirmed ? "recovered" : "unavailable",
         failure,
         file_failure: fileFailure,
+        receiver_error_class: receiverErrorClass,
+        receiver_stage_version: receiverDiagnostic?.version,
+        receiver_stage: receiverDiagnostic?.stage,
+        receiver_adapter: receiverDiagnostic?.adapter,
+        receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
       }),
     );
     if (!this.nativeFileRelayConfirmed) {
@@ -751,6 +804,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 message.message,
                 parseDesktopFileFailure(message.fileFailure) ??
                   getDesktopFileFailure(new Error(message.message)),
+                readDesktopFileReceiverDiagnostic(message),
               ),
             );
           else resolve(message as T);

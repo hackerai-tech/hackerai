@@ -1,4 +1,5 @@
 import { stripe } from "../stripe";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 import {
   PRO_YEARLY_PRICE_LOOKUP_KEY,
   isCurrentProYearlyPrice,
@@ -71,6 +72,8 @@ function resolveQuantity(
 }
 
 export const POST = async (req: NextRequest) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan = body?.plan;

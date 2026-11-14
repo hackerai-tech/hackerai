@@ -5,15 +5,18 @@ import type { ChatMessage, ChatMode, ChatStatus } from "@/types";
 jest.mock("../MessagePartHandler", () => ({
   MessagePartHandler: ({
     part,
+    partIndex,
     keepLatestReasoningOpenDuringStreaming,
     deferReasoningCollapseUntilParent,
   }: {
     part: any;
+    partIndex: number;
     keepLatestReasoningOpenDuringStreaming?: boolean;
     deferReasoningCollapseUntilParent?: boolean;
   }) => (
     <div
       data-testid={`part-${part.type}`}
+      data-part-index={partIndex}
       data-keep-latest-reasoning-open={String(
         !!keepLatestReasoningOpenDuringStreaming,
       )}
@@ -621,6 +624,109 @@ describe("MessageItem WorkedFor rendering", () => {
     });
 
     expect(screen.queryByText(/worked for/i)).not.toBeInTheDocument();
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+  });
+});
+
+describe("MessageItem saved hunt results", () => {
+  const savedCompletion = {
+    type: "tool-complete_finding_hunt",
+    toolCallId: "complete-1",
+    state: "output-available",
+    input: "saved hunt card",
+    output: { success: true, hunt_id: "h1", counts: { reproduced: 1 } },
+  };
+  const huntMessage = (
+    parts: unknown[],
+    metadata: Record<string, unknown> = {
+      mode: "agent",
+      generationTimeMs: 1_500,
+    },
+  ) => ({ ...assistantMessage, parts, metadata }) as unknown as ChatMessage;
+  const cards = () =>
+    screen.queryAllByTestId("part-tool-complete_finding_hunt");
+  const workAndAnswer = [
+    { type: "step-start" },
+    { type: "tool-shell", input: "ran command", state: "output-available" },
+    savedCompletion,
+    { type: "text", text: "final answer" },
+  ];
+
+  it("shows the saved card once outside collapsed Worked for, keeping the answer", () => {
+    renderMessageItem({ mode: "agent", message: huntMessage(workAndAnswer) });
+
+    const trigger = screen.getByRole("button", { name: /worked for 2s/i });
+    expect(screen.queryByText("ran command")).not.toBeInTheDocument();
+    expect(cards()).toHaveLength(1);
+    // The card keeps its own position in the message.
+    expect(cards()[0]).toHaveAttribute("data-part-index", "2");
+    expect(screen.getByText("final answer")).toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+    expect(cards()).toHaveLength(1);
+  });
+
+  it("shows it once while the run is still streaming", () => {
+    renderMessageItem({
+      mode: "agent",
+      status: "streaming",
+      message: huntMessage(workAndAnswer, {
+        mode: "agent",
+        generationStartedAt: Date.now(),
+      }),
+    });
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+    expect(cards()).toHaveLength(1);
+  });
+
+  it("shows it once when the run ended without final text", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: huntMessage(workAndAnswer.slice(0, 3)),
+    });
+    expect(screen.getByText("ran command")).toBeInTheDocument();
+    expect(cards()).toHaveLength(1);
+  });
+
+  it.each([
+    ["with", workAndAnswer],
+    ["without", workAndAnswer.slice(0, 3)],
+  ])(
+    "shows it once in the timeline answer shell %s final text",
+    (_label, parts) => {
+      renderMessageItem({
+        mode: "agent",
+        message: huntMessage(parts),
+        workPresentation: "timeline-shell",
+      });
+      // Work belongs to the virtual timeline rows; the card stays here.
+      expect(screen.queryByTestId("part-tool-shell")).not.toBeInTheDocument();
+      expect(cards()).toHaveLength(1);
+      expect(cards()[0]).toHaveAttribute("data-part-index", "2");
+    },
+  );
+
+  it("keeps a refused completion in the collapsed work, never as a saved card", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: huntMessage([
+        { type: "tool-shell", input: "ran command", state: "output-available" },
+        { ...savedCompletion, output: { success: false, error: "conflict" } },
+        { type: "text", text: "final answer" },
+      ]),
+    });
+    expect(cards()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /worked for 2s/i }));
+    expect(cards()).toHaveLength(1);
+  });
+
+  it("leaves non-Agent rendering in place", () => {
+    renderMessageItem({
+      mode: "agent",
+      message: huntMessage(workAndAnswer, { mode: "ask" }),
+    });
+    expect(cards()).toHaveLength(1);
     expect(screen.getByText("ran command")).toBeInTheDocument();
   });
 });

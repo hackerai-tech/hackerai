@@ -20,6 +20,10 @@ import {
   FindingRetestToolHandler,
   type FindingRetestToolName,
 } from "./tools/FindingRetestToolHandler";
+import {
+  FindingHuntToolHandler,
+  type FindingHuntToolName,
+} from "./tools/FindingHuntToolHandler";
 import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
 import { FindingCard } from "./findings/FindingCard";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
@@ -460,6 +464,11 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
 
+    case "tool-get_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="get_note" />
+      );
+
     case "tool-list_reports":
       return (
         <ReportToolHandler
@@ -490,6 +499,17 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           part={part}
           status={status}
           toolName={part.type.slice("tool-".length) as FindingRetestToolName}
+        />
+      );
+    case "tool-get_finding_hunts":
+    case "tool-start_finding_hunt":
+    case "tool-record_finding_hunt_candidate":
+    case "tool-complete_finding_hunt":
+      return (
+        <FindingHuntToolHandler
+          part={part}
+          status={status}
+          toolName={part.type.slice("tool-".length) as FindingHuntToolName}
         />
       );
 

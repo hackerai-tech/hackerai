@@ -138,6 +138,8 @@ export interface FileErrorMessage {
   message: string;
   /** Optional bounded cause from newer Desktop bridges. */
   fileFailure?: import("./desktop-file-errors").DesktopFileFailure;
+  /** Optional closed stage/adapter observation on file_stat failures only. */
+  receiverDiagnostic?: import("./desktop-file-errors").DesktopFileReceiverDiagnostic;
 }
 
 export interface FileStatResultMessage {

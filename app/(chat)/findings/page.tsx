@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useConvex, useConvexAuth, usePaginatedQuery } from "convex/react";
 import {
+  ArrowLeft,
   ChevronRight,
   Download,
   Filter,
@@ -186,15 +187,52 @@ const getFindingsHref = ({
   return query ? `/findings?${query}` : "/findings";
 };
 
+// Next or another URL writer can replace custom history state during reload.
+// Keep only the ownership bit for this exact browser entry, scoped to the tab.
+// Older browsers or blocked storage fall back to the classic history marker.
+const findingEntryStorageKey = () => {
+  const key = window.navigation?.currentEntry?.key;
+  return key ? `hackerai:findings:entry:${key}` : null;
+};
+
+const ownsFindingEntry = () => {
+  if (window.history.state?.hackeraiFindingEntry === true) return true;
+  try {
+    const key = findingEntryStorageKey();
+    return key !== null && window.sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+};
+
 const updateFindingsHistory = (
   href: string,
   method: "push" | "replace" = "replace",
 ) => {
+  const state = { ...window.history.state };
+  // Let Next's patched history API copy its internal state and update URL
+  // hooks. Passing its internal markers would bypass that synchronization.
+  delete state.__NA;
+  delete state._N;
+  const owned =
+    new URL(href, window.location.origin).searchParams.has("finding") &&
+    (method === "push" || ownsFindingEntry());
+  if (owned) state.hackeraiFindingEntry = true;
+  else delete state.hackeraiFindingEntry;
   window.history[method === "push" ? "pushState" : "replaceState"](
-    null,
+    state,
     "",
     href,
   );
+  try {
+    const key = findingEntryStorageKey();
+    if (key) {
+      if (owned) window.sessionStorage.setItem(key, "1");
+      else window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Storage is optional; normal history navigation still works without it.
+  }
 };
 
 function FilterSelect<T extends string>({
@@ -251,6 +289,7 @@ function FindingsPageContent() {
     () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
+  const closingFindingHistory = useRef(false);
   const findingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -305,6 +344,7 @@ function FindingsPageContent() {
 
   useEffect(() => {
     const syncFromBrowserHistory = () => {
+      closingFindingHistory.current = false;
       const params = new URLSearchParams(window.location.search);
       if (params.has("chat")) {
         params.delete("chat");
@@ -541,6 +581,15 @@ function FindingsPageContent() {
   };
 
   const clearSelectedFinding = () => {
+    if (closingFindingHistory.current) return;
+    // Consume the entry opened from this list. A deep link has no owned list
+    // entry behind it, so close it in place instead. State survives reload and
+    // Forward, unlike an in-memory "opened here" flag.
+    if (ownsFindingEntry()) {
+      closingFindingHistory.current = true;
+      window.history.back();
+      return;
+    }
     setSelectedFindingId(null);
     updateFindingsHistory(getHref({ findingId: null }));
   };
@@ -1370,16 +1419,28 @@ function FindingsPageContent() {
             className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:inset-auto sm:top-1/2 sm:left-1/2 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-6xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl"
           >
             <DialogTitle className="sr-only">Vulnerability Report</DialogTitle>
-            <DialogClose asChild>
-              <Button
-                variant="outline"
-                size="icon"
-                aria-label="Close vulnerability report"
-                className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(0.75rem,env(safe-area-inset-right))] z-20 size-9 bg-background/90 shadow-sm backdrop-blur-sm sm:top-4 sm:right-4"
-              >
-                <X className="size-4" aria-hidden="true" />
-              </Button>
-            </DialogClose>
+            <div className="flex shrink-0 items-center justify-between border-b border-border bg-background px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:contents">
+              <DialogClose asChild>
+                <Button
+                  variant="ghost"
+                  className="-ml-3 h-11 text-muted-foreground sm:hidden"
+                  aria-label="Return to findings"
+                >
+                  <ArrowLeft className="size-4" aria-hidden="true" />
+                  Findings
+                </Button>
+              </DialogClose>
+              <DialogClose asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label="Close vulnerability report"
+                  className="size-11 bg-background/90 shadow-sm backdrop-blur-sm sm:absolute sm:top-4 sm:right-4 sm:z-20 sm:size-9"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </Button>
+              </DialogClose>
+            </div>
             <div className="min-h-0 flex-1">
               <FindingDetail
                 findingId={selectedFindingId}

@@ -17,6 +17,8 @@ on:
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
+      - "lib/ai/tools/utils/attachment-download-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/attachment-download-diagnostics*.test.ts"
       - "packages/local/src/utils.ts"
       - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
@@ -39,6 +41,8 @@ on:
       - "lib/ai/tools/utils/__tests__/sandbox-upload-response*.test.ts"
       - "lib/ai/tools/utils/centrifugo-sandbox.ts"
       - "lib/ai/tools/utils/__tests__/sandbox-file-uploader*.test.ts"
+      - "lib/ai/tools/utils/attachment-download-diagnostics.ts"
+      - "lib/ai/tools/utils/__tests__/attachment-download-diagnostics*.test.ts"
       - "packages/local/src/utils.ts"
       - "packages/local/src/__tests__/windows-shell-discovery.test.ts"
       - ".github/workflows/windows-file-metadata.yml"
@@ -71,6 +75,8 @@ jobs:
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-response.windows.test.ts --runInBand --ci
       - name: Verify native Windows TLS connectivity diagnostics
         run: pnpm exec jest lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.test.ts lib/ai/tools/utils/__tests__/sandbox-upload-network-diagnostics.windows.test.ts --runInBand --ci
+      - name: Verify native Windows curl35 download diagnostics
+        run: pnpm exec jest lib/ai/tools/utils/__tests__/attachment-download-diagnostics.test.ts lib/ai/tools/utils/__tests__/attachment-download-diagnostics.windows.test.ts --runInBand --ci
       - name: Verify native Windows file paths
         run: pnpm exec jest lib/ai/tools/utils/__tests__/centrifugo-sandbox.test.ts --runInBand --ci -t "Windows file"
       - name: Verify Windows shell discovery
