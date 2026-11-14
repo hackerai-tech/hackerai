@@ -6,10 +6,12 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
-import { renderHook, act } from "@testing-library/react";
+import { Component, createElement, type ReactNode } from "react";
+import { renderHook, act, render } from "@testing-library/react";
 import { useAuthFromAuthKit, AuthKitDeps } from "../use-auth-from-authkit";
 import { CrossTabMutex } from "../cross-tab-mutex";
 import * as sharedToken from "../shared-token";
+import { readConvexAuthProviderState } from "../convex-auth-diagnostics";
 
 describe("useAuthFromAuthKit", () => {
   let mockStorage: Record<string, string>;
@@ -111,6 +113,149 @@ describe("useAuthFromAuthKit", () => {
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
       expect(result.current.isLoading).toBe(true);
+    });
+  });
+
+  describe("committed provider state diagnostics", () => {
+    let auth: { user: { id: string } | null; loading: boolean };
+
+    beforeEach(() => {
+      auth = { user: { id: "user-123" }, loading: false };
+      mockDeps.useAuth = () => ({
+        user: auth.user,
+        loading: auth.loading,
+        sessionId: auth.user ? `session-${auth.user.id}` : undefined,
+        refreshAuth: mockRefreshAuth,
+      });
+    });
+
+    async function enterTokenRecovery(
+      result: { current: ReturnType<typeof useAuthFromAuthKit> },
+      rerender: () => void,
+    ) {
+      mockGetAccessToken.mockRejectedValueOnce(new Error("Network error"));
+      await act(async () => {
+        await result.current.fetchAccessToken();
+      });
+      rerender();
+    }
+
+    it("reports AuthKit loading, readiness and owner absence as committed", () => {
+      auth.loading = true;
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      expect(view.result.current.isLoading).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("authkit_loading");
+
+      auth.loading = false;
+      view.rerender();
+      expect(view.result.current.isLoading).toBe(false);
+      expect(readConvexAuthProviderState()).toBe("ready");
+
+      auth = { user: null, loading: true };
+      view.rerender();
+      expect(readConvexAuthProviderState()).toBe("owner_absent");
+
+      view.unmount();
+      expect(readConvexAuthProviderState()).toBe("unavailable");
+    });
+
+    it("attributes recovery loading to token recovery rather than AuthKit", async () => {
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(readConvexAuthProviderState()).toBe("ready");
+        await enterTokenRecovery(view.result, view.rerender);
+        // Convex sees the same loading flag either way; provenance differs.
+        expect(view.result.current.isLoading).toBe(true);
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        auth.loading = true;
+        view.rerender();
+        expect(readConvexAuthProviderState()).toBe(
+          "authkit_loading_and_token_recovery",
+        );
+
+        auth.loading = false;
+        view.rerender();
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        mockGetAccessToken.mockResolvedValue("fresh-token");
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10_000);
+        });
+        expect(view.result.current.isLoading).toBe(false);
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("does not carry recovery provenance into a new account context", async () => {
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        await enterTokenRecovery(view.result, view.rerender);
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        auth = { user: { id: "user-456" }, loading: false };
+        view.rerender();
+        expect(view.result.current.isLoading).toBe(false);
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("does not let an older provider's cleanup clear a newer provider", () => {
+      const older = renderHook(() => useAuthFromAuthKit(mockDeps));
+      auth.loading = true;
+      const newer = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(readConvexAuthProviderState()).toBe("authkit_loading");
+        older.unmount();
+        expect(readConvexAuthProviderState()).toBe("authkit_loading");
+      } finally {
+        newer.unmount();
+        older.unmount();
+      }
+      expect(readConvexAuthProviderState()).toBe("unavailable");
+    });
+
+    it("does not publish an abandoned render", () => {
+      class Boundary extends Component<
+        { children: ReactNode },
+        { failed: boolean }
+      > {
+        state = { failed: false };
+        static getDerivedStateFromError() {
+          return { failed: true };
+        }
+        render() {
+          return this.state.failed ? null : this.props.children;
+        }
+      }
+      function Abandoned(): ReactNode {
+        useAuthFromAuthKit({
+          ...mockDeps,
+          useAuth: () => ({
+            user: { id: "user-123" },
+            loading: true,
+            refreshAuth: mockRefreshAuth,
+          }),
+        });
+        throw new Error("render abandoned");
+      }
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const committed = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const abandoned = render(
+          createElement(Boundary, null, createElement(Abandoned)),
+        );
+        expect(readConvexAuthProviderState()).toBe("ready");
+        abandoned.unmount();
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        committed.unmount();
+        error.mockRestore();
+      }
     });
   });
 

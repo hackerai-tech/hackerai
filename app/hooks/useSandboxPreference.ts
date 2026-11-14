@@ -28,6 +28,7 @@ import {
 import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { readConvexAuthProviderState } from "@/lib/auth/convex-auth-diagnostics";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -421,6 +422,7 @@ export function useSandboxPreference(
                   disconnectDesktop: (args) => disconnectRef.current(args),
                   heartbeatDesktop: (args) => heartbeatRef.current(args),
                   readNativeAuthFrontendState,
+                  readNativeAuthProviderState: readConvexAuthProviderState,
                   onConnectionState: (state, environmentId) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {

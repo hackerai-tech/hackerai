@@ -30,6 +30,10 @@ import {
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
+  readClosedConvexAuthProviderState,
+  type ConvexAuthProviderState,
+} from "@/lib/auth/convex-auth-diagnostics";
+import {
   sandboxConnectionChannel,
   DESKTOP_COMMAND_DELIVERY_GRACE_MS,
   type SandboxMessage,
@@ -294,14 +298,18 @@ type NativeAuthInvocation = {
     | "localSandbox:heartbeatDesktop"
     | "localSandbox:refreshCentrifugoTokenDesktop";
   frontendState: NativeAuthFrontendState;
+  providerState: ConvexAuthProviderState;
 };
 
 // Join an existing auth-stop event to its backend failure without copying error
 // text. SDK formats may change; missing/malformed markers simply omit the ID.
 function nativeAuthDiagnostics(
   error: unknown,
-  { convexFunction, frontendState }: NativeAuthInvocation,
-  readFrontendState: (() => NativeAuthFrontendState) | undefined,
+  { convexFunction, frontendState, providerState }: NativeAuthInvocation,
+  {
+    readNativeAuthFrontendState: readFrontendState,
+    readNativeAuthProviderState: readProviderState,
+  }: NativeAuthStateReaders,
 ): Record<string, string | number> {
   const diagnostics: Record<string, string | number> = {
     native_auth_diagnostic_version: 1,
@@ -314,6 +322,12 @@ function nativeAuthDiagnostics(
     native_auth_frontend_state: readNativeAuthFrontendState(readFrontendState),
     native_auth_request_state_version: 1,
     native_auth_request_frontend_state: frontendState,
+    // Which provider boolean (AuthKit loading and/or our token recovery) held
+    // Convex in loading, at invocation and again at the stop.
+    native_auth_provider_state_version: 1,
+    native_auth_request_provider_state: providerState,
+    native_auth_provider_state:
+      readClosedConvexAuthProviderState(readProviderState),
   };
   try {
     const message = error instanceof Error ? error.message : undefined;
@@ -373,7 +387,13 @@ interface DesktopBridgeConfig {
   // Read before each heartbeat/token callback invocation and again at the stop;
   // reported only when that callback's authentication failure stops this bridge.
   readNativeAuthFrontendState?: () => NativeAuthFrontendState;
+  readNativeAuthProviderState?: () => ConvexAuthProviderState;
 }
+
+type NativeAuthStateReaders = Pick<
+  DesktopBridgeConfig,
+  "readNativeAuthFrontendState" | "readNativeAuthProviderState"
+>;
 
 export class DesktopSandboxBridge {
   private environmentId?: string;
@@ -460,6 +480,9 @@ export class DesktopSandboxBridge {
       frontendState: readNativeAuthFrontendState(
         this.config.readNativeAuthFrontendState,
       ),
+      providerState: readClosedConvexAuthProviderState(
+        this.config.readNativeAuthProviderState,
+      ),
     };
   }
 
@@ -528,11 +551,7 @@ export class DesktopSandboxBridge {
       if (isUnauthenticatedConvexError(error)) {
         this.logRelayState("disconnected", {
           reason: "heartbeat_unauthenticated",
-          ...nativeAuthDiagnostics(
-            error,
-            invocation,
-            this.config.readNativeAuthFrontendState,
-          ),
+          ...nativeAuthDiagnostics(error, invocation, this.config),
         });
         this.terminateClient("unauthenticated");
         return;
@@ -741,11 +760,7 @@ export class DesktopSandboxBridge {
               connectionId: this.connectionId,
               clientSurface: "desktop_bridge",
               reason: "unauthenticated" as const,
-              ...nativeAuthDiagnostics(
-                error,
-                invocation,
-                this.config.readNativeAuthFrontendState,
-              ),
+              ...nativeAuthDiagnostics(error, invocation, this.config),
             };
             console.warn(
               "[DesktopSandboxBridge] Centrifugo refresh aborted — user not authenticated; stopping client to break retry loop",

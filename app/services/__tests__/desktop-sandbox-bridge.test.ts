@@ -1670,6 +1670,211 @@ describe("native auth frontend state on authentication stops", () => {
       error.mockRestore();
     }
   });
+
+  describe("provider provenance", () => {
+    const PROVIDER_STATES = [
+      "owner_absent",
+      "authkit_loading",
+      "token_recovery",
+      "authkit_loading_and_token_recovery",
+      "ready",
+      "unavailable",
+    ];
+    const convexFunction = (path: "heartbeat" | "token refresh") =>
+      path === "heartbeat"
+        ? "localSandbox:heartbeatDesktop"
+        : "localSandbox:refreshCentrifugoTokenDesktop";
+
+    describe.each(["heartbeat", "token refresh"] as const)("%s", (path) => {
+      it.each(PROVIDER_STATES)(
+        "reports %s from callback invocation separately from the stop",
+        async (state) => {
+          jest.useFakeTimers();
+          const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+          let provider = "ready";
+          const onTerminated = jest.fn();
+          // Convex loading at both reads; only provider provenance explains it.
+          const config = buildConfig({
+            onTerminated,
+            readNativeAuthFrontendState: () => "owner_present_convex_loading",
+            readNativeAuthProviderState: () => provider,
+          });
+          const bridge = new DesktopSandboxBridge(config);
+          const later =
+            PROVIDER_STATES[
+              (PROVIDER_STATES.indexOf(state) + 1) % PROVIDER_STATES.length
+            ];
+          const error = Object.assign(
+            new Error(
+              `[CONVEX M(${convexFunction(path)})] [Request ID: 0123456789abcdef] Server Error`,
+            ),
+            UNAUTHORIZED,
+          );
+          try {
+            await bridge.start();
+            await jest.advanceTimersByTimeAsync(
+              LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+            );
+            provider = state;
+            const rejectCallback = await invokePendingCallback(path, config);
+            provider = later;
+            await rejectCallback(error);
+
+            expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+            expect(bridge.getConnectionId()).toBeNull();
+            expect(authStopCapture(path)).toMatchObject({
+              native_auth_diagnostic_version: 1,
+              convex_function: convexFunction(path),
+              convex_request_id: "0123456789abcdef",
+              native_auth_request_state_version: 1,
+              native_auth_request_frontend_state:
+                "owner_present_convex_loading",
+              native_auth_frontend_state: "owner_present_convex_loading",
+              native_auth_provider_state_version: 1,
+              native_auth_request_provider_state: state,
+              native_auth_provider_state: later,
+            });
+            expect(nativeAuthCaptures()).toHaveLength(1);
+          } finally {
+            await bridge.stop();
+            jest.useRealTimers();
+            warn.mockRestore();
+          }
+        },
+      );
+
+      it.each([
+        ["missing", undefined],
+        [
+          "throwing",
+          () => {
+            throw new Error("private-reader-canary");
+          },
+        ],
+        ["private string", () => "private-session-canary"],
+        ["near-miss string", () => "READY"],
+        ["boxed string", () => new String("ready")],
+        ["object", () => ({ state: "ready" })],
+        [
+          "coercing object",
+          () => ({
+            toString: () => {
+              throw new Error("private-coercion-canary");
+            },
+            [Symbol.toPrimitive]: () => {
+              throw new Error("private-coercion-canary");
+            },
+          }),
+        ],
+        [
+          "getter object",
+          () =>
+            Object.defineProperty({}, "state", {
+              enumerable: true,
+              get: () => {
+                throw new Error("private-getter-canary");
+              },
+            }),
+        ],
+      ])(
+        "reports unavailable for a %s provider reader without changing the stop",
+        async (_label, readNativeAuthProviderState) => {
+          jest.useFakeTimers();
+          const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+          const onTerminated = jest.fn();
+          const config = buildConfig({
+            onTerminated,
+            readNativeAuthFrontendState: () =>
+              "owner_present_convex_authenticated",
+            ...(readNativeAuthProviderState && { readNativeAuthProviderState }),
+          });
+          const bridge = new DesktopSandboxBridge(config);
+          try {
+            await bridge.start();
+            const rejectCallback = await invokePendingCallback(path, config);
+            await rejectCallback(UNAUTHORIZED);
+
+            expect(onTerminated).toHaveBeenCalledTimes(1);
+            expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+            expect(bridge.getConnectionId()).toBeNull();
+            expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+            // A broken provider reader must not erase the existing fields.
+            expect(authStopCapture(path)).toMatchObject({
+              native_auth_request_frontend_state:
+                "owner_present_convex_authenticated",
+              native_auth_frontend_state: "owner_present_convex_authenticated",
+              native_auth_provider_state_version: 1,
+              native_auth_request_provider_state: "unavailable",
+              native_auth_provider_state: "unavailable",
+            });
+            const captured = JSON.stringify([
+              jest.mocked(captureAuthenticatedEvent).mock.calls,
+              warn.mock.calls,
+            ]);
+            expect(captured).not.toContain("canary");
+            expect(captured).not.toContain("READY");
+          } finally {
+            await bridge.stop();
+            jest.useRealTimers();
+            warn.mockRestore();
+          }
+        },
+      );
+    });
+
+    it("attributes a heartbeat follow-up auth failure to the token callback's provider state", async () => {
+      jest.useFakeTimers();
+      let provider = "authkit_loading";
+      const onTerminated = jest.fn();
+      const config = buildConfig({
+        onTerminated,
+        readNativeAuthProviderState: () => provider,
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      let resolveHeartbeat!: (value: { success: boolean }) => void;
+      let rejectToken!: (reason: unknown) => void;
+      try {
+        await bridge.start();
+        config.heartbeatDesktop.mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveHeartbeat = resolve;
+          }),
+        );
+        (config.refreshCentrifugoTokenDesktop as jest.Mock).mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            rejectToken = reject;
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(
+          LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS,
+        );
+        provider = "token_recovery";
+        resolveHeartbeat({ success: false });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(config.refreshCentrifugoTokenDesktop).toHaveBeenCalled();
+        provider = "owner_absent";
+        rejectToken(UNAUTHORIZED);
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(onTerminated).toHaveBeenCalledTimes(1);
+        expect(nativeAuthCaptures()).toEqual([
+          [
+            "desktop_bridge_relay_state_changed",
+            expect.objectContaining({
+              reason: "heartbeat_unauthenticated",
+              convex_function: "localSandbox:refreshCentrifugoTokenDesktop",
+              native_auth_request_provider_state: "token_recovery",
+              native_auth_provider_state: "owner_absent",
+            }),
+          ],
+        ]);
+      } finally {
+        resolveHeartbeat?.({ success: true });
+        await bridge.stop();
+        jest.useRealTimers();
+      }
+    });
+  });
 });
 
 describe("heartbeat backpressure", () => {

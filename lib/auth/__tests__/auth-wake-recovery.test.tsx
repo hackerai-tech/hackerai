@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
 import { useAuthFromAuthKit, type AuthKitDeps } from "../use-auth-from-authkit";
 import { CrossTabMutex } from "../cross-tab-mutex";
+import { readConvexAuthProviderState } from "../convex-auth-diagnostics";
 
 // Bypass the repository's convex/react mock: the regression is specifically
 // about the real provider's effects after its backend reports auth failure.
@@ -312,5 +313,50 @@ describe("auth recovery through ConvexProviderWithAuth", () => {
     getAccessToken.mockResolvedValue(token);
     await act(async () => view.rerender(renderApp()));
     expect(observations.at(-1)?.isAuthenticated).toBe(true);
+  });
+
+  describe("committed provider state behind Convex loading", () => {
+    it("attributes recovery loading to token recovery, then readiness", async () => {
+      const view = await act(async () => render(renderApp()));
+      expect(observations.at(-1)?.isAuthenticated).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("ready");
+
+      await loseConnection();
+      expect(observations.at(-1)?.isLoading).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+      offline = false;
+      token = "fresh-token";
+      await act(async () => view.rerender(renderApp()));
+      expect(observations.at(-1)?.isAuthenticated).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("ready");
+
+      view.unmount();
+      expect(readConvexAuthProviderState()).toBe("unavailable");
+    });
+
+    it("attributes initial loading to AuthKit", async () => {
+      const useAuth = deps.useAuth;
+      deps.useAuth = (() => ({
+        ...useAuth(),
+        loading: true,
+      })) as AuthKitDeps["useAuth"];
+      const view = await act(async () => render(renderApp()));
+      expect(observations.at(-1)?.isLoading).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("authkit_loading");
+      view.unmount();
+    });
+
+    it("reports provider readiness while Convex confirmation is pending", async () => {
+      // The backend has not confirmed the token yet; neither provider boolean
+      // holds Convex in loading.
+      client.setAuth = jest.fn((fetch) => {
+        fetchToken = fetch;
+      });
+      const view = await act(async () => render(renderApp()));
+      expect(observations.at(-1)?.isLoading).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("ready");
+      view.unmount();
+    });
   });
 });
