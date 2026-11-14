@@ -9,6 +9,11 @@
 //! non-authorizing request ID; this is not a guarantee of the provider format.
 //! The receipt never holds the body, other headers, URLs, authorization IDs,
 //! digests or error text.
+//!
+//! A separate mitigation receipt, frozen apart from that v1 shape, holds only a
+//! closed class of the same response's `x-vercel-mitigated` header. The value
+//! is compared against exact literals and never copied; a matching literal is
+//! an observed marker, not an authenticated provider decision.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -21,6 +26,7 @@ const INVALID_RESPONSE: &str = "Invalid Desktop authorization response";
 const REQUEST_ID_HEADER: &str = "x-vercel-id";
 const MAX_REQUEST_ID_LEN: usize = 96;
 const MAX_REQUEST_ID_REGIONS: usize = 3;
+const MITIGATION_HEADER: &str = "x-vercel-mitigated";
 
 /// Why an answered POST was not approved. An approved response has no class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -84,6 +90,47 @@ pub struct ResponseRejectionReceipt {
     request_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mitigation {
+    Absent,
+    Challenge,
+    Deny,
+    RateLimit,
+    /// One visible-ASCII value that is not exactly one of the literals.
+    Other,
+    /// No single readable value: repeated headers or bytes outside visible
+    /// ASCII, including spaces.
+    Unreadable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseMitigationReceipt {
+    version: u8,
+    mitigation: Mitigation,
+}
+
+fn read_mitigation(headers: &reqwest::header::HeaderMap) -> Mitigation {
+    let mut values = headers.get_all(MITIGATION_HEADER).iter();
+    let Some(value) = values.next() else {
+        return Mitigation::Absent;
+    };
+    if values.next().is_some() {
+        return Mitigation::Unreadable;
+    }
+    let bytes = value.as_bytes();
+    if !bytes.iter().all(u8::is_ascii_graphic) {
+        return Mitigation::Unreadable;
+    }
+    match bytes {
+        b"challenge" => Mitigation::Challenge,
+        b"deny" => Mitigation::Deny,
+        b"rate_limit" => Mitigation::RateLimit,
+        _ => Mitigation::Other,
+    }
+}
+
 fn is_region(region: &[u8]) -> bool {
     matches!(region, [a, b, c, digit]
         if [a, b, c].iter().all(|letter| letter.is_ascii_lowercase())
@@ -143,8 +190,8 @@ fn read_request_id(headers: &reqwest::header::HeaderMap) -> (RequestIdShape, Opt
 /// Applies the original approval check to `response`, with its original
 /// result. A non-2xx response's body is never read.
 ///
-/// Only a rejection is reported, once, before its error is returned; an
-/// approved response has no receipt. The observer cannot retry, delay beyond
+/// Only a rejection is reported, once, with both receipts, before its error is
+/// returned; an approved response has none. The observer cannot retry, delay beyond
 /// its own call or change the result. Panic containment applies to unwinding
 /// builds only; release builds abort, so the production observer must not
 /// panic (it ignores channel send failures).
@@ -154,13 +201,16 @@ pub async fn observed_approval<F>(
     observer: Option<F>,
 ) -> Result<(), String>
 where
-    F: FnOnce(ResponseRejectionReceipt),
+    F: FnOnce(ResponseRejectionReceipt, ResponseMitigationReceipt),
 {
     let status = response.status();
     // Read before the body consumes the response, and only for an observer.
-    let request_id = observer
-        .as_ref()
-        .map(|_| read_request_id(response.headers()));
+    let headers = observer.as_ref().map(|_| {
+        (
+            read_request_id(response.headers()),
+            read_mitigation(response.headers()),
+        )
+    });
     let (approval, error) = if !status.is_success() {
         (Approval::NotChecked, NOT_AUTHORIZED)
     } else {
@@ -175,7 +225,9 @@ where
         }
     };
     let http_status = status.as_u16();
-    if let (Some(observer), Some((request_id_shape, request_id))) = (observer, request_id) {
+    if let (Some(observer), Some(((request_id_shape, request_id), mitigation))) =
+        (observer, headers)
+    {
         // The receipt's status class is closed; an extension status sends none.
         if (100..=599).contains(&http_status) {
             let receipt = ResponseRejectionReceipt {
@@ -187,7 +239,11 @@ where
                 request_id_shape,
                 request_id,
             };
-            let _ = catch_unwind(AssertUnwindSafe(|| observer(receipt)));
+            let mitigation = ResponseMitigationReceipt {
+                version: 1,
+                mitigation,
+            };
+            let _ = catch_unwind(AssertUnwindSafe(|| observer(receipt, mitigation)));
         }
     }
     Err(error.to_string())
@@ -273,22 +329,26 @@ mod tests {
             .expect("the fixture answers")
     }
 
-    type Recorded = Arc<Mutex<Vec<ResponseRejectionReceipt>>>;
+    type Observation = (ResponseRejectionReceipt, ResponseMitigationReceipt);
+    type Recorded = Arc<Mutex<Vec<Observation>>>;
 
-    fn recorder() -> (Recorded, impl FnOnce(ResponseRejectionReceipt)) {
+    fn recorder() -> (
+        Recorded,
+        impl FnOnce(ResponseRejectionReceipt, ResponseMitigationReceipt),
+    ) {
         let receipts = Arc::new(Mutex::new(Vec::new()));
         let recorded = receipts.clone();
-        (receipts, move |receipt| {
-            recorded.lock().unwrap().push(receipt)
+        (receipts, move |receipt, mitigation| {
+            recorded.lock().unwrap().push((receipt, mitigation))
         })
     }
 
     /// Runs the check once with a recorder, bounded well below the client's
     /// 8s budget so a body read on a held connection fails the test.
-    async fn check(
+    async fn check_observed(
         response: Vec<u8>,
         hold: bool,
-    ) -> (Result<(), String>, Vec<ResponseRejectionReceipt>, usize) {
+    ) -> (Result<(), String>, Vec<Observation>, usize) {
         let (url, posts) = serve(response, hold).await;
         let (receipts, observer) = recorder();
         let result = tokio::time::timeout(Duration::from_secs(3), async {
@@ -302,12 +362,24 @@ mod tests {
         (result, receipts, posts.load(Ordering::SeqCst))
     }
 
+    async fn check(
+        response: Vec<u8>,
+        hold: bool,
+    ) -> (Result<(), String>, Vec<ResponseRejectionReceipt>, usize) {
+        let (result, observed, posts) = check_observed(response, hold).await;
+        let receipts = observed.into_iter().map(|(receipt, _)| receipt).collect();
+        (result, receipts, posts)
+    }
+
     #[tokio::test]
     async fn approval_succeeds_unchanged_without_a_receipt() {
-        let (result, receipts, posts) = check(
+        let (result, receipts, posts) = check_observed(
             json(
                 "200 OK",
-                &[&format!("x-vercel-id: {VALID_ID}")],
+                &[
+                    &format!("x-vercel-id: {VALID_ID}"),
+                    "x-vercel-mitigated: challenge",
+                ],
                 r#"{"approved":true,"extra":1}"#,
             ),
             false,
@@ -420,12 +492,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_receipt_serializes_only_its_closed_schema() {
-        let (_, receipts, _) = check(
+    async fn the_receipts_serialize_only_their_closed_schemas() {
+        let (_, observed, _) = check_observed(
             json(
                 "403 Forbidden",
                 &[
                     &format!("x-vercel-id: {VALID_ID}"),
+                    "x-vercel-mitigated: deny",
                     &format!("x-request-id: {PRIVATE}"),
                     &format!("set-cookie: session={PRIVATE}"),
                 ],
@@ -434,7 +507,8 @@ mod tests {
             false,
         )
         .await;
-        let wire = serde_json::to_value(&receipts[0]).unwrap();
+        // The frozen v1 receipt is unchanged by the mitigation header.
+        let wire = serde_json::to_value(&observed[0].0).unwrap();
         let expected_platform = if cfg!(target_os = "macos") {
             "darwin"
         } else if cfg!(target_os = "linux") {
@@ -456,10 +530,114 @@ mod tests {
                 "requestId": VALID_ID,
             })
         );
-        let serialized = wire.to_string();
-        assert!(!serialized.contains(PRIVATE));
-        assert!(!serialized.contains("127.0.0.1"));
-        assert!(!serialized.contains("synthetic"));
+        let mitigation = serde_json::to_value(&observed[0].1).unwrap();
+        assert_eq!(
+            mitigation,
+            serde_json::json!({ "version": 1, "mitigation": "deny" })
+        );
+        for serialized in [wire.to_string(), mitigation.to_string()] {
+            assert!(!serialized.contains(PRIVATE));
+            assert!(!serialized.contains("127.0.0.1"));
+            assert!(!serialized.contains("synthetic"));
+        }
+    }
+
+    /// A rejected 403 whose declared body is never sent: reading it would
+    /// wait for the client deadline, and it would otherwise have approved.
+    fn held_forbidden(headers: &[&str]) -> Vec<u8> {
+        let mut response =
+            "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\n".to_string();
+        for header in headers {
+            response.push_str(header);
+            response.push_str("\r\n");
+        }
+        response.push_str(&format!(
+            "content-length: 4096\r\n\r\n{{\"approved\":true,\"{PRIVATE}\":1"
+        ));
+        response.into_bytes()
+    }
+
+    #[tokio::test]
+    async fn only_exact_mitigation_literals_are_classified() {
+        let huge = "challenge".repeat(1024);
+        // Values of one `x-vercel-mitigated` header each, unless noted.
+        let cases: Vec<(Vec<&str>, Mitigation)> = vec![
+            (vec![], Mitigation::Absent),
+            (vec!["challenge"], Mitigation::Challenge),
+            (vec!["deny"], Mitigation::Deny),
+            (vec!["rate_limit"], Mitigation::RateLimit),
+            (vec!["Challenge"], Mitigation::Other),
+            (vec!["DENY"], Mitigation::Other),
+            (vec!["rate-limit"], Mitigation::Other),
+            (vec!["challenge,deny"], Mitigation::Other),
+            (vec!["deny;reason=x"], Mitigation::Other),
+            (vec!["\"deny\""], Mitigation::Other),
+            (vec![PRIVATE], Mitigation::Other),
+            (vec![&huge], Mitigation::Other),
+            // Internal spaces and tabs are not visible ASCII.
+            (vec!["rate limit"], Mitigation::Unreadable),
+            (vec!["de\tny"], Mitigation::Unreadable),
+            (vec!["deny", "deny"], Mitigation::Unreadable),
+            (vec!["challenge", "deny"], Mitigation::Unreadable),
+        ];
+        for (values, expected) in cases {
+            let headers: Vec<String> = values
+                .iter()
+                .map(|value| format!("x-vercel-mitigated: {value}"))
+                .collect();
+            let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+            let (result, observed, posts) = check_observed(held_forbidden(&headers), true).await;
+            assert_eq!(result, Err(NOT_AUTHORIZED.to_string()), "{values:?}");
+            assert_eq!(posts, 1, "{values:?}");
+            assert_eq!(observed.len(), 1, "{values:?}");
+            let (receipt, mitigation) = &observed[0];
+            assert_eq!(
+                (receipt.http_status, receipt.approval),
+                (403, Approval::NotChecked),
+                "{values:?}"
+            );
+            assert_eq!(
+                *mitigation,
+                ResponseMitigationReceipt {
+                    version: 1,
+                    mitigation: expected
+                },
+                "{values:?}"
+            );
+            let wire = serde_json::to_string(mitigation).unwrap();
+            assert!(!wire.contains(PRIVATE), "{values:?}");
+            assert!(wire.len() < 48, "{values:?}");
+        }
+
+        // Bytes outside visible ASCII, including obs-text and invalid UTF-8.
+        let mut obs_text =
+            b"HTTP/1.1 403 Forbidden\r\nconnection: close\r\nx-vercel-mitigated: den".to_vec();
+        obs_text.extend_from_slice(&[0xff, 0xfe]);
+        obs_text.extend_from_slice(b"\r\ncontent-length: 0\r\n\r\n");
+        let mut non_ascii = b"HTTP/1.1 403 Forbidden\r\nconnection: close\r\n".to_vec();
+        non_ascii.extend_from_slice("x-vercel-mitigated: dény\r\n".as_bytes());
+        non_ascii.extend_from_slice(b"content-length: 0\r\n\r\n");
+        for response in [obs_text, non_ascii] {
+            let (result, observed, posts) = check_observed(response, false).await;
+            assert_eq!(result, Err(NOT_AUTHORIZED.to_string()));
+            assert_eq!(posts, 1);
+            assert_eq!(observed[0].1.mitigation, Mitigation::Unreadable);
+        }
+
+        // A 2xx rejection carries the same response's marker.
+        let (result, observed, posts) = check_observed(
+            json(
+                "200 OK",
+                &["x-vercel-mitigated: rate_limit"],
+                r#"{"approved":false}"#,
+            ),
+            false,
+        )
+        .await;
+        assert_eq!(result, Err(NOT_AUTHORIZED.to_string()));
+        assert_eq!(posts, 1);
+        assert_eq!(observed[0].0.approval, Approval::ApprovedFalse);
+        assert_eq!(observed[0].1.mitigation, Mitigation::RateLimit);
     }
 
     #[tokio::test]
@@ -505,18 +683,26 @@ mod tests {
         let panicking = observed_approval(
             answered(&url).await,
             OriginClass::Localhost,
-            Some(|_: ResponseRejectionReceipt| panic!("observer failure")),
+            Some(
+                |_: ResponseRejectionReceipt, _: ResponseMitigationReceipt| {
+                    panic!("observer failure")
+                },
+            ),
         )
         .await;
         assert_eq!(panicking, Err(NOT_AUTHORIZED.to_string()));
 
+        // Each closed channel fails on its own, as at the IPC boundary.
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (mitigation_sender, mitigation_receiver) = std::sync::mpsc::channel();
         drop(receiver);
+        drop(mitigation_receiver);
         let closed = observed_approval(
             answered(&url).await,
             OriginClass::Localhost,
-            Some(move |receipt| {
+            Some(move |receipt, mitigation| {
                 let _ = sender.send(receipt);
+                let _ = mitigation_sender.send(mitigation);
             }),
         )
         .await;
@@ -525,7 +711,7 @@ mod tests {
         let direct = observed_approval(
             answered(&url).await,
             OriginClass::Localhost,
-            None::<fn(ResponseRejectionReceipt)>,
+            None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
         )
         .await;
         assert_eq!(direct, Err(NOT_AUTHORIZED.to_string()));
@@ -545,7 +731,7 @@ mod tests {
             let result = observed_approval(
                 answered(&url).await,
                 OriginClass::Localhost,
-                None::<fn(ResponseRejectionReceipt)>,
+                None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
             )
             .await;
             assert_eq!(result, expected);

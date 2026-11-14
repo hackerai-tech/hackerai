@@ -25,9 +25,11 @@ import {
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
 } from "../native-authorization-diagnostics";
 
@@ -989,6 +991,199 @@ describe("native authorization response receipt", () => {
       expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
     },
   );
+
+  describe("mitigation marker", () => {
+    const mitigation: NativeAuthorizationMitigationDiagnostic = {
+      native_authorization_response_mitigation_version: 1,
+      native_authorization_response_mitigation: "challenge",
+    };
+    const mitigationKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
+      );
+
+    it.each([
+      "absent",
+      "challenge",
+      "deny",
+      "rate_limit",
+      "other",
+      "unreadable",
+    ] as const)(
+      "joins the %s class only beside a valid response group",
+      (native_authorization_response_mitigation) => {
+        const expected = {
+          ...mitigation,
+          native_authorization_response_mitigation,
+        };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: { ...expected, raw: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({ ...response, ...expected });
+        expect(mitigationKeys(final!.properties)).toHaveLength(2);
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_response_mitigation_value: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({ ...response, ...expected });
+        // The frozen response group is unchanged beside the marker.
+        expect(responseKeys(enriched.properties)).toHaveLength(7);
+        expect(mitigationKeys(enriched.properties)).toHaveLength(2);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "unsupported version",
+        { native_authorization_response_mitigation_version: 2 },
+      ],
+      [
+        "string version",
+        { native_authorization_response_mitigation_version: "1" },
+      ],
+      [
+        "missing version",
+        { native_authorization_response_mitigation_version: undefined },
+      ],
+      ["raw value", { native_authorization_response_mitigation: "PRIVATE" }],
+      [
+        "non-literal",
+        { native_authorization_response_mitigation: "Challenge" },
+      ],
+      [
+        "hyphenated",
+        { native_authorization_response_mitigation: "rate-limit" },
+      ],
+      ["empty", { native_authorization_response_mitigation: "" }],
+      ["null", { native_authorization_response_mitigation: null }],
+      [
+        "missing class",
+        { native_authorization_response_mitigation: undefined },
+      ],
+    ])(
+      "drops only the marker for %s and keeps the response group",
+      (_case, change) => {
+        const invalid = { ...mitigation, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: invalid,
+        });
+        expect(final?.properties).toMatchObject(response);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...response,
+          ...invalid,
+        });
+        expect(enriched.properties).toEqual({
+          terminalType: "error",
+          ...response,
+        });
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each<[string, Record<string, unknown> | undefined]>([
+      ["no response group", undefined],
+      [
+        "a malformed response group",
+        { ...response, native_authorization_response_http_status: 200 },
+      ],
+    ])(
+      "drops an orphan marker with %s and keeps the send group",
+      (_case, invalid) => {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: send,
+          ...(invalid && { nativeAuthorizationResponse: invalid }),
+          nativeAuthorizationMitigation: mitigation,
+        });
+        expect(final?.properties).toMatchObject(send);
+        expect(responseKeys(final!.properties)).toEqual([]);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...send,
+          ...invalid,
+          ...mitigation,
+        });
+        expect(enriched.properties).toEqual({ terminalType: "error", ...send });
+      },
+    );
+
+    it("does not attach the marker to non-error finals, starts or summaries", () => {
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorizationResponse: response,
+        nativeAuthorizationMitigation: mitigation,
+      });
+      expect(mitigationKeys(exitFinal!.properties)).toEqual([]);
+      for (const terminalType of ["exit", null, undefined])
+        expect(
+          mitigationKeys(
+            enrich({ terminalType, ...response, ...mitigation }).properties,
+          ),
+        ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          mitigationKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...response, ...mitigation },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? "deny" : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s marker getter at capture or before_send",
+      (_case, get) => {
+        reads = 0;
+        const hostile = (base: Record<string, unknown>) =>
+          Object.defineProperty(
+            { ...base },
+            "native_authorization_response_mitigation",
+            { enumerable: true, get },
+          );
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: hostile({ ...mitigation }),
+        });
+        expect(final?.properties).toMatchObject(response);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: hostile({
+            terminalType: "error",
+            ...response,
+            ...mitigation,
+          }),
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(sanitized).toEqual({ terminalType: "error", ...response });
+        expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+      },
+    );
+  });
 });
 
 describe("volume reduction and reliability counters", () => {
