@@ -101,7 +101,10 @@ jest.mock("../../lib/db/subagents", () => ({
 import { getActiveTriggerRunsForUser } from "../../lib/db/actions";
 import { listActiveSubagentsForUser } from "../../lib/db/subagents";
 import { Sandbox, Template } from "@e2b/code-interpreter";
-import { ensureCloudSandboxConnection } from "../../lib/ai/tools/utils/cloud-sandbox";
+import {
+  ensureCloudSandboxConnection,
+  terminateCloudSandboxesForUser,
+} from "../../lib/ai/tools/utils/cloud-sandbox";
 import { resolveCloudWorkspaceRegion } from "../../lib/ai/tools/utils/cloud-workspace-routing";
 import {
   workspaceRegionView,
@@ -1119,6 +1122,149 @@ it.each(["reconciliation", "reread"])(
     expect(Sandbox.connect).not.toHaveBeenCalled();
     expect(Sandbox.create).not.toHaveBeenCalled();
     expect(Sandbox.kill).not.toHaveBeenCalled();
+  },
+);
+
+const deletedSource = "deleted-source";
+const resumeFailureKey = `cloud_resume_failures:v1:${owner}`;
+function failedWorkspace(overrides: Record<string, unknown> = {}) {
+  const binding = workspaceBinding(deletedSource, "us-east-1", "adopted");
+  const evidence = {
+    sandboxId: deletedSource,
+    region: "us-east-1",
+    template: "terminal-agent-sandbox",
+    sandboxVersion: "v12",
+    attempts: [recoveryToken],
+    uncertain: false,
+    lastFailedAt: Date.now() - 1000,
+    ...overrides,
+  };
+  mockCommand("SET", cloudWorkspaceStateKey(owner), binding);
+  mockCommand("SET", cloudWorkspaceRegionKey(owner), binding.region);
+  mockCommand("SET", resumeFailureKey, evidence);
+  inventory = [item(deletedSource, "us")];
+  jest.mocked(Sandbox.kill).mockImplementation((async (id: string) => {
+    inventory = inventory.filter((entry) => entry.sandboxId !== id);
+    return true;
+  }) as never);
+  return { binding, evidence };
+}
+
+it("creates a fresh workspace after successful cleanup deleted the workspace that failed to resume", async () => {
+  failedWorkspace();
+  await expect(terminateCloudSandboxesForUser(owner)).resolves.toMatchObject({
+    killed: 1,
+  });
+  expect(inventory).toEqual([]);
+  await resolveCloudWorkspaceRegion({
+    userId: owner,
+    preferredRegion: "us-east-1",
+  });
+  // The deleted source must not be re-adopted from its old failure evidence.
+  expect(await state()).toMatchObject({
+    phase: "provisioning",
+    step: "reserved",
+  });
+  const { sandbox } = await acquire();
+  expect(sandbox.sandboxId).not.toBe(deletedSource);
+  expect(await state()).toMatchObject({
+    phase: "e2b",
+    destinationId: sandbox.sandboxId,
+    origin: "created",
+  });
+  expect(Sandbox.create).toHaveBeenCalledTimes(1);
+  expect(mockCommand("EXISTS", resumeFailureKey)).toBe(0);
+});
+
+it("keeps failure evidence after failed provider cleanup and retires it when a retry succeeds", async () => {
+  const { binding, evidence } = failedWorkspace();
+  jest
+    .mocked(Sandbox.kill)
+    .mockRejectedValueOnce(new Error("provider unavailable"));
+  await expect(terminateCloudSandboxesForUser(owner)).rejects.toThrow(
+    "provider unavailable",
+  );
+  expect(await state()).toEqual(binding);
+  expect(mockDecode(mockCommand("GET", resumeFailureKey))).toEqual(evidence);
+  expect(inventory.map((entry) => entry.files)).toEqual([
+    `retained-${deletedSource}`,
+  ]);
+
+  await terminateCloudSandboxesForUser(owner);
+  expect(mockCommand("EXISTS", resumeFailureKey)).toBe(0);
+  expect((await acquire()).sandbox.sandboxId).not.toBe(deletedSource);
+  expect(Sandbox.create).toHaveBeenCalledTimes(1);
+});
+
+it("preserves failure evidence when another cleanup owner replaces the fence", async () => {
+  const { evidence } = failedWorkspace();
+  const foreign = { version: 1, phase: "cleanup", token: "another-owner" };
+  jest.mocked(Sandbox.kill).mockImplementationOnce((async () => {
+    mockCommand("SET", cloudWorkspaceStateKey(owner), foreign);
+    return true;
+  }) as never);
+  await expect(terminateCloudSandboxesForUser(owner)).rejects.toThrow();
+  expect(mockDecode(mockCommand("GET", cloudWorkspaceStateKey(owner)))).toEqual(
+    foreign,
+  );
+  expect(mockDecode(mockCommand("GET", resumeFailureKey))).toEqual(evidence);
+  expect(mockCommand("GET", cloudWorkspaceRegionKey(owner))).toBe("us-east-1");
+});
+
+it.each([
+  "another_workspace",
+  "another_region",
+  "malformed",
+  "incomplete_matching_record",
+  "unknown_fields",
+  "unbound",
+  "recorded_during_cleanup",
+])(
+  "preserves %s failure evidence after successful cleanup without creating a replacement",
+  async (kind) => {
+    failedWorkspace(
+      kind === "another_workspace"
+        ? { sandboxId: "another-workspace" }
+        : kind === "another_region"
+          ? { region: "eu-central-1" }
+          : {},
+    );
+    if (kind === "malformed")
+      mockCommand("SET", resumeFailureKey, "{unparseable");
+    if (kind === "incomplete_matching_record")
+      mockCommand("SET", resumeFailureKey, {
+        sandboxId: deletedSource,
+        region: "us-east-1",
+      });
+    if (kind === "unknown_fields")
+      mockCommand("SET", resumeFailureKey, {
+        ...mockDecode(mockCommand("GET", resumeFailureKey)),
+        futurePreservationState: "unknown",
+      });
+    if (kind === "unbound") mockCommand("DEL", cloudWorkspaceStateKey(owner));
+    if (kind === "recorded_during_cleanup") {
+      const kill = jest.mocked(Sandbox.kill).getMockImplementation()!;
+      jest.mocked(Sandbox.kill).mockImplementationOnce((async (
+        ...args: Parameters<typeof kill>
+      ) => {
+        // An acquisition admitted before the fence recorded a newer attempt.
+        mockCommand("SET", resumeFailureKey, {
+          ...mockDecode(mockCommand("GET", resumeFailureKey)),
+          attempts: [recoveryToken, "1f0c2e8a-9a3c-4d55-8f40-3f5b8c2d7e61"],
+          lastFailedAt: Date.now(),
+        });
+        return kill(...args);
+      }) as never);
+    }
+    const before = mockCommand("GET", resumeFailureKey);
+    await terminateCloudSandboxesForUser(owner);
+    const after = mockCommand("GET", resumeFailureKey);
+    if (kind === "recorded_during_cleanup") {
+      expect(after).not.toBe(before);
+      expect(mockDecode(after).attempts).toHaveLength(2);
+    } else expect(after).toBe(before);
+    await acquire().catch(() => undefined);
+    expect(Sandbox.create).not.toHaveBeenCalled();
   },
 );
 

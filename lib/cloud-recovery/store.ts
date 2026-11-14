@@ -1,6 +1,7 @@
 import {
   activityKeyFor,
   cloudRecoveryConsentKey,
+  cloudResumeFailureKey,
   cloudWorkspaceStateKey,
   recoveryResultKeyFor,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
@@ -9,22 +10,13 @@ import { z } from "zod";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import { failureSchema, type ResumeFailures } from "./failure";
+
+export { failureSchema, type ResumeFailures } from "./failure";
 
 export const RECOVERY_FLAG = "cloud-workspace-customer-recovery";
-export const failureKey = (userId: string) =>
-  `cloud_resume_failures:v1:${userId}`;
+export const failureKey = cloudResumeFailureKey;
 export const consentKey = cloudRecoveryConsentKey;
-export const failureSchema = z.object({
-  sandboxId: z.string().min(1),
-  region: z.enum(["us-east-1", "us-west-2", "eu-central-1"]),
-  template: z.string().min(1),
-  sandboxVersion: z.string().min(1),
-  attempts: z.array(z.string().uuid()).min(1).max(2),
-  uncertain: z.boolean(),
-  timeoutOnly: z.boolean().optional(),
-  lastFailedAt: z.number(),
-});
-export type ResumeFailures = z.infer<typeof failureSchema>;
 export const consentSchema = z.object({
   token: z.string().uuid(),
   target: failureSchema,
