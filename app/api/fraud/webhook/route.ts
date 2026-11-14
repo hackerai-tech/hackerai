@@ -238,7 +238,11 @@ async function suspendCustomerUsers({
   chargeId?: string | null;
   sourceCreatedUnix: number;
 }): Promise<boolean> {
-  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const { userIds, orgId, reason } =
+    await resolveUserIdsFromCustomer(customerId);
+  if (reason === "lookup_failed") {
+    throw new Error("Cannot verify fraud suspension users");
+  }
   let supportResolved = false;
 
   for (const userId of userIds) {

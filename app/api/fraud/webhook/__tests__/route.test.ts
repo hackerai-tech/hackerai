@@ -296,6 +296,26 @@ describe("POST /api/fraud/webhook", () => {
     );
   });
 
+  it("keeps a failed customer lookup retryable before cleanup", async () => {
+    mockResolveUserIdsFromCustomer.mockResolvedValue({
+      userIds: [],
+      orgId: null,
+      reason: "lookup_failed",
+    } as never);
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "userSuspensions.upsertActive",
+      expect.any(Object),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.markWebhookHandled",
+      expect.any(Object),
+    );
+  });
+
   it.each<CustomerBoundary>([
     "subscriptions.list",
     "paymentMethods.list",
