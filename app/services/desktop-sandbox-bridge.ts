@@ -16,8 +16,11 @@ import {
 } from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
+  nativeAuthorizationCauseDiagnostic,
   nativeAuthorizationDiagnostic,
+  parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendReceipt,
+  type NativeAuthorizationSendCause,
   type NativeAuthorizationSendReceipt,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import {
@@ -1225,13 +1228,21 @@ export class DesktopSandboxBridge {
       (command.timeout ?? 30_000) +
       DESKTOP_COMMAND_DELIVERY_GRACE_MS;
     let terminalExitCode: number | null = null;
-    // Invocation-local native send receipt: one callback attempt, closed by
-    // settlement, owned by the analytics identity at command start, and joined
-    // only to this invocation's rejection.
+    // Invocation-local native send receipts: one callback attempt per channel,
+    // closed by settlement, owned by the analytics identity at command start,
+    // and joined only to this invocation's rejection. The cause receipt has its
+    // own channel and latch; neither callback closes the other.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
+    const receiptFenced = () =>
+      this.isStoppingOrStopped ||
+      this.operationRouter !== router ||
+      this.connectionId !== connectionId ||
+      getIdentifiedAnalyticsUserId() !== receiptOwner;
     let receiptOpen = true;
+    let causeOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
+    let sendCause: NativeAuthorizationSendCause | null = null;
     let invocationRejected = false;
     const onSettled = this.ackTelemetry.start({
       connectionId,
@@ -1249,6 +1260,7 @@ export class DesktopSandboxBridge {
         this.connectionId === connectionId,
       (settlement) => {
         receiptOpen = false;
+        causeOpen = false;
         onSettled(
           {
             ...settlement,
@@ -1259,6 +1271,10 @@ export class DesktopSandboxBridge {
                   sendReceipt,
                   nativeAppVersion,
                 ),
+                ...(sendCause && {
+                  nativeAuthorizationCause:
+                    nativeAuthorizationCauseDiagnostic(sendCause),
+                }),
               }),
           },
           this.commandOutputStopSource,
@@ -1269,11 +1285,12 @@ export class DesktopSandboxBridge {
     this.commandDeliveryDeadlines.set(command.commandId, deadline);
     this.activeCommands.add(command.commandId);
     let diagnosticChannel: object | undefined;
+    let causeChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
       // Published legacy binaries take the legacy command, which has no use for
-      // it, and an unidentified owner could never report it.
+      // them, and an unidentified owner could never report them.
       if (
         receiptOwner &&
         !usesPublishedLegacyDesktopCommands(nativeAppVersion)
@@ -1283,18 +1300,27 @@ export class DesktopSandboxBridge {
           receiptChannel.onmessage = (value) => {
             if (!receiptOpen) return;
             receiptOpen = false;
-            if (
-              this.isStoppingOrStopped ||
-              this.operationRouter !== router ||
-              this.connectionId !== connectionId ||
-              getIdentifiedAnalyticsUserId() !== receiptOwner
-            )
-              return;
+            if (receiptFenced()) return;
             sendReceipt = parseNativeAuthorizationSendReceipt(value);
           };
           diagnosticChannel = receiptChannel;
         } catch {
           diagnosticChannel = undefined;
+        }
+        // A cause is only ever reported with the v1 receipt.
+        if (diagnosticChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!causeOpen) return;
+              causeOpen = false;
+              if (receiptFenced()) return;
+              sendCause = parseNativeAuthorizationSendCause(value);
+            };
+            causeChannel = channel;
+          } catch {
+            causeChannel = undefined;
+          }
         }
       }
       const channel = new Channel<StreamChunk>();
@@ -1323,9 +1349,14 @@ export class DesktopSandboxBridge {
               timeoutMs: command.timeout ?? 30_000,
             },
             { onEvent: channel },
-            diagnosticChannel
-              ? { onAuthorizationDiagnostic: diagnosticChannel }
-              : {},
+            {
+              ...(diagnosticChannel && {
+                onAuthorizationDiagnostic: diagnosticChannel,
+              }),
+              ...(causeChannel && {
+                onAuthorizationCauseDiagnostic: causeChannel,
+              }),
+            },
           );
         }
       } catch (error) {
@@ -1359,15 +1390,17 @@ export class DesktopSandboxBridge {
       }
     } finally {
       stream.stop();
-      // Native apps that ignore the optional argument never end its channel.
-      // Release the callback through the pinned SDK Channel's own method, which
+      // Native apps that ignore an optional argument never end its channel.
+      // Release each callback through the pinned SDK Channel's own method, which
       // its typings mark private; the focused bridge test pins this behavior.
-      try {
-        (
-          diagnosticChannel as { cleanupCallback?: () => void } | undefined
-        )?.cleanupCallback?.();
-      } catch {
-        // Diagnostics must never affect command settlement.
+      for (const optional of [diagnosticChannel, causeChannel]) {
+        try {
+          (
+            optional as { cleanupCallback?: () => void } | undefined
+          )?.cleanupCallback?.();
+        } catch {
+          // Diagnostics must never affect command settlement.
+        }
       }
       this.acknowledgedOutputs.delete(command.commandId);
       this.commandDeliveryDeadlines.delete(command.commandId);

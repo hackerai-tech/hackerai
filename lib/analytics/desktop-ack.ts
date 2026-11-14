@@ -12,7 +12,9 @@ import {
   type DesktopAckStopSource,
 } from "./desktop-ack-privacy";
 import {
+  readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
 } from "./native-authorization-diagnostics";
 
@@ -27,6 +29,8 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   terminalExitCode?: number | null;
   /** Same-invocation native send receipt; only for a terminal error. */
   nativeAuthorization?: NativeAuthorizationDiagnostic;
+  /** Same-invocation closed IO cause; only joined to a valid send receipt. */
+  nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -257,6 +261,9 @@ export class DesktopAckTelemetry {
         result.terminalType === "error"
           ? readNativeAuthorizationDiagnostic(result.nativeAuthorization)
           : null;
+      const nativeAuthorizationCause = nativeAuthorization
+        ? readNativeAuthorizationCause(result.nativeAuthorizationCause)
+        : null;
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -291,6 +298,7 @@ export class DesktopAckTelemetry {
             publishInFlightAgeMs: result.publishInFlightAgeMs,
           }),
           ...nativeAuthorization,
+          ...nativeAuthorizationCause,
         },
         dedupeKey,
       );
