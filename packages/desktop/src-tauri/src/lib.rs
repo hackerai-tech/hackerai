@@ -1,3 +1,4 @@
+mod authorization_response_diagnostics;
 mod authorization_send_diagnostics;
 mod platform;
 mod update_safety;
@@ -1069,21 +1070,24 @@ async fn redeem_authorized_message<R: tauri::Runtime>(
                 authorization_send_diagnostics::SendFailureCause,
             ),
         >,
+        None::<fn(authorization_response_diagnostics::ResponseRejectionReceipt)>,
     )
     .await
 }
 
-async fn redeem_authorized_message_observed<R: tauri::Runtime, F>(
+async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G>(
     authorization_id: &str,
     mut message: serde_json::Value,
     window: &tauri::WebviewWindow<R>,
     send_failure_observer: Option<F>,
+    response_rejection_observer: Option<G>,
 ) -> Result<serde_json::Value, String>
 where
     F: FnOnce(
         authorization_send_diagnostics::SendFailureReceipt,
         authorization_send_diagnostics::SendFailureCause,
     ),
+    G: FnOnce(authorization_response_diagnostics::ResponseRejectionReceipt),
 {
     if authorization_id.len() != 64
         || !authorization_id
@@ -1117,16 +1121,12 @@ where
         authorization_send_diagnostics::observed_send(request, origin_class, send_failure_observer)
             .await
             .map_err(|_| "Desktop operation authorization unavailable".to_string())?;
-    if !response.status().is_success() {
-        return Err("Desktop operation was not authorized".to_string());
-    }
-    let approval: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|_| "Invalid Desktop authorization response".to_string())?;
-    if approval.get("approved") != Some(&serde_json::Value::Bool(true)) {
-        return Err("Desktop operation was not authorized".to_string());
-    }
+    authorization_response_diagnostics::observed_approval(
+        response,
+        origin_class,
+        response_rejection_observer,
+    )
+    .await?;
     Ok(message)
 }
 
@@ -1441,9 +1441,20 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     on_authorization_diagnostic: Option<serde_json::Value>,
     // The closed IO cause, on its own channel so the v1 receipt shape is frozen.
     on_authorization_cause_diagnostic: Option<serde_json::Value>,
+    // An answered POST's rejection, independent of both send channels.
+    on_authorization_response_diagnostic: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    use authorization_response_diagnostics::ResponseRejectionReceipt;
     use authorization_send_diagnostics::{SendFailureCause, SendFailureReceipt};
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
+    let response_rejection_observer =
+        authorization_diagnostic_channel_id(on_authorization_response_diagnostic)
+            .map(|id| id.channel_on::<R, ResponseRejectionReceipt>(webview()))
+            .map(|channel| {
+                move |receipt: ResponseRejectionReceipt| {
+                    let _ = channel.send(receipt);
+                }
+            });
     let receipt_channel = authorization_diagnostic_channel_id(on_authorization_diagnostic)
         .map(|id| id.channel_on::<R, SendFailureReceipt>(webview()));
     let cause_channel = authorization_diagnostic_channel_id(on_authorization_cause_diagnostic)
@@ -1463,6 +1474,7 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
         message,
         &window,
         send_failure_observer,
+        response_rejection_observer,
     )
     .await?;
     authorized_operation_type(&message, &["command"])?;
@@ -2224,17 +2236,40 @@ mod tests {
             .map(|_| ())
     }
 
+    // The published send-and-cause ABI has no response-channel argument.
+    #[tauri::command(rename = "execute_authorized_stream_command")]
+    async fn cause_authorized_command_fixture<R: tauri::Runtime>(
+        window: tauri::WebviewWindow<R>,
+        authorization_id: String,
+        message: serde_json::Value,
+        on_event: tauri::ipc::Channel<StreamEvent>,
+        on_authorization_diagnostic: Option<serde_json::Value>,
+        on_authorization_cause_diagnostic: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let _ = (
+            on_event,
+            on_authorization_diagnostic,
+            on_authorization_cause_diagnostic,
+        );
+        redeem_authorized_message(&authorization_id, message, &window)
+            .await
+            .map(|_| ())
+    }
+
     #[test]
-    fn authorization_send_diagnostics_optional_argument_keeps_original_command_errors() {
+    fn authorization_diagnostics_optional_arguments_keep_original_command_errors() {
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
         // The compiled ACL admits the trusted IPC origin, while the loaded page
         // is untrusted for authorization: no POST can be attempted.
-        for legacy_abi in [false, true] {
+        for abi in ["v1", "cause", "current"] {
             let builder = mock_builder().manage(StreamCommandState::default());
-            let builder = if legacy_abi {
-                builder.invoke_handler(tauri::generate_handler![legacy_authorized_command_fixture])
-            } else {
-                builder.invoke_handler(tauri::generate_handler![execute_authorized_stream_command])
+            let builder = match abi {
+                "v1" => builder
+                    .invoke_handler(tauri::generate_handler![legacy_authorized_command_fixture]),
+                "cause" => builder
+                    .invoke_handler(tauri::generate_handler![cause_authorized_command_fixture]),
+                _ => builder
+                    .invoke_handler(tauri::generate_handler![execute_authorized_stream_command]),
             };
             let app = builder.build(app_context()).unwrap();
             let untrusted_page =
@@ -2243,32 +2278,37 @@ mod tests {
                 .build()
                 .unwrap();
             type Optional = Option<serde_json::Value>;
-            let invoke = |authorization_id: &str, (diagnostic, cause): (Optional, Optional)| {
-                let mut body = serde_json::json!({
-                    "authorizationId": authorization_id,
-                    "message": { "type": "command", "commandId": "synthetic", "command": "true" },
-                    "onEvent": "__CHANNEL__:1",
-                });
-                if let Some(value) = diagnostic {
-                    body["onAuthorizationDiagnostic"] = value;
-                }
-                if let Some(value) = cause {
-                    body["onAuthorizationCauseDiagnostic"] = value;
-                }
-                get_ipc_response(
-                    &window,
-                    tauri::webview::InvokeRequest {
-                        cmd: "execute_authorized_stream_command".into(),
-                        callback: tauri::ipc::CallbackFn(0),
-                        error: tauri::ipc::CallbackFn(1),
-                        url: "https://hackerai.co/".parse().unwrap(),
-                        body: tauri::ipc::InvokeBody::Json(body),
-                        headers: Default::default(),
-                        invoke_key: INVOKE_KEY.to_string(),
-                    },
-                )
-                .map(|_| ())
-            };
+            let invoke =
+                |authorization_id: &str,
+                 (diagnostic, cause, response): (Optional, Optional, Optional)| {
+                    let mut body = serde_json::json!({
+                        "authorizationId": authorization_id,
+                        "message": { "type": "command", "commandId": "synthetic", "command": "true" },
+                        "onEvent": "__CHANNEL__:1",
+                    });
+                    if let Some(value) = diagnostic {
+                        body["onAuthorizationDiagnostic"] = value;
+                    }
+                    if let Some(value) = cause {
+                        body["onAuthorizationCauseDiagnostic"] = value;
+                    }
+                    if let Some(value) = response {
+                        body["onAuthorizationResponseDiagnostic"] = value;
+                    }
+                    get_ipc_response(
+                        &window,
+                        tauri::webview::InvokeRequest {
+                            cmd: "execute_authorized_stream_command".into(),
+                            callback: tauri::ipc::CallbackFn(0),
+                            error: tauri::ipc::CallbackFn(1),
+                            url: "https://hackerai.co/".parse().unwrap(),
+                            body: tauri::ipc::InvokeBody::Json(body),
+                            headers: Default::default(),
+                            invoke_key: INVOKE_KEY.to_string(),
+                        },
+                    )
+                    .map(|_| ())
+                };
             let optional = [
                 None,
                 Some(serde_json::Value::Null),
@@ -2276,15 +2316,18 @@ mod tests {
                 Some(serde_json::json!("not-a-channel")),
                 Some(serde_json::json!("__CHANNEL__:2")),
             ];
-            // Each optional channel alone, then both together as current frontends send them.
+            // Each optional channel alone, the published send-and-cause pair,
+            // then all three together as current frontends send them.
+            let channel = |id: u8| Some(serde_json::json!(format!("__CHANNEL__:{id}")));
             let variants: Vec<_> = optional
                 .iter()
-                .map(|value| (value.clone(), None))
-                .chain(optional.iter().map(|value| (None, value.clone())))
-                .chain([(
-                    Some(serde_json::json!("__CHANNEL__:2")),
-                    Some(serde_json::json!("__CHANNEL__:3")),
-                )])
+                .map(|value| (value.clone(), None, None))
+                .chain(optional.iter().map(|value| (None, value.clone(), None)))
+                .chain(optional.iter().map(|value| (None, None, value.clone())))
+                .chain([
+                    (channel(2), channel(3), None),
+                    (channel(2), channel(3), channel(4)),
+                ])
                 .collect();
             for variant in variants.clone() {
                 assert_eq!(

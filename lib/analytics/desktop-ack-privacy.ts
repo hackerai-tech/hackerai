@@ -1,8 +1,10 @@
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationResponse,
 } from "./native-authorization-diagnostics";
 
 const STOP_SOURCES = [
@@ -143,10 +145,21 @@ export function sanitizeDesktopAckEvent<
     const nativeAuthorizationCause = nativeAuthorization
       ? readNativeAuthorizationCause(event.properties)
       : null;
+    // The response group is validated on its own, as the same kind of data
+    // copy; its validity neither depends on nor admits the send groups.
+    const nativeAuthorizationResponse =
+      event.event === "desktop_ack_command_settled" &&
+      event.properties.terminalType === "error"
+        ? readNativeAuthorizationResponse(event.properties)
+        : null;
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
-        .filter((key) => !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key))
+        .filter(
+          (key) =>
+            !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key),
+        )
         .map((key) => [key, properties[key]] as const)
         .filter(
           ([key, value]) =>
@@ -168,6 +181,8 @@ export function sanitizeDesktopAckEvent<
     );
     if (nativeAuthorizationCause)
       Object.assign(event.properties, nativeAuthorizationCause);
+    if (nativeAuthorizationResponse)
+      Object.assign(event.properties, nativeAuthorizationResponse);
   }
   delete event.$set;
   delete event.$set_once;
