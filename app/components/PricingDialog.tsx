@@ -24,6 +24,7 @@ import {
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
+import { recordTeamHistoryWrite } from "@/lib/posthog/team-history-write-diagnostics";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
 
 interface PricingDialogProps {
@@ -370,6 +371,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     const url = new URL(window.location.href);
     url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
     url.hash = "team-pricing-seat-selection";
+    recordTeamHistoryWrite(
+      "pricing_team_open",
+      url.href === window.location.href,
+    );
     window.history.replaceState({}, "", url.toString());
     window.dispatchEvent(new Event("hashchange"));
 
