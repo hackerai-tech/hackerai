@@ -2975,6 +2975,349 @@ describe("native desktop file relay", () => {
   });
 });
 
+describe("file_stat receiver diagnostics", () => {
+  const PRIVATE_PATH = "C:\\Users\\private\\secret.txt";
+  const statMessage = (requestId: string) => ({
+    type: "file_stat",
+    requestId,
+    path: PRIVATE_PATH,
+    targetConnectionId: "conn-123",
+    authorizationId: "private-authorization",
+  });
+  const legacyRequest = {
+    request: { path: PRIVATE_PATH, type: "file_stat" },
+  };
+
+  /** Starts the real bridge as a given installed binary, then swaps stat-time IPC. */
+  async function startAs(
+    version: string,
+    onStat: (cmd: string) => Promise<unknown> | undefined,
+  ) {
+    mockUseAuthorizedNative = true;
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "plugin:app|version" ? version : original(cmd, args);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockInvokeHandler = async (cmd, args) => onStat(cmd) ?? original(cmd, args);
+    mockSubscription.publish.mockClear();
+    const { invoke } = await import("@tauri-apps/api/core");
+    (invoke as jest.Mock).mockClear();
+    return { bridge, invoke: invoke as jest.Mock };
+  }
+
+  const fileErrors = () =>
+    mockSubscription.publish.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "file_error");
+
+  const reject = (message: string) => Promise.reject(new Error(message));
+  const notFound = (cmd: string) => reject(`Command ${cmd} not found`);
+  const loopbackInfo = { port: 49152, token: "PRIVATE_LOOPBACK_TOKEN" };
+
+  it.each([
+    {
+      // Production 0.0.71 Windows shape: an unclassified native rejection.
+      name: "published legacy native invoke",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? reject("PRIVATE unexpected native failure")
+          : undefined,
+      error: { message: "PRIVATE unexpected native failure" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "published_legacy_native",
+      },
+      ipc: [["desktop_file_request", legacyRequest]],
+    },
+    {
+      name: "authorized native invoke",
+      version: "0.0.74",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? reject("Desktop operation was not authorized")
+          : undefined,
+      error: { message: "Desktop operation was not authorized" },
+      diagnostic: { stage: "native_invoke", adapter: "authorized_native" },
+      ipc: [
+        [
+          "authorized_desktop_file_request",
+          {
+            authorizationId: "private-authorization",
+            message: statMessage("stat-diagnostic"),
+          },
+        ],
+      ],
+    },
+    {
+      name: "compatibility native invoke",
+      version: "0.0.0",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "desktop_file_request"
+            ? reject("PRIVATE compatibility failure")
+            : undefined,
+      error: { message: "PRIVATE compatibility failure" },
+      diagnostic: { stage: "native_invoke", adapter: "compatibility_native" },
+      ipc: [
+        [
+          "authorized_desktop_file_request",
+          {
+            authorizationId: "private-authorization",
+            message: statMessage("stat-diagnostic"),
+          },
+        ],
+        ["desktop_file_request", legacyRequest],
+      ],
+    },
+    {
+      name: "loopback server info",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? reject("PRIVATE server info failure")
+            : undefined,
+      error: { message: "PRIVATE server info failure" },
+      diagnostic: { stage: "loopback_info", adapter: "legacy_loopback" },
+    },
+    {
+      name: "loopback setup",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve({ port: 0, token: "" })
+            : undefined,
+      error: {
+        message: expect.stringContaining("file server is not ready"),
+        fileFailure: "legacy_http_rejected",
+      },
+      diagnostic: { stage: "loopback_setup", adapter: "legacy_loopback" },
+    },
+    {
+      name: "loopback request",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve(loopbackInfo)
+            : undefined,
+      loopback: () => Promise.reject(new TypeError("Load failed")),
+      error: {
+        message: expect.stringContaining("transport failed (legacy_http"),
+        fileFailure: "legacy_http_transport",
+      },
+      diagnostic: { stage: "loopback_request", adapter: "legacy_loopback" },
+    },
+    {
+      name: "loopback response",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve(loopbackInfo)
+            : undefined,
+      loopback: () =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "PRIVATE server rejection" }),
+        }),
+      error: {
+        message: "PRIVATE server rejection",
+        fileFailure: "legacy_http_rejected",
+      },
+      diagnostic: { stage: "loopback_response", adapter: "legacy_loopback" },
+    },
+    {
+      name: "stat reply validation",
+      version: "0.0.74",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? Promise.resolve({ kind: "PRIVATE", path: PRIVATE_PATH })
+          : undefined,
+      error: {
+        message: "Desktop file bridge returned an invalid stat payload",
+        fileFailure: "invalid_response",
+      },
+      diagnostic: {
+        stage: "stat_reply_validation",
+        adapter: "authorized_native",
+      },
+    },
+  ])(
+    "adds only the closed stage after a $name failure",
+    async ({ version, onStat, loopback, error, diagnostic, ipc }) => {
+      global.fetch = jest.fn(
+        loopback ?? (() => Promise.reject(new Error("unexpected fetch"))),
+      ) as unknown as typeof global.fetch;
+      const { bridge, invoke } = await startAs(version, onStat);
+      try {
+        const data = statMessage("stat-diagnostic");
+        getPublicationHandler()({ data });
+        await waitFor(() => expect(fileErrors()).toHaveLength(1));
+
+        // Original message/cause unchanged; the diagnostic is the only addition.
+        expect(fileErrors()[0]).toEqual({
+          type: "file_error",
+          requestId: "stat-diagnostic",
+          ...error,
+          receiverDiagnostic: { version: 1, ...diagnostic },
+        });
+        expect(data).toEqual(statMessage("stat-diagnostic"));
+        if (ipc) {
+          const fileIpc = invoke.mock.calls.filter(([cmd]) =>
+            String(cmd).includes("desktop_file_request"),
+          );
+          expect(fileIpc).toEqual(ipc);
+        }
+        expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
+  it("keeps a successful stat reply and other file errors unchanged", async () => {
+    const { bridge } = await startAs("0.0.74", (cmd) =>
+      cmd === "authorized_desktop_file_request"
+        ? Promise.resolve({ kind: "file", path: PRIVATE_PATH, sizeBytes: 3 })
+        : undefined,
+    );
+    try {
+      getPublicationHandler()({ data: statMessage("stat-ok") });
+      await waitFor(() =>
+        expect(mockSubscription.publish).toHaveBeenCalledWith({
+          type: "file_stat_result",
+          requestId: "stat-ok",
+          kind: "file",
+          path: PRIVATE_PATH,
+          sizeBytes: 3,
+        }),
+      );
+      mockInvokeHandler = () => reject("Read error: PRIVATE");
+      getPublicationHandler()({
+        data: { ...statMessage("read-error"), type: "file_read" },
+      });
+      await waitFor(() =>
+        expect(fileErrors()).toEqual([
+          {
+            type: "file_error",
+            requestId: "read-error",
+            message: "Read error: PRIVATE",
+            fileFailure: "filesystem",
+          },
+        ]),
+      );
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("attributes a failed success-reply publication without changing its result", async () => {
+    const { bridge } = await startAs("0.0.71", (cmd) =>
+      cmd === "desktop_file_request"
+        ? Promise.resolve({ kind: "missing", path: PRIVATE_PATH })
+        : undefined,
+    );
+    try {
+      mockSubscription.publish.mockImplementationOnce(() =>
+        reject("PRIVATE broker rejection"),
+      );
+      getPublicationHandler()({ data: statMessage("stat-reply") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      expect(mockSubscription.publish.mock.calls[0][0]).toEqual({
+        type: "file_stat_result",
+        requestId: "stat-reply",
+        kind: "missing",
+        path: PRIVATE_PATH,
+      });
+      expect(fileErrors()[0]).toEqual({
+        type: "file_error",
+        requestId: "stat-reply",
+        message: "PRIVATE broker rejection",
+        receiverDiagnostic: {
+          version: 1,
+          stage: "reply_publication",
+          adapter: "published_legacy_native",
+        },
+      });
+    } finally {
+      await bridge.stop();
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
+  it("isolates concurrent stats and drops a failure after stop", async () => {
+    let failCompatibility!: (error: Error) => void;
+    let failLate!: (error: Error) => void;
+    const { bridge } = await startAs("0.0.0", () => undefined);
+    const compatibility = new Promise((_, rejectNative) => {
+      failCompatibility = rejectNative;
+    });
+    let authorizedCalls = 0;
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "authorized_desktop_file_request") {
+        authorizedCalls++;
+        if (authorizedCalls === 1) throw new Error(`Command ${cmd} not found`);
+        if (authorizedCalls === 2)
+          throw new Error("Desktop operation was not authorized");
+        return new Promise((_, rejectNative) => {
+          failLate = rejectNative;
+        });
+      }
+      if (cmd === "desktop_file_request") return compatibility;
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    try {
+      // The first stat waits on the compatibility adapter while a second stat
+      // fails on the authorized adapter; neither may take the other's evidence.
+      getPublicationHandler()({ data: statMessage("stat-compat") });
+      await waitFor(() => expect(authorizedCalls).toBe(1));
+      getPublicationHandler()({ data: statMessage("stat-authorized") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      failCompatibility(new Error("PRIVATE compatibility failure"));
+      await waitFor(() => expect(fileErrors()).toHaveLength(2));
+      expect(fileErrors()).toEqual([
+        expect.objectContaining({
+          requestId: "stat-authorized",
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter: "authorized_native",
+          },
+        }),
+        expect.objectContaining({
+          requestId: "stat-compat",
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter: "compatibility_native",
+          },
+        }),
+      ]);
+
+      getPublicationHandler()({ data: statMessage("stat-late") });
+      await waitFor(() => expect(failLate).toBeDefined());
+      await bridge.stop();
+      failLate(new Error("PRIVATE late failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockSubscription.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "stat-late" }),
+      );
+    } finally {
+      await bridge.stop();
+    }
+  });
+});
+
 // ── extractUserIdFromToken ────────────────────────────────────────────
 
 describe("extractUserIdFromToken", () => {

@@ -1,4 +1,7 @@
-import type { DesktopFileFailure } from "@/lib/centrifugo/desktop-file-errors";
+import type {
+  DesktopFileFailure,
+  DesktopFileReceiverDiagnostic,
+} from "@/lib/centrifugo/desktop-file-errors";
 
 export type NativePathResolutionFailure =
   | "missing_utility"
@@ -45,6 +48,8 @@ export class LocalFileRequestError extends Error {
     readonly failure: LocalFileRequestFailure,
     message: string,
     readonly fileFailure?: DesktopFileFailure,
+    // Only from a matched same-request file_error; diagnostics, not a decision input.
+    readonly receiverDiagnostic?: DesktopFileReceiverDiagnostic,
   ) {
     super(message);
   }
