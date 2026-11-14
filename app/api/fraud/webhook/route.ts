@@ -262,6 +262,11 @@ async function suspendCustomerUsers({
   if (reason === "lookup_failed") {
     throw new Error("Cannot verify fraud suspension users");
   }
+  // A missing mapping can be repaired between deliveries. Keep the claim
+  // retryable rather than acknowledging a fraud event without an app hold.
+  if (userIds.length === 0) {
+    throw new Error("Cannot identify fraud suspension users");
+  }
   let resolvedCount = 0;
 
   for (const userId of userIds) {
@@ -555,6 +560,15 @@ export async function POST(req: NextRequest) {
       { error: "Webhook signature verification failed" },
       { status: 400 },
     );
+  }
+
+  // Stripe can deliver one event to multiple endpoints. Only the owning
+  // handler may consume its ID in the shared webhook ledger.
+  if (
+    event.type !== "radar.early_fraud_warning.created" &&
+    event.type !== "charge.dispute.created"
+  ) {
+    return NextResponse.json({ received: true });
   }
 
   const sourceId =

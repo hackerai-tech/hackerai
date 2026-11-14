@@ -66,6 +66,16 @@ const WEBHOOK_LOG_CONTEXT = {
   webhook: "subscription",
   route: "/api/subscription/webhook",
 };
+const SUBSCRIPTION_WEBHOOK_EVENT_TYPES = new Set<string>([
+  "checkout.session.completed",
+  "invoice.paid",
+  "invoice.payment_failed",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "customer.updated",
+  "refund.created",
+  "refund.updated",
+]);
 const ENTITLED_SUBSCRIPTION_STATUSES = new Set<Stripe.Subscription.Status>([
   "active",
   "trialing",
@@ -2843,6 +2853,12 @@ async function handleSubscriptionWebhook(
     event.type === "checkout.session.completed" &&
     (event.data.object as Stripe.Checkout.Session).mode !== "subscription"
   ) {
+    return NextResponse.json({ received: true });
+  }
+
+  // Other Stripe endpoints can receive the same event ID. An event this route
+  // does not handle must not consume their shared idempotency record.
+  if (!SUBSCRIPTION_WEBHOOK_EVENT_TYPES.has(event.type)) {
     return NextResponse.json({ received: true });
   }
 

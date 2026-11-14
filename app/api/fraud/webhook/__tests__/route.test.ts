@@ -171,6 +171,41 @@ describe("POST /api/fraud/webhook", () => {
     jest.restoreAllMocks();
   });
 
+  it("leaves subscription events for their own endpoint", async () => {
+    mockConstructEvent.mockReturnValueOnce({
+      id: "evt_invoice",
+      type: "invoice.paid",
+      data: { object: { id: "in_test" } },
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockRetrieveCharge).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unmapped customer retryable without completing or cleaning up", async () => {
+    mockResolveUserIdsFromCustomer.mockResolvedValueOnce({
+      userIds: [],
+      orgId: null,
+      reason: "missing_workos_organization_metadata",
+    } as never);
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.markFraudWebhookReviewRequired",
+      expect.any(Object),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.markFraudCleanupStarted",
+      expect.any(Object),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
+    expect(mockUpdateCustomer).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["claim_held", 503],
     ["already_processed", 200],
