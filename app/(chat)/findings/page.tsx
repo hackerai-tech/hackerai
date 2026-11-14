@@ -187,15 +187,52 @@ const getFindingsHref = ({
   return query ? `/findings?${query}` : "/findings";
 };
 
+// Next or another URL writer can replace custom history state during reload.
+// Keep only the ownership bit for this exact browser entry, scoped to the tab.
+// Older browsers or blocked storage fall back to the classic history marker.
+const findingEntryStorageKey = () => {
+  const key = window.navigation?.currentEntry?.key;
+  return key ? `hackerai:findings:entry:${key}` : null;
+};
+
+const ownsFindingEntry = () => {
+  if (window.history.state?.hackeraiFindingEntry === true) return true;
+  try {
+    const key = findingEntryStorageKey();
+    return key !== null && window.sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+};
+
 const updateFindingsHistory = (
   href: string,
   method: "push" | "replace" = "replace",
 ) => {
+  const state = { ...window.history.state };
+  // Let Next's patched history API copy its internal state and update URL
+  // hooks. Passing its internal markers would bypass that synchronization.
+  delete state.__NA;
+  delete state._N;
+  const owned =
+    new URL(href, window.location.origin).searchParams.has("finding") &&
+    (method === "push" || ownsFindingEntry());
+  if (owned) state.hackeraiFindingEntry = true;
+  else delete state.hackeraiFindingEntry;
   window.history[method === "push" ? "pushState" : "replaceState"](
-    null,
+    state,
     "",
     href,
   );
+  try {
+    const key = findingEntryStorageKey();
+    if (key) {
+      if (owned) window.sessionStorage.setItem(key, "1");
+      else window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Storage is optional; normal history navigation still works without it.
+  }
 };
 
 function FilterSelect<T extends string>({
@@ -252,6 +289,7 @@ function FindingsPageContent() {
     () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
+  const closingFindingHistory = useRef(false);
   const findingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
@@ -306,6 +344,7 @@ function FindingsPageContent() {
 
   useEffect(() => {
     const syncFromBrowserHistory = () => {
+      closingFindingHistory.current = false;
       const params = new URLSearchParams(window.location.search);
       if (params.has("chat")) {
         params.delete("chat");
@@ -542,6 +581,15 @@ function FindingsPageContent() {
   };
 
   const clearSelectedFinding = () => {
+    if (closingFindingHistory.current) return;
+    // Consume the entry opened from this list. A deep link has no owned list
+    // entry behind it, so close it in place instead. State survives reload and
+    // Forward, unlike an in-memory "opened here" flag.
+    if (ownsFindingEntry()) {
+      closingFindingHistory.current = true;
+      window.history.back();
+      return;
+    }
     setSelectedFindingId(null);
     updateFindingsHistory(getHref({ findingId: null }));
   };

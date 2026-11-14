@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentRetestOutcome } from "@/lib/findings/agent-retest";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import type {
@@ -22,82 +21,39 @@ import {
   type OutcomeTone,
 } from "./FindingAssessment";
 import { FindingRelativeTime } from "./FindingTime";
-
-const POLL_INTERVAL_MS = 5_000;
+import {
+  useFindingHistoryState,
+  type FindingHistorySource,
+} from "./useFindingHistoryState";
 
 export type EnabledRetestState = Extract<FindingRetestState, { enabled: true }>;
 
-async function fetchRetestState(
-  findingId: string,
-): Promise<FindingRetestState | null> {
-  try {
-    const response = await fetch(
-      `/api/finding-retests?findingId=${encodeURIComponent(findingId)}`,
-      { cache: "no-store" },
-    );
-    return response.ok ? ((await response.json()) as FindingRetestState) : null;
-  } catch {
-    return null;
-  }
-}
+const RETEST_HISTORY: FindingHistorySource<EnabledRetestState> = {
+  load: async (findingId) => {
+    try {
+      const response = await fetch(
+        `/api/finding-retests?findingId=${encodeURIComponent(findingId)}`,
+        { cache: "no-store" },
+      );
+      return response.ok
+        ? ((await response.json()) as FindingRetestState)
+        : null;
+    } catch {
+      return null;
+    }
+  },
+  isRunning: (state) =>
+    state.retests.some((retest) => retest.status === "running"),
+};
 
 /**
  * Retest history for a finding. `undefined` while loading; a failed first read
  * resolves to disabled so the report keeps its existing follow-up actions.
- * Polls only while a real Agent run is recorded as running.
  */
-export function useFindingRetestState(
+export const useFindingRetestState = (
   findingId: string | undefined,
-): FindingRetestState | undefined {
-  const [loaded, setLoaded] = useState<{
-    findingId: string;
-    state: FindingRetestState;
-  } | null>(null);
-  const readSequence = useRef(0);
-
-  // A failed refresh keeps the last good state for the same finding.
-  const read = useCallback((id: string, isCurrent: () => boolean) => {
-    const sequence = ++readSequence.current;
-    return fetchRetestState(id).then((next) => {
-      if (!isCurrent() || sequence !== readSequence.current) return;
-      setLoaded((prev) => ({
-        findingId: id,
-        state:
-          next ??
-          (prev?.findingId === id ? prev.state : { enabled: false as const }),
-      }));
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!findingId) return;
-    let current = true;
-    void read(findingId, () => current);
-    return () => {
-      current = false;
-    };
-  }, [findingId, read]);
-
-  const state =
-    loaded && loaded.findingId === findingId ? loaded.state : undefined;
-  const running =
-    state?.enabled === true &&
-    state.retests.some((retest) => retest.status === "running");
-  useEffect(() => {
-    if (!findingId || !running) return;
-    let current = true;
-    const timer = setInterval(
-      () => void read(findingId, () => current),
-      POLL_INTERVAL_MS,
-    );
-    return () => {
-      current = false;
-      clearInterval(timer);
-    };
-  }, [findingId, running, read]);
-
-  return state;
-}
+): FindingRetestState | undefined =>
+  useFindingHistoryState(RETEST_HISTORY, findingId);
 
 export const RETEST_OUTCOMES: Record<
   AgentRetestOutcome,

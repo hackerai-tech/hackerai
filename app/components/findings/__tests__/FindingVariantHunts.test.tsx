@@ -282,7 +282,7 @@ describe("useFindingHuntState", () => {
     await waitFor(() => expect(result.current).toEqual({ enabled: false }));
   });
 
-  it("polls only while running and keeps the last good state on a failed refresh", async () => {
+  it("polls every 5s while running and keeps the last good state on a failed refresh", async () => {
     jest.useFakeTimers();
     const running = state([hunt({ status: "running", candidates: [] })]);
     fetchMock
@@ -319,9 +319,9 @@ describe("useFindingHuntState", () => {
     );
     await act(async () => {});
     expect(result.current).toEqual(idle);
-    // Idle findings don't poll.
+    // Idle findings don't poll at the running cadence.
     await act(async () => {
-      await jest.advanceTimersByTimeAsync(30_000);
+      await jest.advanceTimersByTimeAsync(25_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
 

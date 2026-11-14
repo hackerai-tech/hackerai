@@ -126,6 +126,9 @@ export function FindingExportStatus({
   );
 }
 
+/** Keys that open a Radix dropdown trigger. */
+const MENU_OPEN_KEYS = new Set(["Enter", " ", "ArrowDown"]);
+
 const FormatItems = ({ exporter }: { exporter: FindingExporter }) =>
   EXPORT_FORMATS.map((item) => (
     <DropdownMenuItem
@@ -233,13 +236,24 @@ export function FindingExportMenu({
   return (
     <>
       <DropdownMenu>
+        {/* While busy the trigger stays focusable, so the closing menu can
+            return focus to it, but it doesn't open the menu. */}
         <DropdownMenuTrigger asChild>
           <Button
             type="button"
             variant={variant}
             size="sm"
-            disabled={disabled || isBusy}
+            disabled={disabled}
+            aria-disabled={isBusy || undefined}
             aria-busy={isBusy || undefined}
+            onPointerDown={(event) => {
+              if (isBusy) event.preventDefault();
+            }}
+            onKeyDown={(event) => {
+              if (isBusy && MENU_OPEN_KEYS.has(event.key))
+                event.preventDefault();
+            }}
+            className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
           >
             <Download className="size-4" aria-hidden="true" />
             {isBusy ? "Exporting…" : label}
