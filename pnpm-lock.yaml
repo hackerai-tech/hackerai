@@ -91,7 +91,7 @@ patchedDependencies:
     hash: 2693ca809ba5b425c3b8ef33ed7ef7ae532541ec0be9636fb82132f82a7ed4d1
     path: patches/@trigger.dev__sdk@4.7.7.patch
   '@workos-inc/authkit-nextjs@4.3.2':
-    hash: 714a464931cdaf5df8a612462ffec8d4d6014be4eeb410e78a318c2a0954f6e1
+    hash: 8a4621d0bd1523d2f0fb137d7779d9ca7b28c097bf9515f3d356e6df925e6702
     path: patches/@workos-inc__authkit-nextjs@4.3.2.patch
   brace-expansion@5.0.12:
     hash: c21475a6dddf7d6e51aea14c31c14bb4cd80eeafb6f8ea8b669cb8985d98429e
@@ -247,7 +247,7 @@ importers:
         version: 3.3.20
       '@workos-inc/authkit-nextjs':
         specifier: 4.3.2
-        version: 4.3.2(patch_hash=714a464931cdaf5df8a612462ffec8d4d6014be4eeb410e78a318c2a0954f6e1)(@workos-inc/node@10.14.0)(next@16.4.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)
+        version: 4.3.2(patch_hash=8a4621d0bd1523d2f0fb137d7779d9ca7b28c097bf9515f3d356e6df925e6702)(@workos-inc/node@10.14.0)(next@16.4.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)
       '@workos-inc/node':
         specifier: ^10.14.0
         version: 10.14.0
@@ -12224,7 +12224,7 @@ snapshots:
 
   '@workos-inc/authkit-js@0.20.0': {}
 
-  '@workos-inc/authkit-nextjs@4.3.2(patch_hash=714a464931cdaf5df8a612462ffec8d4d6014be4eeb410e78a318c2a0954f6e1)(@workos-inc/node@10.14.0)(next@16.4.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)':
+  '@workos-inc/authkit-nextjs@4.3.2(patch_hash=8a4621d0bd1523d2f0fb137d7779d9ca7b28c097bf9515f3d356e6df925e6702)(@workos-inc/node@10.14.0)(next@16.4.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(typescript@6.0.3)':
     dependencies:
       '@sindresorhus/fnv1a': 3.1.0
       '@workos-inc/node': 10.14.0
