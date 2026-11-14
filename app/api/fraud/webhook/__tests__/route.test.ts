@@ -62,6 +62,9 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     extraUsage: {
       claimWebhookProcessing: "extraUsage.claimWebhookProcessing",
+      markFraudCleanupStarted: "extraUsage.markFraudCleanupStarted",
+      markFraudWebhookReviewRequired:
+        "extraUsage.markFraudWebhookReviewRequired",
       markWebhookHandled: "extraUsage.markWebhookHandled",
       finalizeWebhookProcessing: "extraUsage.finalizeWebhookProcessing",
     },
@@ -154,6 +157,9 @@ describe("POST /api/fraud/webhook", () => {
       if (operation === "extraUsage.claimWebhookProcessing") {
         return { state: "acquired" };
       }
+      if (operation === "extraUsage.markFraudCleanupStarted") {
+        return { allowed: true };
+      }
       return undefined;
     });
 
@@ -192,6 +198,8 @@ describe("POST /api/fraud/webhook", () => {
       if (operation === "extraUsage.claimWebhookProcessing") {
         return { state: "acquired" };
       }
+      if (operation === "extraUsage.markFraudCleanupStarted")
+        return { allowed: true };
       if (operation === "extraUsage.finalizeWebhookProcessing") {
         throw new Error("transient storage failure");
       }
@@ -220,6 +228,8 @@ describe("POST /api/fraud/webhook", () => {
         claims += 1;
         return { state: claims === 1 ? "acquired" : "handler_completed" };
       }
+      if (operation === "extraUsage.markFraudCleanupStarted")
+        return { allowed: true };
       if (
         operation === "extraUsage.finalizeWebhookProcessing" &&
         ++finalizations === 1
@@ -250,6 +260,8 @@ describe("POST /api/fraud/webhook", () => {
     mockConvexMutation.mockImplementation(async (operation: unknown) => {
       if (operation === "extraUsage.claimWebhookProcessing")
         return { state: "acquired" };
+      if (operation === "extraUsage.markFraudCleanupStarted")
+        return { allowed: true };
       if (operation === "extraUsage.markWebhookHandled")
         throw new Error("storage failure");
       return undefined;
@@ -294,6 +306,64 @@ describe("POST /api/fraud/webhook", () => {
       "extraUsage.markWebhookHandled",
       expect.any(Object),
     );
+  });
+
+  it("queues a shared customer for review when one member was restored", async () => {
+    mockResolveUserIdsFromCustomer.mockResolvedValue({
+      userIds: ["held_user", "restored_user"],
+      orgId: "org_opaque",
+    } as never);
+    mockConvexMutation.mockImplementation(
+      async (operation: unknown, args: any) => {
+        if (operation === "extraUsage.claimWebhookProcessing")
+          return { state: "acquired" };
+        if (operation === "userSuspensions.upsertActive")
+          return args.userId === "restored_user" ? null : "suspension_id";
+        return undefined;
+      },
+    );
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ reviewRequired: true });
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.markFraudWebhookReviewRequired",
+      expect.objectContaining({
+        customerId: "cus_deleted",
+        reason: "mixed_support_resolution",
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.markFraudCleanupStarted",
+      expect.any(Object),
+    );
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockListPaymentMethods).not.toHaveBeenCalled();
+    expect(mockUpdateCustomer).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat cleanup when the completion record fails", async () => {
+    let claims = 0;
+    mockConvexMutation.mockImplementation(async (operation: unknown) => {
+      if (operation === "extraUsage.claimWebhookProcessing")
+        return { state: ++claims === 1 ? "acquired" : "review_required" };
+      if (operation === "extraUsage.markFraudCleanupStarted")
+        return { allowed: true };
+      if (operation === "extraUsage.markWebhookHandled")
+        throw new Error("storage failure");
+      return undefined;
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeRequest())).status).toBe(500);
+    expect(mockRetrieveCharge).toHaveBeenCalledTimes(1);
+    const retry = await POST(makeRequest());
+    expect(retry.status).toBe(503);
+    expect(await retry.json()).toMatchObject({ reviewRequired: true });
+    expect(mockRetrieveCharge).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCustomer).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a failed customer lookup retryable before cleanup", async () => {

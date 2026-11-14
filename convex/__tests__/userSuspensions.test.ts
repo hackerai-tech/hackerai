@@ -61,8 +61,12 @@ type TokenRow = {
 
 type WebhookRow = {
   _id: string;
-  source_id: string;
-  status: "pending" | "handled" | "completed";
+  source_id?: string;
+  event_id?: string;
+  status:
+    "pending" | "cleanup_started" | "review_required" | "handled" | "completed";
+  claimed_at?: number;
+  review_customer_id?: string;
 };
 
 function makeMockCtx(
@@ -86,18 +90,41 @@ function makeMockCtx(
   const indexed = (table: string) => (indexName: string, predicate: any) => {
     withIndex(indexName, predicate);
     const filters: Record<string, unknown> = {};
+    const ranges: Array<(row: any) => boolean> = [];
+    let postFilter: ((q: any) => boolean) | null = null;
     const q = {
       eq: jest.fn((field: string, value: unknown) => {
         filters[field] = value;
+        return q;
+      }),
+      gte: jest.fn((field: string, value: any) => {
+        ranges.push((row) => row[field] >= value);
+        return q;
+      }),
+      lt: jest.fn((field: string, value: any) => {
+        ranges.push((row) => row[field] < value);
         return q;
       }),
     };
     predicate(q);
 
     const filteredRows = () =>
-      tables[table].filter((row) => matchesFilters(row, filters));
+      tables[table].filter(
+        (row) =>
+          matchesFilters(row, filters) &&
+          ranges.every((range) => range(row)) &&
+          (!postFilter ||
+            postFilter({
+              field: (name: string) => name,
+              gte: (field: string, value: any) => row[field] >= value,
+            })),
+      );
 
-    return {
+    const result = {
+      filter: jest.fn((predicate: (q: any) => boolean) => {
+        postFilter = predicate;
+        return result;
+      }),
       order: jest.fn((direction: "asc" | "desc") => ({
         collect: async () => {
           const sorted = [...filteredRows()].sort(
@@ -117,6 +144,7 @@ function makeMockCtx(
       first: async () => filteredRows()[0] ?? null,
       take: async (count: number) => filteredRows().slice(0, count),
     };
+    return result;
   };
 
   const ctx: any = {
@@ -314,6 +342,12 @@ describe("userSuspensions", () => {
     ).rejects.toThrow("Fraud webhook is still processing");
     expect(rows[0].status).toBe("active");
 
+    webhook.status = "review_required";
+    webhook.review_customer_id = "cus_123";
+    await expect(
+      (resolveBySource as any).handler(ctx, resolveArgs),
+    ).rejects.toThrow("Fraud webhook requires reconciliation");
+
     webhook.status = "handled";
     expect(await (resolveBySource as any).handler(ctx, resolveArgs)).toEqual({
       resolved: true,
@@ -326,6 +360,57 @@ describe("userSuspensions", () => {
     ).toBeNull();
     expect(rows[0].status).toBe("resolved");
     expect(rows[0].resolved_at).toBe(10_000);
+  });
+
+  it("ignores an unrelated WorkOS claim but fences a live legacy Stripe claim", async () => {
+    const { resolveBySource } = await import("../userSuspensions");
+    const suspension: SuspensionRow = {
+      _id: "id-1",
+      user_id: "user_123",
+      status: "active",
+      category: "dispute_fraudulent",
+      source: "stripe",
+      source_id: "dp_123",
+      stripe_customer_id: "cus_123",
+      created_at: 5_000,
+      updated_at: 5_000,
+    };
+    const args = {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+      sourceId: "dp_123",
+    };
+    const workos = makeMockCtx(
+      [suspension],
+      [],
+      [
+        {
+          _id: "workos-1",
+          event_id: "event_0123456789ABCDEFGHJKMNPQRS",
+          status: "pending",
+          claimed_at: 9_000,
+        },
+      ],
+    );
+    expect(await (resolveBySource as any).handler(workos.ctx, args)).toEqual({
+      resolved: true,
+    });
+
+    const stripe = makeMockCtx(
+      [{ ...suspension }],
+      [],
+      [
+        {
+          _id: "stripe-1",
+          event_id: "evt_legacy",
+          status: "pending",
+          claimed_at: 9_000,
+        },
+      ],
+    );
+    await expect(
+      (resolveBySource as any).handler(stripe.ctx, args),
+    ).rejects.toThrow("A legacy webhook is still processing");
   });
 
   it("returns the newest active suspension for a user", async () => {

@@ -158,13 +158,57 @@ export const resolveBySource = mutation({
     // perform external cleanup. This index read conflicts with a new claim,
     // so support resolution and claim creation are ordered by Convex.
     if (suspension.source === "stripe") {
-      const pending = await ctx.db
+      for (const status of [
+        "pending",
+        "cleanup_started",
+        "review_required",
+      ] as const) {
+        const active = await ctx.db
+          .query("processed_webhooks")
+          .withIndex("by_source_id_and_status", (q) =>
+            q.eq("source_id", args.sourceId).eq("status", status),
+          )
+          .first();
+        if (active)
+          throw new Error(
+            status === "review_required"
+              ? "Fraud webhook requires reconciliation"
+              : "Fraud webhook is still processing",
+          );
+      }
+
+      if (suspension.stripe_customer_id) {
+        for (const status of ["cleanup_started", "review_required"] as const) {
+          const customerCleanup = await ctx.db
+            .query("processed_webhooks")
+            .withIndex("by_review_customer_id_and_status", (q) =>
+              q
+                .eq("review_customer_id", suspension.stripe_customer_id)
+                .eq("status", status),
+            )
+            .first();
+          if (customerCleanup)
+            throw new Error("Customer-wide fraud cleanup needs reconciliation");
+        }
+      }
+
+      // Pre-deployment pending claims have no source_id. A running old
+      // handler can still alter this shared Stripe customer; after the
+      // ten-minute claim window, a retry goes to manual review instead.
+      const legacy = await ctx.db
         .query("processed_webhooks")
-        .withIndex("by_source_id_and_status", (q) =>
-          q.eq("source_id", args.sourceId).eq("status", "pending"),
+        .withIndex("by_source_status_event_id", (q) =>
+          q
+            .eq("source_id", undefined)
+            .eq("status", "pending")
+            .gte("event_id", "evt_")
+            .lt("event_id", "evt`"),
+        )
+        .filter((q) =>
+          q.gte(q.field("claimed_at"), Date.now() - 10 * 60 * 1000),
         )
         .first();
-      if (pending) throw new Error("Fraud webhook is still processing");
+      if (legacy) throw new Error("A legacy webhook is still processing");
     }
 
     const now = Date.now();

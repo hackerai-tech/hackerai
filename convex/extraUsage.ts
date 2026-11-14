@@ -210,7 +210,7 @@ async function upsertExtraUsagePurchase(
 /**
  * Internal mutation: purge processed_webhooks rows older than cutoff.
  * Stripe only retries within ~72h, so retention of a week is plenty.
- * Iterates oldest-first via the implicit by_creation_time ordering.
+ * Iterates completed rows by processed time; unfinished reviews are retained.
  */
 export const purgeOldProcessedWebhooks = internalMutation({
   args: {
@@ -221,14 +221,18 @@ export const purgeOldProcessedWebhooks = internalMutation({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
 
-    const rows = await ctx.db
-      .query("processed_webhooks")
-      .order("asc")
-      .take(limit);
-
     let deletedCount = 0;
-    for (const row of rows) {
-      if (row.processed_at < args.cutoffTimeMs) {
+    // Only terminal rows are purged. Indexing by status and processed time
+    // avoids a queue of retained reviews starving cleanup of newer rows.
+    for (const status of [undefined, "completed"] as const) {
+      if (deletedCount >= limit) break;
+      const rows = await ctx.db
+        .query("processed_webhooks")
+        .withIndex("by_status_and_processed_at", (q) =>
+          q.eq("status", status).lt("processed_at", args.cutoffTimeMs),
+        )
+        .take(limit - deletedCount);
+      for (const row of rows) {
         await ctx.db.delete(row._id);
         deletedCount++;
       }
@@ -312,6 +316,7 @@ export const claimWebhookProcessing = mutation({
     serviceKey: v.string(),
     eventId: v.string(),
     sourceId: v.optional(v.string()),
+    claimToken: v.optional(v.string()),
   },
   returns: v.object({
     state: v.union(
@@ -319,10 +324,15 @@ export const claimWebhookProcessing = mutation({
       v.literal("already_processed"),
       v.literal("handler_completed"),
       v.literal("claim_held"),
+      v.literal("review_required"),
     ),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    if (args.sourceId && !args.claimToken) {
+      throw new Error("Fraud webhook claim requires an owner token");
+    }
 
     const now = Date.now();
     // .unique() throws if duplicates exist, surfacing any state-machine
@@ -339,6 +349,7 @@ export const claimWebhookProcessing = mutation({
         processed_at: now,
         status: "pending",
         claimed_at: now,
+        claim_token: args.claimToken,
       });
       return { state: "acquired" as const };
     }
@@ -354,12 +365,17 @@ export const claimWebhookProcessing = mutation({
     ) {
       throw new Error("Webhook source changed for existing event");
     }
-    if (args.sourceId && !existing.source_id && status !== "completed") {
+    const hadSourceId = Boolean(existing.source_id);
+    const hadClaimToken = Boolean(existing.claim_token);
+    if (args.sourceId && !hadSourceId && status !== "completed") {
       await ctx.db.patch(existing._id, { source_id: args.sourceId });
     }
 
     if (status === "completed") {
       return { state: "already_processed" as const };
+    }
+    if (status === "review_required") {
+      return { state: "review_required" as const };
     }
     if (status === "handled") {
       return { state: "handler_completed" as const };
@@ -370,12 +386,129 @@ export const claimWebhookProcessing = mutation({
       return { state: "claim_held" as const };
     }
 
-    // Stale claim — take it over so Stripe's retry can drive completion.
+    // A prior fraud attempt may already have changed Stripe. Once it reached
+    // customer cleanup, or predates source/owner fencing, require manual
+    // reconciliation instead of replaying customer-wide side effects.
+    if (
+      args.sourceId &&
+      (status === "cleanup_started" || !hadSourceId || !hadClaimToken)
+    ) {
+      await ctx.db.patch(existing._id, {
+        status: "review_required",
+        review_reason: "ambiguous_previous_attempt",
+        processed_at: now,
+      });
+      return { state: "review_required" as const };
+    }
+
+    // Stale pre-cleanup claim — no customer-wide Stripe effects have started.
     await ctx.db.patch(existing._id, {
       status: "pending",
       claimed_at: now,
+      claim_token: args.claimToken,
     });
     return { state: "acquired" as const };
+  },
+});
+
+/** Record the transition before any customer-wide Stripe cleanup starts. */
+export const markFraudCleanupStarted = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    claimToken: v.string(),
+    customerId: v.string(),
+  },
+  returns: v.object({ allowed: v.boolean() }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (
+      existing?.status !== "pending" ||
+      existing.claim_token !== args.claimToken
+    )
+      throw new Error("Fraud webhook claim no longer owns cleanup");
+    const restored = await ctx.db
+      .query("user_suspensions")
+      .withIndex("by_customer_and_status", (q) =>
+        q.eq("stripe_customer_id", args.customerId).eq("status", "resolved"),
+      )
+      .first();
+    if (restored) return { allowed: false };
+    await ctx.db.patch(existing._id, {
+      status: "cleanup_started",
+      review_customer_id: args.customerId,
+    });
+    return { allowed: true };
+  },
+});
+
+/** Leave an ambiguous delivery in a durable queue for support reconciliation. */
+export const markFraudWebhookReviewRequired = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    claimToken: v.string(),
+    customerId: v.string(),
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (
+      (existing?.status !== "pending" &&
+        existing?.status !== "cleanup_started") ||
+      existing.claim_token !== args.claimToken
+    )
+      throw new Error("Fraud webhook claim no longer owns review");
+    await ctx.db.patch(existing._id, {
+      status: "review_required",
+      review_customer_id: args.customerId,
+      review_reason: args.reason,
+      processed_at: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Support calls this only after reconciling the Stripe customer and hold. */
+export const completeFraudWebhookReview = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+    reviewedBy: v.string(),
+    resolution: v.union(
+      v.literal("cleanup_completed"),
+      v.literal("restoration_preserved"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    if (!args.reviewedBy.trim())
+      throw new Error("Reviewer identity is required");
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .unique();
+    if (existing?.status !== "review_required")
+      throw new Error("Fraud webhook is not awaiting manual review");
+    const now = Date.now();
+    await ctx.db.patch(existing._id, {
+      status: "completed",
+      review_resolution: args.resolution,
+      reviewed_by: args.reviewedBy,
+      reviewed_at: now,
+      processed_at: now,
+    });
+    return null;
   },
 });
 
@@ -384,6 +517,7 @@ export const markWebhookHandled = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    claimToken: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -394,11 +528,21 @@ export const markWebhookHandled = mutation({
       .unique();
     if (!existing)
       throw new Error("Webhook claim missing before handler completion");
-    if (existing.status === "pending") {
+    if (existing.claim_token !== args.claimToken)
+      throw new Error("Fraud webhook claim was superseded");
+    if (
+      existing.status === "pending" ||
+      existing.status === "cleanup_started"
+    ) {
       await ctx.db.patch(existing._id, {
         status: "handled",
         processed_at: Date.now(),
       });
+    } else if (
+      existing.status !== "handled" &&
+      existing.status !== "completed"
+    ) {
+      throw new Error("Fraud webhook is not ready for completion");
     }
     return null;
   },
@@ -415,6 +559,7 @@ export const finalizeWebhookProcessing = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    requireHandled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -427,6 +572,15 @@ export const finalizeWebhookProcessing = mutation({
       .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
       .unique();
 
+    if (existing?.status === "review_required")
+      throw new Error("Fraud webhook requires manual reconciliation");
+    if (
+      args.requireHandled &&
+      existing?.status !== "handled" &&
+      existing?.status !== "completed"
+    ) {
+      throw new Error("Fraud webhook handler completion was not recorded");
+    }
     if (existing) {
       await ctx.db.patch(existing._id, {
         status: "completed",
