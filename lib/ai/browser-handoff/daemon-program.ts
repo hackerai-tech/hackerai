@@ -95,6 +95,16 @@ export const BROWSER_DAEMON_DEADLINE_PHASES = [
   "partial_response",
 ] as const;
 
+// Wire tuple r1 code is the index. Which check refused the daemon's first
+// response line at exit5; never its data, error, body or ID, and not a cause.
+export const BROWSER_DAEMON_RESPONSE_VALIDATIONS = [
+  "invalid_json",
+  "invalid_envelope",
+  "id_mismatch",
+  "success_false",
+  "success_other",
+] as const;
+
 export const BROWSER_DAEMON_PROGRAM = String.raw`
 const fs = require('node:fs');
 const net = require('node:net');
@@ -416,6 +426,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.r1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.r1;
     if (value?.dv !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.dv;
     if (value?.k1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.k1;
     if (value?.os1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.os1;
@@ -474,11 +485,15 @@ try {
       if (buffer.length > 2 * 1024 * 1024) return finish(4);
       const newline = buffer.indexOf('\n');
       if (newline < 0) return;
+      // Every refusal keeps exit5; r1 records only which check refused it. Only
+      // the parse can throw before finish marks done, so catch remains invalid_json.
       try {
         const response = JSON.parse(buffer.slice(0, newline));
-        if (response.id !== id || response.success !== true) return finish(5);
+        const refused = response === null || typeof response !== 'object' || Array.isArray(response) ? 1 :
+          response.id !== id ? 2 : response.success === false ? 3 : response.success !== true ? 4 : -1;
+        if (refused >= 0) return finish(5, { r1: [1, refused] });
         finish(0, response);
-      } catch { finish(5); }
+      } catch { finish(5, { r1: [1, 0] }); }
     });
     socket.on('error', () => finish(6));
     socket.on('close', () => { if (!done) finish(6); });
