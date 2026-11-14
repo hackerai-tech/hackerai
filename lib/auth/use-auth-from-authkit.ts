@@ -17,6 +17,9 @@ import {
 } from "@/lib/auth/shared-token";
 import { isCrossTabTokenSharingEnabled } from "@/lib/auth/feature-flags";
 import {
+  advanceConvexAuthTokenDecisionContext,
+  beginConvexAuthTokenDecision,
+  createConvexAuthTokenDecisionOwner,
   deriveConvexAuthProviderState,
   publishConvexAuthProviderState,
 } from "@/lib/auth/convex-auth-diagnostics";
@@ -76,9 +79,13 @@ export function useAuthFromAuthKit(
   const hasResolvedOrgRef = useRef(false);
   const authContext = JSON.stringify([user?.id, sessionId, organizationId]);
   const authContextRef = useRef(authContext);
+  // Diagnostics only: this provider's stable token-decision owner. It is never
+  // set, so it adds no updates, and is published only with committed state.
+  const [tokenDecisions] = useState(createConvexAuthTokenDecisionOwner);
   useLayoutEffect(() => {
     authContextRef.current = authContext;
-  }, [authContext]);
+    advanceConvexAuthTokenDecisionContext(tokenDecisions);
+  }, [authContext, tokenDecisions]);
   const [recovery, setRecovery] = useState<{
     context: string;
     failedToken: string | undefined;
@@ -91,8 +98,8 @@ export function useAuthFromAuthKit(
     tokenRecovering: isRecovering,
   });
   useLayoutEffect(
-    () => publishConvexAuthProviderState(providerState),
-    [providerState],
+    () => publishConvexAuthProviderState(providerState, tokenDecisions),
+    [providerState, tokenDecisions],
   );
   const sessionRecoveryRef = useRef<{
     userId: string;
@@ -202,20 +209,38 @@ export function useAuthFromAuthKit(
         return;
       }
       pending = true;
+      const settle = beginConvexAuthTokenDecision(
+        tokenDecisions,
+        "recovery",
+        authContextRef.current === recovery?.context,
+      );
       try {
         // AuthKit checks JWT expiry and deduplicates concurrent wake refreshes.
         const token = await getAccessToken();
-        if (cancelled || authContextRef.current !== recovery?.context) return;
+        if (cancelled || authContextRef.current !== recovery?.context) {
+          settle("context_superseded");
+          return;
+        }
         if (!token) await reconcileMissingToken();
-        if (cancelled || authContextRef.current !== recovery?.context) return;
+        if (cancelled || authContextRef.current !== recovery?.context) {
+          settle("context_superseded");
+          return;
+        }
         if (token) {
+          settle("token");
           accessTokenRef.current = token;
           lastRefreshErrorAt.current = 0;
           setRecovery(null);
           return;
         }
+        settle("null");
       } catch {
         // A transport/provider failure is not evidence of sign-out.
+        settle(
+          cancelled || authContextRef.current !== recovery?.context
+            ? "context_superseded"
+            : "exception_fallback",
+        );
       } finally {
         pending = false;
       }
@@ -247,13 +272,20 @@ export function useAuthFromAuthKit(
     accessToken,
     getAccessToken,
     reconcileMissingToken,
+    tokenDecisions,
   ]);
 
   const fetchAccessToken = useCallback(
     async ({
       forceRefreshToken,
     }: { forceRefreshToken?: boolean } = {}): Promise<string | null> => {
+      const settle = beginConvexAuthTokenDecision(
+        tokenDecisions,
+        forceRefreshToken ? "forced_refresh" : "ordinary",
+        authContextRef.current === authContext,
+      );
       if (!user) {
+        settle("no_owner", false);
         return null;
       }
 
@@ -266,7 +298,9 @@ export function useAuthFromAuthKit(
             console.log(
               "[Convex Auth] Skipping refresh during cooldown, using cached token",
             );
-            return accessTokenRef.current ?? null;
+            const cached = accessTokenRef.current ?? null;
+            settle("cooldown_fallback", !!cached);
+            return cached;
           }
 
           // Use new cross-tab coordination if feature flag is enabled
@@ -292,29 +326,44 @@ export function useAuthFromAuthKit(
         } else {
           token = await getAccessToken();
         }
-        if (authContextRef.current !== authContext) return null;
+        if (authContextRef.current !== authContext) {
+          settle("context_superseded", false);
+          return null;
+        }
         if (!token) {
           const cachedToken = accessTokenRef.current;
           const recoveryFailed = await reconcileMissingToken();
-          if (authContextRef.current !== authContext) return null;
+          if (authContextRef.current !== authContext) {
+            settle("context_superseded", false);
+            return null;
+          }
           if (recoveryFailed) {
             startRecovery();
-            return cachedToken ?? null;
+            const cached = cachedToken ?? null;
+            settle("cached_fallback", !!cached);
+            return cached;
           }
           accessTokenRef.current = undefined;
         } else {
           accessTokenRef.current = token;
           sessionRecoveryRef.current = null;
         }
-        return token ?? null;
+        const returned = token ?? null;
+        settle(token ? "token" : "null", !!returned);
+        return returned;
       } catch {
-        if (authContextRef.current !== authContext) return null;
+        if (authContextRef.current !== authContext) {
+          settle("context_superseded", false);
+          return null;
+        }
         // Preserve the shell while the token is unavailable. Returning an old
         // token alone can leave Convex signed out even after AuthKit recovers.
         lastRefreshErrorAt.current = Date.now();
         startRecovery();
         console.log("[Convex Auth] Using cached token during network issues");
-        return accessTokenRef.current ?? null;
+        const cached = accessTokenRef.current ?? null;
+        settle("exception_fallback", !!cached);
+        return cached;
       }
     },
     [
@@ -326,6 +375,7 @@ export function useAuthFromAuthKit(
       reconcileMissingToken,
       startRecovery,
       authContext,
+      tokenDecisions,
     ],
   );
 

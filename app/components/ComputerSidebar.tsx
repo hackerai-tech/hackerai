@@ -63,6 +63,7 @@ import {
   getDisplayTarget,
 } from "./computer-sidebar-utils";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
+import { useS3ActionDiagnostics } from "@/app/hooks/useS3ActionDiagnostics";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
@@ -124,7 +125,10 @@ const SidebarPreviewImage = ({
   file: FilePart & { page?: number };
   label: string;
 }) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "computer_sidebar",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
     if (file.fileId && fileUrlCache) {

@@ -536,6 +536,136 @@ describe("PostHogProvider", () => {
     }
   });
 
+  it("exports only the committed owner's strict file action diagnostic", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const { before_send: beforeSend } = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => Record<string, unknown> | null;
+    };
+
+    const eventUuid = "0193a5b2-7c41-7a10-8f00-1234567890ab";
+    const retained = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+      $lib: "web",
+      $is_identified: true,
+      file_action_auth_diagnostic_version: 1,
+      caller: "computer_sidebar",
+      operation: "getFileUrlAction",
+      failure_class: "redacted_server_error",
+      convex_request_id: "0123456789abcdef",
+      request_convex_auth_state: "loading",
+      convex_auth_state: "loading",
+      request_provider_state: "token_recovery",
+      provider_state: "ready",
+      request_token_mode: "ordinary",
+      request_token_outcome: "cached_fallback",
+      request_token_result: "null",
+      request_token_age: "lt_10s",
+      request_token_context: "same",
+      token_mode: "recovery",
+      token_outcome: "token",
+      token_result: "no_result",
+      token_age: "lt_1s",
+      token_context: "same",
+      token_attempt: "changed",
+      input_relation: "same",
+      observer_scope_id: "0193a5b2-7c41-7a10-8f00-bbbbbbbbbbbb",
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const accessor = jest.fn(() => "private");
+    const enriched = (properties: Record<string, unknown>) => ({
+      uuid: eventUuid,
+      event: "file_action_auth_diagnostic",
+      properties: Object.defineProperties(
+        {
+          ...properties,
+          $current_url: "https://hackerai.co/c/private?code=private",
+          $pathname: "/c/private",
+          fileId: "private",
+          url: "https://bucket.test/private?X-Amz-Signature=private",
+          error_message: "private",
+          $set: { email: "private" },
+        },
+        { registered_content: { get: accessor, enumerable: true } },
+      ),
+      timestamp: new Date(1_794_094_000_000),
+      $set_once: { $initial_referrer: "private" },
+    });
+
+    const sanitized = beforeSend(enriched(retained));
+    expect(sanitized).toEqual({
+      uuid: eventUuid,
+      event: "file_action_auth_diagnostic",
+      properties: retained,
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toContain("private");
+    expect(accessor).not.toHaveBeenCalled();
+    // Queued under another owner, or malformed.
+    expect(
+      beforeSend(enriched({ ...retained, distinct_id: "user-other" })),
+    ).toBeNull();
+    expect(
+      beforeSend(
+        enriched({ ...retained, operation: "generateS3UploadUrlAction" }),
+      ),
+    ).toBeNull();
+    const unrelated = {
+      event: "ordinary_event",
+      properties: { retained: "value" },
+    };
+    expect(beforeSend(unrelated)).toEqual({
+      event: "ordinary_event",
+      properties: { retained: "value" },
+    });
+
+    // The private-page gate still runs before the event-specific projection.
+    try {
+      expect(
+        beforeSend({
+          ...enriched(retained),
+          properties: {
+            ...retained,
+            $current_url: "https://hackerai.co/abuse/report",
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+
+    // A retained callback after the committed owner switches, before the
+    // global analytics identity resets.
+    mockUseAuth.mockReturnValue({ user: { id: "user-b" } });
+    view.rerender(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    expect(beforeSend(enriched(retained))).toBeNull();
+    expect(beforeSend(unrelated)).toEqual({
+      event: "ordinary_event",
+      properties: { retained: "value" },
+    });
+    view.unmount();
+  });
+
   it.each([
     ["withdraws consent", false, { id: "user-123" }],
     ["switches account", true, { id: "user-b" }],

@@ -23,6 +23,11 @@ import {
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
+import {
+  beginConvexAuthTokenDecision,
+  createConvexAuthTokenDecisionOwner,
+  publishConvexAuthProviderState,
+} from "@/lib/auth/convex-auth-diagnostics";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -1882,6 +1887,467 @@ describe("native auth frontend state on authentication stops", () => {
       }
     });
   });
+
+  describe("token decision provenance", () => {
+    const UNAVAILABLE_TOKEN_FIELDS = {
+      native_auth_token_decision_version: 1,
+      native_auth_request_token_mode: "unavailable",
+      native_auth_request_token_outcome: "unavailable",
+      native_auth_request_token_result: "unavailable",
+      native_auth_request_token_age: "unavailable",
+      native_auth_request_token_context: "unavailable",
+      native_auth_token_mode: "unavailable",
+      native_auth_token_outcome: "unavailable",
+      native_auth_token_result: "unavailable",
+      native_auth_token_age: "unavailable",
+      native_auth_token_context: "unavailable",
+      native_auth_token_attempt: "unavailable",
+    };
+
+    // Every reported token field, so no unlisted or identity field can pass.
+    function tokenFields(path: "heartbeat" | "token refresh") {
+      return Object.fromEntries(
+        Object.entries(authStopCapture(path) ?? {}).filter(([key]) =>
+          /^native_auth_(request_)?token_/.test(key),
+        ),
+      );
+    }
+
+    describe.each(["heartbeat", "token refresh"] as const)("%s", (path) => {
+      it.each([
+        ["the same attempt settled", true, "same"],
+        ["a newer attempt started", false, "changed"],
+      ] as const)(
+        "reports invocation and stop decisions when %s",
+        async (_label, sameAttempt, comparison) => {
+          jest.useFakeTimers();
+          const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+          const requestAttempt = { private: "private-attempt-canary" };
+          let decision: unknown = {
+            mode: "ordinary",
+            outcome: "pending",
+            result: "pending",
+            age: "lt_1s",
+            context: "same",
+            attempt: requestAttempt,
+          };
+          const onTerminated = jest.fn();
+          const config = buildConfig({
+            onTerminated,
+            readNativeAuthProviderState: () => "ready",
+            readNativeAuthTokenDecision: () => decision,
+          });
+          const bridge = new DesktopSandboxBridge(config);
+          try {
+            await bridge.start();
+            const rejectCallback = await invokePendingCallback(path, config);
+            decision = {
+              mode: sameAttempt ? "ordinary" : "forced_refresh",
+              outcome: sameAttempt ? "token" : "cooldown_fallback",
+              result: sameAttempt ? "token" : "null",
+              age: "lt_10s",
+              context: "superseded",
+              attempt: sameAttempt ? requestAttempt : {},
+              token: "private-token-canary",
+            };
+            await rejectCallback(UNAUTHORIZED);
+
+            expect(onTerminated).toHaveBeenCalledTimes(1);
+            expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+            expect(bridge.getConnectionId()).toBeNull();
+            expect(authStopCapture(path)).toMatchObject({
+              native_auth_request_provider_state: "ready",
+              native_auth_provider_state: "ready",
+            });
+            expect(tokenFields(path)).toEqual({
+              native_auth_token_decision_version: 1,
+              native_auth_request_token_mode: "ordinary",
+              native_auth_request_token_outcome: "pending",
+              native_auth_request_token_result: "pending",
+              native_auth_request_token_age: "lt_1s",
+              native_auth_request_token_context: "same",
+              native_auth_token_mode: sameAttempt
+                ? "ordinary"
+                : "forced_refresh",
+              native_auth_token_outcome: sameAttempt
+                ? "token"
+                : "cooldown_fallback",
+              native_auth_token_result: sameAttempt ? "token" : "null",
+              native_auth_token_age: "lt_10s",
+              native_auth_token_context: "superseded",
+              native_auth_token_attempt: comparison,
+            });
+            expect(nativeAuthCaptures()).toHaveLength(1);
+            expect(
+              JSON.stringify([
+                jest.mocked(captureAuthenticatedEvent).mock.calls,
+                warn.mock.calls,
+              ]),
+            ).not.toContain("canary");
+          } finally {
+            await bridge.stop();
+            jest.useRealTimers();
+            warn.mockRestore();
+          }
+        },
+      );
+
+      it("reads the committed provider's decision when no reader is configured", async () => {
+        jest.useFakeTimers();
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const owner = createConvexAuthTokenDecisionOwner();
+        const clear = publishConvexAuthProviderState("ready", owner);
+        const config = buildConfig({ onTerminated: jest.fn() });
+        const bridge = new DesktopSandboxBridge(config);
+        try {
+          await bridge.start();
+          const settle = beginConvexAuthTokenDecision(owner, "ordinary", true);
+          const rejectCallback = await invokePendingCallback(path, config);
+          settle("token", true);
+          await rejectCallback(UNAUTHORIZED);
+
+          expect(tokenFields(path)).toEqual({
+            ...UNAVAILABLE_TOKEN_FIELDS,
+            native_auth_request_token_mode: "ordinary",
+            native_auth_request_token_outcome: "pending",
+            native_auth_request_token_result: "pending",
+            native_auth_token_result: "token",
+            // The heartbeat timer fires one interval after the attempt began.
+            native_auth_request_token_age:
+              path === "heartbeat" ? "lt_1m" : "lt_1s",
+            native_auth_request_token_context: "same",
+            native_auth_token_mode: "ordinary",
+            native_auth_token_outcome: "token",
+            native_auth_token_age: "lt_1s",
+            native_auth_token_context: "same",
+            native_auth_token_attempt: "same",
+          });
+        } finally {
+          clear();
+          await bridge.stop();
+          jest.useRealTimers();
+          warn.mockRestore();
+        }
+      });
+
+      it.each([
+        ["no committed provider", undefined],
+        [
+          "throwing",
+          () => {
+            throw new Error("private-reader-canary");
+          },
+        ],
+        ["private string", () => "private-token-canary"],
+        [
+          "malformed",
+          () => ({
+            mode: "ordinary",
+            outcome: "private-error-canary",
+            age: "lt_1s",
+            context: "same",
+            attempt: {},
+          }),
+        ],
+        [
+          "getter object",
+          () =>
+            Object.defineProperty({}, "outcome", {
+              enumerable: true,
+              get: () => {
+                throw new Error("private-getter-canary");
+              },
+            }),
+        ],
+      ])(
+        "reports an unmeasured decision for a %s reader without changing the stop",
+        async (_label, readNativeAuthTokenDecision) => {
+          jest.useFakeTimers();
+          const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+          const onTerminated = jest.fn();
+          const config = buildConfig({
+            onTerminated,
+            ...(readNativeAuthTokenDecision && { readNativeAuthTokenDecision }),
+          });
+          const bridge = new DesktopSandboxBridge(config);
+          try {
+            await bridge.start();
+            const rejectCallback = await invokePendingCallback(path, config);
+            await rejectCallback(UNAUTHORIZED);
+
+            expect(onTerminated).toHaveBeenCalledTimes(1);
+            expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+            expect(bridge.getConnectionId()).toBeNull();
+            expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+            expect(tokenFields(path)).toEqual(UNAVAILABLE_TOKEN_FIELDS);
+            expect(
+              JSON.stringify(
+                [
+                  jest.mocked(captureAuthenticatedEvent).mock.calls,
+                  warn.mock.calls,
+                ],
+                (_key, value: unknown) =>
+                  value instanceof Error
+                    ? { message: value.message, stack: value.stack }
+                    : value,
+              ),
+            ).not.toContain("canary");
+          } finally {
+            await bridge.stop();
+            jest.useRealTimers();
+            warn.mockRestore();
+          }
+        },
+      );
+    });
+  });
+
+  describe("registration before a connection ID", () => {
+    function registrationCaptures() {
+      return jest
+        .mocked(captureAuthenticatedEvent)
+        .mock.calls.filter(
+          ([event, properties]) =>
+            event === "desktop_bridge_relay_error" &&
+            properties?.source === "registration",
+        );
+    }
+
+    function withNativeVersion(version: string) {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) =>
+        cmd === "plugin:app|version" ? version : original(cmd, args);
+    }
+
+    it("records an authentication rejection and rethrows the same error", async () => {
+      withNativeVersion("0.0.74");
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = Object.assign(
+        new Error(
+          "[CONVEX M(localSandbox:connectDesktop)] [Request ID: 0123456789abcdef] Server Error: private-error-canary",
+        ),
+        UNAUTHORIZED,
+      );
+      let frontend = "owner_present_convex_authenticated";
+      let provider = "ready";
+      const requestAttempt = {};
+      let decision: unknown = {
+        mode: "ordinary",
+        outcome: "token",
+        result: "token",
+        age: "lt_10s",
+        context: "same",
+        attempt: requestAttempt,
+      };
+      const onTerminated = jest.fn();
+      const config = buildConfig({
+        onTerminated,
+        readNativeAuthFrontendState: () => frontend,
+        readNativeAuthProviderState: () => provider,
+        readNativeAuthTokenDecision: () => decision,
+        connectDesktop: jest.fn(async () => {
+          // State changes while registration is pending.
+          frontend = "owner_present_convex_loading";
+          provider = "token_recovery";
+          decision = {
+            mode: "forced_refresh",
+            outcome: "exception_fallback",
+            result: "null",
+            age: "lt_1s",
+            context: "same",
+            attempt: {},
+          };
+          throw error;
+        }),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await expect(bridge.start()).rejects.toBe(error);
+
+        expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+        expect(config.connectDesktop).toHaveBeenCalledWith({
+          connectionName: "test-host",
+          osInfo: {
+            platform: "darwin",
+            release: "24.0.0",
+            arch: "arm64",
+            hostname: "test-host",
+          },
+          capabilities: {
+            commands: true,
+            pty: true,
+            files: true,
+            operationChannels: true,
+          },
+        });
+        expect(registrationCaptures()).toEqual([
+          [
+            "desktop_bridge_relay_error",
+            {
+              connectionId: null,
+              clientSurface: "desktop_bridge",
+              state: "error",
+              reconnectAttempt: 0,
+              source: "registration",
+              errorType: "unauthenticated",
+              native_app_version: "0.0.74",
+              native_platform: "darwin",
+              native_auth_diagnostic_version: 1,
+              heartbeat_backpressure_version: 1,
+              convex_function: "localSandbox:connectDesktop",
+              convex_request_id: "0123456789abcdef",
+              native_auth_request_state_version: 1,
+              native_auth_request_frontend_state:
+                "owner_present_convex_authenticated",
+              native_auth_frontend_state: "owner_present_convex_loading",
+              native_auth_provider_state_version: 1,
+              native_auth_request_provider_state: "ready",
+              native_auth_provider_state: "token_recovery",
+              native_auth_token_decision_version: 1,
+              native_auth_request_token_mode: "ordinary",
+              native_auth_request_token_outcome: "token",
+              native_auth_request_token_result: "token",
+              native_auth_request_token_age: "lt_10s",
+              native_auth_request_token_context: "same",
+              native_auth_token_mode: "forced_refresh",
+              native_auth_token_outcome: "exception_fallback",
+              native_auth_token_result: "null",
+              native_auth_token_age: "lt_1s",
+              native_auth_token_context: "same",
+              native_auth_token_attempt: "changed",
+              telemetry_version: 2,
+              telemetry_occurrences: 1,
+              telemetry_summary: false,
+              telemetry_window_started_at: expect.any(String),
+              telemetry_last_seen_at: expect.any(String),
+            },
+          ],
+        ]);
+        // Observation only: no stop, retry, relay or second registration.
+        expect(onTerminated).not.toHaveBeenCalled();
+        expect(config.disconnectDesktop).not.toHaveBeenCalled();
+        expect(config.heartbeatDesktop).not.toHaveBeenCalled();
+        expect(mockClient.connect).not.toHaveBeenCalled();
+        expect(bridge.getConnectionId()).toBeNull();
+        expect(
+          JSON.stringify([
+            jest.mocked(captureAuthenticatedEvent).mock.calls,
+            warn.mock.calls,
+          ]),
+        ).not.toContain("canary");
+      } finally {
+        await bridge.stop();
+        warn.mockRestore();
+      }
+    });
+
+    it("omits a request ID formatted for another function", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = Object.assign(
+        new Error(
+          "[CONVEX M(localSandbox:heartbeatDesktop)] [Request ID: 0123456789abcdef] Server Error",
+        ),
+        UNAUTHORIZED,
+      );
+      const config = buildConfig({
+        connectDesktop: jest.fn().mockRejectedValue(error),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await expect(bridge.start()).rejects.toBe(error);
+        const [[, properties]] = registrationCaptures();
+        expect(properties).toMatchObject({
+          convex_function: "localSandbox:connectDesktop",
+          native_app_version: "unknown",
+          native_auth_request_frontend_state: "unavailable",
+          native_auth_request_provider_state: "unavailable",
+          native_auth_request_token_mode: "unavailable",
+          native_auth_token_attempt: "unavailable",
+        });
+        expect(properties).not.toHaveProperty("convex_request_id");
+      } finally {
+        await bridge.stop();
+        warn.mockRestore();
+      }
+    });
+
+    it("records nothing for a successful registration", async () => {
+      const config = buildConfig({
+        readNativeAuthFrontendState: () => "owner_present_convex_authenticated",
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await expect(bridge.start()).resolves.toBe("conn-123");
+        expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+        expect(registrationCaptures()).toEqual([]);
+        expect(nativeAuthCaptures()).toEqual([]);
+      } finally {
+        await bridge.stop();
+      }
+    });
+
+    it("records nothing for a non-authentication registration failure", async () => {
+      const error = new Error("offline");
+      const config = buildConfig({
+        connectDesktop: jest.fn().mockRejectedValue(error),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      try {
+        await expect(bridge.start()).rejects.toBe(error);
+        expect(config.connectDesktop).toHaveBeenCalledTimes(1);
+        expect(registrationCaptures()).toEqual([]);
+        expect(nativeAuthCaptures()).toEqual([]);
+      } finally {
+        await bridge.stop();
+      }
+    });
+
+    it.each([false, true])(
+      "records nothing for an authentication rejection after startup was stopped (restart=%s)",
+      async (restart) => {
+        let rejectConnect!: (reason: unknown) => void;
+        let enteredConnect!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enteredConnect = resolve;
+        });
+        const config = buildConfig({
+          connectDesktop: jest
+            .fn()
+            .mockImplementationOnce(
+              () =>
+                new Promise((_resolve, reject) => {
+                  rejectConnect = reject;
+                  enteredConnect();
+                }),
+            )
+            .mockResolvedValue({
+              connectionId: "new-connection",
+              centrifugoToken: createTestJwt("user-456"),
+              centrifugoWsUrl: "ws://localhost:8000/connection/websocket",
+            }),
+        });
+        const bridge = new DesktopSandboxBridge(config);
+        const first = bridge.start();
+        try {
+          await entered;
+          await bridge.stop();
+          if (restart) await bridge.start();
+          rejectConnect(UNAUTHORIZED);
+          await expect(first).rejects.toBe(UNAUTHORIZED);
+
+          expect(config.connectDesktop).toHaveBeenCalledTimes(restart ? 2 : 1);
+          expect(registrationCaptures()).toEqual([]);
+          expect(nativeAuthCaptures()).toEqual([]);
+          expect(config.disconnectDesktop).not.toHaveBeenCalled();
+          expect(bridge.getConnectionId()).toBe(
+            restart ? "new-connection" : null,
+          );
+        } finally {
+          await bridge.stop();
+        }
+      },
+    );
+  });
 });
 
 describe("heartbeat backpressure", () => {
@@ -2973,6 +3439,544 @@ describe("native desktop file relay", () => {
       message: "Write error: Permission denied",
       fileFailure: "filesystem",
     });
+  });
+});
+
+describe("file_stat receiver diagnostics", () => {
+  const PRIVATE_PATH = "C:\\Users\\private\\secret.txt";
+  const statMessage = (requestId: string) => ({
+    type: "file_stat",
+    requestId,
+    path: PRIVATE_PATH,
+    targetConnectionId: "conn-123",
+    authorizationId: "private-authorization",
+  });
+  const legacyRequest = {
+    request: { path: PRIVATE_PATH, type: "file_stat" },
+  };
+
+  /** Starts the real bridge as a given installed binary, then swaps stat-time IPC. */
+  async function startAs(
+    version: string,
+    onStat: (cmd: string) => Promise<unknown> | undefined,
+  ) {
+    mockUseAuthorizedNative = true;
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "plugin:app|version" ? version : original(cmd, args);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    mockInvokeHandler = async (cmd, args) => onStat(cmd) ?? original(cmd, args);
+    mockSubscription.publish.mockClear();
+    const { invoke } = await import("@tauri-apps/api/core");
+    (invoke as jest.Mock).mockClear();
+    return { bridge, invoke: invoke as jest.Mock };
+  }
+
+  const fileErrors = () =>
+    mockSubscription.publish.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.type === "file_error");
+
+  const reject = (message: string) => Promise.reject(new Error(message));
+  const notFound = (cmd: string) => reject(`Command ${cmd} not found`);
+  const loopbackInfo = { port: 49152, token: "PRIVATE_LOOPBACK_TOKEN" };
+
+  it.each([
+    {
+      // Production 0.0.71 Windows shape: an unclassified native rejection.
+      name: "published legacy native invoke",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? reject("PRIVATE unexpected native failure")
+          : undefined,
+      error: { message: "PRIVATE unexpected native failure" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "published_legacy_native",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
+      ipc: [["desktop_file_request", legacyRequest]],
+    },
+    {
+      name: "authorized native invoke",
+      version: "0.0.74",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? reject("Desktop operation was not authorized")
+          : undefined,
+      error: { message: "Desktop operation was not authorized" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "authorized_native",
+        nativeVersionLookup: "resolved_other",
+      },
+      ipc: [
+        [
+          "authorized_desktop_file_request",
+          {
+            authorizationId: "private-authorization",
+            message: statMessage("stat-diagnostic"),
+          },
+        ],
+      ],
+    },
+    {
+      name: "compatibility native invoke",
+      version: "0.0.0",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "desktop_file_request"
+            ? reject("PRIVATE compatibility failure")
+            : undefined,
+      error: { message: "PRIVATE compatibility failure" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "compatibility_native",
+        nativeVersionLookup: "resolved_other",
+      },
+      ipc: [
+        [
+          "authorized_desktop_file_request",
+          {
+            authorizationId: "private-authorization",
+            message: statMessage("stat-diagnostic"),
+          },
+        ],
+        ["desktop_file_request", legacyRequest],
+      ],
+    },
+    {
+      name: "loopback server info",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? reject("PRIVATE server info failure")
+            : undefined,
+      error: { message: "PRIVATE server info failure" },
+      // The native attempt that fell back to loopback consulted the lookup.
+      diagnostic: {
+        stage: "loopback_info",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
+    },
+    {
+      name: "loopback setup",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve({ port: 0, token: "" })
+            : undefined,
+      error: {
+        message: expect.stringContaining("file server is not ready"),
+        fileFailure: "legacy_http_rejected",
+      },
+      diagnostic: {
+        stage: "loopback_setup",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
+    },
+    {
+      name: "loopback request",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve(loopbackInfo)
+            : undefined,
+      loopback: () => Promise.reject(new TypeError("Load failed")),
+      error: {
+        message: expect.stringContaining("transport failed (legacy_http"),
+        fileFailure: "legacy_http_transport",
+      },
+      diagnostic: {
+        stage: "loopback_request",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
+    },
+    {
+      name: "loopback response",
+      version: "0.0.71",
+      onStat: (cmd: string) =>
+        cmd === "desktop_file_request"
+          ? notFound(cmd)
+          : cmd === "get_cmd_server_info"
+            ? Promise.resolve(loopbackInfo)
+            : undefined,
+      loopback: () =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "PRIVATE server rejection" }),
+        }),
+      error: {
+        message: "PRIVATE server rejection",
+        fileFailure: "legacy_http_rejected",
+      },
+      diagnostic: {
+        stage: "loopback_response",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
+    },
+    {
+      name: "stat reply validation",
+      version: "0.0.74",
+      onStat: (cmd: string) =>
+        cmd === "authorized_desktop_file_request"
+          ? Promise.resolve({ kind: "PRIVATE", path: PRIVATE_PATH })
+          : undefined,
+      error: {
+        message: "Desktop file bridge returned an invalid stat payload",
+        fileFailure: "invalid_response",
+      },
+      diagnostic: {
+        stage: "stat_reply_validation",
+        adapter: "authorized_native",
+        nativeVersionLookup: "resolved_other",
+      },
+    },
+  ])(
+    "adds only the closed stage after a $name failure",
+    async ({ version, onStat, loopback, error, diagnostic, ipc }) => {
+      global.fetch = jest.fn(
+        loopback ?? (() => Promise.reject(new Error("unexpected fetch"))),
+      ) as unknown as typeof global.fetch;
+      const { bridge, invoke } = await startAs(version, onStat);
+      try {
+        const data = statMessage("stat-diagnostic");
+        getPublicationHandler()({ data });
+        await waitFor(() => expect(fileErrors()).toHaveLength(1));
+
+        // Original message/cause unchanged; the diagnostic is the only addition.
+        expect(fileErrors()[0]).toEqual({
+          type: "file_error",
+          requestId: "stat-diagnostic",
+          ...error,
+          receiverDiagnostic: { version: 1, ...diagnostic },
+        });
+        expect(data).toEqual(statMessage("stat-diagnostic"));
+        if (ipc) {
+          const fileIpc = invoke.mock.calls.filter(([cmd]) =>
+            String(cmd).includes("desktop_file_request"),
+          );
+          expect(fileIpc).toEqual(ipc);
+        }
+        expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      } finally {
+        await bridge.stop();
+      }
+    },
+  );
+
+  /** Starts with a controlled version lookup; fake timers drive its deadline. */
+  async function startWithLookup(lookup: () => Promise<unknown>) {
+    mockUseAuthorizedNative = true;
+    const original = mockInvokeHandler;
+    mockInvokeHandler = (cmd, args) =>
+      cmd === "plugin:app|version" ? lookup() : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    const started = bridge.start();
+    await jest.advanceTimersByTimeAsync(499);
+    // The lookup deadline is still exactly 500ms before registration proceeds.
+    const registeredBeforeDeadline =
+      config.connectDesktop.mock.calls.length > 0;
+    await jest.advanceTimersByTimeAsync(1);
+    await started;
+    // Neither adapter reports a missing command, so no fallback may occur.
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "authorized_desktop_file_request"
+        ? reject("Desktop operation was not authorized")
+        : cmd === "desktop_file_request"
+          ? reject("PRIVATE legacy native failure")
+          : original(cmd, args);
+    mockSubscription.publish.mockClear();
+    const { invoke } = await import("@tauri-apps/api/core");
+    (invoke as jest.Mock).mockClear();
+    return { bridge, registeredBeforeDeadline, invoke: invoke as jest.Mock };
+  }
+
+  const fileIpc = (invoke: jest.Mock) =>
+    invoke.mock.calls
+      .map(([cmd]) => cmd)
+      .filter((cmd) => String(cmd).includes("desktop_file_request"));
+
+  const legacyFailure = {
+    message: "PRIVATE legacy native failure",
+    adapter: "published_legacy_native",
+    ipc: ["desktop_file_request"],
+  };
+  const authorizedDenial = {
+    message: "Desktop operation was not authorized",
+    adapter: "authorized_native",
+    ipc: ["authorized_desktop_file_request"],
+  };
+
+  it.each([
+    {
+      name: "the last published legacy version",
+      lookup: () => Promise.resolve("0.0.72"),
+      nativeVersionLookup: "resolved_published_legacy",
+      deadline: false,
+      ...legacyFailure,
+    },
+    {
+      name: "the first authorized version",
+      lookup: () => Promise.resolve("0.0.73"),
+      nativeVersionLookup: "resolved_other",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a rejected lookup",
+      lookup: () => reject("PRIVATE lookup failure 0.0.72"),
+      nativeVersionLookup: "rejected",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a lookup resolving undefined",
+      lookup: () => Promise.resolve(undefined),
+      nativeVersionLookup: "invalid",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a malformed version",
+      lookup: () => Promise.resolve("0.0.72-PRIVATE"),
+      nativeVersionLookup: "invalid",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a lookup that never settles",
+      lookup: () => new Promise(() => {}),
+      nativeVersionLookup: "timeout",
+      deadline: true,
+      ...authorizedDenial,
+    },
+  ])(
+    "records $nativeVersionLookup for $name with the unchanged adapter",
+    async ({
+      lookup,
+      nativeVersionLookup,
+      deadline,
+      message,
+      adapter,
+      ipc,
+    }) => {
+      jest.useFakeTimers();
+      const started = await startWithLookup(lookup);
+      try {
+        // Only the timed-out lookup waits for the full deadline.
+        expect(started.registeredBeforeDeadline).toBe(!deadline);
+        getPublicationHandler()({ data: statMessage("stat-lookup") });
+        await waitFor(() => expect(fileErrors()).toHaveLength(1));
+
+        expect(fileErrors()[0]).toEqual({
+          type: "file_error",
+          requestId: "stat-lookup",
+          message,
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter,
+            nativeVersionLookup,
+          },
+        });
+        // A denial never downgrades to the legacy command.
+        expect(fileIpc(started.invoke)).toEqual(ipc);
+        expect(JSON.stringify(fileErrors()[0].receiverDiagnostic)).not.toMatch(
+          /0\.0\.7|PRIVATE/,
+        );
+      } finally {
+        await started.bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps a timeout when the lookup resolves a legacy version late", async () => {
+    jest.useFakeTimers();
+    const started = await startWithLookup(
+      () => new Promise((resolve) => setTimeout(() => resolve("0.0.72"), 600)),
+    );
+    try {
+      getPublicationHandler()({ data: statMessage("stat-before-late") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      // The late result settles after startup and must not change selection.
+      await jest.advanceTimersByTimeAsync(200);
+      getPublicationHandler()({ data: statMessage("stat-after-late") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(2));
+
+      expect(fileErrors().map((error) => error.receiverDiagnostic)).toEqual([
+        {
+          version: 1,
+          stage: "native_invoke",
+          adapter: "authorized_native",
+          nativeVersionLookup: "timeout",
+        },
+        {
+          version: 1,
+          stage: "native_invoke",
+          adapter: "authorized_native",
+          nativeVersionLookup: "timeout",
+        },
+      ]);
+      expect(fileIpc(started.invoke)).toEqual([
+        "authorized_desktop_file_request",
+        "authorized_desktop_file_request",
+      ]);
+    } finally {
+      await started.bridge.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps a successful stat reply and other file errors unchanged", async () => {
+    const { bridge } = await startAs("0.0.74", (cmd) =>
+      cmd === "authorized_desktop_file_request"
+        ? Promise.resolve({ kind: "file", path: PRIVATE_PATH, sizeBytes: 3 })
+        : undefined,
+    );
+    try {
+      getPublicationHandler()({ data: statMessage("stat-ok") });
+      await waitFor(() =>
+        expect(mockSubscription.publish).toHaveBeenCalledWith({
+          type: "file_stat_result",
+          requestId: "stat-ok",
+          kind: "file",
+          path: PRIVATE_PATH,
+          sizeBytes: 3,
+        }),
+      );
+      mockInvokeHandler = () => reject("Read error: PRIVATE");
+      getPublicationHandler()({
+        data: { ...statMessage("read-error"), type: "file_read" },
+      });
+      await waitFor(() =>
+        expect(fileErrors()).toEqual([
+          {
+            type: "file_error",
+            requestId: "read-error",
+            message: "Read error: PRIVATE",
+            fileFailure: "filesystem",
+          },
+        ]),
+      );
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("attributes a failed success-reply publication without changing its result", async () => {
+    const { bridge } = await startAs("0.0.71", (cmd) =>
+      cmd === "desktop_file_request"
+        ? Promise.resolve({ kind: "missing", path: PRIVATE_PATH })
+        : undefined,
+    );
+    try {
+      mockSubscription.publish.mockImplementationOnce(() =>
+        reject("PRIVATE broker rejection"),
+      );
+      getPublicationHandler()({ data: statMessage("stat-reply") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      expect(mockSubscription.publish.mock.calls[0][0]).toEqual({
+        type: "file_stat_result",
+        requestId: "stat-reply",
+        kind: "missing",
+        path: PRIVATE_PATH,
+      });
+      expect(fileErrors()[0]).toEqual({
+        type: "file_error",
+        requestId: "stat-reply",
+        message: "PRIVATE broker rejection",
+        receiverDiagnostic: {
+          version: 1,
+          stage: "reply_publication",
+          adapter: "published_legacy_native",
+          nativeVersionLookup: "resolved_published_legacy",
+        },
+      });
+    } finally {
+      await bridge.stop();
+      mockSubscription.publish.mockReset().mockResolvedValue(undefined);
+    }
+  });
+
+  it("isolates concurrent stats and drops a failure after stop", async () => {
+    let failCompatibility!: (error: Error) => void;
+    let failLate!: (error: Error) => void;
+    const { bridge } = await startAs("0.0.0", () => undefined);
+    const compatibility = new Promise((_, rejectNative) => {
+      failCompatibility = rejectNative;
+    });
+    let authorizedCalls = 0;
+    mockInvokeHandler = async (cmd) => {
+      if (cmd === "authorized_desktop_file_request") {
+        authorizedCalls++;
+        if (authorizedCalls === 1) throw new Error(`Command ${cmd} not found`);
+        if (authorizedCalls === 2)
+          throw new Error("Desktop operation was not authorized");
+        return new Promise((_, rejectNative) => {
+          failLate = rejectNative;
+        });
+      }
+      if (cmd === "desktop_file_request") return compatibility;
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    try {
+      // The first stat waits on the compatibility adapter while a second stat
+      // fails on the authorized adapter; neither may take the other's evidence.
+      getPublicationHandler()({ data: statMessage("stat-compat") });
+      await waitFor(() => expect(authorizedCalls).toBe(1));
+      getPublicationHandler()({ data: statMessage("stat-authorized") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      failCompatibility(new Error("PRIVATE compatibility failure"));
+      await waitFor(() => expect(fileErrors()).toHaveLength(2));
+      expect(fileErrors()).toEqual([
+        expect.objectContaining({
+          requestId: "stat-authorized",
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter: "authorized_native",
+            nativeVersionLookup: "resolved_other",
+          },
+        }),
+        expect.objectContaining({
+          requestId: "stat-compat",
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter: "compatibility_native",
+            nativeVersionLookup: "resolved_other",
+          },
+        }),
+      ]);
+
+      getPublicationHandler()({ data: statMessage("stat-late") });
+      await waitFor(() => expect(failLate).toBeDefined());
+      await bridge.stop();
+      failLate(new Error("PRIVATE late failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockSubscription.publish).not.toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "stat-late" }),
+      );
+    } finally {
+      await bridge.stop();
+    }
   });
 });
 
