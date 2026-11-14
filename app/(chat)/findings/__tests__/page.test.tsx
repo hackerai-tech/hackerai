@@ -531,6 +531,82 @@ describe("FindingsPage", () => {
     });
   });
 
+  it("retains ownership when app hydration replaces the classic history state", async () => {
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "qa-finding-entry" } },
+    });
+    const back = jest.spyOn(window.history, "back");
+    try {
+      const view = render(<Page />);
+      fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+      // Observed in Preview after reload: the entry key survives, custom state doesn't.
+      window.history.replaceState({}, "", window.location.href);
+      view.unmount();
+      mockSearchParams.set("finding", "finding-1");
+      render(<Page />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      expect(back).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      back.mockRestore();
+      delete (window as any).navigation;
+      window.sessionStorage.removeItem(
+        "hackerai:findings:entry:qa-finding-entry",
+      );
+    }
+  });
+
+  it("does not reuse another entry's ownership for an identical deep link", async () => {
+    window.sessionStorage.setItem("hackerai:findings:entry:old-entry", "1");
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "new-entry" } },
+    });
+    window.history.replaceState({}, "", "/findings?finding=finding-1");
+    mockSearchParams.set("finding", "finding-1");
+    const back = jest.spyOn(window.history, "back");
+    try {
+      render(<Page />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(back).not.toHaveBeenCalled();
+    } finally {
+      back.mockRestore();
+      delete (window as any).navigation;
+      window.sessionStorage.removeItem("hackerai:findings:entry:old-entry");
+    }
+  });
+
+  it("keeps normal open and close working when session storage is blocked", async () => {
+    Object.defineProperty(window, "navigation", {
+      configurable: true,
+      value: { currentEntry: { key: "blocked-entry" } },
+    });
+    const write = jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("Blocked", "SecurityError");
+      });
+    try {
+      render(<Page />);
+      fireEvent.click(screen.getByRole("link", { name: /Confirmed IDOR/i }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      write.mockRestore();
+      delete (window as any).navigation;
+    }
+  });
+
   it("deep-link close replaces the URL instead of navigating away", async () => {
     window.history.replaceState(
       { returnContext: "deep-link" },
