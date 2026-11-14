@@ -30,6 +30,8 @@ if not held then
   elseif now >= reset then
     refilledAt = refilledAt + math.floor((now - refilledAt) / interval) * interval
     tokens = allocation
+    -- A new allowance cycle has no debt from prior tier transitions.
+    redis.call("HSET", key, "tierChangeConsumedOffset", 0)
     reset = refilledAt + interval
   end
 end

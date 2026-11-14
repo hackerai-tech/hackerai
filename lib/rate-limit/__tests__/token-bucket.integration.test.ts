@@ -179,13 +179,17 @@ describe("token-bucket async functions", () => {
 
     const tierChangeState = (overrides: Record<string, unknown> = {}) =>
       JSON.stringify({
-        version: 3,
+        version: 4,
         oldTier: "pro",
+        oldPlanMax: 250_000,
         targetTier: "pro-plus",
         subscriptionId: "sub_upgrade",
         transitionId: "in_upgrade",
         remaining: 0,
         cycleAllocation: 250_000,
+        consumedCredits:
+          Number(overrides.cycleAllocation ?? 250_000) -
+          Number(overrides.remaining ?? 0),
         resetAtMs: Date.now() + 12 * 24 * 60 * 60 * 1000,
         ...overrides,
       });
@@ -238,6 +242,7 @@ describe("token-bucket async functions", () => {
         tierChangeState({
           remaining: 50_000,
           cycleAllocation: 200_000,
+          oldPlanMax: 200_000,
           resetAtMs,
         }),
       );
@@ -306,6 +311,42 @@ describe("token-bucket async functions", () => {
       );
       expect(mockLimitFn).not.toHaveBeenCalled();
       expect(mockHsetFn).not.toHaveBeenCalled();
+    });
+
+    it("uses the old plan ceiling for a chained upgrade with prior spend", async () => {
+      const chainedIdentity = {
+        subscriptionId: "sub_upgrade",
+        targetTier: "ultra" as const,
+        transitionId: "in_second_upgrade",
+      };
+      mockEvalFn
+        .mockResolvedValueOnce(
+          tierChangeState({
+            oldTier: "pro-plus",
+            oldPlanMax: 600_000,
+            targetTier: "ultra",
+            transitionId: "in_second_upgrade",
+            cycleAllocation: 425_000,
+            remaining: 175_000,
+          }),
+        )
+        .mockResolvedValueOnce([1, 525_000]);
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      const result = await applyProratedTierChangeBucket("user-123", "ultra", {
+        identity: chainedIdentity,
+        proratedRatio: 0.25,
+      });
+
+      expect(result).toMatchObject({
+        consumedCredits: 250_000,
+        incrementalCredits: 350_000,
+        cycleAllocation: 775_000,
+        remainingCredits: 525_000,
+      });
+      expect(mockEvalFn.mock.calls[1][2]).toEqual(
+        expect.arrayContaining([525_000, 775_000]),
+      );
     });
 
     it.each([{ monthlyPeriodEnd: true }, { monthlyPeriodEnd: false }])(
