@@ -439,6 +439,267 @@ it.each([
   },
 );
 
+const illegalMessage =
+  "curl: (35) schannel: next InitializeSecurityContext failed: SEC_E_ILLEGAL_MESSAGE (0x80090326) - This error usually occurs when a fatal SSL/TLS alert is received (e.g. handshake failed). More detail may be available in the Windows System event log.";
+const noRevocationCheck =
+  "curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK (0x80092012) - The revocation function was unable to check revocation for the certificate.";
+const receiveFailed =
+  "curl: (35) schannel: failed to receive handshake, SSL/TLS connection failed";
+const opensslSyscall =
+  "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to private.example:443 ";
+const opensslEof =
+  "curl: (35) TLS connect error: OpenSSL/3.0.13: error:0A000126:SSL routines::unexpected eof while reading";
+const curl35PrivacyCanary =
+  /private|secret|token=|SEC_E|CRYPT_E|0x|Initialize|revocation function|SSL routines|error:0A|OpenSSL\/|connection to|443|event log/;
+
+it.each([
+  [illegalMessage, "schannel_illegal_message"],
+  [noRevocationCheck, "schannel_revocation_unavailable"],
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE (0x80092013)",
+    "schannel_revocation_unavailable",
+  ],
+  // Localized system text after the symbol and code is accepted, never kept.
+  [
+    "curl: (35) schannel: initial InitializeSecurityContext failed: SEC_E_INVALID_TOKEN (0x80090308) - Le jeton fourni à la fonction n’est pas valide",
+    "schannel_invalid_token",
+  ],
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: SEC_E_INTERNAL_ERROR (0x80090304) - The Local Security Authority cannot be contacted",
+    "schannel_internal_error",
+  ],
+  [
+    "curl: (35) schannel: initial InitializeSecurityContext failed: SEC_E_ALGORITHM_MISMATCH (0x80090331) - The client and server cannot communicate, because they do not possess a common algorithm.",
+    "schannel_algorithm_mismatch",
+  ],
+  [receiveFailed, "schannel_handshake_receive_failed"],
+  [opensslSyscall, "openssl_syscall"],
+  [opensslSyscall.trimEnd(), "openssl_syscall"],
+  [
+    "curl: (35) BoringSSL SSL_connect: SSL_ERROR_SYSCALL in connection to 10.0.0.1:8443 ",
+    "openssl_syscall",
+  ],
+  [opensslEof, "openssl_unexpected_eof"],
+  [
+    "curl: (35) TLS connect error: OpenSSL/3.5.1: error:0A00010B:SSL routines::wrong version number",
+    "openssl_wrong_version",
+  ],
+  [`progress\r\n${illegalMessage}\r\n`, "schannel_illegal_message"],
+  // One repeated family, including both revocation statuses, is not conflicting.
+  [
+    `${noRevocationCheck}\n${noRevocationCheck}`,
+    "schannel_revocation_unavailable",
+  ],
+  [
+    `${noRevocationCheck}\ncurl: (35) schannel: initial InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE (0x80092013)`,
+    "schannel_revocation_unavailable",
+  ],
+  [`${illegalMessage}\ncurl: (35) private detail`, "schannel_illegal_message"],
+  [`${illegalMessage}\n${receiveFailed}`, "multiple"],
+  [`${opensslEof}\r\n${opensslSyscall}\r\n`, "multiple"],
+])("keeps only a closed public curl35 reason family: %j", (stderr, hint) => {
+  const original = Object.freeze(new Error("private original"));
+  expect(
+    recordAttachmentDownloadFailure(original, {
+      ...input,
+      shell: "cmd",
+      exitCode: 35,
+      stderr: `${stderr}\nhttps://private.example/secret?token=private`,
+    }),
+  ).toBe(original);
+  const fields = getAttachmentDownloadFailureContext(original);
+  expect(fields).toMatchObject({
+    attachment_download_curl35_version: 1,
+    attachment_download_curl35_line_present: true,
+    attachment_download_curl35_hint: hint,
+    attachment_download_exit_code: 35,
+  });
+  expect(JSON.stringify(fields)).not.toMatch(curl35PrivacyCanary);
+  expect(Object.keys(original)).toEqual([]);
+});
+
+it.each([
+  // Other SSPI statuses, unnamed codes and mismatched pairs stay unclassified.
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: SEC_E_CERT_EXPIRED (0x80090328)",
+    true,
+  ],
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: Unknown error (0x80092012) - The revocation function was unable to check revocation for the certificate.",
+    true,
+  ],
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: SEC_E_ILLEGAL_MESSAGE (0x80090308)",
+    true,
+  ],
+  [illegalMessage.replace("(0x80090326)", "(0X80090326)"), true],
+  [
+    "curl: (35) schannel: next InitializeSecurityContext failed: SEC_E_ILLEGAL_MESSAGE (0x80090326) -",
+    true,
+  ],
+  [illegalMessage.replace("next", "final"), true],
+  [`${receiveFailed} private suffix`, true],
+  // A socket error replaces the public SSL_ERROR_SYSCALL name.
+  [
+    "curl: (35) OpenSSL SSL_connect: Connection reset by peer in connection to private.example:443 ",
+    true,
+  ],
+  [opensslSyscall.replace("443", "private"), true],
+  // Other library formats, reason codes or a private suffix stay unknown.
+  [
+    "curl: (35) error:1408F10B:SSL routines:ssl3_get_record:wrong version number",
+    true,
+  ],
+  [opensslEof.replace("0A000126", "0A00010B"), true],
+  [opensslEof.replace("OpenSSL/3.0.13", "LibreSSL/3.8.2"), true],
+  [`${opensslEof} private`, true],
+  ["curl: (35) private unrecognized detail", true],
+  // Only anchored complete curl35 lines count.
+  [` ${illegalMessage}`, false],
+  [`private prefix ${receiveFailed}`, false],
+  [`'${receiveFailed}'`, false],
+  [`progress\r${illegalMessage}`, false],
+  [illegalMessage.replace("(35)", "(60)"), false],
+  [illegalMessage.slice("curl: (35) ".length), false],
+  ["", false],
+])(
+  "leaves unsupported or malformed curl35 wording unclassified: %j",
+  (stderr, linePresent) => {
+    const fields = getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure(Object.freeze(new Error("private")), {
+        ...input,
+        shell: "cmd",
+        exitCode: 35,
+        stderr: `${stderr}\nhttps://private.example/secret?token=private`,
+      }),
+    );
+    expect(fields).toMatchObject({
+      attachment_download_curl35_version: 1,
+      attachment_download_curl35_line_present: linePresent,
+      attachment_download_curl35_hint: "unclassified",
+    });
+    expect(JSON.stringify(fields)).not.toMatch(curl35PrivacyCanary);
+  },
+);
+
+it.each([
+  ["curl", 60],
+  ["curl", 28],
+  ["curl", 1],
+  ["curl", 0],
+  ["wget", 35],
+  ["powershell", 35],
+] as const)(
+  "does not assign curl35 wording to selected %s exit%s",
+  (httpClient, exitCode) => {
+    const fields = getAttachmentDownloadFailureContext(
+      recordAttachmentDownloadFailure(new Error(), {
+        ...input,
+        httpClient,
+        exitCode,
+        stderr: illegalMessage,
+      }),
+    );
+    expect(fields).toHaveProperty("attachment_download_exit_code", exitCode);
+    for (const key of [
+      "attachment_download_curl35_version",
+      "attachment_download_curl35_line_present",
+      "attachment_download_curl35_hint",
+    ])
+      expect(fields).not.toHaveProperty(key);
+  },
+);
+
+it.each([
+  // A newline-terminated line before the cut remains complete.
+  [
+    `${"x".repeat(8000)}\r\n${receiveFailed}\r\n${"y".repeat(500)}`,
+    true,
+    "schannel_handshake_receive_failed",
+  ],
+  // The budget can end exactly after the wording while the line continues.
+  [
+    `${"x".repeat(8192 - receiveFailed.length - 1)}\n${receiveFailed} private suffix`,
+    true,
+    "unclassified",
+  ],
+  // A public line cut by the existing budget is present but unclassified.
+  [`${"x".repeat(8150)}\n${illegalMessage}`, true, "unclassified"],
+  [`${"x".repeat(8192)}\n${illegalMessage}`, false, "unclassified"],
+])(
+  "classifies curl35 wording only from lines completed before truncation (%#)",
+  (stderr, linePresent, hint) => {
+    expect(
+      getAttachmentDownloadFailureContext(
+        recordAttachmentDownloadFailure(new Error(), {
+          ...input,
+          exitCode: 35,
+          stderr,
+        }),
+      ),
+    ).toMatchObject({
+      attachment_download_curl35_line_present: linePresent,
+      attachment_download_curl35_hint: hint,
+      attachment_download_stderr_truncated: true,
+    });
+  },
+);
+
+it("adds curl35 fields without changing other context and retains them through boundary and copy propagation", () => {
+  const original = Object.freeze(new Error("private original"));
+  recordAttachmentDownloadFailure(original, {
+    ...input,
+    shell: "cmd",
+    exitCode: 35,
+    stderr: `${noRevocationCheck}\r\n`,
+    directoryProbe: {
+      state: "returned",
+      output: "target_dir_exists=true\r\n",
+      truncated: false,
+    },
+  });
+  recordAttachmentDownloadBoundary(original, {
+    phase: "failure_diagnostics",
+    attempt: 3,
+    resultState: "nonzero",
+  });
+  const copy = copyAttachmentDownloadFailureContext(
+    original,
+    new Error("private wrapper"),
+  );
+  const fields = getAttachmentDownloadFailureContext(copy)!;
+  expect(fields).toEqual({
+    attachment_download_diagnostic_version: 1,
+    attachment_download_platform: "windows",
+    attachment_download_shell: "cmd",
+    attachment_download_http_client: "curl",
+    attachment_download_exit_code: 35,
+    attachment_download_stderr_signal: "tls",
+    attachment_download_reported_http_status: null,
+    attachment_download_stderr_truncated: false,
+    attachment_download_curl35_version: 1,
+    attachment_download_curl35_line_present: true,
+    attachment_download_curl35_hint: "schannel_revocation_unavailable",
+    attachment_download_directory_probe_version: 1,
+    attachment_download_directory_probe_state: "returned",
+    attachment_download_target_dir_exists: true,
+    attachment_download_target_dir_writable: null,
+    attachment_download_directory_probe_truncated: false,
+    attachment_download_boundary_version: 1,
+    attachment_download_phase: "failure_diagnostics",
+    attachment_download_attempt: 3,
+    attachment_download_result_state: "nonzero",
+    attachment_download_error_kind: "error",
+    attachment_download_result_context_present: true,
+  });
+  fields.attachment_download_curl35_hint = "multiple";
+  expect(
+    getAttachmentDownloadFailureContext(copy)?.attachment_download_curl35_hint,
+  ).toBe("schannel_revocation_unavailable");
+  expect(original.message).toBe("private original");
+  expect(Object.keys(original)).toEqual([]);
+});
+
 const notRecognized = (program: string) =>
   `'${program}' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n`;
 const powerShellParserError = [
