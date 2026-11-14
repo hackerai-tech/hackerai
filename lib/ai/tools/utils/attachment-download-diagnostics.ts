@@ -65,6 +65,86 @@ function curl1Context(stderr: string, truncated: boolean) {
   };
 }
 
+type Curl35Hint =
+  | "schannel_revocation_unavailable"
+  | "schannel_illegal_message"
+  | "schannel_invalid_token"
+  | "schannel_internal_error"
+  | "schannel_algorithm_mismatch"
+  | "schannel_handshake_receive_failed"
+  | "openssl_syscall"
+  | "openssl_unexpected_eof"
+  | "openssl_wrong_version";
+
+// curl 8.21 schannel.c InitializeSecurityContext failures. Curl_sspi_strerror
+// prints `SYMBOL (0x%08lx)`, then optional localized system text.
+const SCHANNEL_CONTEXT_FAILED =
+  /^curl: \(35\) schannel: (?:initial|next) InitializeSecurityContext failed: ([A-Z_]{1,40} \(0x[0-9a-f]{8}\))(?: - [^\r]{1,255})?$/;
+// Only exact symbol and code pairs; other SSPI statuses stay unclassified.
+const SCHANNEL_STATUS = new Map<string, Curl35Hint>([
+  [
+    "CRYPT_E_NO_REVOCATION_CHECK (0x80092012)",
+    "schannel_revocation_unavailable",
+  ],
+  [
+    "CRYPT_E_REVOCATION_OFFLINE (0x80092013)",
+    "schannel_revocation_unavailable",
+  ],
+  ["SEC_E_ILLEGAL_MESSAGE (0x80090326)", "schannel_illegal_message"],
+  ["SEC_E_INVALID_TOKEN (0x80090308)", "schannel_invalid_token"],
+  ["SEC_E_INTERNAL_ERROR (0x80090304)", "schannel_internal_error"],
+  ["SEC_E_ALGORITHM_MISMATCH (0x80090331)", "schannel_algorithm_mismatch"],
+]);
+// curl 8.21 schannel.c receive wording and openssl.c SSL_connect/ossl_strerror
+// wording (OpenSSL 3 packed reason codes). The peer host is never kept.
+const CURL35_LINES: ReadonlyArray<readonly [RegExp, Curl35Hint]> = [
+  [
+    /^curl: \(35\) schannel: failed to receive handshake, SSL\/TLS connection failed$/,
+    "schannel_handshake_receive_failed",
+  ],
+  [
+    /^curl: \(35\) (?:OpenSSL|LibreSSL|BoringSSL|AWS-LC|quictls) SSL_connect: SSL_ERROR_SYSCALL in connection to \S{1,253}:\d{1,5} ?$/,
+    "openssl_syscall",
+  ],
+  [
+    /^curl: \(35\) TLS connect error: (?:OpenSSL|quictls)\/\d[\w.+-]{0,31}: error:0A000126:SSL routines::unexpected eof while reading$/,
+    "openssl_unexpected_eof",
+  ],
+  [
+    /^curl: \(35\) TLS connect error: (?:OpenSSL|quictls)\/\d[\w.+-]{0,31}: error:0A00010B:SSL routines::wrong version number$/,
+    "openssl_wrong_version",
+  ],
+];
+
+/** Complete public curl exit35 error-buffer lines only. The hint is observed
+ * text, not the proven TLS backend, network cause or final inner retry. SSPI
+ * codes, hosts and system text are never kept; conflicting families stay explicit. */
+function curl35Context(stderr: string, truncated: boolean) {
+  const lines = stderr.split(/\r?\n/);
+  // A truncated final segment may continue past the scan budget.
+  const complete = truncated ? lines.slice(0, -1) : lines;
+  const hints = new Set<Curl35Hint>();
+  for (const line of complete) {
+    const status = SCHANNEL_CONTEXT_FAILED.exec(line)?.[1];
+    const hint =
+      status === undefined
+        ? CURL35_LINES.find(([pattern]) => pattern.test(line))?.[1]
+        : SCHANNEL_STATUS.get(status);
+    if (hint) hints.add(hint);
+  }
+  const hint: Curl35Hint | "multiple" | "unclassified" =
+    hints.size > 1
+      ? "multiple"
+      : (hints.values().next().value ?? "unclassified");
+  return {
+    attachment_download_curl35_version: 1 as const,
+    attachment_download_curl35_line_present: lines.some((line) =>
+      /^curl: \(35\) /.test(line),
+    ),
+    attachment_download_curl35_hint: hint,
+  };
+}
+
 const SELECTED_CLIENT_ALIASES: Record<
   DownloadInput["httpClient"],
   readonly string[]
@@ -233,6 +313,9 @@ function summarize(input: DownloadInput) {
       : {}),
     ...(input.httpClient === "curl" && input.exitCode === 1
       ? curl1Context(stderr, input.stderr.length > 8192)
+      : {}),
+    ...(input.httpClient === "curl" && input.exitCode === 35
+      ? curl35Context(stderr, input.stderr.length > 8192)
       : {}),
     ...(input.exitCode === 127 || signal === "command_syntax"
       ? {
