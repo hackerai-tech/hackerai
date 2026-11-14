@@ -10,7 +10,9 @@ import {
   desktopFileUnavailableMessage,
   getDesktopFileFailure,
   parseDesktopFileFailure,
+  readDesktopFileReceiverDiagnostic,
   type DesktopFileFailure,
+  type DesktopFileReceiverDiagnostic,
 } from "@/lib/centrifugo/desktop-file-errors";
 
 import { CONNECTED_AGENT_BROWSER_GUIDANCE } from "@/lib/ai/browser-guidance";
@@ -478,6 +480,7 @@ export class CentrifugoSandbox extends EventEmitter {
     let failure: string | undefined;
     let fileFailure: DesktopFileFailure | undefined;
     let receiverErrorClass: NativeReceiverErrorClass | undefined;
+    let receiverDiagnostic: DesktopFileReceiverDiagnostic | undefined;
     try {
       await this.dispatchFileRequest<FileStatResultMessage>(
         { type: "file_stat", path: "." },
@@ -500,6 +503,9 @@ export class CentrifugoSandbox extends EventEmitter {
       )
         receiverErrorClass =
           NATIVE_RECEIVER_ERROR_CLASSES.get(error.message) ?? "other";
+      // Observation only: the receiver's last attempted boundary and adapter.
+      if (failure === "native_error" && error instanceof LocalFileRequestError)
+        receiverDiagnostic = error.receiverDiagnostic;
     } finally {
       clearTimeout(deadline);
     }
@@ -513,6 +519,9 @@ export class CentrifugoSandbox extends EventEmitter {
         failure,
         file_failure: fileFailure,
         receiver_error_class: receiverErrorClass,
+        receiver_stage_version: receiverDiagnostic?.version,
+        receiver_stage: receiverDiagnostic?.stage,
+        receiver_adapter: receiverDiagnostic?.adapter,
       }),
     );
     if (!this.nativeFileRelayConfirmed) {
@@ -794,6 +803,7 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                 message.message,
                 parseDesktopFileFailure(message.fileFailure) ??
                   getDesktopFileFailure(new Error(message.message)),
+                readDesktopFileReceiverDiagnostic(message),
               ),
             );
           else resolve(message as T);

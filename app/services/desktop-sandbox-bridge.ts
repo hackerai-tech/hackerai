@@ -13,6 +13,9 @@ import {
   DesktopFileBridgeError,
   getDesktopFileFailure,
   type DesktopFileFailure,
+  type DesktopFileReceiverAdapter,
+  type DesktopFileReceiverDiagnostic,
+  type DesktopFileReceiverStage,
 } from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
@@ -136,6 +139,23 @@ function usesPublishedLegacyDesktopCommands(version: string): boolean {
   const patch = Number(match[1]);
   // 0.0.0 is an unversioned development build, not a published legacy binary.
   return patch >= 1 && patch <= 72;
+}
+
+/**
+ * One file_stat invocation's last attempted boundary and selected adapter.
+ * Callers that pass none record into a discarded object.
+ */
+interface FileStatReceiverTrace {
+  stage?: DesktopFileReceiverStage;
+  adapter?: DesktopFileReceiverAdapter;
+}
+
+function fileStatReceiverDiagnostic(
+  trace: FileStatReceiverTrace,
+): DesktopFileReceiverDiagnostic | undefined {
+  return trace.stage && trace.adapter
+    ? { version: 1, stage: trace.stage, adapter: trace.adapter }
+    : undefined;
 }
 
 /** Recognize browser transport failures without swallowing native filesystem errors. */
@@ -1087,11 +1107,16 @@ export class DesktopSandboxBridge {
     channelArgs: Record<string, unknown> = {},
     // Optional arguments older authorized binaries ignore; never sent to legacy.
     authorizedOnlyArgs: Record<string, unknown> = {},
+    trace: FileStatReceiverTrace = {},
   ): Promise<T> {
+    trace.stage = "module_load";
     const { invoke } = await import("@tauri-apps/api/core");
+    trace.stage = "native_invoke";
     if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
+      trace.adapter = "published_legacy_native";
       return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
     }
+    trace.adapter = "authorized_native";
     try {
       return await invoke<T>(authorizedCommand, {
         authorizationId: message.authorizationId ?? "",
@@ -1101,6 +1126,7 @@ export class DesktopSandboxBridge {
       });
     } catch (error) {
       if (!nativeCommandMissing(error, authorizedCommand)) throw error;
+      trace.adapter = "compatibility_native";
       return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
     }
   }
@@ -1817,6 +1843,7 @@ export class DesktopSandboxBridge {
     requestId: string,
     error: unknown,
     reply: (message: SandboxMessage) => Promise<void>,
+    receiverDiagnostic?: DesktopFileReceiverDiagnostic,
   ): Promise<void> {
     const fileFailure = getDesktopFileFailure(error);
     await reply({
@@ -1824,6 +1851,7 @@ export class DesktopSandboxBridge {
       requestId,
       message: this.getErrorMessage(error),
       ...(fileFailure !== "unknown" ? { fileFailure } : {}),
+      ...(receiverDiagnostic ? { receiverDiagnostic } : {}),
     });
   }
 
@@ -1850,11 +1878,16 @@ export class DesktopSandboxBridge {
   private async callLegacyLocalFileServer<T>(
     route: string,
     body: Record<string, unknown>,
+    trace: FileStatReceiverTrace = {},
   ): Promise<T> {
+    trace.adapter = "legacy_loopback";
+    trace.stage = "module_load";
     const { invoke } = await import("@tauri-apps/api/core");
+    trace.stage = "loopback_info";
     const info = await invoke<{ port: number; token: string }>(
       "get_cmd_server_info",
     );
+    trace.stage = "loopback_setup";
     if (!info.port || !info.token) {
       throw new DesktopFileBridgeError(
         "legacy_http_rejected",
@@ -1862,6 +1895,7 @@ export class DesktopSandboxBridge {
       );
     }
 
+    trace.stage = "loopback_request";
     const response = await fetch(`http://127.0.0.1:${info.port}${route}`, {
       method: "POST",
       headers: {
@@ -1870,6 +1904,7 @@ export class DesktopSandboxBridge {
       },
       body: JSON.stringify(body),
     });
+    trace.stage = "loopback_response";
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       throw new DesktopFileBridgeError(
@@ -1962,8 +1997,14 @@ export class DesktopSandboxBridge {
     legacyRoute: string,
     body: Record<string, unknown>,
     message?: { authorizationId?: string },
+    trace: FileStatReceiverTrace = {},
   ): Promise<T> {
     if (this.nativeFileIpcAvailable !== false) {
+      // A module failure here precedes the authorized helper's own selection.
+      trace.stage = "module_load";
+      trace.adapter = usesPublishedLegacyDesktopCommands(this.nativeAppVersion)
+        ? "published_legacy_native"
+        : "authorized_native";
       const { invoke } = await import("@tauri-apps/api/core");
       try {
         const request = { ...body, type: requestType };
@@ -1974,6 +2015,9 @@ export class DesktopSandboxBridge {
             "authorized_desktop_file_request",
             "desktop_file_request",
             { request },
+            {},
+            {},
+            trace,
           );
         } else if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
           payload = await invoke<T>("desktop_file_request", { request });
@@ -2025,7 +2069,7 @@ export class DesktopSandboxBridge {
       );
     }
     try {
-      return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
+      return await this.callLegacyLocalFileServer<T>(legacyRoute, body, trace);
     } catch (error) {
       if (isFileTransportError(error)) {
         throw this.fileTransportFailure(requestType, "legacy_http");
@@ -2123,12 +2167,15 @@ export class DesktopSandboxBridge {
   private async handleFileStat(message: FileStatMessage): Promise<void> {
     const reply = this.fileReplyPublisher();
     const { requestId, path } = message;
+    // Invocation-local, so concurrent stats never share or overwrite evidence.
+    const trace: FileStatReceiverTrace = {};
     try {
       const payload = await this.callDesktopFileBridge<{
         kind: "file" | "not_file" | "missing";
         path: string;
         sizeBytes?: number;
-      }>("file_stat", "/files/stat", { path }, message);
+      }>("file_stat", "/files/stat", { path }, message, trace);
+      trace.stage = "stat_reply_validation";
       if (
         typeof payload.path !== "string" ||
         (payload.kind !== "file" &&
@@ -2146,6 +2193,7 @@ export class DesktopSandboxBridge {
           "Desktop file bridge returned an invalid stat payload",
         );
       }
+      trace.stage = "reply_publication";
       await reply({
         type: "file_stat_result",
         requestId,
@@ -2154,7 +2202,12 @@ export class DesktopSandboxBridge {
         ...(payload.kind === "file" ? { sizeBytes: payload.sizeBytes } : {}),
       });
     } catch (error) {
-      await this.publishFileError(requestId, error, reply);
+      await this.publishFileError(
+        requestId,
+        error,
+        reply,
+        fileStatReceiverDiagnostic(trace),
+      );
     }
   }
 
