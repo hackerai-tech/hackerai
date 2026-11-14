@@ -26,6 +26,7 @@ import {
   type ResearchCohortReport,
   type ResearchCoverage,
 } from "@/lib/research/user-research";
+import { readResearchStructuredOutput } from "@/lib/research/structured-output-diagnostics";
 
 const MAX_MESSAGES_PER_CHAT = 80;
 
@@ -96,7 +97,7 @@ export const analyzeUserResearchProfile = schemaTask({
   maxDuration: 5 * 60,
   retry: { maxAttempts: 2 },
   machine: { preset: "small-1x" },
-  run: async (payload) => {
+  run: async (payload, { ctx }) => {
     const { client, serviceKey } = getResearchClient();
     const chats = await client.query(api.userResearch.listRepresentativeChats, {
       serviceKey,
@@ -186,7 +187,10 @@ export const analyzeUserResearchProfile = schemaTask({
       prompt,
     });
     const profile = normalizeResearchUserProfile(
-      result.output,
+      await readResearchStructuredOutput(result, {
+        operation: "profile",
+        ctx,
+      }),
       coverage.chatsReviewed,
     );
     const usage = usageForStorage(result.usage);
@@ -220,7 +224,7 @@ export const pmUserResearch = schemaTask({
   maxDuration: 30 * 60,
   retry: { maxAttempts: 1 },
   machine: { preset: "small-1x" },
-  run: async (payload) => {
+  run: async (payload, { ctx }) => {
     const { client, serviceKey } = getResearchClient();
     const analysisId = crypto.randomUUID();
     const evidenceAnchors = new Map(
@@ -395,7 +399,10 @@ export const pmUserResearch = schemaTask({
         prompt,
       });
       const synthesis = normalizeCohortSynthesis(
-        result.output,
+        await readResearchStructuredOutput(result, {
+          operation: "synthesis",
+          ctx,
+        }),
         profiles.length,
       );
       const report: ResearchCohortReport = {
