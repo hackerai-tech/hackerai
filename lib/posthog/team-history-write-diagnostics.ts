@@ -1,4 +1,7 @@
-import { getIdentifiedAnalyticsUserId } from "@/lib/analytics/client";
+import {
+  getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
+} from "@/lib/analytics/client";
 
 // Chosen for diagnosis; browsers do not expose their History budget or window.
 const WINDOW_MS = 30000;
@@ -14,12 +17,24 @@ type Write = { at: number; site: TeamHistoryWriteSite; sameUrl: boolean };
 const writes: Array<Write | undefined> = new Array(MAX_WRITES);
 let next = 0;
 let owner: string | null = null;
+let subscribed = false;
+
+function clearWrites() {
+  writes.fill(undefined);
+  next = 0;
+  owner = null;
+}
 
 function identifiedOwner() {
+  if (!subscribed) {
+    // Use the existing consent/identity notifications even when no write or
+    // exception occurs during revocation. No DOM listener or timer is added.
+    subscribeAuthenticatedAnalytics(clearWrites);
+    subscribed = true;
+  }
   const current = getIdentifiedAnalyticsUserId();
   if (current !== owner || !current) {
-    writes.fill(undefined);
-    next = 0;
+    clearWrites();
     owner = current;
   }
   return current;
@@ -45,7 +60,7 @@ export function recordTeamHistoryWrite(
 }
 
 /**
- * Capped recent writes by the instrumented Team sites only. Other History
+ * Capped recent attempts by the instrumented Team sites only. Other History
  * writers (including Next's router) share the browser budget but are not
  * counted, so these numbers never describe that budget.
  */
@@ -70,6 +85,7 @@ export function getTeamHistoryWriteDiagnostics(): Record<
     return {
       hackerai_team_history_write_version: 1,
       hackerai_team_history_write_scope: "instrumented_team_sites",
+      hackerai_team_history_write_unit: "attempts",
       hackerai_team_history_write_window_ms: WINDOW_MS,
       hackerai_team_history_write_count: recent.length,
       hackerai_team_history_write_capped: recent.length >= MAX_WRITES,

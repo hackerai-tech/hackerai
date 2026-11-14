@@ -8,8 +8,13 @@ import {
   recordTeamHistoryWrite,
 } from "../team-history-write-diagnostics";
 
+const mockAnalyticsListeners = new Set<() => void>();
 jest.mock("@/lib/analytics/client", () => ({
   getIdentifiedAnalyticsUserId: jest.fn(),
+  subscribeAuthenticatedAnalytics: jest.fn((listener: () => void) => {
+    mockAnalyticsListeners.add(listener);
+    return () => mockAnalyticsListeners.delete(listener);
+  }),
 }));
 const identity = jest.mocked(getIdentifiedAnalyticsUserId);
 let now = 10000;
@@ -71,6 +76,7 @@ test("attaches own Team write counts to a retained History rate-limit error", ()
   expect(fields).toEqual({
     hackerai_team_history_write_version: 1,
     hackerai_team_history_write_scope: "instrumented_team_sites",
+    hackerai_team_history_write_unit: "attempts",
     hackerai_team_history_write_window_ms: 30000,
     hackerai_team_history_write_count: 43,
     hackerai_team_history_write_capped: false,
@@ -210,6 +216,18 @@ test("reprocessing as another account does not carry the earlier owner's counts"
   expect(teamFields(enrichFrontendExceptionEvent(event).properties)).toEqual(
     {},
   );
+});
+
+test("clears counts across unobserved consent revocation and same-user restoration", () => {
+  recordTeamHistoryWrite("team_seat_sync", true);
+  identity.mockReturnValue(null);
+  mockAnalyticsListeners.forEach((listener) => listener());
+  identity.mockReturnValue("synthetic-user");
+  mockAnalyticsListeners.forEach((listener) => listener());
+  // No recorder or diagnostic getter ran between these notifications.
+  expect(
+    getTeamHistoryWriteDiagnostics().hackerai_team_history_write_count,
+  ).toBe(0);
 });
 
 test("a failing diagnostic never replaces the original History failure", () => {
