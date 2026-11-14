@@ -2208,8 +2208,24 @@ it.each([
   [false, [4, "deadline", "message_received", "none", 3, "not_observed"], true],
   [true, [4, "deadline", "awaiting_frame", "none", 1, "false"], false],
   [false, [4, "deadline", "message_received", "none", 17, "true"], false],
+  [true, [5, "deadline", "message_received", "none", 9, "true", "false"], true],
+  [
+    false,
+    [5, "deadline", "message_received", "none", 4, "true", "other"],
+    true,
+  ],
+  [
+    true,
+    [5, "deadline", "message_received", "none", 3, "true", "not_observed"],
+    false,
+  ],
+  [
+    false,
+    [5, "deadline", "message_received", "none", 3, "true", "PRIVATE"],
+    false,
+  ],
 ] as const)(
-  "forwards only a consistent v4 status summary through the capture observer (SDK throws: %s, %#)",
+  "forwards only a consistent status summary through the capture observer (SDK throws: %s, %#)",
   async (throws, tuple, accepted) => {
     const sandbox = fixture();
     const result = {
@@ -2245,16 +2261,68 @@ it.each([
     expect(bridge).toEqual(
       accepted
         ? {
-            capture_bridge_diagnostic_version: 4,
+            capture_bridge_diagnostic_version: tuple[0],
             capture_bridge_failure: "deadline",
             capture_bridge_phase: tuple[2],
             capture_bridge_close_code: "none",
             capture_bridge_nonframe_message_count: tuple[4],
             capture_bridge_status_message_connected: tuple[5],
+            // Older v4 helpers never claimed screencasting.
+            ...(tuple[0] === 5
+              ? { capture_bridge_status_message_screencasting: tuple[6] }
+              : {}),
           }
         : {},
     );
     expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([true, false])(
+  "keeps the original frame rejection when the observer throws on a v5 summary (SDK throws: %s)",
+  async (throws) => {
+    const sandbox = fixture();
+    const result = {
+      exitCode: 3,
+      stdout: JSON.stringify({
+        bridge_failure: [
+          5,
+          "deadline",
+          "message_received",
+          "none",
+          3,
+          "true",
+          "false",
+        ],
+      }),
+      stderr: "PRIVATE_FRAME",
+    };
+    const original = new CommandExitError(result);
+    if (throws) sandbox.commands.run.mockRejectedValueOnce(original);
+    else sandbox.commands.run.mockResolvedValueOnce(result);
+    const observe = jest.fn(() => {
+      throw new Error("PRIVATE observer");
+    });
+    const capture = captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+      observe,
+    );
+    if (throws) await expect(capture).rejects.toBe(original);
+    else
+      await expect(capture).rejects.toBeInstanceOf(BrowserPreviewUnavailable);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capture_bridge_diagnostic_version: 5,
+        capture_bridge_status_message_connected: "true",
+        capture_bridge_status_message_screencasting: "false",
+      }),
+    );
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   },
 );
 
