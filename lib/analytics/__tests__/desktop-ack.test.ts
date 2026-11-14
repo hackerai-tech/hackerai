@@ -23,7 +23,9 @@ import {
   withDesktopRuntimeIdentity,
 } from "../desktop-runtime-identity";
 import {
+  NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
 } from "../native-authorization-diagnostics";
 
@@ -508,6 +510,188 @@ describe("native authorization send receipt", () => {
       telemetry_sample_rate: 1,
     });
   });
+
+  describe("closed IO cause", () => {
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+
+    it.each<Partial<NativeAuthorizationCauseDiagnostic>>([
+      {},
+      { native_authorization_cause_io_kind: "unexpected_eof" },
+      {
+        native_authorization_cause_io_kind: "other",
+        native_authorization_cause_source_depth: 8,
+      },
+      {
+        native_authorization_cause_io_kind: "not_exposed",
+        native_authorization_cause_source_depth: 0,
+      },
+      {
+        native_authorization_cause_io_kind: "not_exposed",
+        native_authorization_cause_source_depth: 8,
+        native_authorization_cause_source_chain_truncated: true,
+      },
+    ])(
+      "joins the cause to a valid v1 group on a terminal-error final: %p",
+      (change) => {
+        const expected = { ...cause, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: group,
+          nativeAuthorizationCause: { ...expected, message: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({ ...group, ...expected });
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_cause_message: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({ ...group, ...expected });
+        expect(causeKeys(enriched.properties)).toHaveLength(4);
+        expect(nativeKeys(enriched.properties)).toHaveLength(8);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("never reports a cause without a valid v1 group", () => {
+      for (const nativeAuthorization of [
+        undefined,
+        { ...group, native_authorization_send_elapsed_ms: 60_001 },
+      ]) {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization,
+          nativeAuthorizationCause: cause,
+        });
+        expect(final?.properties).toMatchObject({ terminalType: "error" });
+        expect(causeKeys(final!.properties)).toEqual([]);
+        expect(nativeKeys(final!.properties)).toEqual([]);
+        expect(
+          causeKeys(
+            enrich({ terminalType: "error", ...nativeAuthorization, ...cause })
+              .properties,
+          ),
+        ).toEqual([]);
+      }
+      // Nor on a successful or nonzero exit, a start or a summary.
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorization: group,
+        nativeAuthorizationCause: cause,
+      });
+      expect(causeKeys(exitFinal!.properties)).toEqual([]);
+      expect(
+        causeKeys(
+          enrich({ terminalType: "exit", ...group, ...cause }).properties,
+        ),
+      ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          causeKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...group, ...cause },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unsupported version", { native_authorization_cause_version: 2 }],
+      ["string version", { native_authorization_cause_version: "1" }],
+      ["missing version", { native_authorization_cause_version: undefined }],
+      [
+        "unlisted kind",
+        { native_authorization_cause_io_kind: "connection_refused" },
+      ],
+      ["private kind", { native_authorization_cause_io_kind: "PRIVATE" }],
+      ["missing kind", { native_authorization_cause_io_kind: undefined }],
+      ["unbounded depth", { native_authorization_cause_source_depth: 9 }],
+      ["negative depth", { native_authorization_cause_source_depth: -1 }],
+      ["fractional depth", { native_authorization_cause_source_depth: 1.5 }],
+      ["string depth", { native_authorization_cause_source_depth: "3" }],
+      [
+        "string truncation",
+        { native_authorization_cause_source_chain_truncated: "false" },
+      ],
+      [
+        "an exposed kind without a source link",
+        { native_authorization_cause_source_depth: 0 },
+      ],
+      [
+        "an exposed kind on a truncated walk",
+        { native_authorization_cause_source_chain_truncated: true },
+      ],
+      [
+        "a truncated walk shorter than the bound",
+        {
+          native_authorization_cause_io_kind: "not_exposed",
+          native_authorization_cause_source_depth: 7,
+          native_authorization_cause_source_chain_truncated: true,
+        },
+      ],
+    ])("drops only the cause for %s", (_case, change) => {
+      const invalid = { ...cause, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: group,
+        nativeAuthorizationCause: invalid,
+      });
+      // The original v1 diagnostic is unaffected.
+      expect(final?.properties).toMatchObject(group);
+      expect(causeKeys(final!.properties)).toEqual([]);
+      const enriched = enrich({ terminalType: "error", ...group, ...invalid });
+      expect(enriched.properties).toEqual({ terminalType: "error", ...group });
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    let reads = 0;
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? "connection_reset" : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s cause getter at before_send and keeps the v1 group",
+      (_case, get) => {
+        reads = 0;
+        const properties: Record<string, unknown> = {
+          terminalType: "error",
+          ...group,
+          ...cause,
+        };
+        Object.defineProperty(
+          properties,
+          "native_authorization_cause_io_kind",
+          { enumerable: true, get },
+        );
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties,
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(causeKeys(sanitized)).toEqual([]);
+        expect(sanitized).toEqual({ terminalType: "error", ...group });
+        expect(JSON.stringify(sanitized)).not.toContain("PRIVATE");
+      },
+    );
+  });
 });
 
 describe("volume reduction and reliability counters", () => {
@@ -791,6 +975,10 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       native_authorization_origin_class: "canonical_production",
       native_app_version: "PRIVATE",
       native_platform: "darwin",
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
     });
     expect(sent).toMatchObject(measured);
     expect(
@@ -811,16 +999,24 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       native_app_version: null,
       native_platform: "darwin",
     };
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
     telemetry.start({ connectionId: "connection", commandId: "receipt" })({
       ...result,
       terminalType: "error",
       terminalExitCode: null,
       nativeAuthorization: receipt,
+      nativeAuthorizationCause: cause,
     } as never);
     const final = capture.mock.calls.at(-1)![0];
     const sent = send(final.event, final.properties!);
     expect(sent).toMatchObject({
       ...receipt,
+      ...cause,
       native_app_version: "0.0.74",
       terminalType: "error",
       hackerai_frontend_build_commit: "a".repeat(40),

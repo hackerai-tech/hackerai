@@ -17,7 +17,10 @@ import {
 import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
-import { NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES } from "@/lib/analytics/native-authorization-diagnostics";
+import {
+  NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+} from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -5276,6 +5279,7 @@ describe("native authorization send receipt", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]).toHaveProperty("onEvent");
       expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(1);
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: unavailable }),
@@ -5355,10 +5359,300 @@ describe("native authorization send receipt", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toHaveProperty("onEvent");
     expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+    expect(calls[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
     expect(sequencedFrames(replies[0])).toEqual([
       expect.objectContaining({ type: "error", message: unavailable }),
     ]);
     expect(nativeKeys(finals()[0].properties)).toEqual([]);
+  });
+
+  describe("closed IO cause", () => {
+    const cause = {
+      version: 1,
+      ioKind: "connection_reset",
+      sourceDepth: 3,
+      sourceChainTruncated: false,
+    };
+    const causeGroup = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+    const channels = (call: NativeCall) => ({
+      receipt: call.onAuthorizationDiagnostic as MockChannel,
+      cause: call.onAuthorizationCauseDiagnostic as MockChannel,
+    });
+
+    it.each(["receipt first", "cause first"])(
+      "joins one cause from its own one-shot channel with %s",
+      async (order) => {
+        const { calls, replies } = await run(async (call) => {
+          const { receipt: v1, cause: v2 } = channels(call);
+          if (order === "receipt first") {
+            v1.onmessage!(receipt);
+            v2.onmessage!(cause);
+          } else {
+            v2.onmessage!(cause);
+            v1.onmessage!(receipt);
+          }
+          // Each latch closes only itself, on its own first attempt.
+          v1.onmessage!({ ...receipt, timeout: true });
+          v2.onmessage!({ ...cause, ioKind: "broken_pipe" });
+          return Promise.reject(unavailable);
+        });
+
+        expect(calls).toHaveLength(1);
+        const { receipt: v1, cause: v2 } = channels(calls[0]);
+        expect(v2).toBeDefined();
+        expect(v2).not.toBe(v1);
+        expect(v2).not.toBe(calls[0].onEvent);
+        expect(Object.keys(calls[0].message as object)).not.toContain(
+          "onAuthorizationCauseDiagnostic",
+        );
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: unavailable }),
+        ]);
+        expect(finals()).toHaveLength(1);
+        const final = finals()[0];
+        expect(final.properties).toMatchObject({
+          terminalType: "error",
+          native_authorization_send_timeout: false,
+          native_platform: "linux",
+          ...causeGroup,
+        });
+        expect(nativeKeys(final.properties)).toHaveLength(8);
+        const enriched = sanitizeDesktopAckEvent({
+          ...final,
+          properties: { ...final.properties, $current_url: "PRIVATE" },
+        });
+        expect(enriched.properties).toMatchObject(causeGroup);
+        expect(causeKeys(enriched.properties)).toHaveLength(4);
+        expect(JSON.stringify([captures(), enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("keeps the original v1 diagnostic when an older native app sends no cause", async () => {
+      await run((call) => {
+        channels(call).receipt.onmessage!(receipt);
+        return reject(unavailable);
+      });
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("reports no cause without the same invocation's v1 receipt", async () => {
+      await run((call) => {
+        channels(call).cause.onmessage!(cause);
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+      expect(nativeKeys(finals()[0].properties)).toEqual([]);
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an extra private field", () => ({ ...cause, message: "PRIVATE" })],
+      [
+        "a missing field",
+        () => ({ ...cause, sourceChainTruncated: undefined }),
+      ],
+      ["an unlisted kind", () => ({ ...cause, ioKind: "connection_refused" })],
+      ["a private kind", () => ({ ...cause, ioKind: "PRIVATE" })],
+      ["an unbounded depth", () => ({ ...cause, sourceDepth: 9 })],
+      [
+        "an exposed kind on a truncated walk",
+        () => ({ ...cause, sourceChainTruncated: true }),
+      ],
+      ["a v1 receipt on the cause channel", () => receipt],
+      ["a string", () => "PRIVATE"],
+      [
+        "a class instance",
+        () =>
+          Object.assign(Object.create({ message: "PRIVATE" }) as object, cause),
+      ],
+      [
+        "a throwing getter",
+        () => {
+          const hostile = { ...cause };
+          Object.defineProperty(hostile, "ioKind", {
+            enumerable: true,
+            get() {
+              throw new Error("PRIVATE");
+            },
+          });
+          return hostile;
+        },
+      ],
+      [
+        "a throwing proxy",
+        () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          return new Proxy(
+            {},
+            { getPrototypeOf: fail, ownKeys: fail, get: fail },
+          );
+        },
+      ],
+    ])(
+      "drops only the cause for %s and keeps the v1 diagnostic",
+      async (_case, value) => {
+        const { replies } = await run((call) => {
+          const { receipt: v1, cause: v2 } = channels(call);
+          v1.onmessage!(receipt);
+          v2.onmessage!(value());
+          // The malformed first attempt closed the cause latch.
+          v2.onmessage!(cause);
+          return reject(unavailable);
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: unavailable }),
+        ]);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(causeKeys(finals()[0].properties)).toEqual([]);
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("adds no cause to a successful command", async () => {
+      await run(async (call) => {
+        const { receipt: v1, cause: v2 } = channels(call);
+        v1.onmessage!(receipt);
+        v2.onmessage!(cause);
+        (call.onEvent as MockChannel).onmessage!({ type: "exit", exitCode: 0 });
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+      expect(nativeKeys(finals()[0].properties)).toEqual([]);
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a cause after settlement and releases both callbacks", async () => {
+      let call!: NativeCall;
+      await run((native) => {
+        call = native;
+        channels(call).receipt.onmessage!(receipt);
+        return reject(unavailable);
+      });
+      const { receipt: v1, cause: v2 } = channels(call);
+      expect(v1.cleanupCallback).toHaveBeenCalledTimes(1);
+      expect(v2.cleanupCallback).toHaveBeenCalledTimes(1);
+      v2.onmessage!(cause);
+      expect(finals()).toHaveLength(1);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a cause observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run((call) => {
+          const { receipt: v1, cause: v2 } = channels(call);
+          v1.onmessage!(receipt);
+          identity.mockReturnValue("another-user");
+          v2.onmessage!(cause);
+          identity.mockReturnValue("user-456");
+          v2.onmessage!(cause);
+          return reject(unavailable);
+        });
+        expect(finals()).toHaveLength(1);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(causeKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("drops a cause that arrives after the connection is stopped", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          channels(call).receipt.onmessage!(receipt);
+          await pending;
+          channels(call).cause.onmessage!(cause);
+          return reject(unavailable);
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("keeps interleaved invocations' causes separate", async () => {
+      let arrived = 0;
+      let release!: () => void;
+      const both = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          const { receipt: v1, cause: v2 } = channels(call);
+          const commandId = (call.message as { commandId: string }).commandId;
+          if (commandId === "reset") v2.onmessage!(cause);
+          if (++arrived === 2) release();
+          await both;
+          v1.onmessage!(receipt);
+          if (commandId === "eof")
+            v2.onmessage!({
+              ...cause,
+              ioKind: "unexpected_eof",
+              sourceDepth: 4,
+            });
+          return reject(unavailable);
+        },
+        { commandIds: ["reset", "eof", "v1-only"] },
+      );
+      const byCommand = Object.fromEntries(
+        finals().map((event) => [
+          event.properties!.commandId,
+          event.properties,
+        ]),
+      );
+      expect(byCommand.reset).toMatchObject(causeGroup);
+      expect(byCommand.eof).toMatchObject({
+        native_authorization_cause_io_kind: "unexpected_eof",
+        native_authorization_cause_source_depth: 4,
+      });
+      expect(nativeKeys(byCommand["v1-only"])).toHaveLength(8);
+      expect(causeKeys(byCommand["v1-only"])).toEqual([]);
+    });
+
+    it("keeps the v1 channel when only the cause channel cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const create = jest.mocked(Channel).getMockImplementation()!;
+      jest
+        .mocked(Channel)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+      const { calls } = await run((call) => {
+        channels(call).receipt.onmessage!(receipt);
+        return reject(unavailable);
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toEqual([]);
+    });
   });
 
   it.each<
@@ -5392,9 +5686,10 @@ describe("native authorization send receipt", () => {
     async (_case, options, native) => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
-      // Only a possible authorized acknowledged invocation constructs it.
+      // Only a possible authorized acknowledged invocation constructs the
+      // optional receipt and cause channels besides the output channel.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 2,
+        options?.version || options?.acknowledged === false ? 1 : 3,
       );
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",
@@ -5405,10 +5700,14 @@ describe("native authorization send receipt", () => {
       if (options?.acknowledged === false) {
         expect(authorized).toHaveLength(1);
         expect(authorized[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+        expect(authorized[0]).not.toHaveProperty(
+          "onAuthorizationCauseDiagnostic",
+        );
       } else {
         expect(legacy).toHaveLength(1);
         expect(legacy[0]).toHaveProperty("onEvent");
         expect(legacy[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+        expect(legacy[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
         expect(authorized).toHaveLength(options?.version ? 0 : 1);
       }
     },

@@ -1,5 +1,7 @@
 import {
+  NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
 } from "./native-authorization-diagnostics";
 
@@ -135,25 +137,37 @@ export function sanitizeDesktopAckEvent<
       event.event === "desktop_ack_command_settled" &&
       event.properties.terminalType === "error" &&
       readNativeAuthorizationDiagnostic(event.properties) !== null;
+    // The cause group joins only a valid v1 group, and only as the validated
+    // data copy. The original cause properties are never read (a getter never
+    // runs) or forwarded.
+    const nativeAuthorizationCause = nativeAuthorization
+      ? readNativeAuthorizationCause(event.properties)
+      : null;
+    const properties = event.properties;
     event.properties = Object.fromEntries(
-      Object.entries(event.properties).filter(
-        ([key, value]) =>
-          (NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key)
-            ? nativeAuthorization
-            : (event.event === "desktop_ack_delivery_summary"
-                ? SUMMARY_PROPERTIES
-                : ALLOWED_PROPERTIES
-              ).has(key)) &&
-          (!AGE_PROPERTIES.has(key) ||
-            (event.event === "desktop_ack_command_settled" &&
-              isDesktopAckAge(value))) &&
-          (key !== "stopSource" ||
-            (event.event === "desktop_ack_command_settled" &&
-              event.properties?.reason === "stopped" &&
-              event.properties?.outcome === "incomplete" &&
-              isDesktopAckStopSource(value))),
-      ),
+      Object.keys(properties)
+        .filter((key) => !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key))
+        .map((key) => [key, properties[key]] as const)
+        .filter(
+          ([key, value]) =>
+            (NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key)
+              ? nativeAuthorization
+              : (event.event === "desktop_ack_delivery_summary"
+                  ? SUMMARY_PROPERTIES
+                  : ALLOWED_PROPERTIES
+                ).has(key)) &&
+            (!AGE_PROPERTIES.has(key) ||
+              (event.event === "desktop_ack_command_settled" &&
+                isDesktopAckAge(value))) &&
+            (key !== "stopSource" ||
+              (event.event === "desktop_ack_command_settled" &&
+                event.properties?.reason === "stopped" &&
+                event.properties?.outcome === "incomplete" &&
+                isDesktopAckStopSource(value))),
+        ),
     );
+    if (nativeAuthorizationCause)
+      Object.assign(event.properties, nativeAuthorizationCause);
   }
   delete event.$set;
   delete event.$set_once;

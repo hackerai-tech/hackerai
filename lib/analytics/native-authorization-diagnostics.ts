@@ -3,6 +3,11 @@
  * native binary's compiled platform: never error text, URLs, identifiers,
  * commands or output. A missing receipt means unknown (for example an older
  * native app), not a successful send.
+ *
+ * A newer native app also sends a separate cause receipt on its own channel:
+ * the closed kind of the first IO error in a bounded walk of the send error's
+ * sources. It is a transport class, not the customer's physical network cause,
+ * and it is only reported together with a valid v1 receipt.
  */
 
 const ORIGIN_CLASSES = [
@@ -24,8 +29,30 @@ const RECEIPT_KEYS = [
   "platform",
 ] as const;
 
+const IO_KINDS = [
+  "connection_reset",
+  "connection_aborted",
+  "broken_pipe",
+  "unexpected_eof",
+  "timed_out",
+  "not_connected",
+  "permission_denied",
+  "invalid_data",
+  "invalid_input",
+  "other",
+  "not_exposed",
+] as const;
+const MAX_SOURCE_DEPTH = 8;
+const CAUSE_KEYS = [
+  "version",
+  "ioKind",
+  "sourceDepth",
+  "sourceChainTruncated",
+] as const;
+
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
+type IoKind = (typeof IO_KINDS)[number];
 
 export interface NativeAuthorizationSendReceipt {
   readonly timeout: boolean;
@@ -61,6 +88,46 @@ export const NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES: ReadonlySet<string> =
     "native_platform",
   ]);
 
+export interface NativeAuthorizationSendCause {
+  readonly ioKind: IoKind;
+  readonly sourceDepth: number;
+  readonly sourceChainTruncated: boolean;
+}
+
+export interface NativeAuthorizationCauseDiagnostic {
+  readonly native_authorization_cause_version: 1;
+  readonly native_authorization_cause_io_kind: IoKind;
+  readonly native_authorization_cause_source_depth: number;
+  readonly native_authorization_cause_source_chain_truncated: boolean;
+}
+
+const CAUSE_PROPERTIES = [
+  "native_authorization_cause_version",
+  "native_authorization_cause_io_kind",
+  "native_authorization_cause_source_depth",
+  "native_authorization_cause_source_chain_truncated",
+] as const satisfies readonly (keyof NativeAuthorizationCauseDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_CAUSE_PROPERTIES: ReadonlySet<string> =
+  new Set(CAUSE_PROPERTIES);
+
+/** The native walk's invariants: an exposed IO error ends the walk at depth
+ * 1..8; only an unexposed walk of all 8 links can be truncated. */
+const isCause = (
+  ioKind: unknown,
+  sourceDepth: unknown,
+  sourceChainTruncated: unknown,
+): boolean =>
+  IO_KINDS.some((kind) => kind === ioKind) &&
+  typeof sourceDepth === "number" &&
+  Number.isSafeInteger(sourceDepth) &&
+  sourceDepth >= 0 &&
+  sourceDepth <= MAX_SOURCE_DEPTH &&
+  typeof sourceChainTruncated === "boolean" &&
+  (ioKind === "not_exposed"
+    ? !sourceChainTruncated || sourceDepth === MAX_SOURCE_DEPTH
+    : sourceDepth >= 1 && !sourceChainTruncated);
+
 const isElapsed = (value: unknown): value is number =>
   typeof value === "number" &&
   Number.isSafeInteger(value) &&
@@ -77,29 +144,42 @@ const isReceiptPlatform = (
 ): value is (typeof RECEIPT_PLATFORMS)[number] =>
   RECEIPT_PLATFORMS.some((platform) => platform === value);
 
+/** The values of exactly `keys` as plain data properties, or null. */
+function readClosedObject(
+  value: unknown,
+  keys: readonly string[],
+): unknown[] | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    return null;
+  const own = Object.getOwnPropertyNames(value);
+  if (
+    own.length !== keys.length ||
+    Object.getOwnPropertySymbols(value).length > 0 ||
+    !keys.every((key) => own.includes(key))
+  )
+    return null;
+  return readDataProperties(value, keys);
+}
+
+/** Data properties only: never run a getter from untrusted input. */
+function readDataProperties(source: object, keys: readonly string[]) {
+  return keys.map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  });
+}
+
 /** Copy only the closed native schema; anything else is dropped. */
 export function parseNativeAuthorizationSendReceipt(
   value: unknown,
 ): NativeAuthorizationSendReceipt | null {
   try {
-    if (
-      typeof value !== "object" ||
-      value === null ||
-      Object.getPrototypeOf(value) !== Object.prototype
-    )
-      return null;
-    const keys = Object.getOwnPropertyNames(value);
-    if (
-      keys.length !== RECEIPT_KEYS.length ||
-      Object.getOwnPropertySymbols(value).length > 0 ||
-      !RECEIPT_KEYS.every((key) => keys.includes(key))
-    )
-      return null;
-    // Data properties only: never run a getter from untrusted input.
-    const read = (key: (typeof RECEIPT_KEYS)[number]) => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor && "value" in descriptor ? descriptor.value : undefined;
-    };
+    const values = readClosedObject(value, RECEIPT_KEYS);
+    if (!values) return null;
     const [
       version,
       timeout,
@@ -108,7 +188,7 @@ export function parseNativeAuthorizationSendReceipt(
       elapsedMs,
       originClass,
       platform,
-    ] = RECEIPT_KEYS.map(read);
+    ] = values;
     if (
       version !== 1 ||
       typeof timeout !== "boolean" ||
@@ -190,4 +270,57 @@ export function readNativeAuthorizationDiagnostic(
     (group.native_platform === null || isNativePlatform(group.native_platform))
     ? (Object.freeze(group) as NativeAuthorizationDiagnostic)
     : null;
+}
+
+/** Copy only the closed native cause schema; anything else is dropped. */
+export function parseNativeAuthorizationSendCause(
+  value: unknown,
+): NativeAuthorizationSendCause | null {
+  try {
+    const values = readClosedObject(value, CAUSE_KEYS);
+    if (!values) return null;
+    const [version, ioKind, sourceDepth, sourceChainTruncated] = values;
+    if (version !== 1 || !isCause(ioKind, sourceDepth, sourceChainTruncated))
+      return null;
+    return Object.freeze({
+      ioKind,
+      sourceDepth,
+      sourceChainTruncated,
+    } as NativeAuthorizationSendCause);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationCauseDiagnostic(
+  cause: NativeAuthorizationSendCause,
+): NativeAuthorizationCauseDiagnostic {
+  return Object.freeze({
+    native_authorization_cause_version: 1,
+    native_authorization_cause_io_kind: cause.ioKind,
+    native_authorization_cause_source_depth: cause.sourceDepth,
+    native_authorization_cause_source_chain_truncated:
+      cause.sourceChainTruncated,
+  });
+}
+
+/** Read the complete cause group from any property bag's own data properties,
+ * or nothing at all. Callers join it only to a valid v1 group. */
+export function readNativeAuthorizationCause(
+  source: unknown,
+): NativeAuthorizationCauseDiagnostic | null {
+  if (typeof source !== "object" || source === null) return null;
+  try {
+    const [version, ioKind, sourceDepth, sourceChainTruncated] =
+      readDataProperties(source, CAUSE_PROPERTIES);
+    return version === 1 && isCause(ioKind, sourceDepth, sourceChainTruncated)
+      ? nativeAuthorizationCauseDiagnostic({
+          ioKind,
+          sourceDepth,
+          sourceChainTruncated,
+        } as NativeAuthorizationSendCause)
+      : null;
+  } catch {
+    return null;
+  }
 }
