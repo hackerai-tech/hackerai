@@ -73,11 +73,27 @@ jest.mock("../../stripe", () => ({
 
 function makeRequest(body: Record<string, unknown> = {}) {
   return {
+    url: "https://hackerai.example/api/subscription-details",
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
     json: jest.fn().mockResolvedValue(body),
   } as any;
 }
 
 describe("POST /api/subscription-details", () => {
+  it("rejects a sibling-origin plan change before authentication", async () => {
+    const request = makeRequest({ plan: "pro-monthly-plan", confirm: true });
+    request.headers.set("origin", "https://evil.hackerai.example");
+    request.headers.set("content-type", "text/plain");
+
+    const { POST } = await import("../route");
+    expect((await POST(request)).status).toBe(403);
+    expect(mockGetUserIDAndPro).not.toHaveBeenCalled();
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockHasActiveSuspensionForUser.mockResolvedValue(false);

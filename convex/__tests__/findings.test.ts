@@ -2,6 +2,7 @@ jest.mock("../_generated/api", () => ({
   internal: {
     findingRetests: { deleteForFinding: "deleteFindingRetests" },
     findingAgentRetests: { deleteForFinding: "deleteFindingAgentRetests" },
+    findingHunts: { deleteForFinding: "deleteFindingHunts" },
     findings: {
       backfillFindingProjects: "backfillFindingProjects",
       syncChatFindingProject: "syncChatFindingProject",
@@ -357,6 +358,11 @@ describe("findings Convex lifecycle", () => {
     expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
       0,
       "deleteFindingAgentRetests",
+      { findingId: result.finding_id, userId: expect.any(String) },
+    );
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "deleteFindingHunts",
       { findingId: result.finding_id, userId: expect.any(String) },
     );
   });

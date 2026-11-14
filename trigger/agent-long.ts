@@ -1,5 +1,10 @@
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import {
+  getLatestUserTaskText,
+  isNotesRelevantRecallEnabled,
+} from "@/lib/notes/recall";
+import { isFindingHuntsEnabled } from "@/lib/findings/hunt-policy";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
 import { judgeGoalCompletion, retainGoalRunMessages } from "@/lib/goals/judge";
@@ -399,6 +404,7 @@ import {
   extractAgentAutoReviewAuthorizationContext,
   extractAgentAutoReviewConversationContext,
 } from "@/lib/chat/agent-auto-review";
+import { createAgentApprovalSessionWaits } from "@/lib/chat/agent-approval-session-waits";
 import {
   AgentAutoReviewEntitlementRevalidationUnavailableError,
   buildAgentToolApprovalRequester,
@@ -1996,6 +2002,7 @@ export const agentLongTask = task({
       }
     };
     let cleanupBrowserSessions = async () => {};
+    const approvalSessionWaits = createAgentApprovalSessionWaits();
     let approvalSessionClosed = false;
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
@@ -2423,7 +2430,12 @@ export const agentLongTask = task({
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
       const findingRetestAssignment = isFindingRetestsEnabled(userId);
+      const findingHuntAssignment = isFindingHuntsEnabled(userId);
       const notesEnabled = userCustomization?.include_notes ?? true;
+      // Evaluated once per task run and shared by the tools and recall.
+      const notesRecallAssignment = notesEnabled
+        ? isNotesRelevantRecallEnabled(userId)
+        : Promise.resolve(false);
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -3101,6 +3113,7 @@ export const agentLongTask = task({
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode,
               approvalSessionId,
+              approvalSessionWaits,
               writer,
               chatId,
               userId,
@@ -3203,6 +3216,8 @@ export const agentLongTask = task({
                 triggerRegion,
                 environment: ctx.environment.type,
                 findingRetestToolsEnabled: await findingRetestAssignment,
+                notesRelevantRecallEnabled: await notesRecallAssignment,
+                findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
                 onBrowserOwnershipLost: () =>
@@ -3456,6 +3471,12 @@ export const agentLongTask = task({
               userId,
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
+              relevantRecall: (await notesRecallAssignment)
+                ? {
+                    taskText: getLatestUserTaskText(truncatedMessages),
+                    projectId: projectContext.projectId,
+                  }
+                : undefined,
             };
             const trackedProvider = createTrackedProvider();
             const [baseSystemPrompt, messagesWithNotes] = await Promise.all([
@@ -6410,6 +6431,24 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      // Close the shared approval inbox first: the close record wakes this run's
+      // and its children's pending waits even if a wake send failed.
+      if (payload.approvalSessionId && triggerSessions) {
+        try {
+          await triggerSessions.close(payload.approvalSessionId, {
+            reason: "agent-run-ended",
+          });
+          approvalSessionClosed = true;
+        } catch (error) {
+          console.error(
+            "[agent-long] failed to close approval session:",
+            error,
+          );
+        }
+      }
+      // A stopped stream can stop awaiting a tool callback that still holds a
+      // Session waitpoint. Settle every started wait before the task returns.
+      await approvalSessionWaits.finish();
       // Fill only missing reports; never repeat billing or manufacture a full cost.
       let reportingUsage:
         ReturnType<typeof triggerUsage.getCurrent> | undefined;
@@ -6453,19 +6492,6 @@ export const agentLongTask = task({
         ).catch(() => undefined);
       }
       await ptySessionManager.closeAll(chatId).catch(() => undefined);
-      if (payload.approvalSessionId && triggerSessions) {
-        try {
-          await triggerSessions.close(payload.approvalSessionId, {
-            reason: "agent-run-ended",
-          });
-          approvalSessionClosed = true;
-        } catch (error) {
-          console.error(
-            "[agent-long] failed to close approval session:",
-            error,
-          );
-        }
-      }
       await cleanupBrowserSessions();
       await finishE2BIdleLeaseRelease?.().catch((error) => {
         triggerLogger.warn("[agent-long] E2B idle lease release failed", {

@@ -12,8 +12,16 @@ import {
   type DesktopAckStopSource,
 } from "./desktop-ack-privacy";
 import {
+  readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationMitigation,
+  readNativeAuthorizationResponse,
+  readNativeAuthorizationTransport,
+  type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationMitigationDiagnostic,
+  type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationTransportDiagnostic,
 } from "./native-authorization-diagnostics";
 
 interface DesktopAckContext {
@@ -27,6 +35,14 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   terminalExitCode?: number | null;
   /** Same-invocation native send receipt; only for a terminal error. */
   nativeAuthorization?: NativeAuthorizationDiagnostic;
+  /** Same-invocation closed IO cause; only joined to a valid send receipt. */
+  nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
+  /** Same-invocation transport detail; only joined to a valid send receipt. */
+  nativeAuthorizationTransport?: NativeAuthorizationTransportDiagnostic;
+  /** Same-invocation approval rejection; independent of the send groups. */
+  nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
+  /** Same response's mitigation marker; only joined to a valid response. */
+  nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -257,6 +273,21 @@ export class DesktopAckTelemetry {
         result.terminalType === "error"
           ? readNativeAuthorizationDiagnostic(result.nativeAuthorization)
           : null;
+      const nativeAuthorizationCause = nativeAuthorization
+        ? readNativeAuthorizationCause(result.nativeAuthorizationCause)
+        : null;
+      const nativeAuthorizationTransport = nativeAuthorization
+        ? readNativeAuthorizationTransport(result.nativeAuthorizationTransport)
+        : null;
+      const nativeAuthorizationResponse =
+        result.terminalType === "error"
+          ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
+          : null;
+      const nativeAuthorizationMitigation = nativeAuthorizationResponse
+        ? readNativeAuthorizationMitigation(
+            result.nativeAuthorizationMitigation,
+          )
+        : null;
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -291,6 +322,10 @@ export class DesktopAckTelemetry {
             publishInFlightAgeMs: result.publishInFlightAgeMs,
           }),
           ...nativeAuthorization,
+          ...nativeAuthorizationCause,
+          ...nativeAuthorizationTransport,
+          ...nativeAuthorizationResponse,
+          ...nativeAuthorizationMitigation,
         },
         dedupeKey,
       );

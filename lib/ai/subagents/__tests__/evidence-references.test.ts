@@ -1,6 +1,12 @@
 import { describe, expect, it, jest, afterEach } from "@jest/globals";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnySandbox } from "@/types";
@@ -68,6 +74,41 @@ function setup(result = finding(), kind: "e2b" | "local" | "desktop" = "e2b") {
 afterEach(() => jest.useRealTimers());
 
 describe("saved evidence verification", () => {
+  it("does not import a child-controlled Python module during evidence checks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "evidence-python-isolation-"));
+    const evidence = join(dir, "capture.http");
+    const marker = join(dir, "shadow-ran");
+    writeFileSync(evidence, "synthetic evidence");
+    writeFileSync(
+      join(dir, "json.py"),
+      `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('ran')\n`,
+    );
+    const { args, run } = setup(finding([evidence]), "local");
+    run.mockImplementation(async (...call) => {
+      const command = call[0] as string;
+      const options = call[1] as { envVars?: Record<string, string> };
+      return {
+        stdout: execFileSync("/bin/bash", ["-c", command], {
+          cwd: dir,
+          encoding: "utf8",
+          env: { ...process.env, PYTHONPATH: dir, ...options.envVars },
+          timeout: 5000,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    try {
+      expect(await verifyResultEvidence(args)).toMatchObject({
+        accepted: true,
+        result: { evidence_refs: [evidence] },
+      });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each(["e2b", "local"] as const)(
     "checks real files through the %s command environment contract",
     async (kind) => {

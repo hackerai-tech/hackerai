@@ -43,6 +43,16 @@ describe("free desktop sandbox selection", () => {
     ).toBe("desktop");
   });
 
+  it("does not silently choose a newly connected CLI runner", () => {
+    expect(
+      resolveFreeDesktopSandboxPreference({
+        sandboxPreference: "e2b",
+        desktopBridgeActive: false,
+        localConnections: [remoteConnection],
+      }),
+    ).toBe("desktop");
+  });
+
   it("waits for connection discovery before replacing a stored remote runner", () => {
     expect(
       resolveFreeDesktopSandboxPreference({

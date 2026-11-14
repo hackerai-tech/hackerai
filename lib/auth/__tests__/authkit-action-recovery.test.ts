@@ -1,5 +1,7 @@
+import { createHash, webcrypto } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { TextEncoder } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 
@@ -8,7 +10,22 @@ import ts from "typescript";
 describe.each(["src/actions.ts", "dist/esm/actions.js"])(
   "AuthKit %s",
   (file) => {
-    function loadActions(error?: unknown) {
+    // The VM context has no platform globals; supply the server's Web Crypto.
+    const platformGlobals = { crypto: webcrypto, TextEncoder };
+    const spyCrypto = () => {
+      const digest = jest.fn((algorithm: string, data: Uint8Array) =>
+        webcrypto.subtle.digest(algorithm, data),
+      );
+      return {
+        digest,
+        globals: { crypto: { subtle: { digest } }, TextEncoder },
+      };
+    };
+
+    function loadActions(
+      error?: unknown,
+      globals: Record<string, unknown> = platformGlobals,
+    ) {
       const auth = jest.fn(async () => {
         if (error) throw error;
         return {
@@ -58,6 +75,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
           return dependencies[name];
         },
         console: { warn },
+        ...globals,
       });
       return { actions, auth, organization, warn };
     }
@@ -150,8 +168,11 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       },
     );
 
-    async function refreshWarningDiagnostics(error: unknown) {
-      const { actions, auth, organization, warn } = loadActions(error);
+    async function refreshWarningDiagnostics(
+      error: unknown,
+      globals?: Record<string, unknown>,
+    ) {
+      const { actions, auth, organization, warn } = loadActions(error, globals);
       const result = await actions.refreshAccessTokenAction();
       expect(Object.keys(result)).toEqual(["accessToken", "error"]);
       expect(result).toEqual({
@@ -198,6 +219,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       requestIdShape: string,
       retryAfter: number | null,
       retryAfterShape: string,
+      [sessionFingerprint, sessionShape]: [string | null, string],
     ) => ({
       ...coarse,
       auth_action_refresh_rate_limit_diagnostic_version: 1,
@@ -205,7 +227,15 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       auth_action_refresh_rate_limit_request_id_shape: requestIdShape,
       auth_action_refresh_rate_limit_retry_after_seconds: retryAfter,
       auth_action_refresh_rate_limit_retry_after_shape: retryAfterShape,
+      auth_action_refresh_rate_limit_session_diagnostic_version: 1,
+      auth_action_refresh_rate_limit_session_fingerprint: sessionFingerprint,
+      auth_action_refresh_rate_limit_session_shape: sessionShape,
     });
+    // Raw session IDs start at a word boundary; field names contain "_session_".
+    const privateText = /canary|user_|\bsession_/i;
+    // SDK canary session IDs are not WorkOS-shaped and are never hashed.
+    const unrecognizedSession: [null, string] = [null, "unrecognized"];
+    const absentSession: [null, string] = [null, "absent"];
     const selfCycle = Object.assign(new Error("Canary server text"), {
       name: "GenericServerException",
       status: 700,
@@ -242,6 +272,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
           "invalid",
           30,
           "valid",
+          unrecognizedSession,
         ),
       },
       {
@@ -320,7 +351,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
       "adds only fixed refresh failure metadata to the existing warning: $case",
       async ({ error, expected }) => {
         const diagnostics = await refreshWarningDiagnostics(error);
-        expect(diagnostics).not.toMatch(/canary|req_|user_|session_/i);
+        expect(diagnostics).not.toMatch(/canary|req_|user_|\bsession_/i);
         expect(JSON.parse(diagnostics)).toEqual(expected);
       },
     );
@@ -379,9 +410,16 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
         const diagnostics = await refreshWarningDiagnostics(
           tokenRefreshError(rateLimit(`req_${ulid}`, 30)),
         );
-        expect(diagnostics).not.toMatch(/canary|user_|session_/i);
+        expect(diagnostics).not.toMatch(privateText);
         expect(JSON.parse(diagnostics)).toEqual(
-          withRateLimit(wrapped, `req_${ulid}`, "valid", 30, "valid"),
+          withRateLimit(
+            wrapped,
+            `req_${ulid}`,
+            "valid",
+            30,
+            "valid",
+            unrecognizedSession,
+          ),
         );
       });
 
@@ -412,7 +450,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
           const diagnostics = await refreshWarningDiagnostics(
             tokenRefreshError(rateLimit(requestID, retryAfter)),
           );
-          expect(diagnostics).not.toMatch(/canary|user_|session_/i);
+          expect(diagnostics).not.toMatch(privateText);
           expect(JSON.parse(diagnostics)).toEqual(
             withRateLimit(
               wrapped,
@@ -420,6 +458,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
               requestIdShape,
               retryAfterShape === "valid" ? (retryAfter as number) : null,
               retryAfterShape,
+              unrecognizedSession,
             ),
           );
         },
@@ -434,7 +473,16 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
               ),
             ),
           ),
-        ).toEqual(withRateLimit(wrapped, null, "unreadable", 30, "valid"));
+        ).toEqual(
+          withRateLimit(
+            wrapped,
+            null,
+            "unreadable",
+            30,
+            "valid",
+            unrecognizedSession,
+          ),
+        );
         expect(
           JSON.parse(
             await refreshWarningDiagnostics(
@@ -443,15 +491,28 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
               ),
             ),
           ),
-        ).toEqual(withRateLimit(wrapped, uuid, "valid", null, "unreadable"));
+        ).toEqual(
+          withRateLimit(
+            wrapped,
+            uuid,
+            "valid",
+            null,
+            "unreadable",
+            unrecognizedSession,
+          ),
+        );
       });
 
       it("reads only the root or its immediate cause, preferring the cause", async () => {
         const selfCause = rateLimit(ulid, 5);
         selfCause.cause = selfCause;
-        for (const error of [rateLimit(ulid, 5), selfCause])
+        // An unwrapped 429 has no SDK session context, so it is never read.
+        for (const error of [
+          withThrowingGetter(rateLimit(ulid, 5), "sessionId"),
+          selfCause,
+        ])
           expect(JSON.parse(await refreshWarningDiagnostics(error))).toEqual(
-            withRateLimit(unwrapped, ulid, "valid", 5, "valid"),
+            withRateLimit(unwrapped, ulid, "valid", 5, "valid", absentSession),
           );
 
         const both = Object.assign(rateLimit(ulid, 5), {
@@ -464,7 +525,134 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
             "valid",
             7,
             "valid",
+            absentSession,
           ),
+        );
+      });
+
+      describe("original session fingerprint", () => {
+        const sessionId = `session_${ulid}`;
+        const otherSessionId = `session_${ulid.slice(0, -1)}B`;
+        // Fixed fixture, checked against Node's hash module rather than the
+        // Web Crypto path the SDK uses.
+        const expectedFingerprint = "eaea9c5efcf91b3c278f89a470a68a3d";
+        const fingerprint = (id: string) =>
+          createHash("sha256")
+            .update(`hackerai:auth-refresh-429-session:v1:${id}`)
+            .digest("hex")
+            .slice(0, 32);
+        const withSession = (session: [string | null, string]) =>
+          withRateLimit(wrapped, uuid, "valid", 30, "valid", session);
+        const sessionWarning = (
+          sessionIdValue: unknown,
+          globals?: Record<string, unknown>,
+        ) =>
+          refreshWarningDiagnostics(
+            Object.assign(tokenRefreshError(rateLimit(uuid, 30)), {
+              sessionId: sessionIdValue,
+            }),
+            globals,
+          );
+
+        it("emits a stable one-way fingerprint that distinguishes sessions", async () => {
+          expect(fingerprint(sessionId)).toBe(expectedFingerprint);
+          const { digest, globals } = spyCrypto();
+          const first = await sessionWarning(sessionId, globals);
+          expect(digest).toHaveBeenCalledTimes(1);
+          expect(digest.mock.calls[0][0]).toBe("SHA-256");
+          expect(first).not.toContain(ulid);
+          expect(first).not.toMatch(privateText);
+          expect(JSON.parse(first)).toEqual(
+            withSession([expectedFingerprint, "valid"]),
+          );
+          expect(JSON.parse(await sessionWarning(sessionId))).toEqual(
+            withSession([expectedFingerprint, "valid"]),
+          );
+          expect(JSON.parse(await sessionWarning(otherSessionId))).toEqual(
+            withSession([fingerprint(otherSessionId), "valid"]),
+          );
+          expect(fingerprint(otherSessionId)).not.toBe(expectedFingerprint);
+        });
+
+        it.each<[unknown, string]>([
+          [undefined, "absent"],
+          [null, "absent"],
+          ["", "unrecognized"],
+          ["session_canary", "unrecognized"],
+          [ulid, "unrecognized"],
+          [`user_${ulid}`, "unrecognized"],
+          [`sess_${ulid}`, "unrecognized"],
+          [`Session_${ulid}`, "unrecognized"],
+          [`session_${ulid.toLowerCase()}`, "unrecognized"],
+          [`session_8${ulid.slice(1)}`, "unrecognized"],
+          [`session_${ulid.slice(0, -1)}I`, "unrecognized"],
+          [`${sessionId}0`, "unrecognized"],
+          [`${sessionId}\n`, "unrecognized"],
+          [` ${sessionId}`, "unrecognized"],
+          [12345, "unrecognized"],
+          [{ toString: () => sessionId }, "unrecognized"],
+        ])(
+          "hashes only WorkOS-shaped session IDs: %j",
+          async (value, shape) => {
+            const { digest, globals } = spyCrypto();
+            const diagnostics = await sessionWarning(value, globals);
+            expect(digest).not.toHaveBeenCalled();
+            expect(diagnostics).not.toContain(ulid);
+            expect(JSON.parse(diagnostics)).toEqual(withSession([null, shape]));
+          },
+        );
+
+        it("closes a throwing session getter without hashing", async () => {
+          const { digest, globals } = spyCrypto();
+          const diagnostics = await refreshWarningDiagnostics(
+            withThrowingGetter(
+              tokenRefreshError(rateLimit(uuid, 30)),
+              "sessionId",
+            ),
+            globals,
+          );
+          expect(digest).not.toHaveBeenCalled();
+          expect(JSON.parse(diagnostics)).toEqual(
+            withSession([null, "unreadable"]),
+          );
+        });
+
+        it.each<[string, Record<string, unknown>]>([
+          ["missing crypto", { crypto: undefined, TextEncoder }],
+          ["missing subtle crypto", { crypto: {}, TextEncoder }],
+          [
+            "missing TextEncoder",
+            { crypto: webcrypto, TextEncoder: undefined },
+          ],
+          [
+            "throwing digest",
+            {
+              crypto: { subtle: { digest: throwingGetter } },
+              TextEncoder,
+            },
+          ],
+          [
+            "rejecting digest",
+            {
+              crypto: {
+                subtle: {
+                  digest: async () => {
+                    throw new Error("digest canary");
+                  },
+                },
+              },
+              TextEncoder,
+            },
+          ],
+        ])(
+          "keeps the warning and result when Web Crypto fails: %s",
+          async (_, globals) => {
+            const diagnostics = await sessionWarning(sessionId, globals);
+            expect(diagnostics).not.toContain(ulid);
+            expect(JSON.parse(diagnostics)).toEqual(
+              withSession([null, "crypto_unavailable"]),
+            );
+          },
         );
       });
 
@@ -495,7 +683,7 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
           kind: ["Error", null, "absent", "none"],
         },
       ])(
-        "does not read request metadata from non-selected errors: $case",
+        "does not read request or session metadata from non-selected errors: $case",
         async ({ cause, kind }) => {
           const read = jest.fn();
           const immediate = cause();
@@ -505,10 +693,15 @@ describe.each(["src/actions.ts", "dist/esm/actions.js"])(
                 Object.defineProperty(target, key, {
                   get: () => read(key),
                 });
-          const diagnostics = await refreshWarningDiagnostics(
+          const root = Object.defineProperty(
             tokenRefreshError(immediate),
+            "sessionId",
+            { get: () => read("sessionId") },
           );
+          const { digest, globals } = spyCrypto();
+          const diagnostics = await refreshWarningDiagnostics(root, globals);
           expect(read).not.toHaveBeenCalled();
+          expect(digest).not.toHaveBeenCalled();
           expect(JSON.parse(diagnostics)).toEqual(
             metadata(
               ["TokenRefreshError", null, "absent", "none"],
