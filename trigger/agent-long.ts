@@ -1,5 +1,9 @@
 import { clearFinishedAgentRun } from "@/lib/api/agent-run-cleanup";
 import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import {
+  getLatestUserTaskText,
+  isNotesRelevantRecallEnabled,
+} from "@/lib/notes/recall";
 import { isFindingHuntsEnabled } from "@/lib/findings/hunt-policy";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { goalExecutionInstructions } from "@/lib/goals/commands";
@@ -2428,6 +2432,10 @@ export const agentLongTask = task({
       const findingRetestAssignment = isFindingRetestsEnabled(userId);
       const findingHuntAssignment = isFindingHuntsEnabled(userId);
       const notesEnabled = userCustomization?.include_notes ?? true;
+      // Evaluated once per task run and shared by the tools and recall.
+      const notesRecallAssignment = notesEnabled
+        ? isNotesRelevantRecallEnabled(userId)
+        : Promise.resolve(false);
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
         mode,
@@ -3208,6 +3216,7 @@ export const agentLongTask = task({
                 triggerRegion,
                 environment: ctx.environment.type,
                 findingRetestToolsEnabled: await findingRetestAssignment,
+                notesRelevantRecallEnabled: await notesRecallAssignment,
                 findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
@@ -3462,6 +3471,12 @@ export const agentLongTask = task({
               userId,
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
+              relevantRecall: (await notesRecallAssignment)
+                ? {
+                    taskText: getLatestUserTaskText(truncatedMessages),
+                    projectId: projectContext.projectId,
+                  }
+                : undefined,
             };
             const trackedProvider = createTrackedProvider();
             const [baseSystemPrompt, messagesWithNotes] = await Promise.all([

@@ -55,12 +55,15 @@ describe("prompt notes read budget", () => {
       });
       expect(result).toHaveLength(count);
       expect(db.reads()).toBe(count);
+      // Scope is part of the index range, so scoped notes cannot consume reads.
       expect(db.withIndex).toHaveBeenCalledWith(
-        "by_user_and_category_and_updated",
+        "by_user_and_project_and_target_and_category_and_updated",
         expect.any(Function),
       );
       expect(db.range.eq.mock.calls).toEqual([
         ["user_id", "user-1"],
+        ["project_id", undefined],
+        ["target", undefined],
         ["category", "general"],
       ]);
       expect(db.order).toHaveBeenCalledWith("desc");
