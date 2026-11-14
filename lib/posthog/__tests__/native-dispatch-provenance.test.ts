@@ -611,21 +611,26 @@ it("limits stackless DOMException context to the retained bounded mechanism", ()
   ).not.toHaveProperty("hackerai_nearby_dispatch_group");
 });
 
-const anonymousReferenceEntry = () => ({
+const anonymousReferenceEntry = (frameCount = 2) => ({
   type: "ReferenceError",
   value: "PRIVATE_identifier is not defined",
   mechanism: { handled: false, synthetic: false, type: "generic" },
   stacktrace: {
-    frames: [
-      { filename: "<anonymous>", in_app: false },
-      { filename: "<anonymous>", in_app: false },
-    ],
+    frames: Array.from({ length: frameCount }, () => ({
+      filename: "<anonymous>",
+      in_app: false,
+    })),
   },
 });
 
-it.each(["same_origin", "absent"])(
-  "retains anonymous ReferenceErrors with finite nearby source %s",
-  (source) => {
+it.each([
+  ["same_origin", 1],
+  ["same_origin", 2],
+  ["absent", 1],
+  ["absent", 2],
+] as const)(
+  "retains anonymous ReferenceErrors with finite nearby source %s and %i frames",
+  (source, frameCount) => {
     const dispatched = new ErrorEvent("error", {
       message: "PRIVATE native message",
       filename:
@@ -637,7 +642,7 @@ it.each(["same_origin", "absent"])(
       cancelable: true,
     });
     window.dispatchEvent(dispatched);
-    const exception = anonymousReferenceEntry();
+    const exception = anonymousReferenceEntry(frameCount);
     const context = snapshot(exception);
     expect(context).toMatchObject({
       hackerai_nearby_dispatch_group:
@@ -681,7 +686,14 @@ it("does not extend anonymous ReferenceError attribution to first-party or diffe
     { ...exception, value: `${"x".repeat(65)} is not defined` },
     { ...exception, value: `${"x".repeat(256)} is not defined` },
     { ...exception, stacktrace: { frames: [] } },
-    { ...exception, stacktrace: { frames: [exception.stacktrace.frames[0]] } },
+    {
+      ...exception,
+      stacktrace: {
+        frames: [{ filename: "/_next/static/chunks/app.js", in_app: true }],
+      },
+    },
+    { ...exception, stacktrace: { frames: [{ filename: "<anonymous>" }] } },
+    { ...exception, stacktrace: { frames: Array(1) } },
     {
       ...exception,
       stacktrace: {
