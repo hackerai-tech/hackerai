@@ -7,6 +7,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { useFileUrlCacheContext } from "@/app/contexts/FileUrlCacheContext";
 import { isTauriEnvironment, openDownloadsFolder } from "./useTauri";
 import { startBlobDownload } from "@/lib/utils/file-download";
+import { useS3ActionDiagnostics } from "./useS3ActionDiagnostics";
 
 export type AttachmentDownloadOutcome =
   "downloaded" | "opened-fallback" | "unavailable" | "failed" | "busy";
@@ -24,7 +25,10 @@ interface AttachmentDownloadRequest {
  * Failures leave the caller's control usable so the user can retry.
  */
 export function useAttachmentDownload() {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "attachment_download",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const inFlightRef = useRef(false);
   const [isDownloading, setIsDownloading] = useState(false);

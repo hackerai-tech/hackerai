@@ -48,6 +48,7 @@ jest.mock("next/image", () => ({
 
 jest.mock("convex/react", () => ({
   useAction: () => jest.fn(),
+  useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
 }));
 

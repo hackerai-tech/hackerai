@@ -1,7 +1,7 @@
 // Bundled by sandbox-download.test.mjs with the real Streamdown pipeline and
 // its default sanitizers; Jest replaces Streamdown with a stub.
 import { renderToStaticMarkup } from "react-dom/server";
-import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { ConvexProviderWithAuth, ConvexReactClient } from "convex/react";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import { SandboxAttachmentContext } from "@/app/components/SandboxAttachmentLink";
 import { resolveSandboxAttachments } from "@/lib/chat/sandbox-attachment-links";
@@ -11,6 +11,17 @@ class OfflineWebSocket {
   constructor() {
     throw new Error("The Markdown fixture must not open a Convex connection");
   }
+}
+
+// The app root provides Convex auth; a static signed-out state keeps this
+// offline: no token is ever fetched.
+const fetchNoAccessToken = async () => null;
+function useOfflineAuth() {
+  return {
+    isLoading: false,
+    isAuthenticated: false,
+    fetchAccessToken: fetchNoAccessToken,
+  };
 }
 
 export interface FixtureDelivery {
@@ -37,11 +48,11 @@ export function renderAssistantMarkdown(
     : null;
   try {
     return renderToStaticMarkup(
-      <ConvexProvider client={client}>
+      <ConvexProviderWithAuth client={client} useAuth={useOfflineAuth}>
         <SandboxAttachmentContext.Provider value={attachments}>
           <MemoizedMarkdown content={markdown} />
         </SandboxAttachmentContext.Provider>
-      </ConvexProvider>,
+      </ConvexProviderWithAuth>,
     );
   } finally {
     void client.close();
