@@ -1,4 +1,10 @@
 import { StickyNote, List, Pencil, Trash2, FileText } from "lucide-react";
+import {
+  getRecheckState,
+  normalizeNoteTarget,
+  parseObservedAt,
+  parseRecheckAfter,
+} from "@/lib/notes/policy";
 import type { NoteCategory, SidebarNote, SidebarNotes } from "@/types/chat";
 
 export type NotesToolName =
@@ -131,6 +137,44 @@ const toSidebarNote = (note: RawNote): SidebarNote => ({
 });
 
 /**
+ * Recall metadata for a note being created, parsed the way the server stores
+ * it. Legacy create inputs carry none of these fields and stay unchanged.
+ */
+const createdNoteMetadata = (input: any): Partial<SidebarNote> => {
+  const raw = {
+    target: typeof input.target === "string" ? input.target : undefined,
+    observed_at:
+      typeof input.observed_at === "string" ? input.observed_at : undefined,
+    recheck_after:
+      typeof input.recheck_after === "string" ? input.recheck_after : undefined,
+  };
+  if (Object.values(raw).every((value) => value === undefined)) return {};
+  const normalized = raw.target ? normalizeNoteTarget(raw.target) : undefined;
+  const target = normalized?.ok ? normalized.target : raw.target;
+  const now = Date.now();
+  const observed = raw.observed_at
+    ? parseObservedAt(raw.observed_at, now)
+    : undefined;
+  const recheck = raw.recheck_after
+    ? parseRecheckAfter(raw.recheck_after)
+    : undefined;
+  const observed_at = observed?.ok ? observed.value : undefined;
+  return {
+    target,
+    observed_at,
+    recheck: getRecheckState(
+      {
+        target,
+        category: input.category || "general",
+        observed_at,
+        recheck_after: recheck?.ok ? recheck.value : undefined,
+      },
+      now,
+    ),
+  };
+};
+
+/**
  * Sidebar content for one notes tool part. Shared by the inline tool block
  * and the sidebar timeline so saved messages render the same everywhere.
  */
@@ -139,12 +183,15 @@ export function buildNotesSidebarContent({
   input,
   output,
   state,
+  errorText,
   toolCallId,
 }: {
   toolName: NotesToolName;
   input: any;
   output: any;
   state?: string;
+  /** Tool-call failure text for the `output-error` state. */
+  errorText?: string;
   toolCallId?: string;
 }): SidebarNotes {
   const result = output?.result || output || {};
@@ -152,6 +199,7 @@ export function buildNotesSidebarContent({
 
   let notes: SidebarNote[] = [];
   let totalCount = 0;
+  let hasMore: boolean | undefined;
   let affectedTitle: string | undefined;
   let newNoteId: string | undefined;
   let original: SidebarNotes["original"];
@@ -160,6 +208,7 @@ export function buildNotesSidebarContent({
   if (action === "list" && Array.isArray(result?.notes)) {
     notes = result.notes.map(toSidebarNote);
     totalCount = result.total_count || notes.length;
+    if (result.has_more === true) hasMore = true;
   } else if (action === "get") {
     notes = result?.note ? [toSidebarNote(result.note)] : [];
     affectedTitle = result?.note?.title || input?.note_id;
@@ -173,7 +222,7 @@ export function buildNotesSidebarContent({
         category: input.category || "general",
         tags: input.tags || [],
         updated_at: 0,
-        target: typeof input.target === "string" ? input.target : undefined,
+        ...createdNoteMetadata(input),
       }),
     ];
     totalCount = 1;
@@ -189,11 +238,20 @@ export function buildNotesSidebarContent({
     totalCount = 0;
   }
 
+  const failed = state === "output-error" || result?.success === false;
+  const error = failed
+    ? (state === "output-error" ? errorText : result?.error) ||
+      getNotesActionText(toolName, true)
+    : undefined;
+
   return {
     action,
     notes,
     totalCount,
-    isExecuting: state !== "output-available",
+    ...(hasMore && { hasMore }),
+    // Both output states are terminal; only earlier states are in progress.
+    isExecuting: state !== "output-available" && state !== "output-error",
+    ...(error !== undefined && { error }),
     toolCallId: toolCallId || "",
     affectedTitle,
     newNoteId,

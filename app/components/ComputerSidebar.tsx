@@ -63,6 +63,7 @@ import {
   getDisplayTarget,
 } from "./computer-sidebar-utils";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
+import { useS3ActionDiagnostics } from "@/app/hooks/useS3ActionDiagnostics";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { getNoteMetaSegments } from "./tools/notes-tool-utils";
@@ -125,7 +126,10 @@ const SidebarPreviewImage = ({
   file: FilePart & { page?: number };
   label: string;
 }) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "computer_sidebar",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
     if (file.fileId && fileUrlCache) {
@@ -1083,6 +1087,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                   Processing...
                                 </div>
                               </div>
+                            ) : sidebarContent.error ? (
+                              <div
+                                role="alert"
+                                className="py-8 text-center text-sm text-muted-foreground break-words"
+                              >
+                                {sidebarContent.error}
+                              </div>
                             ) : sidebarContent.action === "update" &&
                               sidebarContent.modified ? (
                               // Update action: show before/after comparison
@@ -1239,6 +1250,15 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                 );
                               })
                             )}
+                            {!sidebarContent.isExecuting &&
+                              !sidebarContent.error &&
+                              sidebarContent.action === "list" &&
+                              sidebarContent.hasMore && (
+                                <div className="mt-1 border-t border-border/30 pt-3 text-xs text-muted-foreground">
+                                  Partial list: showing one page. More notes may
+                                  match.
+                                </div>
+                              )}
                           </div>
                         </div>
                       )}

@@ -5,6 +5,7 @@ import pauseSubscription from "@/lib/actions/pause-subscription";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 import { phLogger } from "@/lib/posthog/server";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,8 @@ function parsePauseSubscriptionInput(
 
 /** Accept the retention "pause" offer instead of cancelling outright. */
 export async function POST(request: NextRequest) {
+  const rejection = rejectUnsafeRequest(request, { jsonBody: true });
+  if (rejection) return rejection;
   after(() => phLogger.flush());
   try {
     const body = await request.json().catch(() => null);

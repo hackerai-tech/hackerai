@@ -28,6 +28,7 @@ const {
   createGetNote,
   createListNotes,
   createUpdateNote,
+  encodeNoteCursor,
   NOTE_TOOL_RESPONSE_TOKENS,
 } = require("../notes") as typeof import("../notes");
 const { listNotesToolInputSchema } =
@@ -240,6 +241,7 @@ describe("relevant-recall note tools", () => {
             content: content.slice(start, end),
             content_offset: start,
             content_length: content.length,
+            content_revision: "0123456789abcdef",
           },
         };
       },
@@ -265,6 +267,47 @@ describe("relevant-recall note tools", () => {
     } while (cursor && pages < 100);
     expect(pages).toBeGreaterThan(1);
     expect(rebuilt).toBe(content);
+    // Every continuation was bound to the note and the revision it started from.
+    for (const [args] of mockGetNoteContent.mock.calls.slice(1))
+      expect(args).toMatchObject({
+        userId: "user-1",
+        noteId: "big",
+        revision: "0123456789abcdef",
+      });
+  });
+
+  it("rejects stale, foreign and legacy continuation cursors with restart guidance", async () => {
+    const tool = createGetNote(context);
+    const cursor = encodeNoteCursor("abc12", "0123456789abcdef", 40);
+    mockGetNoteContent.mockResolvedValue({
+      success: false,
+      error:
+        "Note 'abc12' changed since the previous page. Restart get_note without a cursor to read the current version.",
+    });
+    expect(await runTool(tool, { note_id: "abc12", cursor })).toEqual({
+      success: false,
+      error: expect.stringContaining("Restart get_note without a cursor"),
+    });
+    expect(mockGetNoteContent).toHaveBeenLastCalledWith({
+      userId: "user-1",
+      noteId: "abc12",
+      offset: 40,
+      revision: "0123456789abcdef",
+    });
+
+    mockGetNoteContent.mockClear();
+    for (const bad of [cursor.replace("abc12", "other"), "4000", "n2:abc12"]) {
+      const result = (await runTool(tool, {
+        note_id: "abc12",
+        cursor: bad,
+      })) as {
+        success: boolean;
+        error: string;
+      };
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Restart get_note without a cursor");
+    }
+    expect(mockGetNoteContent).not.toHaveBeenCalled();
   });
 
   it("caps a list page of pathological legacy metadata without losing IDs or the cursor", () => {

@@ -44,3 +44,39 @@ it("requires a recorded retest to start before testing and complete honestly", (
     findingFollowupPrompt(finding, "verify", { recordRetest: true }),
   ).not.toContain("start_finding_retest");
 });
+
+it("asks a hunt to start first, save candidates one by one and never touch the report", () => {
+  const finding = {
+    finding_id: "f1",
+    updated_at: 7,
+    target: "https://private.example.test",
+    technical_analysis: "private analysis text",
+  } as FindingDetailRecord;
+  const hunt = findingFollowupPrompt(finding, "hunt");
+  expect(hunt).toContain('finding_id "f1"');
+  expect(hunt).toContain("current user-authorized");
+  const order = [
+    "get_report",
+    "start_finding_hunt",
+    "record_finding_hunt_candidate",
+    "complete_finding_hunt",
+  ].map((name) => hunt.indexOf(name));
+  expect(order.every((index) => index >= 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  expect(hunt).toContain("Before any investigative traffic");
+  expect(hunt).toContain("source-only suspicion");
+  expect(hunt).toContain(
+    "evidence_basis (runtime_check or source_review_only)",
+  );
+  expect(hunt).toContain(
+    "A runtime ruled_out needs a successful same-surface authorized control (authorized_control_succeeded: true)",
+  );
+  expect(hunt).toContain("blocked access, so inconclusive");
+  expect(hunt).toContain("even if you stop early");
+  expect(hunt).toContain("do not create reports");
+  expect(hunt).toContain("do not start another hunt");
+  // The prompt references the saved report; it never copies its content.
+  expect(hunt).not.toContain(finding.target);
+  expect(hunt).not.toContain("private analysis text");
+  expect(hunt).not.toContain("update_vulnerability_report");
+});

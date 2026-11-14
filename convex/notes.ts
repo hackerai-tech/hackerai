@@ -4,8 +4,12 @@ import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./lib/utils";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  buildNoteSearchMetadata,
+  buildRecallExcerpt,
   getRecheckState,
+  isRecallKeyword,
   normalizeNoteTarget,
+  noteContentRevision,
   safeCutIndex,
 } from "../lib/notes/policy";
 
@@ -42,10 +46,6 @@ function estimateNoteTokens(
   return Math.ceil(totalChars / 4);
 }
 
-/** Scoped notes belong to relevant recall and must never enter the legacy dump. */
-const isScopedNote = (note: Doc<"notes">) =>
-  note.target !== undefined || note.project_id !== undefined;
-
 const clipText = (text: string, maxChars: number) => {
   if (text.length <= maxChars) return { text, truncated: false };
   return {
@@ -62,9 +62,11 @@ const NOTE_GET_MAX_CHARS = 24_000;
 const RECALL_MAX_TARGET_KEYS = 24;
 // Per eligible scope (unprojected, current project).
 const RECALL_PER_TARGET = 6;
-const RECALL_LABEL_SCAN = 15;
+const RECALL_METADATA_SCAN = 15;
 const RECALL_GENERAL_SCAN = 25;
 const RECALL_SEARCH_SCAN = 10;
+const RECALL_SEARCH_TERMS = 16;
+const RECALL_SEARCH_CHARS = 400;
 const RECALL_EXCERPT_CHARS = 1_200;
 // Legacy notes have unbounded tags; responses carry a bounded subset.
 const NOTE_MAX_TAGS = 12;
@@ -219,6 +221,11 @@ export const createNoteForBackend = mutation({
         tags,
         tokens,
         updated_at: now,
+        search_metadata: buildNoteSearchMetadata({
+          title: args.title.trim(),
+          tags,
+          target,
+        }),
         ...(target !== undefined && { target }),
         ...(projectId !== undefined && { project_id: projectId }),
         ...(args.observedAt !== undefined && { observed_at: args.observedAt }),
@@ -274,12 +281,21 @@ export const getNotesForBackend = query({
     validateServiceKey(args.serviceKey);
 
     try {
-      // Get only "general" category notes for system prompt injection
-      // Other categories must be retrieved via list_notes tool
+      // Get only unscoped "general" notes for system prompt injection.
+      // Other categories must be retrieved via list_notes tool. Target and
+      // project notes are recalled only by relevance, even after a rollback
+      // disables recall; the index excludes them so they cannot leak into
+      // every chat or consume the bounded read.
       const notes = ctx.db
         .query("notes")
-        .withIndex("by_user_and_category_and_updated", (q) =>
-          q.eq("user_id", args.userId).eq("category", "general"),
+        .withIndex(
+          "by_user_and_project_and_target_and_category_and_updated",
+          (q) =>
+            q
+              .eq("user_id", args.userId)
+              .eq("project_id", undefined)
+              .eq("target", undefined)
+              .eq("category", "general"),
         )
         .order("desc");
 
@@ -289,15 +305,9 @@ export const getNotesForBackend = query({
         !args.subscription || args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validNotes = [];
-      let scanned = 0;
 
       // A prompt needs only a bounded prefix, not every note in the account.
       for await (const note of notes) {
-        // Skipped scoped notes still count, so skipping cannot scan unboundedly.
-        if (++scanned > 200) break;
-        // Target/project notes are recalled only by relevance, even after a
-        // rollback disables recall; they must not leak into every chat.
-        if (isScopedNote(note)) continue;
         const tokensValue = Number(note.tokens);
         const safeTokens =
           Number.isFinite(tokensValue) && tokensValue > 0
@@ -598,6 +608,8 @@ export const getNoteForBackend = query({
     userId: v.string(),
     noteId: v.string(),
     offset: v.optional(v.number()),
+    /** Content revision from a continuation cursor; a change rejects it. */
+    revision: v.optional(v.string()),
     maxChars: v.optional(v.number()),
   },
   returns: v.object({
@@ -608,6 +620,7 @@ export const getNoteForBackend = query({
         content: v.string(),
         content_offset: v.number(),
         content_length: v.number(),
+        content_revision: v.string(),
       }),
     ),
     error: v.optional(v.string()),
@@ -621,6 +634,15 @@ export const getNoteForBackend = query({
     // Other users' notes are indistinguishable from missing ones.
     if (!note || note.user_id !== args.userId) {
       return { success: false, error: `Note '${args.noteId}' not found` };
+    }
+    const revision = noteContentRevision(note.content);
+    // Pages of different revisions must never be combined, even when an
+    // edit keeps the same length.
+    if (args.revision !== undefined && args.revision !== revision) {
+      return {
+        success: false,
+        error: `Note '${args.noteId}' changed since the previous page. Restart get_note without a cursor to read the current version.`,
+      };
     }
     const requested = Math.floor(args.offset ?? 0);
     if (
@@ -646,6 +668,7 @@ export const getNoteForBackend = query({
         content: note.content.slice(start, end),
         content_offset: start,
         content_length: note.content.length,
+        content_revision: revision,
       },
     };
   },
@@ -701,6 +724,17 @@ export const getNoteRecallCandidatesForBackend = query({
     const scopes: (Id<"projects"> | undefined)[] = projectId
       ? [undefined, projectId]
       : [undefined];
+    // Convex full-text search accepts at most 16 terms per query.
+    const searchTerms = (args.searchText ?? "")
+      .slice(0, RECALL_SEARCH_CHARS)
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, RECALL_SEARCH_TERMS);
+    const searchText = searchTerms.join(" ");
+    // Short words and stopwords can retrieve labels but never score, so an
+    // early "the" must not pin the excerpt to the prefix.
+    const excerptTerms = searchTerms.filter(isRecallKeyword);
 
     for (const scope of scopes) {
       for (const target of [...new Set(args.targets)].slice(
@@ -723,18 +757,6 @@ export const getNoteRecallCandidatesForBackend = query({
       add(
         await ctx.db
           .query("notes")
-          .withIndex("by_user_and_project_and_target_and_updated", (q) =>
-            q
-              .eq("user_id", args.userId)
-              .eq("project_id", scope)
-              .gte("target", "label:")
-              .lt("target", "label;"),
-          )
-          .take(RECALL_LABEL_SCAN),
-      );
-      add(
-        await ctx.db
-          .query("notes")
           .withIndex(
             "by_user_and_project_and_target_and_category_and_updated",
             (q) =>
@@ -747,8 +769,21 @@ export const getNoteRecallCandidatesForBackend = query({
           .order("desc")
           .take(RECALL_GENERAL_SCAN),
       );
-      const searchText = args.searchText?.trim().slice(0, 200);
       if (searchText) {
+        // Title, tag and engagement-label keywords, ranked by relevance, so
+        // matching labels cannot starve behind unrelated ones. Selection
+        // still requires an exact label phrase in the task.
+        add(
+          await ctx.db
+            .query("notes")
+            .withSearchIndex("search_note_metadata", (q) =>
+              q
+                .search("search_metadata", searchText)
+                .eq("user_id", args.userId)
+                .eq("project_id", scope),
+            )
+            .take(RECALL_METADATA_SCAN),
+        );
         add(
           await ctx.db
             .query("notes")
@@ -765,7 +800,11 @@ export const getNoteRecallCandidatesForBackend = query({
 
     const now = Date.now();
     return [...byId.values()].map((note) => {
-      const excerpt = clipText(note.content, RECALL_EXCERPT_CHARS);
+      const excerpt = buildRecallExcerpt(
+        note.content,
+        excerptTerms,
+        RECALL_EXCERPT_CHARS,
+      );
       return {
         ...noteMetadata(note, now),
         excerpt: excerpt.text,
@@ -892,12 +931,18 @@ export const updateNoteForBackend = mutation({
         tags?: string[];
         tokens: number;
         updated_at: number;
+        search_metadata: string;
         target?: string | undefined;
         observed_at?: number;
         recheck_after?: number | undefined;
       } = {
         tokens,
         updated_at: Date.now(),
+        search_metadata: buildNoteSearchMetadata({
+          title: finalTitle,
+          tags: finalTags,
+          target: args.target !== undefined ? target : note.target,
+        }),
       };
 
       if (args.title !== undefined) {
@@ -1246,6 +1291,10 @@ export const createUserNote = mutation({
         tags,
         tokens,
         updated_at: now,
+        search_metadata: buildNoteSearchMetadata({
+          title: args.title.trim(),
+          tags,
+        }),
       });
 
       return { success: true, note_id: noteId };
@@ -1357,9 +1406,15 @@ export const updateUserNote = mutation({
         tags?: string[];
         tokens: number;
         updated_at: number;
+        search_metadata: string;
       } = {
         tokens,
         updated_at: Date.now(),
+        search_metadata: buildNoteSearchMetadata({
+          title: finalTitle,
+          tags: finalTags,
+          target: note.target,
+        }),
       };
 
       if (args.title !== undefined) {

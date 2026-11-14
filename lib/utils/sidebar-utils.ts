@@ -824,6 +824,7 @@ export function extractSidebarContentFromMessage(
           input: part.input || {},
           output: part.output,
           state: part.state,
+          errorText: part.errorText,
           toolCallId: part.toolCallId,
         }),
       );

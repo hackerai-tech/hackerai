@@ -170,6 +170,16 @@ export function getActionText(content: SidebarContent): string {
       };
       return streamingActionMap[content.action];
     }
+    if (content.error) {
+      const failedActionMap = {
+        create: "Failed to create note",
+        list: "Failed to list notes",
+        update: "Failed to update note",
+        delete: "Failed to delete note",
+        get: "Failed to read note",
+      };
+      return failedActionMap[content.action];
+    }
     const completedActionMap = {
       create: "Created note",
       list: "Notes",

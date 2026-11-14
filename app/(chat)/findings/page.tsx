@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useConvex, useConvexAuth, usePaginatedQuery } from "convex/react";
 import {
+  ArrowLeft,
   ChevronRight,
   Download,
   Filter,
@@ -1370,16 +1371,28 @@ function FindingsPageContent() {
             className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:inset-auto sm:top-1/2 sm:left-1/2 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-6xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl"
           >
             <DialogTitle className="sr-only">Vulnerability Report</DialogTitle>
-            <DialogClose asChild>
-              <Button
-                variant="outline"
-                size="icon"
-                aria-label="Close vulnerability report"
-                className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(0.75rem,env(safe-area-inset-right))] z-20 size-9 bg-background/90 shadow-sm backdrop-blur-sm sm:top-4 sm:right-4"
-              >
-                <X className="size-4" aria-hidden="true" />
-              </Button>
-            </DialogClose>
+            <div className="flex shrink-0 items-center justify-between border-b border-border bg-background px-4 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:contents">
+              <DialogClose asChild>
+                <Button
+                  variant="ghost"
+                  className="-ml-3 h-11 text-muted-foreground sm:hidden"
+                  aria-label="Return to findings"
+                >
+                  <ArrowLeft className="size-4" aria-hidden="true" />
+                  Findings
+                </Button>
+              </DialogClose>
+              <DialogClose asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label="Close vulnerability report"
+                  className="size-11 bg-background/90 shadow-sm backdrop-blur-sm sm:absolute sm:top-4 sm:right-4 sm:z-20 sm:size-9"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </Button>
+              </DialogClose>
+            </div>
             <div className="min-h-0 flex-1">
               <FindingDetail
                 findingId={selectedFindingId}

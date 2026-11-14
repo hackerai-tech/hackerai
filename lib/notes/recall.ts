@@ -9,6 +9,7 @@ import {
   extractTaskTargets,
   fitTextToTokens,
   isLabelTarget,
+  isRecallKeyword,
   taskMentionsLabel,
 } from "./policy";
 
@@ -24,11 +25,6 @@ const TITLE_CHARS = 120;
 const TITLE_TOKENS = 40;
 const MAX_TAGS = 6;
 const TAGS_TOKENS = 24;
-const STOPWORDS = new Set(
-  "the and for with that this from what about have into your you are was were will would should could can our out not but all any how why when where who which their them they then than there here also just like make need want use using please test check find look know does did done some more most very only".split(
-    " ",
-  ),
-);
 
 /**
  * Fail closed: a missing, slow or failed evaluation keeps the legacy notes
@@ -76,7 +72,9 @@ const stripReminders = (text: string) =>
 
 /**
  * The user's own latest request. Automatic continuations and injected
- * reminders are not tasks, and tool output never defines the target.
+ * reminders are not tasks, and tool output never defines the target. A
+ * latest message without text (e.g. attachments only) is an empty task; an
+ * earlier request never stands in for it.
  */
 export function getLatestUserTaskText(
   messages: readonly Pick<UIMessage, "role" | "metadata" | "parts">[],
@@ -89,14 +87,15 @@ export function getLatestUserTaskText(
         ?.isAutoContinue
     )
       continue;
-    const text = stripReminders(
+    return stripReminders(
       (message.parts ?? [])
         .flatMap((part) =>
           part.type === "text" ? [(part as { text: string }).text] : [],
         )
         .join("\n"),
-    ).trim();
-    if (text) return text.slice(0, TASK_TEXT_LIMIT);
+    )
+      .trim()
+      .slice(0, TASK_TEXT_LIMIT);
   }
   return "";
 }
@@ -107,7 +106,7 @@ const termsOf = (text: string) =>
       .normalize("NFKC")
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
-      .filter((term) => term.length >= 3 && !STOPWORDS.has(term)),
+      .filter(isRecallKeyword),
   );
 
 type ScoredCandidate = {
@@ -277,11 +276,36 @@ export function serializeRecalledNotes(
   return empty;
 }
 
-const searchTextFor = (taskText: string) =>
-  [...termsOf(taskText)]
-    .sort((a, b) => b.length - a.length)
-    .slice(0, 8)
-    .join(" ");
+const SEARCH_MAX_TERMS = 16;
+const SEARCH_MAX_CHARS = 400;
+
+/**
+ * Bounded retrieval query: the task's unique words in order, including
+ * short words and stopwords, because engagement labels like "q4" or a
+ * stopword-only label are valid. Selection still applies the exact-label
+ * and keyword-overlap gates. Within Convex's 16-term search query limit;
+ * later words of a long task may not be searched.
+ */
+export function searchTextFor(taskText: string): string {
+  const words = new Set(
+    taskText
+      .slice(0, TASK_TEXT_LIMIT)
+      .normalize("NFKC")
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean),
+  );
+  const terms: string[] = [];
+  let chars = 0;
+  for (const word of words) {
+    if (terms.length >= SEARCH_MAX_TERMS) break;
+    const next = chars + (terms.length ? 1 : 0) + word.length;
+    if (next > SEARCH_MAX_CHARS) break;
+    terms.push(word);
+    chars = next;
+  }
+  return terms.join(" ");
+}
 
 /**
  * Builds the relevant-notes block once for a task. Throws when the lookup

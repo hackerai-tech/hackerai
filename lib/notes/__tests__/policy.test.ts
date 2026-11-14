@@ -1,8 +1,11 @@
 import { describe, expect, it } from "@jest/globals";
 import { safeCountTokens } from "@/lib/token-utils";
 import {
+  buildNoteSearchMetadata,
+  buildRecallExcerpt,
   extractTaskTargets,
   fitTextToTokens,
+  noteContentRevision,
   getRecheckState,
   normalizeNoteTarget,
   parseObservedAt,
@@ -59,6 +62,64 @@ describe("extractTaskTargets", () => {
 
   it("ignores credentials embedded in URLs", () => {
     expect(extractTaskTargets("https://admin:pw@alpha.example/")).toEqual([]);
+  });
+
+  it.each([
+    ["Retest https://[::1]:8080/login", "https://[::1]:8080"],
+    ["Retest [::1]:8080 again", "[::1]:8080"],
+    ["Retest [2001:DB8::1] now", "[2001:db8::1]"],
+  ])("extracts the IPv6 target that normalization stores (%s)", (task, key) => {
+    const saved = normalizeNoteTarget(key);
+    expect(saved).toEqual({ ok: true, target: key });
+    expect(extractTaskTargets(task)).toContain(key);
+  });
+});
+
+describe("recall search helpers", () => {
+  it("builds bounded metadata from title, tags and label words only", () => {
+    expect(
+      buildNoteSearchMetadata({
+        title: "Invoice  IDOR",
+        tags: ["auth", "export"],
+        target: "label:zulu bank",
+      }),
+    ).toBe("zulu bank Invoice IDOR auth export");
+    expect(
+      buildNoteSearchMetadata({
+        title: "Host",
+        tags: [],
+        target: "alpha.example",
+      }),
+    ).toBe("Host");
+    expect(
+      buildNoteSearchMetadata({
+        title: "題".repeat(5_000),
+        tags: Array.from({ length: 500 }, () => "t".repeat(500)),
+      }).length,
+    ).toBeLessThanOrEqual(1_024);
+  });
+
+  it("centers an excerpt on a whole-word match beyond the prefix", () => {
+    const content = `${"filler ".repeat(300)}graphqlx then graphql here${" tail".repeat(300)}`;
+    const excerpt = buildRecallExcerpt(content, ["graphql"], 1_200);
+    expect(excerpt.truncated).toBe(true);
+    expect(excerpt.text.length).toBeLessThanOrEqual(1_205);
+    expect(excerpt.text.startsWith("filler")).toBe(true);
+    expect(excerpt.text).toMatch(/\bgraphql here\b/);
+    // A match inside the prefix keeps the plain leading excerpt.
+    expect(
+      buildRecallExcerpt(`graphql ${content}`, ["graphql"], 1_200),
+    ).toEqual({ text: expect.not.stringContaining(" … "), truncated: true });
+  });
+
+  it("changes the content revision on a same-length edit", () => {
+    expect(noteContentRevision("abcdefgh")).toBe(
+      noteContentRevision("abcdefgh"),
+    );
+    expect(noteContentRevision("abcdefgh")).not.toBe(
+      noteContentRevision("abcdefgH"),
+    );
+    expect(noteContentRevision("x")).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 

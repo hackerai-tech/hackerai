@@ -15,6 +15,8 @@ const { NotesToolHandler } =
   require("../NotesToolHandler") as typeof import("../NotesToolHandler");
 const { getNoteMetaSegments } =
   require("../notes-tool-utils") as typeof import("../notes-tool-utils");
+const { extractSidebarContentFromMessage } =
+  require("@/lib/utils/sidebar-utils") as typeof import("@/lib/utils/sidebar-utils");
 
 const observed = Date.UTC(2026, 10, 3, 12);
 
@@ -141,6 +143,103 @@ describe("NotesToolHandler", () => {
       updated_at: observed,
     };
     expect(getNoteMetaSegments(legacy)).toEqual([]);
+  });
+
+  it("keeps a bounded list page's continuation status", () => {
+    render(
+      <NotesToolHandler
+        status="ready"
+        toolName="list_notes"
+        part={{
+          toolCallId: "call-4",
+          state: "output-available",
+          input: {},
+          output: {
+            success: true,
+            has_more: true,
+            next_cursor: "page-2",
+            notes: [
+              {
+                note_id: "a",
+                title: "First",
+                category: "general",
+                tags: [],
+                updated_at: observed,
+                preview: "x",
+                preview_truncated: false,
+              },
+            ],
+          },
+        }}
+      />,
+    );
+    expect(sidebarContent).toMatchObject({ hasMore: true, totalCount: 1 });
+  });
+
+  it("shows the observation date and target a created note was saved with", () => {
+    render(
+      <NotesToolHandler
+        status="ready"
+        toolName="create_note"
+        part={{
+          toolCallId: "call-5",
+          state: "output-available",
+          input: {
+            title: "IDOR",
+            content: "Invoice export",
+            category: "findings",
+            target: "HTTPS://Alpha.Example/",
+            observed_at: "2026-11-03",
+          },
+          output: { success: true, note_id: "n1" },
+        }}
+      />,
+    );
+    const [note] = sidebarContent!.notes;
+    expect(note).toMatchObject({
+      target: "https://alpha.example",
+      observed_at: Date.UTC(2026, 10, 3),
+    });
+    expect(getNoteMetaSegments(note)).toEqual([
+      "https://alpha.example",
+      "Observed 2026-11-03",
+    ]);
+
+    // Legacy create outputs carry no recall fields and gain no metadata.
+    render(
+      <NotesToolHandler
+        status="ready"
+        toolName="create_note"
+        part={{
+          toolCallId: "call-6",
+          state: "output-available",
+          input: { title: "Old", content: "x", category: "findings" },
+          output: { success: true, note_id: "n2" },
+        }}
+      />,
+    );
+    expect(getNoteMetaSegments(sidebarContent!.notes[0])).toEqual([]);
+  });
+
+  it("treats a failed read as finished in the sidebar timeline", () => {
+    const [content] = extractSidebarContentFromMessage({
+      id: "m1",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-get_note",
+          toolCallId: "call-7",
+          state: "output-error",
+          input: { note_id: "zz" },
+          errorText: "Convex unavailable",
+        },
+      ],
+    } as never) as SidebarNotes[];
+    expect(content).toMatchObject({
+      action: "get",
+      isExecuting: false,
+      error: "Convex unavailable",
+    });
   });
 
   it("omits the edit date when it matches the observation", () => {

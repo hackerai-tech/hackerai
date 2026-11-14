@@ -1,8 +1,19 @@
 import "@testing-library/jest-dom";
 import userEvent from "@testing-library/user-event";
-jest.mock("../FindingFollowupActions", () => ({
-  FindingFollowupActions: () => null,
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({ push: jest.fn() }),
+  usePathname: () => "/findings",
 }));
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ closeSidebar: jest.fn(), setChatMode: jest.fn() }),
+}));
+jest.mock("@/app/contexts/ComposerState", () => ({
+  useComposerActions: () => ({ getInput: () => "", setInput: jest.fn() }),
+}));
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: (...args: unknown[]) => mockCapture(...args),
+}));
+const mockCapture = jest.fn();
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import {
   fireEvent,
@@ -37,6 +48,11 @@ Object.defineProperty(global, "ResizeObserver", {
 
 const { FindingDetail } =
   require("../FindingDetail") as typeof import("../FindingDetail");
+
+const openReport = () =>
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Report" }));
+const openMore = () =>
+  userEvent.click(screen.getByRole("button", { name: "More actions" }));
 
 const finding: FindingDetailRecord = {
   finding_id: "finding-1",
@@ -114,6 +130,7 @@ describe("FindingDetail", () => {
         }}
       />,
     );
+    openReport();
     expect(
       screen.getByRole("button", { name: "Useful and reproducible" }),
     ).toHaveAttribute("aria-pressed", "true");
@@ -158,6 +175,7 @@ describe("FindingDetail", () => {
     mutate.mockResolvedValue({ success: false, error: "conflict" });
     const feedbackErrorToast = jest.spyOn(toast, "error");
     render(<FindingDetail finding={finding} />);
+    openReport();
     fireEvent.click(screen.getByRole("button", { name: "Needs correction" }));
     await waitFor(() =>
       expect(mutate).toHaveBeenCalledWith({
@@ -177,14 +195,31 @@ describe("FindingDetail", () => {
     feedbackErrorToast.mockRestore();
   });
 
-  it("renders the complete report and source chat link", () => {
+  it("opens on a short overview and keeps the complete report one tab away", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
-    expect(screen.getByText("Vulnerability finding")).toBeVisible();
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
     expect(screen.getByText("Active")).toBeVisible();
+    // The agent-reported evidence basis stays visible as quiet header text.
+    expect(screen.getByText("Not recorded")).toHaveAttribute(
+      "title",
+      expect.stringContaining("not independent verification"),
+    );
+    expect(
+      screen.getByText("https://app.example.test", { exact: false }),
+    ).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByRole("heading", { name: "Summary" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Impact" })).toBeVisible();
+    expect(screen.getByText(finding.description)).toBeVisible();
+    // Long report sections are not on the default view.
+    expect(screen.queryByRole("heading", { name: "Root Cause" })).toBeNull();
+    expect(screen.queryByText(finding.poc_script_code)).toBeNull();
+
+    openReport();
     expect(screen.getByRole("heading", { name: "Root Cause" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Validation" })).toBeVisible();
     expect(
@@ -217,6 +252,7 @@ describe("FindingDetail", () => {
 
   it("explains the CVSS metrics in plain language on request", () => {
     render(<FindingDetail finding={finding} />);
+    openReport();
 
     expect(screen.queryByText("Reachable over a network")).toBeNull();
 
@@ -238,8 +274,9 @@ describe("FindingDetail", () => {
     ).toBeVisible();
   });
 
-  it("omits management controls in the chat sidebar", () => {
+  it("omits management controls in the chat sidebar", async () => {
     render(<FindingDetail finding={finding} surface="computer_sidebar" />);
+    openReport();
 
     expect(
       screen.queryByRole("link", {
@@ -247,11 +284,16 @@ describe("FindingDetail", () => {
       }),
     ).toBeNull();
     expect(screen.queryByText("Invoice test")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Close Finding" })).toBeNull();
+    await openMore();
+    expect(
+      screen.queryByRole("menuitem", { name: /Close finding/ }),
+    ).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /source/ })).toBeNull();
   });
 
   it("copies the PoC and CVSS vector", async () => {
     render(<FindingDetail finding={finding} />);
+    openReport();
 
     fireEvent.click(screen.getByRole("button", { name: "Copy PoC" }));
     fireEvent.click(screen.getByRole("button", { name: "Copy CVSS vector" }));
@@ -267,6 +309,7 @@ describe("FindingDetail", () => {
       'GET /eval?s=__import__("os") HTTP/1.1\nHost: lab.example.test\n\nHTTP/1.1 200 OK\n{"value":"literal\\n","html":"<b>raw</b>"}\n```\n# not a heading';
     const saved = { ...finding, evidence };
     render(<FindingDetail finding={saved} />);
+    openReport();
     const section = screen.getByRole("region", {
       name: "Observed Evidence",
       exact: true,
@@ -285,7 +328,10 @@ describe("FindingDetail", () => {
     mutation.mockResolvedValue({ closed: true, closed_at: 2 });
     render(<FindingDetail finding={finding} surface="findings_page" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Finding" }));
+    await openMore();
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: /Close finding/ }),
+    );
     expect(
       screen.getByRole("heading", { name: "Close finding" }),
     ).toBeVisible();
@@ -315,7 +361,10 @@ describe("FindingDetail", () => {
     expect(
       screen.getByText("Could not reproduce after validating tenant scope."),
     ).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Close Finding" })).toBeNull();
+    await openMore();
+    expect(
+      screen.queryByRole("menuitem", { name: /Close finding/ }),
+    ).toBeNull();
   });
 
   it("dismisses closure and explains when the finding was deleted concurrently", async () => {
@@ -323,7 +372,10 @@ describe("FindingDetail", () => {
     mutation.mockResolvedValue({ closed: false, not_found: true });
     const errorToast = jest.spyOn(toast, "error");
     render(<FindingDetail finding={finding} surface="findings_page" />);
-    fireEvent.click(screen.getByRole("button", { name: "Close Finding" }));
+    await openMore();
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: /Close finding/ }),
+    );
     fireEvent.change(screen.getByLabelText(/Closure note/), {
       target: { value: "Retest complete." },
     });
@@ -346,7 +398,7 @@ describe("FindingDetail", () => {
 
 it("downloads the saved report in the sidebar without another investigation", async () => {
   render(<FindingDetail finding={finding} surface="computer_sidebar" />);
-  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("button", { name: "Export" }));
   await userEvent.click(screen.getByRole("menuitem", { name: /Markdown/ }));
   await waitFor(() => expect(downloadFile).toHaveBeenCalled());
   expect(downloadFile).toHaveBeenCalledWith({
@@ -391,6 +443,7 @@ it("shows and exports saved verification gaps without calling them checked", () 
     },
   };
   render(<FindingDetail finding={saved} />);
+  openReport();
   expect(screen.getByText("Evidence verification incomplete")).toBeVisible();
   expect(screen.getByText(warning)).toBeVisible();
   expect(renderFindingMarkdown(saved)).toContain(warning);
@@ -405,10 +458,11 @@ it("shows assessment limits and includes them in the downloaded report", async (
     severity_change_conditions: "Broader access would increase the impact.",
   };
   render(<FindingDetail finding={saved} />);
+  openReport();
   expect(screen.getByText(saved.counterevidence)).toBeVisible();
   expect(screen.getByText(saved.severity_change_conditions)).toBeVisible();
   expect(screen.getByText("medium", { exact: true })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("button", { name: "Export" }));
   await userEvent.click(screen.getByRole("menuitem", { name: /Markdown/ }));
   await waitFor(() => expect(downloadFile).toHaveBeenCalled());
   expect(downloadFile).toHaveBeenLastCalledWith(
@@ -420,10 +474,159 @@ it("shows assessment limits and includes them in the downloaded report", async (
 
 it("does not infer confidence for an older saved report", () => {
   render(<FindingDetail finding={finding} />);
-  expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+  openReport();
+  expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(1);
   expect(renderFindingMarkdown(finding)).toContain(
     "Assessment confidence: Not recorded",
   );
+});
+
+describe("Agent check rollouts", () => {
+  const hunts = {
+    enabled: true,
+    chat_title: "Invoice test",
+    hunts: [
+      {
+        hunt_id: "h1",
+        chat_id: "chat-1",
+        assistant_message_id: "message-9",
+        status: "finished",
+        started_at: Date.now() - 60_000,
+        finished_at: Date.now() - 30_000,
+        summary: "Two sibling invoice endpoints share the gap.",
+        limitations: ["Export needs an admin account."],
+        candidates: ["pdf", "memo"].map((key) => ({
+          candidate_key: key,
+          surface: `GET /api/invoices/{id}/${key}`,
+          rationale: "Same loader.",
+          outcome: "reproduced",
+          evidence_basis: "runtime_check",
+          reproduction_steps: ["Read tester B's record as tester A"],
+          observed_result: "200",
+          expected_result: "403",
+          evidence_refs: [],
+          limitations: [],
+          recorded_at: 1,
+        })),
+      },
+    ],
+  };
+  const retests = {
+    enabled: true,
+    chat_title: "Invoice test",
+    retests: [
+      {
+        retest_id: "r1",
+        chat_id: "chat-1",
+        assistant_message_id: "message-2",
+        status: "finished",
+        started_at: Date.now() - 90_000,
+        outcome: "reproduced",
+        summary: "Still reproduces.",
+      },
+    ],
+  };
+  const respond = (routes: { hunts: unknown; retests: unknown }) =>
+    jest.fn(async (url: string) => ({
+      ok: true,
+      json: async () =>
+        url.startsWith("/api/finding-hunts") ? routes.hunts : routes.retests,
+    }));
+
+  beforeEach(() => mockCapture.mockClear());
+  afterEach(() => {
+    delete (global as any).fetch;
+  });
+
+  it("shows hunt results behind one header action, a compact check and its tab", async () => {
+    (global as any).fetch = respond({ hunts, retests });
+    render(<FindingDetail finding={finding} surface="findings_page" />);
+    expect(
+      await screen.findByRole("button", { name: "Hunt similar" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("tab", { name: /Similar issues/ })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /Retests/ })).toBeVisible();
+    const checks = screen.getByRole("heading", {
+      name: "Agent checks",
+    }).parentElement!;
+    expect(within(checks).getByText("2 reproduced")).toBeVisible();
+    // The concise button names keep their visible status as a description.
+    expect(
+      within(checks).getByRole("button", { name: "Open Similar issues" }),
+    ).toHaveAccessibleDescription(/2 reproduced/);
+    expect(
+      within(checks).getByRole("button", { name: "Open Retest" }),
+    ).toHaveAccessibleDescription(/Reproduced .*ago/);
+    // Results stay compact until the tab is opened.
+    expect(screen.queryByText("GET /api/invoices/{id}/pdf")).toBeNull();
+
+    fireEvent.click(
+      within(checks).getByRole("button", { name: "Open Similar issues" }),
+    );
+    expect(screen.getByRole("tab", { name: /Similar issues/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      screen.getByText("Two sibling invoice endpoints share the gap."),
+    ).toBeVisible();
+    expect(screen.getByText("GET /api/invoices/{id}/pdf")).toBeVisible();
+    // The tab has no second hunt CTA.
+    expect(screen.getAllByRole("button", { name: /Hunt/ })).toHaveLength(1);
+
+    const exposures = mockCapture.mock.calls.filter(
+      ([event]) => event === "finding_hunt_section_viewed",
+    );
+    expect(exposures).toEqual([
+      [
+        "finding_hunt_section_viewed",
+        { surface: "findings_page", hunt_count: 1 },
+      ],
+    ]);
+  });
+
+  it("opens another finding on Overview and counts its exposure once", async () => {
+    (global as any).fetch = respond({ hunts, retests });
+    const { rerender } = render(<FindingDetail finding={finding} />);
+    await screen.findByRole("tab", { name: /Similar issues/ });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: /Similar issues/ }));
+    rerender(<FindingDetail finding={{ ...finding, updated_at: 2 }} />);
+    // A refreshed revision of the same finding keeps the open tab.
+    expect(screen.getByRole("tab", { name: /Similar issues/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    rerender(
+      <FindingDetail finding={{ ...finding, finding_id: "finding-2" }} />,
+    );
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await waitFor(() =>
+      expect(
+        mockCapture.mock.calls.filter(
+          ([event]) => event === "finding_hunt_section_viewed",
+        ),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("hides hunt controls, tab and exposure when the rollout is off", async () => {
+    (global as any).fetch = respond({ hunts: { enabled: false }, retests });
+    render(<FindingDetail finding={finding} />);
+    expect(await screen.findByRole("tab", { name: /Retests/ })).toBeVisible();
+    expect(screen.queryByRole("tab", { name: /Similar issues/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Hunt/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open Similar issues" }),
+    ).toBeNull();
+    expect(
+      mockCapture.mock.calls.some(
+        ([event]) => event === "finding_hunt_section_viewed",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("finding query recovery", () => {

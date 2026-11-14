@@ -184,6 +184,21 @@ describe("recall lookup", () => {
   });
 });
 
+describe("retrieval query", () => {
+  it("keeps short words and stopwords that can form a label, within bounds", () => {
+    expect(recall.searchTextFor("Retest the Q4 login, then q4 again")).toBe(
+      "retest the q4 login then again",
+    );
+    const long = recall.searchTextFor(
+      Array.from({ length: 40 }, (_, i) => `word${i}${"x".repeat(30)}`).join(
+        " ",
+      ),
+    );
+    expect(long.split(" ").length).toBeLessThanOrEqual(16);
+    expect(long.length).toBeLessThanOrEqual(400);
+  });
+});
+
 describe("rollout flag", () => {
   afterEach(() => {
     jest.useRealTimers();
@@ -286,4 +301,23 @@ it("uses the latest real user task, skipping continuations and reminders", () =>
       },
     ] as never),
   ).toBe("Look at gamma.example");
+});
+
+it("treats a latest attachment-only message as an empty task, not the previous one", () => {
+  expect(
+    recall.getLatestUserTaskText([
+      { role: "user", parts: [{ type: "text", text: "Check alpha.example" }] },
+      { role: "assistant", parts: [{ type: "text", text: "Done" }] },
+      {
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: "https://files.example/x.png",
+          },
+        ],
+      },
+    ] as never),
+  ).toBe("");
 });

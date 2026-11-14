@@ -2675,6 +2675,8 @@ export async function getNoteContent(args: {
   userId: string;
   noteId: string;
   offset?: number;
+  /** Revision bound into a continuation cursor. */
+  revision?: string;
 }) {
   try {
     return await getConvexClient().query(api.notes.getNoteForBackend, {

@@ -140,20 +140,26 @@ function createDb() {
         },
         withSearchIndex(_name: string, build: (q: any) => unknown) {
           let terms: string[] = [];
+          let searchField = "";
           const eq: [string, unknown][] = [];
           const q: any = {
-            search: (_field: string, text: string) => (
+            search: (field: string, text: string) => (
+              (searchField = field),
               (terms = text.toLowerCase().split(/\s+/).filter(Boolean)),
               q
             ),
             eq: (field: string, value: unknown) => (eq.push([field, value]), q),
           };
           build(q);
+          // Like Convex, a document without the search field is not indexed.
           return results(
             tables[table].filter(
               (doc) =>
+                typeof doc[searchField] === "string" &&
                 eq.every(([f, v]) => doc[f] === v) &&
-                terms.some((term) => doc.content.toLowerCase().includes(term)),
+                terms.some((term) =>
+                  doc[searchField].toLowerCase().includes(term),
+                ),
             ),
           );
         },
@@ -460,7 +466,175 @@ describe("notes recall backend", () => {
       targets: ["alpha.example", "https://alpha.example"],
       searchText: "alpha invoice",
     });
+    // Per target key, metadata search, untargeted general, content search.
     expect(db.reads()).toBeLessThanOrEqual(6 * 2 + 15 + 25 + 10);
+  });
+
+  it("keeps older unscoped preferences in the legacy dump behind many scoped notes", async () => {
+    await create({ title: "Old preference", content: "x" });
+    for (let i = 0; i < 210; i++) {
+      await create({
+        title: `Scoped ${i}`,
+        content: "x",
+        target: i % 2 ? "alpha.example" : undefined,
+        chatId: i % 2 ? undefined : "chat-alpha",
+      });
+    }
+    const legacy = await run(notes.getNotesForBackend, db.ctx, {
+      userId: "user-1",
+      subscription: "pro",
+    });
+    expect(legacy.map((note: { title: string }) => note.title)).toEqual([
+      "Old preference",
+    ]);
+  });
+
+  it("recalls a named engagement label behind many alphabetically earlier labels", async () => {
+    for (let i = 0; i < 15; i++) {
+      await create({
+        title: `Acme ${i}`,
+        content: "x",
+        category: "findings",
+        target: "label:acme",
+      });
+    }
+    await create({
+      title: "Scope rules",
+      content: "Weekdays only.",
+      category: "findings",
+      target: "label:zulu bank",
+    });
+    const result = await buildRelevantNotesSection({
+      userId: "user-1",
+      scope: { taskText: "Continue the zulu bank engagement" },
+    });
+    expect(result.section).toContain("Scope rules");
+    expect(result.section).not.toContain("Acme");
+  });
+
+  it("recalls untargeted notes whose title or tags match the task", async () => {
+    await create({
+      title: "GraphQL batching",
+      content: "Combine aliases to reduce requests.",
+      category: "methodology",
+    });
+    await create({
+      title: "Rate limits",
+      content: "Rotate tokens.",
+      category: "methodology",
+      tags: ["ratelimit"],
+    });
+    const result = await buildRelevantNotesSection({
+      userId: "user-1",
+      scope: { taskText: "GraphQL" },
+    });
+    expect(result.section).toContain("GraphQL batching");
+    const byTag = await buildRelevantNotesSection({
+      userId: "user-1",
+      scope: { taskText: "check the ratelimit behaviour" },
+    });
+    expect(byTag.section).toContain("Rate limits");
+  });
+
+  it.each([
+    ["a typical short request", "label:q4", "Retest q4 login"],
+    ["a stopword-only label", "label:this and that", "Continue this and that"],
+  ])("retrieves %s named by the task (%s)", async (_, target, taskText) => {
+    for (let i = 0; i < 15; i++) {
+      await create({
+        title: `Acme ${i}`,
+        content: "x",
+        category: "findings",
+        target: "label:acme",
+      });
+    }
+    await create({
+      title: "Scope rules",
+      content: "Weekdays only.",
+      category: "findings",
+      target,
+    });
+    const result = await buildRelevantNotesSection({
+      userId: "user-1",
+      scope: { taskText },
+    });
+    expect(result.section).toContain("Scope rules");
+    expect(result.section).not.toContain("Acme");
+  });
+
+  it("keeps a keyword match that lies beyond the leading excerpt", async () => {
+    await create({
+      title: "Long methodology",
+      // Stopwords in the task also occur early; they must not pin the excerpt.
+      content: `${"the filler ".repeat(200)}graphql introspection is enabled.`,
+      category: "methodology",
+    });
+    const result = await buildRelevantNotesSection({
+      userId: "user-1",
+      scope: { taskText: "show the graphql notes" },
+    });
+    expect(result.section).toContain("Long methodology");
+    expect(result.section).toContain("graphql introspection");
+  });
+
+  it("maintains search metadata on every write path", async () => {
+    const { note_id } = await create({
+      title: "IDOR",
+      content: "x",
+      tags: ["auth"],
+      target: "label:Acme Q4",
+    });
+    expect(db.tables.notes[0].search_metadata).toBe("acme q4 IDOR auth");
+    await run(notes.updateNoteForBackend, db.ctx, {
+      userId: "user-1",
+      noteId: note_id,
+      title: "Invoice IDOR",
+      target: null,
+    });
+    expect(db.tables.notes[0].search_metadata).toBe("Invoice IDOR auth");
+
+    const authed = {
+      db: db.ctx.db,
+      auth: { getUserIdentity: async () => ({ subject: "user-1" }) },
+    };
+    const created = await (notes.createUserNote as any).handler(authed, {
+      title: "UI note",
+      content: "x",
+      tags: ["web"],
+    });
+    const uiNote = () =>
+      db.tables.notes.find((note) => note.note_id === created.note_id)!;
+    expect(uiNote().search_metadata).toBe("UI note web");
+    await (notes.updateUserNote as any).handler(authed, {
+      noteId: created.note_id,
+      tags: ["mobile"],
+    });
+    expect(uiNote().search_metadata).toBe("UI note mobile");
+  });
+
+  it("rejects a continuation after the note changes, even at the same length", async () => {
+    const { note_id } = await create({ title: "Long", content: "abcdefgh" });
+    const first = await run(notes.getNoteForBackend, db.ctx, {
+      userId: "user-1",
+      noteId: note_id,
+      maxChars: 4,
+    });
+    expect(first.note.content).toBe("abcd");
+    await run(notes.updateNoteForBackend, db.ctx, {
+      userId: "user-1",
+      noteId: note_id,
+      content: "ABCDEFGH",
+    });
+    const next = await run(notes.getNoteForBackend, db.ctx, {
+      userId: "user-1",
+      noteId: note_id,
+      offset: 4,
+      revision: first.note.content_revision,
+    });
+    expect(next).toEqual({
+      success: false,
+      error: expect.stringContaining("Restart get_note without a cursor"),
+    });
   });
 
   it("does not let newer notes from another project crowd out the current project", async () => {

@@ -99,10 +99,12 @@ function makeRequest(
   cookies: Record<string, string> = {},
 ) {
   return {
+    url: "https://hackerai.example/api/subscribe",
     json: jest.fn().mockResolvedValue(body),
-    headers: {
-      get: jest.fn().mockReturnValue(null),
-    },
+    headers: new Headers({
+      origin: "https://hackerai.example",
+      "content-type": "application/json",
+    }),
     cookies: {
       get: jest.fn((name: string) =>
         cookies[name] ? { value: cookies[name] } : undefined,
@@ -112,6 +114,17 @@ function makeRequest(
 }
 
 describe("POST /api/subscribe", () => {
+  it("rejects a sibling-origin checkout attempt before authentication", async () => {
+    const request = makeRequest({ plan: "pro-monthly-plan" });
+    request.headers.set("origin", "https://evil.hackerai.example");
+    request.headers.set("content-type", "text/plain");
+
+    const { POST } = await import("../route");
+    expect((await POST(request)).status).toBe(403);
+    expect(mockGetUserIDAndPro).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_BASE_URL = "https://hackerai.example";

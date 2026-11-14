@@ -75,9 +75,10 @@ export const NotesToolHandler = memo(function NotesToolHandler({
         input,
         output: output || part.result,
         state,
+        errorText,
         toolCallId,
       }),
-    [toolName, output, part.result, input, state, toolCallId],
+    [toolName, output, part.result, input, state, errorText, toolCallId],
   );
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({

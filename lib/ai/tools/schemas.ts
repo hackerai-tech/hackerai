@@ -970,7 +970,7 @@ export const getNoteToolInputSchema = z.object({
 });
 
 export const getNoteTool = tool({
-  description: `Read the full content and metadata of one saved note. Long notes are returned in pages of up to about 4,000 tokens; pass next_cursor to continue reading without skipping content.`,
+  description: `Read the full content and metadata of one saved note. Long notes are returned in pages of up to about 4,000 tokens; pass next_cursor to continue reading without skipping content. If the note changed between pages, the cursor is rejected: restart without a cursor instead of combining versions.`,
   inputSchema: getNoteToolInputSchema,
 });
 

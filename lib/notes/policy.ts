@@ -114,7 +114,11 @@ export const isLabelTarget = (target: string) =>
 
 const HOST_PATTERN =
   /(?<![\p{L}\p{N}_.@-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{1,62}|\d{1,3}(?:\.\d{1,3}){3}|localhost)(?::(\d{1,5}))?(?![\p{L}\p{N}_-])/giu;
-const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`)\]]+/gi;
+// A bracketed IPv6 authority is consumed whole; `]` otherwise ends a URL.
+const URL_PATTERN = /\bhttps?:\/\/(?:\[[0-9a-f:.]+\])?[^\s<>"'`)\]]*/gi;
+/** Bracketed IPv6 host, optionally with a port, as normalization accepts it. */
+const IPV6_PATTERN =
+  /(?<![\p{L}\p{N}_.@:/-])\[([0-9a-f:.]+)\](?::(\d{1,5}))?(?![\p{L}\p{N}_-])/giu;
 
 /**
  * Exact target keys mentioned by the user's task. A mentioned host matches
@@ -149,7 +153,15 @@ export function extractTaskTargets(text: string): string[] {
     }
   }
   const withoutUrls = scan.replace(URL_PATTERN, " ");
-  for (const match of withoutUrls.matchAll(HOST_PATTERN)) {
+  for (const match of withoutUrls.matchAll(IPV6_PATTERN)) {
+    const hostname = normalizeHostname(`[${match[1]}]`);
+    if (!hostname) continue;
+    const port = match[2] && isValidPort(match[2]) ? match[2] : undefined;
+    addHost(hostname, port);
+  }
+  // IPv4-mapped IPv6 literals must not also yield their embedded IPv4 host.
+  const withoutIpv6 = withoutUrls.replace(IPV6_PATTERN, " ");
+  for (const match of withoutIpv6.matchAll(HOST_PATTERN)) {
     const hostname = normalizeHostname(match[1]);
     if (!hostname) continue;
     const port = match[2] && isValidPort(match[2]) ? match[2] : undefined;
@@ -231,6 +243,113 @@ export const safeCutIndex = (text: string, index: number): number => {
   const code = text.charCodeAt(bounded - 1);
   return code >= 0xd800 && code <= 0xdbff ? bounded - 1 : bounded;
 };
+
+const RECALL_STOPWORDS = new Set(
+  "the and for with that this from what about have into your you are was were will would should could can our out not but all any how why when where who which their them they then than there here also just like make need want use using please test check find look know does did done some more most very only".split(
+    " ",
+  ),
+);
+
+/**
+ * Whether a lowercase word counts toward keyword relevance. Retrieval may
+ * search broader words (e.g. short labels); scoring and excerpt centering
+ * use only these.
+ */
+export const isRecallKeyword = (term: string) =>
+  term.length >= 3 && !RECALL_STOPWORDS.has(term);
+
+export const NOTE_SEARCH_METADATA_MAX_CHARS = 1_024;
+const SEARCH_METADATA_TAGS = 12;
+const SEARCH_METADATA_TAG_CHARS = 64;
+
+/**
+ * Bounded keyword text for a note's metadata search index: title, tags and
+ * the words of an engagement label. Host targets are matched exactly by
+ * index, so they are not included. Every note write must keep it current.
+ */
+export function buildNoteSearchMetadata(note: {
+  title: string;
+  tags: readonly string[];
+  target?: string;
+}): string {
+  const parts = [
+    note.target !== undefined && isLabelTarget(note.target)
+      ? note.target.slice(LABEL_PREFIX.length)
+      : "",
+    note.title.slice(0, NOTE_SEARCH_METADATA_MAX_CHARS),
+    ...note.tags
+      .slice(0, SEARCH_METADATA_TAGS)
+      .map((tag) => tag.slice(0, SEARCH_METADATA_TAG_CHARS)),
+  ];
+  const text = parts.join(" ").replace(/\s+/g, " ").trim();
+  return text.slice(0, safeCutIndex(text, NOTE_SEARCH_METADATA_MAX_CHARS));
+}
+
+const escapeRegExp = (value: string) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A bounded excerpt that keeps evidence of a keyword match. When the first
+ * whole-word match lies beyond the leading excerpt, the excerpt joins a
+ * shorter lead with a window around that match.
+ */
+export function buildRecallExcerpt(
+  content: string,
+  terms: readonly string[],
+  maxChars: number,
+): { text: string; truncated: boolean } {
+  if (content.length <= maxChars) return { text: content, truncated: false };
+  const clip = (start: number, end: number) =>
+    content.slice(safeCutIndex(content, start), safeCutIndex(content, end));
+  let matchAt = -1;
+  let matchEnd = -1;
+  for (const term of terms) {
+    if (!term) continue;
+    const found = new RegExp(
+      `(?<![\\p{L}\\p{N}])${escapeRegExp(term)}(?![\\p{L}\\p{N}])`,
+      "iu",
+    ).exec(content);
+    if (found && (matchAt < 0 || found.index < matchAt)) {
+      matchAt = found.index;
+      matchEnd = found.index + found[0].length;
+    }
+  }
+  const window = Math.floor(maxChars / 2);
+  // Keep the plain prefix when it already contains the match.
+  if (matchAt < 0 || matchEnd <= maxChars) {
+    return { text: `${clip(0, maxChars).trimEnd()}…`, truncated: true };
+  }
+  const start = Math.min(
+    content.length - window,
+    Math.max(window, matchAt - Math.floor(window / 4)),
+  );
+  const end = start + window;
+  return {
+    text: `${clip(0, maxChars - window).trimEnd()} … ${clip(start, end).trim()}${end < content.length ? "…" : ""}`,
+    truncated: true,
+  };
+}
+
+/**
+ * Stable revision of note content for continuation cursors. Any content
+ * change, including a same-length edit, changes it with overwhelming
+ * probability. Not a security boundary: ownership is checked separately.
+ */
+export function noteContentRevision(content: string): string {
+  let h1 = 0xdeadbeef ^ content.length;
+  let h2 = 0x41c6ce57 ^ content.length;
+  for (let i = 0; i < content.length; i++) {
+    const code = content.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const hex = (value: number) => (value >>> 0).toString(16).padStart(8, "0");
+  return `${hex(h2)}${hex(h1)}`;
+}
 
 /**
  * Longest prefix whose exact token count fits the budget. The counter is

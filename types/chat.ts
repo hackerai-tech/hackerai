@@ -365,7 +365,11 @@ export interface SidebarNotes {
   action: "create" | "list" | "update" | "delete" | "get";
   notes: SidebarNote[];
   totalCount: number;
+  /** list: more matching notes exist beyond this bounded page. */
+  hasMore?: boolean;
   isExecuting: boolean;
+  /** The action ended in a failure; shown instead of an empty result. */
+  error?: string;
   toolCallId: string;
   /** For create/update/delete - the affected note title */
   affectedTitle?: string;

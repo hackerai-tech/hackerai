@@ -7,6 +7,7 @@ import { isPdfFile, isTextViewableFile } from "@/lib/utils/file-utils";
 import { LocalDesktopFile } from "@/types/file";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import { readLocalPreviewFile } from "../hooks/useTauri";
+import { useS3ActionDiagnostics } from "../hooks/useS3ActionDiagnostics";
 
 const isBrowserFile = (file: File | LocalDesktopFile): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -42,7 +43,10 @@ export const FileContentViewer = ({
   fileId,
   localPath,
 }: FileContentViewerProps) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "file_preview",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   const [content, setContent] = useState<string>("");
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);

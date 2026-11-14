@@ -103,7 +103,9 @@ function captureWithPostHogClient(
           event === "desktop_bridge_relay_state_changed") &&
           properties.native_auth_diagnostic_version === 1) ||
         (event === "react_boundary_failure_context" &&
-          properties.version === 1)) &&
+          properties.version === 1) ||
+        (event === "file_action_auth_diagnostic" &&
+          properties.file_action_auth_diagnostic_version === 1)) &&
       buildCommit &&
       /^[a-f0-9]{40}$/i.test(buildCommit)
     ) {

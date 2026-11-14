@@ -41,6 +41,10 @@ import {
   agentRetestOutcomeValidator,
 } from "./findingAgentRetestValidators";
 import {
+  huntEnvironmentValidator,
+  huntStoredCandidateValidator,
+} from "./findingHuntValidators";
+import {
   researchCohortReportValidator,
   researchCoverageValidator,
   researchRunStatusValidator,
@@ -867,6 +871,35 @@ export default defineSchema({
     .index("by_user_and_started", ["user_id", "started_at"])
     .index("by_user_and_chat", ["user_id", "chat_id"]),
 
+  // One Agent hunt for surfaces sharing a finding's root cause. Provenance is
+  // server-supplied. Candidates are saved one at a time, are immutable, and are
+  // never findings; the seed finding is never changed.
+  finding_variant_hunts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this hunt: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    interrupted: v.optional(v.boolean()),
+    candidates: v.array(huntStoredCandidateValidator),
+    summary: v.optional(v.string()),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(huntEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
   // Legacy executable HTTP retest data from Preview. Hidden and read-only:
   // retained only so existing rows validate and are removed by deletion.
   finding_retest_recipes: defineTable({
@@ -1547,6 +1580,9 @@ export default defineSchema({
     // When the noted behavior was actually observed; distinct from edits.
     observed_at: v.optional(v.number()),
     recheck_after: v.optional(v.number()),
+    // Bounded title, tags and label words for recall keyword matching.
+    // Written by every note write; legacy rows are filled by noteMigrations.
+    search_metadata: v.optional(v.string()),
   })
     .index("by_note_id", ["note_id"])
     .index("by_user_and_target_and_updated", [
@@ -1579,6 +1615,10 @@ export default defineSchema({
     .searchIndex("search_notes", {
       searchField: "content",
       filterFields: ["user_id", "category", "project_id"],
+    })
+    .searchIndex("search_note_metadata", {
+      searchField: "search_metadata",
+      filterFields: ["user_id", "project_id"],
     }),
 
   // Local Sandbox Tables

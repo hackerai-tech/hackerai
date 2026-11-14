@@ -137,8 +137,50 @@ type NotePage = NoteMetadata & {
   content: string;
   content_offset: number;
   content_length: number;
+  content_revision: string;
   next_cursor?: string;
 };
+
+/**
+ * Versioned get_note cursor bound to one note and one content revision, so
+ * pages of different revisions can never be combined. It carries no user
+ * scope: ownership always comes from the request context.
+ */
+const NOTE_CURSOR_VERSION = "n2";
+export const encodeNoteCursor = (
+  noteId: string,
+  revision: string,
+  offset: number,
+) => `${NOTE_CURSOR_VERSION}:${noteId}:${revision}:${offset}`;
+
+const RESTART_HINT = "Restart get_note without a cursor to read the note.";
+
+export function decodeNoteCursor(
+  cursor: string | null | undefined,
+  noteId: string,
+):
+  | { ok: true; offset: number; revision?: string }
+  | { ok: false; error: string } {
+  if (cursor == null || cursor === "") return { ok: true, offset: 0 };
+  if (/^\d+$/.test(cursor))
+    return {
+      ok: false,
+      error: `This cursor uses an older format. ${RESTART_HINT}`,
+    };
+  const match = cursor.match(/^n2:(.+):([0-9a-f]{16}):(\d+)$/);
+  const offset = match ? Number(match[3]) : NaN;
+  if (!match || !Number.isSafeInteger(offset))
+    return {
+      ok: false,
+      error: `Invalid cursor for this note. ${RESTART_HINT}`,
+    };
+  if (match[1] !== noteId)
+    return {
+      ok: false,
+      error: `This cursor belongs to a different note. ${RESTART_HINT}`,
+    };
+  return { ok: true, offset, revision: match[2] };
+}
 
 /** Model text for one get_note page: bounded header, page body, cursor footer. */
 export function renderNotePage(note: NotePage): string {
@@ -161,11 +203,13 @@ export function renderNotePage(note: NotePage): string {
  * Always advances at least one code point so paging terminates.
  */
 function fitNotePage(note: Omit<NotePage, "next_cursor">) {
+  const cursorAt = (offset: number) =>
+    encodeNoteCursor(note.note_id, note.content_revision, offset);
   const worstCase = renderNotePage({
     ...note,
     content: "",
     content_offset: note.content_length,
-    next_cursor: String(note.content_length),
+    next_cursor: cursorAt(note.content_length),
   });
   let budget = NOTE_TOOL_RESPONSE_TOKENS - safeCountTokens(worstCase) - 4;
   for (;;) {
@@ -182,7 +226,7 @@ function fitNotePage(note: Omit<NotePage, "next_cursor">) {
     const result: NotePage = {
       ...note,
       content: note.content.slice(0, consumed),
-      ...(end < note.content_length && { next_cursor: String(end) }),
+      ...(end < note.content_length && { next_cursor: cursorAt(end) }),
     };
     const overshoot =
       safeCountTokens(renderNotePage(result)) - NOTE_TOOL_RESPONSE_TOKENS;
@@ -361,15 +405,16 @@ export const createGetNote = (context: ToolContext) =>
   tool({
     ...getNoteTool,
     execute: async ({ note_id, cursor }: GetNoteToolInput) => {
-      const offset = cursor == null || cursor === "" ? 0 : Number(cursor);
-      if (!Number.isInteger(offset) || offset < 0) {
-        return { success: false, error: "Invalid cursor for this note" };
-      }
+      const position = decodeNoteCursor(cursor, note_id);
+      if (!position.ok) return { success: false, error: position.error };
       try {
         const result = await getNoteContent({
           userId: context.userID,
           noteId: note_id,
-          offset,
+          offset: position.offset,
+          ...(position.revision !== undefined && {
+            revision: position.revision,
+          }),
         });
         if (!result.success || !result.note) {
           return {
