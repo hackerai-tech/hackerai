@@ -1087,9 +1087,7 @@ describe("Chat Component Integration", () => {
         };
         rerender(ui());
         const expectedPreference =
-          !sandboxType || sandboxType === "e2b"
-            ? "available-remote"
-            : sandboxType;
+          !sandboxType || sandboxType === "e2b" ? "desktop" : sandboxType;
         await waitFor(() =>
           expect(screen.getByTestId("selected-computer")).toHaveTextContent(
             expectedPreference,

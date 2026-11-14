@@ -32,6 +32,13 @@ export function DisconnectedComputerNotice({
           ? "Reconnect or choose another environment to start."
           : "Reconnect it to continue this task."}
       </p>
+      {!sandboxPreference.startsWith("desktop") &&
+        sandboxPreference !== "e2b" && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Select the runner whose connection ID matches the one printed in
+            your terminal. Older saved runner selections need to be reselected.
+          </p>
+        )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <Button
           type="button"
