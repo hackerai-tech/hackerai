@@ -5,8 +5,10 @@
 //! error predicates, a bounded elapsed time, a fixed origin class and the
 //! compiled target platform. The separate cause receipt holds only the closed
 //! kind of the first `std::io::Error` in a bounded walk of the source chain.
-//! Neither holds error text, URLs, identifiers, digests, bodies, headers,
-//! hostnames or architecture.
+//! The separate transport detail splits that kind without the cause's `Other`
+//! fold and records whether a typed `native_tls::Error` was observed. None of
+//! them hold error text, URLs, identifiers, digests, bodies, headers,
+//! hostnames, certificate details or architecture.
 
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -105,6 +107,80 @@ pub struct SendFailureCause {
     source_chain_truncated: bool,
 }
 
+/// The first IO error's own kind. Known kinds keep their name, `Other` is only
+/// `ErrorKind::Other` itself, and every remaining kind is `Unmapped`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoKindDetail {
+    ConnectionRefused,
+    ConnectionReset,
+    ConnectionAborted,
+    HostUnreachable,
+    NetworkUnreachable,
+    NetworkDown,
+    AddrInUse,
+    AddrNotAvailable,
+    BrokenPipe,
+    UnexpectedEof,
+    TimedOut,
+    NotConnected,
+    PermissionDenied,
+    InvalidData,
+    InvalidInput,
+    WouldBlock,
+    Interrupted,
+    Unsupported,
+    OutOfMemory,
+    Other,
+    Unmapped,
+    /// No `std::io::Error` within the observed links.
+    NotExposed,
+}
+
+impl IoKindDetail {
+    fn from_io(kind: std::io::ErrorKind) -> Self {
+        use std::io::ErrorKind;
+        match kind {
+            ErrorKind::ConnectionRefused => Self::ConnectionRefused,
+            ErrorKind::ConnectionReset => Self::ConnectionReset,
+            ErrorKind::ConnectionAborted => Self::ConnectionAborted,
+            ErrorKind::HostUnreachable => Self::HostUnreachable,
+            ErrorKind::NetworkUnreachable => Self::NetworkUnreachable,
+            ErrorKind::NetworkDown => Self::NetworkDown,
+            ErrorKind::AddrInUse => Self::AddrInUse,
+            ErrorKind::AddrNotAvailable => Self::AddrNotAvailable,
+            ErrorKind::BrokenPipe => Self::BrokenPipe,
+            ErrorKind::UnexpectedEof => Self::UnexpectedEof,
+            ErrorKind::TimedOut => Self::TimedOut,
+            ErrorKind::NotConnected => Self::NotConnected,
+            ErrorKind::PermissionDenied => Self::PermissionDenied,
+            ErrorKind::InvalidData => Self::InvalidData,
+            ErrorKind::InvalidInput => Self::InvalidInput,
+            ErrorKind::WouldBlock => Self::WouldBlock,
+            ErrorKind::Interrupted => Self::Interrupted,
+            ErrorKind::Unsupported => Self::Unsupported,
+            ErrorKind::OutOfMemory => Self::OutOfMemory,
+            ErrorKind::Other => Self::Other,
+            _ => Self::Unmapped,
+        }
+    }
+}
+
+/// Sent on its own optional channel so the cause receipt's buckets are frozen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendTransportDetail {
+    version: u8,
+    io_kind_detail: IoKindDetail,
+    /// A typed `native_tls::Error` was an observed link or the first IO
+    /// error's inner error. Not a certificate reason or the failure's origin.
+    native_tls_source: bool,
+    /// Links observed, at most `MAX_SOURCE_LINKS`.
+    source_depth: u8,
+    /// Another link existed beyond the last one observed.
+    source_chain_truncated: bool,
+}
+
 fn bounded_elapsed_ms(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis())
         .unwrap_or(MAX_ELAPSED_MS)
@@ -136,6 +212,43 @@ fn send_failure_cause(error: &(dyn Error + 'static)) -> SendFailureCause {
     cause(IoKind::NotExposed, depth, false)
 }
 
+/// Walks at most `MAX_SOURCE_LINKS` sources of `error` (not `error` itself),
+/// all of them rather than stopping at the first `std::io::Error`. Only
+/// `source`, type checks and that IO error's `kind` and `get_ref` are called:
+/// never `Display`, `Debug` or any other accessor. `io::Error::source` skips
+/// a custom inner error, so that inner error's type is checked directly.
+fn send_transport_detail(error: &(dyn Error + 'static)) -> SendTransportDetail {
+    let mut io_kind_detail = None;
+    let mut native_tls_source = false;
+    let mut source_depth = 0;
+    let mut source_chain_truncated = false;
+    let mut source = error.source();
+    while let Some(link) = source {
+        if source_depth == MAX_SOURCE_LINKS {
+            source_chain_truncated = true;
+            break;
+        }
+        source_depth += 1;
+        native_tls_source |= link.is::<native_tls::Error>();
+        if io_kind_detail.is_none() {
+            if let Some(io) = link.downcast_ref::<std::io::Error>() {
+                io_kind_detail = Some(IoKindDetail::from_io(io.kind()));
+                native_tls_source |= io
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<native_tls::Error>());
+            }
+        }
+        source = link.source();
+    }
+    SendTransportDetail {
+        version: 1,
+        io_kind_detail: io_kind_detail.unwrap_or(IoKindDetail::NotExposed),
+        native_tls_source,
+        source_depth,
+        source_chain_truncated,
+    }
+}
+
 /// Sends `request` exactly once and returns reqwest's original result.
 ///
 /// Only a send error is reported, once, before that error is returned. Without
@@ -149,7 +262,7 @@ pub async fn observed_send<F>(
     observer: Option<F>,
 ) -> reqwest::Result<reqwest::Response>
 where
-    F: FnOnce(SendFailureReceipt, SendFailureCause),
+    F: FnOnce(SendFailureReceipt, SendFailureCause, SendTransportDetail),
 {
     let Some(observer) = observer else {
         return request.send().await;
@@ -167,7 +280,8 @@ where
             platform: Platform::from_target_os(std::env::consts::OS),
         };
         let cause = send_failure_cause(error);
-        let _ = catch_unwind(AssertUnwindSafe(|| observer(receipt, cause)));
+        let detail = send_transport_detail(error);
+        let _ = catch_unwind(AssertUnwindSafe(|| observer(receipt, cause, detail)));
     }
     result
 }
@@ -267,14 +381,69 @@ mod tests {
             .json(&serde_json::json!({ "id": "synthetic", "digest": "synthetic" }))
     }
 
-    type Recorded = Arc<Mutex<Vec<(SendFailureReceipt, SendFailureCause)>>>;
+    /// A plaintext HTTP endpoint behind an `https` URL. The client's own TLS
+    /// handshake fails on the non-TLS answer before any certificate is
+    /// presented, so validation keeps its defaults. Counts connections.
+    async fn plaintext_https_url() -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "https://{}/api/desktop/authorized-operation",
+            listener.local_addr().unwrap()
+        );
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counted = connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buffer = [0u8; 4096];
+                    let _ = socket.read(&mut buffer).await;
+                    let response = b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n";
+                    let _ = socket.write_all(response).await;
+                    let _ = socket.shutdown().await;
+                    // Drain until the client gives up, so the close is orderly.
+                    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                        while let Ok(n) = socket.read(&mut buffer).await {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+        });
+        (url, connections)
+    }
 
-    fn recorder() -> (Recorded, impl FnOnce(SendFailureReceipt, SendFailureCause)) {
+    type Recorded = Arc<Mutex<Vec<(SendFailureReceipt, SendFailureCause, SendTransportDetail)>>>;
+
+    fn recorder() -> (
+        Recorded,
+        impl FnOnce(SendFailureReceipt, SendFailureCause, SendTransportDetail),
+    ) {
         let receipts = Arc::new(Mutex::new(Vec::new()));
         let recorded = receipts.clone();
-        (receipts, move |receipt, cause| {
-            recorded.lock().unwrap().push((receipt, cause))
+        (receipts, move |receipt, cause, detail| {
+            recorded.lock().unwrap().push((receipt, cause, detail))
         })
+    }
+
+    /// The frozen cause bucket that every detail must still fall into.
+    fn legacy_bucket(detail: IoKindDetail) -> IoKind {
+        match detail {
+            IoKindDetail::ConnectionReset => IoKind::ConnectionReset,
+            IoKindDetail::ConnectionAborted => IoKind::ConnectionAborted,
+            IoKindDetail::BrokenPipe => IoKind::BrokenPipe,
+            IoKindDetail::UnexpectedEof => IoKind::UnexpectedEof,
+            IoKindDetail::TimedOut => IoKind::TimedOut,
+            IoKindDetail::NotConnected => IoKind::NotConnected,
+            IoKindDetail::PermissionDenied => IoKind::PermissionDenied,
+            IoKindDetail::InvalidData => IoKind::InvalidData,
+            IoKindDetail::InvalidInput => IoKind::InvalidInput,
+            IoKindDetail::NotExposed => IoKind::NotExposed,
+            _ => IoKind::Other,
+        }
     }
 
     #[tokio::test]
@@ -310,11 +479,12 @@ mod tests {
         .expect_err("closed loopback port");
         let receipts = receipts.lock().unwrap();
         assert_eq!(receipts.len(), 1);
-        let (receipt, cause) = receipts[0];
+        let (receipt, cause, detail) = receipts[0];
         eprintln!(
-            "authorization_refusal_fixture: timeout={} connect={} request={} elapsed_ms={} io_kind={:?} source_depth={}",
+            "authorization_refusal_fixture: timeout={} connect={} request={} elapsed_ms={} io_kind={:?} source_depth={} io_kind_detail={:?} native_tls_source={} detail_source_depth={} detail_truncated={}",
             receipt.timeout, receipt.connect, receipt.request, receipt.elapsed_ms,
-            cause.io_kind, cause.source_depth
+            cause.io_kind, cause.source_depth, detail.io_kind_detail,
+            detail.native_tls_source, detail.source_depth, detail.source_chain_truncated
         );
         assert!(error.is_connect());
         // Refusal is outside the closed IO classes, but reqwest still exposes
@@ -322,6 +492,16 @@ mod tests {
         assert_eq!(cause.io_kind, IoKind::Other);
         assert!((1..=MAX_SOURCE_LINKS).contains(&cause.source_depth));
         assert!(!cause.source_chain_truncated);
+        // The detail names the same IO error that the cause folds into Other.
+        assert_eq!(detail.version, 1);
+        assert_eq!(detail.io_kind_detail, IoKindDetail::ConnectionRefused);
+        assert!(!detail.native_tls_source);
+        assert!(detail.source_depth >= cause.source_depth);
+        assert!(detail.source_depth <= MAX_SOURCE_LINKS);
+        assert!(!detail.source_chain_truncated);
+        let wire = serde_json::to_value(detail).unwrap();
+        assert_eq!(wire["ioKindDetail"], "connection_refused");
+        assert!(!wire.to_string().contains("127.0.0.1"));
         assert_eq!(
             (receipt.version, receipt.connect, receipt.timeout),
             (1, true, false)
@@ -372,12 +552,15 @@ mod tests {
         .await
         .expect_err("the fixture never answers");
         assert!(error.is_timeout());
-        let (receipt, cause) = receipts.lock().unwrap()[0];
+        let (receipt, cause, detail) = receipts.lock().unwrap()[0];
         assert!(receipt.timeout);
         assert!((200..=MAX_ELAPSED_MS).contains(&receipt.elapsed_ms));
         // reqwest's own deadline is not an IO error; it must not be claimed as one.
         assert_eq!(cause.io_kind, IoKind::NotExposed);
         assert!(!cause.source_chain_truncated);
+        assert_eq!(detail.io_kind_detail, IoKindDetail::NotExposed);
+        assert!(!detail.native_tls_source);
+        assert!(!detail.source_chain_truncated);
         // Give an unexpected retry time to arrive before counting.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(posts.load(Ordering::SeqCst), 1);
@@ -390,7 +573,11 @@ mod tests {
         let panicking = observed_send(
             request(&url, Duration::from_millis(100)),
             OriginClass::Localhost,
-            Some(|_: SendFailureReceipt, _: SendFailureCause| panic!("observer failure")),
+            Some(
+                |_: SendFailureReceipt, _: SendFailureCause, _: SendTransportDetail| {
+                    panic!("observer failure")
+                },
+            ),
         )
         .await
         .expect_err("panic is contained");
@@ -401,8 +588,8 @@ mod tests {
         let closed = observed_send(
             request(&url, Duration::from_millis(100)),
             OriginClass::Localhost,
-            Some(move |receipt, cause| {
-                let _ = sender.send((receipt, cause));
+            Some(move |receipt, cause, detail| {
+                let _ = sender.send((receipt, cause, detail));
             }),
         )
         .await
@@ -412,7 +599,7 @@ mod tests {
         let direct = observed_send(
             request(&url, Duration::from_millis(100)),
             OriginClass::Localhost,
-            None::<fn(SendFailureReceipt, SendFailureCause)>,
+            None::<fn(SendFailureReceipt, SendFailureCause, SendTransportDetail)>,
         )
         .await
         .expect_err("direct path keeps the error");
@@ -437,11 +624,14 @@ mod tests {
         assert!(!error.is_timeout());
         let receipts = receipts.lock().unwrap();
         assert_eq!(receipts.len(), 1);
-        let (receipt, cause) = receipts[0];
+        let (receipt, cause, detail) = receipts[0];
         assert_eq!(
             (receipt.timeout, receipt.connect, receipt.request),
             (error.is_timeout(), error.is_connect(), error.is_request())
         );
+        // The same first IO error, still in its frozen cause bucket.
+        assert_eq!(legacy_bucket(detail.io_kind_detail), cause.io_kind);
+        assert!(!detail.native_tls_source);
         // Depending on whether the reset beats the request write, the platform
         // reports a reset or an aborted write; both are the typed IO cause.
         assert!(
@@ -456,6 +646,41 @@ mod tests {
         assert!(!cause.source_chain_truncated);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_tls_handshake_reports_a_typed_native_tls_source() {
+        let (url, connections) = plaintext_https_url().await;
+        let (receipts, observer) = recorder();
+        let error = observed_send(
+            // The production client's TLS defaults; only proxies are disabled.
+            request(&url, Duration::from_secs(8)),
+            OriginClass::Localhost,
+            Some(observer),
+        )
+        .await
+        .expect_err("a plaintext answer cannot complete a TLS handshake");
+        let receipts = receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1);
+        let (receipt, cause, detail) = receipts[0];
+        eprintln!(
+            "authorization_tls_fixture: timeout={} connect={} request={} io_kind={:?} source_depth={} io_kind_detail={:?} native_tls_source={} detail_source_depth={} detail_truncated={}",
+            receipt.timeout, receipt.connect, receipt.request, cause.io_kind,
+            cause.source_depth, detail.io_kind_detail, detail.native_tls_source,
+            detail.source_depth, detail.source_chain_truncated
+        );
+        assert!(!error.is_timeout());
+        assert_eq!(
+            (receipt.timeout, receipt.connect, receipt.request),
+            (error.is_timeout(), error.is_connect(), error.is_request())
+        );
+        assert!(detail.native_tls_source);
+        assert!((1..=MAX_SOURCE_LINKS).contains(&detail.source_depth));
+        assert!(!detail.source_chain_truncated);
+        // Whatever IO kind the platform exposes, the cause keeps its bucket.
+        assert_eq!(legacy_bucket(detail.io_kind_detail), cause.io_kind);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
     /// Display and Debug panic, so a walk that formats any link fails the test.
@@ -609,6 +834,246 @@ mod tests {
         let wire = serde_json::to_value(send_failure_cause(&Cycle)).unwrap();
         assert_eq!(wire["ioKind"], "not_exposed");
         assert_eq!(wire["sourceChainTruncated"], true);
+    }
+
+    fn detail(error: &(dyn Error + 'static)) -> (IoKindDetail, bool, u8, bool) {
+        let detail = send_transport_detail(error);
+        assert_eq!(detail.version, 1);
+        (
+            detail.io_kind_detail,
+            detail.native_tls_source,
+            detail.source_depth,
+            detail.source_chain_truncated,
+        )
+    }
+
+    /// A typed TLS error from a local parse; no network or certificate trust.
+    fn tls() -> native_tls::Error {
+        match native_tls::Certificate::from_der(&[]) {
+            Err(error) => error,
+            Ok(_) => panic!("an empty certificate must not parse"),
+        }
+    }
+
+    #[test]
+    fn transport_detail_splits_io_kinds_without_changing_the_cause_bucket() {
+        use std::io::ErrorKind;
+        for (kind, expected) in [
+            (
+                ErrorKind::ConnectionRefused,
+                IoKindDetail::ConnectionRefused,
+            ),
+            (ErrorKind::ConnectionReset, IoKindDetail::ConnectionReset),
+            (
+                ErrorKind::ConnectionAborted,
+                IoKindDetail::ConnectionAborted,
+            ),
+            (ErrorKind::HostUnreachable, IoKindDetail::HostUnreachable),
+            (
+                ErrorKind::NetworkUnreachable,
+                IoKindDetail::NetworkUnreachable,
+            ),
+            (ErrorKind::NetworkDown, IoKindDetail::NetworkDown),
+            (ErrorKind::AddrInUse, IoKindDetail::AddrInUse),
+            (ErrorKind::AddrNotAvailable, IoKindDetail::AddrNotAvailable),
+            (ErrorKind::BrokenPipe, IoKindDetail::BrokenPipe),
+            (ErrorKind::UnexpectedEof, IoKindDetail::UnexpectedEof),
+            (ErrorKind::TimedOut, IoKindDetail::TimedOut),
+            (ErrorKind::NotConnected, IoKindDetail::NotConnected),
+            (ErrorKind::PermissionDenied, IoKindDetail::PermissionDenied),
+            (ErrorKind::InvalidData, IoKindDetail::InvalidData),
+            (ErrorKind::InvalidInput, IoKindDetail::InvalidInput),
+            (ErrorKind::WouldBlock, IoKindDetail::WouldBlock),
+            (ErrorKind::Interrupted, IoKindDetail::Interrupted),
+            (ErrorKind::Unsupported, IoKindDetail::Unsupported),
+            (ErrorKind::OutOfMemory, IoKindDetail::OutOfMemory),
+            // Only the actual Other kind is Other; the rest stay distinct.
+            (ErrorKind::Other, IoKindDetail::Other),
+            (ErrorKind::NotFound, IoKindDetail::Unmapped),
+            (ErrorKind::AlreadyExists, IoKindDetail::Unmapped),
+            (ErrorKind::WriteZero, IoKindDetail::Unmapped),
+        ] {
+            let error = chain(2, io(kind));
+            assert_eq!(detail(&error), (expected, false, 3, false), "{kind:?}");
+            assert_eq!(legacy_bucket(expected), walk(&error).0, "{kind:?}");
+        }
+        // An OS error that std leaves uncategorized is residual, not Other.
+        let raw = chain(0, Some(Box::new(std::io::Error::from_raw_os_error(-1))));
+        assert_eq!(detail(&raw).0, IoKindDetail::Unmapped);
+        assert_eq!(walk(&raw).0, IoKind::Other);
+    }
+
+    #[test]
+    fn transport_detail_finds_only_a_typed_native_tls_error() {
+        use std::io::ErrorKind;
+        // A typed link beneath opaque wrappers, with no IO error. The TLS
+        // error's own sources depend on the platform backend.
+        let wrapped = chain(2, Some(Box::new(tls())));
+        let (kind, native_tls_source, depth, truncated) = detail(&wrapped);
+        assert_eq!(
+            (kind, native_tls_source, truncated),
+            (IoKindDetail::NotExposed, true, false)
+        );
+        assert!((3..=MAX_SOURCE_LINKS).contains(&depth));
+        assert_eq!(
+            detail(&chain(2, None)),
+            (IoKindDetail::NotExposed, false, 2, false)
+        );
+        // The first IO error's custom inner error, which `source` skips.
+        let inner = chain(
+            1,
+            Some(Box::new(std::io::Error::new(ErrorKind::Other, tls()))),
+        );
+        let (kind, native_tls_source, depth, _) = detail(&inner);
+        assert_eq!((kind, native_tls_source), (IoKindDetail::Other, true));
+        assert!((2..=MAX_SOURCE_LINKS).contains(&depth));
+        assert_eq!(walk(&inner).0, IoKind::Other);
+        // Beneath the first IO error, which still names the kind.
+        let below = chain(
+            0,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::ConnectionReset,
+                Link(Some(Box::new(tls()))),
+            ))),
+        );
+        let (kind, native_tls_source, ..) = detail(&below);
+        assert_eq!(
+            (kind, native_tls_source),
+            (IoKindDetail::ConnectionReset, true)
+        );
+        // Error text is never read, so TLS-like words are not a TLS witness.
+        let words = chain(
+            1,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::Other,
+                "tls handshake certificate proxy",
+            ))),
+        );
+        assert_eq!(detail(&words), (IoKindDetail::Other, false, 2, false));
+        // A ninth link is never inspected, even when it is a TLS error.
+        let beyond = chain(8, Some(Box::new(tls())));
+        assert_eq!(detail(&beyond), (IoKindDetail::NotExposed, false, 8, true));
+    }
+
+    #[test]
+    fn transport_detail_walk_is_bounded_and_survives_cycles() {
+        use std::io::ErrorKind;
+        assert_eq!(
+            detail(&chain(0, None)),
+            (IoKindDetail::NotExposed, false, 0, false)
+        );
+        // Links after the first IO error are still counted, up to the bound.
+        let deeper = chain(
+            0,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::TimedOut,
+                chain(2, io(ErrorKind::BrokenPipe)),
+            ))),
+        );
+        assert_eq!(detail(&deeper), (IoKindDetail::TimedOut, false, 4, false));
+        let last = chain(7, io(ErrorKind::ConnectionRefused));
+        assert_eq!(
+            detail(&last),
+            (IoKindDetail::ConnectionRefused, false, 8, false)
+        );
+        assert_eq!(
+            detail(&chain(8, None)),
+            (IoKindDetail::NotExposed, false, 8, false)
+        );
+        let beyond = chain(8, io(ErrorKind::ConnectionRefused));
+        assert_eq!(detail(&beyond), (IoKindDetail::NotExposed, false, 8, true));
+        // An exposed kind can still have more links than the walk observes.
+        let long = chain(
+            0,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::ConnectionRefused,
+                chain(9, None),
+            ))),
+        );
+        assert_eq!(
+            detail(&long),
+            (IoKindDetail::ConnectionRefused, false, 8, true)
+        );
+        assert_eq!(detail(&Cycle), (IoKindDetail::NotExposed, false, 8, true));
+    }
+
+    #[test]
+    fn transport_detail_serializes_only_its_closed_schema() {
+        let wire = serde_json::to_value(send_transport_detail(&chain(
+            1,
+            io(std::io::ErrorKind::AddrNotAvailable),
+        )))
+        .unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "version": 1,
+                "ioKindDetail": "addr_not_available",
+                "nativeTlsSource": false,
+                "sourceDepth": 2,
+                "sourceChainTruncated": false,
+            })
+        );
+        let wire =
+            serde_json::to_value(send_transport_detail(&Link(Some(Box::new(tls()))))).unwrap();
+        assert_eq!(wire["nativeTlsSource"], true);
+        assert_eq!(wire.as_object().unwrap().len(), 5);
+        // The closed names parsed by the web, in declaration order.
+        use IoKindDetail::*;
+        let names: Vec<_> = [
+            ConnectionRefused,
+            ConnectionReset,
+            ConnectionAborted,
+            HostUnreachable,
+            NetworkUnreachable,
+            NetworkDown,
+            AddrInUse,
+            AddrNotAvailable,
+            BrokenPipe,
+            UnexpectedEof,
+            TimedOut,
+            NotConnected,
+            PermissionDenied,
+            InvalidData,
+            InvalidInput,
+            WouldBlock,
+            Interrupted,
+            Unsupported,
+            OutOfMemory,
+            Other,
+            Unmapped,
+            NotExposed,
+        ]
+        .into_iter()
+        .map(|kind| serde_json::to_value(kind).unwrap())
+        .collect();
+        assert_eq!(
+            names,
+            [
+                "connection_refused",
+                "connection_reset",
+                "connection_aborted",
+                "host_unreachable",
+                "network_unreachable",
+                "network_down",
+                "addr_in_use",
+                "addr_not_available",
+                "broken_pipe",
+                "unexpected_eof",
+                "timed_out",
+                "not_connected",
+                "permission_denied",
+                "invalid_data",
+                "invalid_input",
+                "would_block",
+                "interrupted",
+                "unsupported",
+                "out_of_memory",
+                "other",
+                "unmapped",
+                "not_exposed",
+            ]
+        );
     }
 
     #[test]

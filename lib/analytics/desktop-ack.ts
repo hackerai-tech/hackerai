@@ -16,10 +16,12 @@ import {
   readNativeAuthorizationDiagnostic,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
+  readNativeAuthorizationTransport,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationTransportDiagnostic,
 } from "./native-authorization-diagnostics";
 
 interface DesktopAckContext {
@@ -35,6 +37,8 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorization?: NativeAuthorizationDiagnostic;
   /** Same-invocation closed IO cause; only joined to a valid send receipt. */
   nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
+  /** Same-invocation transport detail; only joined to a valid send receipt. */
+  nativeAuthorizationTransport?: NativeAuthorizationTransportDiagnostic;
   /** Same-invocation approval rejection; independent of the send groups. */
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
   /** Same response's mitigation marker; only joined to a valid response. */
@@ -272,6 +276,9 @@ export class DesktopAckTelemetry {
       const nativeAuthorizationCause = nativeAuthorization
         ? readNativeAuthorizationCause(result.nativeAuthorizationCause)
         : null;
+      const nativeAuthorizationTransport = nativeAuthorization
+        ? readNativeAuthorizationTransport(result.nativeAuthorizationTransport)
+        : null;
       const nativeAuthorizationResponse =
         result.terminalType === "error"
           ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
@@ -316,6 +323,7 @@ export class DesktopAckTelemetry {
           }),
           ...nativeAuthorization,
           ...nativeAuthorizationCause,
+          ...nativeAuthorizationTransport,
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
         },

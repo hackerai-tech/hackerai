@@ -27,10 +27,12 @@ import {
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationTransportDiagnostic,
 } from "../native-authorization-diagnostics";
 
 jest.mock("../client", () => ({
@@ -695,6 +697,261 @@ describe("native authorization send receipt", () => {
         expect(JSON.stringify(sanitized)).not.toContain("PRIVATE");
       },
     );
+  });
+
+  describe("transport detail", () => {
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "other",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
+    const transport: NativeAuthorizationTransportDiagnostic = {
+      native_authorization_transport_version: 1,
+      native_authorization_transport_io_kind_detail: "connection_refused",
+      native_authorization_transport_native_tls_source: false,
+      native_authorization_transport_source_depth: 3,
+      native_authorization_transport_source_chain_truncated: false,
+    };
+    const transportKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key),
+      );
+
+    it.each<Partial<NativeAuthorizationTransportDiagnostic>>([
+      {},
+      // A typed TLS witness without any exposed IO error.
+      {
+        native_authorization_transport_io_kind_detail: "not_exposed",
+        native_authorization_transport_native_tls_source: true,
+        native_authorization_transport_source_depth: 2,
+      },
+      // The actual Other kind and the residual are distinct values.
+      { native_authorization_transport_io_kind_detail: "other" },
+      { native_authorization_transport_io_kind_detail: "unmapped" },
+      { native_authorization_transport_io_kind_detail: "network_unreachable" },
+      // Unlike the cause, an exposed kind may come from a truncated walk.
+      {
+        native_authorization_transport_io_kind_detail: "host_unreachable",
+        native_authorization_transport_source_depth: 8,
+        native_authorization_transport_source_chain_truncated: true,
+      },
+      {
+        native_authorization_transport_io_kind_detail: "not_exposed",
+        native_authorization_transport_source_depth: 0,
+      },
+    ])(
+      "joins the detail to a valid v1 group on a terminal-error final: %p",
+      (change) => {
+        const expected = { ...transport, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: group,
+          nativeAuthorizationCause: cause,
+          nativeAuthorizationTransport: { ...expected, message: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({
+          ...group,
+          ...cause,
+          ...expected,
+        });
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_transport_message: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({
+          ...group,
+          ...cause,
+          ...expected,
+        });
+        expect(transportKeys(enriched.properties)).toHaveLength(5);
+        expect(nativeKeys(enriched.properties)).toHaveLength(8);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("never reports a detail without a valid v1 group", () => {
+      for (const nativeAuthorization of [
+        undefined,
+        { ...group, native_authorization_origin_class: "hackerai.co" },
+      ]) {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization,
+          nativeAuthorizationTransport: transport,
+        });
+        expect(final?.properties).toMatchObject({ terminalType: "error" });
+        expect(transportKeys(final!.properties)).toEqual([]);
+        expect(
+          transportKeys(
+            enrich({
+              terminalType: "error",
+              ...nativeAuthorization,
+              ...transport,
+            }).properties,
+          ),
+        ).toEqual([]);
+      }
+      // Nor on a successful or nonzero exit, a start or a summary.
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorization: group,
+        nativeAuthorizationTransport: transport,
+      });
+      expect(transportKeys(exitFinal!.properties)).toEqual([]);
+      expect(
+        transportKeys(
+          enrich({ terminalType: "exit", ...group, ...transport }).properties,
+        ),
+      ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          transportKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...group, ...transport },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("leaves every existing group intact beside it", () => {
+      const response: NativeAuthorizationResponseDiagnostic = {
+        native_authorization_response_version: 1,
+        native_authorization_response_http_status: 503,
+        native_authorization_response_approval: "not_checked",
+        native_authorization_response_origin_class: "canonical_production",
+        native_authorization_response_platform: "windows",
+        native_authorization_response_request_id_shape: "absent",
+        native_authorization_response_request_id: null,
+      };
+      const mitigation: NativeAuthorizationMitigationDiagnostic = {
+        native_authorization_response_mitigation_version: 1,
+        native_authorization_response_mitigation: "absent",
+      };
+      const all = { ...group, ...cause, ...response, ...mitigation };
+      for (const extra of [transport, {}]) {
+        const sanitized = enrich({
+          terminalType: "error",
+          ...all,
+          ...extra,
+        }).properties;
+        expect(sanitized).toEqual({ terminalType: "error", ...all, ...extra });
+      }
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unsupported version", { native_authorization_transport_version: 2 }],
+      ["string version", { native_authorization_transport_version: "1" }],
+      [
+        "missing version",
+        { native_authorization_transport_version: undefined },
+      ],
+      [
+        "a guessed TLS kind",
+        { native_authorization_transport_io_kind_detail: "tls_handshake" },
+      ],
+      [
+        "private kind",
+        { native_authorization_transport_io_kind_detail: "PRIVATE" },
+      ],
+      [
+        "missing kind",
+        { native_authorization_transport_io_kind_detail: undefined },
+      ],
+      [
+        "string TLS flag",
+        { native_authorization_transport_native_tls_source: "false" },
+      ],
+      [
+        "missing TLS flag",
+        { native_authorization_transport_native_tls_source: undefined },
+      ],
+      ["unbounded depth", { native_authorization_transport_source_depth: 9 }],
+      ["negative depth", { native_authorization_transport_source_depth: -1 }],
+      [
+        "fractional depth",
+        { native_authorization_transport_source_depth: 1.5 },
+      ],
+      ["string depth", { native_authorization_transport_source_depth: "3" }],
+      [
+        "string truncation",
+        { native_authorization_transport_source_chain_truncated: "false" },
+      ],
+      [
+        "an exposed kind without a source link",
+        { native_authorization_transport_source_depth: 0 },
+      ],
+      [
+        "a TLS source without a source link",
+        {
+          native_authorization_transport_io_kind_detail: "not_exposed",
+          native_authorization_transport_native_tls_source: true,
+          native_authorization_transport_source_depth: 0,
+        },
+      ],
+      [
+        "a truncated walk shorter than the bound",
+        {
+          native_authorization_transport_source_depth: 7,
+          native_authorization_transport_source_chain_truncated: true,
+        },
+      ],
+    ])("drops only the detail for %s", (_case, change) => {
+      const invalid = { ...transport, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: group,
+        nativeAuthorizationCause: cause,
+        nativeAuthorizationTransport: invalid,
+      });
+      // The original v1 and cause groups are unaffected.
+      expect(final?.properties).toMatchObject({ ...group, ...cause });
+      expect(transportKeys(final!.properties)).toEqual([]);
+      const enriched = enrich({
+        terminalType: "error",
+        ...group,
+        ...cause,
+        ...invalid,
+      });
+      expect(enriched.properties).toEqual({
+        terminalType: "error",
+        ...group,
+        ...cause,
+      });
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    it("never runs a detail getter at before_send and keeps the v1 group", () => {
+      let reads = 0;
+      const properties: Record<string, unknown> = {
+        terminalType: "error",
+        ...group,
+        ...transport,
+      };
+      Object.defineProperty(
+        properties,
+        "native_authorization_transport_native_tls_source",
+        {
+          enumerable: true,
+          get() {
+            reads++;
+            throw new Error("PRIVATE");
+          },
+        },
+      );
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties,
+      }).properties!;
+      expect(reads).toBe(0);
+      expect(transportKeys(sanitized)).toEqual([]);
+      expect(sanitized).toEqual({ terminalType: "error", ...group });
+    });
   });
 });
 

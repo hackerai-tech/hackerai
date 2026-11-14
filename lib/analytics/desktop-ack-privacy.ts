@@ -3,10 +3,12 @@ import {
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
+  readNativeAuthorizationTransport,
 } from "./native-authorization-diagnostics";
 
 const STOP_SOURCES = [
@@ -147,6 +149,11 @@ export function sanitizeDesktopAckEvent<
     const nativeAuthorizationCause = nativeAuthorization
       ? readNativeAuthorizationCause(event.properties)
       : null;
+    // The transport group joins a valid v1 group the same way, independently
+    // of the cause group.
+    const nativeAuthorizationTransport = nativeAuthorization
+      ? readNativeAuthorizationTransport(event.properties)
+      : null;
     // The response group is validated on its own, as the same kind of data
     // copy; its validity neither depends on nor admits the send groups.
     const nativeAuthorizationResponse =
@@ -165,6 +172,7 @@ export function sanitizeDesktopAckEvent<
         .filter(
           (key) =>
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
         )
@@ -189,6 +197,8 @@ export function sanitizeDesktopAckEvent<
     );
     if (nativeAuthorizationCause)
       Object.assign(event.properties, nativeAuthorizationCause);
+    if (nativeAuthorizationTransport)
+      Object.assign(event.properties, nativeAuthorizationTransport);
     if (nativeAuthorizationResponse)
       Object.assign(event.properties, nativeAuthorizationResponse);
     if (nativeAuthorizationMitigation)
