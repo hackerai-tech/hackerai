@@ -426,8 +426,8 @@ function nearbyDispatchGroup(
       exception.value.length <= 128 &&
       /^[A-Za-z_$][\w$]{0,63} is not defined$/.test(exception.value) &&
       Array.isArray(frames) &&
-      frames.length === 2 &&
-      [frames[0], frames[1]].every(
+      (frames.length === 1 || frames.length === 2) &&
+      (frames.length === 1 ? [frames[0]] : [frames[0], frames[1]]).every(
         (frame) => frame?.filename === "<anonymous>" && frame?.in_app === false,
       )
     )
