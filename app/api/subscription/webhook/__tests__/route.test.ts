@@ -546,6 +546,18 @@ describe("POST /api/subscription/webhook", () => {
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
   });
 
+  it("leaves fraud events for their own endpoint", async () => {
+    mockConstructEvent.mockReturnValueOnce({
+      id: "evt_dispute",
+      type: "charge.dispute.created",
+      data: { object: { id: "dp_test" } },
+    });
+
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])(
     "records only bounded unhandled body context (valid correlation %s)",
     async (valid) => {

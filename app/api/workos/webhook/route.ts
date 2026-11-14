@@ -73,7 +73,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let claimState: "acquired" | "already_processed" | "claim_held";
+  let claimState:
+    | "acquired"
+    | "already_processed"
+    | "handler_completed"
+    | "claim_held"
+    | "review_required";
   try {
     const result = await getConvexClient().mutation(
       api.extraUsage.claimWebhookProcessing,

@@ -2308,14 +2308,36 @@ export default defineSchema({
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
     event_id: v.string(),
+    // Fraud source IDs let support resolution fence an in-flight delivery.
+    source_id: v.optional(v.string()),
     processed_at: v.number(),
-    // State-machine fields for atomic claim/finalize. Optional for
+    // State-machine fields for atomic claim/handled/finalize. Optional for
     // backwards compatibility — legacy rows (no status) are treated as
     // completed since they were inserted under the old "mark on entry"
     // semantics for events whose lifecycle has already concluded.
-    status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
+    status: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("cleanup_started"),
+        v.literal("review_required"),
+        v.literal("handled"),
+        v.literal("completed"),
+      ),
+    ),
     claimed_at: v.optional(v.number()),
-  }).index("by_event_id", ["event_id"]),
+    claim_token: v.optional(v.string()),
+    review_reason: v.optional(v.string()),
+    review_customer_id: v.optional(v.string()),
+    review_resolution: v.optional(v.string()),
+    reviewed_by: v.optional(v.string()),
+    reviewed_at: v.optional(v.number()),
+  })
+    .index("by_event_id", ["event_id"])
+    .index("by_status", ["status"])
+    .index("by_status_and_processed_at", ["status", "processed_at"])
+    .index("by_review_customer_id_and_status", ["review_customer_id", "status"])
+    .index("by_source_id_and_status", ["source_id", "status"])
+    .index("by_source_status_event_id", ["source_id", "status", "event_id"]),
 
   // Durable idempotency records for user-visible checkout session confirms.
   // Unlike webhook retry deduplication, these keys must not be time-purged

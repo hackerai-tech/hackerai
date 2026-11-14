@@ -14,6 +14,9 @@ import {
   isTerminalStripeResourceError,
 } from "@/lib/billing/stripe-terminal-errors";
 
+// Keep execution below the ten-minute stale-claim takeover window.
+export const maxDuration = 300;
+
 const WEBHOOK_LOG_PREFIX = "[Fraud Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
   webhook: "fraud",
@@ -22,6 +25,25 @@ const WEBHOOK_LOG_CONTEXT = {
 
 type SuspensionCategory =
   "early_fraud_warning" | "dispute_fraudulent" | "dispute_billing_hold";
+
+type FraudHandlerOutcome = { customerId: string; reason: string } | null;
+
+async function beginCustomerCleanup(
+  eventId: string,
+  claimToken: string,
+  customerId: string,
+): Promise<boolean> {
+  const result = await getConvexClient().mutation(
+    api.extraUsage.markFraudCleanupStarted,
+    {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      eventId,
+      claimToken,
+      customerId,
+    },
+  );
+  return result.allowed;
+}
 
 // =============================================================================
 // Helpers
@@ -234,22 +256,39 @@ async function suspendCustomerUsers({
   sourceReason?: string;
   chargeId?: string | null;
   sourceCreatedUnix: number;
-}): Promise<void> {
-  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+}): Promise<"cleanup" | "resolved" | "mixed"> {
+  const { userIds, orgId, reason } =
+    await resolveUserIdsFromCustomer(customerId);
+  if (reason === "lookup_failed") {
+    throw new Error("Cannot verify fraud suspension users");
+  }
+  // A missing mapping can be repaired between deliveries. Keep the claim
+  // retryable rather than acknowledging a fraud event without an app hold.
+  if (userIds.length === 0) {
+    throw new Error("Cannot identify fraud suspension users");
+  }
+  let resolvedCount = 0;
 
   for (const userId of userIds) {
-    await getConvexClient().mutation(api.userSuspensions.upsertActive, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      category,
-      sourceId,
-      sourceReason,
-      stripeCustomerId: customerId,
-      stripeChargeId: chargeId ?? undefined,
-      workosOrganizationId: orgId ?? undefined,
-      sourceCreatedAt: sourceCreatedUnix * 1000,
-    });
+    const suspensionId = await getConvexClient().mutation(
+      api.userSuspensions.upsertActive,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        category,
+        sourceId,
+        preserveResolved: true,
+        sourceReason,
+        stripeCustomerId: customerId,
+        stripeChargeId: chargeId ?? undefined,
+        workosOrganizationId: orgId ?? undefined,
+        sourceCreatedAt: sourceCreatedUnix * 1000,
+      },
+    );
+    if (suspensionId === null) resolvedCount++;
   }
+  if (resolvedCount === 0) return "cleanup";
+  return resolvedCount === userIds.length ? "resolved" : "mixed";
 }
 
 /**
@@ -276,10 +315,12 @@ async function blockFraudulentUser(
     sourceReason?: string;
   },
   sourceCreatedUnix: number,
-): Promise<void> {
+  eventId: string,
+  claimToken: string,
+): Promise<FraudHandlerOutcome> {
   // Suspend first so a customer deleted during Stripe cleanup cannot prevent
   // the local safety control from being applied. The upsert is replay-safe.
-  await suspendCustomerUsers({
+  const disposition = await suspendCustomerUsers({
     customerId,
     category: suspension.category,
     sourceId: suspension.sourceId,
@@ -287,6 +328,18 @@ async function blockFraudulentUser(
     chargeId,
     sourceCreatedUnix,
   });
+  if (disposition === "mixed") {
+    return { customerId, reason: "mixed_support_resolution" };
+  }
+  if (disposition === "resolved") {
+    console.log(
+      `[Fraud Webhook] Skipped cleanup for support-resolved source ${suspension.sourceId}`,
+    );
+    return null;
+  }
+  if (!(await beginCustomerCleanup(eventId, claimToken, customerId))) {
+    return { customerId, reason: "customer_has_restored_user" };
+  }
   await expireOpenCheckoutSessions(customerId);
   await cancelAllSubscriptions(customerId);
   await detachAllPaymentMethods(customerId);
@@ -298,6 +351,7 @@ async function blockFraudulentUser(
   console.log(
     `[Fraud Webhook] Processed fraud block for customer ${customerId} (${metadataReason})`,
   );
+  return null;
 }
 
 // =============================================================================
@@ -313,7 +367,9 @@ async function blockFraudulentUser(
  */
 async function handleEarlyFraudWarning(
   warning: Stripe.Radar.EarlyFraudWarning,
-): Promise<void> {
+  eventId: string,
+  claimToken: string,
+): Promise<FraudHandlerOutcome> {
   const chargeId =
     typeof warning.charge === "string" ? warning.charge : warning.charge?.id;
 
@@ -322,7 +378,7 @@ async function handleEarlyFraudWarning(
       "[Fraud Webhook] Early fraud warning missing charge ID:",
       warning.id,
     );
-    return;
+    return null;
   }
 
   console.log(
@@ -337,7 +393,7 @@ async function handleEarlyFraudWarning(
 
   // Block the user
   if (customerId) {
-    await blockFraudulentUser(
+    return await blockFraudulentUser(
       customerId,
       chargeId,
       `early_fraud_warning:${warning.fraud_type}`,
@@ -347,8 +403,11 @@ async function handleEarlyFraudWarning(
         sourceReason: warning.fraud_type,
       },
       warning.created,
+      eventId,
+      claimToken,
     );
   }
+  return null;
 }
 
 /**
@@ -365,7 +424,11 @@ async function handleEarlyFraudWarning(
  * "charge_disputed" / double-refund. The disputed funds are returned to the
  * cardholder by their issuer, not by us.
  */
-async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
+async function handleDisputeCreated(
+  dispute: Stripe.Dispute,
+  eventId: string,
+  claimToken: string,
+): Promise<FraudHandlerOutcome> {
   const chargeId =
     typeof dispute.charge === "string" ? dispute.charge : dispute.charge?.id;
   const isFraudulent = dispute.reason === "fraudulent";
@@ -374,7 +437,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     `[Fraud Webhook] Dispute created: ${dispute.id}, reason: ${dispute.reason}, fraudulent: ${isFraudulent}, amount: $${(dispute.amount / 100).toFixed(2)}, charge: ${chargeId}`,
   );
 
-  if (!chargeId) return;
+  if (!chargeId) return null;
 
   const charge = await stripe.charges.retrieve(chargeId);
   const customerId = getCustomerIdFromCharge(charge);
@@ -383,12 +446,12 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     console.error(
       `[Fraud Webhook] Could not resolve customer for dispute ${dispute.id}`,
     );
-    return;
+    return null;
   }
 
   if (isFraudulent) {
     // Stolen card — block fully but preserve everything for evidence
-    await blockFraudulentUser(
+    return await blockFraudulentUser(
       customerId,
       chargeId,
       `dispute_fraudulent:${dispute.id}`,
@@ -398,6 +461,8 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
         sourceReason: dispute.reason,
       },
       dispute.created,
+      eventId,
+      claimToken,
     );
   } else {
     // Non-fraudulent dispute (unrecognized, duplicate, product issue, etc.).
@@ -407,7 +472,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // AND detach payment methods. Don't mark the Stripe customer as a fraud
     // actor, but keep the Convex billing hold authoritative: every app billing
     // path rejects new transactions until support resolves the suspension.
-    await suspendCustomerUsers({
+    const disposition = await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
       sourceId: dispute.id,
@@ -415,6 +480,18 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
+    if (disposition === "mixed") {
+      return { customerId, reason: "mixed_support_resolution" };
+    }
+    if (disposition === "resolved") {
+      console.log(
+        `[Fraud Webhook] Skipped cleanup for support-resolved source ${dispute.id}`,
+      );
+      return null;
+    }
+    if (!(await beginCustomerCleanup(eventId, claimToken, customerId))) {
+      return { customerId, reason: "customer_has_restored_user" };
+    }
     await expireOpenCheckoutSessions(customerId);
     await cancelAllSubscriptions(customerId);
     await detachAllPaymentMethods(customerId);
@@ -422,6 +499,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       `[Fraud Webhook] Processed billing hold for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
   }
+  return null;
 }
 
 // =============================================================================
@@ -484,19 +562,49 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Stripe can deliver one event to multiple endpoints. Only the owning
+  // handler may consume its ID in the shared webhook ledger.
+  if (
+    event.type !== "radar.early_fraud_warning.created" &&
+    event.type !== "charge.dispute.created"
+  ) {
+    return NextResponse.json({ received: true });
+  }
+
+  const sourceId =
+    event.type === "radar.early_fraud_warning.created" ||
+    event.type === "charge.dispute.created"
+      ? event.data.object.id
+      : undefined;
+  if (sourceId !== undefined && typeof sourceId !== "string") {
+    return NextResponse.json(
+      { error: "Invalid fraud source" },
+      { status: 400 },
+    );
+  }
+
+  const claimToken = crypto.randomUUID();
+
   // Atomic claim — eliminates the TOCTOU window where two concurrent
   // deliveries of the same event.id could both pass a read-then-write
   // pre-check and both run side effects. claimWebhookProcessing inserts
   // a `pending` row in a single transaction; only one caller wins.
   // Stale `pending` claims (>10 min) are reclaimable so a crashed first
   // attempt doesn't permanently block Stripe's retries.
-  let claimState: "acquired" | "already_processed" | "claim_held";
+  let claimState:
+    | "acquired"
+    | "already_processed"
+    | "handler_completed"
+    | "claim_held"
+    | "review_required";
   try {
     const result = await getConvexClient().mutation(
       api.extraUsage.claimWebhookProcessing,
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         eventId: event.id,
+        sourceId,
+        claimToken,
       },
     );
     claimState = result.state;
@@ -508,51 +616,124 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (claimState !== "acquired") {
-    console.log(`[Fraud Webhook] Event ${event.id} ${claimState}, skipping`);
+  if (claimState === "already_processed") {
     return NextResponse.json({ received: true });
+  }
+  if (claimState === "review_required") {
+    console.error(
+      `[Fraud Webhook] Manual review required for event ${event.id}`,
+    );
+    return NextResponse.json(
+      { error: "Manual review required", reviewRequired: true },
+      { status: 503, headers: { "Retry-After": "600" } },
+    );
+  }
+  if (claimState === "claim_held") {
+    // A concurrent delivery is still pending. A 2xx would tell Stripe the
+    // event is complete even if the holder later fails or crashes.
+    return NextResponse.json(
+      { error: "Webhook processing in progress" },
+      { status: 503, headers: { "Retry-After": "600" } },
+    );
   }
 
   // Handle events. If the handler throws, return 500 WITHOUT finalizing —
   // the `pending` claim will become reclaimable after STALE_CLAIM_MS so a
   // future Stripe retry can drive completion.
-  try {
-    switch (event.type) {
-      case "radar.early_fraud_warning.created": {
-        await handleEarlyFraudWarning(
-          event.data.object as Stripe.Radar.EarlyFraudWarning,
-        );
-        break;
+  if (claimState === "acquired") {
+    let outcome: FraudHandlerOutcome = null;
+    try {
+      switch (event.type) {
+        case "radar.early_fraud_warning.created": {
+          outcome = await handleEarlyFraudWarning(
+            event.data.object as Stripe.Radar.EarlyFraudWarning,
+            event.id,
+            claimToken,
+          );
+          break;
+        }
+        case "charge.dispute.created": {
+          outcome = await handleDisputeCreated(
+            event.data.object as Stripe.Dispute,
+            event.id,
+            claimToken,
+          );
+          break;
+        }
       }
-      case "charge.dispute.created": {
-        await handleDisputeCreated(event.data.object as Stripe.Dispute);
-        break;
-      }
+    } catch (error) {
+      console.error(
+        `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
+        error,
+      );
+      return NextResponse.json({ error: "Handler failed" }, { status: 500 });
     }
-  } catch (error) {
-    console.error(
-      `[Fraud Webhook] Handler failed for event ${event.id} (${event.type}):`,
-      error,
-    );
-    return NextResponse.json({ error: "Handler failed" }, { status: 500 });
+
+    if (outcome) {
+      try {
+        await getConvexClient().mutation(
+          api.extraUsage.markFraudWebhookReviewRequired,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            eventId: event.id,
+            claimToken,
+            customerId: outcome.customerId,
+            reason: outcome.reason,
+          },
+        );
+      } catch (error) {
+        console.error(
+          `[Fraud Webhook] Failed to record manual review for ${event.id}:`,
+          error,
+        );
+        return NextResponse.json(
+          { error: "Review record failed" },
+          { status: 500 },
+        );
+      }
+      console.error(
+        `[Fraud Webhook] Manual review required for event ${event.id} (${outcome.reason})`,
+      );
+      return NextResponse.json(
+        { error: "Manual review required", reviewRequired: true },
+        { status: 503, headers: { "Retry-After": "600" } },
+      );
+    }
+
+    // If finalization fails later, a retry sees `handled` and never repeats
+    // Stripe cleanup after support has reviewed or restored this customer.
+    try {
+      await getConvexClient().mutation(api.extraUsage.markWebhookHandled, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        eventId: event.id,
+        claimToken,
+      });
+    } catch (error) {
+      console.error(
+        `[Fraud Webhook] Failed to record handler completion for ${event.id}:`,
+        error,
+      );
+      return NextResponse.json(
+        { error: "Handler completion failed" },
+        { status: 500 },
+      );
+    }
   }
 
-  // Finalize the claim. If this write itself fails, log and continue:
-  // a duplicate Stripe retry would re-run the handler operations, but the
-  // cleanup operations are idempotent and re-read current Stripe state. A
-  // replay therefore removes any subscription, card, or open Checkout session
-  // that drifted in after the original dispute event while the hold remained
-  // active.
+  // A failed finalize leaves a handled record. Keep the delivery retryable;
+  // the next delivery finalizes it without repeating external side effects.
   try {
     await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
+      requireHandled: true,
     });
   } catch (error) {
     console.error(
       `[Fraud Webhook] Failed to finalize event ${event.id}:`,
       error,
     );
+    return NextResponse.json({ error: "Finalization failed" }, { status: 500 });
   }
 
   return NextResponse.json({ received: true });
