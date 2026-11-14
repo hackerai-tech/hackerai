@@ -16,6 +16,7 @@ import {
   type DesktopFileReceiverAdapter,
   type DesktopFileReceiverDiagnostic,
   type DesktopFileReceiverStage,
+  type DesktopNativeVersionLookup,
 } from "@/lib/centrifugo/desktop-file-errors";
 import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
@@ -144,20 +145,32 @@ function usesPublishedLegacyDesktopCommands(version: string): boolean {
   return patch >= 1 && patch <= 72;
 }
 
+/** Distinguishes the 500ms deadline from a native lookup resolving undefined. */
+const NATIVE_VERSION_LOOKUP_TIMED_OUT = Symbol("native version lookup timeout");
+
 /**
- * One file_stat invocation's last attempted boundary and selected adapter.
+ * One file_stat invocation's last attempted boundary and selected adapter, with
+ * the version lookup outcome read alongside that selection.
  * Callers that pass none record into a discarded object.
  */
 interface FileStatReceiverTrace {
   stage?: DesktopFileReceiverStage;
   adapter?: DesktopFileReceiverAdapter;
+  nativeVersionLookup?: DesktopNativeVersionLookup;
 }
 
 function fileStatReceiverDiagnostic(
   trace: FileStatReceiverTrace,
 ): DesktopFileReceiverDiagnostic | undefined {
   return trace.stage && trace.adapter
-    ? { version: 1, stage: trace.stage, adapter: trace.adapter }
+    ? {
+        version: 1,
+        stage: trace.stage,
+        adapter: trace.adapter,
+        ...(trace.nativeVersionLookup && {
+          nativeVersionLookup: trace.nativeVersionLookup,
+        }),
+      }
     : undefined;
 }
 
@@ -484,6 +497,8 @@ export class DesktopSandboxBridge {
   private nativeFileIpcAvailable: boolean | null = null;
   private nativeFileIpcFailure: DesktopFileFailure | undefined;
   private nativeAppVersion = "unknown";
+  // Always assigned together with nativeAppVersion.
+  private nativeVersionLookup: DesktopNativeVersionLookup = "unobserved";
   private nativePlatform = "unknown";
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -762,7 +777,9 @@ export class DesktopSandboxBridge {
     if (environmentId) {
       this.config.onConnectionState?.("connecting", environmentId);
     }
-    this.nativeAppVersion = await this.getNativeAppVersion();
+    const nativeVersion = await this.lookupNativeAppVersion();
+    this.nativeAppVersion = nativeVersion.version;
+    this.nativeVersionLookup = nativeVersion.lookup;
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
@@ -1183,6 +1200,7 @@ export class DesktopSandboxBridge {
     trace.stage = "module_load";
     const { invoke } = await import("@tauri-apps/api/core");
     trace.stage = "native_invoke";
+    trace.nativeVersionLookup = this.nativeVersionLookup;
     if (usesPublishedLegacyDesktopCommands(this.nativeAppVersion)) {
       trace.adapter = "published_legacy_native";
       return invoke<T>(legacyCommand, { ...legacyArgs, ...channelArgs });
@@ -1202,24 +1220,39 @@ export class DesktopSandboxBridge {
     }
   }
 
-  private async getNativeAppVersion(): Promise<string> {
+  private async lookupNativeAppVersion(): Promise<{
+    version: string;
+    lookup: DesktopNativeVersionLookup;
+  }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const version = await Promise.race([
         invoke<unknown>("plugin:app|version"),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), 500);
+        new Promise<typeof NATIVE_VERSION_LOOKUP_TIMED_OUT>((resolve) => {
+          timer = setTimeout(
+            () => resolve(NATIVE_VERSION_LOOKUP_TIMED_OUT),
+            500,
+          );
         }),
       ]);
+      if (version === NATIVE_VERSION_LOOKUP_TIMED_OUT)
+        return { version: "unknown", lookup: "timeout" };
       // Only the native package version, never the fixed browser user agent or
       // arbitrary error text. Diagnostics must not delay or prevent recovery.
-      return typeof version === "string" &&
+      if (
+        typeof version === "string" &&
         /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)
-        ? version
-        : "unknown";
+      )
+        return {
+          version,
+          lookup: usesPublishedLegacyDesktopCommands(version)
+            ? "resolved_published_legacy"
+            : "resolved_other",
+        };
+      return { version: "unknown", lookup: "invalid" };
     } catch {
-      return "unknown";
+      return { version: "unknown", lookup: "rejected" };
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -2073,6 +2106,7 @@ export class DesktopSandboxBridge {
     if (this.nativeFileIpcAvailable !== false) {
       // A module failure here precedes the authorized helper's own selection.
       trace.stage = "module_load";
+      trace.nativeVersionLookup = this.nativeVersionLookup;
       trace.adapter = usesPublishedLegacyDesktopCommands(this.nativeAppVersion)
         ? "published_legacy_native"
         : "authorized_native";

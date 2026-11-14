@@ -522,6 +522,7 @@ export class CentrifugoSandbox extends EventEmitter {
         receiver_stage_version: receiverDiagnostic?.version,
         receiver_stage: receiverDiagnostic?.stage,
         receiver_adapter: receiverDiagnostic?.adapter,
+        receiver_native_version_lookup: receiverDiagnostic?.nativeVersionLookup,
       }),
     );
     if (!this.nativeFileRelayConfirmed) {

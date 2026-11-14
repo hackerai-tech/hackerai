@@ -3494,6 +3494,7 @@ describe("file_stat receiver diagnostics", () => {
       diagnostic: {
         stage: "native_invoke",
         adapter: "published_legacy_native",
+        nativeVersionLookup: "resolved_published_legacy",
       },
       ipc: [["desktop_file_request", legacyRequest]],
     },
@@ -3505,7 +3506,11 @@ describe("file_stat receiver diagnostics", () => {
           ? reject("Desktop operation was not authorized")
           : undefined,
       error: { message: "Desktop operation was not authorized" },
-      diagnostic: { stage: "native_invoke", adapter: "authorized_native" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "authorized_native",
+        nativeVersionLookup: "resolved_other",
+      },
       ipc: [
         [
           "authorized_desktop_file_request",
@@ -3526,7 +3531,11 @@ describe("file_stat receiver diagnostics", () => {
             ? reject("PRIVATE compatibility failure")
             : undefined,
       error: { message: "PRIVATE compatibility failure" },
-      diagnostic: { stage: "native_invoke", adapter: "compatibility_native" },
+      diagnostic: {
+        stage: "native_invoke",
+        adapter: "compatibility_native",
+        nativeVersionLookup: "resolved_other",
+      },
       ipc: [
         [
           "authorized_desktop_file_request",
@@ -3548,7 +3557,12 @@ describe("file_stat receiver diagnostics", () => {
             ? reject("PRIVATE server info failure")
             : undefined,
       error: { message: "PRIVATE server info failure" },
-      diagnostic: { stage: "loopback_info", adapter: "legacy_loopback" },
+      // The native attempt that fell back to loopback consulted the lookup.
+      diagnostic: {
+        stage: "loopback_info",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
     },
     {
       name: "loopback setup",
@@ -3563,7 +3577,11 @@ describe("file_stat receiver diagnostics", () => {
         message: expect.stringContaining("file server is not ready"),
         fileFailure: "legacy_http_rejected",
       },
-      diagnostic: { stage: "loopback_setup", adapter: "legacy_loopback" },
+      diagnostic: {
+        stage: "loopback_setup",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
     },
     {
       name: "loopback request",
@@ -3579,7 +3597,11 @@ describe("file_stat receiver diagnostics", () => {
         message: expect.stringContaining("transport failed (legacy_http"),
         fileFailure: "legacy_http_transport",
       },
-      diagnostic: { stage: "loopback_request", adapter: "legacy_loopback" },
+      diagnostic: {
+        stage: "loopback_request",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
     },
     {
       name: "loopback response",
@@ -3600,7 +3622,11 @@ describe("file_stat receiver diagnostics", () => {
         message: "PRIVATE server rejection",
         fileFailure: "legacy_http_rejected",
       },
-      diagnostic: { stage: "loopback_response", adapter: "legacy_loopback" },
+      diagnostic: {
+        stage: "loopback_response",
+        adapter: "legacy_loopback",
+        nativeVersionLookup: "resolved_published_legacy",
+      },
     },
     {
       name: "stat reply validation",
@@ -3616,6 +3642,7 @@ describe("file_stat receiver diagnostics", () => {
       diagnostic: {
         stage: "stat_reply_validation",
         adapter: "authorized_native",
+        nativeVersionLookup: "resolved_other",
       },
     },
   ])(
@@ -3650,6 +3677,171 @@ describe("file_stat receiver diagnostics", () => {
       }
     },
   );
+
+  /** Starts with a controlled version lookup; fake timers drive its deadline. */
+  async function startWithLookup(lookup: () => Promise<unknown>) {
+    mockUseAuthorizedNative = true;
+    const original = mockInvokeHandler;
+    mockInvokeHandler = (cmd, args) =>
+      cmd === "plugin:app|version" ? lookup() : original(cmd, args);
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    const started = bridge.start();
+    await jest.advanceTimersByTimeAsync(499);
+    // The lookup deadline is still exactly 500ms before registration proceeds.
+    const registeredBeforeDeadline =
+      config.connectDesktop.mock.calls.length > 0;
+    await jest.advanceTimersByTimeAsync(1);
+    await started;
+    // Neither adapter reports a missing command, so no fallback may occur.
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "authorized_desktop_file_request"
+        ? reject("Desktop operation was not authorized")
+        : cmd === "desktop_file_request"
+          ? reject("PRIVATE legacy native failure")
+          : original(cmd, args);
+    mockSubscription.publish.mockClear();
+    const { invoke } = await import("@tauri-apps/api/core");
+    (invoke as jest.Mock).mockClear();
+    return { bridge, registeredBeforeDeadline, invoke: invoke as jest.Mock };
+  }
+
+  const fileIpc = (invoke: jest.Mock) =>
+    invoke.mock.calls
+      .map(([cmd]) => cmd)
+      .filter((cmd) => String(cmd).includes("desktop_file_request"));
+
+  const legacyFailure = {
+    message: "PRIVATE legacy native failure",
+    adapter: "published_legacy_native",
+    ipc: ["desktop_file_request"],
+  };
+  const authorizedDenial = {
+    message: "Desktop operation was not authorized",
+    adapter: "authorized_native",
+    ipc: ["authorized_desktop_file_request"],
+  };
+
+  it.each([
+    {
+      name: "the last published legacy version",
+      lookup: () => Promise.resolve("0.0.72"),
+      nativeVersionLookup: "resolved_published_legacy",
+      deadline: false,
+      ...legacyFailure,
+    },
+    {
+      name: "the first authorized version",
+      lookup: () => Promise.resolve("0.0.73"),
+      nativeVersionLookup: "resolved_other",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a rejected lookup",
+      lookup: () => reject("PRIVATE lookup failure 0.0.72"),
+      nativeVersionLookup: "rejected",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a lookup resolving undefined",
+      lookup: () => Promise.resolve(undefined),
+      nativeVersionLookup: "invalid",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a malformed version",
+      lookup: () => Promise.resolve("0.0.72-PRIVATE"),
+      nativeVersionLookup: "invalid",
+      deadline: false,
+      ...authorizedDenial,
+    },
+    {
+      name: "a lookup that never settles",
+      lookup: () => new Promise(() => {}),
+      nativeVersionLookup: "timeout",
+      deadline: true,
+      ...authorizedDenial,
+    },
+  ])(
+    "records $nativeVersionLookup for $name with the unchanged adapter",
+    async ({
+      lookup,
+      nativeVersionLookup,
+      deadline,
+      message,
+      adapter,
+      ipc,
+    }) => {
+      jest.useFakeTimers();
+      const started = await startWithLookup(lookup);
+      try {
+        // Only the timed-out lookup waits for the full deadline.
+        expect(started.registeredBeforeDeadline).toBe(!deadline);
+        getPublicationHandler()({ data: statMessage("stat-lookup") });
+        await waitFor(() => expect(fileErrors()).toHaveLength(1));
+
+        expect(fileErrors()[0]).toEqual({
+          type: "file_error",
+          requestId: "stat-lookup",
+          message,
+          receiverDiagnostic: {
+            version: 1,
+            stage: "native_invoke",
+            adapter,
+            nativeVersionLookup,
+          },
+        });
+        // A denial never downgrades to the legacy command.
+        expect(fileIpc(started.invoke)).toEqual(ipc);
+        expect(JSON.stringify(fileErrors()[0].receiverDiagnostic)).not.toMatch(
+          /0\.0\.7|PRIVATE/,
+        );
+      } finally {
+        await started.bridge.stop();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps a timeout when the lookup resolves a legacy version late", async () => {
+    jest.useFakeTimers();
+    const started = await startWithLookup(
+      () => new Promise((resolve) => setTimeout(() => resolve("0.0.72"), 600)),
+    );
+    try {
+      getPublicationHandler()({ data: statMessage("stat-before-late") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(1));
+      // The late result settles after startup and must not change selection.
+      await jest.advanceTimersByTimeAsync(200);
+      getPublicationHandler()({ data: statMessage("stat-after-late") });
+      await waitFor(() => expect(fileErrors()).toHaveLength(2));
+
+      expect(fileErrors().map((error) => error.receiverDiagnostic)).toEqual([
+        {
+          version: 1,
+          stage: "native_invoke",
+          adapter: "authorized_native",
+          nativeVersionLookup: "timeout",
+        },
+        {
+          version: 1,
+          stage: "native_invoke",
+          adapter: "authorized_native",
+          nativeVersionLookup: "timeout",
+        },
+      ]);
+      expect(fileIpc(started.invoke)).toEqual([
+        "authorized_desktop_file_request",
+        "authorized_desktop_file_request",
+      ]);
+    } finally {
+      await started.bridge.stop();
+      jest.useRealTimers();
+    }
+  });
 
   it("keeps a successful stat reply and other file errors unchanged", async () => {
     const { bridge } = await startAs("0.0.74", (cmd) =>
@@ -3713,6 +3905,7 @@ describe("file_stat receiver diagnostics", () => {
           version: 1,
           stage: "reply_publication",
           adapter: "published_legacy_native",
+          nativeVersionLookup: "resolved_published_legacy",
         },
       });
     } finally {
@@ -3758,6 +3951,7 @@ describe("file_stat receiver diagnostics", () => {
             version: 1,
             stage: "native_invoke",
             adapter: "authorized_native",
+            nativeVersionLookup: "resolved_other",
           },
         }),
         expect.objectContaining({
@@ -3766,6 +3960,7 @@ describe("file_stat receiver diagnostics", () => {
             version: 1,
             stage: "native_invoke",
             adapter: "compatibility_native",
+            nativeVersionLookup: "resolved_other",
           },
         }),
       ]);

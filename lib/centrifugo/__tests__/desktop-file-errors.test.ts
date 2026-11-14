@@ -67,6 +67,74 @@ describe("readDesktopFileReceiverDiagnostic", () => {
     expect(readDesktopFileReceiverDiagnostic(fileError)).toBeUndefined();
   });
 
+  it.each([
+    "resolved_published_legacy",
+    "resolved_other",
+    "timeout",
+    "rejected",
+    "invalid",
+    "unobserved",
+  ])("keeps the closed native version lookup %s", (nativeVersionLookup) => {
+    expect(
+      readDesktopFileReceiverDiagnostic({
+        receiverDiagnostic: { ...valid, nativeVersionLookup },
+      }),
+    ).toEqual({ ...valid, nativeVersionLookup });
+  });
+
+  it.each([
+    ["a raw native version", "0.0.72"],
+    ["an arbitrary string", "PRIVATE_PATH"],
+    ["a prototype key", "toString"],
+    ["a non-string", 1],
+    ["null", null],
+    ["an object", { outcome: "timeout" }],
+  ])(
+    "omits %s lookup but keeps the valid stage and adapter",
+    (_name, nativeVersionLookup) => {
+      const parsed = readDesktopFileReceiverDiagnostic({
+        receiverDiagnostic: { ...valid, nativeVersionLookup },
+      });
+
+      expect(parsed).toEqual(valid);
+      expect(parsed).not.toHaveProperty("nativeVersionLookup");
+      expect(JSON.stringify(parsed)).not.toContain("PRIVATE");
+    },
+  );
+
+  it("never reads an accessor or inherited lookup and keeps the stage", () => {
+    const getter = jest.fn(() => "timeout");
+    const accessor = { ...valid };
+    Object.defineProperty(accessor, "nativeVersionLookup", {
+      enumerable: true,
+      get: getter,
+    });
+    const inherited = Object.assign(
+      Object.create({ nativeVersionLookup: "timeout" }) as object,
+      valid,
+    );
+
+    expect(
+      readDesktopFileReceiverDiagnostic({ receiverDiagnostic: accessor }),
+    ).toEqual(valid);
+    expect(
+      readDesktopFileReceiverDiagnostic({ receiverDiagnostic: inherited }),
+    ).toEqual(valid);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("still rejects an invalid group even with a valid lookup", () => {
+    expect(
+      readDesktopFileReceiverDiagnostic({
+        receiverDiagnostic: {
+          ...valid,
+          adapter: "authorized_native",
+          nativeVersionLookup: "resolved_other",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("never invokes accessors on the message or diagnostic", () => {
     const getter = jest.fn(() => valid.stage);
     const diagnostic = { version: 1, adapter: valid.adapter };
