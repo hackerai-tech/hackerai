@@ -1363,8 +1363,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?ctx\.run\.id,[\s\S]*?"parent_canceled",[\s\S]*?cleanup\.userId,[\s\S]*?cleanup\.chatId,[\s\S]*?\)\.catch/,
     );
     expect(taskSrc).toMatch(
-      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
     );
+  });
+
+  test("the parent closes its approval inbox before joining durable waits", () => {
+    // Session closure wakes pending approval waitpoints; workspace teardown
+    // still follows child settlement in the separate contract above.
+    const close = taskSrc.indexOf(
+      "await triggerSessions.close(payload.approvalSessionId",
+    );
+    const join = taskSrc.indexOf("await approvalSessionWaits.finish()");
+    expect(close).toBeGreaterThan(-1);
+    expect(join).toBeGreaterThan(close);
+    expect(taskSrc.match(/await triggerSessions\.close\(/g)).toHaveLength(1);
   });
 
   test("all Agent permission modes enable generic delegation without a rollout flag", () => {

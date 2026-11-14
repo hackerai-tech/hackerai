@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   FindingExportMenu,
@@ -60,6 +61,60 @@ it("does not export partial selections after an unavailable record", async () =>
     ),
   );
   expect(downloadFindingsReport).not.toHaveBeenCalled();
+});
+it("blocks a second export and announces progress until the first finishes", async () => {
+  let finish!: (value: { outcome: "success" }) => void;
+  jest.mocked(downloadFindingsReport).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  render(<FindingExportMenu getFindings={async () => [record]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: /PDF/ }));
+  const busyTrigger = await screen.findByRole("button", {
+    name: /Exporting…/,
+  });
+  expect(busyTrigger).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("status")).toHaveTextContent("Preparing export…");
+  // The busy trigger doesn't reopen the formats, so nothing starts twice.
+  await userEvent.click(busyTrigger);
+  expect(screen.queryAllByRole("menuitem")).toHaveLength(0);
+  expect(downloadFindingsReport).toHaveBeenCalledTimes(1);
+
+  await act(async () => finish({ outcome: "success" }));
+  // Formats become available again once the first export settles.
+  expect(screen.getByRole("status")).toHaveTextContent("");
+  await userEvent.click(screen.getByRole("button", { name: "Export report" }));
+  expect(screen.getAllByRole("menuitem")).toHaveLength(5);
+  for (const item of screen.getAllByRole("menuitem"))
+    expect(item).not.toHaveAttribute("aria-disabled");
+});
+it("keeps keyboard focus on the trigger while a keyboard-chosen export is pending", async () => {
+  let finish!: (value: { outcome: "success" }) => void;
+  jest.mocked(downloadFindingsReport).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  render(<FindingExportMenu getFindings={async () => [record]} />);
+  screen.getByRole("button", { name: "Export report" }).focus();
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("menuitem", { name: /Markdown/ })).toHaveFocus();
+  await userEvent.keyboard("{Enter}");
+
+  const busyTrigger = await screen.findByRole("button", {
+    name: /Exporting…/,
+  });
+  expect(busyTrigger).toHaveFocus();
+  // Enter on the busy trigger neither reopens the menu nor exports again.
+  await userEvent.keyboard("{Enter}");
+  expect(screen.queryAllByRole("menuitem")).toHaveLength(0);
+  expect(downloadFindingsReport).toHaveBeenCalledTimes(1);
+  expect(downloadFindingsReport).toHaveBeenCalledWith([record], "markdown");
+
+  await act(async () => finish({ outcome: "success" }));
+  expect(screen.getByRole("button", { name: "Export report" })).toHaveFocus();
 });
 it("records cancellation without calling it a successful export", async () => {
   jest

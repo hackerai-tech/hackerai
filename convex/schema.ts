@@ -41,6 +41,10 @@ import {
   agentRetestOutcomeValidator,
 } from "./findingAgentRetestValidators";
 import {
+  huntEnvironmentValidator,
+  huntStoredCandidateValidator,
+} from "./findingHuntValidators";
+import {
   researchCohortReportValidator,
   researchCoverageValidator,
   researchRunStatusValidator,
@@ -860,6 +864,35 @@ export default defineSchema({
     evidence_verification: v.optional(agentRetestEvidenceVerificationValidator),
     limitations: v.optional(v.array(v.string())),
     environment: v.optional(agentRetestEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
+  // One Agent hunt for surfaces sharing a finding's root cause. Provenance is
+  // server-supplied. Candidates are saved one at a time, are immutable, and are
+  // never findings; the seed finding is never changed.
+  finding_variant_hunts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this hunt: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    interrupted: v.optional(v.boolean()),
+    candidates: v.array(huntStoredCandidateValidator),
+    summary: v.optional(v.string()),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(huntEnvironmentValidator),
     result_key: v.optional(v.string()),
   })
     .index("by_finding_and_started", ["finding_id", "started_at"])

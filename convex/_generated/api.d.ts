@@ -37,6 +37,8 @@ import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
 import type * as findingAgentRetestValidators from "../findingAgentRetestValidators.js";
 import type * as findingAgentRetests from "../findingAgentRetests.js";
+import type * as findingHuntValidators from "../findingHuntValidators.js";
+import type * as findingHunts from "../findingHunts.js";
 import type * as findingRetestValidators from "../findingRetestValidators.js";
 import type * as findingRetests from "../findingRetests.js";
 import type * as findingValidators from "../findingValidators.js";
@@ -143,6 +145,8 @@ declare const fullApi: ApiFromModules<{
   fileStorage: typeof fileStorage;
   findingAgentRetestValidators: typeof findingAgentRetestValidators;
   findingAgentRetests: typeof findingAgentRetests;
+  findingHuntValidators: typeof findingHuntValidators;
+  findingHunts: typeof findingHunts;
   findingRetestValidators: typeof findingRetestValidators;
   findingRetests: typeof findingRetests;
   findingValidators: typeof findingValidators;

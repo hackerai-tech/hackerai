@@ -253,6 +253,8 @@ export const MessageItem = memo(function MessageItem({
     workParts,
     workPartIndexes,
     trailingTextParts,
+    trailingTextOffset,
+    savedHuntResults,
   } = useMemo(() => splitWorkedForParts(message.parts), [message.parts]);
   const workProjection = useMemo(
     () =>
@@ -265,6 +267,11 @@ export const MessageItem = memo(function MessageItem({
     workPresentation === "timeline-shell" ? trailingTextParts : nonFileParts;
   const shouldRenderWorkedFor =
     message.metadata?.mode === "agent" && workPresentation === "inline";
+  // Saved hunt results are kept out of the work and shown once below the
+  // answer, so they stay visible when Worked for is collapsed. Other views
+  // render them in place with the rest of the message.
+  const showsSavedHuntResults =
+    shouldRenderWorkedFor || workPresentation === "timeline-shell";
 
   const shouldCollapseUserMessage =
     isUser &&
@@ -366,6 +373,15 @@ export const MessageItem = memo(function MessageItem({
     </>
   );
 
+  const renderSavedHuntResults = () =>
+    showsSavedHuntResults && savedHuntResults.length > 0 ? (
+      <div key="saved-hunt-results" className="space-y-3">
+        {savedHuntResults.map(({ part, partIndex }) =>
+          renderAssistantPart(part, partIndex),
+        )}
+      </div>
+    ) : null;
+
   const shouldShowBranchIndicator = Boolean(
     branchedFromChatId &&
     branchedFromChatTitle &&
@@ -466,7 +482,8 @@ export const MessageItem = memo(function MessageItem({
             )}
 
             {/* Render text and other parts */}
-            {renderedNonFileParts.length > 0 && (
+            {(renderedNonFileParts.length > 0 ||
+              (showsSavedHuntResults && savedHuntResults.length > 0)) && (
               <div
                 data-testid="message-content"
                 className={`${
@@ -520,18 +537,21 @@ export const MessageItem = memo(function MessageItem({
                     )}
                   </div>
                 ) : !shouldRenderWorkedFor ? (
-                  renderedNonFileParts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={effectiveStatus}
-                      isLastMessage={isLastMessage}
-                      terminalOutputByToolCallId={terminalOutputByToolCallId}
-                      sharedFileDetails={effectiveFileDetails}
-                    />
-                  ))
+                  <>
+                    {renderedNonFileParts.map((part, partIndex) => (
+                      <MessagePartHandler
+                        key={`${message.id}-${partIndex}`}
+                        message={message}
+                        part={part}
+                        partIndex={partIndex}
+                        status={effectiveStatus}
+                        isLastMessage={isLastMessage}
+                        terminalOutputByToolCallId={terminalOutputByToolCallId}
+                        sharedFileDetails={effectiveFileDetails}
+                      />
+                    ))}
+                    {renderSavedHuntResults()}
+                  </>
                 ) : shouldShowWorkingTimer ? (
                   <>
                     {workParts.length > 0 && (
@@ -557,16 +577,20 @@ export const MessageItem = memo(function MessageItem({
                         {trailingTextParts.map((part, partIndex) =>
                           renderAssistantPart(
                             part,
-                            workParts.length + partIndex,
+                            trailingTextOffset + partIndex,
                           ),
                         )}
                       </div>
                     )}
+                    {renderSavedHuntResults()}
                   </>
                 ) : trailingTextParts.length === 0 ? (
                   // If a run stops before producing final text, keep the work
                   // visible inline instead of leaving only a collapsed header.
-                  renderWorkParts()
+                  <>
+                    {renderWorkParts()}
+                    {renderSavedHuntResults()}
+                  </>
                 ) : (
                   <>
                     {workParts.length > 0 && (
@@ -590,11 +614,12 @@ export const MessageItem = memo(function MessageItem({
                         {trailingTextParts.map((part, partIndex) =>
                           renderAssistantPart(
                             part,
-                            workParts.length + partIndex,
+                            trailingTextOffset + partIndex,
                           ),
                         )}
                       </div>
                     )}
+                    {renderSavedHuntResults()}
                   </>
                 )}
               </div>

@@ -161,20 +161,20 @@ import {
   getMaxTokensForSubscription,
   safeCountTokens,
 } from "@/lib/token-utils";
-import {
-  COMPACTION_ESTIMATE_RECOVERY_RATIO,
-  getSummarizationThresholdTokens,
-  MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM,
-  ROLLING_COMPACTION_MAX_SIZE_RATIO,
-  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
-} from "@/lib/chat/summarization/constants";
+import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import {
   boundModelMessagesForSummarization,
   compactModelMessagesForSummarization,
-  getRecentCompleteModelTail,
   estimateSummaryInputTokens,
 } from "@/lib/chat/summarization/helpers";
+import {
+  buildCompactedRollingBase,
+  buildRollingModelMessages,
+  estimateToolSchemaTokens,
+  RollingCompactionAttempts,
+  type RollingModelContextCheckpoint,
+} from "@/lib/chat/summarization/rolling-context";
 import {
   withProviderRequestSizeRecovery,
   type ProviderRequestRetryParams,
@@ -405,36 +405,6 @@ export const retryUsesDifferentModel = (
   selectedModel: string,
   retryModel: string,
 ): boolean => retryModel !== selectedModel;
-
-export type RollingModelContextCheckpoint = {
-  /** Latest compacted provider context, excluding later raw SDK responses. */
-  baseMessages: ModelMessage[];
-  /** Number of raw SDK messages covered by baseMessages. */
-  rawMessageCursor: number;
-};
-
-/**
- * AI SDK prepareStep overrides apply to one request only. Rebase its cumulative
- * raw history onto our latest compacted checkpoint for every later request.
- */
-export const buildRollingModelMessages = (
-  rawMessages: ModelMessage[],
-  checkpoint?: RollingModelContextCheckpoint,
-): ModelMessage[] => {
-  if (!checkpoint) return rawMessages;
-  const cursor = Math.min(checkpoint.rawMessageCursor, rawMessages.length);
-  return [...checkpoint.baseMessages, ...rawMessages.slice(cursor)];
-};
-
-export const isRollingCompactionEffective = (
-  previousMessages: ModelMessage[],
-  compactedMessages: ModelMessage[],
-): boolean => {
-  const previousBytes = getSerializedBytes(previousMessages);
-  const compactedBytes = getSerializedBytes(compactedMessages);
-  if (previousBytes === undefined || compactedBytes === undefined) return true;
-  return compactedBytes < previousBytes * ROLLING_COMPACTION_MAX_SIZE_RATIO;
-};
 
 // ---------------------------------------------------------------------------
 // Mutable state — the runner updates these in place; callers read them back.
@@ -1106,37 +1076,8 @@ export async function createAgentStream(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
   );
   let rollingContextCheckpoint: RollingModelContextCheckpoint | undefined;
-  let compactionAttemptCount = 0;
-  let unproductiveCompactionCount = 0;
-  let pendingCompactionVerdict = false;
-  let pendingCompactionInputEstimate = 0;
-  let lastCompactionRawMessageCount = -1;
-  const canSummarizeAgain = () =>
-    unproductiveCompactionCount <
-    MAX_UNPRODUCTIVE_CONTEXT_COMPACTIONS_PER_STREAM;
-  const recordCompactionAttempt = () => {
-    compactionAttemptCount++;
-    unproductiveCompactionCount++;
-    pendingCompactionVerdict = true;
-    pendingCompactionInputEstimate = 0;
-  };
-  const confirmCompactionProgress = (inputTokens?: number) => {
-    if (!pendingCompactionVerdict) return;
-    pendingCompactionVerdict = false;
-    const providerTokens =
-      typeof inputTokens === "number" &&
-      Number.isFinite(inputTokens) &&
-      inputTokens > 0
-        ? inputTokens
-        : undefined;
-    const recovered =
-      providerTokens !== undefined
-        ? providerTokens < summarizationThreshold
-        : pendingCompactionInputEstimate > 0 &&
-          pendingCompactionInputEstimate <
-            summarizationThreshold * COMPACTION_ESTIMATE_RECOVERY_RATIO;
-    if (recovered) unproductiveCompactionCount = 0;
-  };
+  const compactionAttempts = new RollingCompactionAttempts();
+  const canSummarizeAgain = () => compactionAttempts.canCompact();
   let toolHistoryRepairReported = false;
   // Max counts retries beneath recovery middleware, including rejected adapter calls.
   const countMaxAdapterCalls = ctx.selectedModelOverride === "hackerai-max";
@@ -1573,16 +1514,7 @@ export async function createAgentStream(
     ctx.platformAuthorized || state.hasCompletedAbliterationStep;
   let toolSchemaInputEstimate: Promise<number> | undefined;
   const getToolSchemaInputEstimate = () =>
-    (toolSchemaInputEstimate ??= Promise.all(
-      Object.entries(ctx.tools).map(async ([name, tool]) => ({
-        name,
-        description: tool.description,
-        schema: await asSchema(tool.inputSchema).jsonSchema,
-        providerOptions: tool.providerOptions,
-      })),
-    )
-      .then((tools) => safeCountTokens(JSON.stringify(tools)))
-      .catch(() => Number.POSITIVE_INFINITY));
+    (toolSchemaInputEstimate ??= estimateToolSchemaTokens(ctx.tools));
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1645,7 +1577,7 @@ export async function createAgentStream(
     // Preserve the transcript for retry instead of silently deleting context.
     if (
       ctx.mode === "agent" &&
-      (ctx.agentModelContextEnabled || pendingCompactionVerdict)
+      (ctx.agentModelContextEnabled || compactionAttempts.pendingVerdict)
     ) {
       lastPreparedInputEstimate =
         estimateSummaryInputTokens(prepared) +
@@ -1655,11 +1587,11 @@ export async function createAgentStream(
             JSON.stringify(requestSystemPrompt(effectiveModelName)),
           ),
         );
-      if (pendingCompactionVerdict) {
+      if (compactionAttempts.pendingVerdict) {
         // Include fixed request overhead before falling back to this estimate
         // when the provider omits usage. All tools are a conservative bound
         // for steps that activate only a subset.
-        pendingCompactionInputEstimate =
+        compactionAttempts.pendingInputEstimate =
           lastPreparedInputEstimate +
           (await getToolSchemaInputEstimate()) +
           safeCountTokens(
@@ -1685,8 +1617,8 @@ export async function createAgentStream(
           estimated_input_tokens: lastPreparedInputEstimate,
           previous_provider_input_tokens: state.lastStepInputTokens,
           max_tokens: activeContextBudget,
-          compaction_attempt_count: compactionAttemptCount,
-          unproductive_compaction_count: unproductiveCompactionCount,
+          compaction_attempt_count: compactionAttempts.attemptCount,
+          unproductive_compaction_count: compactionAttempts.unproductiveCount,
         }),
       );
       throw new AgentContextBudgetError(
@@ -1708,7 +1640,7 @@ export async function createAgentStream(
     if (!rejectedRequestSource || !canSummarizeAgain()) return undefined;
     await ctx.checkBudgetBeforeStep?.();
     abortSignal.throwIfAborted();
-    recordCompactionAttempt();
+    compactionAttempts.record();
     const result = await compactModelMessagesInRun({
       compactionPolicy,
       // Use the existing bounded summary projection even for expanded Max.
@@ -1806,7 +1738,8 @@ export async function createAgentStream(
       rollingContextCheckpoint.baseMessages,
       rejectedRequestSource.rawMessages,
     );
-    lastCompactionRawMessageCount = rejectedRequestSource.rawMessages.length;
+    compactionAttempts.lastRawMessageCount =
+      rejectedRequestSource.rawMessages.length;
     // The retry bypasses normal preparation; include its system prompt and
     // fixed request controls before using the missing-usage fallback.
     lastPreparedInputEstimate =
@@ -1821,7 +1754,7 @@ export async function createAgentStream(
           providerOptions: retryParams.providerOptions,
         }),
       );
-    pendingCompactionInputEstimate = lastPreparedInputEstimate;
+    compactionAttempts.pendingInputEstimate = lastPreparedInputEstimate;
     lastCompletedResponseMessages = [];
     state.ctxUsage = {
       usedTokens: lastPreparedInputEstimate,
@@ -1897,7 +1830,7 @@ export async function createAgentStream(
       transcript_source_message_count:
         state.transcriptSourceMessages?.length ?? 0,
       summarization_count: ctx.summarizationTracker.summarizationCount,
-      compaction_attempt_count: compactionAttemptCount,
+      compaction_attempt_count: compactionAttempts.attemptCount,
     });
     return latestProviderRequestDiagnostics;
   };
@@ -2436,8 +2369,7 @@ export async function createAgentStream(
             });
 
             if (result.summarizationAttempted) {
-              recordCompactionAttempt();
-              lastCompactionRawMessageCount = rawModelMessages.length;
+              compactionAttempts.record(rawModelMessages.length);
             }
 
             if (result.needsSummarization && result.summarizedMessages) {
@@ -2561,13 +2493,12 @@ export async function createAgentStream(
               };
             }
           } else if (
-            rawModelMessages.length === lastCompactionRawMessageCount
+            rawModelMessages.length === compactionAttempts.lastRawMessageCount
           ) {
             // Never repeatedly summarize the same raw source cursor. A later
             // provider step advances the cursor and can become eligible again.
           } else {
-            recordCompactionAttempt();
-            lastCompactionRawMessageCount = rawModelMessages.length;
+            compactionAttempts.record(rawModelMessages.length);
             const inRunResult = await compactModelMessagesInRun({
               compactionPolicy,
               modelMessages: rollingModelMessages,
@@ -2607,34 +2538,25 @@ export async function createAgentStream(
               // The helper clears its transient UI state. A later raw cursor
               // may retry while the bounded attempt budget remains.
             } else {
-              const compactedModelMessages = await convertToModelMessages(
-                [inRunResult.summaryMessage],
-                { tools: createPromptSerializationTools(ctx.tools) },
-              );
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-              const retainedModelTail = getRecentCompleteModelTail(
-                rollingModelMessages,
-                Math.max(
-                  0,
-                  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS -
-                    (inRunResult.userMessageContextTokens ?? 0) -
-                    (inRunResult.runtimeContextTokens ?? 0),
-                ),
-              );
-              const nextBaseMessages: ModelMessage[] = [
-                ...compactedModelMessages,
-                ...retainedModelTail,
-                { role: "user", content: continuationPrompt },
-                ...(parentGate.reminder
-                  ? [{ role: "user" as const, content: parentGate.reminder }]
-                  : []),
-              ];
-              const effectiveCompaction = isRollingCompactionEffective(
-                rollingModelMessages,
-                nextBaseMessages,
-              );
+              const {
+                baseMessages: nextBaseMessages,
+                summaryMessageCount: compactedMessageCount,
+                retainedTail: retainedModelTail,
+                effective: effectiveCompaction,
+              } = await buildCompactedRollingBase({
+                compaction: inRunResult,
+                sourceMessages: rollingModelMessages,
+                tools: ctx.tools,
+                trailingMessages: [
+                  { role: "user", content: continuationPrompt },
+                  ...(parentGate.reminder
+                    ? [{ role: "user" as const, content: parentGate.reminder }]
+                    : []),
+                ],
+              });
 
               if (!effectiveCompaction) {
                 ctx.summarizationTracker.recordSummarizationUsage(
@@ -2653,7 +2575,7 @@ export async function createAgentStream(
                     timestamp: new Date().toISOString(),
                     chat_id: ctx.chatId ?? undefined,
                     mode: ctx.mode,
-                    compaction_attempt: compactionAttemptCount,
+                    compaction_attempt: compactionAttempts.attemptCount,
                     summarization_count:
                       ctx.summarizationTracker.summarizationCount,
                     raw_message_count: rawModelMessages.length,
@@ -2678,7 +2600,7 @@ export async function createAgentStream(
                     chat_id: ctx.chatId ?? undefined,
                     mode: ctx.mode,
                     subscription: ctx.subscription,
-                    compaction_attempt: compactionAttemptCount,
+                    compaction_attempt: compactionAttempts.attemptCount,
                     summarization_count:
                       ctx.summarizationTracker.summarizationCount,
                     persistence: "run_scoped",
@@ -2697,7 +2619,7 @@ export async function createAgentStream(
                 }
                 rollingModelMessages = withHandoffNotes(
                   nextBaseMessages,
-                  compactedModelMessages.length,
+                  compactedMessageCount,
                 );
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
@@ -2722,10 +2644,7 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  withHandoffNotes(
-                    nextBaseMessages,
-                    compactedModelMessages.length,
-                  ),
+                  withHandoffNotes(nextBaseMessages, compactedMessageCount),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {
@@ -2980,11 +2899,12 @@ export async function createAgentStream(
               )
             : state.lastStepInputTokens,
         getHasSummarized: () =>
-          ctx.summarizationTracker.hasSummarized || compactionAttemptCount > 0,
+          ctx.summarizationTracker.hasSummarized ||
+          compactionAttempts.attemptCount > 0,
         // Let the provider finish the latest compacted request before using
         // its prompt size to decide whether another attempt is possible.
         getCanSummarizeAgain: () =>
-          pendingCompactionVerdict || canSummarizeAgain(),
+          compactionAttempts.pendingVerdict || canSummarizeAgain(),
         onFired: () => {
           state.stoppedDueToTokenExhaustion = true;
         },
@@ -3233,7 +3153,7 @@ export async function createAgentStream(
           };
         }
       }
-      confirmCompactionProgress(usage?.inputTokens);
+      compactionAttempts.confirm(usage?.inputTokens, summarizationThreshold);
       stepUsageCostIndexes.push(stepUsageCostIndex);
 
       const stepOpenRouterMetadata = extractOpenRouterMetadata({

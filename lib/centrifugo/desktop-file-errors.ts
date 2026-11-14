@@ -29,6 +29,127 @@ export function parseDesktopFileFailure(
   }
 }
 
+/** Boundary the Desktop receiver attempted last, not proof a handler ran. */
+export type DesktopFileReceiverStage =
+  | "module_load"
+  | "native_invoke"
+  | "loopback_info"
+  | "loopback_setup"
+  | "loopback_request"
+  | "loopback_response"
+  | "stat_reply_validation"
+  | "reply_publication";
+
+/** Adapter the Desktop receiver actually selected for this invocation. */
+export type DesktopFileReceiverAdapter =
+  | "published_legacy_native"
+  | "authorized_native"
+  | "compatibility_native"
+  | "legacy_loopback";
+
+/**
+ * How this bridge's own 500ms native version lookup settled, never the raw
+ * version. Analytics enrichment can report a different device version.
+ */
+export type DesktopNativeVersionLookup =
+  | "resolved_published_legacy"
+  | "resolved_other"
+  | "timeout"
+  | "rejected"
+  | "invalid"
+  | "unobserved";
+
+export interface DesktopFileReceiverDiagnostic {
+  version: 1;
+  stage: DesktopFileReceiverStage;
+  adapter: DesktopFileReceiverAdapter;
+  /** Optional within version 1; older readers drop it, older senders omit it. */
+  nativeVersionLookup?: DesktopNativeVersionLookup;
+}
+
+const NATIVE_VERSION_LOOKUPS: ReadonlySet<unknown> =
+  new Set<DesktopNativeVersionLookup>([
+    "resolved_published_legacy",
+    "resolved_other",
+    "timeout",
+    "rejected",
+    "invalid",
+    "unobserved",
+  ]);
+
+const RECEIVER_ADAPTERS: ReadonlySet<unknown> =
+  new Set<DesktopFileReceiverAdapter>([
+    "published_legacy_native",
+    "authorized_native",
+    "compatibility_native",
+    "legacy_loopback",
+  ]);
+
+// Stages limited to the adapters that can reach them; other stages apply to all.
+const RECEIVER_STAGE_ADAPTERS: ReadonlyMap<
+  unknown,
+  ReadonlySet<DesktopFileReceiverAdapter> | null
+> = new Map<
+  DesktopFileReceiverStage,
+  ReadonlySet<DesktopFileReceiverAdapter> | null
+>([
+  ["module_load", null],
+  [
+    "native_invoke",
+    new Set([
+      "published_legacy_native",
+      "authorized_native",
+      "compatibility_native",
+    ]),
+  ],
+  ["loopback_info", new Set(["legacy_loopback"])],
+  ["loopback_setup", new Set(["legacy_loopback"])],
+  ["loopback_request", new Set(["legacy_loopback"])],
+  ["loopback_response", new Set(["legacy_loopback"])],
+  ["stat_reply_validation", null],
+  ["reply_publication", null],
+]);
+
+function ownDataValue(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+/**
+ * Read a file_error's optional receiver diagnostic as a fresh closed copy.
+ * Accessors, inherited or unknown values and inconsistent groups are ignored,
+ * and reading can never throw into the original failure. An unusable optional
+ * version lookup is omitted without discarding a valid stage and adapter.
+ */
+export function readDesktopFileReceiverDiagnostic(
+  fileError: unknown,
+): DesktopFileReceiverDiagnostic | undefined {
+  try {
+    const diagnostic = ownDataValue(fileError, "receiverDiagnostic");
+    if (ownDataValue(diagnostic, "version") !== 1) return undefined;
+    const stage = ownDataValue(diagnostic, "stage");
+    const adapter = ownDataValue(diagnostic, "adapter");
+    if (!RECEIVER_STAGE_ADAPTERS.has(stage) || !RECEIVER_ADAPTERS.has(adapter))
+      return undefined;
+    const allowed = RECEIVER_STAGE_ADAPTERS.get(stage);
+    if (allowed && !allowed.has(adapter as DesktopFileReceiverAdapter))
+      return undefined;
+    const nativeVersionLookup = ownDataValue(diagnostic, "nativeVersionLookup");
+    return {
+      version: 1,
+      stage: stage as DesktopFileReceiverStage,
+      adapter: adapter as DesktopFileReceiverAdapter,
+      ...(NATIVE_VERSION_LOOKUPS.has(nativeVersionLookup) && {
+        nativeVersionLookup: nativeVersionLookup as DesktopNativeVersionLookup,
+      }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export class DesktopFileBridgeError extends Error {
   constructor(
     readonly fileFailure: DesktopFileFailure,

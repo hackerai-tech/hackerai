@@ -22,12 +22,19 @@ const TRAILING_METADATA_PART_TYPES = new Set([
 
 const EXPANDABLE_WORK_PART_TYPES = new Set(["data-terminal"]);
 
+export type IndexedMessagePart = { part: MessagePart; partIndex: number };
+
 export type WorkedForParts = {
   fileParts: FilePart[];
   nonFileParts: MessagePart[];
+  /** Work shown in Worked for; excludes saved hunt results. */
   workParts: MessagePart[];
   workPartIndexes: number[];
   trailingTextParts: MessagePart[];
+  /** Index of the first trailing text part among non-file parts. */
+  trailingTextOffset: number;
+  /** Saved hunt result parts, with their indexes in the message. */
+  savedHuntResults: IndexedMessagePart[];
 };
 
 export type AgentWorkActivity = {
@@ -732,6 +739,26 @@ export function projectAgentWorkParts(
   };
 }
 
+/**
+ * A hunt completion the backend confirmed as saved. Its result card is a
+ * receipt the user checks against the Agent's prose, so it renders outside
+ * collapsed work. Pending and failed completions stay in the work as usual.
+ */
+export const isSavedHuntResultPart = (part: MessagePart) => {
+  const candidate = part as {
+    type?: string;
+    state?: string;
+    output?: { success?: unknown; result?: { success?: unknown } };
+  };
+  if (
+    candidate.type !== "tool-complete_finding_hunt" ||
+    candidate.state !== "output-available"
+  )
+    return false;
+  const result = candidate.output?.result ?? candidate.output;
+  return result?.success === true && !toolPartHasKnownFailure(part);
+};
+
 export function splitWorkedForParts(
   parts: ChatMessage["parts"],
 ): WorkedForParts {
@@ -767,13 +794,21 @@ export function splitWorkedForParts(
     }
   }
 
+  const work: IndexedMessagePart[] = [];
+  const savedHuntResults: IndexedMessagePart[] = [];
+  for (const indexed of indexedNonFileParts.slice(0, trailingStart)) {
+    (isSavedHuntResultPart(indexed.part) ? savedHuntResults : work).push(
+      indexed,
+    );
+  }
+
   return {
     fileParts,
     nonFileParts,
-    workParts: nonFileParts.slice(0, trailingStart),
-    workPartIndexes: indexedNonFileParts
-      .slice(0, trailingStart)
-      .map(({ partIndex }) => partIndex),
+    workParts: work.map(({ part }) => part),
+    workPartIndexes: work.map(({ partIndex }) => partIndex),
     trailingTextParts: nonFileParts.slice(trailingStart, trailingEnd),
+    trailingTextOffset: trailingStart,
+    savedHuntResults,
   };
 }

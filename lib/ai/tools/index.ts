@@ -31,6 +31,12 @@ import {
   createGetFindingRetests,
   createStartFindingRetest,
 } from "./finding-retests";
+import {
+  createCompleteFindingHunt,
+  createGetFindingHunts,
+  createRecordFindingHuntCandidate,
+  createStartFindingHunt,
+} from "./finding-hunts";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -94,6 +100,9 @@ export type CreateToolsRuntimePolicy = {
    * evaluated the finding retest rollout for this user. The tools re-check
    * the flag and fail closed on every call. */
   findingRetestToolsEnabled?: boolean;
+  /** Expose variant hunt tools only when the caller already evaluated the
+   * hunt rollout for this user. Starting a hunt re-checks the flag. */
+  findingHuntToolsEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -346,6 +355,18 @@ export const createTools = (
         get_finding_retests: createGetFindingRetests(context),
         start_finding_retest: createStartFindingRetest(context),
         complete_finding_retest: createCompleteFindingRetest(
+          context,
+          () => sandbox,
+        ),
+      }),
+      ...(runtimePolicy.findingHuntToolsEnabled && {
+        get_finding_hunts: createGetFindingHunts(context),
+        start_finding_hunt: createStartFindingHunt(context),
+        record_finding_hunt_candidate: createRecordFindingHuntCandidate(
+          context,
+          () => sandbox,
+        ),
+        complete_finding_hunt: createCompleteFindingHunt(
           context,
           () => sandbox,
         ),

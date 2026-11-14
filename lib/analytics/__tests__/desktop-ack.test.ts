@@ -23,8 +23,14 @@ import {
   withDesktopRuntimeIdentity,
 } from "../desktop-runtime-identity";
 import {
+  NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
+  type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationMitigationDiagnostic,
+  type NativeAuthorizationResponseDiagnostic,
 } from "../native-authorization-diagnostics";
 
 jest.mock("../client", () => ({
@@ -508,6 +514,676 @@ describe("native authorization send receipt", () => {
       telemetry_sample_rate: 1,
     });
   });
+
+  describe("closed IO cause", () => {
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+
+    it.each<Partial<NativeAuthorizationCauseDiagnostic>>([
+      {},
+      { native_authorization_cause_io_kind: "unexpected_eof" },
+      {
+        native_authorization_cause_io_kind: "other",
+        native_authorization_cause_source_depth: 8,
+      },
+      {
+        native_authorization_cause_io_kind: "not_exposed",
+        native_authorization_cause_source_depth: 0,
+      },
+      {
+        native_authorization_cause_io_kind: "not_exposed",
+        native_authorization_cause_source_depth: 8,
+        native_authorization_cause_source_chain_truncated: true,
+      },
+    ])(
+      "joins the cause to a valid v1 group on a terminal-error final: %p",
+      (change) => {
+        const expected = { ...cause, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: group,
+          nativeAuthorizationCause: { ...expected, message: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({ ...group, ...expected });
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_cause_message: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({ ...group, ...expected });
+        expect(causeKeys(enriched.properties)).toHaveLength(4);
+        expect(nativeKeys(enriched.properties)).toHaveLength(8);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("never reports a cause without a valid v1 group", () => {
+      for (const nativeAuthorization of [
+        undefined,
+        { ...group, native_authorization_send_elapsed_ms: 60_001 },
+      ]) {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization,
+          nativeAuthorizationCause: cause,
+        });
+        expect(final?.properties).toMatchObject({ terminalType: "error" });
+        expect(causeKeys(final!.properties)).toEqual([]);
+        expect(nativeKeys(final!.properties)).toEqual([]);
+        expect(
+          causeKeys(
+            enrich({ terminalType: "error", ...nativeAuthorization, ...cause })
+              .properties,
+          ),
+        ).toEqual([]);
+      }
+      // Nor on a successful or nonzero exit, a start or a summary.
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorization: group,
+        nativeAuthorizationCause: cause,
+      });
+      expect(causeKeys(exitFinal!.properties)).toEqual([]);
+      expect(
+        causeKeys(
+          enrich({ terminalType: "exit", ...group, ...cause }).properties,
+        ),
+      ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          causeKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...group, ...cause },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unsupported version", { native_authorization_cause_version: 2 }],
+      ["string version", { native_authorization_cause_version: "1" }],
+      ["missing version", { native_authorization_cause_version: undefined }],
+      [
+        "unlisted kind",
+        { native_authorization_cause_io_kind: "connection_refused" },
+      ],
+      ["private kind", { native_authorization_cause_io_kind: "PRIVATE" }],
+      ["missing kind", { native_authorization_cause_io_kind: undefined }],
+      ["unbounded depth", { native_authorization_cause_source_depth: 9 }],
+      ["negative depth", { native_authorization_cause_source_depth: -1 }],
+      ["fractional depth", { native_authorization_cause_source_depth: 1.5 }],
+      ["string depth", { native_authorization_cause_source_depth: "3" }],
+      [
+        "string truncation",
+        { native_authorization_cause_source_chain_truncated: "false" },
+      ],
+      [
+        "an exposed kind without a source link",
+        { native_authorization_cause_source_depth: 0 },
+      ],
+      [
+        "an exposed kind on a truncated walk",
+        { native_authorization_cause_source_chain_truncated: true },
+      ],
+      [
+        "a truncated walk shorter than the bound",
+        {
+          native_authorization_cause_io_kind: "not_exposed",
+          native_authorization_cause_source_depth: 7,
+          native_authorization_cause_source_chain_truncated: true,
+        },
+      ],
+    ])("drops only the cause for %s", (_case, change) => {
+      const invalid = { ...cause, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: group,
+        nativeAuthorizationCause: invalid,
+      });
+      // The original v1 diagnostic is unaffected.
+      expect(final?.properties).toMatchObject(group);
+      expect(causeKeys(final!.properties)).toEqual([]);
+      const enriched = enrich({ terminalType: "error", ...group, ...invalid });
+      expect(enriched.properties).toEqual({ terminalType: "error", ...group });
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    let reads = 0;
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? "connection_reset" : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s cause getter at before_send and keeps the v1 group",
+      (_case, get) => {
+        reads = 0;
+        const properties: Record<string, unknown> = {
+          terminalType: "error",
+          ...group,
+          ...cause,
+        };
+        Object.defineProperty(
+          properties,
+          "native_authorization_cause_io_kind",
+          { enumerable: true, get },
+        );
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties,
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(causeKeys(sanitized)).toEqual([]);
+        expect(sanitized).toEqual({ terminalType: "error", ...group });
+        expect(JSON.stringify(sanitized)).not.toContain("PRIVATE");
+      },
+    );
+  });
+});
+
+describe("native authorization response receipt", () => {
+  const VERCEL_ID = "iad1::abcde-1700000000000-0123456789ab";
+  const response: NativeAuthorizationResponseDiagnostic = {
+    native_authorization_response_version: 1,
+    native_authorization_response_http_status: 403,
+    native_authorization_response_approval: "not_checked",
+    native_authorization_response_origin_class: "canonical_production",
+    native_authorization_response_platform: "windows",
+    native_authorization_response_request_id_shape: "valid",
+    native_authorization_response_request_id: VERCEL_ID,
+  };
+  const send: NativeAuthorizationDiagnostic = {
+    native_authorization_diagnostic_version: 1,
+    native_authorization_send_timeout: true,
+    native_authorization_send_connect: false,
+    native_authorization_send_request: false,
+    native_authorization_send_elapsed_ms: 8000,
+    native_authorization_origin_class: "localhost",
+    native_app_version: "0.0.80",
+    native_platform: "darwin",
+  };
+  const terminalError = {
+    ...result,
+    terminalType: "error" as const,
+    terminalExitCode: null,
+  };
+  const responseKeys = (properties: Record<string, unknown> = {}) =>
+    Object.keys(properties).filter((key) =>
+      NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key),
+    );
+  const sendKeys = (properties: Record<string, unknown> = {}) =>
+    Object.keys(properties).filter((key) =>
+      NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key),
+    );
+  const settle = (settlement: Record<string, unknown>) => {
+    capture.mockClear();
+    telemetry.start({ connectionId: "connection", commandId: "rejected" })(
+      settlement as never,
+    );
+    return capture.mock.calls.find(
+      ([event]) => event.event === "desktop_ack_command_settled",
+    )?.[0];
+  };
+  const enrich = (properties: Record<string, unknown>) =>
+    sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: {
+        ...properties,
+        $current_url: "PRIVATE URL",
+        native_authorization_response_body: "PRIVATE BODY",
+        native_authorization_response_headers: "PRIVATE HEADERS",
+      },
+      $set: { email: "PRIVATE" },
+    });
+
+  it.each<Partial<NativeAuthorizationResponseDiagnostic>>([
+    {},
+    {
+      native_authorization_response_http_status: 100,
+      native_authorization_response_request_id_shape: "absent",
+      native_authorization_response_request_id: null,
+    },
+    {
+      native_authorization_response_http_status: 199,
+      native_authorization_response_origin_class: "localhost",
+    },
+    { native_authorization_response_http_status: 307 },
+    { native_authorization_response_http_status: 599 },
+    {
+      native_authorization_response_http_status: 200,
+      native_authorization_response_approval: "json_error",
+      native_authorization_response_request_id_shape: "unrecognized",
+      native_authorization_response_request_id: null,
+    },
+    {
+      native_authorization_response_http_status: 299,
+      native_authorization_response_approval: "approved_false",
+      native_authorization_response_request_id_shape: "unreadable",
+      native_authorization_response_request_id: null,
+    },
+    {
+      native_authorization_response_http_status: 201,
+      native_authorization_response_approval: "missing",
+    },
+    {
+      native_authorization_response_http_status: 200,
+      native_authorization_response_approval: "invalid_type",
+      native_authorization_response_origin_class: "unknown",
+      native_authorization_response_platform: null,
+    },
+    {
+      native_authorization_response_request_id:
+        "cle1::iad1::sfo9::zz0z9-0000000000000-ffffffffffff",
+    },
+  ])(
+    "keeps one complete response group on a terminal-error final: %p",
+    (change) => {
+      const expected = { ...response, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorizationResponse: { ...expected, message: "PRIVATE" },
+      });
+      expect(final?.properties).toMatchObject({
+        ...expected,
+        terminalType: "error",
+        telemetry_sample_rate: 1,
+      });
+      // The response group neither needs nor supplies the send group.
+      expect(sendKeys(final!.properties)).toEqual([]);
+      const enriched = enrich(final!.properties);
+      expect(enriched.properties).toMatchObject(expected);
+      expect(responseKeys(enriched.properties)).toHaveLength(7);
+      expect(sendKeys(enriched.properties)).toEqual([]);
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    },
+  );
+
+  it.each<[string, Record<string, unknown>]>([
+    ["unsupported version", { native_authorization_response_version: 2 }],
+    ["string version", { native_authorization_response_version: "1" }],
+    ["missing version", { native_authorization_response_version: undefined }],
+    ["status below 100", { native_authorization_response_http_status: 99 }],
+    ["status above 599", { native_authorization_response_http_status: 600 }],
+    ["fractional status", { native_authorization_response_http_status: 403.5 }],
+    ["string status", { native_authorization_response_http_status: "403" }],
+    ["NaN status", { native_authorization_response_http_status: NaN }],
+    ["an approval", { native_authorization_response_approval: "approved" }],
+    ["private approval", { native_authorization_response_approval: "PRIVATE" }],
+    ["an unchecked 2xx", { native_authorization_response_http_status: 200 }],
+    [
+      "a parsed non-2xx",
+      { native_authorization_response_approval: "json_error" },
+    ],
+    [
+      "a parsed redirect",
+      {
+        native_authorization_response_http_status: 302,
+        native_authorization_response_approval: "approved_false",
+      },
+    ],
+    [
+      "hostname origin",
+      { native_authorization_response_origin_class: "hackerai.co" },
+    ],
+    ["raw target OS", { native_authorization_response_platform: "macos" }],
+    ["unknown platform", { native_authorization_response_platform: "unknown" }],
+    ["missing platform", { native_authorization_response_platform: undefined }],
+    [
+      "private shape",
+      { native_authorization_response_request_id_shape: "PRIVATE" },
+    ],
+    [
+      "valid shape without an ID",
+      { native_authorization_response_request_id: null },
+    ],
+    [
+      "an ID outside the subset",
+      { native_authorization_response_request_id: "iad1::PRIVATE" },
+    ],
+    [
+      "an ID with a query",
+      { native_authorization_response_request_id: `${VERCEL_ID}?t=PRIVATE` },
+    ],
+    [
+      "an ID with CRLF",
+      { native_authorization_response_request_id: `${VERCEL_ID}\r\nPRIVATE` },
+    ],
+    [
+      "an ID with a trailing newline",
+      { native_authorization_response_request_id: `${VERCEL_ID}\n` },
+    ],
+    [
+      "an uppercase ID",
+      { native_authorization_response_request_id: VERCEL_ID.toUpperCase() },
+    ],
+    [
+      "four region prefixes",
+      {
+        native_authorization_response_request_id: `cle1::${"iad1::".repeat(3)}abcde-1700000000000-0123456789ab`,
+      },
+    ],
+    [
+      "a huge ID",
+      {
+        native_authorization_response_request_id: `${"iad1::".repeat(10_000)}PRIVATE`,
+      },
+    ],
+    [
+      "an ID beside an unrecognized shape",
+      { native_authorization_response_request_id_shape: "unrecognized" },
+    ],
+    [
+      "an ID beside an absent shape",
+      { native_authorization_response_request_id_shape: "absent" },
+    ],
+    ["missing ID", { native_authorization_response_request_id: undefined }],
+  ])(
+    "drops only the response group for %s and keeps the send group",
+    (_case, change) => {
+      const invalid = { ...response, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: send,
+        nativeAuthorizationResponse: invalid,
+      });
+      expect(final?.properties).toMatchObject(send);
+      expect(responseKeys(final!.properties)).toEqual([]);
+      const enriched = enrich({ terminalType: "error", ...send, ...invalid });
+      expect(enriched.properties).toEqual({ terminalType: "error", ...send });
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    },
+  );
+
+  it("keeps a valid response group when the send group is malformed", () => {
+    const final = settle({
+      ...terminalError,
+      nativeAuthorization: { ...send, native_platform: "PRIVATE" },
+      nativeAuthorizationResponse: response,
+    });
+    expect(sendKeys(final!.properties)).toEqual([]);
+    expect(final?.properties).toMatchObject(response);
+    // A valid response group never admits the send group's shared identity.
+    const enriched = enrich({
+      terminalType: "error",
+      ...send,
+      native_authorization_send_elapsed_ms: 60_001,
+      ...response,
+    });
+    expect(enriched.properties).toEqual({ terminalType: "error", ...response });
+  });
+
+  it("does not attach the group to non-error finals, starts or summaries", () => {
+    const exitFinal = settle({
+      ...result,
+      terminalExitCode: 1,
+      nativeAuthorizationResponse: response,
+    });
+    expect(exitFinal?.properties).toMatchObject({ terminalExitCode: 1 });
+    expect(responseKeys(exitFinal!.properties)).toEqual([]);
+    for (const terminalType of ["exit", null, undefined])
+      expect(
+        responseKeys(enrich({ terminalType, ...response }).properties),
+      ).toEqual([]);
+    for (const event of [
+      "desktop_ack_command_started",
+      "desktop_ack_delivery_summary",
+    ])
+      expect(
+        responseKeys(
+          sanitizeDesktopAckEvent({
+            event,
+            properties: { terminalType: "error", ...response },
+          }).properties,
+        ),
+      ).toEqual([]);
+  });
+
+  let reads = 0;
+  it.each<[string, () => unknown]>([
+    // Valid on the first read, a canary afterwards.
+    ["valid-looking", () => (reads++ === 0 ? VERCEL_ID : "PRIVATE")],
+    [
+      "throwing",
+      () => {
+        reads++;
+        throw new Error("PRIVATE");
+      },
+    ],
+  ])(
+    "never runs a %s response getter at capture or before_send",
+    (_case, get) => {
+      reads = 0;
+      const hostile = (base: Record<string, unknown>) =>
+        Object.defineProperty(
+          { ...base },
+          "native_authorization_response_request_id",
+          { enumerable: true, get },
+        );
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: send,
+        nativeAuthorizationResponse: hostile({ ...response }),
+      });
+      expect(responseKeys(final!.properties)).toEqual([]);
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties: hostile({ terminalType: "error", ...send, ...response }),
+      }).properties!;
+      expect(reads).toBe(0);
+      expect(sanitized).toEqual({ terminalType: "error", ...send });
+      expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+    },
+  );
+
+  describe("mitigation marker", () => {
+    const mitigation: NativeAuthorizationMitigationDiagnostic = {
+      native_authorization_response_mitigation_version: 1,
+      native_authorization_response_mitigation: "challenge",
+    };
+    const mitigationKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
+      );
+
+    it.each([
+      "absent",
+      "challenge",
+      "deny",
+      "rate_limit",
+      "other",
+      "unreadable",
+    ] as const)(
+      "joins the %s class only beside a valid response group",
+      (native_authorization_response_mitigation) => {
+        const expected = {
+          ...mitigation,
+          native_authorization_response_mitigation,
+        };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: { ...expected, raw: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({ ...response, ...expected });
+        expect(mitigationKeys(final!.properties)).toHaveLength(2);
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_response_mitigation_value: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({ ...response, ...expected });
+        // The frozen response group is unchanged beside the marker.
+        expect(responseKeys(enriched.properties)).toHaveLength(7);
+        expect(mitigationKeys(enriched.properties)).toHaveLength(2);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each<[string, Record<string, unknown>]>([
+      [
+        "unsupported version",
+        { native_authorization_response_mitigation_version: 2 },
+      ],
+      [
+        "string version",
+        { native_authorization_response_mitigation_version: "1" },
+      ],
+      [
+        "missing version",
+        { native_authorization_response_mitigation_version: undefined },
+      ],
+      ["raw value", { native_authorization_response_mitigation: "PRIVATE" }],
+      [
+        "non-literal",
+        { native_authorization_response_mitigation: "Challenge" },
+      ],
+      [
+        "hyphenated",
+        { native_authorization_response_mitigation: "rate-limit" },
+      ],
+      ["empty", { native_authorization_response_mitigation: "" }],
+      ["null", { native_authorization_response_mitigation: null }],
+      [
+        "missing class",
+        { native_authorization_response_mitigation: undefined },
+      ],
+    ])(
+      "drops only the marker for %s and keeps the response group",
+      (_case, change) => {
+        const invalid = { ...mitigation, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: invalid,
+        });
+        expect(final?.properties).toMatchObject(response);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...response,
+          ...invalid,
+        });
+        expect(enriched.properties).toEqual({
+          terminalType: "error",
+          ...response,
+        });
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it.each<[string, Record<string, unknown> | undefined]>([
+      ["no response group", undefined],
+      [
+        "a malformed response group",
+        { ...response, native_authorization_response_http_status: 200 },
+      ],
+    ])(
+      "drops an orphan marker with %s and keeps the send group",
+      (_case, invalid) => {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: send,
+          ...(invalid && { nativeAuthorizationResponse: invalid }),
+          nativeAuthorizationMitigation: mitigation,
+        });
+        expect(final?.properties).toMatchObject(send);
+        expect(responseKeys(final!.properties)).toEqual([]);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const enriched = enrich({
+          terminalType: "error",
+          ...send,
+          ...invalid,
+          ...mitigation,
+        });
+        expect(enriched.properties).toEqual({ terminalType: "error", ...send });
+      },
+    );
+
+    it("does not attach the marker to non-error finals, starts or summaries", () => {
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorizationResponse: response,
+        nativeAuthorizationMitigation: mitigation,
+      });
+      expect(mitigationKeys(exitFinal!.properties)).toEqual([]);
+      for (const terminalType of ["exit", null, undefined])
+        expect(
+          mitigationKeys(
+            enrich({ terminalType, ...response, ...mitigation }).properties,
+          ),
+        ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          mitigationKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...response, ...mitigation },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      // Valid on the first read, a canary afterwards.
+      ["valid-looking", () => (reads++ === 0 ? "deny" : "PRIVATE")],
+      [
+        "throwing",
+        () => {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      ],
+    ])(
+      "never runs a %s marker getter at capture or before_send",
+      (_case, get) => {
+        reads = 0;
+        const hostile = (base: Record<string, unknown>) =>
+          Object.defineProperty(
+            { ...base },
+            "native_authorization_response_mitigation",
+            { enumerable: true, get },
+          );
+        const final = settle({
+          ...terminalError,
+          nativeAuthorizationResponse: response,
+          nativeAuthorizationMitigation: hostile({ ...mitigation }),
+        });
+        expect(final?.properties).toMatchObject(response);
+        expect(mitigationKeys(final!.properties)).toEqual([]);
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties: hostile({
+            terminalType: "error",
+            ...response,
+            ...mitigation,
+          }),
+        }).properties!;
+        expect(reads).toBe(0);
+        expect(sanitized).toEqual({ terminalType: "error", ...response });
+        expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
+      },
+    );
+  });
 });
 
 describe("volume reduction and reliability counters", () => {
@@ -791,6 +1467,10 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       native_authorization_origin_class: "canonical_production",
       native_app_version: "PRIVATE",
       native_platform: "darwin",
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
     });
     expect(sent).toMatchObject(measured);
     expect(
@@ -811,20 +1491,64 @@ describe("Desktop runtime identity at the capture and before_send boundaries", (
       native_app_version: null,
       native_platform: "darwin",
     };
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "connection_reset",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
     telemetry.start({ connectionId: "connection", commandId: "receipt" })({
       ...result,
       terminalType: "error",
       terminalExitCode: null,
       nativeAuthorization: receipt,
+      nativeAuthorizationCause: cause,
     } as never);
     const final = capture.mock.calls.at(-1)![0];
     const sent = send(final.event, final.properties!);
     expect(sent).toMatchObject({
       ...receipt,
+      ...cause,
       native_app_version: "0.0.74",
       terminalType: "error",
       hackerai_frontend_build_commit: "a".repeat(40),
     });
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+  });
+
+  it("keeps a response group with measured identity and no send group", () => {
+    const response: NativeAuthorizationResponseDiagnostic = {
+      native_authorization_response_version: 1,
+      native_authorization_response_http_status: 200,
+      native_authorization_response_approval: "approved_false",
+      native_authorization_response_origin_class: "canonical_production",
+      native_authorization_response_platform: "darwin",
+      native_authorization_response_request_id_shape: "valid",
+      native_authorization_response_request_id:
+        "iad1::abcde-1700000000000-0123456789ab",
+    };
+    telemetry.start({ connectionId: "connection", commandId: "response" })({
+      ...result,
+      terminalType: "error",
+      terminalExitCode: null,
+      nativeAuthorizationResponse: response,
+    } as never);
+    const final = capture.mock.calls.at(-1)![0];
+    const sent = send(final.event, {
+      ...final.properties!,
+      // A stale shared identity cannot ride on the response group.
+      native_app_version: "PRIVATE",
+    });
+    // The receipt's own platform stays response-prefixed; the shared identity
+    // is the measured runtime, never the response receipt's.
+    expect(sent).toMatchObject({ ...response, ...measured });
+    expect(
+      Object.keys(sent).filter(
+        (key) =>
+          key.startsWith("native_authorization_") &&
+          !key.startsWith("native_authorization_response_"),
+      ),
+    ).toEqual([]);
     expect(JSON.stringify(sent)).not.toContain("PRIVATE");
   });
 

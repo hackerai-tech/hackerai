@@ -207,6 +207,29 @@ describe("client analytics", () => {
       );
     });
 
+    it.each<[Record<string, unknown>, boolean]>([
+      [{ file_action_auth_diagnostic_version: 1, caller: "upload" }, true],
+      [{ file_action_auth_diagnostic_version: 2, caller: "upload" }, false],
+      [{ file_action_auth_diagnostic_version: "1", caller: "upload" }, false],
+    ])(
+      "attributes only version 1 file action diagnostics to the loaded build (%p)",
+      (diagnostic, stamped) => {
+        expect(
+          captureAuthenticatedEvent("file_action_auth_diagnostic", diagnostic),
+        ).toBe(true);
+        expect(mockCapture).toHaveBeenCalledWith(
+          "file_action_auth_diagnostic",
+          stamped
+            ? {
+                ...diagnostic,
+                hackerai_frontend_build_commit: "a".repeat(40),
+              }
+            : diagnostic,
+        );
+        expect(diagnostic).not.toHaveProperty("hackerai_frontend_build_commit");
+      },
+    );
+
     it("attributes a queued diagnostic when the identified SDK becomes ready", async () => {
       mockPostHog.__loaded = false;
       expect(

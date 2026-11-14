@@ -15,6 +15,7 @@ const generateS3UploadUrlAction = jest.fn();
 const StateContext = createContext<any>(null);
 jest.mock("convex/react", () => ({
   useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
+  useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   useMutation: () => deleteFile,
   useAction: (action: unknown) =>
     String(action).includes("generateS3UploadUrlAction")
