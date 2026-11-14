@@ -64,6 +64,7 @@ type BridgeConfig = {
     environmentId?: string,
   ) => void;
   readNativeAuthFrontendState?: () => unknown;
+  readNativeAuthProviderState?: () => unknown;
 };
 
 describe("useSandboxPreference", () => {
@@ -224,6 +225,49 @@ describe("useSandboxPreference", () => {
         }
       },
     );
+
+    it("reads the committed Convex auth provider state", async () => {
+      const { useAuthFromAuthKit } =
+        require("@/lib/auth/use-auth-from-authkit") as typeof import("@/lib/auth/use-auth-from-authkit");
+      const { CrossTabMutex } =
+        require("@/lib/auth/cross-tab-mutex") as typeof import("@/lib/auth/cross-tab-mutex");
+      const readProviderState = () =>
+        configs[0]?.readNativeAuthProviderState?.();
+      let authKitLoading = true;
+      const deps = {
+        useAuth: () => ({
+          user: { id: "user-1" },
+          loading: authKitLoading,
+          refreshAuth: jest.fn(),
+        }),
+        useAccessToken: () => ({
+          accessToken: "token",
+          getAccessToken: jest.fn(),
+          refresh: jest.fn(),
+        }),
+        mutex: new CrossTabMutex(),
+        isCrossTabEnabled: () => false,
+      } as unknown as Parameters<typeof useAuthFromAuthKit>[0];
+      const consumer = mountConsumer();
+      try {
+        await waitFor(() =>
+          expect(consumer.result.current.desktopBridgeStatus).toBe("connected"),
+        );
+        expect(readProviderState()).toBe("unavailable");
+        // The bridge reads the provider committed after it was created.
+        const provider = renderHook(() => useAuthFromAuthKit(deps));
+        expect(readProviderState()).toBe("authkit_loading");
+        authKitLoading = false;
+        provider.rerender();
+        expect(readProviderState()).toBe("ready");
+        provider.unmount();
+        expect(readProviderState()).toBe("unavailable");
+        expect(DesktopSandboxBridge).toHaveBeenCalledTimes(1);
+      } finally {
+        await act(async () => consumer.rerender({ authenticated: false }));
+        consumer.unmount();
+      }
+    });
   });
 
   it("defaults Desktop to the local sandbox when no preference is saved", () => {

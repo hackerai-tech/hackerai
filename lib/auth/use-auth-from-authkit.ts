@@ -16,6 +16,10 @@ import {
   TOKEN_FRESHNESS_MS,
 } from "@/lib/auth/shared-token";
 import { isCrossTabTokenSharingEnabled } from "@/lib/auth/feature-flags";
+import {
+  deriveConvexAuthProviderState,
+  publishConvexAuthProviderState,
+} from "@/lib/auth/convex-auth-diagnostics";
 
 // Singleton mutex shared across all hook instances in this tab
 const refreshMutex = new CrossTabMutex({
@@ -80,6 +84,16 @@ export function useAuthFromAuthKit(
     failedToken: string | undefined;
   } | null>(null);
   const isRecovering = !!user && recovery?.context === authContext;
+  // Diagnostics distinguish which provider boolean holds Convex in loading.
+  const providerState = deriveConvexAuthProviderState({
+    ownerPresent: !!user,
+    authKitLoading: !!isLoading,
+    tokenRecovering: isRecovering,
+  });
+  useLayoutEffect(
+    () => publishConvexAuthProviderState(providerState),
+    [providerState],
+  );
   const sessionRecoveryRef = useRef<{
     userId: string;
     startedAt: number;
