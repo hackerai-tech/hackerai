@@ -16,22 +16,21 @@ export const isDesktopPreference = (preference: string) =>
 export function environmentPreference(
   connection: EnvironmentConnection,
 ): string {
+  if (!connection.isDesktop) return connection.connectionId;
   return connection.environmentId
-    ? `${connection.isDesktop ? "desktop-environment" : "environment"}:${connection.environmentId}`
-    : connection.isDesktop
-      ? "desktop"
-      : connection.connectionId;
+    ? `desktop-environment:${connection.environmentId}`
+    : "desktop";
 }
 
 /**
  * Identity for work and approvals performed inside a local environment.
- * Modern clients use their persistent installation identity; legacy clients
- * remain scoped to their replaceable relay session.
+ * Native Desktop has an authenticated registration path. Bearer-token runners
+ * remain scoped to the exact relay session, even when they claim a stable ID.
  */
 export function localEnvironmentIdentity(
   connection: EnvironmentConnection,
 ): string {
-  return connection.environmentId
+  return connection.isDesktop && connection.environmentId
     ? environmentPreference(connection)
     : connection.connectionId;
 }
@@ -42,10 +41,10 @@ export function connectionMatchesPreference(
 ): boolean {
   if (preference === "desktop") return Boolean(connection.isDesktop);
   if (isEnvironmentPreference(preference)) {
+    if (!connection.isDesktop || !isDesktopPreference(preference)) return false;
     return (
       connection.environmentId ===
-        preference.slice(preference.indexOf(":") + 1) &&
-      Boolean(connection.isDesktop) === isDesktopPreference(preference)
+        preference.slice(preference.indexOf(":") + 1) && connection.isDesktop
     );
   }
   return connection.connectionId === preference;

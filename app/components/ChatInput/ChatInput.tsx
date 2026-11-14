@@ -70,7 +70,6 @@ import {
   reconnectOnlineStatus,
   useOnlineStatus,
 } from "@/app/hooks/useOnlineStatus";
-import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
@@ -1427,7 +1426,6 @@ const ChatInputContent = ({
                 onReconnect={() => {
                   if (selectedNativeDesktop) retryDesktopBridge();
                   else {
-                    requestRemoteConnectionSelection(sandboxPreference);
                     openSettingsDialog("Remote Control");
                   }
                 }}

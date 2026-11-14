@@ -1,8 +1,5 @@
 import type { SandboxPreference } from "@/types/chat";
-import {
-  connectionMatchesPreference,
-  environmentPreference,
-} from "@/lib/sandbox/environment";
+import { connectionMatchesPreference } from "@/lib/sandbox/environment";
 
 interface LocalSandboxConnection {
   connectionId: string;
@@ -29,10 +26,7 @@ export function resolveFreeDesktopSandboxPreference({
 
   if (desktopBridgeActive) return "desktop";
 
-  const remoteConnection = localConnections?.find(
-    (connection) => !connection.isDesktop,
-  );
-  return remoteConnection ? environmentPreference(remoteConnection) : "desktop";
+  return "desktop";
 }
 
 export function isFreeDesktopSandboxAvailable({

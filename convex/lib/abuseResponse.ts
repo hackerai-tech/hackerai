@@ -127,7 +127,7 @@ export async function computeResponsePlan(
       !connections.some(
         (connection) =>
           connection.environment_id === scope.environmentId &&
-          (connection.client_version === "desktop") ===
+          (connection.registration_origin === "desktop") ===
             (scope.transport === "desktop"),
       )
     )

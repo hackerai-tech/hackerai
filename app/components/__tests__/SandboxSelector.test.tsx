@@ -126,7 +126,7 @@ describe("SandboxSelector", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows one option per environment after a replacement session connects", () => {
+  it("shows separate exact CLI sessions despite matching claimed machine IDs", () => {
     mockGlobalState.desktopBridgeStatus = "connected";
     mockGlobalState.localConnections = [
       {
@@ -148,10 +148,21 @@ describe("SandboxSelector", () => {
         name: "Other",
       },
     ];
-    render(<SandboxSelector value="environment:same-computer" />);
-    fireEvent.click(screen.getByRole("button", { name: "Kali" }));
-    expect(screen.getAllByRole("button", { name: "Kali" })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
+    render(<SandboxSelector value="old-session" />);
+    fireEvent.click(screen.getByRole("button", { name: "Kali (old-sess)" }));
+    expect(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Kali (old-sess)",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Kali (new-sess)",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Other (other-se)" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the selected computer label neutral while connections hydrate", () => {
@@ -229,13 +240,14 @@ describe("SandboxSelector", () => {
 
     render(<SandboxSelector value="remote-office-pc" size="toolbar" />);
 
-    expect(screen.getByRole("button", { name: hostname })).toHaveClass(
+    const label = `${hostname} (remote-o)`;
+    expect(screen.getByRole("button", { name: label })).toHaveClass(
       "max-w-full",
       "sm:max-w-[min(100%,16rem)]",
       "min-w-0",
     );
-    expect(screen.getByTitle(hostname)).toBeInTheDocument();
-    expect(screen.getByText(hostname)).toHaveClass(
+    expect(screen.getByTitle(label)).toBeInTheDocument();
+    expect(screen.getByText(label)).toHaveClass(
       "min-w-0",
       "flex-1",
       "truncate",

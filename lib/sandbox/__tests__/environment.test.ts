@@ -19,19 +19,15 @@ const unrelated = {
   createdAt: 3,
 };
 
-it("selects the newest session of the saved environment and pins a healthy active session", () => {
+it("does not let a CLI runner claim a saved environment", () => {
   expect(
     resolveEnvironmentConnection(
       [oldSession, unrelated, newSession],
       "environment:machine-a",
     ),
-  ).toBe(newSession);
+  ).toBeUndefined();
   expect(
-    resolveEnvironmentConnection(
-      [oldSession, newSession],
-      "environment:machine-a",
-      "old",
-    ),
+    resolveEnvironmentConnection([oldSession, newSession], "old", "old"),
   ).toBe(oldSession);
   expect(
     resolveEnvironmentConnection([unrelated], "environment:machine-a"),
@@ -49,8 +45,9 @@ it("keeps desktop identity distinct from a CLI using the same UUID", () => {
   ).toBe(false);
 });
 
-it("uses the stable environment for work identity and a session for legacy clients", () => {
-  expect(localEnvironmentIdentity(newSession)).toBe("environment:machine-a");
+it("uses a session for CLI work identity and stable identity only for Desktop", () => {
+  expect(environmentPreference(newSession)).toBe("new");
+  expect(localEnvironmentIdentity(newSession)).toBe("new");
   expect(localEnvironmentIdentity({ ...newSession, isDesktop: true })).toBe(
     "desktop-environment:machine-a",
   );

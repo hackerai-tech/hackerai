@@ -51,8 +51,10 @@ async function resolvePreference(
     .query("local_sandbox_connections")
     .withIndex("by_connection_id", (q) => q.eq("connection_id", preference))
     .unique();
-  return session?.user_id === userId && session.environment_id
-    ? `${session.client_version === "desktop" ? "desktop-environment" : "environment"}:${session.environment_id}`
+  return session?.user_id === userId &&
+    session.registration_origin === "desktop" &&
+    session.environment_id
+    ? `desktop-environment:${session.environment_id}`
     : preference;
 }
 
@@ -377,6 +379,7 @@ export const connect = mutation({
       ...(args.environmentId ? { ready: false } : {}),
       connection_name: args.connectionName,
       client_version: args.clientVersion,
+      registration_origin: "runner",
       mode: "dangerous",
       os_info: args.osInfo,
       capabilities: args.capabilities ?? { commands: true, pty: true },
@@ -633,7 +636,7 @@ export const connectDesktop = mutation({
     const now = Date.now();
     for (const conn of existingDesktop) {
       if (
-        conn.client_version === "desktop" &&
+        conn.registration_origin === "desktop" &&
         conn.environment_id === args.environmentId
       ) {
         await ctx.db.patch(conn._id, {
@@ -654,6 +657,7 @@ export const connectDesktop = mutation({
       container_id: undefined,
       ...(args.environmentId ? { ready: false } : {}),
       client_version: "desktop",
+      registration_origin: "desktop",
       mode: "dangerous",
       os_info: args.osInfo,
       capabilities: args.capabilities ?? { commands: true, pty: true },
@@ -744,7 +748,7 @@ export const heartbeatDesktop = mutation({
     if (
       !connection ||
       connection.user_id !== identity.subject ||
-      connection.client_version !== "desktop" ||
+      connection.registration_origin !== "desktop" ||
       connection.status !== "connected" ||
       (await disconnectIfRevoked(ctx, connection)).status !== "connected"
     ) {
@@ -859,7 +863,7 @@ function connectionDetails(conn: Doc<"local_sandbox_connections">) {
     createdAt: conn._creationTime,
     name: conn.connection_name,
     osInfo: conn.os_info,
-    isDesktop: conn.client_version === "desktop",
+    isDesktop: conn.registration_origin === "desktop",
     capabilities: conn.capabilities ?? { commands: true, pty: true },
   };
 }

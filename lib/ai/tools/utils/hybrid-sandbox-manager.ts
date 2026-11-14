@@ -122,6 +122,9 @@ export function isSameLocalMachine(
   current: ConnectionInfo,
   candidate: ConnectionInfo,
 ): boolean {
+  // Runner IDs, names, and OS fields are client supplied. A replacement
+  // runner must be selected explicitly in the browser.
+  if (!current.isDesktop || !candidate.isDesktop) return false;
   if (current.environmentId || candidate.environmentId) {
     return Boolean(
       current.environmentId &&
