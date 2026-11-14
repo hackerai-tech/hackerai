@@ -8,6 +8,12 @@
  * the closed kind of the first IO error in a bounded walk of the send error's
  * sources. It is a transport class, not the customer's physical network cause,
  * and it is only reported together with a valid v1 receipt.
+ *
+ * A response receipt is independent of both: the native approval check
+ * rejected an answered POST. It holds the HTTP status, a closed approval
+ * class, the origin class, the compiled platform and the shape of the
+ * response's public `x-vercel-id`. That ID is copied only within a strict
+ * observed subset; this is not a guarantee of Vercel's format.
  */
 
 const ORIGIN_CLASSES = [
@@ -50,9 +56,39 @@ const CAUSE_KEYS = [
   "sourceChainTruncated",
 ] as const;
 
+/** `json_error` covers both an unreadable body and an undecodable one. */
+const APPROVALS = [
+  "not_checked",
+  "json_error",
+  "approved_false",
+  "missing",
+  "invalid_type",
+] as const;
+const REQUEST_ID_SHAPES = [
+  "absent",
+  "valid",
+  "unrecognized",
+  "unreadable",
+] as const;
+const MAX_REQUEST_ID_LENGTH = 96;
+// The native subset: 1-3 region prefixes, then an ID and a 13-digit time.
+const REQUEST_ID =
+  /^(?:[a-z]{3}[1-9]::){1,3}[a-z0-9]{5}-[0-9]{13}-[0-9a-f]{12}$/;
+const RESPONSE_KEYS = [
+  "version",
+  "httpStatus",
+  "approval",
+  "originClass",
+  "platform",
+  "requestIdShape",
+  "requestId",
+] as const;
+
 type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 type IoKind = (typeof IO_KINDS)[number];
+type Approval = (typeof APPROVALS)[number];
+type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 
 export interface NativeAuthorizationSendReceipt {
   readonly timeout: boolean;
@@ -319,6 +355,147 @@ export function readNativeAuthorizationCause(
           sourceDepth,
           sourceChainTruncated,
         } as NativeAuthorizationSendCause)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationResponseReceipt {
+  readonly httpStatus: number;
+  readonly approval: Approval;
+  readonly originClass: OriginClass;
+  readonly platform: (typeof RECEIPT_PLATFORMS)[number];
+  readonly requestIdShape: RequestIdShape;
+  readonly requestId: string | null;
+}
+
+export interface NativeAuthorizationResponseDiagnostic {
+  readonly native_authorization_response_version: 1;
+  readonly native_authorization_response_http_status: number;
+  readonly native_authorization_response_approval: Approval;
+  readonly native_authorization_response_origin_class: OriginClass;
+  /** The receipt's compiled target platform; null when unknown. */
+  readonly native_authorization_response_platform: NativePlatform | null;
+  readonly native_authorization_response_request_id_shape: RequestIdShape;
+  /** Public `x-vercel-id`, only within the strict subset; otherwise null. */
+  readonly native_authorization_response_request_id: string | null;
+}
+
+const RESPONSE_PROPERTIES = [
+  "native_authorization_response_version",
+  "native_authorization_response_http_status",
+  "native_authorization_response_approval",
+  "native_authorization_response_origin_class",
+  "native_authorization_response_platform",
+  "native_authorization_response_request_id_shape",
+  "native_authorization_response_request_id",
+] as const satisfies readonly (keyof NativeAuthorizationResponseDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES: ReadonlySet<string> =
+  new Set(RESPONSE_PROPERTIES);
+
+/** The native check's invariants: only a non-2xx status skips the body, and
+ * only a valid shape carries an ID within the strict subset. */
+const isResponse = (
+  httpStatus: unknown,
+  approval: unknown,
+  originClass: unknown,
+  requestIdShape: unknown,
+  requestId: unknown,
+): boolean =>
+  typeof httpStatus === "number" &&
+  Number.isSafeInteger(httpStatus) &&
+  httpStatus >= 100 &&
+  httpStatus <= 599 &&
+  APPROVALS.some((value) => value === approval) &&
+  (approval === "not_checked") === (httpStatus < 200 || httpStatus > 299) &&
+  isOriginClass(originClass) &&
+  REQUEST_ID_SHAPES.some((shape) => shape === requestIdShape) &&
+  (requestIdShape === "valid"
+    ? typeof requestId === "string" &&
+      requestId.length <= MAX_REQUEST_ID_LENGTH &&
+      REQUEST_ID.test(requestId)
+    : requestId === null);
+
+/** Copy only the closed native response schema; anything else is dropped. */
+export function parseNativeAuthorizationResponseReceipt(
+  value: unknown,
+): NativeAuthorizationResponseReceipt | null {
+  try {
+    const values = readClosedObject(value, RESPONSE_KEYS);
+    if (!values) return null;
+    const [
+      version,
+      httpStatus,
+      approval,
+      originClass,
+      platform,
+      requestIdShape,
+      requestId,
+    ] = values;
+    if (
+      version !== 1 ||
+      !isReceiptPlatform(platform) ||
+      !isResponse(httpStatus, approval, originClass, requestIdShape, requestId)
+    )
+      return null;
+    return Object.freeze({
+      httpStatus,
+      approval,
+      originClass,
+      platform,
+      requestIdShape,
+      requestId,
+    } as NativeAuthorizationResponseReceipt);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationResponseDiagnostic(
+  receipt: NativeAuthorizationResponseReceipt,
+): NativeAuthorizationResponseDiagnostic {
+  return Object.freeze({
+    native_authorization_response_version: 1,
+    native_authorization_response_http_status: receipt.httpStatus,
+    native_authorization_response_approval: receipt.approval,
+    native_authorization_response_origin_class: receipt.originClass,
+    native_authorization_response_platform: isNativePlatform(receipt.platform)
+      ? receipt.platform
+      : null,
+    native_authorization_response_request_id_shape: receipt.requestIdShape,
+    native_authorization_response_request_id: receipt.requestId,
+  });
+}
+
+/** Read the complete response group from any property bag's own data
+ * properties, or nothing at all. Independent of the send groups. */
+export function readNativeAuthorizationResponse(
+  source: unknown,
+): NativeAuthorizationResponseDiagnostic | null {
+  if (typeof source !== "object" || source === null) return null;
+  try {
+    const [
+      version,
+      httpStatus,
+      approval,
+      originClass,
+      platform,
+      requestIdShape,
+      requestId,
+    ] = readDataProperties(source, RESPONSE_PROPERTIES);
+    return version === 1 &&
+      (platform === null || isNativePlatform(platform)) &&
+      isResponse(httpStatus, approval, originClass, requestIdShape, requestId)
+      ? nativeAuthorizationResponseDiagnostic({
+          httpStatus,
+          approval,
+          originClass,
+          platform: platform ?? "unknown",
+          requestIdShape,
+          requestId,
+        } as NativeAuthorizationResponseReceipt)
       : null;
   } catch {
     return null;

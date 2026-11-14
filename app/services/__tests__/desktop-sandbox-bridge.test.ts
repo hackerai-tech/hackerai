@@ -20,6 +20,7 @@ import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
 } from "@/lib/analytics/native-authorization-diagnostics";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
@@ -5866,6 +5867,315 @@ describe("native authorization send receipt", () => {
     });
   });
 
+  describe("approval rejection response", () => {
+    const vercelId = "iad1::abcde-1700000000000-0123456789ab";
+    const rejection = {
+      version: 1,
+      httpStatus: 403,
+      approval: "not_checked",
+      originClass: "canonical_production",
+      platform: "windows",
+      requestIdShape: "valid",
+      requestId: vercelId,
+    };
+    const responseGroup = {
+      native_authorization_response_version: 1,
+      native_authorization_response_http_status: 403,
+      native_authorization_response_approval: "not_checked",
+      native_authorization_response_origin_class: "canonical_production",
+      native_authorization_response_platform: "windows",
+      native_authorization_response_request_id_shape: "valid",
+      native_authorization_response_request_id: vercelId,
+    };
+    const notAuthorized = "Desktop operation was not authorized";
+    const responseKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key),
+      );
+    const responseChannel = (call: NativeCall) =>
+      call.onAuthorizationResponseDiagnostic as MockChannel;
+
+    it("joins one same-invocation response receipt on its own channel", async () => {
+      const { calls, replies } = await run(async (call) => {
+        responseChannel(call).onmessage!(rejection);
+        // A duplicate cannot replace the first callback attempt.
+        responseChannel(call).onmessage!({
+          ...rejection,
+          httpStatus: 200,
+          approval: "approved_false",
+        });
+        return Promise.reject(notAuthorized);
+      });
+
+      expect(calls).toHaveLength(1);
+      const channel = responseChannel(calls[0]);
+      expect(channel).toBeDefined();
+      for (const other of [
+        calls[0].onEvent,
+        calls[0].onAuthorizationDiagnostic,
+        calls[0].onAuthorizationCauseDiagnostic,
+      ])
+        expect(channel).not.toBe(other);
+      expect(calls[0]).toMatchObject({
+        cmd: "execute_authorized_stream_command",
+        authorizationId,
+      });
+      expect(Object.keys(calls[0].message as object)).not.toContain(
+        "onAuthorizationResponseDiagnostic",
+      );
+      // The product error is the identical single terminal frame.
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({
+          type: "error",
+          message: notAuthorized,
+          sequence: 0,
+        }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      expect(final.properties).toMatchObject({
+        outcome: "acknowledged",
+        terminalType: "error",
+        telemetry_sample_rate: 1,
+        ...responseGroup,
+      });
+      // Independent of the send groups: neither is invented or joined.
+      expect(nativeKeys(final.properties)).toEqual([]);
+      const enriched = sanitizeDesktopAckEvent({
+        ...final,
+        properties: { ...final.properties, $current_url: "PRIVATE" },
+      });
+      expect(responseKeys(enriched.properties)).toHaveLength(7);
+      const serialized = JSON.stringify([captures(), enriched]);
+      expect(serialized).not.toContain("PRIVATE");
+      expect(serialized).not.toContain(authorizationId);
+      expect(serialized).not.toContain(notAuthorized);
+    });
+
+    it("keeps the response channel when the send channels cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      jest.mocked(Channel).mockImplementationOnce(() => {
+        throw new Error("channel unavailable");
+      });
+      const { calls, replies } = await run((call) => {
+        responseChannel(call).onmessage!(rejection);
+        return reject(notAuthorized);
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: notAuthorized }),
+      ]);
+      expect(finals()[0].properties).toMatchObject(responseGroup);
+    });
+
+    it("keeps the command and send channels when only the response channel cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const create = jest.mocked(Channel).getMockImplementation()!;
+      jest
+        .mocked(Channel)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+      const { calls, replies } = await run((call) => {
+        (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
+        return reject(unavailable);
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).toHaveProperty("onAuthorizationCauseDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationResponseDiagnostic");
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(responseKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an extra private field", () => ({ ...rejection, body: "PRIVATE" })],
+      ["a missing field", () => ({ ...rejection, requestId: undefined })],
+      ["an approval", () => ({ ...rejection, approval: "approved" })],
+      [
+        "a parsed non-2xx",
+        () => ({ ...rejection, approval: "approved_false" }),
+      ],
+      ["an unchecked 2xx", () => ({ ...rejection, httpStatus: 200 })],
+      ["an extension status", () => ({ ...rejection, httpStatus: 600 })],
+      [
+        "an ID outside the subset",
+        () => ({ ...rejection, requestId: "iad1::PRIVATE" }),
+      ],
+      [
+        "an ID with a shape that withholds it",
+        () => ({ ...rejection, requestIdShape: "unrecognized" }),
+      ],
+      ["a send receipt on the response channel", () => receipt],
+      ["a string", () => "PRIVATE"],
+      [
+        "a class instance",
+        () =>
+          Object.assign(
+            Object.create({ message: "PRIVATE" }) as object,
+            rejection,
+          ),
+      ],
+      [
+        "a throwing getter",
+        () =>
+          Object.defineProperty({ ...rejection }, "requestId", {
+            enumerable: true,
+            get() {
+              throw new Error("PRIVATE");
+            },
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          return new Proxy(
+            {},
+            { getPrototypeOf: fail, ownKeys: fail, get: fail },
+          );
+        },
+      ],
+    ])(
+      "drops the response receipt for %s and keeps the command",
+      async (_case, value) => {
+        const { calls, replies } = await run((call) => {
+          responseChannel(call).onmessage!(value());
+          // The malformed first attempt closed the response latch.
+          responseChannel(call).onmessage!(rejection);
+          return reject(notAuthorized);
+        });
+        expect(calls).toHaveLength(1);
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: notAuthorized }),
+        ]);
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(responseKeys(finals()[0].properties)).toEqual([]);
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("adds no response receipt to a successful command", async () => {
+      await run(async (call) => {
+        responseChannel(call).onmessage!(rejection);
+        (call.onEvent as MockChannel).onmessage!({ type: "exit", exitCode: 0 });
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+      expect(responseKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a response receipt after settlement and releases its callback", async () => {
+      let call!: NativeCall;
+      await run((native) => {
+        call = native;
+        return reject(notAuthorized);
+      });
+      const channel = responseChannel(call);
+      expect(channel.cleanupCallback).toHaveBeenCalledTimes(1);
+      channel.onmessage!(rejection);
+      expect(finals()).toHaveLength(1);
+      expect(responseKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a response receipt observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run((call) => {
+          identity.mockReturnValue("another-user");
+          responseChannel(call).onmessage!(rejection);
+          identity.mockReturnValue("user-456");
+          responseChannel(call).onmessage!(rejection);
+          return reject(notAuthorized);
+        });
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(responseKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("drops a response receipt that arrives after the connection is stopped", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          await pending;
+          responseChannel(call).onmessage!(rejection);
+          return reject(notAuthorized);
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(responseKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("keeps interleaved invocations' response and send receipts separate", async () => {
+      let arrived = 0;
+      let release!: () => void;
+      const all = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          const commandId = (call.message as { commandId: string }).commandId;
+          if (commandId === "approved-false")
+            responseChannel(call).onmessage!({
+              ...rejection,
+              httpStatus: 200,
+              approval: "approved_false",
+              requestIdShape: "absent",
+              requestId: null,
+            });
+          if (++arrived === 3) release();
+          await all;
+          if (commandId === "forbidden")
+            responseChannel(call).onmessage!(rejection);
+          if (commandId === "send-failure")
+            (call.onAuthorizationDiagnostic as MockChannel).onmessage!(receipt);
+          return reject(notAuthorized);
+        },
+        { commandIds: ["approved-false", "forbidden", "send-failure"] },
+      );
+      const byCommand = Object.fromEntries(
+        finals().map((event) => [
+          event.properties!.commandId,
+          event.properties,
+        ]),
+      );
+      expect(byCommand["approved-false"]).toMatchObject({
+        native_authorization_response_http_status: 200,
+        native_authorization_response_approval: "approved_false",
+        native_authorization_response_request_id: null,
+      });
+      expect(nativeKeys(byCommand["approved-false"])).toEqual([]);
+      expect(byCommand.forbidden).toMatchObject(responseGroup);
+      expect(nativeKeys(byCommand["send-failure"])).toHaveLength(8);
+      expect(responseKeys(byCommand["send-failure"])).toEqual([]);
+    });
+  });
+
   it.each<
     [string, Parameters<typeof run>[1], (call: NativeCall) => Promise<unknown>]
   >([
@@ -5898,9 +6208,9 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt and cause channels besides the output channel.
+      // optional receipt, cause and response channels besides the output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 3,
+        options?.version || options?.acknowledged === false ? 1 : 4,
       );
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",
@@ -5914,11 +6224,17 @@ describe("native authorization send receipt", () => {
         expect(authorized[0]).not.toHaveProperty(
           "onAuthorizationCauseDiagnostic",
         );
+        expect(authorized[0]).not.toHaveProperty(
+          "onAuthorizationResponseDiagnostic",
+        );
       } else {
         expect(legacy).toHaveLength(1);
         expect(legacy[0]).toHaveProperty("onEvent");
         expect(legacy[0]).not.toHaveProperty("onAuthorizationDiagnostic");
         expect(legacy[0]).not.toHaveProperty("onAuthorizationCauseDiagnostic");
+        expect(legacy[0]).not.toHaveProperty(
+          "onAuthorizationResponseDiagnostic",
+        );
         expect(authorized).toHaveLength(options?.version ? 0 : 1);
       }
     },

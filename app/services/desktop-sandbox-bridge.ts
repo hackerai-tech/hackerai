@@ -18,8 +18,11 @@ import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   nativeAuthorizationCauseDiagnostic,
   nativeAuthorizationDiagnostic,
+  nativeAuthorizationResponseDiagnostic,
+  parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
   parseNativeAuthorizationSendReceipt,
+  type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
   type NativeAuthorizationSendReceipt,
 } from "@/lib/analytics/native-authorization-diagnostics";
@@ -1246,7 +1249,8 @@ export class DesktopSandboxBridge {
     // Invocation-local native send receipts: one callback attempt per channel,
     // closed by settlement, owned by the analytics identity at command start,
     // and joined only to this invocation's rejection. The cause receipt has its
-    // own channel and latch; neither callback closes the other.
+    // own channel and latch; neither callback closes the other. The response
+    // receipt likewise has its own channel and latch, independent of both.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     const receiptFenced = () =>
@@ -1256,8 +1260,10 @@ export class DesktopSandboxBridge {
       getIdentifiedAnalyticsUserId() !== receiptOwner;
     let receiptOpen = true;
     let causeOpen = true;
+    let responseOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
+    let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let invocationRejected = false;
     const onSettled = this.ackTelemetry.start({
       connectionId,
@@ -1276,6 +1282,7 @@ export class DesktopSandboxBridge {
       (settlement) => {
         receiptOpen = false;
         causeOpen = false;
+        responseOpen = false;
         onSettled(
           {
             ...settlement,
@@ -1291,6 +1298,11 @@ export class DesktopSandboxBridge {
                     nativeAuthorizationCauseDiagnostic(sendCause),
                 }),
               }),
+            ...(invocationRejected &&
+              responseReceipt && {
+                nativeAuthorizationResponse:
+                  nativeAuthorizationResponseDiagnostic(responseReceipt),
+              }),
           },
           this.commandOutputStopSource,
         );
@@ -1301,6 +1313,7 @@ export class DesktopSandboxBridge {
     this.activeCommands.add(command.commandId);
     let diagnosticChannel: object | undefined;
     let causeChannel: object | undefined;
+    let responseChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1337,6 +1350,19 @@ export class DesktopSandboxBridge {
             causeChannel = undefined;
           }
         }
+        // Independent of the send channels: either can fail on its own.
+        try {
+          const channel = new Channel<unknown>();
+          channel.onmessage = (value) => {
+            if (!responseOpen) return;
+            responseOpen = false;
+            if (receiptFenced()) return;
+            responseReceipt = parseNativeAuthorizationResponseReceipt(value);
+          };
+          responseChannel = channel;
+        } catch {
+          responseChannel = undefined;
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1370,6 +1396,9 @@ export class DesktopSandboxBridge {
               }),
               ...(causeChannel && {
                 onAuthorizationCauseDiagnostic: causeChannel,
+              }),
+              ...(responseChannel && {
+                onAuthorizationResponseDiagnostic: responseChannel,
               }),
             },
           );
@@ -1408,7 +1437,11 @@ export class DesktopSandboxBridge {
       // Native apps that ignore an optional argument never end its channel.
       // Release each callback through the pinned SDK Channel's own method, which
       // its typings mark private; the focused bridge test pins this behavior.
-      for (const optional of [diagnosticChannel, causeChannel]) {
+      for (const optional of [
+        diagnosticChannel,
+        causeChannel,
+        responseChannel,
+      ]) {
         try {
           (
             optional as { cleanupCallback?: () => void } | undefined
