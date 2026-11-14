@@ -300,16 +300,23 @@ mod tests {
         let url = refused_url().await;
         let (receipts, observer) = recorder();
         let error = observed_send(
-            request(&url, Duration::from_secs(2)),
+            // Match the native request's existing budget: this case must
+            // observe a refusal, not preempt it with a shorter fixture deadline.
+            request(&url, Duration::from_secs(8)),
             OriginClass::OtherAllowed,
             Some(observer),
         )
         .await
         .expect_err("closed loopback port");
-        assert!(error.is_connect());
         let receipts = receipts.lock().unwrap();
         assert_eq!(receipts.len(), 1);
         let (receipt, cause) = receipts[0];
+        eprintln!(
+            "authorization_refusal_fixture: timeout={} connect={} request={} elapsed_ms={} io_kind={:?} source_depth={}",
+            receipt.timeout, receipt.connect, receipt.request, receipt.elapsed_ms,
+            cause.io_kind, cause.source_depth
+        );
+        assert!(error.is_connect());
         // Refusal is outside the closed IO classes, but reqwest still exposes
         // its typed IO source within the bounded walk.
         assert_eq!(cause.io_kind, IoKind::Other);
