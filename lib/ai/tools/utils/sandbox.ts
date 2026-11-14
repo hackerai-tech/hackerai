@@ -33,6 +33,7 @@ import {
   SandboxError,
   TimeoutError,
   classifyE2BError,
+  getE2BConnectConflictMessageSignal,
   getE2BErrorKind,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
@@ -95,6 +96,10 @@ export class E2BAcquisitionError extends Error {
       e2b_workspace_identity_get_info_transport_code?: GetInfoErrorContext["cloud_transport_code"];
       e2b_workspace_identity_requested_target_fingerprint?: string | null;
       e2b_workspace_identity_requested_cluster?: E2BCluster | null;
+      e2b_connect_conflict_message_signal_version?: 1;
+      e2b_connect_conflict_message_signal?: ReturnType<
+        typeof getE2BConnectConflictMessageSignal
+      >;
     },
   ) {
     super(message);
@@ -195,6 +200,7 @@ export const ensureSandboxConnection = async (
   let failedTarget:
     { sandboxId: string; template: string; sandboxVersion: string } | undefined;
   let connectGatewayTimeout: SandboxError | undefined;
+  let connectRejection: unknown;
   const connectSelectedSandbox = async (
     sandboxId: string,
     connectOptions: Parameters<typeof Sandbox.connect>[1],
@@ -202,6 +208,7 @@ export const ensureSandboxConnection = async (
     try {
       return await Sandbox.connect(sandboxId, connectOptions);
     } catch (error) {
+      connectRejection = error;
       if (error instanceof SandboxError && error.statusCode === 504)
         connectGatewayTimeout = error;
       throw error;
@@ -563,6 +570,16 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
+    // Only the original connect rejection is eligible. The closed signal
+    // describes its message text, not provider state or the customer's cause.
+    const connectConflictSignal =
+      phase === "connect" && error === connectRejection
+        ? getE2BConnectConflictMessageSignal(error)
+        : undefined;
+    if (connectConflictSignal) {
+      diagnostics.e2b_connect_conflict_message_signal_version = 1;
+      diagnostics.e2b_connect_conflict_message_signal = connectConflictSignal;
+    }
     if (
       diagnostics.e2b_workspace_identity_operation === "get_info" &&
       diagnostics.e2b_workspace_identity_error_kind === "other_error"
