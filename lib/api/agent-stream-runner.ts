@@ -1833,7 +1833,26 @@ export async function createAgentStream(
     });
     return latestProviderRequestDiagnostics;
   };
-  const promptSerializationTools = createPromptSerializationTools(ctx.tools);
+  // Saved-history formatter rejections are reported once per invocation with
+  // closed shape fields only; the original error still propagates unchanged.
+  let historyFormatterStage: "initial" | "subsequent" = "initial";
+  let historyFormatterFailureReported = false;
+  const promptSerializationTools = createPromptSerializationTools(ctx.tools, {
+    onFormatterFailure: (failure) => {
+      if (historyFormatterFailureReported) return;
+      historyFormatterFailureReported = true;
+      phLogger.warn("Prompt history formatter failed", {
+        event: "prompt_history_formatter_failed",
+        prompt_history_formatter_diagnostic_version: 1,
+        userId: ctx.userId,
+        chat_id: ctx.chatId,
+        run_id: ctx.triggerRunId,
+        mode: ctx.mode,
+        stage: historyFormatterStage,
+        ...failure,
+      });
+    },
+  });
   const initialSerializationStartedAt = Date.now();
   let initialSerializedMessages: ModelMessage[];
   try {
@@ -1843,6 +1862,7 @@ export async function createAgentStream(
         tools: promptSerializationTools,
       },
     );
+    historyFormatterStage = "subsequent";
   } finally {
     ctx.onStartupPhaseDuration?.(
       "message_serialization",
@@ -2412,9 +2432,7 @@ export async function createAgentStream(
               try {
                 summarizedModelMessages = await convertToModelMessages(
                   result.summarizedMessages,
-                  {
-                    tools: createPromptSerializationTools(ctx.tools),
-                  },
+                  { tools: promptSerializationTools },
                 );
               } finally {
                 ctx.onStartupPhaseDuration?.(
