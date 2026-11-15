@@ -52,6 +52,18 @@ runpy.run_path(script,run_name='__main__')
 `;
 
 /**
+ * Run the generated wrapper with a clock whose millisecond timestamp has the
+ * given digit count, to size receipts near the private reader cap.
+ */
+const CLOCK_BOOTSTRAP = String.raw`import runpy,sys,time
+script,digits=sys.argv[1:3]
+sys.argv=[script,*sys.argv[3:]]
+now=float(2*10**(int(digits)-4))
+time.time=lambda: now
+runpy.run_path(script,run_name='__main__')
+`;
+
+/**
  * Controlled CLI: snapshots what the wrapper wrote before it ran and the exact
  * argv it received, creates the requested socket fixture for its selected
  * session, writes fixed output, exits.
@@ -103,7 +115,11 @@ const exercise = (
   initializeHistory = true,
   procStat?: string | false,
   procStatCloseFails = false,
-  { socket, lstatFault }: { socket?: SocketFixture; lstatFault?: string } = {},
+  {
+    socket,
+    lstatFault,
+    atDigits,
+  }: { socket?: SocketFixture; lstatFault?: string; atDigits?: number } = {},
 ) =>
   JSON.parse(
     execFileSync(
@@ -146,6 +162,7 @@ if x['verify']:
 command=[sys.executable,str(script),*x['args']]
 if x.get('procStat') is not None: command=[sys.executable,'-c',x['bootstrap'],str(script),x['procStat'] or '','1' if x['procStatCloseFails'] else '',*x['args']]
 if x.get('lstatFault'): command=[sys.executable,'-c',x['lstatBootstrap'],str(script),x['lstatFault'],*x['args']]
+if x.get('atDigits'): command=[sys.executable,'-c',x['clockBootstrap'],str(script),str(x['atDigits']),*x['args']]
 result=subprocess.run(command,env=env,capture_output=True)
 if mode=='socket_removed':
     for path in sockets.glob('*.sock'): path.unlink()
@@ -169,6 +186,8 @@ print(json.dumps({'status':result.returncode,'stdout':result.stdout.decode(),'st
           socket,
           lstatFault,
           lstatBootstrap: LSTAT_FAULT_BOOTSTRAP,
+          atDigits,
+          clockBootstrap: CLOCK_BOOTSTRAP,
           fake: FAKE_BROWSER,
           program: BROWSER_SESSION_PROGRAM,
         }),
@@ -637,6 +656,103 @@ it.each([
     expect(result.leftovers).toBe(0);
   },
 );
+
+/** The real CLI's normalized pass-through argv for a wrapped invocation. */
+const normalizedArgv = (args: string[]) => {
+  const named = args.indexOf("--session");
+  return named < 0
+    ? ["--session", "default", ...args]
+    : [
+        "--session",
+        args[named + 1],
+        ...args.filter((_, i) => i !== named && i !== named + 1),
+      ];
+};
+
+it.each<[string, string[], number]>([
+  ["an ordinary OPEN", defaultArgs, 0],
+  ["trailing help", ["open", "PRIVATE_TARGET", "--help"], 1],
+  // Pinned CLIs scan every argument, including the session value.
+  ["a session value", ["--session", "-V", "open", "PRIVATE_TARGET"], 2],
+  ["help and version", ["open", "-h", "PRIVATE_TARGET", "--version"], 3],
+  [
+    "inexact tokens",
+    ["open", "PRIVATE_TARGET", "--HELP", "-hV", "--version=1", "-v"],
+    0,
+  ],
+])(
+  "declares exact informational tokens for %s without changing the CLI call",
+  (_case, args, code) => {
+    const result = socketCall({ socket: "socket" }, 0, args);
+    expect(result.status).toBe(0);
+    expect([result.stdout, result.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+    expect(
+      JSON.parse(readFileSync(path.join(root, "cli-argv.json"), "utf8")),
+    ).toEqual(normalizedArgv(args));
+    // Appended after the preexisting at-return socket code.
+    expect(result.open).toMatchObject({
+      action: "open",
+      phase: "completed",
+      exit: 0,
+      os1: 1,
+      o1: code,
+    });
+    expect(Object.keys(result.open).at(-1)).toBe("o1");
+    expect(result.started_open.o1).toBe(code);
+    expect(result.finished).not.toHaveProperty("o1");
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|--help|"-V"/);
+    expect(result.leftovers).toBe(0);
+  },
+);
+
+it.each([
+  ["--version"],
+  ["-V"],
+  ["close", "--help"],
+  ["snapshot", "-h"],
+  ["--help", "open", "PRIVATE_TARGET"],
+])("writes no OPEN declaration for %j", (...args) => {
+  const result = socketCall({ socket: "socket" }, 0, args);
+  expect(result.status).toBe(0);
+  expect([result.stdout, result.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+  expect(result.open).toBeNull();
+  for (const receipt of [result.finished, result.close])
+    expect(receipt ?? {}).not.toHaveProperty("o1");
+});
+
+it("omits the declaration before os1 or any existing field at the private 512-byte cap", () => {
+  const openBytes = () =>
+    readFileSync(path.join(root, "open-receipt.json")).byteLength;
+  const withoutAt = ({ at: _at, ...rest }: Record<string, unknown>) => rest;
+  const calibration = socketCall({ socket: "socket" });
+  expect(calibration.open).toMatchObject({ os1: 1, o1: 0 });
+  // Size the receipt without o1 through its millisecond timestamp's digit count.
+  const declarationBytes = Buffer.byteLength(', "o1": 0');
+  const digitsFor = (withoutDeclaration: number) =>
+    13 + withoutDeclaration - (openBytes() - declarationBytes);
+  const fits = digitsFor(512 - declarationBytes);
+  const exact = socketCall(
+    { socket: "socket", atDigits: fits },
+    0,
+    defaultArgs,
+  );
+  expect(exact.status).toBe(0);
+  expect(openBytes()).toBe(512); // Exactly at the cap, o1 still fits.
+  expect(exact.open.o1).toBe(0);
+  const over = socketCall(
+    { socket: "socket", atDigits: fits + 1 },
+    0,
+    defaultArgs,
+  );
+  expect(over.status).toBe(0);
+  expect([over.stdout, over.stderr]).toEqual(["CLI_OUT\n", "CLI_ERR\n"]);
+  expect(openBytes()).toBe(512 - declarationBytes + 1);
+  expect(over.open).not.toHaveProperty("o1");
+  // Every preexisting field, including os1, is retained unchanged.
+  const { o1: _o1, ...previous } = withoutAt(calibration.open);
+  expect(withoutAt(over.open)).toEqual(previous);
+  expect(over.leftovers).toBe(0);
+});
 
 /** The fixed k1 code's category, decoded with the daemon helper's wire table. */
 const commandClass = (receipt: { k1?: unknown }) =>

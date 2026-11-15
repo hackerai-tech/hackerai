@@ -23,6 +23,7 @@ import {
   BROWSER_CLI_AT_PREPARE_STATUSES,
   BROWSER_WRAPPER_PROCESS_VISIBILITIES,
   BROWSER_OPEN_SOCKET_RETURN_STATUSES,
+  BROWSER_OPEN_INFO_FLAGS,
   BROWSER_WRAPPER_COMMAND_CLASSES,
   BROWSER_DAEMON_VERSION_FILE_STATUSES,
 } from "./daemon-program";
@@ -694,6 +695,10 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   // Absent means unmeasured (older writer or budget), never missing.
   capture_open_socket_return_version?: 1;
   capture_open_socket_return_status?: (typeof BROWSER_OPEN_SOCKET_RETURN_STATUSES)[number];
+  // Exact help/version tokens declared in that matching OPEN's arguments; not
+  // its effective CLI result or daemon state. Absent means unmeasured, never none.
+  capture_open_info_version?: 1;
+  capture_open_info_flags?: (typeof BROWSER_OPEN_INFO_FLAGS)[number];
   // The selected daemon's .version sidecar declaration beside that matching OPEN's
   // socket; not a verified daemon version, identity or health. Absent is unmeasured.
   capture_daemon_version_file_version?: 1;
@@ -894,6 +899,8 @@ export async function captureBrowserFrame(
         | "capture_daemon_process_visibility"
         | "capture_open_socket_return_version"
         | "capture_open_socket_return_status"
+        | "capture_open_info_version"
+        | "capture_open_info_flags"
         | "capture_daemon_version_file_version"
         | "capture_daemon_version_file_status"
         | "capture_daemon_version_file_major"
@@ -1139,6 +1146,20 @@ export async function captureBrowserFrame(
                 precondition.capture_open_socket_return_version = 1;
                 precondition.capture_open_socket_return_status =
                   BROWSER_OPEN_SOCKET_RETURN_STATUSES[openSocket];
+              }
+              const openInfo = parsed?.o1;
+              if (
+                precondition.capture_open_receipt_status === "recorded" &&
+                precondition.capture_open_phase === "completed" &&
+                precondition.capture_open_exit_code === 0 &&
+                precondition.capture_open_session_matches === true &&
+                Number.isInteger(openInfo) &&
+                openInfo >= 0 &&
+                openInfo < BROWSER_OPEN_INFO_FLAGS.length
+              ) {
+                precondition.capture_open_info_version = 1;
+                precondition.capture_open_info_flags =
+                  BROWSER_OPEN_INFO_FLAGS[openInfo];
               }
               const daemonVersion = parsed?.dv;
               if (
