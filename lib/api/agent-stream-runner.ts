@@ -137,6 +137,11 @@ import {
   type AgentGuardrailObservation,
 } from "@/lib/chat/tool-loop-observer";
 import {
+  buildToolFailureNotice,
+  ToolFailureRecovery,
+  type ToolFailureNotice,
+} from "@/lib/chat/tool-failure-recovery";
+import {
   createAssistantContentLoopMonitor,
   type AssistantContentLoopDetection,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -463,6 +468,8 @@ export type AgentStreamState = {
     toolCallCount?: number;
   };
   toolCycleRecoveryCount: number;
+  /** Varied explicit failures of one tool; counts only, shared by replacements. */
+  toolFailureRecovery: ToolFailureRecovery;
   /** True only when the final provider attempt stopped at the step condition. */
   stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
@@ -500,6 +507,7 @@ export function initAgentStreamState(
     hasCompletedAbliterationStep: false,
     toolLoopObserver: new ToolLoopObserver(),
     toolCycleRecoveryCount: 0,
+    toolFailureRecovery: new ToolFailureRecovery(),
     stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
@@ -1273,6 +1281,7 @@ export async function createAgentStream(
   type DoomLoopRecovery = {
     nudge?: string;
     excludedTools?: ReadonlySet<string>;
+    toolFailure?: ToolFailureNotice;
   };
 
   // Repeated results are a reason to inspect progress, not proof of failure.
@@ -1292,12 +1301,14 @@ export async function createAgentStream(
       ? confirmedFailureCycleNudge
       : toolCycleNudge;
   let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
-  const markToolCycleRecoveryPrepared = (recovery: DoomLoopRecovery) => {
+  let preparedToolFailureRecovery: ToolFailureNotice | undefined;
+  const markRecoveryPrepared = (recovery: DoomLoopRecovery) => {
     if (
       recovery.nudge?.includes(toolCycleNudge) ||
       recovery.nudge?.includes(confirmedFailureCycleNudge)
     )
       preparedToolCycleRecovery = state.pendingToolCycleRecovery;
+    preparedToolFailureRecovery = recovery.toolFailure;
   };
 
   const getDoomLoopRecovery = (
@@ -1310,10 +1321,17 @@ export async function createAgentStream(
       // the hard stop. Keep only malformed-input recovery in this path.
       isAgentMode(ctx.mode) ? null : undefined,
     );
+    const toolFailure = isAgentMode(ctx.mode)
+      ? state.toolFailureRecovery.getPendingNotice()
+      : undefined;
+    const pendingNudges = [
+      ...(state.pendingToolCycleRecovery ? [pendingToolCycleNudge()] : []),
+      ...(toolFailure ? [buildToolFailureNotice(toolFailure)] : []),
+    ];
 
     if (loopCheck.severity === "none") {
-      return state.pendingToolCycleRecovery
-        ? { nudge: pendingToolCycleNudge() }
+      return pendingNudges.length
+        ? { nudge: pendingNudges.join("\n\n"), toolFailure }
         : {};
     }
 
@@ -1333,10 +1351,8 @@ export async function createAgentStream(
     });
 
     const recovery: DoomLoopRecovery = {
-      nudge: [
-        generateDoomLoopNudge(loopCheck),
-        ...(state.pendingToolCycleRecovery ? [pendingToolCycleNudge()] : []),
-      ].join("\n\n"),
+      nudge: [generateDoomLoopNudge(loopCheck), ...pendingNudges].join("\n\n"),
+      toolFailure,
     };
     console.log("[doom-loop] Injecting nudge as last user message");
 
@@ -2152,6 +2168,21 @@ export async function createAgentStream(
           { deduplicate: false },
         );
       }
+      if (!abortSignal.aborted && preparedToolFailureRecovery) {
+        const notice = preparedToolFailureRecovery;
+        preparedToolFailureRecovery = undefined;
+        state.toolFailureRecovery.recordExposure(notice);
+        reportGuardrail(
+          {
+            reason: "repeated_tool_failure",
+            action: "nudge",
+            tool_names: [notice.toolName],
+            repeat_count: notice.failureCount,
+          },
+          // Bounded by MAX_TOOL_FAILURE_NOTICES actual exposures per request.
+          { deduplicate: false },
+        );
+      }
       if (
         !abortSignal.aborted &&
         !state.agentContextBudgetExposed &&
@@ -2228,6 +2259,7 @@ export async function createAgentStream(
       runtimeSection = nextRuntimeSection;
       runtimePromptTokens = safeCountTokens(runtimeSection);
       preparedToolCycleRecovery = undefined;
+      preparedToolFailureRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
           ? stepNumber
@@ -2494,7 +2526,7 @@ export async function createAgentStream(
                 providerOptions,
                 activeTools,
               });
-              markToolCycleRecoveryPrepared(loopRecovery);
+              markRecoveryPrepared(loopRecovery);
               return {
                 model: getNamespacedLanguageModel(
                   continuationModelInfo.languageModel,
@@ -2682,7 +2714,7 @@ export async function createAgentStream(
                   providerOptions,
                   activeTools,
                 });
-                markToolCycleRecoveryPrepared(loopRecovery);
+                markRecoveryPrepared(loopRecovery);
                 return {
                   model: getNamespacedLanguageModel(
                     continuationModelInfo.languageModel,
@@ -2792,7 +2824,7 @@ export async function createAgentStream(
           providerOptions,
           activeTools,
         });
-        markToolCycleRecoveryPrepared(loopRecovery);
+        markRecoveryPrepared(loopRecovery);
         return {
           model: getNamespacedLanguageModel(
             effectiveModelInfo.languageModel,
@@ -3230,6 +3262,25 @@ export async function createAgentStream(
           // Unknown progress must not reuse an earlier cycle or block settlement.
           state.toolLoopObserver.reset();
           state.pendingToolCycleRecovery = undefined;
+        }
+        try {
+          const failure = state.toolFailureRecovery.observe(
+            toolCalls ?? [],
+            toolResults ?? [],
+            // Exact repeats already receive the cycle notice and hard stop.
+            { armNotice: !state.toolLoopObserver.getCurrentCycle() },
+          );
+          if (failure) {
+            reportGuardrail({
+              reason: "repeated_tool_failure",
+              action: "observe",
+              tool_names: [failure.toolName],
+              repeat_count: failure.failureCount,
+              run_cost_dollars: currentCostDollars,
+            });
+          }
+        } catch {
+          state.toolFailureRecovery.reset();
         }
       }
       const budgetDecision =
