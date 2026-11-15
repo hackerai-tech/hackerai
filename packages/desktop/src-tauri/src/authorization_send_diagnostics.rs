@@ -6,9 +6,11 @@
 //! compiled target platform. The separate cause receipt holds only the closed
 //! kind of the first `std::io::Error` in a bounded walk of the source chain.
 //! The separate transport detail splits that kind without the cause's `Other`
-//! fold and records whether a typed `native_tls::Error` was observed. None of
+//! fold and records whether a typed `native_tls::Error` was observed. When
+//! that first IO error's detail is `Unmapped`, a separate supplement splits
+//! its remaining stable kind and a closed family of its own OS code. None of
 //! them hold error text, URLs, identifiers, digests, bodies, headers,
-//! hostnames, certificate details or architecture.
+//! hostnames, certificate details, raw OS codes or architecture.
 
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -179,6 +181,124 @@ pub struct SendTransportDetail {
     source_depth: u8,
     /// Another link existed beyond the last one observed.
     source_chain_truncated: bool,
+    /// Derived from the same first IO error, only when it is `Unmapped`. Never
+    /// serialized here, so this receipt's wire shape stays frozen.
+    #[serde(skip)]
+    io_supplement: Option<SendIoSupplement>,
+}
+
+impl SendTransportDetail {
+    /// The supplement for its own optional channel, as a copied value.
+    pub fn io_supplement(&self) -> Option<SendIoSupplement> {
+        self.io_supplement
+    }
+}
+
+/// The stable kinds that `IoKindDetail` leaves `Unmapped`. `Unknown` is every
+/// other kind, including std's unstable `Uncategorized` and future kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnmappedIoKind {
+    NotFound,
+    AlreadyExists,
+    WriteZero,
+    NotADirectory,
+    IsADirectory,
+    DirectoryNotEmpty,
+    ReadOnlyFilesystem,
+    StaleNetworkFileHandle,
+    StorageFull,
+    NotSeekable,
+    QuotaExceeded,
+    FileTooLarge,
+    ResourceBusy,
+    ExecutableFileBusy,
+    Deadlock,
+    CrossesDevices,
+    TooManyLinks,
+    InvalidFilename,
+    ArgumentListTooLong,
+    Unknown,
+}
+
+impl UnmappedIoKind {
+    fn from_io(kind: std::io::ErrorKind) -> Self {
+        use std::io::ErrorKind;
+        match kind {
+            ErrorKind::NotFound => Self::NotFound,
+            ErrorKind::AlreadyExists => Self::AlreadyExists,
+            ErrorKind::WriteZero => Self::WriteZero,
+            ErrorKind::NotADirectory => Self::NotADirectory,
+            ErrorKind::IsADirectory => Self::IsADirectory,
+            ErrorKind::DirectoryNotEmpty => Self::DirectoryNotEmpty,
+            ErrorKind::ReadOnlyFilesystem => Self::ReadOnlyFilesystem,
+            ErrorKind::StaleNetworkFileHandle => Self::StaleNetworkFileHandle,
+            ErrorKind::StorageFull => Self::StorageFull,
+            ErrorKind::NotSeekable => Self::NotSeekable,
+            ErrorKind::QuotaExceeded => Self::QuotaExceeded,
+            ErrorKind::FileTooLarge => Self::FileTooLarge,
+            ErrorKind::ResourceBusy => Self::ResourceBusy,
+            ErrorKind::ExecutableFileBusy => Self::ExecutableFileBusy,
+            ErrorKind::Deadlock => Self::Deadlock,
+            ErrorKind::CrossesDevices => Self::CrossesDevices,
+            ErrorKind::TooManyLinks => Self::TooManyLinks,
+            ErrorKind::InvalidFilename => Self::InvalidFilename,
+            ErrorKind::ArgumentListTooLong => Self::ArgumentListTooLong,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// A closed family of the IO error's own stored OS code, never the code
+/// itself. Only the Windows Sockets name-resolution codes are named, and only
+/// in a Windows build, because the same numbers mean nothing (or something
+/// else) elsewhere. See Microsoft's Windows Sockets Error Codes:
+/// https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2
+/// A family is the code std recorded, not proof of the physical cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OsFamily {
+    /// WSAHOST_NOT_FOUND (11001).
+    WinsockHostNotFound,
+    /// WSATRY_AGAIN (11002).
+    WinsockTryAgain,
+    /// WSANO_RECOVERY (11003).
+    WinsockNoRecovery,
+    /// WSANO_DATA (11004).
+    WinsockNoData,
+    OtherWindowsOsCode,
+    NoRawOsCode,
+    NotWindows,
+}
+
+impl OsFamily {
+    /// Reads only the value `io::Error::raw_os_error` returned for that error,
+    /// never the thread's last OS error.
+    fn classify(raw_os_error: Option<i32>, compiled_windows: bool) -> Self {
+        if !compiled_windows {
+            return Self::NotWindows;
+        }
+        match raw_os_error {
+            None => Self::NoRawOsCode,
+            Some(11001) => Self::WinsockHostNotFound,
+            Some(11002) => Self::WinsockTryAgain,
+            Some(11003) => Self::WinsockNoRecovery,
+            Some(11004) => Self::WinsockNoData,
+            Some(_) => Self::OtherWindowsOsCode,
+        }
+    }
+}
+
+/// Sent on its own optional channel so the transport detail's v1 wire shape
+/// and buckets are frozen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendIoSupplement {
+    version: u8,
+    io_kind: UnmappedIoKind,
+    os_family: OsFamily,
+    /// The first IO error's depth, 1..=`MAX_SOURCE_LINKS`.
+    source_depth: u8,
 }
 
 fn bounded_elapsed_ms(elapsed: Duration) -> u64 {
@@ -214,11 +334,13 @@ fn send_failure_cause(error: &(dyn Error + 'static)) -> SendFailureCause {
 
 /// Walks at most `MAX_SOURCE_LINKS` sources of `error` (not `error` itself),
 /// all of them rather than stopping at the first `std::io::Error`. Only
-/// `source`, type checks and that IO error's `kind` and `get_ref` are called:
-/// never `Display`, `Debug` or any other accessor. `io::Error::source` skips
-/// a custom inner error, so that inner error's type is checked directly.
+/// `source`, type checks and that IO error's `kind`, `get_ref` and (only when
+/// `Unmapped`) `raw_os_error` are called: never `Display`, `Debug` or any
+/// other accessor. `io::Error::source` skips a custom inner error, so that
+/// inner error's type is checked directly.
 fn send_transport_detail(error: &(dyn Error + 'static)) -> SendTransportDetail {
     let mut io_kind_detail = None;
+    let mut io_supplement = None;
     let mut native_tls_source = false;
     let mut source_depth = 0;
     let mut source_chain_truncated = false;
@@ -232,7 +354,17 @@ fn send_transport_detail(error: &(dyn Error + 'static)) -> SendTransportDetail {
         native_tls_source |= link.is::<native_tls::Error>();
         if io_kind_detail.is_none() {
             if let Some(io) = link.downcast_ref::<std::io::Error>() {
-                io_kind_detail = Some(IoKindDetail::from_io(io.kind()));
+                let kind = io.kind();
+                let detail = IoKindDetail::from_io(kind);
+                io_kind_detail = Some(detail);
+                if detail == IoKindDetail::Unmapped {
+                    io_supplement = Some(SendIoSupplement {
+                        version: 1,
+                        io_kind: UnmappedIoKind::from_io(kind),
+                        os_family: OsFamily::classify(io.raw_os_error(), cfg!(windows)),
+                        source_depth,
+                    });
+                }
                 native_tls_source |= io
                     .get_ref()
                     .is_some_and(|inner| inner.is::<native_tls::Error>());
@@ -246,6 +378,7 @@ fn send_transport_detail(error: &(dyn Error + 'static)) -> SendTransportDetail {
         native_tls_source,
         source_depth,
         source_chain_truncated,
+        io_supplement,
     }
 }
 
@@ -1074,6 +1207,441 @@ mod tests {
                 "not_exposed",
             ]
         );
+    }
+
+    fn supplement(error: &(dyn Error + 'static)) -> Option<(UnmappedIoKind, OsFamily, u8)> {
+        let detail = send_transport_detail(error);
+        let supplement = detail.io_supplement()?;
+        assert_eq!(supplement.version, 1);
+        // It only ever supplements an unmapped first IO error, at its depth.
+        assert_eq!(detail.io_kind_detail, IoKindDetail::Unmapped);
+        assert_eq!(walk(error).0, IoKind::Other);
+        assert_eq!(walk(error).1, supplement.source_depth);
+        assert!((1..=detail.source_depth).contains(&supplement.source_depth));
+        Some((
+            supplement.io_kind,
+            supplement.os_family,
+            supplement.source_depth,
+        ))
+    }
+
+    fn raw(code: i32) -> Option<Box<dyn Error + Send + Sync>> {
+        Some(Box::new(std::io::Error::from_raw_os_error(code)))
+    }
+
+    /// The family a raw code must get in this build: named only on Windows.
+    fn compiled_family(windows: OsFamily) -> OsFamily {
+        if cfg!(windows) {
+            windows
+        } else {
+            OsFamily::NotWindows
+        }
+    }
+
+    #[test]
+    fn io_supplement_belongs_only_to_the_first_unmapped_io_error() {
+        use std::io::ErrorKind;
+        let no_code = compiled_family(OsFamily::NoRawOsCode);
+        assert_eq!(
+            supplement(&chain(2, io(ErrorKind::NotFound))),
+            Some((UnmappedIoKind::NotFound, no_code, 3))
+        );
+        // A mapped first IO error owns the walk, even above an unmapped one.
+        let mapped_above = chain(
+            0,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::ConnectionReset,
+                Link(raw(11001)),
+            ))),
+        );
+        assert_eq!(detail(&mapped_above).0, IoKindDetail::ConnectionReset);
+        assert_eq!(supplement(&mapped_above), None);
+        // The first unmapped IO error owns it; a deeper code is never read.
+        let unmapped_above = chain(
+            1,
+            Some(Box::new(std::io::Error::new(
+                ErrorKind::AlreadyExists,
+                Link(raw(11001)),
+            ))),
+        );
+        assert_eq!(detail(&unmapped_above).2, 3);
+        assert_eq!(
+            supplement(&unmapped_above),
+            Some((UnmappedIoKind::AlreadyExists, no_code, 2))
+        );
+        // No IO error, or a mapped or Other one, has no supplement.
+        for error in [
+            chain(0, None),
+            chain(3, None),
+            chain(2, Some(Box::new(tls()))),
+            chain(0, io(ErrorKind::Other)),
+            chain(0, io(ErrorKind::ConnectionRefused)),
+            chain(0, io(ErrorKind::TimedOut)),
+        ] {
+            assert_eq!(supplement(&error), None);
+        }
+        // The first and last observed links; a ninth is never inspected.
+        assert_eq!(
+            supplement(&chain(0, io(ErrorKind::WriteZero))),
+            Some((UnmappedIoKind::WriteZero, no_code, 1))
+        );
+        assert_eq!(
+            supplement(&chain(7, io(ErrorKind::WriteZero))),
+            Some((UnmappedIoKind::WriteZero, no_code, 8))
+        );
+        let beyond = chain(8, raw(11001));
+        assert_eq!(detail(&beyond), (IoKindDetail::NotExposed, false, 8, true));
+        assert_eq!(send_transport_detail(&beyond).io_supplement(), None);
+    }
+
+    #[test]
+    fn io_supplement_reads_only_the_first_io_errors_own_os_code() {
+        for (code, family) in [
+            (11001, OsFamily::WinsockHostNotFound),
+            (11002, OsFamily::WinsockTryAgain),
+            (11003, OsFamily::WinsockNoRecovery),
+            (11004, OsFamily::WinsockNoData),
+            (11000, OsFamily::OtherWindowsOsCode),
+            (11005, OsFamily::OtherWindowsOsCode),
+            (-1, OsFamily::OtherWindowsOsCode),
+            (i32::MAX, OsFamily::OtherWindowsOsCode),
+        ] {
+            let (kind, os_family, depth) =
+                supplement(&chain(2, raw(code))).unwrap_or_else(|| panic!("{code}"));
+            assert_eq!((os_family, depth), (compiled_family(family), 3), "{code}");
+            // std leaves these codes uncategorized off Windows.
+            if !cfg!(windows) {
+                assert_eq!(kind, UnmappedIoKind::Unknown, "{code}");
+            }
+        }
+    }
+
+    #[test]
+    fn os_family_names_winsock_codes_only_in_a_windows_build() {
+        for (code, windows) in [
+            (None, OsFamily::NoRawOsCode),
+            (Some(11001), OsFamily::WinsockHostNotFound),
+            (Some(11002), OsFamily::WinsockTryAgain),
+            (Some(11003), OsFamily::WinsockNoRecovery),
+            (Some(11004), OsFamily::WinsockNoData),
+            (Some(0), OsFamily::OtherWindowsOsCode),
+            (Some(11000), OsFamily::OtherWindowsOsCode),
+            (Some(11005), OsFamily::OtherWindowsOsCode),
+            (Some(10060), OsFamily::OtherWindowsOsCode),
+            (Some(-11001), OsFamily::OtherWindowsOsCode),
+            (Some(i32::MIN), OsFamily::OtherWindowsOsCode),
+            (Some(i32::MAX), OsFamily::OtherWindowsOsCode),
+        ] {
+            assert_eq!(OsFamily::classify(code, true), windows, "{code:?}");
+            // The same numbers on Linux or macOS are another namespace.
+            assert_eq!(
+                OsFamily::classify(code, false),
+                OsFamily::NotWindows,
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn io_supplement_splits_only_the_remaining_stable_kinds() {
+        use std::io::ErrorKind;
+        for (kind, expected) in [
+            (ErrorKind::NotFound, UnmappedIoKind::NotFound),
+            (ErrorKind::AlreadyExists, UnmappedIoKind::AlreadyExists),
+            (ErrorKind::WriteZero, UnmappedIoKind::WriteZero),
+            (ErrorKind::NotADirectory, UnmappedIoKind::NotADirectory),
+            (ErrorKind::IsADirectory, UnmappedIoKind::IsADirectory),
+            (
+                ErrorKind::DirectoryNotEmpty,
+                UnmappedIoKind::DirectoryNotEmpty,
+            ),
+            (
+                ErrorKind::ReadOnlyFilesystem,
+                UnmappedIoKind::ReadOnlyFilesystem,
+            ),
+            (
+                ErrorKind::StaleNetworkFileHandle,
+                UnmappedIoKind::StaleNetworkFileHandle,
+            ),
+            (ErrorKind::StorageFull, UnmappedIoKind::StorageFull),
+            (ErrorKind::NotSeekable, UnmappedIoKind::NotSeekable),
+            (ErrorKind::QuotaExceeded, UnmappedIoKind::QuotaExceeded),
+            (ErrorKind::FileTooLarge, UnmappedIoKind::FileTooLarge),
+            (ErrorKind::ResourceBusy, UnmappedIoKind::ResourceBusy),
+            (
+                ErrorKind::ExecutableFileBusy,
+                UnmappedIoKind::ExecutableFileBusy,
+            ),
+            (ErrorKind::Deadlock, UnmappedIoKind::Deadlock),
+            (ErrorKind::CrossesDevices, UnmappedIoKind::CrossesDevices),
+            (ErrorKind::TooManyLinks, UnmappedIoKind::TooManyLinks),
+            (ErrorKind::InvalidFilename, UnmappedIoKind::InvalidFilename),
+            (
+                ErrorKind::ArgumentListTooLong,
+                UnmappedIoKind::ArgumentListTooLong,
+            ),
+        ] {
+            let no_code = compiled_family(OsFamily::NoRawOsCode);
+            assert_eq!(
+                supplement(&chain(1, io(kind))),
+                Some((expected, no_code, 2)),
+                "{kind:?}"
+            );
+        }
+        // Every kind the detail names keeps its name and gets no supplement.
+        for kind in [
+            ErrorKind::ConnectionRefused,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::HostUnreachable,
+            ErrorKind::NetworkUnreachable,
+            ErrorKind::NetworkDown,
+            ErrorKind::AddrInUse,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::TimedOut,
+            ErrorKind::NotConnected,
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidData,
+            ErrorKind::InvalidInput,
+            ErrorKind::WouldBlock,
+            ErrorKind::Interrupted,
+            ErrorKind::Unsupported,
+            ErrorKind::OutOfMemory,
+            ErrorKind::Other,
+        ] {
+            assert_eq!(supplement(&chain(1, io(kind))), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn io_supplement_serializes_separately_from_the_frozen_detail() {
+        let error = chain(1, raw(11001));
+        let detail = send_transport_detail(&error);
+        let supplement = detail.io_supplement().expect("an unmapped OS error");
+        // The v1 detail's wire shape is unchanged by its cached supplement.
+        assert_eq!(
+            serde_json::to_value(detail).unwrap(),
+            serde_json::json!({
+                "version": 1,
+                "ioKindDetail": "unmapped",
+                "nativeTlsSource": false,
+                "sourceDepth": 2,
+                "sourceChainTruncated": false,
+            })
+        );
+        let wire = serde_json::to_value(supplement).unwrap();
+        let expected_family = if cfg!(windows) {
+            "winsock_host_not_found"
+        } else {
+            "not_windows"
+        };
+        assert_eq!(wire["version"], 1);
+        assert_eq!(wire["osFamily"], expected_family);
+        assert_eq!(wire["sourceDepth"], 2);
+        assert_eq!(wire.as_object().unwrap().len(), 4);
+        assert!(!wire.to_string().contains("11001"));
+        assert_eq!(
+            serde_json::to_value(SendIoSupplement {
+                version: 1,
+                io_kind: UnmappedIoKind::NotFound,
+                os_family: OsFamily::NoRawOsCode,
+                source_depth: 3,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "version": 1,
+                "ioKind": "not_found",
+                "osFamily": "no_raw_os_code",
+                "sourceDepth": 3,
+            })
+        );
+        // The closed names parsed by the web, in declaration order.
+        use UnmappedIoKind::*;
+        let kinds: Vec<_> = [
+            NotFound,
+            AlreadyExists,
+            WriteZero,
+            NotADirectory,
+            IsADirectory,
+            DirectoryNotEmpty,
+            ReadOnlyFilesystem,
+            StaleNetworkFileHandle,
+            StorageFull,
+            NotSeekable,
+            QuotaExceeded,
+            FileTooLarge,
+            ResourceBusy,
+            ExecutableFileBusy,
+            Deadlock,
+            CrossesDevices,
+            TooManyLinks,
+            InvalidFilename,
+            ArgumentListTooLong,
+            Unknown,
+        ]
+        .into_iter()
+        .map(|kind| serde_json::to_value(kind).unwrap())
+        .collect();
+        assert_eq!(
+            kinds,
+            [
+                "not_found",
+                "already_exists",
+                "write_zero",
+                "not_a_directory",
+                "is_a_directory",
+                "directory_not_empty",
+                "read_only_filesystem",
+                "stale_network_file_handle",
+                "storage_full",
+                "not_seekable",
+                "quota_exceeded",
+                "file_too_large",
+                "resource_busy",
+                "executable_file_busy",
+                "deadlock",
+                "crosses_devices",
+                "too_many_links",
+                "invalid_filename",
+                "argument_list_too_long",
+                "unknown",
+            ]
+        );
+        use OsFamily::*;
+        let families: Vec<_> = [
+            WinsockHostNotFound,
+            WinsockTryAgain,
+            WinsockNoRecovery,
+            WinsockNoData,
+            OtherWindowsOsCode,
+            NoRawOsCode,
+            NotWindows,
+        ]
+        .into_iter()
+        .map(|family| serde_json::to_value(family).unwrap())
+        .collect();
+        assert_eq!(
+            families,
+            [
+                "winsock_host_not_found",
+                "winsock_try_again",
+                "winsock_no_recovery",
+                "winsock_no_data",
+                "other_windows_os_code",
+                "no_raw_os_code",
+                "not_windows",
+            ]
+        );
+    }
+
+    /// Fails every lookup with a synthetic stored OS code, without a network.
+    struct FailingResolver {
+        lookups: Arc<AtomicUsize>,
+    }
+
+    impl reqwest::dns::Resolve for FailingResolver {
+        fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Err(Box::new(std::io::Error::from_raw_os_error(11001))
+                    as Box<dyn Error + Send + Sync>)
+            })
+        }
+    }
+
+    fn unresolved_request(lookups: &Arc<AtomicUsize>) -> reqwest::RequestBuilder {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(Arc::new(FailingResolver {
+                lookups: lookups.clone(),
+            }))
+            .build()
+            .unwrap()
+            .post("http://synthetic.invalid/api/desktop/authorized-operation")
+            .json(&serde_json::json!({ "id": "synthetic", "digest": "synthetic" }))
+    }
+
+    #[tokio::test]
+    async fn unmapped_lookup_failure_supplements_one_send_without_changing_it() {
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let (receipts, observer) = recorder();
+        let error = observed_send(
+            unresolved_request(&lookups),
+            OriginClass::CanonicalProduction,
+            Some(observer),
+        )
+        .await
+        .expect_err("the lookup fails");
+        assert!(!error.is_timeout());
+        let receipts = receipts.lock().unwrap();
+        assert_eq!(receipts.len(), 1);
+        let (receipt, cause, detail) = receipts[0];
+        let supplement = detail.io_supplement().expect("an unmapped first IO error");
+        eprintln!(
+            "authorization_lookup_fixture: connect={} request={} io_kind={:?} source_depth={} io_kind_detail={:?} supplement_kind={:?} os_family={:?} supplement_depth={}",
+            receipt.connect, receipt.request, cause.io_kind, cause.source_depth,
+            detail.io_kind_detail, supplement.io_kind, supplement.os_family,
+            supplement.source_depth
+        );
+        assert_eq!(
+            (receipt.timeout, receipt.connect, receipt.request),
+            (error.is_timeout(), error.is_connect(), error.is_request())
+        );
+        // The frozen receipts are exactly those of any unmapped IO error.
+        assert_eq!(cause.io_kind, IoKind::Other);
+        assert_eq!(detail.io_kind_detail, IoKindDetail::Unmapped);
+        assert!(!detail.native_tls_source);
+        assert!((1..=MAX_SOURCE_LINKS).contains(&cause.source_depth));
+        assert_eq!(supplement.source_depth, cause.source_depth);
+        assert_eq!(
+            supplement.os_family,
+            compiled_family(OsFamily::WinsockHostNotFound)
+        );
+        if !cfg!(windows) {
+            assert_eq!(supplement.io_kind, UnmappedIoKind::Unknown);
+        }
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        drop(receipts);
+
+        // A panicking, closed or absent observer keeps the same single attempt.
+        let panicking = observed_send(
+            unresolved_request(&lookups),
+            OriginClass::CanonicalProduction,
+            Some(
+                |_: SendFailureReceipt, _: SendFailureCause, detail: SendTransportDetail| {
+                    let _ = detail.io_supplement();
+                    panic!("observer failure")
+                },
+            ),
+        )
+        .await
+        .expect_err("panic is contained");
+        assert!(panicking.is_connect());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(receiver);
+        let closed = observed_send(
+            unresolved_request(&lookups),
+            OriginClass::CanonicalProduction,
+            Some(move |_, _, detail: SendTransportDetail| {
+                let _ = sender.send(detail.io_supplement());
+            }),
+        )
+        .await
+        .expect_err("closed callback is ignored");
+        assert!(closed.is_connect());
+        let direct = observed_send(
+            unresolved_request(&lookups),
+            OriginClass::CanonicalProduction,
+            None::<fn(SendFailureReceipt, SendFailureCause, SendTransportDetail)>,
+        )
+        .await
+        .expect_err("direct path keeps the error");
+        assert!(direct.is_connect());
+        assert_eq!(lookups.load(Ordering::SeqCst), 4);
     }
 
     #[test]

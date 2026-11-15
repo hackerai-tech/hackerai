@@ -22,17 +22,20 @@ import { DesktopAckTelemetry } from "@/lib/analytics/desktop-ack";
 import {
   nativeAuthorizationCauseDiagnostic,
   nativeAuthorizationDiagnostic,
+  nativeAuthorizationIoDiagnostic,
   nativeAuthorizationMitigationDiagnostic,
   nativeAuthorizationResponseDiagnostic,
   nativeAuthorizationTransportDiagnostic,
   parseNativeAuthorizationResponseMitigation,
   parseNativeAuthorizationResponseReceipt,
   parseNativeAuthorizationSendCause,
+  parseNativeAuthorizationSendIo,
   parseNativeAuthorizationSendReceipt,
   parseNativeAuthorizationSendTransport,
   type NativeAuthorizationResponseMitigation,
   type NativeAuthorizationResponseReceipt,
   type NativeAuthorizationSendCause,
+  type NativeAuthorizationSendIo,
   type NativeAuthorizationSendReceipt,
   type NativeAuthorizationSendTransport,
 } from "@/lib/analytics/native-authorization-diagnostics";
@@ -1389,6 +1392,8 @@ export class DesktopSandboxBridge {
     // closes another, and both join only the v1 receipt. The response receipt
     // likewise has its own channel and latch, independent of the send ones, and
     // the same response's mitigation marker joins only that response receipt.
+    // The IO supplement has its own channel and latch too, and joins only the
+    // v1, cause and transport receipts that describe the same IO error.
     const { nativeAppVersion } = this;
     const receiptOwner = getIdentifiedAnalyticsUserId();
     const receiptFenced = () =>
@@ -1399,11 +1404,13 @@ export class DesktopSandboxBridge {
     let receiptOpen = true;
     let causeOpen = true;
     let transportOpen = true;
+    let ioOpen = true;
     let responseOpen = true;
     let mitigationOpen = true;
     let sendReceipt: NativeAuthorizationSendReceipt | null = null;
     let sendCause: NativeAuthorizationSendCause | null = null;
     let sendTransport: NativeAuthorizationSendTransport | null = null;
+    let sendIo: NativeAuthorizationSendIo | null = null;
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
     let invocationRejected = false;
@@ -1425,6 +1432,7 @@ export class DesktopSandboxBridge {
         receiptOpen = false;
         causeOpen = false;
         transportOpen = false;
+        ioOpen = false;
         responseOpen = false;
         mitigationOpen = false;
         onSettled(
@@ -1444,6 +1452,10 @@ export class DesktopSandboxBridge {
                 ...(sendTransport && {
                   nativeAuthorizationTransport:
                     nativeAuthorizationTransportDiagnostic(sendTransport),
+                }),
+                ...(sendIo && {
+                  nativeAuthorizationIo:
+                    nativeAuthorizationIoDiagnostic(sendIo),
                 }),
               }),
             ...(invocationRejected &&
@@ -1468,6 +1480,7 @@ export class DesktopSandboxBridge {
     let responseChannel: object | undefined;
     let mitigationChannel: object | undefined;
     let transportChannel: object | undefined;
+    let ioChannel: object | undefined;
     try {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
       // Optional: construction or delivery failure leaves the command unchanged.
@@ -1549,6 +1562,21 @@ export class DesktopSandboxBridge {
             transportChannel = undefined;
           }
         }
+        // An IO supplement only ever refines the transport detail.
+        if (transportChannel) {
+          try {
+            const channel = new Channel<unknown>();
+            channel.onmessage = (value) => {
+              if (!ioOpen) return;
+              ioOpen = false;
+              if (receiptFenced()) return;
+              sendIo = parseNativeAuthorizationSendIo(value);
+            };
+            ioChannel = channel;
+          } catch {
+            ioChannel = undefined;
+          }
+        }
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
@@ -1592,6 +1620,7 @@ export class DesktopSandboxBridge {
               ...(transportChannel && {
                 onAuthorizationTransportDiagnostic: transportChannel,
               }),
+              ...(ioChannel && { onAuthorizationIoDiagnostic: ioChannel }),
             },
           );
         }
@@ -1635,6 +1664,7 @@ export class DesktopSandboxBridge {
         responseChannel,
         mitigationChannel,
         transportChannel,
+        ioChannel,
       ]) {
         try {
           (

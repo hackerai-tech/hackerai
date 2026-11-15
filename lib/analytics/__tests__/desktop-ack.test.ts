@@ -25,11 +25,13 @@ import {
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
@@ -951,6 +953,357 @@ describe("native authorization send receipt", () => {
       expect(reads).toBe(0);
       expect(transportKeys(sanitized)).toEqual([]);
       expect(sanitized).toEqual({ terminalType: "error", ...group });
+    });
+  });
+
+  describe("unmapped IO supplement", () => {
+    const windows = { ...group, native_platform: "windows" as const };
+    const cause: NativeAuthorizationCauseDiagnostic = {
+      native_authorization_cause_version: 1,
+      native_authorization_cause_io_kind: "other",
+      native_authorization_cause_source_depth: 3,
+      native_authorization_cause_source_chain_truncated: false,
+    };
+    const transport: NativeAuthorizationTransportDiagnostic = {
+      native_authorization_transport_version: 1,
+      native_authorization_transport_io_kind_detail: "unmapped",
+      native_authorization_transport_native_tls_source: false,
+      native_authorization_transport_source_depth: 3,
+      native_authorization_transport_source_chain_truncated: false,
+    };
+    const io: NativeAuthorizationIoDiagnostic = {
+      native_authorization_io_version: 1,
+      native_authorization_io_kind: "unknown",
+      native_authorization_io_os_family: "winsock_host_not_found",
+      native_authorization_io_source_depth: 3,
+    };
+    const ioKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_IO_PROPERTIES.has(key),
+      );
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+    const transportKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key),
+      );
+    type Groups = {
+      send?: unknown;
+      cause?: unknown;
+      transport?: unknown;
+      io?: unknown;
+    };
+    const both = ({ send, cause, transport, io }: Groups) => ({
+      final: settle({
+        ...terminalError,
+        nativeAuthorization: send,
+        nativeAuthorizationCause: cause,
+        nativeAuthorizationTransport: transport,
+        nativeAuthorizationIo: io,
+      }),
+      enriched: enrich({
+        terminalType: "error",
+        ...(send as object),
+        ...(cause as object),
+        ...(transport as object),
+        ...(io as object),
+      }).properties!,
+    });
+
+    it.each<[string, Groups]>([
+      ["a Winsock family on Windows", { send: windows, io }],
+      [
+        "every named Winsock family",
+        {
+          send: windows,
+          io: {
+            ...io,
+            native_authorization_io_os_family: "winsock_no_data",
+            native_authorization_io_kind: "not_found",
+          },
+        },
+      ],
+      [
+        "a Windows error without a stored code",
+        {
+          send: windows,
+          io: { ...io, native_authorization_io_os_family: "no_raw_os_code" },
+        },
+      ],
+      [
+        "another Windows code",
+        {
+          send: windows,
+          io: {
+            ...io,
+            native_authorization_io_os_family: "other_windows_os_code",
+          },
+        },
+      ],
+      [
+        "another platform",
+        {
+          send: group,
+          io: { ...io, native_authorization_io_os_family: "not_windows" },
+        },
+      ],
+      [
+        "a transport walk beyond the first IO error",
+        {
+          send: windows,
+          transport: {
+            ...transport,
+            native_authorization_transport_source_depth: 8,
+            native_authorization_transport_source_chain_truncated: true,
+          },
+        },
+      ],
+      [
+        "the last observed link",
+        {
+          send: windows,
+          cause: { ...cause, native_authorization_cause_source_depth: 8 },
+          transport: {
+            ...transport,
+            native_authorization_transport_source_depth: 8,
+          },
+          io: { ...io, native_authorization_io_source_depth: 8 },
+        },
+      ],
+      [
+        "the first observed link",
+        {
+          send: windows,
+          cause: { ...cause, native_authorization_cause_source_depth: 1 },
+          transport: {
+            ...transport,
+            native_authorization_transport_source_depth: 1,
+          },
+          io: { ...io, native_authorization_io_source_depth: 1 },
+        },
+      ],
+    ])("joins the same first IO error's supplement for %s", (_case, groups) => {
+      const expected = {
+        send: windows,
+        cause,
+        transport,
+        io,
+        ...groups,
+      } as Required<Groups>;
+      const { final, enriched } = both({
+        ...expected,
+        io: {
+          ...(expected.io as object),
+          message: "PRIVATE",
+          rawOsError: "PRIVATE",
+        },
+      });
+      const all = {
+        ...(expected.send as object),
+        ...(expected.cause as object),
+        ...(expected.transport as object),
+        ...(expected.io as object),
+      };
+      expect(final?.properties).toMatchObject(all);
+      expect(enriched).toEqual({ terminalType: "error", ...all });
+      for (const properties of [final!.properties!, enriched]) {
+        expect(ioKeys(properties)).toHaveLength(4);
+        expect(transportKeys(properties)).toHaveLength(5);
+        expect(causeKeys(properties)).toHaveLength(4);
+        expect(nativeKeys(properties)).toHaveLength(8);
+      }
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    it.each<[string, Groups]>([
+      [
+        "an unknown platform",
+        {
+          send: { ...group, native_platform: null },
+          io: { ...io, native_authorization_io_os_family: "not_windows" },
+        },
+      ],
+      ["no v1 group", { send: undefined }],
+      [
+        "an invalid v1 group",
+        { send: { ...windows, native_authorization_origin_class: "PRIVATE" } },
+      ],
+      ["no cause group", { cause: undefined }],
+      ["no transport group", { transport: undefined }],
+      [
+        "a mapped transport kind",
+        {
+          transport: {
+            ...transport,
+            native_authorization_transport_io_kind_detail: "connection_refused",
+          },
+        },
+      ],
+      [
+        "the actual Other kind",
+        {
+          transport: {
+            ...transport,
+            native_authorization_transport_io_kind_detail: "other",
+          },
+        },
+      ],
+      [
+        "no exposed IO error",
+        {
+          cause: {
+            ...cause,
+            native_authorization_cause_io_kind: "not_exposed",
+          },
+          transport: {
+            ...transport,
+            native_authorization_transport_io_kind_detail: "not_exposed",
+          },
+        },
+      ],
+      [
+        "a cause outside the Other fold",
+        {
+          cause: {
+            ...cause,
+            native_authorization_cause_io_kind: "connection_reset",
+          },
+        },
+      ],
+      [
+        "a depth other than the cause's",
+        { io: { ...io, native_authorization_io_source_depth: 2 } },
+      ],
+      [
+        "a depth beyond the transport walk",
+        {
+          cause: { ...cause, native_authorization_cause_source_depth: 4 },
+          io: { ...io, native_authorization_io_source_depth: 4 },
+        },
+      ],
+      ["a Winsock family off Windows", { send: group }],
+      [
+        "a Winsock family on an unknown platform",
+        { send: { ...group, native_platform: null } },
+      ],
+      [
+        "a non-Windows family on Windows",
+        { io: { ...io, native_authorization_io_os_family: "not_windows" } },
+      ],
+    ])("drops only the supplement for %s", (_case, groups) => {
+      const given = { send: windows, cause, transport, io, ...groups };
+      const { final, enriched } = both(given);
+      for (const properties of [final!.properties!, enriched]) {
+        expect(ioKeys(properties)).toEqual([]);
+        expect(properties).toMatchObject({ terminalType: "error" });
+      }
+      // Every valid legacy group is unaffected by the dropped supplement.
+      const kept = { ...given, io: undefined };
+      expect(enriched).toEqual(both(kept).enriched);
+      expect(final!.properties).toEqual(both(kept).final!.properties);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unsupported version", { native_authorization_io_version: 2 }],
+      ["string version", { native_authorization_io_version: "1" }],
+      ["missing version", { native_authorization_io_version: undefined }],
+      [
+        "std's unstable kind name",
+        { native_authorization_io_kind: "uncategorized" },
+      ],
+      [
+        "an already mapped kind",
+        { native_authorization_io_kind: "connection_refused" },
+      ],
+      ["private kind", { native_authorization_io_kind: "PRIVATE" }],
+      ["missing kind", { native_authorization_io_kind: undefined }],
+      ["a raw OS code", { native_authorization_io_os_family: 11001 }],
+      [
+        "a guessed family",
+        { native_authorization_io_os_family: "dns_not_found" },
+      ],
+      ["private family", { native_authorization_io_os_family: "PRIVATE" }],
+      ["no exposed depth", { native_authorization_io_source_depth: 0 }],
+      ["unbounded depth", { native_authorization_io_source_depth: 9 }],
+      ["fractional depth", { native_authorization_io_source_depth: 2.5 }],
+      ["string depth", { native_authorization_io_source_depth: "3" }],
+    ])("drops a malformed supplement with %s", (_case, change) => {
+      const invalid = { ...io, ...change };
+      const { final, enriched } = both({
+        send: windows,
+        cause,
+        transport,
+        io: invalid,
+      });
+      const kept = {
+        terminalType: "error",
+        ...windows,
+        ...cause,
+        ...transport,
+      };
+      expect(final?.properties).toMatchObject(kept);
+      expect(ioKeys(final!.properties)).toEqual([]);
+      expect(enriched).toEqual(kept);
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    it("never reports a supplement on other finals, starts or summaries", () => {
+      const all = { ...windows, ...cause, ...transport, ...io };
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorization: windows,
+        nativeAuthorizationCause: cause,
+        nativeAuthorizationTransport: transport,
+        nativeAuthorizationIo: io,
+      });
+      expect(ioKeys(exitFinal!.properties)).toEqual([]);
+      expect(
+        ioKeys(enrich({ terminalType: "exit", ...all }).properties),
+      ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          ioKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...all },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("never runs a supplement getter at before_send", () => {
+      let reads = 0;
+      const properties: Record<string, unknown> = {
+        terminalType: "error",
+        ...windows,
+        ...cause,
+        ...transport,
+        ...io,
+      };
+      Object.defineProperty(properties, "native_authorization_io_os_family", {
+        enumerable: true,
+        get() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      });
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties,
+      }).properties!;
+      expect(reads).toBe(0);
+      expect(sanitized).toEqual({
+        terminalType: "error",
+        ...windows,
+        ...cause,
+        ...transport,
+      });
     });
   });
 });

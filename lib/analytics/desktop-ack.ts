@@ -14,11 +14,13 @@ import {
 import {
   readNativeAuthorizationCause,
   readNativeAuthorizationDiagnostic,
+  readNativeAuthorizationIo,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
   readNativeAuthorizationTransport,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationDiagnostic,
+  type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
@@ -39,6 +41,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorizationCause?: NativeAuthorizationCauseDiagnostic;
   /** Same-invocation transport detail; only joined to a valid send receipt. */
   nativeAuthorizationTransport?: NativeAuthorizationTransportDiagnostic;
+  /** Same first IO error's supplement; only joined to valid send, cause and
+   * unmapped transport groups that describe it. */
+  nativeAuthorizationIo?: NativeAuthorizationIoDiagnostic;
   /** Same-invocation approval rejection; independent of the send groups. */
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
   /** Same response's mitigation marker; only joined to a valid response. */
@@ -279,6 +284,14 @@ export class DesktopAckTelemetry {
       const nativeAuthorizationTransport = nativeAuthorization
         ? readNativeAuthorizationTransport(result.nativeAuthorizationTransport)
         : null;
+      const nativeAuthorizationIo = readNativeAuthorizationIo(
+        result.nativeAuthorizationIo,
+        {
+          diagnostic: nativeAuthorization,
+          cause: nativeAuthorizationCause,
+          transport: nativeAuthorizationTransport,
+        },
+      );
       const nativeAuthorizationResponse =
         result.terminalType === "error"
           ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
@@ -324,6 +337,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorization,
           ...nativeAuthorizationCause,
           ...nativeAuthorizationTransport,
+          ...nativeAuthorizationIo,
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
         },

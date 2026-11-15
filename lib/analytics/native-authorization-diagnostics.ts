@@ -16,6 +16,14 @@
  * That presence is not a certificate reason or the failure's origin. It is
  * likewise only reported together with a valid v1 receipt.
  *
+ * When that detail is `unmapped`, a newer native app also sends a separate IO
+ * supplement on its own channel: the same first IO error's remaining stable
+ * kind, a closed family of its own stored OS code (Windows name-resolution
+ * Winsock codes are named only on Windows; never the code itself) and its
+ * depth. A family is the code the OS reported, not proof of the physical
+ * cause. It is only reported together with valid v1, cause and unmapped
+ * transport receipts for the same IO error.
+ *
  * A response receipt is independent of both: the native approval check
  * rejected an answered POST. It holds the HTTP status, a closed approval
  * class, the origin class, the compiled platform and the shape of the
@@ -101,6 +109,39 @@ const TRANSPORT_KEYS = [
   "sourceChainTruncated",
 ] as const;
 
+const UNMAPPED_IO_KINDS = [
+  "not_found",
+  "already_exists",
+  "write_zero",
+  "not_a_directory",
+  "is_a_directory",
+  "directory_not_empty",
+  "read_only_filesystem",
+  "stale_network_file_handle",
+  "storage_full",
+  "not_seekable",
+  "quota_exceeded",
+  "file_too_large",
+  "resource_busy",
+  "executable_file_busy",
+  "deadlock",
+  "crosses_devices",
+  "too_many_links",
+  "invalid_filename",
+  "argument_list_too_long",
+  "unknown",
+] as const;
+const OS_FAMILIES = [
+  "winsock_host_not_found",
+  "winsock_try_again",
+  "winsock_no_recovery",
+  "winsock_no_data",
+  "other_windows_os_code",
+  "no_raw_os_code",
+  "not_windows",
+] as const;
+const IO_KEYS = ["version", "ioKind", "osFamily", "sourceDepth"] as const;
+
 /** `json_error` covers both an unreadable body and an undecodable one. */
 const APPROVALS = [
   "not_checked",
@@ -143,6 +184,8 @@ type OriginClass = (typeof ORIGIN_CLASSES)[number];
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
 type IoKind = (typeof IO_KINDS)[number];
 type IoKindDetail = (typeof IO_KIND_DETAILS)[number];
+type UnmappedIoKind = (typeof UNMAPPED_IO_KINDS)[number];
+type OsFamily = (typeof OS_FAMILIES)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 type Mitigation = (typeof MITIGATIONS)[number];
@@ -538,6 +581,123 @@ export function readNativeAuthorizationTransport(
           sourceDepth,
           sourceChainTruncated,
         } as NativeAuthorizationSendTransport)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationSendIo {
+  readonly ioKind: UnmappedIoKind;
+  readonly osFamily: OsFamily;
+  readonly sourceDepth: number;
+}
+
+export interface NativeAuthorizationIoDiagnostic {
+  readonly native_authorization_io_version: 1;
+  readonly native_authorization_io_kind: UnmappedIoKind;
+  /** A closed class of the OS code; not the code or the physical cause. */
+  readonly native_authorization_io_os_family: OsFamily;
+  readonly native_authorization_io_source_depth: number;
+}
+
+const IO_PROPERTIES = [
+  "native_authorization_io_version",
+  "native_authorization_io_kind",
+  "native_authorization_io_os_family",
+  "native_authorization_io_source_depth",
+] as const satisfies readonly (keyof NativeAuthorizationIoDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_IO_PROPERTIES: ReadonlySet<string> = new Set(
+  IO_PROPERTIES,
+);
+
+/** The native supplement names an exposed IO error, at depth 1..8. */
+const isIo = (
+  ioKind: unknown,
+  osFamily: unknown,
+  sourceDepth: unknown,
+): boolean =>
+  UNMAPPED_IO_KINDS.some((kind) => kind === ioKind) &&
+  OS_FAMILIES.some((family) => family === osFamily) &&
+  typeof sourceDepth === "number" &&
+  Number.isSafeInteger(sourceDepth) &&
+  sourceDepth >= 1 &&
+  sourceDepth <= MAX_SOURCE_DEPTH;
+
+/** Copy only the closed native IO supplement schema; anything else is
+ * dropped. */
+export function parseNativeAuthorizationSendIo(
+  value: unknown,
+): NativeAuthorizationSendIo | null {
+  try {
+    const values = readClosedObject(value, IO_KEYS);
+    if (!values) return null;
+    const [version, ioKind, osFamily, sourceDepth] = values;
+    if (version !== 1 || !isIo(ioKind, osFamily, sourceDepth)) return null;
+    return Object.freeze({
+      ioKind,
+      osFamily,
+      sourceDepth,
+    } as NativeAuthorizationSendIo);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationIoDiagnostic(
+  io: NativeAuthorizationSendIo,
+): NativeAuthorizationIoDiagnostic {
+  return Object.freeze({
+    native_authorization_io_version: 1,
+    native_authorization_io_kind: io.ioKind,
+    native_authorization_io_os_family: io.osFamily,
+    native_authorization_io_source_depth: io.sourceDepth,
+  });
+}
+
+/** Read the complete IO group from any property bag's own data properties,
+ * or nothing at all. It joins only already validated groups that describe the
+ * same unmapped first IO error: the cause's depth and `other` fold, an
+ * `unmapped` transport detail at least as deep, and a Windows family only
+ * with a Windows receipt. */
+export function readNativeAuthorizationIo(
+  source: unknown,
+  groups: {
+    readonly diagnostic: NativeAuthorizationDiagnostic | null;
+    readonly cause: NativeAuthorizationCauseDiagnostic | null;
+    readonly transport: NativeAuthorizationTransportDiagnostic | null;
+  },
+): NativeAuthorizationIoDiagnostic | null {
+  const { diagnostic, cause, transport } = groups;
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    !diagnostic ||
+    !cause ||
+    !transport ||
+    !isNativePlatform(diagnostic.native_platform) ||
+    cause.native_authorization_cause_io_kind !== "other" ||
+    transport.native_authorization_transport_io_kind_detail !== "unmapped"
+  )
+    return null;
+  try {
+    const [version, ioKind, osFamily, sourceDepth] = readDataProperties(
+      source,
+      IO_PROPERTIES,
+    );
+    return version === 1 &&
+      isIo(ioKind, osFamily, sourceDepth) &&
+      sourceDepth === cause.native_authorization_cause_source_depth &&
+      (sourceDepth as number) <=
+        transport.native_authorization_transport_source_depth &&
+      (osFamily === "not_windows") !==
+        (diagnostic.native_platform === "windows")
+      ? nativeAuthorizationIoDiagnostic({
+          ioKind,
+          osFamily,
+          sourceDepth,
+        } as NativeAuthorizationSendIo)
       : null;
   } catch {
     return null;
