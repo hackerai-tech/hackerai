@@ -1818,6 +1818,69 @@ it.each([false, true])(
 );
 
 it.each([
+  [0, "none"],
+  [1, "help"],
+  [2, "version"],
+  [3, "help_and_version"],
+  [undefined, undefined], // An older writer is unmeasured, not "none".
+  [4, undefined],
+  [-1, undefined],
+  [1.5, undefined],
+  ["1", undefined],
+  [null, undefined],
+])(
+  "projects only a closed OPEN informational-token code %j beside a matching successful OPEN",
+  async (o1, flags) => {
+    const context = await observeDaemonFailure(
+      2,
+      JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        ...successfulSelectedOpen,
+        p1: [1, 0, 0],
+        os1: 2,
+        o1,
+        private: "PRIVATE",
+      }),
+    );
+    // Invalid or missing codes omit only the new pair; other context remains.
+    expect(context).toMatchObject({
+      capture_precondition_reason: "socket_stat",
+      capture_open_exit_code: 0,
+      capture_daemon_pid_status: "missing",
+      capture_open_socket_return_status: "missing",
+    });
+    expect(context.capture_open_info_version).toBe(flags ? 1 : undefined);
+    expect(context.capture_open_info_flags).toBe(flags);
+    expect(JSON.stringify(context)).not.toContain("PRIVATE");
+  },
+);
+
+it.each([
+  { open_session_matches: false },
+  { open_phase: "started", open_exit: "none" },
+  { open_exit: 1 },
+  { open_receipt_status: "unreadable" },
+])(
+  "keeps the OPEN informational-token code censored without a matching successful OPEN: %j",
+  async (override) => {
+    const context = await observeDaemonFailure(
+      2,
+      JSON.stringify({
+        diagnostic_reason: "socket_stat",
+        diagnostic_error: "missing",
+        ...successfulSelectedOpen,
+        ...override,
+        o1: 3,
+      }),
+    );
+    expect(context.capture_precondition_reason).toBe("socket_stat");
+    expect(context).not.toHaveProperty("capture_open_info_version");
+    expect(context).not.toHaveProperty("capture_open_info_flags");
+  },
+);
+
+it.each([
   [0, "wait"],
   [1, "snapshot"],
   [2, "screenshot"],

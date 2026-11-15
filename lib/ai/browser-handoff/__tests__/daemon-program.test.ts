@@ -14,6 +14,7 @@ function expectPacketBudgets(text: string) {
     k1: _commandClass,
     dv: _daemonVersion,
     r1: _responseValidation,
+    o1: _openInfo,
     ...previousContext
   } = JSON.parse(text);
   expect(
@@ -1540,6 +1541,61 @@ it("does not read or add the at-return socket code to a successful daemon respon
   expect(d.openReceipt).not.toHaveBeenCalled();
 });
 
+it.each([0, 1, 2, 3])(
+  "forwards the selected successful OPEN's informational-token code %s beside os1",
+  (code) => {
+    const d = daemon({
+      ...missingSocket,
+      receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+      openReceipt: { ...successfulOpen, os1: 2, o1: code },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    expect(d.connect).not.toHaveBeenCalled();
+    const text = d.output.mock.calls[0][0];
+    expect(JSON.parse(text)).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      open_phase: "completed",
+      open_exit: 0,
+      open_session_matches: true,
+      p1: [1, 0, 0],
+      os1: 2,
+      o1: code,
+    });
+    expectPacketBudgets(text);
+    expect(text).not.toMatch(/PRIVATE|\/dev\/shm|default|\.sock/);
+  },
+);
+
+it.each<[string, Record<string, unknown>, boolean]>([
+  ["a STARTED OPEN", { phase: "started", exit: null }, false],
+  ["a failed OPEN", { exit: 37 }, false],
+  ["another session's OPEN", { session_key: "a".repeat(64) }, false],
+  ["an out-of-range code", { o1: 4 }, true],
+  ["a negative code", { o1: -1 }, true],
+  ["a fractional code", { o1: 1.5 }, true],
+  ["a string code", { o1: "1" }, true],
+  ["null", { o1: null }, true],
+  ["an older writer", { o1: undefined }, true],
+])(
+  "omits the informational-token code for %s without dropping os1",
+  (_case, override, selected) => {
+    const d = daemon({
+      ...missingSocket,
+      receipt: { ...receipt, action: "version", open_receipt_support: 1 },
+      openReceipt: { ...successfulOpen, os1: 2, o1: 3, ...override },
+    });
+    expect(d.exit).toHaveBeenCalledWith(2);
+    const value = JSON.parse(d.output.mock.calls[0][0]);
+    expect(value).toMatchObject({
+      diagnostic_reason: "socket_stat",
+      open_receipt_status: "recorded",
+    });
+    expect(value).not.toHaveProperty("o1");
+    // The selected successful OPEN's existing code is independent of o1.
+    expect(value.os1).toBe(selected ? 2 : undefined);
+  },
+);
+
 /** Maximal legacy context, optionally with a started wrapper's w1 and an os1 code. */
 const maximalOpenSocket = (started: boolean, os1?: number, exit = 999) => {
   const longest = { ...receipt, at: Date.now() + 60_000, exit };
@@ -2316,7 +2372,7 @@ it("preserves exit5 when the refusal packet cannot be written", () => {
 });
 
 /** Every maximal optional context field beside a connected daemon response. */
-const maximalResponse = (line?: string, chargedBytes?: number) => {
+const maximalResponse = (line?: string, chargedBytes?: number, o1?: number) => {
   const longest = { ...receipt, at: Date.now() + 60_000, exit: 999 };
   const d = daemon({
     chargedBytes,
@@ -2343,6 +2399,7 @@ const maximalResponse = (line?: string, chargedBytes?: number) => {
       idle_env_version: 1,
       idle_env: "unparsed",
       os1: 4,
+      o1,
     },
     closeReceipt: { ...longest, action: "close", close_all: false },
   });
@@ -2390,4 +2447,14 @@ it("drops the refusal code first, before the declaration or any existing field, 
   expect(JSON.parse(maximalResponse(line, 545 - full + refusalBytes))).toEqual(
     rest,
   );
+});
+
+it("drops the OPEN informational-token code first, before the refusal code or any existing field", () => {
+  const line = '{"id":"PRIVATE","success":true}';
+  const complete = maximalResponse(line, undefined, 3);
+  expectPacketBudgets(complete);
+  expect(JSON.parse(complete)).toMatchObject({ o1: 3, r1: [1, 2], os1: 4 });
+  // One byte over the cap drops only o1; r1 and every existing field remain.
+  const justOver = maximalResponse(line, 545 - Buffer.byteLength(complete), 3);
+  expect(JSON.parse(justOver)).toEqual(JSON.parse(maximalResponse(line)));
 });

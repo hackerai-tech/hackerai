@@ -292,6 +292,14 @@ def record_wrapper(phase, status=None, executed=False):
             # displacing fields at the reader's 512-byte cap.
             if socket_at_return is not None and len(json.dumps(dict(value, os1=socket_at_return))) <= 512:
                 opened = dict(value, os1=socket_at_return)
+            # Exact informational tokens anywhere in this normalized invocation,
+            # which pinned CLIs scan before daemon startup: 1 help, 2 version.
+            # A declaration only, not the CLI's effective result or daemon state.
+            # Appended last and omitted rather than displacing any field at the cap.
+            tokens = sys.argv[1:]
+            informational = (1 if '--help' in tokens or '-h' in tokens else 0) + (2 if '--version' in tokens or '-V' in tokens else 0)
+            if len(json.dumps(dict(opened, o1=informational))) <= 512:
+                opened = dict(opened, o1=informational)
             write_receipt('open-receipt.json', opened)
         elif action == 'close':
             write_receipt('close-receipt.json', value)

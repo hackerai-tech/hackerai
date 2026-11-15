@@ -66,6 +66,15 @@ export const BROWSER_OPEN_SOCKET_RETURN_STATUSES = [
   "unreadable",
 ] as const;
 
+// Wire code o1 is the index (bit1 help, bit2 version). Exact informational tokens
+// declared in that same OPEN's arguments; not its effective CLI result or daemon state.
+export const BROWSER_OPEN_INFO_FLAGS = [
+  "none",
+  "help",
+  "version",
+  "help_and_version",
+] as const;
+
 // Wire code k1 is the index. The latest wrapped command's declared first verb
 // token category; not its execution, the daemon's active command or a cause.
 export const BROWSER_WRAPPER_COMMAND_CLASSES = [
@@ -329,6 +338,8 @@ function wrapperReceipt() {
       result.p1 = daemonProcess();
       // Recorded with this same OPEN's return; older writers omit it.
       if (Number.isInteger(open.os1) && open.os1 >= 0 && open.os1 <= 4) result.os1 = open.os1;
+      // That OPEN's declared help(1)/version(2) tokens; not its effective result.
+      if (Number.isInteger(open.o1) && open.o1 >= 0 && open.o1 <= 3) result.o1 = open.o1;
       const declared = daemonVersionFile();
       if (declared) result.dv = declared;
     }
@@ -426,6 +437,7 @@ function finish(code, value) {
     if (cli) value = { ...value, cv: cli };
     // Optional codes never displace existing context at the parser cap; the
     // newest is dropped first.
+    if (value?.o1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.o1;
     if (value?.r1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.r1;
     if (value?.dv !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.dv;
     if (value?.k1 !== undefined && Buffer.byteLength(JSON.stringify(value)) > 544) delete value.k1;
