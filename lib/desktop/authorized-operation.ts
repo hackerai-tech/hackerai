@@ -1,5 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import {
+  createAuthorizationDiagnostic,
+  readAuthorizationDiagnostic,
+  type AuthorizationDiagnostic,
+} from "@/lib/desktop/authorization-diagnostics";
 
 const OPERATION_TTL_SECONDS = 90;
 const KEY_PREFIX = "desktop:authorized-operation:";
@@ -8,6 +13,8 @@ export type AuthorizedDesktopOperation = {
   userId: string;
   connectionId: string;
   digest: string;
+  /** Optional correlation only; never part of authorization validity. */
+  diagnostic?: AuthorizationDiagnostic;
 };
 
 function canonicalJson(value: unknown): string {
@@ -44,12 +51,15 @@ export async function authorizeDesktopOperation(
   const redis = createRedisClient();
   if (!redis) throw new Error("Desktop operation authorization is unavailable");
   const id = randomBytes(32).toString("hex");
+  const digest = desktopOperationDigest(payload);
+  const diagnostic = createAuthorizationDiagnostic(payload);
   await redis.set(
     `${KEY_PREFIX}${id}`,
     {
       userId,
       connectionId,
-      digest: desktopOperationDigest(payload),
+      digest,
+      ...(diagnostic ? { diagnostic } : {}),
     } satisfies AuthorizedDesktopOperation,
     { ex: OPERATION_TTL_SECONDS },
   );
@@ -63,7 +73,7 @@ export async function redeemDesktopOperation(
   if (!/^[a-f0-9]{64}$/.test(id)) return null;
   const redis = createRedisClient();
   if (!redis) return null;
-  const operation = await redis.getdel<AuthorizedDesktopOperation>(
+  const operation = await redis.getdel<Record<string, unknown>>(
     `${KEY_PREFIX}${id}`,
   );
   if (
@@ -75,5 +85,11 @@ export async function redeemDesktopOperation(
   ) {
     return null;
   }
-  return operation;
+  const diagnostic = readAuthorizationDiagnostic(operation);
+  return {
+    userId: operation.userId,
+    connectionId: operation.connectionId,
+    digest: operation.digest,
+    ...(diagnostic ? { diagnostic } : {}),
+  };
 }
