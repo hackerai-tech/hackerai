@@ -150,6 +150,166 @@ describe("receiver diagnostics", () => {
     });
   });
 
+  const idleState = () => ({
+    sequence: -1,
+    terminalReceived: false,
+    cancelRequested: false,
+    dispatched: false,
+  });
+  const intentKeys = [
+    "request_intent_version",
+    "request_background",
+    "request_timeout_ms",
+  ];
+
+  it.each([
+    [false, 30_000],
+    [true, 120_000],
+    [false, 1],
+    [true, Number.MAX_SAFE_INTEGER],
+  ])(
+    "records requested background=%s timeout=%s on the first started event only",
+    (requestedBackground, requestedTimeoutMs) => {
+      jest.useFakeTimers();
+      try {
+        const log = jest.spyOn(console, "info").mockImplementation(() => {});
+        const diagnostics = createReceiverDiagnostics(
+          {
+            enabled: true,
+            commandId: "id",
+            requestedBackground,
+            requestedTimeoutMs,
+          },
+          idleState,
+        );
+        diagnostics.start();
+        diagnostics.start();
+        diagnostics.transition("subscribing");
+        diagnostics.subscribed(false);
+        jest.advanceTimersByTime(10_000);
+        diagnostics.dispatchUncertain("publish_timeout");
+        diagnostics.terminal("exit");
+        diagnostics.cursorResult(false, 0, true);
+        diagnostics.finish("terminal_ack_published");
+        const records = log.mock.calls.map(([value]) => JSON.parse(value));
+        expect(records[0]).toMatchObject({
+          phase: "started",
+          request_intent_version: 1,
+          request_background: requestedBackground,
+          request_timeout_ms: requestedTimeoutMs,
+        });
+        expect(records.map((record) => record.phase)).toEqual([
+          "started",
+          "started",
+          "subscribing",
+          "subscribed",
+          "command_wait",
+          "dispatch_uncertain",
+          "terminal_received",
+          "cleanup",
+        ]);
+        // A repeated start is not a first started record.
+        for (const record of records.slice(1))
+          for (const key of intentKeys) expect(record).not.toHaveProperty(key);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ["legacy context", {}],
+    ["missing background", { requestedTimeoutMs: 30_000 }],
+    ["missing timeout", { requestedBackground: false }],
+    [
+      "string background",
+      { requestedBackground: "true", requestedTimeoutMs: 1 },
+    ],
+    ["numeric background", { requestedBackground: 1, requestedTimeoutMs: 1 }],
+    ["NaN timeout", { requestedBackground: true, requestedTimeoutMs: NaN }],
+    [
+      "infinite timeout",
+      { requestedBackground: true, requestedTimeoutMs: Infinity },
+    ],
+    [
+      "fractional timeout",
+      { requestedBackground: true, requestedTimeoutMs: 1.5 },
+    ],
+    ["zero timeout", { requestedBackground: false, requestedTimeoutMs: 0 }],
+    [
+      "negative timeout",
+      { requestedBackground: false, requestedTimeoutMs: -1 },
+    ],
+    [
+      "unsafe timeout",
+      {
+        requestedBackground: false,
+        requestedTimeoutMs: Number.MAX_SAFE_INTEGER + 1,
+      },
+    ],
+    [
+      "string timeout",
+      { requestedBackground: false, requestedTimeoutMs: "30000" },
+    ],
+  ])("omits the whole request intent group for %s", (_name, request) => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const diagnostics = createReceiverDiagnostics(
+      { enabled: true, commandId: "id", ...(request as object) },
+      idleState,
+    );
+    diagnostics.start();
+    diagnostics.finish("deadline");
+    const records = log.mock.calls.map(([value]) => JSON.parse(value));
+    expect(records.map((record) => record.phase)).toEqual([
+      "started",
+      "cleanup",
+    ]);
+    for (const record of records)
+      for (const key of intentKeys) expect(record).not.toHaveProperty(key);
+  });
+
+  it("keeps lifecycle logs when reading a request field throws", () => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const context = { enabled: true, commandId: "id", requestedTimeoutMs: 1 };
+    Object.defineProperty(context, "requestedBackground", {
+      enumerable: true,
+      get() {
+        throw new Error("PRIVATE_GETTER");
+      },
+    });
+    const diagnostics = createReceiverDiagnostics(
+      context as typeof context & { requestedBackground: boolean },
+      idleState,
+    );
+    expect(() => {
+      diagnostics.start();
+      diagnostics.finish("deadline");
+    }).not.toThrow();
+    const records = log.mock.calls.map(([value]) => JSON.parse(value));
+    expect(records.map((record) => record.phase)).toEqual([
+      "started",
+      "cleanup",
+    ]);
+    for (const key of intentKeys) expect(records[0]).not.toHaveProperty(key);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_GETTER");
+  });
+
+  it("does not emit request intent when receiver logs are disabled", () => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const diagnostics = createReceiverDiagnostics(
+      {
+        enabled: false,
+        commandId: "id",
+        requestedBackground: true,
+        requestedTimeoutMs: 30_000,
+      },
+      idleState,
+    );
+    diagnostics.start();
+    diagnostics.finish("deadline");
+    expect(log).not.toHaveBeenCalled();
+  });
+
   it("does not emit for legacy transports and tolerates a failing log sink", () => {
     const log = jest.spyOn(console, "info").mockImplementation(() => {
       throw new Error("sink down");

@@ -33,10 +33,40 @@ export type DispatchUncertainReason =
  * Bound transition logs independently of retries; always retain final counters.
  */
 export function createReceiverDiagnostics(
-  context: { commandId: string; triggerRunId?: string; enabled: boolean },
+  context: {
+    commandId: string;
+    triggerRunId?: string;
+    enabled: boolean;
+    /** What the server asked Desktop to do; not the native lifetime or receipt. */
+    requestedBackground?: boolean;
+    /** Requested execution budget, excluding any receiver delivery allowance. */
+    requestedTimeoutMs?: number;
+  },
   state: () => ReceiverState,
 ) {
   const started = Date.now();
+  let startRecorded = false;
+  // Closed group: omitted entirely unless both requested values are valid.
+  const requestIntent = () => {
+    try {
+      const background: unknown = context.requestedBackground;
+      const timeoutMs: unknown = context.requestedTimeoutMs;
+      if (
+        typeof background !== "boolean" ||
+        typeof timeoutMs !== "number" ||
+        !Number.isSafeInteger(timeoutMs) ||
+        timeoutMs <= 0
+      )
+        return {};
+      return {
+        request_intent_version: 1,
+        request_background: background,
+        request_timeout_ms: timeoutMs,
+      };
+    } catch {
+      return {};
+    }
+  };
   let transitions = 0;
   let suppressed = 0;
   let closed = false;
@@ -101,7 +131,9 @@ export function createReceiverDiagnostics(
   };
   return {
     start() {
-      emit("started");
+      const first = !startRecorded;
+      startRecorded = true;
+      emit("started", first && context.enabled ? requestIntent() : {});
       if (context.enabled && !closed && !waitTimer) {
         // One passive snapshot before a web request's platform deadline.
         waitTimer = setTimeout(() => {

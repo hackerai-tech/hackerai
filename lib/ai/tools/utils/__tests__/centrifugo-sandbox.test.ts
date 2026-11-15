@@ -639,6 +639,148 @@ describe("CentrifugoSandbox", () => {
     expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["foreground", { background: false, timeoutMs: 45_000 }, false, 45_000],
+    ["background", { background: true, timeoutMs: 120_000 }, true, 120_000],
+    ["default", {}, false, 30_000],
+  ] as const)(
+    "records the %s Desktop request intent on its started event only",
+    async (_name, request, background, timeoutMs) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const stdout = jest.fn();
+      const pending = sandbox.commands.run("PRIVATE_COMMAND", {
+        ...request,
+        onStdout: stdout,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = mockSubscriptions[1];
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      const dispatched = control.publish.mock.calls[0][0];
+      // The diagnostic must describe exactly what was dispatched to Desktop.
+      expect(dispatched).toMatchObject({
+        type: "command",
+        commandId: FIXED_UUID,
+        timeout: timeoutMs,
+        outputProtocol: "ack-v1",
+      });
+      expect(dispatched.background === true).toBe(background);
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: FIXED_UUID },
+      });
+      const sender = new AcknowledgedCommandOutput(
+        FIXED_UUID,
+        Date.now() + 5000,
+        async (frame) => {
+          reply.emit("publication", { data: frame });
+        },
+        () => true,
+      );
+      reply.publish.mockImplementation(async (message) => {
+        if (message.type === "command_output_ack")
+          sender.acknowledge(message.sequence);
+      });
+      sender.append({ type: "stdout", data: "done" });
+      sender.append({ type: "exit", exitCode: 0 });
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(pending).resolves.toMatchObject({
+        stdout: "done",
+        exitCode: 0,
+      });
+      await expect(sender.delivered).resolves.toBeUndefined();
+      expect(stdout.mock.calls).toEqual([["done"]]);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+
+      const records = receiverRecords();
+      const intent = {
+        request_intent_version: 1,
+        request_background: background,
+        request_timeout_ms: timeoutMs,
+      };
+      expect(records[0]).toEqual(
+        expect.objectContaining({
+          phase: "started",
+          command_id: FIXED_UUID,
+          ...intent,
+        }),
+      );
+      expect(records.length).toBeGreaterThan(1);
+      for (const record of records.slice(1)) {
+        for (const key of Object.keys(intent))
+          expect(record).not.toHaveProperty(key);
+      }
+      expect(records.at(-1)).toMatchObject({
+        phase: "cleanup",
+        reason: "terminal_ack_published",
+        terminal_received: true,
+      });
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_COMMAND");
+    },
+  );
+
+  it.each([
+    ["CLI operation channel", false, true],
+    ["legacy Desktop channel", true, false],
+  ] as const)(
+    "emits no receiver request intent for a %s command",
+    async (_name, isDesktop, operationChannels) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop,
+          capabilities: { commands: true, operationChannels },
+        },
+        defaultConfig,
+      );
+      const pending = sandbox.commands.run("once", {
+        background: true,
+        timeoutMs: 120_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const control = operationChannels ? mockSubscriptions[1] : reply;
+      expect(control.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          timeout: 120_000,
+          background: true,
+        }),
+      );
+      if (operationChannels)
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+      reply.emit("publication", {
+        data: { type: "stdout", commandId: FIXED_UUID, data: "done" },
+      });
+      reply.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(pending).resolves.toMatchObject({
+        stdout: "done",
+        exitCode: 0,
+      });
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      expect(receiverRecords()).toEqual([]);
+    },
+  );
+
   it("does not report a terminal ACK for an unsequenced exit after ACK output", async () => {
     const sandbox = new CentrifugoSandbox(
       "user-1",
