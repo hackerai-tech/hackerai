@@ -79,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-native-test-executable
-          path: packages/desktop/src-tauri/target/debug/deps/hackerai_desktop_lib-*.exe
+          path: packages/desktop/src-tauri/target/debug/**/hackerai_desktop_lib-*.exe
           if-no-files-found: error
           retention-days: 7
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
