@@ -31,6 +31,7 @@ jest.mock("next/server", () => {
   };
 });
 
+import { ConvexError } from "convex/values";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { ChatSDKError } from "@/lib/errors";
 
@@ -152,6 +153,156 @@ describe("handleAgentRouteError", () => {
       error_name: "object",
       error_message: JSON.stringify(error),
       error_code: "trigger_unavailable",
+    });
+  });
+});
+
+describe("Agent start goal reconciliation failures", () => {
+  let error: jest.SpyInstance;
+  beforeEach(() => {
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    error.mockRestore();
+  });
+
+  const reconciliationFields = [
+    "goal_reconciliation_diagnostic_version",
+    "goal_reconciliation_step",
+    "goal_reconciliation_failure_kind",
+    "goal_reconciliation_convex_request_id",
+  ];
+  const suspended = () =>
+    Object.assign(
+      new ConvexError("[Request ID: ABCDEF0123456789] Server Error"),
+      {
+        data: {
+          code: "CHAT_ACCESS_SUSPENDED",
+          message: "PRIVATE_SUSPENSION_MESSAGE",
+          suspensionCategory: "PRIVATE_CATEGORY",
+        },
+      },
+    );
+  const fail = async (
+    failure: unknown,
+    {
+      endpoint = "/api/agent",
+      action = "start",
+      context = {},
+    }: {
+      endpoint?: string;
+      action?: Parameters<typeof handleAgentRouteError>[0]["action"];
+      context?: Record<string, unknown>;
+    } = {},
+  ) => {
+    const response = handleAgentRouteError({
+      error: failure,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "Failed to start agent run",
+      context: context as any,
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: "Failed to start agent run",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    return JSON.parse(String(error.mock.calls[0][0]));
+  };
+
+  test.each(["/api/agent", "/api/agent-long"])(
+    "adds the finite reconcile step, kind and backend join on %s",
+    async (endpoint) => {
+      const fields = await fail(suspended(), {
+        endpoint,
+        context: {
+          stage: "reconcile_goal",
+          goalReconciliationStep: "finish_goal",
+        },
+      });
+      expect(fields).toMatchObject({
+        event: "agent_route_failed",
+        endpoint,
+        action: "start",
+        stage: "reconcile_goal",
+        goal_reconciliation_diagnostic_version: 1,
+        goal_reconciliation_step: "finish_goal",
+        goal_reconciliation_failure_kind: "chat_access_suspended",
+        goal_reconciliation_convex_request_id: "abcdef0123456789",
+      });
+      // Structured Convex data stays out of the existing error event.
+      expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    },
+  );
+
+  test.each([
+    ["a later start stage", {}, { stage: "persist_user_message" }],
+    ["a non-start action", { action: "resume" }, { stage: "reconcile_goal" }],
+    [
+      "another endpoint",
+      { endpoint: "/api/chat" },
+      { stage: "reconcile_goal" },
+    ],
+  ] as const)("leaves %s unchanged", async (_label, options, context) => {
+    const fields = await fail(suspended(), {
+      ...options,
+      context: { ...context, goalReconciliationStep: "finish_goal" },
+    });
+    for (const key of reconciliationFields)
+      expect(fields).not.toHaveProperty(key);
+  });
+
+  const stepAccessor = jest.fn(() => "finish_goal");
+  test.each([
+    ["absent", {}],
+    ["outside the closed set", { goalReconciliationStep: "PRIVATE_STEP" }],
+    [
+      "an accessor",
+      Object.defineProperty({}, "goalReconciliationStep", {
+        get: stepAccessor,
+        enumerable: false,
+      }),
+    ],
+  ])("reports a step that is %s as unknown", async (_label, marker) => {
+    const context = Object.defineProperties(
+      { stage: "reconcile_goal" },
+      Object.getOwnPropertyDescriptors(marker),
+    );
+    const fields = await fail(new TypeError("fetch failed"), { context });
+    expect(fields).toMatchObject({
+      goal_reconciliation_step: "unknown",
+      goal_reconciliation_failure_kind: "type_error",
+      goal_reconciliation_convex_request_id: "none",
+    });
+    expect(stepAccessor).not.toHaveBeenCalled();
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  });
+
+  test("keeps the original 500 when the error cannot be inspected", async () => {
+    const dataGetter = jest.fn(() => "Goal chat unavailable");
+    const accessor = new Error("[Request ID: abcdef0123456789]");
+    Object.defineProperty(accessor, "data", { get: dataGetter });
+    const hostile = new Proxy(new Error("synthetic"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("PRIVATE_TRAP");
+      },
+    });
+    const context = {
+      stage: "reconcile_goal",
+      goalReconciliationStep: "get_goal",
+    };
+    expect(await fail(accessor, { context })).toMatchObject({
+      goal_reconciliation_failure_kind: "other_error",
+      goal_reconciliation_convex_request_id: "abcdef0123456789",
+    });
+    expect(dataGetter).not.toHaveBeenCalled();
+    error.mockClear();
+    expect(await fail(hostile, { context })).toMatchObject({
+      goal_reconciliation_step: "get_goal",
+      goal_reconciliation_failure_kind: "unreadable_error",
+      goal_reconciliation_convex_request_id: "none",
     });
   });
 });

@@ -3,6 +3,7 @@ import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
 import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import type { GoalReconciliationStep } from "@/lib/goals/reconciliation-diagnostics";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
 import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
@@ -660,6 +661,7 @@ export const createAgentTriggerPost = ({
       | undefined;
     // Observational only: names the existing guard callsite still in progress.
     let guardBoundary: AgentStartGuardBoundary | undefined;
+    let goalReconciliationStep: GoalReconciliationStep | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -864,8 +866,12 @@ export const createAgentTriggerPost = ({
       }
       stage = "reconcile_goal";
       const existingGoal = existingChat
-        ? await reconcileGoal(chatId, userId)
+        ? await reconcileGoal(chatId, userId, (step) => {
+            goalReconciliationStep = step;
+          })
         : null;
+      // Later local guards did not fail inside a reconciliation step.
+      goalReconciliationStep = undefined;
       if (
         !goalRequest &&
         existingGoal &&
@@ -1376,6 +1382,7 @@ export const createAgentTriggerPost = ({
           stage,
           initialPersistenceStep,
           guardBoundary,
+          goalReconciliationStep,
         },
       });
     } finally {

@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
+import { ConvexError } from "convex/values";
 import { ChatSDKError } from "@/lib/errors";
 
 class MockResponse {
@@ -46,9 +54,11 @@ const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
 const mockGoalMutation = jest.fn<any>();
+const mockGoalQuery = jest.fn<any>();
+const mockRetrieveRun = jest.fn<any>();
 const mockReconcileGoal = jest.fn<any>().mockResolvedValue(null);
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ mutation: mockGoalMutation }),
+  getConvexClient: () => ({ mutation: mockGoalMutation, query: mockGoalQuery }),
 }));
 jest.mock("@/lib/goals/server", () => ({
   goalServiceKey: () => "synthetic",
@@ -83,6 +93,7 @@ jest.mock("next/server", () => ({
 jest.mock("@trigger.dev/sdk", () => ({
   auth: { createPublicToken: mockCreatePublicToken },
   idempotencyKeys: { create: jest.fn() },
+  runs: { retrieve: mockRetrieveRun },
   sessions: { start: jest.fn() },
   tasks: { trigger: mockTriggerTask },
 }));
@@ -2203,4 +2214,168 @@ describe("goal reservations on oversized dispatch", () => {
       expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("goal reconciliation failures at Agent start", () => {
+  const { sessions } = require("@trigger.dev/sdk");
+  const { getChatById, getUserCustomization } = require("@/lib/db/actions");
+  const originalKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  let warn: ReturnType<typeof jest.spyOn>;
+  let error: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CONVEX_SERVICE_ROLE_KEY = "synthetic-reconcile-key";
+    getChatById
+      .mockReset()
+      .mockResolvedValue({ id: "chat-1", user_id: "user-1" });
+    getUserCustomization.mockResolvedValue(null);
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-1",
+      subscription: "pro",
+    });
+    mockGoalQuery
+      .mockReset()
+      .mockResolvedValue({ activeRunId: "run-1", state: "running" });
+    mockRetrieveRun.mockReset().mockResolvedValue({
+      status: "FAILED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    });
+    mockGoalMutation.mockReset();
+    mockTriggerTask.mockReset();
+    // Exercise the actual reconciliation with only its I/O faked.
+    mockReconcileGoal.mockImplementationOnce(
+      jest.requireActual<typeof import("@/lib/goals/server")>(
+        "@/lib/goals/server",
+      ).reconcileGoal,
+    );
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+    mockReconcileGoal.mockReset().mockResolvedValue(null);
+    if (originalKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = originalKey;
+  });
+
+  const start = (endpoint: string) =>
+    createAgentTriggerPost({ endpoint: endpoint as any })({
+      headers: new Headers(),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "chat-1",
+        sandboxPreference: "desktop",
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "private-prompt-canary" }],
+          },
+        ],
+      }),
+    } as any);
+
+  it.each([
+    ["/api/agent", "get_goal", "goal_chat_unavailable"],
+    ["/api/agent-long", "finish_goal", "chat_access_suspended"],
+  ] as const)(
+    "adds the finite %s %s failure to the existing 500 without admitting the run",
+    async (endpoint, step, kind) => {
+      const failure = Object.assign(
+        new ConvexError("[Request ID: ABCDEF0123456789] Server Error"),
+        {
+          data:
+            step === "get_goal"
+              ? "Goal chat unavailable"
+              : {
+                  code: "CHAT_ACCESS_SUSPENDED",
+                  message: "suspension-data-canary",
+                },
+        },
+      );
+      if (step === "get_goal") mockGoalQuery.mockRejectedValueOnce(failure);
+      else mockGoalMutation.mockRejectedValueOnce(failure);
+      const response = await start(endpoint);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        code: "bad_request:api",
+        message: "Something went wrong. Please try again later.",
+        cause: "Failed to start agent run",
+      });
+      expect(error).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(error.mock.calls[0][0] as string);
+      expect(diagnostic).toMatchObject({
+        event: "agent_route_failed",
+        endpoint,
+        action: "start",
+        stage: "reconcile_goal",
+        goal_reconciliation_diagnostic_version: 1,
+        goal_reconciliation_step: step,
+        goal_reconciliation_failure_kind: kind,
+        goal_reconciliation_convex_request_id: "abcdef0123456789",
+      });
+      expect(JSON.stringify(error.mock.calls)).not.toContain("canary");
+      expect(warn).not.toHaveBeenCalled();
+      // The failed read or settlement is not retried or followed by recovery.
+      expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+      expect(mockRetrieveRun).toHaveBeenCalledTimes(
+        step === "get_goal" ? 0 : 1,
+      );
+      expect(mockGoalMutation).toHaveBeenCalledTimes(
+        step === "get_goal" ? 0 : 1,
+      );
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not attribute a later dispatch failure to completed reconciliation", async () => {
+    mockGoalQuery.mockResolvedValueOnce({ state: "paused" });
+    mockTriggerTask.mockRejectedValueOnce(new Error("queue unavailable"));
+    expect((await start("/api/agent")).status).toBe(500);
+    expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+    expect(mockTriggerTask).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(error.mock.calls[0][0] as string);
+    expect(diagnostic.stage).toBe("tasks.trigger");
+    for (const key of Object.keys(diagnostic))
+      expect(key).not.toMatch(/^goal_reconciliation_/);
+  });
+
+  it("does not attribute a local guard failure after reconciliation returns to its last step", async () => {
+    // The actual reconcileGoal returns this goal; the route's own guard read fails.
+    mockGoalQuery.mockResolvedValueOnce(
+      Object.defineProperty({}, "state", {
+        get() {
+          throw new Error("synthetic post-reconcile failure");
+        },
+      }),
+    );
+    const response = await start("/api/agent");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: "Failed to start agent run",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(error.mock.calls[0][0] as string)).toMatchObject({
+      event: "agent_route_failed",
+      stage: "reconcile_goal",
+      goal_reconciliation_diagnostic_version: 1,
+      goal_reconciliation_step: "unknown",
+      goal_reconciliation_failure_kind: "other_error",
+      goal_reconciliation_convex_request_id: "none",
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+    expect(mockRetrieveRun).not.toHaveBeenCalled();
+    expect(mockGoalMutation).not.toHaveBeenCalled();
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    expect(mockTriggerTask).not.toHaveBeenCalled();
+  });
 });

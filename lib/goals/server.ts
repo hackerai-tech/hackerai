@@ -7,6 +7,7 @@ import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
 import type { GoalJudgment } from "./contracts";
+import type { GoalReconciliationStep } from "./reconciliation-diagnostics";
 type GoalExecutionContext = {
   chatId: string;
   userId: string;
@@ -125,9 +126,23 @@ export async function finishGoalRun(
 }
 
 /** Reconcile only a recorded, owned run. Unknown/provider failures never authorize a restart. */
-export async function reconcileGoal(chatId: string, userId: string) {
+export async function reconcileGoal(
+  chatId: string,
+  userId: string,
+  onStep?: (step: GoalReconciliationStep) => void,
+) {
+  // Diagnostics name the step in progress; they cannot alter reconciliation.
+  const enter = (step: GoalReconciliationStep) => {
+    try {
+      onStep?.(step);
+    } catch {
+      // An observer failure must not replace the domain result or error.
+    }
+  };
+  enter("get_goal");
   const goal = await getGoal(chatId, userId);
   if (!goal?.activeRunId) return goal;
+  enter("retrieve_run");
   const { runs } = await import("@trigger.dev/sdk");
   const run = await runs.retrieve(goal.activeRunId);
   const metadata = run.metadata as Record<string, unknown> | undefined;
@@ -148,6 +163,7 @@ export async function reconcileGoal(chatId: string, userId: string) {
     ].includes(run.status)
   )
     return goal;
+  enter("finish_goal");
   const settled = await getConvexClient().mutation(api.agentGoals.finish, {
     serviceKey: goalServiceKey(),
     chatId,
@@ -157,6 +173,7 @@ export async function reconcileGoal(chatId: string, userId: string) {
     failed: run.status !== "CANCELED",
     usageExhausted: false,
   });
+  enter("clear_active_run");
   const { setActiveTriggerRun } = await import("@/lib/db/actions");
   await setActiveTriggerRun({
     chatId,
@@ -165,11 +182,15 @@ export async function reconcileGoal(chatId: string, userId: string) {
     expectedRunId: goal.activeRunId,
     clearApprovalPending: true,
   });
-  if (settled)
+  if (settled) {
+    enter("capture_lifecycle");
     await captureGoalLifecycle(
       "reconciled",
       { userId, chatId, runId: goal.activeRunId },
       settled,
     );
-  return settled ?? (await getGoal(chatId, userId));
+    return settled;
+  }
+  enter("reload_goal");
+  return await getGoal(chatId, userId);
 }
