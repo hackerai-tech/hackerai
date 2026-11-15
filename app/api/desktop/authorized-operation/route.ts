@@ -1,9 +1,11 @@
 import { redeemDesktopOperation } from "@/lib/desktop/authorized-operation";
+import { recordDesktopAuthorizationDecision } from "@/lib/desktop/authorization-diagnostics";
 
 export const runtime = "nodejs";
 
 /** Native Desktop redeems an unguessable, short-lived operation once. */
 export async function POST(request: Request): Promise<Response> {
+  const handlerStartedAt = performance.now();
   if (request.headers.has("origin") || request.headers.has("sec-fetch-site")) {
     return Response.json({ error: "Native request required" }, { status: 403 });
   }
@@ -17,10 +19,16 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Invalid operation" }, { status: 400 });
   }
   try {
+    const lookupStartedAt = performance.now();
     const operation = await redeemDesktopOperation(id);
     if (!operation) {
       return Response.json({ error: "Operation unavailable" }, { status: 404 });
     }
+    recordDesktopAuthorizationDecision(
+      operation.diagnostic,
+      operation.digest === digest ? "approved" : "mismatch",
+      { handlerStartedAt, lookupStartedAt },
+    );
     if (operation.digest !== digest) {
       return Response.json({ error: "Operation mismatch" }, { status: 403 });
     }
