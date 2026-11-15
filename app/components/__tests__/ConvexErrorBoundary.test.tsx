@@ -6,7 +6,7 @@ import {
   it,
   jest,
 } from "@jest/globals";
-import type { ErrorInfo } from "react";
+import { StrictMode, type ErrorInfo } from "react";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 
@@ -18,20 +18,29 @@ jest.mock("sonner", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
   getIdentifiedAnalyticsUserId: jest.fn(),
+  getPermittedAnalyticsUserId: jest.fn(),
+  subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
 }));
 
 const { ConvexErrorBoundary } =
   require("../ConvexErrorBoundary") as typeof import("../ConvexErrorBoundary");
+const { getReactBoundaryDiagnostics, startReactBoundaryDiagnostics } =
+  require("@/lib/posthog/react-boundary-diagnostics") as typeof import("@/lib/posthog/react-boundary-diagnostics");
 const errorInfo = { componentStack: "" } as ErrorInfo;
 
 const createBoundary = () => new ConvexErrorBoundary({ children: null });
 const { toast } = jest.requireMock<typeof import("sonner")>("sonner");
-const { captureAuthenticatedEvent, getIdentifiedAnalyticsUserId } =
-  jest.requireMock<typeof import("@/lib/analytics/client")>(
-    "@/lib/analytics/client",
-  );
+const {
+  captureAuthenticatedEvent,
+  getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
+} = jest.requireMock<typeof import("@/lib/analytics/client")>(
+  "@/lib/analytics/client",
+);
 const capture = jest.mocked(captureAuthenticatedEvent);
 const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+const permitted = jest.mocked(getPermittedAnalyticsUserId);
+const OWNER = "identified-fixture-owner";
 
 const NULL_REMOVE_CHILD =
   "Cannot read properties of null (reading 'removeChild')";
@@ -45,8 +54,10 @@ describe("ConvexErrorBoundary", () => {
     capture.mockReset();
     capture.mockReturnValue(true);
     identity.mockReset();
-    identity.mockReturnValue("identified-fixture-owner");
-    jest.mocked(toast.error).mockClear();
+    identity.mockReturnValue(OWNER);
+    permitted.mockReset();
+    permitted.mockReturnValue(OWNER);
+    jest.mocked(toast.error).mockReset();
   });
 
   afterEach(() => {
@@ -389,6 +400,174 @@ describe("ConvexErrorBoundary", () => {
       expect(screen.getByText("Chat ready")).toBeInTheDocument();
       expect(capture).not.toHaveBeenCalled();
       expect(toast.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("nearby context for retained exceptions", () => {
+    let stopObserver: () => void;
+    const mountedScopes = () => {
+      const fields = getReactBoundaryDiagnostics(OWNER);
+      return {
+        chat_content: fields.hackerai_react_boundary_chat_content_mounted,
+        chat_layout: fields.hackerai_react_boundary_chat_layout_mounted,
+        unknown: fields.hackerai_react_boundary_unknown_scope_mounted,
+      };
+    };
+    const recentCatch = () => {
+      const fields = getReactBoundaryDiagnostics(OWNER);
+      return [
+        fields.hackerai_react_boundary_recent_catch_state,
+        fields.hackerai_react_boundary_recent_scope,
+      ];
+    };
+
+    beforeEach(() => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      stopObserver = startReactBoundaryDiagnostics();
+    });
+
+    afterEach(() => {
+      cleanup();
+      stopObserver();
+    });
+
+    it("tracks mounted fixed scopes from before identification through scope changes and unmount", () => {
+      stopObserver();
+      identity.mockReturnValue(null);
+      permitted.mockReturnValue(null);
+      const view = render(
+        <>
+          <ConvexErrorBoundary diagnosticScope="chat_content">
+            <p>content</p>
+          </ConvexErrorBoundary>
+          <ConvexErrorBoundary diagnosticScope="chat_layout">
+            <p>layout</p>
+          </ConvexErrorBoundary>
+        </>,
+      );
+      identity.mockReturnValue(OWNER);
+      permitted.mockReturnValue(OWNER);
+      stopObserver = startReactBoundaryDiagnostics();
+      expect(mountedScopes()).toEqual({
+        chat_content: true,
+        chat_layout: true,
+        unknown: false,
+      });
+
+      view.rerender(
+        <>
+          <ConvexErrorBoundary diagnosticScope="chat_content">
+            <p>content</p>
+          </ConvexErrorBoundary>
+          <ConvexErrorBoundary
+            diagnosticScope={"PRIVATE-scope" as "chat_layout"}
+          >
+            <p>layout</p>
+          </ConvexErrorBoundary>
+        </>,
+      );
+      expect(mountedScopes()).toEqual({
+        chat_content: true,
+        chat_layout: false,
+        unknown: true,
+      });
+
+      view.unmount();
+      expect(mountedScopes()).toEqual({
+        chat_content: false,
+        chat_layout: false,
+        unknown: false,
+      });
+    });
+
+    it("leaves no registration behind after StrictMode's remount and unmount", () => {
+      const view = render(
+        <StrictMode>
+          <ConvexErrorBoundary diagnosticScope="chat_layout">
+            <p>layout</p>
+          </ConvexErrorBoundary>
+        </StrictMode>,
+      );
+      expect(mountedScopes().chat_layout).toBe(true);
+      view.unmount();
+      expect(mountedScopes().chat_layout).toBe(false);
+    });
+
+    it("records a recent catch with the boundary's fixed scope", () => {
+      const Throw = () => {
+        throw new TypeError(NULL_REMOVE_CHILD);
+      };
+      render(
+        <ConvexErrorBoundary diagnosticScope="chat_layout">
+          <Throw />
+        </ConvexErrorBoundary>,
+      );
+      expect(recentCatch()).toEqual(["observed", "chat_layout"]);
+    });
+
+    it.each([
+      ["console.error", () => jest.mocked(console.error)],
+      ["toast.error", () => jest.mocked(toast.error)],
+    ])(
+      "records and captures before %s throws, then rethrows the original",
+      (_label, reporter) => {
+        const original = new Error("legacy reporter failure");
+        reporter().mockImplementation(() => {
+          throw original;
+        });
+        const boundary = new ConvexErrorBoundary({
+          children: null,
+          diagnosticScope: "chat_content",
+        });
+
+        let thrown: unknown;
+        try {
+          boundary.componentDidCatch(
+            new TypeError(NULL_REMOVE_CHILD),
+            errorInfo,
+          );
+        } catch (error) {
+          thrown = error;
+        }
+
+        expect(thrown).toBe(original);
+        expect(capture.mock.calls).toEqual([failureContext("chat_content")]);
+        expect(recentCatch()).toEqual(["observed", "chat_content"]);
+      },
+    );
+
+    it("neither records nor captures when the permitted owner differs", () => {
+      permitted.mockReturnValue("another-owner");
+      new ConvexErrorBoundary({
+        children: null,
+        diagnosticScope: "chat_content",
+      }).componentDidCatch(new TypeError(NULL_REMOVE_CHILD), errorInfo);
+      expect(capture).not.toHaveBeenCalled();
+      permitted.mockReturnValue(OWNER);
+      expect(recentCatch()).toEqual(["none", undefined]);
+    });
+
+    it("keeps the fallback, capture and legacy reporting when recording fails", () => {
+      // The boundary's own owner gate passes; the recorder's re-read throws.
+      identity.mockReturnValueOnce(OWNER).mockImplementationOnce(() => {
+        throw new Error("PRIVATE identity failure");
+      });
+      const Throw = () => {
+        throw new TypeError(NULL_REMOVE_CHILD);
+      };
+      render(
+        <ConvexErrorBoundary diagnosticScope="chat_content">
+          <Throw />
+        </ConvexErrorBoundary>,
+      );
+      expect(
+        screen.getByRole("heading", { name: "Something went wrong" }),
+      ).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith("Something went wrong", {
+        description: "Please try refreshing the page.",
+      });
+      expect(capture.mock.calls).toEqual([failureContext("chat_content")]);
+      expect(recentCatch()).toEqual(["none", undefined]);
     });
   });
 });
