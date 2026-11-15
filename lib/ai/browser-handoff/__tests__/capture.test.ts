@@ -632,15 +632,17 @@ it.each([
       stdout: JSON.stringify({ deadline: [1, "awaiting_response"] }),
       stderr: "PRIVATE",
     });
-    sandbox.commands.run.mockImplementation(async (command: string) => {
-      if (
-        stage === "fresh_screenshot"
-          ? command.includes('"action":"screenshot"')
-          : !command.includes('"action":"stream_status"')
-      )
-        throw error;
-      return run(command);
-    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command: string) => {
+        if (
+          stage === "fresh_screenshot"
+            ? command.includes('"action":"screenshot"')
+            : !command.includes('"action":"stream_status"')
+        )
+          throw error;
+        return run(command);
+      }),
+    );
     const observed = jest.fn();
     await expect(
       captureBrowserFrame(
@@ -677,10 +679,12 @@ it.each([
       stderr: "PRIVATE_URL",
     });
     if (failedCommand === 1)
-      sandbox.commands.run.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: JSON.stringify({ data: { port: 1234 } }),
-      });
+      sandbox.commands.run.mockResolvedValueOnce(
+        sdkHandle(async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ data: { port: 1234 } }),
+        })),
+      );
     sandbox.commands.run.mockRejectedValueOnce(error);
     const observed = jest.fn();
     await expect(
@@ -764,10 +768,12 @@ it("reports a fresh screenshot failure after the cached frame and retains cleanu
     stdout: "PRIVATE",
     stderr: "PRIVATE",
   });
-  sandbox.commands.run.mockImplementation(async (command) => {
-    if (command.includes('"action":"screenshot"')) throw error;
-    return run(command);
-  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command) => {
+      if (command.includes('"action":"screenshot"')) throw error;
+      return run(command);
+    }),
+  );
   const observed = jest.fn();
   await expect(
     captureBrowserFrame(
@@ -808,10 +814,12 @@ it.each([2, 3, 6])(
       }),
       stderr: "PRIVATE_CAPTURE_OUTPUT",
     });
-    sandbox.commands.run.mockImplementation(async (command) => {
-      if (command.includes('"action":"screenshot"')) throw error;
-      return run(command);
-    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command) => {
+        if (command.includes('"action":"screenshot"')) throw error;
+        return run(command);
+      }),
+    );
     const observed = jest.fn();
     await expect(
       captureBrowserFrame(
@@ -866,10 +874,12 @@ it.each([
     const sandbox = fixture();
     const run = sandbox.commands.run.getMockImplementation()!;
     const error = new CommandExitError({ exitCode, stdout, stderr: "PRIVATE" });
-    sandbox.commands.run.mockImplementation(async (command) => {
-      if (command.includes('"action":"screenshot"')) throw error;
-      return run(command);
-    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command) => {
+        if (command.includes('"action":"screenshot"')) throw error;
+        return run(command);
+      }),
+    );
     const observed = jest.fn();
     await expect(
       captureBrowserFrame(
@@ -910,15 +920,17 @@ it("does not invoke a fresh helper output accessor or inspect bridge output", as
       },
     );
     const error = new CommandExitError(result as any);
-    sandbox.commands.run.mockImplementation(async (command) => {
-      if (
-        freshStage
-          ? command.includes('"action":"screenshot"')
-          : !command.includes('"action":"stream_status"')
-      )
-        throw error;
-      return run(command);
-    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command) => {
+        if (
+          freshStage
+            ? command.includes('"action":"screenshot"')
+            : !command.includes('"action":"stream_status"')
+        )
+          throw error;
+        return run(command);
+      }),
+    );
     const observed = jest.fn();
     await expect(
       captureBrowserFrame(
@@ -940,29 +952,50 @@ it("does not invoke a fresh helper output accessor or inspect bridge output", as
   expect(getter).not.toHaveBeenCalled();
 });
 
+/** An e2b command handle whose wait settles once with the command outcome. */
+function sdkHandle(settle: () => Promise<unknown>) {
+  return {
+    pid: 1,
+    wait: jest.fn(settle),
+    kill: jest.fn(),
+    disconnect: jest.fn(),
+  };
+}
+
+/**
+ * Model e2b `commands.run`: a background start resolves a handle and only its
+ * wait settles with the outcome; a foreground run settles with it directly.
+ */
+function sdkRun(outcome: (command: string) => Promise<unknown>) {
+  return async (command: string, options?: { background?: boolean }) =>
+    options?.background ? sdkHandle(() => outcome(command)) : outcome(command);
+}
+
 function fixture(screenshotExitCode = 0, viewportExitCode = 0) {
   const sandbox = {
     commands: {
-      run: jest.fn(async (command: string) => {
-        if (command.includes('"action":"stream_status"'))
+      run: jest.fn(
+        sdkRun(async (command: string) => {
+          if (command.includes('"action":"stream_status"'))
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ data: { port: 1234 } }),
+            };
+          if (command.includes('"action":"screenshot"'))
+            return { exitCode: screenshotExitCode, stdout: "" };
+          if (command.includes('"action":"viewport"'))
+            return { exitCode: viewportExitCode, stdout: "" };
           return {
             exitCode: 0,
-            stdout: JSON.stringify({ data: { port: 1234 } }),
+            stdout: JSON.stringify({
+              data: cached.toString("base64"),
+              width: 800,
+              height: 600,
+              capturedAt: 0,
+            }),
           };
-        if (command.includes('"action":"screenshot"'))
-          return { exitCode: screenshotExitCode, stdout: "" };
-        if (command.includes('"action":"viewport"'))
-          return { exitCode: viewportExitCode, stdout: "" };
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            data: cached.toString("base64"),
-            width: 800,
-            height: 600,
-            capturedAt: 0,
-          }),
-        };
-      }),
+        }),
+      ),
     },
     files: {
       getInfo: jest.fn(async () => ({ size: fresh.length })),
@@ -2435,14 +2468,16 @@ function bridgeSandbox(messages: string[], throws: boolean) {
   const sandbox = fixture();
   const run = sandbox.commands.run.getMockImplementation()!;
   const thrown: unknown[] = [];
-  sandbox.commands.run.mockImplementation(async (command: string) => {
-    if (command.includes('"action":"stream_status"')) return run(command);
-    const result = runFrameBridge(command, messages);
-    if (result.exitCode === 0 || !throws) return result;
-    const error = new CommandExitError({ ...result, stderr: "PRIVATE" });
-    thrown.push(error);
-    throw error;
-  });
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (command.includes('"action":"stream_status"')) return run(command);
+      const result = runFrameBridge(command, messages);
+      if (result.exitCode === 0 || !throws) return result;
+      const error = new CommandExitError({ ...result, stderr: "PRIVATE" });
+      thrown.push(error);
+      throw error;
+    }),
+  );
   return { sandbox, thrown };
 }
 
@@ -2665,22 +2700,28 @@ function helperSandbox(
   const sandbox = fixture();
   const run = sandbox.commands.run.getMockImplementation()!;
   const thrown: unknown[] = [];
-  sandbox.commands.run.mockImplementation(async (command: string) => {
-    if (
-      !command.includes(
-        stage === "fresh_screenshot"
-          ? '"action":"screenshot"'
-          : '"action":"stream_status"',
+  sandbox.commands.run.mockImplementation(
+    sdkRun(async (command: string) => {
+      if (
+        !command.includes(
+          stage === "fresh_screenshot"
+            ? '"action":"screenshot"'
+            : '"action":"stream_status"',
+        )
       )
-    )
-      return run(command);
-    const { exitCode, stdout } = runDaemonHelper(command, line);
-    if (exitCode === 0) return { exitCode, stdout };
-    // The SDK rejects a nonzero exit with the command's result.
-    const error = new CommandExitError({ exitCode, stdout, stderr: "PRIVATE" });
-    thrown.push(error);
-    throw error;
-  });
+        return run(command);
+      const { exitCode, stdout } = runDaemonHelper(command, line);
+      if (exitCode === 0) return { exitCode, stdout };
+      // The SDK rejects a nonzero exit with the command's result.
+      const error = new CommandExitError({
+        exitCode,
+        stdout,
+        stderr: "PRIVATE",
+      });
+      thrown.push(error);
+      throw error;
+    }),
+  );
   return { sandbox, thrown };
 }
 
@@ -2850,17 +2891,19 @@ it.each([
       stdout: JSON.stringify({ r1: [1, 3] }),
       stderr: "PRIVATE",
     });
-    sandbox.commands.run.mockImplementation(async (command: string) => {
-      if (
-        stage === "fresh_screenshot"
-          ? command.includes('"action":"screenshot"')
-          : stage === "stream_status"
-            ? command.includes('"action":"stream_status"')
-            : !command.includes('"action":"stream_status"')
-      )
-        throw error;
-      return run(command);
-    });
+    sandbox.commands.run.mockImplementation(
+      sdkRun(async (command: string) => {
+        if (
+          stage === "fresh_screenshot"
+            ? command.includes('"action":"screenshot"')
+            : stage === "stream_status"
+              ? command.includes('"action":"stream_status"')
+              : !command.includes('"action":"stream_status"')
+        )
+          throw error;
+        return run(command);
+      }),
+    );
     const observed = jest.fn();
     await expect(
       captureBrowserFrame(
@@ -2942,4 +2985,317 @@ it("keeps the original exit5 rejection when the observer throws on a response re
   expect(observed).toHaveBeenCalledTimes(1);
   expect(sandbox.commands.run).toHaveBeenCalledTimes(3);
   expect(sandbox.files.remove).toHaveBeenCalledTimes(1);
+});
+
+describe("stream-status SDK start acknowledgement phase", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  const statusCommand = (requireFresh: boolean) =>
+    browserDaemonCommand(
+      location.directory,
+      "default",
+      requireFresh
+        ? { action: "stream_status" }
+        : { action: "stream_status", owned_port: true },
+    );
+  // The existing 7s command deadline; the 8s handshake stays inherited from connect.
+  const backgroundStart = { user: "root", timeoutMs: 7_000, background: true };
+  const failureBase = {
+    capture_stage: "stream_status",
+    capture_command_exit_code: "none",
+  };
+
+  /**
+   * Model e2b `run` for the status command only: `start` yields the process
+   * handle or rejects; a background run returns that handle, and a foreground
+   * run awaits the same handle's wait, as the SDK does. Other commands use the
+   * fixture.
+   */
+  function statusSandbox(start: () => Promise<ReturnType<typeof sdkHandle>>) {
+    const sandbox = fixture();
+    const run = sandbox.commands.run.getMockImplementation()!;
+    sandbox.commands.run.mockImplementation(async (command, options) => {
+      if (!command.includes('"action":"stream_status"'))
+        return run(command, options);
+      const handle = await start();
+      return options?.background ? handle : handle.wait();
+    });
+    return sandbox;
+  }
+
+  /** Queue the two monotonic reads; each entry returns a value or throws. */
+  function clock(...reads: (() => unknown)[]) {
+    const now = jest.spyOn(performance, "now");
+    for (const read of reads) now.mockImplementationOnce(read as () => number);
+    return now;
+  }
+
+  const capture = (
+    sandbox: ReturnType<typeof fixture>,
+    requireFresh: boolean,
+    observed: jest.Mock,
+  ) =>
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      requireFresh,
+      undefined,
+      observed,
+    ).catch((error: unknown) => error);
+
+  it.each([
+    [false, new TimeoutError("PRIVATE deadline_exceeded"), "timeout"],
+    [true, new TimeoutError("PRIVATE canceled"), "timeout"],
+    [
+      false,
+      new Error("PRIVATE https://private.invalid/?token=x"),
+      "other_error",
+    ],
+    [false, "PRIVATE thrown value", "thrown_value"],
+  ] as const)(
+    "reports start when the SDK returns no handle (fresh: %s, %#)",
+    async (requireFresh, error, kind) => {
+      clock(
+        () => 100,
+        () => 200,
+      );
+      const sandbox = statusSandbox(async () => {
+        throw error;
+      });
+      const observed = jest.fn();
+      expect(await capture(sandbox, requireFresh, observed)).toBe(error);
+      expect(observed.mock.calls).toEqual([
+        [
+          {
+            ...failureBase,
+            capture_error_kind: kind,
+            capture_sdk_command_diagnostic_version: 1,
+            capture_sdk_command_phase: "start",
+          },
+        ],
+      ]);
+      // One unchanged start request, only background added; no retry or extra call.
+      expect(sandbox.commands.run.mock.calls).toEqual([
+        [statusCommand(requireFresh), backgroundStart],
+      ]);
+      expect(JSON.stringify(observed.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  it.each([
+    [0, "lt1s"],
+    [999.9, "lt1s"],
+    [1_000, "lt3s"],
+    [2_999, "lt3s"],
+    [3_000, "lt6s"],
+    [5_999.5, "lt6s"],
+    [6_000, "gte6s"],
+    [7_950, "gte6s"],
+  ] as const)(
+    "reports wait with a closed %sms start-acknowledgement bucket",
+    async (latency, bucket) => {
+      clock(
+        () => 5_000,
+        () => 5_000 + latency,
+      );
+      const error = new TimeoutError("PRIVATE deadline_exceeded");
+      const handle = sdkHandle(async () => {
+        throw error;
+      });
+      const sandbox = statusSandbox(async () => handle);
+      const observed = jest.fn();
+      expect(await capture(sandbox, false, observed)).toBe(error);
+      expect(observed.mock.calls).toEqual([
+        [
+          {
+            ...failureBase,
+            capture_error_kind: "timeout",
+            capture_sdk_command_diagnostic_version: 1,
+            capture_sdk_command_phase: "wait",
+            capture_sdk_start_ack_latency: bucket,
+          },
+        ],
+      ]);
+      // Same handle, awaited once with no fresh timeout, signal or request.
+      expect(handle.wait).toHaveBeenCalledTimes(1);
+      expect(handle.wait).toHaveBeenCalledWith();
+      expect(handle.kill).not.toHaveBeenCalled();
+      expect(handle.disconnect).not.toHaveBeenCalled();
+      expect(sandbox.commands.run.mock.calls).toEqual([
+        [statusCommand(false), backgroundStart],
+      ]);
+    },
+  );
+
+  it.each([
+    [
+      "an unreadable start clock",
+      () => {
+        throw new Error("PRIVATE clock");
+      },
+      () => 1_000,
+    ],
+    [
+      "an unreadable acknowledgement clock",
+      () => 1_000,
+      () => {
+        throw new Error("PRIVATE clock");
+      },
+    ],
+    ["a NaN acknowledgement", () => 1_000, () => NaN],
+    ["an infinite acknowledgement", () => 1_000, () => Infinity],
+    ["an infinite start", () => -Infinity, () => 1_000],
+    ["a backwards clock", () => 2_000, () => 1_999],
+    ["a non-number reading", () => 1_000, () => "2000"],
+    ["a missing reading", () => 1_000, () => undefined],
+  ])(
+    "omits the whole wait group for %s while preserving the rejection",
+    async (_case, startRead, ackRead) => {
+      clock(startRead, ackRead);
+      const error = new TimeoutError("PRIVATE deadline_exceeded");
+      const handle = sdkHandle(async () => {
+        throw error;
+      });
+      const sandbox = statusSandbox(async () => handle);
+      const observed = jest.fn();
+      expect(await capture(sandbox, false, observed)).toBe(error);
+      expect(observed.mock.calls).toEqual([
+        [{ ...failureBase, capture_error_kind: "timeout" }],
+      ]);
+      expect(handle.wait).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps a start phase without reading any acknowledgement time", async () => {
+    clock(() => {
+      throw new Error("PRIVATE clock");
+    });
+    const error = new TimeoutError("PRIVATE");
+    const sandbox = statusSandbox(async () => {
+      throw error;
+    });
+    const observed = jest.fn();
+    expect(await capture(sandbox, false, observed)).toBe(error);
+    expect(observed.mock.calls[0][0]).toEqual({
+      ...failureBase,
+      capture_error_kind: "timeout",
+      capture_sdk_command_diagnostic_version: 1,
+      capture_sdk_command_phase: "start",
+    });
+  });
+
+  it("captures unchanged through one background start and its wait", async () => {
+    clock(
+      () => {
+        throw new Error("PRIVATE clock");
+      },
+      () => NaN,
+    );
+    const handle = sdkHandle(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ data: { port: 1234 } }),
+    }));
+    const sandbox = statusSandbox(async () => handle);
+    const observed = jest.fn();
+    const result = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      undefined,
+      observed,
+    );
+    expect(result).toEqual({
+      image: `data:image/jpeg;base64,${cached.toString("base64")}`,
+      width: 800,
+      height: 600,
+      capturedAt: 0,
+      browserSessionName: "default",
+    });
+    expect(observed).not.toHaveBeenCalled();
+    expect(handle.wait).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run.mock.calls).toEqual([
+      [statusCommand(false), backgroundStart],
+      [browserBridgeCommand(1234, "frame"), { user: "root", timeoutMs: 8_000 }],
+    ]);
+  });
+
+  it("keeps a waited command exit's existing context without a phase group", async () => {
+    clock(
+      () => 0,
+      () => 10,
+    );
+    const error = new CommandExitError({
+      exitCode: 3,
+      stdout: JSON.stringify({ deadline: [1, "awaiting_response"] }),
+      stderr: "PRIVATE",
+    });
+    const handle = sdkHandle(async () => {
+      throw error;
+    });
+    const sandbox = statusSandbox(async () => handle);
+    const observed = jest.fn();
+    expect(await capture(sandbox, false, observed)).toBe(error);
+    expect(observed.mock.calls).toEqual([
+      [
+        {
+          capture_stage: "stream_status",
+          capture_error_kind: "command_exit",
+          capture_command_exit_code: 3,
+          capture_deadline_diagnostic_version: 1,
+          capture_deadline_phase: "awaiting_response",
+        },
+      ],
+    ]);
+  });
+
+  it("adds no phase to a returned nonzero exit that the SDK did not reject", async () => {
+    clock(
+      () => 0,
+      () => 10,
+    );
+    const sandbox = statusSandbox(async () =>
+      sdkHandle(async () => ({ exitCode: 2, stdout: "PRIVATE" })),
+    );
+    const observed = jest.fn();
+    expect(await capture(sandbox, false, observed)).toEqual(
+      new BrowserPreviewUnavailable("closed"),
+    );
+    expect(observed.mock.calls).toEqual([
+      [{ ...failureBase, capture_error_kind: "preview_unavailable" }],
+    ]);
+  });
+
+  it("keeps the original wait rejection when the observer throws", async () => {
+    clock(
+      () => 0,
+      () => 10,
+    );
+    const error = new TimeoutError("PRIVATE");
+    const handle = sdkHandle(async () => {
+      throw error;
+    });
+    const sandbox = statusSandbox(async () => handle);
+    const observed = jest.fn(() => {
+      throw new Error("PRIVATE observer");
+    });
+    expect(await capture(sandbox, false, observed)).toBe(error);
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(handle.wait).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps non-capture stream-port lookups on the original foreground run", async () => {
+    const now = jest.spyOn(performance, "now");
+    const sandbox = fixture();
+    await expect(
+      getPrivateStreamPort(sandbox as unknown as Sandbox, location, "default"),
+    ).resolves.toBe(1234);
+    expect(sandbox.commands.run.mock.calls).toEqual([
+      [statusCommand(true), { user: "root", timeoutMs: 7_000 }],
+    ]);
+    expect(now).not.toHaveBeenCalled();
+  });
 });
