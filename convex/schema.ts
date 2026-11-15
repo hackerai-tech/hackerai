@@ -1376,6 +1376,12 @@ export default defineSchema({
     create_attempts: v.number(),
     release_reason: v.optional(v.string()),
     consumed_after_release: v.optional(v.boolean()),
+    // Set once on a released hold when a retry of an attempt that resolved to
+    // it creates or joins a replacement. Every attempt mapped to this hold
+    // follows the link, so a lost response recovers the replacement.
+    replacement_reservation_id: v.optional(
+      v.id("extra_usage_bundle_reservations"),
+    ),
     // Never updated: bounds replay of the Stripe idempotency key (~24h).
     created_at: v.number(),
     updated_at: v.number(),

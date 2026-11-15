@@ -153,6 +153,57 @@ const fromReservation = (
   cap,
 });
 
+type Reservation = Doc<"extra_usage_bundle_reservations">;
+
+/**
+ * Bound work per retry even after many Stripe-confirmed releases. An attempt
+ * beyond this limit needs reconciliation rather than risking a new purchase.
+ */
+const MAX_REPLACEMENT_HOPS = 25;
+
+/**
+ * Follow a hold's replacement links to the reservation its attempts now
+ * resolve to: the first row that is not released (a paid-after-release row
+ * stays authoritative), or a released row no retry has replaced yet.
+ */
+async function resolveReplacement(
+  ctx: MutationCtx,
+  start: Reservation,
+): Promise<
+  | { ok: true; row: Reservation }
+  | { ok: false; reason: string; reservationId: string }
+> {
+  const visited = new Set<string>([start._id]);
+  let row = start;
+  while (row.status === "released" && row.replacement_reservation_id) {
+    const nextId = row.replacement_reservation_id;
+    if (visited.has(nextId))
+      return { ok: false, reason: "replacement_cycle", reservationId: row._id };
+    if (visited.size > MAX_REPLACEMENT_HOPS)
+      return {
+        ok: false,
+        reason: "replacement_chain_too_long",
+        reservationId: row._id,
+      };
+    const next = await ctx.db.get(nextId);
+    if (!next)
+      return {
+        ok: false,
+        reason: "replacement_missing",
+        reservationId: row._id,
+      };
+    if (next.user_id !== start.user_id || next.bundle_id !== start.bundle_id)
+      return {
+        ok: false,
+        reason: "replacement_mismatch",
+        reservationId: row._id,
+      };
+    visited.add(next._id);
+    row = next;
+  }
+  return { ok: true, row };
+}
+
 /**
  * Atomically hold allowance before Stripe is called. Each user has at most one
  * pending checkout per offer per period: a retry, or a new attempt for the same
@@ -202,12 +253,51 @@ export const reserveBundle = internalMutation({
       .unique();
     if (mapping && mapping.bundle_id !== bundle.id)
       return { status: "attempt_conflict" as const };
-    const mapped = mapping ? await ctx.db.get(mapping.reservation_id) : null;
-    let live = mapped && mapped.status !== "released" ? mapped : null;
+
+    // A lineage that cannot be resolved may hide a paid replacement, so it
+    // never falls back to a new checkout.
+    const lineageInvalid = async (reason: string, reservationId: string) => {
+      convexLogger.error("extra_usage_bundle_attempt_lineage_invalid", {
+        user_id: args.userId,
+        checkout_attempt_id: args.checkoutAttemptId,
+        bundle_id: bundle.id,
+        reservation_id: reservationId,
+        reason,
+        remediation:
+          "Inspect replacement_reservation_id links from this reservation; repair the link to the attempt's actual replacement before the user retries.",
+      });
+      return {
+        status: "unavailable" as const,
+        cap: toSnapshot(await readBundleCapUsage(ctx, args.userId, now)),
+      };
+    };
+
+    // Released holds this attempt resolves to that no retry has replaced yet.
+    // A replacement this call creates or joins is linked from them.
+    const unreplaced: Reservation[] = [];
+    let live: Reservation | null = null;
+
+    if (mapping) {
+      const mapped = await ctx.db.get(mapping.reservation_id);
+      if (
+        !mapped ||
+        mapped.user_id !== args.userId ||
+        mapped.bundle_id !== bundle.id
+      )
+        return await lineageInvalid(
+          "mapped_reservation_invalid",
+          mapping.reservation_id,
+        );
+      const resolved = await resolveReplacement(ctx, mapped);
+      if (!resolved.ok)
+        return await lineageInvalid(resolved.reason, resolved.reservationId);
+      if (resolved.row.status === "released") unreplaced.push(resolved.row);
+      else live = resolved.row;
+    }
 
     // Reservations created before attempt mappings existed: a new row is only
     // inserted for an attempt without a pending row, so its newest row is the
-    // only one that can still be live.
+    // only one that can still be live, directly or through its replacements.
     if (!live) {
       const newestForAttempt = await ctx.db
         .query("extra_usage_bundle_reservations")
@@ -218,18 +308,34 @@ export const reserveBundle = internalMutation({
         )
         .order("desc")
         .first();
-      // Replaying an already-paid attempt must recover that purchase, never
-      // allocate a second checkout. A genuinely new purchase has a new attempt.
-      live =
-        newestForAttempt && newestForAttempt.status !== "released"
-          ? newestForAttempt
-          : null;
-      if (live && live.bundle_id !== bundle.id)
-        return { status: "attempt_conflict" as const };
+      if (newestForAttempt && newestForAttempt.bundle_id !== bundle.id) {
+        if (newestForAttempt.status !== "released")
+          return { status: "attempt_conflict" as const };
+      } else if (newestForAttempt) {
+        // Replaying an already-paid attempt must recover that purchase, never
+        // allocate a second checkout. A new purchase has a new attempt.
+        const resolved = await resolveReplacement(ctx, newestForAttempt);
+        if (!resolved.ok)
+          return await lineageInvalid(resolved.reason, resolved.reservationId);
+        if (resolved.row.status !== "released") live = resolved.row;
+        else if (!unreplaced.some((row) => row._id === resolved.row._id))
+          unreplaced.push(resolved.row);
+      }
     }
+    const linkReplacement = async (
+      reservationId: Id<"extra_usage_bundle_reservations">,
+    ) => {
+      for (const row of unreplaced) {
+        await ctx.db.patch(row._id, {
+          replacement_reservation_id: reservationId,
+          updated_at: now,
+        });
+      }
+    };
     const mapAttempt = async (
       reservationId: Id<"extra_usage_bundle_reservations">,
     ) => {
+      await linkReplacement(reservationId);
       if (!mapping) {
         await ctx.db.insert("extra_usage_bundle_attempts", {
           user_id: args.userId,

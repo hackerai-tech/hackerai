@@ -519,6 +519,176 @@ describe("monthly discounted bundle cap", () => {
     expect(tables.extra_usage_bundle_attempts).toHaveLength(2);
   });
 
+  it("recovers a paid replacement for every attempt that shared its expired checkout, across months", async () => {
+    now = Date.UTC(2026, 10, 30, 23);
+    const { buy, pay, tables } = await createHarness();
+    const original = await buy("usage-1000-v1", "attempt-A");
+    await buy("usage-1000-v1", "attempt-B");
+
+    // After the UTC rollover the shared checkout expires and B replaces it.
+    now = Date.UTC(2026, 11, 1, 1);
+    stripeSessions.get(original.checkoutSessionId).status = "expired";
+    const replacement = await buy("usage-1000-v1", "attempt-B");
+    expect(replacement.checkoutSessionId).not.toBe(original.checkoutSessionId);
+    await pay(replacement);
+    mockSessionCreate.mockClear();
+
+    // A's response was lost: its retry recovers B's paid replacement.
+    const recovered = {
+      url: `https://hackerai.co/api/extra-usage/confirm?session_id=${replacement.checkoutSessionId}`,
+      checkoutSessionId: replacement.checkoutSessionId,
+    };
+    expect(await buy("usage-1000-v1", "attempt-A")).toMatchObject(recovered);
+    now = Date.UTC(2027, 0, 3);
+    expect(await buy("usage-1000-v1", "attempt-A")).toMatchObject(recovered);
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(reservations(tables)).toHaveLength(2);
+
+    // A genuinely new purchase is still allowed.
+    const fresh = await buy("usage-1000-v1", "attempt-C");
+    expect(fresh.url).toBe(stripeSessions.get(fresh.checkoutSessionId).url);
+    expect(mockSessionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps all old attempts attached when a retry joins another pending checkout", async () => {
+    const { buy, pay, tables } = await createHarness();
+    const original = await buy("usage-1000-v1", "attempt-A");
+    await buy("usage-1000-v1", "attempt-B");
+    stripeSessions.get(original.checkoutSessionId).status = "expired";
+    const replacement = await buy("usage-1000-v1", "attempt-C");
+    expect(await buy("usage-1000-v1", "attempt-B")).toMatchObject({
+      checkoutSessionId: replacement.checkoutSessionId,
+    });
+    await pay(replacement);
+    mockSessionCreate.mockClear();
+    expect(await buy("usage-1000-v1", "attempt-A")).toMatchObject({
+      checkoutSessionId: replacement.checkoutSessionId,
+    });
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(reservations(tables)).toHaveLength(2);
+  });
+
+  it("follows repeated replacements for mapped and pre-mapping attempts", async () => {
+    const { buy, pay, tables } = await createHarness();
+    const original = await buy("usage-1000-v1", "attempt-A");
+    await buy("usage-1000-v1", "attempt-B");
+    await buy("usage-1000-v1", "attempt-C");
+
+    stripeSessions.get(original.checkoutSessionId).status = "expired";
+    const second = await buy("usage-1000-v1", "attempt-B");
+    stripeSessions.get(second.checkoutSessionId).status = "expired";
+    // C still maps to the first hold; its retry replaces the second one.
+    const third = await buy("usage-1000-v1", "attempt-C");
+    expect(
+      new Set([
+        original.checkoutSessionId,
+        second.checkoutSessionId,
+        third.checkoutSessionId,
+      ]).size,
+    ).toBe(3);
+    await pay(third);
+    mockSessionCreate.mockClear();
+
+    // A reservation created before attempt mappings existed resolves by its
+    // own attempt ID and follows the same lineage.
+    tables.extra_usage_bundle_attempts =
+      tables.extra_usage_bundle_attempts.filter(
+        (row) => row.checkout_attempt_id !== "attempt-A",
+      );
+    for (const attempt of ["attempt-A", "attempt-B", "attempt-C"]) {
+      expect(await buy("usage-1000-v1", attempt)).toMatchObject({
+        checkoutSessionId: third.checkoutSessionId,
+      });
+    }
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(reservations(tables)).toHaveLength(3);
+  });
+
+  it.each([
+    [
+      "a missing replacement",
+      [{ replacement_reservation_id: "reservation:missing" }],
+      false,
+    ],
+    [
+      "a replacement cycle",
+      [
+        { replacement_reservation_id: "reservation:lineage-1" },
+        {
+          checkout_attempt_id: "attempt-other",
+          replacement_reservation_id: "reservation:lineage-0",
+        },
+      ],
+      false,
+    ],
+    [
+      "a replacement for another offer",
+      [
+        { replacement_reservation_id: "reservation:lineage-1" },
+        {
+          checkout_attempt_id: "attempt-other",
+          bundle_id: "usage-50-v1",
+          status: "consumed",
+          stripe_checkout_session_id: "cs_other_offer",
+        },
+      ],
+      true,
+    ],
+    ["a mapping to a missing reservation", [], true],
+  ])(
+    "fails closed on %s instead of starting a new checkout",
+    async (_label, overrides, mapped) => {
+      const rows = overrides.map((fields, index): Row => ({
+        _id: `reservation:lineage-${index}`,
+        user_id: USER,
+        period_month: "2026-11",
+        policy_version: "bundle-cap-v1",
+        checkout_attempt_id: "attempt-A",
+        bundle_id: "usage-250-v1",
+        credit_dollars: 250,
+        paid_dollars: 200,
+        status: "released",
+        release_reason: "stripe_session_expired",
+        stripe_customer_id: "cus_personal",
+        application_origin: "https://hackerai.co",
+        create_attempts: 1,
+        created_at: NOV_15 - HOUR,
+        updated_at: NOV_15 - HOUR,
+        ...fields,
+      }));
+      const { convexLogger } = await import("../lib/logger");
+      const { buy, tables } = await createHarness({
+        extra_usage_bundle_reservations: rows,
+        extra_usage_bundle_attempts: mapped
+          ? [
+              {
+                _id: "attempt:A",
+                user_id: USER,
+                checkout_attempt_id: "attempt-A",
+                bundle_id: "usage-250-v1",
+                reservation_id: rows[0]?._id ?? "reservation:missing",
+                created_at: NOV_15 - HOUR,
+                updated_at: NOV_15 - HOUR,
+              },
+            ]
+          : [],
+      });
+
+      expect(await buy("usage-250-v1", "attempt-A")).toMatchObject({
+        url: null,
+        errorCode: "bundle_cap_unavailable",
+      });
+      expect(mockSessionCreate).not.toHaveBeenCalled();
+      expect(reservations(tables)).toHaveLength(rows.length);
+      expect(convexLogger.error).toHaveBeenCalledWith(
+        "extra_usage_bundle_attempt_lineage_invalid",
+        expect.objectContaining({ user_id: USER }),
+      );
+      // A new attempt is unaffected by the broken lineage.
+      expect((await buy("usage-250-v1", "attempt-new")).url).toBeTruthy();
+    },
+  );
+
   it("keeps a pending hold resumable at zero allowance, then restarts it once Stripe expires it", async () => {
     const { buy, pay, status, tables } = await createHarness();
     await pay(await buy("usage-1000-v1", "attempt-paid"));
