@@ -8,6 +8,7 @@ import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-prog
 import { buildSandboxCommandOptions } from "@/lib/ai/tools/utils/sandbox-command-options";
 import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
+  BROWSER_BRIDGE_CLOSED_EXIT,
   browserBridgeCommand,
   browserBridgeFailureContext,
   type BrowserBridgeFailureContext,
@@ -232,6 +233,15 @@ function ownResultValue(result: unknown, key: "exitCode" | "stdout") {
   if (descriptor && !("value" in descriptor))
     throw new TypeError("Unreadable command result");
   return descriptor?.value as unknown;
+}
+
+/** Only an own numeric exit counts; accessors or unreadable results never do. */
+function bridgeReportedClosed(result: unknown) {
+  try {
+    return ownResultValue(result, "exitCode") === BROWSER_BRIDGE_CLOSED_EXIT;
+  } catch {
+    return false;
+  }
 }
 
 /** Record only this stop invocation's bounded receipt; never throws. */
@@ -750,7 +760,9 @@ export async function captureBrowserFrame(
     );
     if (result.exitCode !== 0) {
       returnedBridgeFailure = result;
-      throw new BrowserPreviewUnavailable("disconnected");
+      throw new BrowserPreviewUnavailable(
+        bridgeReportedClosed(result) ? "closed" : "disconnected",
+      );
     }
     let frame: {
       data: string;
@@ -1285,6 +1297,19 @@ export async function captureBrowserFrame(
         /* Observers cannot change capture behavior. */
       }
     }
+    // The observer above keeps the SDK's exit; callers get the closed state.
+    let closed = false;
+    try {
+      closed =
+        stage === "frame_bridge" &&
+        error instanceof CommandExitError &&
+        bridgeReportedClosed(
+          Object.getOwnPropertyDescriptor(error, "result")?.value,
+        );
+    } catch {
+      /* An unreadable SDK error keeps its original rejection. */
+    }
+    if (closed) throw new BrowserPreviewUnavailable("closed");
     throw error;
   }
 }

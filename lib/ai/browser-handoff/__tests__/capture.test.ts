@@ -16,6 +16,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { RELAY_RENEW_FAILURE_CODES } from "../relay-program";
 import {
+  BROWSER_BRIDGE_PROGRAM,
+  browserBridgeCommand,
+} from "../bridge-program";
+import {
   BROWSER_DAEMON_PROGRAM,
   BROWSER_DAEMON_RESPONSE_VALIDATIONS,
   browserDaemonCommand,
@@ -2388,6 +2392,212 @@ it.each([true, false])(
     expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
   },
 );
+
+/**
+ * Execute the real frame bridge against a stream that sends these messages,
+ * then let its watchdog expire. Returns the first exit and its stdout.
+ */
+function runFrameBridge(command: string, messages: string[]) {
+  expect(command).toBe(browserBridgeCommand(1234, "frame"));
+  const listeners = new Map<string, (value?: unknown) => void>();
+  const timers = new Map<number, () => void>();
+  let nextTimer = 0;
+  let stdout = "";
+  let exitCode: number | undefined;
+  runInNewContext(BROWSER_BRIDGE_PROGRAM, {
+    WebSocket: class {
+      addEventListener(name: string, listener: (value?: unknown) => void) {
+        listeners.set(name, listener);
+      }
+      close() {}
+    },
+    process: {
+      argv: ["node", "1234", "frame"],
+      stdout: { write: (text: string) => (stdout += text) },
+      exit: (code: number) => {
+        exitCode ??= code;
+      },
+    },
+    setTimeout: (callback: () => void) => {
+      timers.set(++nextTimer, callback);
+      return nextTimer;
+    },
+    clearTimeout: (id: number) => timers.delete(id),
+  });
+  listeners.get("open")!();
+  for (const data of messages) listeners.get("message")!({ data });
+  for (const callback of timers.values()) callback();
+  return { exitCode: exitCode!, stdout };
+}
+
+/** A non-fresh preview whose owned-port lookup carries no connected claim. */
+function bridgeSandbox(messages: string[], throws: boolean) {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const thrown: unknown[] = [];
+  sandbox.commands.run.mockImplementation(async (command: string) => {
+    if (command.includes('"action":"stream_status"')) return run(command);
+    const result = runFrameBridge(command, messages);
+    if (result.exitCode === 0 || !throws) return result;
+    const error = new CommandExitError({ ...result, stderr: "PRIVATE" });
+    thrown.push(error);
+    throw error;
+  });
+  return { sandbox, thrown };
+}
+
+const daemonStatus = (connected: unknown, screencasting: unknown) =>
+  JSON.stringify({
+    type: "status",
+    connected,
+    screencasting,
+    url: "PRIVATE_URL",
+  });
+const daemonFrame = JSON.stringify({
+  type: "frame",
+  data: cached.toString("base64"),
+  metadata: { deviceWidth: 800, deviceHeight: 600, timestamp: 1 },
+});
+
+describe.each([true, false])(
+  "non-fresh preview over the owned stream port (SDK throws: %s)",
+  (throws) => {
+    it.each([
+      ["no attached browser", [daemonStatus(false, false)]],
+      [
+        "no attached browser before a frame",
+        [daemonStatus(false, false), daemonFrame],
+      ],
+    ])(
+      "answers closed promptly when the daemon reports %s",
+      async (_case, messages) => {
+        const { sandbox } = bridgeSandbox(messages, throws);
+        const observe = jest.fn();
+        const failure = await captureBrowserFrame(
+          sandbox as unknown as Sandbox,
+          location,
+          "default",
+          false,
+          undefined,
+          observe,
+        ).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(BrowserPreviewUnavailable);
+        expect((failure as BrowserPreviewUnavailable).state).toBe("closed");
+        // The shortcut lookup omits connected, so only the bridge can see it.
+        expect(sandbox.commands.run.mock.calls[0][0]).toContain(
+          '"owned_port":true',
+        );
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        expect(observe).toHaveBeenCalledTimes(1);
+        expect(observe.mock.calls[0][0]).toMatchObject({
+          capture_stage: "frame_bridge",
+          capture_error_kind: throws ? "command_exit" : "preview_unavailable",
+          capture_command_exit_code: throws ? 7 : "none",
+        });
+        expect(JSON.stringify(observe.mock.calls)).not.toContain("PRIVATE");
+      },
+    );
+
+    it("keeps a connected claim without a frame on the disconnected watchdog", async () => {
+      const { sandbox, thrown } = bridgeSandbox(
+        [daemonStatus(true, false)],
+        throws,
+      );
+      const observe = jest.fn();
+      const failure = await captureBrowserFrame(
+        sandbox as unknown as Sandbox,
+        location,
+        "default",
+        false,
+        undefined,
+        observe,
+      ).catch((error: unknown) => error);
+      if (throws) expect(failure).toBe(thrown[0]);
+      else
+        expect(failure).toEqual(new BrowserPreviewUnavailable("disconnected"));
+      expect(observe.mock.calls[0][0]).toMatchObject({
+        capture_command_exit_code: throws ? 3 : "none",
+        capture_bridge_diagnostic_version: 5,
+        capture_bridge_failure: "deadline",
+        capture_bridge_status_message_connected: "true",
+        capture_bridge_status_message_screencasting: "false",
+      });
+    });
+
+    it("returns the frame after a connected claim", async () => {
+      const { sandbox } = bridgeSandbox(
+        [daemonStatus(true, true), daemonFrame],
+        throws,
+      );
+      await expect(
+        captureBrowserFrame(sandbox as unknown as Sandbox, location, "default"),
+      ).resolves.toMatchObject({
+        image: `data:image/jpeg;base64,${cached.toString("base64")}`,
+        width: 800,
+        height: 600,
+        capturedAt: 1,
+      });
+    });
+  },
+);
+
+it("trusts only an own numeric bridge exit 7 as closed", async () => {
+  const getter = jest.fn(() => 7);
+  const sdkResult = Object.defineProperty(
+    { stdout: "", stderr: "PRIVATE" },
+    "exitCode",
+    { get: getter, enumerable: true },
+  );
+  const thrown = new CommandExitError(sdkResult as never);
+  // The existing nonzero check reads this one; classification must not trust it.
+  const returned = Object.defineProperty({ stdout: "" }, "exitCode", {
+    get: () => 7,
+  });
+  const cases: [unknown, "throws" | "returns"][] = [
+    [thrown, "throws"],
+    [new CommandExitError({ exitCode: "7", stdout: "" } as never), "throws"],
+    [returned, "returns"],
+    [{ exitCode: 8, stdout: "" }, "returns"],
+  ];
+  for (const [outcome, kind] of cases) {
+    const sandbox = fixture();
+    if (kind === "throws") sandbox.commands.run.mockRejectedValueOnce(outcome);
+    else sandbox.commands.run.mockResolvedValueOnce(outcome as never);
+    const failure = await captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      false,
+      1234,
+    ).catch((error: unknown) => error);
+    if (kind === "throws") expect(failure).toBe(outcome);
+    else expect(failure).toEqual(new BrowserPreviewUnavailable("disconnected"));
+  }
+  expect(getter).not.toHaveBeenCalled();
+});
+
+it("keeps exit 7 from other capture stages unclassified", async () => {
+  const sandbox = fixture();
+  const run = sandbox.commands.run.getMockImplementation()!;
+  const original = new CommandExitError({
+    exitCode: 7,
+    stdout: "",
+    stderr: "PRIVATE",
+  });
+  sandbox.commands.run.mockImplementation(async (command: string) => {
+    if (command.includes('"action":"screenshot"')) throw original;
+    return run(command);
+  });
+  await expect(
+    captureBrowserFrame(
+      sandbox as unknown as Sandbox,
+      location,
+      "default",
+      true,
+      1234,
+    ),
+  ).rejects.toBe(original);
+});
 
 /**
  * Execute the real daemon helper from a sandbox command against an owned socket
