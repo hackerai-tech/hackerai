@@ -1,4 +1,9 @@
-import { localScheduleExecution } from "./scheduleValidators";
+import { localScheduleExecution, scheduleOrigin } from "./scheduleValidators";
+import { verifyScheduleOrigin } from "./lib/scheduleFindings";
+import {
+  deleteScheduleObservationsForChatBatch,
+  deleteScheduleObservationsForFindingBatch,
+} from "./lib/scheduleFindingObservations";
 import {
   createChatHistoryAccess,
   deleteChatHistoryAccess,
@@ -317,6 +322,13 @@ async function deleteFindingsForChatBatch(
     0,
     DELETE_ALL_CHATS_FINDING_BATCH_SIZE,
   )) {
+    // Remove a scheduled finding's run records before the finding itself. If
+    // some remain, keep the finding so the next batch can find them.
+    if (
+      finding.schedule_id &&
+      (await deleteScheduleObservationsForFindingBatch(ctx, finding.finding_id))
+    )
+      return true;
     await ctx.db.delete(finding._id);
   }
 
@@ -423,7 +435,8 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     (await deleteFindingHuntsForChatBatch(ctx, chat.user_id, chat.id)) ||
     (await deleteFindingAgentRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
     (await deleteFindingRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
-    (await deleteFindingsForChatBatch(ctx, chat))
+    (await deleteFindingsForChatBatch(ctx, chat)) ||
+    (await deleteScheduleObservationsForChatBatch(ctx, chat.user_id, chat.id))
   ) {
     await scheduleDeleteChatDocumentBatch(ctx, chat.id, chat.user_id);
     return;
@@ -510,7 +523,8 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
     (await deleteFindingHuntsForChatBatch(ctx, chat.user_id, chat.id)) ||
     (await deleteFindingAgentRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
     (await deleteFindingRetestsForChatBatch(ctx, chat.user_id, chat.id)) ||
-    (await deleteFindingsForChatBatch(ctx, chat))
+    (await deleteFindingsForChatBatch(ctx, chat)) ||
+    (await deleteScheduleObservationsForChatBatch(ctx, chat.user_id, chat.id))
   ) {
     await scheduleDeleteAllChatsBatch(ctx, userId);
     return true;
@@ -648,6 +662,7 @@ export const getChatByIdFromClient = query({
         objective_checkpoint: _privateObjectiveCheckpoint,
         active_agent_user_wait: activeUserWait,
         next_actions: _privateNextActions,
+        schedule_origin: _privateScheduleOrigin,
 
         ...chatPublic
       } = chat;
@@ -773,6 +788,7 @@ export const getChatById = query({
         codex_thread_id: _legacy,
         objective_checkpoint: _privateObjectiveCheckpoint,
         next_actions: _privateNextActions,
+        schedule_origin: _privateScheduleOrigin,
         ...chatPublic
       } = chat;
       return chatPublic;
@@ -795,6 +811,8 @@ export const saveChat = mutation({
     projectId: v.optional(v.string()),
     sandboxType: v.optional(v.string()),
     scheduledLocalExecution: v.optional(localScheduleExecution),
+    // Supplied only by the scheduler worker; no HTTP route forwards it.
+    scheduleOrigin: v.optional(scheduleOrigin),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -861,6 +879,21 @@ export const saveChat = mutation({
         }
       }
 
+      // Provenance is written once, here. An existing task returned above
+      // never gains or changes it.
+      let verifiedOrigin: Doc<"chats">["schedule_origin"];
+      if (args.scheduleOrigin) {
+        const insertStage = failureStage;
+        failureStage = "verify_schedule_origin";
+        verifiedOrigin =
+          (await verifyScheduleOrigin(ctx, {
+            chatId: args.id,
+            userId: args.userId,
+            origin: args.scheduleOrigin,
+          })) ?? undefined;
+        failureStage = insertStage;
+      }
+
       const chatId = await ctx.db.insert("chats", {
         id: args.id,
         title: args.title,
@@ -870,6 +903,7 @@ export const saveChat = mutation({
         ...(args.scheduledLocalExecution
           ? { scheduled_local_execution: args.scheduledLocalExecution }
           : {}),
+        ...(verifiedOrigin ? { schedule_origin: verifiedOrigin } : {}),
         update_time: Date.now(),
       });
 
@@ -886,7 +920,8 @@ export const saveChat = mutation({
         getConvexErrorCode(causeData) === "CHAT_UNAUTHORIZED" ||
         getConvexErrorCode(causeData) === "ACCOUNT_DELETION_IN_PROGRESS" ||
         getConvexErrorCode(causeData) === "PROJECT_NOT_FOUND" ||
-        getConvexErrorCode(causeData) === "PROJECT_ACCESS_DENIED"
+        getConvexErrorCode(causeData) === "PROJECT_ACCESS_DENIED" ||
+        getConvexErrorCode(causeData) === "SCHEDULE_ORIGIN_MISMATCH"
       ) {
         throw error;
       }
@@ -1275,6 +1310,7 @@ export const getUserChats = query({
           {
             objective_checkpoint: _privateObjectiveCheckpoint,
             next_actions: _privateNextActions,
+            schedule_origin: _privateScheduleOrigin,
             active_agent_user_wait: privateUserWait,
             ...chat
           },

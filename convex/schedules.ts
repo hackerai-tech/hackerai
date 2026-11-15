@@ -10,6 +10,7 @@ import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { scheduleDefinition, scheduleRunStatus } from "./scheduleValidators";
+import { countScheduleFindings } from "./lib/scheduleFindings";
 import {
   MAX_SCHEDULES,
   nextScheduledTime,
@@ -85,6 +86,9 @@ export const list = query({
       enabled: v.boolean(),
       consumed: v.boolean(),
       nextRunAt: v.union(v.number(), v.null()),
+      // Saved findings from this schedule's tasks, capped; truncated means more exist.
+      findingCount: v.number(),
+      findingCountTruncated: v.boolean(),
       runs: v.array(
         v.object({
           id: v.id("schedule_runs"),
@@ -111,6 +115,7 @@ export const list = query({
         enabled: s.enabled,
         consumed: s.consumed_at !== undefined,
         nextRunAt: s.next_run_at ?? null,
+        ...(await countScheduleFindings(ctx, args.userId, s._id)),
         runs: await Promise.all(
           (
             await ctx.db

@@ -12,6 +12,7 @@ import {
 import { useConvex, useConvexAuth, usePaginatedQuery } from "convex/react";
 import {
   ArrowLeft,
+  CalendarClock,
   ChevronRight,
   Download,
   Filter,
@@ -143,6 +144,12 @@ const getStatusFilter = (value: string | null): "all" | FindingStatus =>
 const getProjectFilter = (value: string | null): string | null =>
   value ? value : null;
 
+// Arrives from a link on Schedules. The id goes to the query as text, which
+// lists nothing for one that is malformed or belongs to another account, so
+// a deleted schedule's findings stay reachable and no other id is confirmed.
+const getScheduleFilter = (value: string | null): string | null =>
+  value ? value : null;
+
 const escapeCsvCell = (value: string | number) => {
   const raw = String(value);
   const guarded = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
@@ -156,6 +163,7 @@ type FindingsUrlState = {
   category: "all" | FindingCategory;
   status: "all" | FindingStatus;
   project: string | null;
+  schedule: string | null;
   findingId: string | null;
 };
 
@@ -165,6 +173,7 @@ const readFindingsUrlState = (params: URLSearchParams): FindingsUrlState => ({
   category: getCategoryFilter(params.get("category")),
   status: getStatusFilter(params.get("status")),
   project: getProjectFilter(params.get("project")),
+  schedule: getScheduleFilter(params.get("schedule")),
   findingId: params.get("finding"),
 });
 
@@ -174,10 +183,12 @@ const getFindingsHref = ({
   category,
   status,
   project,
+  schedule,
   findingId,
 }: FindingsUrlState) => {
   const params = new URLSearchParams();
   if (project) params.set("project", project);
+  if (schedule) params.set("schedule", schedule);
   if (search) params.set("q", search);
   if (severity !== "all") params.set("severity", severity);
   if (category !== "all") params.set("category", category);
@@ -285,6 +296,9 @@ function FindingsPageContent() {
   const [project, setProject] = useState<string | null>(() =>
     getProjectFilter(searchParams.get("project")),
   );
+  const [schedule, setSchedule] = useState<string | null>(() =>
+    getScheduleFilter(searchParams.get("schedule")),
+  );
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(
     () => searchParams.get("finding"),
   );
@@ -307,6 +321,7 @@ function FindingsPageContent() {
     category,
     status,
     project,
+    schedule,
   ]);
   const [selection, setSelection] = useState<{
     scope: string;
@@ -330,6 +345,7 @@ function FindingsPageContent() {
     setCategory(state.category);
     setStatus(state.status);
     setProject(state.project);
+    setSchedule(state.schedule);
     setSelectedFindingId(state.findingId);
   }, []);
 
@@ -379,6 +395,7 @@ function FindingsPageContent() {
       category,
       status,
       project,
+      schedule,
       findingId: selectedFindingId,
       ...overrides,
     });
@@ -394,10 +411,19 @@ function FindingsPageContent() {
         category,
         status,
         project,
+        schedule,
         findingId: selectedFindingId,
       }),
     );
-  }, [category, deferredSearch, project, selectedFindingId, severity, status]);
+  }, [
+    category,
+    deferredSearch,
+    project,
+    schedule,
+    selectedFindingId,
+    severity,
+    status,
+  ]);
 
   useEffect(() => {
     if (!selectedFindingId) return;
@@ -434,6 +460,7 @@ function FindingsPageContent() {
     ...(category !== "all" ? { category } : {}),
     ...(status !== "all" ? { status } : {}),
     ...(projectIdFilter ? { projectId: projectIdFilter } : {}),
+    ...(schedule ? { scheduleId: schedule } : {}),
   };
 
   const findingsQuery = usePaginatedQuery(
@@ -450,6 +477,25 @@ function FindingsPageContent() {
       ? []
       : (findingsQuery.results ?? [])
   ) as FindingSummary[];
+  // The chip is named from the saved snapshot on a listed finding and keeps
+  // that name while a search or facet empties the list. Nothing else is
+  // fetched, so an id that lists nothing stays a plain "Schedule" label.
+  const listedSchedule = findings.find(
+    (finding) => finding.schedule?.id === schedule,
+  )?.schedule;
+  const [scheduleLabel, setScheduleLabel] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  if (
+    listedSchedule &&
+    (scheduleLabel?.id !== listedSchedule.id ||
+      scheduleLabel?.name !== listedSchedule.name)
+  ) {
+    setScheduleLabel(listedSchedule);
+  }
+  const scheduleName =
+    scheduleLabel?.id === schedule ? scheduleLabel?.name : undefined;
   const lastObservedSearch = useRef<string | null>(null);
   useEffect(() => {
     if (!isAuthenticated || findingsQuery.status === "LoadingFirstPage") return;
@@ -459,6 +505,7 @@ function FindingsPageContent() {
       category,
       status,
       project,
+      schedule,
     ]);
     if (lastObservedSearch.current === key) return;
     lastObservedSearch.current = key;
@@ -476,6 +523,7 @@ function FindingsPageContent() {
     category,
     status,
     project,
+    schedule,
     findingsQuery.status,
     findings.length,
   ]);
@@ -484,7 +532,8 @@ function FindingsPageContent() {
     severity !== "all" ||
     category !== "all" ||
     status !== "all" ||
-    project !== null;
+    project !== null ||
+    schedule !== null;
   // Search and project stay visible at every width; this counts only the
   // filters that move into the sheet when the toolbar is compact.
   const sheetFilterCount = [severity, status, category].filter(
@@ -622,6 +671,7 @@ function FindingsPageContent() {
     setCategory("all");
     setStatus("all");
     setProject(null);
+    setSchedule(null);
     updateFindingsHistory(
       getFindingsHref({
         search: "",
@@ -629,9 +679,17 @@ function FindingsPageContent() {
         category: "all",
         status: "all",
         project: null,
+        schedule: null,
         findingId: selectedFindingId,
       }),
     );
+  };
+
+  const clearSchedule = () => {
+    setSchedule(null);
+    updateFindingsHistory(getHref({ schedule: null }));
+    // The chip is gone; keep keyboard focus on the page it filtered.
+    findingsHeadingRef.current?.focus();
   };
 
   const handleExport = async () => {
@@ -945,6 +1003,42 @@ function FindingsPageContent() {
                   </SheetContent>
                 </Sheet>
               </div>
+
+              {schedule !== null ? (
+                <div className="mt-2 flex">
+                  <div
+                    role="group"
+                    aria-label="Schedule filter"
+                    className="inline-flex max-w-full min-w-0 items-center gap-2 rounded-md border border-border bg-muted/30 pl-2.5 text-[13px] leading-5"
+                  >
+                    <CalendarClock
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="shrink-0 text-muted-foreground">
+                      Schedule
+                    </span>
+                    {scheduleName ? (
+                      <span
+                        className="min-w-0 truncate font-medium text-foreground"
+                        title={scheduleName}
+                      >
+                        {scheduleName}
+                      </span>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-11 shrink-0 text-muted-foreground hover:text-foreground @min-[36rem]:size-8"
+                      onClick={clearSchedule}
+                      aria-label="Remove schedule filter"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
 
               {isProjectUnavailable ? (
                 <p

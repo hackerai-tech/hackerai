@@ -11,6 +11,7 @@ import { createAgentTriggerPost } from "@/lib/api/agent-trigger-route";
 import { reconcileScheduleRuns } from "@/lib/schedules/reconcile";
 import { phLogger } from "@/lib/posthog/server";
 import { canUseSchedules } from "@/lib/schedules/access";
+import { createScheduleOrigin } from "@/lib/schedules/provenance";
 
 export const scheduledAgentRun = schemaTask({
   schema: z.object({
@@ -224,6 +225,13 @@ export const scheduledAgentRun = schemaTask({
     const response = await createAgentTriggerPost({
       endpoint: "/api/agent",
       ...(execution ? { scheduledLocalExecution: execution } : {}),
+      // Built from the claimed receipt and the dispatched definition, so the
+      // task and its findings stay tied to this schedule and run.
+      scheduleOrigin: createScheduleOrigin({
+        scheduleId: id,
+        runId: claim.id,
+        definition: schedule.definition,
+      }),
       resolveIdentity: async () => ({
         userId: schedule.userId,
         emailVerified: true,

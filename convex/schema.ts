@@ -8,10 +8,7 @@ import {
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
-import {
-  findingRevisionValidator,
-  findingFeedbackValidator,
-} from "./findingValidators";
+import { findingFeedbackValidator } from "./findingValidators";
 import { analyticsFields } from "./lib/influencerAnalytics";
 import { defineSchema, defineTable } from "convex/server";
 import {
@@ -25,6 +22,9 @@ import {
   scheduleDefinition,
   scheduleRunStatus,
   localScheduleExecution,
+  scheduleOrigin,
+  scheduleObservation,
+  scheduledFindingRevision,
 } from "./scheduleValidators";
 import {
   abuseCaseFields,
@@ -468,6 +468,9 @@ export default defineSchema({
     // telemetry `sandbox_type`. Cloud provider selection happens per run.
     sandbox_type: v.optional(v.string()),
     scheduled_local_execution: v.optional(localScheduleExecution),
+    // Written once when the scheduler creates the task, after its receipt is
+    // checked. Ordinary tasks and tasks created before this field have none.
+    schedule_origin: v.optional(scheduleOrigin),
     selected_model: v.optional(v.string()),
     project_id: v.optional(v.id("projects")),
     // Legacy field retained on historical rows. The local-provider feature
@@ -713,7 +716,7 @@ export default defineSchema({
       ),
     ),
     confidence_rationale: v.optional(v.string()),
-    correction_history: v.optional(v.array(findingRevisionValidator)),
+    correction_history: v.optional(v.array(scheduledFindingRevision)),
     correction_count: v.optional(v.number()),
     usefulness_feedback: v.optional(findingFeedbackValidator),
     last_update: v.optional(
@@ -721,8 +724,18 @@ export default defineSchema({
         message_id: v.string(),
         tool_call_id: v.string(),
         reason: v.string(),
+        chat_id: v.optional(v.string()),
       }),
     ),
+    // Copied from the source task's schedule origin when the finding is saved.
+    // The name is a snapshot, so it stays readable after the schedule is deleted.
+    schedule_id: v.optional(v.id("agent_schedules")),
+    schedule_name: v.optional(v.string()),
+    schedule_scope_key: v.optional(v.string()),
+    // Latest runs that reported this finding, oldest first, for display. The
+    // count covers every run recorded in schedule_finding_observations.
+    schedule_observations: v.optional(v.array(scheduleObservation)),
+    schedule_observation_count: v.optional(v.number()),
     dedupe_key: v.string(),
     search_text: v.string(),
     closure_reason: v.optional(findingClosureReasonValidator),
@@ -858,6 +871,25 @@ export default defineSchema({
       "severity",
       "created_at",
     ])
+    // One range per schedule. Facets filter inside it instead of multiplying
+    // the facet indexes above.
+    .index("by_user_schedule_created", ["user_id", "schedule_id", "created_at"])
+    // Shared-finding lookups stay inside one project, so findings of other
+    // projects cannot fill their bounded reads.
+    .index("by_user_schedule_scope_project_created", [
+      "user_id",
+      "schedule_id",
+      "schedule_scope_key",
+      "project_id",
+      "created_at",
+    ])
+    .index("by_user_schedule_scope_project_dedupe", [
+      "user_id",
+      "schedule_id",
+      "schedule_scope_key",
+      "project_id",
+      "dedupe_key",
+    ])
     .searchIndex("search_findings", {
       searchField: "search_text",
       filterFields: [
@@ -867,6 +899,7 @@ export default defineSchema({
         "category",
         "severity",
         "chat_id",
+        "schedule_id",
       ],
     }),
 
@@ -878,9 +911,27 @@ export default defineSchema({
     chat_title: v.string(),
     finding_count: v.number(),
     latest_finding_at: v.number(),
+    // Set when the source task was created by a schedule, so a schedule's
+    // findings can be counted without reading the reports.
+    schedule_id: v.optional(v.id("agent_schedules")),
   })
     .index("by_user_and_latest", ["user_id", "latest_finding_at"])
-    .index("by_user_chat", ["user_id", "chat_id"]),
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_user_schedule", ["user_id", "schedule_id"]),
+
+  // One row per schedule run that reported a finding. It is the identity that
+  // counts each run once, however many runs are retained on the finding. Rows
+  // are removed with the finding, with the reporting task, and with the account.
+  schedule_finding_observations: defineTable({
+    user_id: v.string(),
+    finding_id: v.string(),
+    run_id: v.id("schedule_runs"),
+    chat_id: v.string(),
+    observed_at: v.number(),
+  })
+    .index("by_finding_and_run", ["finding_id", "run_id"])
+    // Also the owner range used by account deletion.
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
 
   // One Agent retest attempt for a finding. Provenance (message, run, stream)
   // is server-supplied; the result is the Agent's own assessment and is

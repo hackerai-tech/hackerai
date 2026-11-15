@@ -30,6 +30,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useSchedules } from "@/app/hooks/useSchedules";
 import {
   MAX_SCHEDULES,
+  formatClockTime,
   type ScheduleDefinition,
 } from "@/lib/schedules/recurrence";
 import type { AgentSchedule } from "@/lib/schedules/types";
@@ -46,7 +47,7 @@ const TEMPLATES = [
       "Summarize notable security advisories, actively exploited vulnerabilities, and CVEs from the last 24 hours using public sources. Link each source and highlight practical takeaways. Do not scan or probe any systems.",
     days: [1, 2, 3, 4, 5],
     time: "08:00",
-    label: "Weekdays · 08:00",
+    when: "Weekdays",
   },
   {
     icon: ShieldCheck,
@@ -57,7 +58,7 @@ const TEMPLATES = [
       "Create a short security maintenance checklist for an individual developer. Include dependency updates, account security, backups, and one practical learning goal. Use public sources for any current advisories. Do not access or scan external systems.",
     days: [1],
     time: "09:00",
-    label: "Mondays · 09:00",
+    when: "Mondays",
   },
   {
     icon: GraduationCap,
@@ -68,7 +69,7 @@ const TEMPLATES = [
       "Teach me one practical web security concept. Include a concise explanation, three questions with answers at the end, and one exercise for a legal local practice lab. Do not scan any external systems.",
     days: [5],
     time: "17:00",
-    label: "Fridays · 17:00",
+    when: "Fridays",
   },
 ];
 // Header and body share one column so titles and content line up. Widths
@@ -172,7 +173,7 @@ export function SchedulesPage() {
                       <Skeleton className="h-3 w-32" />
                     </div>
                     {[0, 1, 2].map((fact) => (
-                      <div key={fact} className="hidden space-y-2 @4xl:block">
+                      <div key={fact} className="hidden space-y-2 @5xl:block">
                         <Skeleton className="h-4 w-28 max-w-full" />
                         <Skeleton className="h-3 w-20" />
                       </div>
@@ -293,7 +294,7 @@ export function SchedulesPage() {
                             </span>
                           </span>
                           <span className="mt-1 block text-sm tabular-nums text-muted-foreground @xl:mt-0 @xl:w-36 @xl:shrink-0">
-                            {t.label}
+                            {t.when} · {formatClockTime(t.time)}
                           </span>
                         </span>
                         <span className="inline-flex shrink-0 items-center gap-1 text-sm font-medium">
@@ -323,7 +324,7 @@ export function SchedulesPage() {
               <div
                 aria-hidden="true"
                 className={cn(
-                  "hidden border-b pb-2.5 text-xs font-medium text-muted-foreground @4xl:grid",
+                  "hidden border-b pb-2.5 text-xs font-medium text-muted-foreground @5xl:grid",
                   SCHEDULE_COLUMNS,
                 )}
               >
@@ -364,9 +365,11 @@ export function SchedulesPage() {
             </section>
           )}
           {data && (
-            <div className="flex items-start justify-between gap-4 text-sm text-muted-foreground">
-              <details className="group min-w-0 max-w-2xl">
-                <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring @4xl:min-h-8 [&::-webkit-details-marker]:hidden">
+            // Open, the explanation takes its own line wherever the count
+            // would otherwise squeeze it, as on phones.
+            <div className="flex flex-wrap items-start justify-between gap-x-4 text-sm text-muted-foreground">
+              <details className="group min-w-0 max-w-2xl open:basis-full">
+                <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring @xl:min-h-8 [&::-webkit-details-marker]:hidden">
                   <ChevronRight
                     className="size-3.5 shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none"
                     aria-hidden="true"
@@ -377,12 +380,13 @@ export function SchedulesPage() {
                   Each run starts a new task with your instructions, and results
                   land in your task history. Cloud schedules run while you’re
                   away. Schedules on a computer need it connected; runs are
-                  skipped while it’s unavailable. Every run uses your account’s
-                  normal usage and spending limits.
+                  skipped while it’s unavailable, aren’t made up later and never
+                  move to the cloud. Every run uses your account’s normal usage
+                  and spending limits.
                 </p>
               </details>
               {data.schedules.length > 0 && (
-                <p className="flex min-h-11 shrink-0 items-center tabular-nums @4xl:min-h-8">
+                <p className="flex min-h-11 shrink-0 items-center tabular-nums @xl:min-h-8">
                   {data.schedules.length} of {MAX_SCHEDULES} schedules
                 </p>
               )}

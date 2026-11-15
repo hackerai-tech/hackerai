@@ -170,6 +170,91 @@ describe("saveChat", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  describe("schedule provenance", () => {
+    const origin = {
+      scheduleId: "schedule-1",
+      scheduleName: "Nightly scan",
+      runId: "run-1",
+      scopeKey: "a".repeat(64),
+    };
+    const receipt = {
+      _id: "run-1",
+      user_id: "user-1",
+      chat_id: "chat-1",
+      schedule_id: "schedule-1",
+    };
+    const save = async (ctx: any, scheduleOrigin: unknown = origin) => {
+      const { saveChat } = await import("../chats");
+      return saveChat.handler(ctx, { ...saveChatArgs, scheduleOrigin } as any);
+    };
+
+    it("is stored with a new task when the receipt names this owner, task and schedule", async () => {
+      const { ctx, insert, get } = makeCtx({ project: receipt });
+      await save(ctx);
+      expect(get).toHaveBeenCalledWith("run-1");
+      expect(insert).toHaveBeenCalledWith(
+        "chats",
+        expect.objectContaining({ schedule_origin: origin }),
+      );
+    });
+
+    it.each([
+      ["another owner", { receipt: { ...receipt, user_id: "other-user" } }],
+      ["another task", { receipt: { ...receipt, chat_id: "chat-2" } }],
+      [
+        "another schedule",
+        { receipt: { ...receipt, schedule_id: "schedule-2" } },
+      ],
+      [
+        "a malformed scope key",
+        { receipt, origin: { ...origin, scopeKey: "raw instructions" } },
+      ],
+    ])("is rejected for %s without creating the task", async (_label, c) => {
+      const { ctx, insert } = makeCtx({ project: c.receipt });
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      try {
+        await expect(
+          save(ctx, "origin" in c ? c.origin : origin),
+        ).rejects.toMatchObject({
+          data: expect.objectContaining({ code: "SCHEDULE_ORIGIN_MISMATCH" }),
+        });
+        expect(insert).not.toHaveBeenCalled();
+        expect(errorSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it("creates an ordinary task when the receipt was removed with its schedule", async () => {
+      const { ctx, insert } = makeCtx({ project: null });
+      await expect(save(ctx)).resolves.toBe("chat-doc-1");
+      expect(insert).toHaveBeenCalledWith("chats", {
+        id: "chat-1",
+        title: "hello",
+        user_id: "user-1",
+        update_time: expect.any(Number),
+      });
+    });
+
+    it("never changes or adds provenance on an existing task", async () => {
+      for (const existing of [undefined, { ...origin, runId: "earlier-run" }]) {
+        const { ctx, insert, patch } = makeCtx({
+          existingChat: {
+            _id: "chat-doc-1",
+            user_id: "user-1",
+            ...(existing ? { schedule_origin: existing } : {}),
+          },
+          project: receipt,
+        });
+        await expect(save(ctx)).resolves.toBe("chat-doc-1");
+        expect(insert).not.toHaveBeenCalled();
+        expect(patch).not.toHaveBeenCalled();
+      }
+    });
+  });
+
   it("rejects chat creation after account deletion starts", async () => {
     const { saveChat } = await import("../chats");
     const { ctx, insert } = makeCtx({ deletionFenced: true });

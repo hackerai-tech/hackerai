@@ -31,17 +31,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { describeTiming } from "@/lib/schedules/recurrence";
+import { describeTiming, formatNextRun } from "@/lib/schedules/recurrence";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 
-// Shared by the desktop column headers in SchedulesPage and every row; the
-// fixed action lane keeps headers aligned with rows of varying content.
+// Three tiers follow the page container, so an open sidebar is accounted for:
+// a phone stack, then name + actions above three labelled facts from @xl, then
+// the table from @5xl. Shared with the column headers in SchedulesPage; the
+// fixed next-run and action lanes keep headers aligned with every row.
 export const SCHEDULE_COLUMNS =
-  "@4xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_11rem] @4xl:gap-x-6";
-// Bordered 44px targets on phones; quiet text actions in the desktop table.
+  "@5xl:grid-cols-[minmax(0,1.2fr)_10rem_minmax(0,1fr)_minmax(0,1.4fr)_11rem] @5xl:gap-x-6";
+// Bordered 44px targets on phones; quiet text actions from the middle tier up.
 const ROW_ACTION =
-  "h-11 flex-1 border @4xl:h-8 @4xl:flex-none @4xl:border-transparent";
+  "h-11 flex-1 border @xl:h-8 @xl:flex-none @xl:border-transparent";
+const ROW_LINK =
+  "inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @xl:min-h-8";
 
 const LABELS: Record<string, string> = {
   queued: "Queued",
@@ -102,27 +106,22 @@ function formatRunTime(at: number) {
     timeStyle: "short",
   });
 }
-const sameYear = (at: number) =>
-  new Date(at).getFullYear() === new Date().getFullYear();
 // Rows show a short date; the exact time stays in the title.
 function formatRunDate(at: number) {
   return new Date(at).toLocaleDateString([], {
     month: "short",
     day: "numeric",
-    ...(sameYear(at) ? {} : { year: "numeric" }),
+    ...(new Date(at).getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
   });
 }
-// One line with the zone abbreviation, e.g. "Nov 9, 9:00 AM CST".
-function formatNextRun(at: number, timeZone?: string) {
-  return new Date(at).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-    ...(sameYear(at) ? {} : { year: "numeric" }),
-    ...(timeZone ? { timeZone } : {}),
-  });
+// Saved findings only. The count is capped by the server, never estimated.
+function findingsLabel(schedule: AgentSchedule) {
+  const count = schedule.findingCount ?? 0;
+  if (count <= 0) return null;
+  if (schedule.findingCountTruncated) return `${count}+ findings`;
+  return count === 1 ? "1 finding" : `${count} findings`;
 }
 function RunStatus({ run }: { run: ScheduleRun }) {
   return (
@@ -157,12 +156,15 @@ function RunTaskLink({
           run_status: run.status,
         })
       }
-      className={cn(
-        "inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @4xl:min-h-8",
-        className,
-      )}
+      className={cn(ROW_LINK, className)}
     >
-      {run.status === "finished" ? "Open result" : "Open task"}
+      {/* An interrupted run continues only from its task; the schedule's own
+          Resume button restarts future runs and is a different action. */}
+      {run.status === "finished"
+        ? "Open result"
+        : run.status === "interrupted"
+          ? "Resume in task"
+          : "Open task"}
       <ArrowUpRight className="size-3.5" aria-hidden="true" />
     </Link>
   );
@@ -193,18 +195,21 @@ export function ScheduleRow({
   const { name, timing, execution } = schedule.definition;
   const completed =
     !schedule.enabled && schedule.consumed && timing.type === "once";
+  const canToggle = schedule.enabled || (!completed && enabled);
+  const unavailable = computerUnavailable && Boolean(execution);
+  const findings = findingsLabel(schedule);
   const ExecutionIcon = !execution
     ? Cloud
     : isDesktopPreference(execution.preference)
       ? Monitor
       : Laptop;
   const fact =
-    "grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-3 @4xl:block";
-  const term = "text-xs text-muted-foreground @4xl:sr-only";
+    "grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-3 @xl:block";
+  const term = "text-xs text-muted-foreground @xl:mb-1 @5xl:sr-only";
   return (
     <li
       className={cn(
-        "grid grid-cols-1 gap-y-3 py-4 @4xl:items-start",
+        "grid grid-cols-1 gap-y-3 py-4 @xl:grid-cols-[minmax(0,1fr)_auto] @xl:gap-x-4 @5xl:items-start",
         SCHEDULE_COLUMNS,
       )}
     >
@@ -212,27 +217,47 @@ export function ScheduleRow({
         <h2 className="text-base font-medium break-words wrap-anywhere">
           {name}
         </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-            {schedule.enabled ? (
-              <span
-                className="size-2 rounded-full bg-foreground"
-                aria-hidden="true"
-              />
-            ) : completed ? (
-              <Check className="size-3" aria-hidden="true" />
-            ) : (
-              <Pause className="size-3 fill-current" aria-hidden="true" />
-            )}
-            {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
-          </span>
-          <span className="break-words">
-            {" · "}
-            {describeTiming(timing)}
-          </span>
-        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3">
+          <p className="min-w-0 text-sm text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+              {schedule.enabled ? (
+                <span
+                  className="size-2 rounded-full bg-foreground"
+                  aria-hidden="true"
+                />
+              ) : completed ? (
+                <Check className="size-3" aria-hidden="true" />
+              ) : (
+                <Pause className="size-3 fill-current" aria-hidden="true" />
+              )}
+              {schedule.enabled ? "Active" : completed ? "Ended" : "Paused"}
+            </span>
+            <span className="break-words">
+              {" · "}
+              {describeTiming(timing)}
+            </span>
+          </p>
+          {findings && (
+            <Link
+              href={`/findings?schedule=${encodeURIComponent(schedule.id)}`}
+              // Content-free: no schedule, target or finding details.
+              onClick={() =>
+                captureAuthenticatedEvent("agent_schedule_findings_opened")
+              }
+              aria-label={`${findings} from ${name}`}
+              // The 44px phone target overlaps only the static lines around
+              // it, so the row grows by one text line.
+              className={cn(
+                ROW_LINK,
+                "-my-3 text-sm tabular-nums @xl:my-0 @xl:min-h-7 @xl:text-[13px]",
+              )}
+            >
+              {findings}
+            </Link>
+          )}
+        </div>
       </div>
-      <dl className="grid min-w-0 gap-y-2.5 text-sm @4xl:col-span-3 @4xl:grid-cols-subgrid">
+      <dl className="grid min-w-0 gap-y-2.5 text-sm @xl:col-span-2 @xl:grid-cols-[10rem_minmax(0,1fr)_minmax(0,1.4fr)] @xl:gap-x-6 @5xl:col-span-3 @5xl:grid-cols-subgrid">
         <div className={fact}>
           <dt className={term}>Next run</dt>
           <dd className="min-w-0 tabular-nums">
@@ -245,10 +270,10 @@ export function ScheduleRow({
                     : undefined
                 }
               >
-                {formatNextRun(
-                  schedule.nextRunAt,
-                  timing.type === "weekly" ? timing.timezone : undefined,
-                )}
+                {formatNextRun(schedule.nextRunAt, {
+                  timeZone:
+                    timing.type === "weekly" ? timing.timezone : undefined,
+                })}
               </span>
             ) : (
               <span className="text-muted-foreground">
@@ -281,11 +306,26 @@ export function ScheduleRow({
                 )}
               </span>
             </span>
-            {computerUnavailable && execution && (
-              <span className="mt-0.5 flex items-center gap-1.5 text-amber-700 dark:text-amber-500">
-                <WifiOff className="size-3.5 shrink-0" aria-hidden="true" />
-                Unavailable
-              </span>
+            {unavailable && (
+              // The one unavailable notice on the row. Run now is described
+              // by it; "How schedules work" carries the same rule in full.
+              <p
+                id={unavailableId}
+                title="Skipped runs aren’t made up later and never move to the cloud."
+                className="mt-0.5 flex items-start gap-1.5 text-amber-700 dark:text-amber-500"
+              >
+                <WifiOff
+                  className="mt-0.5 size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span className="min-w-0">
+                  Unavailable, runs skipped
+                  <span className="sr-only">
+                    . Skipped runs aren’t made up later and never move to the
+                    cloud.
+                  </span>
+                </span>
+              </p>
             )}
           </dd>
         </div>
@@ -314,12 +354,12 @@ export function ScheduleRow({
               <span className="text-muted-foreground">No runs yet</span>
             )}
             {(hasLatestTask || schedule.runs.length > 1) && (
-              <span className="flex flex-wrap items-center gap-x-4 @4xl:mt-1">
+              <span className="flex flex-wrap items-center gap-x-4 @xl:mt-0.5 @xl:gap-x-3 @xl:text-[13px]">
                 {latest && <RunTaskLink run={latest} />}
                 {schedule.runs.length > 1 && (
                   <button
                     type="button"
-                    className="-ml-1 inline-flex min-h-11 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @4xl:ml-0 @4xl:min-h-8 @4xl:px-0"
+                    className="-ml-1 inline-flex min-h-11 items-center gap-1 rounded-sm px-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @xl:ml-0 @xl:min-h-8 @xl:px-0"
                     onClick={() => setHistory(!history)}
                     aria-expanded={history}
                     aria-controls={historyId}
@@ -342,26 +382,11 @@ export function ScheduleRow({
           </dd>
         </div>
       </dl>
-      {computerUnavailable && execution && (
-        <p
-          id={unavailableId}
-          className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2.5 text-sm leading-relaxed text-amber-800 @4xl:col-span-full dark:text-amber-400"
-        >
-          <WifiOff className="mt-1 size-3.5 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 wrap-anywhere">
-            <span className="font-medium">
-              Selected computer is unavailable.
-            </span>{" "}
-            Runs, including Run now, are skipped until it reconnects. Skipped
-            runs aren’t made up later and never move to the cloud.
-          </span>
-        </p>
-      )}
       {history && (
         <ul
           id={historyId}
           aria-label={`Recent runs for ${name}`}
-          className="divide-y rounded-lg border px-3 text-sm @4xl:col-span-full @4xl:px-4"
+          className="divide-y rounded-lg border px-3 text-sm @xl:col-span-full @xl:px-4"
         >
           {schedule.runs.slice(1).map((run) => (
             <li
@@ -385,8 +410,8 @@ export function ScheduleRow({
       )}
       <div
         className={cn(
-          "flex items-center gap-2 @4xl:col-start-5 @4xl:row-start-1 @4xl:justify-end @4xl:gap-1",
-          !enabled && !schedule.enabled && "@max-4xl:justify-end",
+          "flex items-center gap-2 @xl:col-start-2 @xl:row-start-1 @xl:-mt-1 @xl:justify-end @xl:gap-1 @xl:self-start @5xl:col-start-5 @5xl:mt-0",
+          !enabled && !schedule.enabled && "@max-xl:justify-end",
         )}
       >
         <Button
@@ -394,8 +419,8 @@ export function ScheduleRow({
           size="sm"
           className={cn(
             ROW_ACTION,
-            "@4xl:w-14",
-            !enabled && "hidden @4xl:inline-flex",
+            "@xl:w-14",
+            !enabled && "hidden @xl:inline-flex",
           )}
           disabled={pending || !enabled}
           onClick={onEdit}
@@ -403,14 +428,14 @@ export function ScheduleRow({
         >
           Edit
         </Button>
-        {(schedule.enabled || (!completed && enabled)) && (
+        {canToggle ? (
           <Button
             variant="ghost"
             size="sm"
-            className={cn(ROW_ACTION, "@4xl:w-[4.75rem]")}
+            className={cn(ROW_ACTION, "@xl:w-[4.75rem]")}
             disabled={pending}
             onClick={() => onAction(schedule.enabled ? "pause" : "resume")}
-            aria-label={`${schedule.enabled ? "Pause" : "Resume"} ${name}`}
+            aria-label={`${schedule.enabled ? "Pause" : "Resume"} schedule ${name}`}
           >
             {pending ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -420,13 +445,19 @@ export function ScheduleRow({
               "Resume"
             )}
           </Button>
+        ) : (
+          // Keeps Edit in its lane on rows that can no longer be resumed.
+          <span
+            className="hidden w-[4.75rem] shrink-0 @xl:block"
+            aria-hidden="true"
+          />
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="size-11 shrink-0 @4xl:size-8"
+              className="size-11 shrink-0 @xl:size-8"
               disabled={pending}
               aria-label={`More actions for ${name}`}
             >
@@ -437,10 +468,21 @@ export function ScheduleRow({
             <DropdownMenuItem
               onSelect={() => onAction("run")}
               disabled={pending || !enabled || Boolean(busy)}
-              aria-describedby={computerUnavailable ? unavailableId : undefined}
+              aria-describedby={unavailable ? unavailableId : undefined}
+              className={cn(unavailable && "items-start")}
             >
-              <Play className="size-4" />
-              Run now
+              <Play className={cn("size-4", unavailable && "mt-0.5")} />
+              <span>
+                Run now
+                {unavailable && (
+                  <span
+                    aria-hidden="true"
+                    className="block text-xs text-amber-700 dark:text-amber-500"
+                  >
+                    Skipped while unavailable
+                  </span>
+                )}
+              </span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem

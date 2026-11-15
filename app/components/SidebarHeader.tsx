@@ -245,9 +245,17 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                     asChild
                     variant="ghost"
                     size="sm"
-                    className="size-9 p-0 hover:bg-sidebar-accent/50"
+                    className={`size-9 p-0 hover:bg-sidebar-accent/50 ${
+                      pathname === "/schedules" ? "bg-sidebar-accent" : ""
+                    }`}
                   >
-                    <Link href="/schedules" aria-label="Schedules">
+                    <Link
+                      href="/schedules"
+                      aria-label="Schedules"
+                      aria-current={
+                        pathname === "/schedules" ? "page" : undefined
+                      }
+                    >
                       <CalendarClock className="size-[18px]" />
                     </Link>
                   </Button>
@@ -379,11 +387,14 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
           <Button
             asChild
             variant="ghost"
-            className="h-auto w-full justify-start rounded-lg p-2 hover:bg-sidebar-accent/50"
+            className={`h-auto w-full justify-start rounded-lg p-2 hover:bg-sidebar-accent/50 ${
+              pathname === "/schedules" ? "bg-sidebar-accent" : ""
+            }`}
           >
             <Link
               href="/schedules"
               onClick={isMobileOverlay ? handleCloseSidebar : undefined}
+              aria-current={pathname === "/schedules" ? "page" : undefined}
             >
               <CalendarClock className="size-4" />
               <span className="text-sm font-medium">Schedules</span>

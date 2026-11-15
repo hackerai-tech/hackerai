@@ -279,7 +279,7 @@ describe("projects", () => {
     expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
   });
 
-  it("paginates project tasks without exposing private prediction content", async () => {
+  it("paginates project tasks without exposing private prediction content or schedule provenance", async () => {
     const page = {
       page: [{ _id: "task-1", user_id: "user-1", project_id: "project-1" }],
       isDone: true,
@@ -293,6 +293,12 @@ describe("projects", () => {
         next_actions: {
           consumed: false,
           batch: { suggestions: ["Private suggestion"] },
+        },
+        schedule_origin: {
+          scheduleId: "schedule-1",
+          scheduleName: "Nightly scan",
+          runId: "run-1",
+          scopeKey: "a".repeat(64),
         },
       })),
     });

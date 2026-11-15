@@ -735,4 +735,108 @@ describe("FindingsPage", () => {
       expect(findingRow).toHaveFocus();
     });
   });
+
+  describe("schedule filter", () => {
+    const scheduledFinding = {
+      ...mockFinding,
+      schedule: { id: "schedule-1", name: "Nightly recon" },
+    };
+    const openFromSchedule = (id: string) => {
+      mockSearchParams.set("schedule", id);
+      window.history.replaceState({}, "", `/findings?schedule=${id}`);
+    };
+    const chip = () => screen.queryByRole("group", { name: "Schedule filter" });
+    const lastQuery = () => mockUsePaginatedQuery.mock.calls.at(-1)?.[1];
+
+    it("scopes the list, search and CSV export to the schedule until it is removed", async () => {
+      openFromSchedule("schedule-1");
+      mockUsePaginatedQuery.mockReturnValue({
+        results: [scheduledFinding],
+        status: "Exhausted",
+        loadMore: jest.fn(),
+      });
+      render(<Page />);
+      expect(lastQuery()).toEqual({ scheduleId: "schedule-1" });
+      // Named from the saved snapshot on a listed finding.
+      expect(chip()).toHaveTextContent("Nightly recon");
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Export all matching findings as CSV",
+        }),
+      );
+      await waitFor(() =>
+        expect(mockConvexQuery).toHaveBeenCalledWith(expect.anything(), {
+          scheduleId: "schedule-1",
+          paginationOpts: { cursor: null, numItems: 25 },
+        }),
+      );
+
+      fireEvent.change(screen.getByLabelText("Search findings"), {
+        target: { value: "smb" },
+      });
+      await waitFor(() =>
+        expect(window.location.search).toBe("?schedule=schedule-1&q=smb"),
+      );
+      expect(lastQuery()).toEqual({ search: "smb", scheduleId: "schedule-1" });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Remove schedule filter" }),
+      );
+      await waitFor(() => expect(window.location.search).toBe("?q=smb"));
+      expect(lastQuery()).toEqual({ search: "smb" });
+      expect(chip()).toBeNull();
+      expect(
+        screen.getByRole("heading", { name: "Findings", exact: true }),
+      ).toHaveFocus();
+    });
+
+    it("offers a way out when the linked schedule lists nothing, without calling it deleted", async () => {
+      openFromSchedule("not-a-schedule");
+      mockUsePaginatedQuery.mockReturnValue({
+        results: [],
+        status: "Exhausted",
+        loadMore: jest.fn(),
+      });
+      render(<Page />);
+      // The id still reaches the query, which decides what the viewer may see.
+      expect(lastQuery()).toEqual({ scheduleId: "not-a-schedule" });
+      expect(chip()).toHaveTextContent(/^Schedule$/);
+      expect(screen.queryByText(/deleted/i)).toBeNull();
+      expect(screen.getByText("No matching findings")).toBeVisible();
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+      await waitFor(() => expect(window.location.search).toBe(""));
+      expect(lastQuery()).toEqual({});
+      expect(chip()).toBeNull();
+      expect(screen.getByText("No findings yet")).toBeVisible();
+    });
+
+    it("keeps the schedule filter while a report is opened and closed", async () => {
+      openFromSchedule("schedule-1");
+      mockUsePaginatedQuery.mockReturnValue({
+        results: [scheduledFinding],
+        status: "Exhausted",
+        loadMore: jest.fn(),
+      });
+      render(<Page />);
+      const row = screen.getByRole("link", { name: /Confirmed IDOR/i });
+      expect(row).toHaveAttribute(
+        "href",
+        "/findings?schedule=schedule-1&finding=finding-1",
+      );
+      fireEvent.click(row);
+      expect(window.location.search).toBe(
+        "?schedule=schedule-1&finding=finding-1",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close vulnerability report" }),
+      );
+      await waitFor(() =>
+        expect(window.location.search).toBe("?schedule=schedule-1"),
+      );
+      expect(chip()).toHaveTextContent("Nightly recon");
+      expect(lastQuery()).toEqual({ scheduleId: "schedule-1" });
+    });
+  });
 });

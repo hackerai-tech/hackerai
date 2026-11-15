@@ -682,6 +682,97 @@ describe("Agent check rollouts", () => {
   });
 });
 
+describe("scheduled source", () => {
+  const scheduled: FindingDetailRecord = {
+    ...finding,
+    schedule: { id: "schedule-1", name: "Nightly recon" },
+    scheduleAvailable: true,
+    observationCount: 3,
+    scheduledObservations: [
+      {
+        observedAt: 30,
+        taskAvailable: true,
+        chatId: "later-task",
+        messageId: "later-message",
+      },
+      { observedAt: 20, taskAvailable: false },
+      {
+        observedAt: 10,
+        taskAvailable: true,
+        chatId: "chat-1",
+        messageId: "message-1",
+      },
+    ],
+  };
+  const sourceTask = () =>
+    screen.getByRole("link", { name: "Open source message in Invoice test" });
+
+  it("names the live schedule and keeps the original task as the source", () => {
+    render(<FindingDetail finding={scheduled} surface="findings_page" />);
+    openReport();
+    expect(
+      screen.getByRole("link", { name: "Nightly recon in Schedules" }),
+    ).toHaveAttribute("href", "/schedules");
+    // Later runs never replace the canonical source task.
+    expect(sourceTask()).toHaveAttribute("href", "/c/chat-1#message=message-1");
+    expect(screen.getAllByText("Source task")).toHaveLength(1);
+
+    const history = screen
+      .getByText("Reported by 3 scheduled runs")
+      .closest("details")!;
+    expect(history).not.toHaveAttribute("open");
+    expect(
+      within(history)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).toEqual([
+      "/c/later-task#message=later-message",
+      "/c/chat-1#message=message-1",
+    ]);
+    expect(within(history).getByText("Task deleted")).toBeInTheDocument();
+    // Repeat reports leave the saved status alone.
+    expect(screen.getByText("Active")).toBeVisible();
+  });
+
+  it.each([
+    ["a deleted schedule", false, true],
+    ["a schedule of unknown state", undefined, false],
+  ] as const)(
+    "keeps the saved name of %s without a link",
+    (_case, scheduleAvailable, saysDeleted) => {
+      render(
+        <FindingDetail
+          finding={{ ...scheduled, scheduleAvailable }}
+          surface="findings_page"
+        />,
+      );
+      openReport();
+      expect(screen.getByText("Nightly recon")).toBeVisible();
+      expect(screen.queryByRole("link", { name: /Nightly recon/ })).toBeNull();
+      // Only an explicit answer from the server may call it deleted.
+      expect(Boolean(screen.queryByText(/· Deleted/))).toBe(saysDeleted);
+      expect(sourceTask()).toHaveAttribute(
+        "href",
+        "/c/chat-1#message=message-1",
+      );
+    },
+  );
+
+  it("adds no schedule details to a finding saved outside a schedule", () => {
+    render(<FindingDetail finding={finding} surface="findings_page" />);
+    openReport();
+    expect(screen.queryByText("Source schedule")).toBeNull();
+    expect(screen.queryByText(/scheduled runs/)).toBeNull();
+  });
+
+  it("leaves the schedule link out of the chat sidebar", () => {
+    render(<FindingDetail finding={scheduled} surface="computer_sidebar" />);
+    openReport();
+    expect(screen.queryByText("Source schedule")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Schedules/ })).toBeNull();
+  });
+});
+
 describe("finding query recovery", () => {
   afterEach(() => resetMockConvexQueries());
 

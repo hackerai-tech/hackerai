@@ -13,6 +13,10 @@ export type AgentSchedule = {
   enabled: boolean;
   consumed: boolean;
   nextRunAt: number | null;
+  /** Saved findings from this schedule's tasks, capped at 100. Absent on older responses. */
+  findingCount?: number;
+  /** More findings exist than `findingCount` reports. */
+  findingCountTruncated?: boolean;
   runs: ScheduleRun[];
 };
 export type SchedulesResponse = {

@@ -36,6 +36,7 @@ function store() {
     agent_schedules: [],
     schedule_runs: [],
     chats: [],
+    finding_sources: [],
     user_deletion_fences: [],
   };
   const db: any = {
@@ -514,6 +515,143 @@ describe("durable schedules", () => {
       expect.objectContaining({ _id: "unrelated" }),
     ]);
   });
+});
+
+describe("schedule finding counts", () => {
+  const addSource = (
+    tables: Record<string, Row[]>,
+    n: number,
+    source: Record<string, unknown>,
+    chat: Record<string, unknown> | null = {},
+  ) => {
+    const chatId = `task-${n}`;
+    tables.finding_sources.push({
+      _id: `source-${n}`,
+      _creationTime: n,
+      user_id: "owner",
+      chat_id: chatId,
+      finding_count: 1,
+      ...source,
+    });
+    if (chat)
+      tables.chats.push({
+        _id: `chat-${n}`,
+        _creationTime: n,
+        id: chatId,
+        user_id: "owner",
+        ...chat,
+      });
+  };
+
+  it("counts only findings from the owner's readable tasks of that schedule", async () => {
+    const { ctx, tables } = store();
+    const id = await call(save, ctx, { ...auth, definition });
+    const other = await call(save, ctx, {
+      ...auth,
+      definition: { ...definition, name: "Other" },
+    });
+    const empty = await call(save, ctx, {
+      ...auth,
+      definition: { ...definition, name: "No findings" },
+    });
+    addSource(tables, 1, { schedule_id: id, finding_count: 2 });
+    addSource(tables, 2, { schedule_id: id, finding_count: 1 });
+    // Excluded: a task being deleted, a deleted task, a task that changed
+    // hands, another account's row, another schedule, and an ordinary task.
+    addSource(
+      tables,
+      3,
+      { schedule_id: id, finding_count: 5 },
+      { deletion_started_at: 1 },
+    );
+    addSource(tables, 4, { schedule_id: id, finding_count: 7 }, null);
+    addSource(
+      tables,
+      5,
+      { schedule_id: id, finding_count: 11 },
+      { user_id: "intruder" },
+    );
+    addSource(tables, 6, {
+      schedule_id: id,
+      user_id: "intruder",
+      finding_count: 13,
+    });
+    addSource(tables, 7, { schedule_id: other, finding_count: 4 });
+    addSource(tables, 8, { finding_count: 17 });
+
+    const counts = Object.fromEntries(
+      (await call(list, ctx, auth)).map((s: any) => [
+        s.id,
+        [s.findingCount, s.findingCountTruncated],
+      ]),
+    );
+    expect(counts).toEqual({
+      [id]: [3, false],
+      [other]: [4, false],
+      [empty]: [0, false],
+    });
+    expect(await call(list, ctx, { ...auth, userId: "intruder" })).toEqual([]);
+  });
+
+  it("shows no count instead of a false 100+ while a full read is mostly tasks being deleted", async () => {
+    const { ctx, tables } = store();
+    const id = await call(save, ctx, { ...auth, definition });
+    const counted = async () => {
+      const [schedule] = await call(list, ctx, auth);
+      return [schedule.findingCount, schedule.findingCountTruncated];
+    };
+    // 150 tasks with one finding each; the first 60 are being deleted. The
+    // bounded read sees 41 readable ones and cannot know how many follow.
+    for (let n = 0; n < 150; n++)
+      addSource(
+        tables,
+        n,
+        { schedule_id: id },
+        n < 60 ? { deletion_started_at: 1 } : {},
+      );
+    expect(await counted()).toEqual([0, false]);
+
+    // More than the cap is reported only once that many readable findings are
+    // counted, even with tasks being deleted in the same read.
+    for (const source of tables.finding_sources) source.finding_count = 3;
+    expect(await counted()).toEqual([100, true]);
+    for (const source of tables.finding_sources) source.finding_count = 1;
+
+    // Deletion finishes: the exact count returns.
+    const deleting = new Set(
+      tables.chats
+        .filter((chat) => chat.deletion_started_at)
+        .map((chat) => chat.id),
+    );
+    tables.finding_sources = tables.finding_sources.filter(
+      (source) => !deleting.has(source.chat_id),
+    );
+    tables.chats = tables.chats.filter((chat) => !deleting.has(chat.id));
+    expect(await counted()).toEqual([90, false]);
+  });
+
+  it.each([
+    ["exactly at the cap", 100, 1, [100, false]],
+    ["one past the cap", 101, 1, [100, true]],
+    ["many tasks past the cap", 250, 1, [100, true]],
+    ["one task with many findings", 1, 250, [100, true]],
+  ])(
+    "caps the count and its reads: %s",
+    async (_label, tasks, each, expected) => {
+      const { ctx, tables } = store();
+      const id = await call(save, ctx, { ...auth, definition });
+      for (let n = 0; n < tasks; n++)
+        addSource(tables, n, { schedule_id: id, finding_count: each });
+      const read = jest.spyOn(ctx.db, "query");
+      const [schedule] = await call(list, ctx, auth);
+      expect([schedule.findingCount, schedule.findingCountTruncated]).toEqual(
+        expected,
+      );
+      expect(
+        read.mock.calls.filter(([table]) => table === "chats").length,
+      ).toBeLessThanOrEqual(101);
+    },
+  );
 });
 
 it("preserves the next interval when only instructions or name are edited", async () => {

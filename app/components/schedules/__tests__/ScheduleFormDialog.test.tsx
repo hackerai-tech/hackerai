@@ -6,7 +6,10 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { ScheduleFormDialog } from "../ScheduleFormDialog";
-import type { ScheduleDefinition } from "@/lib/schedules/recurrence";
+import {
+  formatNextRun,
+  type ScheduleDefinition,
+} from "@/lib/schedules/recurrence";
 const initial: ScheduleDefinition = {
   name: "QA schedule",
   prompt: "Reply hello",
@@ -103,10 +106,7 @@ it("shows the saved interval time while renaming and a new time only after timin
       target: { value: "Renamed" },
     });
     const label = (timestamp: number) =>
-      new Date(timestamp).toLocaleString([], {
-        dateStyle: "medium",
-        timeStyle: "short",
-      });
+      formatNextRun(timestamp, { weekday: true });
     expect(screen.getByText(label(at))).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Repeat every (minutes)"), {
       target: { value: "30" },
@@ -204,7 +204,14 @@ it("allows editing an unavailable saved computer without changing its execution 
     />,
   );
   expect(screen.getByLabelText("Starting folder")).toHaveValue("/tmp/original");
-  expect(screen.getByText(/You can still save changes/)).toBeInTheDocument();
+  // The one remaining warning must still say skipped runs are not made up
+  // later or moved to the cloud, and must describe the control it is about.
+  expect(
+    screen.getByRole("combobox", { name: "Run on" }),
+  ).toHaveAccessibleDescription(
+    /You can still save changes\..*aren’t made up later.*never move to the cloud/,
+  );
+  expect(screen.getAllByText(/never move to the cloud/)).toHaveLength(1);
   fireEvent.change(screen.getByLabelText("Name"), {
     target: { value: "Renamed" },
   });
@@ -214,6 +221,37 @@ it("allows editing an unavailable saved computer without changing its execution 
       expect.objectContaining({ name: "Renamed", execution }),
     ),
   );
+});
+it("shows a weekly next run in the schedule's zone on one line", () => {
+  jest.useFakeTimers().setSystemTime(new Date("2026-11-07T23:00:00Z"));
+  try {
+    const timing = {
+      type: "weekly" as const,
+      time: "09:00",
+      weekdays: [1],
+      timezone: "Asia/Tokyo",
+    };
+    render(
+      <ScheduleFormDialog
+        computers={[]}
+        initial={{ ...initial, timing }}
+        editing={false}
+        onSave={jest.fn()}
+        onClose={jest.fn()}
+      />,
+    );
+    // Monday 09:00 in Tokyo, whatever zone the viewer is in.
+    expect(
+      screen.getByText(
+        formatNextRun(Date.parse("2026-11-09T00:00:00Z"), {
+          weekday: true,
+          timeZone: "Asia/Tokyo",
+        }),
+      ),
+    ).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 it("keeps folders scoped to their computer when switching targets", () => {
   const first = {

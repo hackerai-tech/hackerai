@@ -58,6 +58,12 @@ jest.mock("../MessageSearchDialog", () => ({
 const SidebarHeaderContent = require("../SidebarHeader")
   .default as typeof import("../SidebarHeader").default;
 
+// A page left set by one test must not mark a destination in the next.
+beforeEach(() => {
+  mockPathname = "/";
+  mockSchedulesAccess = undefined;
+});
+
 describe("SidebarHeaderContent", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -230,7 +236,85 @@ describe("findings navigation", () => {
       expect(
         screen.getByRole("button", { name: "Open findings" }),
       ).toHaveAttribute("aria-current", "page");
-      mockPathname = "/";
     },
   );
+});
+
+describe("schedules navigation", () => {
+  const renderHeader = (isCollapsed: boolean, isMobileOverlay = false) => {
+    const handleCloseSidebar = jest.fn();
+    render(
+      <SidebarHeaderContent
+        handleCloseSidebar={handleCloseSidebar}
+        isCollapsed={isCollapsed}
+        isMobileOverlay={isMobileOverlay}
+      />,
+    );
+    return handleCloseSidebar;
+  };
+  const schedules = () => screen.getByRole("link", { name: "Schedules" });
+  const findings = () => screen.getByRole("button", { name: "Open findings" });
+
+  it.each([true, false])(
+    "marks Schedules as the current page the way Findings is marked (collapsed=%s)",
+    (isCollapsed) => {
+      mockSchedulesAccess = { visible: true };
+      mockPathname = "/schedules";
+      const view = render(
+        <SidebarHeaderContent
+          handleCloseSidebar={jest.fn()}
+          isCollapsed={isCollapsed}
+        />,
+      );
+      expect(schedules()).toHaveAttribute("aria-current", "page");
+      expect(schedules()).toHaveAttribute("href", "/schedules");
+      // Sighted users get the same marker Findings uses.
+      expect(schedules()).toHaveClass("bg-sidebar-accent");
+      expect(findings()).not.toHaveAttribute("aria-current");
+      expect(findings()).not.toHaveClass("bg-sidebar-accent");
+
+      // Moving to Findings hands the marker over; only one page is current.
+      mockPathname = "/findings";
+      view.rerender(
+        <SidebarHeaderContent
+          handleCloseSidebar={jest.fn()}
+          isCollapsed={isCollapsed}
+        />,
+      );
+      expect(findings()).toHaveAttribute("aria-current", "page");
+      expect(findings()).toHaveClass("bg-sidebar-accent");
+      expect(schedules()).not.toHaveAttribute("aria-current");
+      expect(schedules()).not.toHaveClass("bg-sidebar-accent");
+    },
+  );
+
+  it.each([true, false])(
+    "marks neither destination on another page (collapsed=%s)",
+    (isCollapsed) => {
+      mockSchedulesAccess = { visible: true };
+      renderHeader(isCollapsed);
+      expect(schedules()).not.toHaveAttribute("aria-current");
+      expect(schedules()).not.toHaveClass("bg-sidebar-accent");
+      expect(findings()).not.toHaveAttribute("aria-current");
+    },
+  );
+
+  it.each([true, false])(
+    "stays hidden without access even on the schedules page (collapsed=%s)",
+    (isCollapsed) => {
+      mockSchedulesAccess = { visible: false };
+      mockPathname = "/schedules";
+      renderHeader(isCollapsed);
+      expect(screen.queryByRole("link", { name: "Schedules" })).toBeNull();
+    },
+  );
+
+  it("still closes the mobile overlay when Schedules is opened from it", () => {
+    mockSchedulesAccess = { visible: true };
+    mockPathname = "/schedules";
+    const handleCloseSidebar = renderHeader(false, true);
+    expect(schedules()).toHaveAttribute("aria-current", "page");
+    fireEvent.click(schedules());
+    expect(handleCloseSidebar).toHaveBeenCalledTimes(1);
+  });
 });

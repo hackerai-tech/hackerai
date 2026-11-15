@@ -1,4 +1,5 @@
 import type { LocalScheduleExecution } from "@/lib/schedules/recurrence";
+import type { ScheduleOrigin } from "@/lib/schedules/provenance";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
@@ -649,12 +650,15 @@ export const createAgentTriggerPost = ({
   endpoint,
   resolveIdentity = getUserIDAndPro,
   scheduledLocalExecution,
+  scheduleOrigin,
 }: {
   endpoint: AgentApiEndpoint;
   /** Trusted internal callers resolve current billing-backed identity, never request-body identity. */
   resolveIdentity?: typeof getUserIDAndPro;
   /** Only the scheduler supplies this snapshot; never accepted from an HTTP body. */
   scheduledLocalExecution?: LocalScheduleExecution;
+  /** Only the scheduler supplies this provenance; never accepted from an HTTP body. */
+  scheduleOrigin?: ScheduleOrigin;
 }) =>
   withServiceQueryRecovery(async (req: NextRequest) => {
     const routeStartedAt = Date.now();
@@ -1078,6 +1082,7 @@ export const createAgentTriggerPost = ({
         projectId: projectContext.projectId,
         sandboxType: sandboxPreference ?? "e2b",
         scheduledLocalExecution,
+        scheduleOrigin,
         onPersistenceStep: (step) => {
           initialPersistenceStep = step;
         },

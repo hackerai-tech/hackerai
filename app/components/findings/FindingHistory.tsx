@@ -34,12 +34,25 @@ export function FindingHistory({ finding }: { finding: FindingDetailRecord }) {
               {revision.previous_confidence ?? "Not recorded"} →{" "}
               {revision.confidence ?? "Not recorded"}.
             </p>
-            <Link
-              className="text-xs underline"
-              href={getSourceMessageHref(finding.chat_id, revision.message_id)}
-            >
-              View correction message
-            </Link>
+            {/* A later scheduled run corrects from its own task, so the
+                message is there, not in the finding's source task. Once that
+                task is gone there is nothing to open: the source task never
+                held this message. */}
+            {revision.task_available === false ? (
+              <span className="text-xs text-muted-foreground">
+                Correction task unavailable
+              </span>
+            ) : (
+              <Link
+                className="text-xs underline"
+                href={getSourceMessageHref(
+                  revision.chat_id ?? finding.chat_id,
+                  revision.message_id,
+                )}
+              >
+                View correction message
+              </Link>
+            )}
             <time
               className="ml-3 text-xs text-muted-foreground"
               dateTime={new Date(revision.updated_at).toISOString()}

@@ -382,6 +382,58 @@ describe("web request correlation at Agent dispatch", () => {
     );
   });
 
+  it("persists schedule provenance only from the trusted caller, never the request body", async () => {
+    const forged = {
+      scheduleId: "forged-schedule",
+      scheduleName: "Forged",
+      runId: "forged-run",
+      scopeKey: "f".repeat(64),
+    };
+    const forgedBody = { scheduleOrigin: forged, schedule_origin: forged };
+    const response = await start(
+      "/api/agent",
+      "full_access",
+      requestId,
+      forgedBody,
+    );
+    expect(response.status).toBe(200);
+    expect(
+      mockHandleInitialChatAndUserMessage.mock.calls[0][0].scheduleOrigin,
+    ).toBeUndefined();
+    expect(
+      JSON.stringify(mockHandleInitialChatAndUserMessage.mock.calls[0][0]),
+    ).not.toContain("forged");
+
+    mockHandleInitialChatAndUserMessage.mockClear();
+    const trusted = {
+      scheduleId: "schedule-1",
+      scheduleName: "Nightly scan",
+      runId: "run-1",
+      scopeKey: "a".repeat(64),
+    } as any;
+    const scheduled = await createAgentTriggerPost({
+      endpoint: "/api/agent",
+      scheduleOrigin: trusted,
+    })({
+      headers: new Headers(),
+      json: async () => ({
+        chatId: "chat-1",
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "Scheduled instructions" }],
+          },
+        ],
+        ...forgedBody,
+      }),
+    } as any);
+    expect(scheduled.status).toBe(200);
+    expect(
+      mockHandleInitialChatAndUserMessage.mock.calls[0][0].scheduleOrigin,
+    ).toEqual(trusted);
+  });
+
   it.each(["full_access", "ask_approval"])(
     "persists the authenticated shared usage subject for %s Agent runs",
     async (mode) => {

@@ -1,5 +1,7 @@
 import {
   describeTiming,
+  formatClockTime,
+  formatNextRun,
   nextScheduledTime,
   validateSchedule,
   type ScheduleTiming,
@@ -109,11 +111,33 @@ describe("schedule recurrence", () => {
   });
   it("uses readable recurrence labels", () => {
     expect(describeTiming(weekly("09:00", [1, 2, 3, 4, 5]))).toBe(
-      "Weekdays at 09:00",
+      `Weekdays at ${formatClockTime("09:00")}`,
     );
     expect(describeTiming({ type: "interval", minutes: 60 })).toBe(
       "Every 1 hour",
     );
+  });
+  it("writes the cadence time in the same clock format as the next run", () => {
+    // A row shows both; "09:00" beside "9:00 AM" read as two different times.
+    const nextRun = formatNextRun(new Date(2026, 10, 9, 9, 0).getTime());
+    expect(nextRun).toContain(formatClockTime("09:00"));
+    expect(formatClockTime("18:30")).not.toBe(formatClockTime("06:30"));
+  });
+  it("shows the next run in the schedule's zone, not the viewer's", () => {
+    const run = at("2026-11-09T15:00:00Z");
+    const hour = (timeZone: string) =>
+      new Date(run).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone,
+      });
+    expect(formatNextRun(run, { timeZone: "America/Chicago" })).toContain(
+      hour("America/Chicago"),
+    );
+    expect(formatNextRun(run, { timeZone: "Asia/Tokyo" })).toContain(
+      hour("Asia/Tokyo"),
+    );
+    expect(hour("America/Chicago")).not.toBe(hour("Asia/Tokyo"));
   });
 });
 

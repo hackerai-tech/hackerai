@@ -47,6 +47,7 @@ import { isDesktopPreference } from "@/lib/sandbox/environment";
 import {
   nextScheduledTime,
   describeTiming,
+  formatNextRun,
   sameScheduleTiming,
   validateSchedule,
   type ScheduleDefinition,
@@ -257,7 +258,9 @@ export function ScheduleFormDialog({
     >
       <DialogContent
         showCloseButton={false}
-        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-auto sm:max-h-[min(92dvh,56rem)] sm:max-w-[calc(100%-2rem)] sm:rounded-lg sm:border md:max-w-2xl lg:max-w-[min(calc(100%-4rem),68rem)]"
+        // Two columns need about 868px, so they start at a 900px viewport: a
+        // half-screen window keeps timing, next run and model beside the form.
+        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-auto sm:max-h-[min(92dvh,56rem)] sm:max-w-[calc(100%-2rem)] sm:rounded-lg sm:border md:max-w-2xl min-[900px]:max-w-[min(calc(100%-2rem),68rem)]"
         onInteractOutside={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -265,17 +268,18 @@ export function ScheduleFormDialog({
           if (pending) e.preventDefault();
         }}
       >
-        <DialogHeader className="min-h-14 shrink-0 flex-row items-center gap-3 border-b py-2.5 pr-14 pl-4 text-left sm:py-4 sm:pl-6 lg:pl-8">
-          <div className="min-w-0 flex-1 space-y-1">
-            <DialogTitle className="text-lg tracking-tight lg:text-xl">
+        <DialogHeader className="min-h-14 shrink-0 flex-row items-center gap-3 border-b py-2.5 pr-14 pl-4 text-left sm:py-4 sm:pl-6 min-[900px]:pl-8">
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="text-lg tracking-tight min-[900px]:text-xl">
               {editing ? "Edit schedule" : "New schedule"}
             </DialogTitle>
-            <DialogDescription className="max-sm:sr-only">
+            {/* The same sentence is visible under Instructions. */}
+            <DialogDescription className="sr-only">
               Each run starts a new task with your instructions.
             </DialogDescription>
           </div>
           {dirty && (
-            <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:gap-1 sm:self-start">
+            <span className="shrink-0 text-xs text-muted-foreground sm:flex sm:h-9 sm:items-center sm:gap-1">
               Unsaved <span className="max-sm:hidden">changes</span>
             </span>
           )}
@@ -284,9 +288,9 @@ export function ScheduleFormDialog({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <fieldset
               disabled={pending}
-              className="min-w-0 lg:grid lg:min-h-full lg:grid-cols-[minmax(0,1fr)_22rem]"
+              className="min-w-0 min-[900px]:grid min-[900px]:min-h-full min-[900px]:grid-cols-[minmax(0,1fr)_22rem]"
             >
-              <div className="space-y-6 px-4 py-5 sm:px-6 lg:px-8 lg:py-6">
+              <div className="space-y-6 px-4 py-5 sm:px-6 min-[900px]:px-8 min-[900px]:py-6">
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-name`}>Name</Label>
                   <Input
@@ -296,7 +300,7 @@ export function ScheduleFormDialog({
                       setValue({ ...value, name: e.target.value })
                     }
                     maxLength={80}
-                    className="h-11 lg:h-12 lg:text-lg lg:font-medium"
+                    className="h-11"
                     placeholder="e.g. Morning security brief"
                     required
                     autoFocus
@@ -313,7 +317,7 @@ export function ScheduleFormDialog({
                     maxLength={16000}
                     rows={6}
                     aria-describedby={`${id}-prompt-help`}
-                    className="min-h-32 resize-y leading-relaxed lg:min-h-52"
+                    className="min-h-32 resize-y leading-relaxed min-[900px]:min-h-40"
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
@@ -321,8 +325,8 @@ export function ScheduleFormDialog({
                     id={`${id}-prompt-help`}
                     className="text-xs leading-relaxed text-muted-foreground"
                   >
-                    Each run starts a new task with these instructions. Say
-                    exactly what to touch and what to report.
+                    Each run starts a new task. Say exactly what to touch and
+                    what to report.
                   </p>
                 </div>
                 <div
@@ -439,8 +443,8 @@ export function ScheduleFormDialog({
                                 : " Connect a computer to run schedules on it."
                             }`
                           : unavailable
-                            ? "The selected computer is unavailable. You can still save changes; runs are skipped until it reconnects and never move to the cloud."
-                            : "Runs only while the selected computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
+                            ? "You can still save changes. Runs are skipped until it reconnects; they aren’t made up later and never move to the cloud."
+                            : "Runs only while this computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
                       </span>
                     </p>
                   </div>
@@ -487,28 +491,33 @@ export function ScheduleFormDialog({
                             className="mt-0.5 size-3.5 shrink-0"
                             aria-hidden="true"
                           />
-                          {folderError}
+                          <span className="min-w-0 wrap-anywhere">
+                            {folderError} For example{" "}
+                            <code className="font-mono">/home/you/project</code>
+                            ,{" "}
+                            <code className="font-mono">
+                              C:\Users\you\project
+                            </code>{" "}
+                            or{" "}
+                            <code className="font-mono">
+                              \\server\share\project
+                            </code>
+                            .
+                          </span>
                         </p>
                       )}
                       <p
                         id={`${id}-folder-help`}
                         className="text-xs leading-relaxed wrap-anywhere text-muted-foreground"
                       >
-                        Absolute path where each task starts, such as{" "}
-                        <code className="font-mono">/home/you/project</code>,{" "}
-                        <code className="font-mono">C:\Users\you\project</code>{" "}
-                        or{" "}
-                        <code className="font-mono">
-                          \\server\share\project
-                        </code>
-                        . It’s a starting point, not a boundary: tools can reach
-                        anything the selected computer can.
+                        Where each task starts. Not a boundary: tools can reach
+                        anything this computer can.
                       </p>
                     </div>
                   )}
                 </div>
               </div>
-              <div className="space-y-6 border-t bg-muted/30 px-4 py-5 sm:px-6 lg:border-t-0 lg:border-l lg:py-6">
+              <div className="space-y-6 border-t bg-muted/30 px-4 py-5 sm:px-6 min-[900px]:border-t-0 min-[900px]:border-l min-[900px]:py-6">
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <div
@@ -579,7 +588,7 @@ export function ScheduleFormDialog({
                       <Input
                         id={`${id}-at`}
                         type="datetime-local"
-                        className="h-11 min-w-0 max-w-full sm:h-9 sm:w-64 lg:w-full"
+                        className="h-11 min-w-0 max-w-full sm:h-9 sm:w-64 min-[900px]:w-full"
                         value={onceAt}
                         onInput={(e) => setOnceAt(e.currentTarget.value)}
                         required
@@ -632,7 +641,7 @@ export function ScheduleFormDialog({
                           ))}
                         </div>
                       </div>
-                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] lg:grid-cols-1">
+                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] min-[900px]:grid-cols-1">
                         <div className="min-w-0 space-y-2">
                           <Label htmlFor={`${id}-time`}>Time</Label>
                           <Input
@@ -691,34 +700,20 @@ export function ScheduleFormDialog({
                 </div>
                 <div className="space-y-1.5 border-t pt-5 text-sm leading-relaxed text-muted-foreground">
                   {next ? (
-                    <>
-                      <p className="text-xs">
-                        Next run:
-                        <span className="mt-1 block text-lg leading-snug font-semibold tracking-tight text-foreground tabular-nums">
-                          {new Date(next).toLocaleString([], {
-                            dateStyle: "medium",
-                            timeStyle: "short",
-                            ...(timing.type === "weekly"
-                              ? { timeZone: timing.timezone }
-                              : {}),
-                          })}
-                        </span>
-                      </p>
-                      {timing.type === "weekly" && (
-                        <p className="break-words">
-                          {timing.timezone.replaceAll("_", " ")}
-                        </p>
-                      )}
-                      {unavailable && (
-                        <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-500">
-                          <WifiOff
-                            className="mt-1 size-3.5 shrink-0"
-                            aria-hidden="true"
-                          />
-                          Skipped if the computer is still unavailable then.
-                        </p>
-                      )}
-                    </>
+                    // One line in the list's format; Run on already says what
+                    // happens while the computer is unavailable.
+                    <p className="text-xs">
+                      Next run:
+                      <span className="mt-1 block text-lg leading-snug font-semibold tracking-tight text-foreground tabular-nums">
+                        {formatNextRun(next, {
+                          weekday: true,
+                          timeZone:
+                            timing.type === "weekly"
+                              ? timing.timezone
+                              : undefined,
+                        })}
+                      </span>
+                    </p>
                   ) : !enabledAfterSave ? (
                     <p>
                       {saved?.consumed && !timingChanged
@@ -760,7 +755,7 @@ export function ScheduleFormDialog({
               </div>
             </fieldset>
           </div>
-          <div className="shrink-0 space-y-3 border-t bg-background px-4 py-3 sm:px-6 sm:py-4 lg:px-8">
+          <div className="shrink-0 space-y-3 border-t bg-background px-4 py-3 sm:px-6 sm:py-4 min-[900px]:px-8">
             {error && (
               <p
                 role="alert"
@@ -773,7 +768,7 @@ export function ScheduleFormDialog({
                 <span className="min-w-0 break-words">{error}</span>
               </p>
             )}
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-8">
+            <div className="flex flex-col gap-3 min-[900px]:flex-row min-[900px]:items-center min-[900px]:gap-8">
               <div className="flex min-w-0 flex-1 items-start gap-2 text-xs leading-relaxed text-muted-foreground sm:text-sm">
                 <Shield
                   className="mt-0.5 size-3.5 shrink-0 max-sm:hidden sm:size-4"
@@ -813,7 +808,7 @@ export function ScheduleFormDialog({
                   </p>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end lg:shrink-0">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end min-[900px]:shrink-0">
                 <Button
                   type="button"
                   variant="outline"

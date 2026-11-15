@@ -120,6 +120,40 @@ it("uses current entitlement and the normal Agent start with immutable cloud set
   });
   expect(body.messages[0].parts[0].text).toBe(schedule.definition.prompt);
 });
+it("ties the task to its schedule and claimed receipt outside the request body", async () => {
+  await run();
+  const origin = mockIdentityConfig.scheduleOrigin;
+  expect(origin).toEqual({
+    scheduleId: "s",
+    scheduleName: "test",
+    runId: "receipt",
+    scopeKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  const body = JSON.stringify(await mockStart.mock.calls[0][0].json());
+  expect(body).not.toContain(origin.scopeKey);
+  expect(body).not.toContain("scheduleOrigin");
+
+  // A rename or new timing keeps the scope; new instructions start another.
+  mockQuery.mockResolvedValue({
+    ...schedule,
+    definition: {
+      ...schedule.definition,
+      name: "renamed",
+      timing: { type: "interval", minutes: 60 },
+    },
+  });
+  await run();
+  expect(mockIdentityConfig.scheduleOrigin).toEqual({
+    ...origin,
+    scheduleName: "renamed",
+  });
+  mockQuery.mockResolvedValue({
+    ...schedule,
+    definition: { ...schedule.definition, prompt: "Different instructions" },
+  });
+  await run();
+  expect(mockIdentityConfig.scheduleOrigin.scopeKey).not.toBe(origin.scopeKey);
+});
 it("dispatches due and queued work even when reconciliation fails", async () => {
   (reconcileScheduleRuns as jest.Mock).mockRejectedValueOnce(
     Error("unavailable"),

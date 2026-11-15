@@ -202,6 +202,35 @@ export function nextScheduledTime(
   throw new Error("Could not calculate the next run.");
 }
 
+/** A stored "HH:mm" time in the viewer's clock format, as next-run labels use. */
+export function formatClockTime(time: string): string {
+  const [hour, minute] = time.split(":").map(Number);
+  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/** One line with the zone abbreviation, e.g. "Nov 9, 9:00 AM CST". */
+export function formatNextRun(
+  at: number,
+  { timeZone, weekday }: { timeZone?: string; weekday?: boolean } = {},
+): string {
+  const date = new Date(at);
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    ...(weekday ? { weekday: "short" } : {}),
+    ...(date.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
+    ...(timeZone ? { timeZone } : {}),
+  });
+}
+
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function describeTiming(timing: ScheduleTiming): string {
   if (timing.type === "once")
@@ -219,5 +248,5 @@ export function describeTiming(timing: ScheduleTiming): string {
       : timing.weekdays.join() === "1,2,3,4,5"
         ? "Weekdays"
         : timing.weekdays.map((d) => DAY_NAMES[d]).join(", ");
-  return `${days} at ${timing.time}`;
+  return `${days} at ${formatClockTime(timing.time)}`;
 }
