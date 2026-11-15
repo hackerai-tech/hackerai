@@ -1063,6 +1063,9 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
             commandId,
             triggerRunId: this.triggerRunId,
             enabled: isolated && this.connectionInfo.isDesktop === true,
+            // Requested execution intent, not maxWaitTime's delivery window.
+            requestedBackground: opts?.background === true,
+            requestedTimeoutMs: timeout,
           },
           () => ({
             sequence: lastStreamSequence,
