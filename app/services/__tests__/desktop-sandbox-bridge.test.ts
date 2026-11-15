@@ -20,6 +20,7 @@ import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
@@ -7813,6 +7814,396 @@ describe("native authorization send receipt", () => {
     });
   });
 
+  describe("connector phase snapshot", () => {
+    // A lost response: reqwest's deadline fired after its connector returned.
+    const timedOut = {
+      ...receipt,
+      timeout: true,
+      connect: false,
+      request: true,
+    };
+    const cause = {
+      version: 1,
+      ioKind: "not_exposed",
+      sourceDepth: 1,
+      sourceChainTruncated: false,
+    };
+    const connector = {
+      version: 1,
+      phase: "connected",
+      attempts: 1,
+      elapsedMs: 31,
+    };
+    const connectorGroup = {
+      native_authorization_connector_version: 1,
+      native_authorization_connector_phase: "connected",
+      native_authorization_connector_attempts: 1,
+      native_authorization_connector_elapsed_ms: 31,
+    };
+    const connectorKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key),
+      );
+    const causeKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key),
+      );
+    const channels = (call: NativeCall) => ({
+      receipt: call.onAuthorizationDiagnostic as MockChannel,
+      cause: call.onAuthorizationCauseDiagnostic as MockChannel,
+      connector: call.onAuthorizationConnectorDiagnostic as MockChannel,
+    });
+    /** Delivers the frozen receipts as a current native app sends them. */
+    const sendLegacy = (call: NativeCall) => {
+      channels(call).receipt.onmessage!(timedOut);
+      channels(call).cause.onmessage!(cause);
+    };
+
+    it("joins one snapshot from its own one-shot channel beside the unchanged groups", async () => {
+      const { calls, replies } = await run(async (call) => {
+        const { connector: v5 } = channels(call);
+        v5.onmessage!(connector);
+        // A duplicate cannot replace the first callback attempt.
+        v5.onmessage!({ ...connector, phase: "failed" });
+        sendLegacy(call);
+        return Promise.reject(unavailable);
+      });
+
+      expect(calls).toHaveLength(1);
+      const { receipt: v1, cause: v2, connector: v5 } = channels(calls[0]);
+      expect(v5).toBeDefined();
+      for (const other of [
+        calls[0].onEvent,
+        v1,
+        v2,
+        calls[0].onAuthorizationTransportDiagnostic,
+        calls[0].onAuthorizationIoDiagnostic,
+      ])
+        expect(v5).not.toBe(other);
+      expect(Object.keys(calls[0].message as object)).not.toContain(
+        "onAuthorizationConnectorDiagnostic",
+      );
+      // The product error is the identical single terminal frame.
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      expect(final.properties).toMatchObject({
+        terminalType: "error",
+        native_authorization_send_timeout: true,
+        native_authorization_cause_io_kind: "not_exposed",
+        ...connectorGroup,
+      });
+      const started = captures().find(
+        (event) => event.event === "desktop_ack_command_started",
+      );
+      expect(connectorKeys(started?.properties)).toEqual([]);
+      const enriched = sanitizeDesktopAckEvent({
+        ...final,
+        properties: { ...final.properties, $current_url: "PRIVATE" },
+      });
+      expect(enriched.properties).toMatchObject(connectorGroup);
+      expect(connectorKeys(enriched.properties)).toHaveLength(4);
+      // The frozen groups are unchanged beside it.
+      expect(nativeKeys(enriched.properties)).toHaveLength(8);
+      expect(causeKeys(enriched.properties)).toHaveLength(4);
+      const serialized = JSON.stringify([captures(), enriched]);
+      expect(serialized).not.toContain("PRIVATE");
+      expect(serialized).not.toContain(authorizationId);
+      expect(serialized).not.toContain(unavailable);
+    });
+
+    it.each([
+      { phase: "not_started", attempts: 0, elapsedMs: null },
+      { phase: "pending", attempts: 1, elapsedMs: 8_000 },
+      { phase: "failed", attempts: 1, elapsedMs: 0 },
+      { phase: "multiple", attempts: 8, elapsedMs: null },
+    ])("keeps the native snapshot as sent: %p", async (snapshot) => {
+      await run((call) => {
+        sendLegacy(call);
+        channels(call).connector.onmessage!({ version: 1, ...snapshot });
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({
+        native_authorization_connector_version: 1,
+        native_authorization_connector_phase: snapshot.phase,
+        native_authorization_connector_attempts: snapshot.attempts,
+        native_authorization_connector_elapsed_ms: snapshot.elapsedMs,
+      });
+    });
+
+    it("keeps the frozen groups unchanged when an older native app sends no snapshot", async () => {
+      const { calls } = await run((call) => {
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      expect(calls[0]).toHaveProperty("onAuthorizationConnectorDiagnostic");
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(causeKeys(finals()[0].properties)).toHaveLength(4);
+      // Unknown, never defaulted to a phase.
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("reports no snapshot without the same invocation's v1 receipt", async () => {
+      await run((call) => {
+        channels(call).connector.onmessage!(connector);
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+      expect(nativeKeys(finals()[0].properties)).toEqual([]);
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an extra private field", () => ({ ...connector, host: "PRIVATE" })],
+      ["a missing field", () => ({ ...connector, elapsedMs: undefined })],
+      [
+        "an omitted field",
+        () => {
+          const { elapsedMs: _elapsedMs, ...rest } = connector;
+          return rest;
+        },
+      ],
+      ["another version", () => ({ ...connector, version: 2 })],
+      ["a guessed DNS phase", () => ({ ...connector, phase: "dns" })],
+      ["a guessed write phase", () => ({ ...connector, phase: "written" })],
+      ["a private phase", () => ({ ...connector, phase: "PRIVATE" })],
+      [
+        "a single call without its time",
+        () => ({ ...connector, elapsedMs: null }),
+      ],
+      ["a single phase for two calls", () => ({ ...connector, attempts: 2 })],
+      [
+        "multiple calls with one time",
+        () => ({ phase: "multiple", attempts: 2, elapsedMs: 5, version: 1 }),
+      ],
+      [
+        "multiple calls counted once",
+        () => ({ phase: "multiple", attempts: 1, elapsedMs: null, version: 1 }),
+      ],
+      [
+        "an unbounded call count",
+        () => ({ phase: "multiple", attempts: 9, elapsedMs: null, version: 1 }),
+      ],
+      [
+        "a started connector without a call",
+        () => ({ ...connector, phase: "not_started", attempts: 0 }),
+      ],
+      ["an unbounded time", () => ({ ...connector, elapsedMs: 60_001 })],
+      ["a negative time", () => ({ ...connector, elapsedMs: -1 })],
+      ["a fractional time", () => ({ ...connector, elapsedMs: 0.5 })],
+      ["a string time", () => ({ ...connector, elapsedMs: "31" })],
+      ["a cause on the connector channel", () => cause],
+      ["a string", () => "PRIVATE"],
+      [
+        "a class instance",
+        () =>
+          Object.assign(
+            Object.create({ message: "PRIVATE" }) as object,
+            connector,
+          ),
+      ],
+      [
+        "a throwing getter",
+        () =>
+          Object.defineProperty({ ...connector }, "phase", {
+            enumerable: true,
+            get() {
+              throw new Error("PRIVATE");
+            },
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          return new Proxy(
+            {},
+            { getPrototypeOf: fail, ownKeys: fail, get: fail },
+          );
+        },
+      ],
+    ])(
+      "drops only the snapshot for %s and keeps the frozen groups",
+      async (_case, value) => {
+        const { replies } = await run((call) => {
+          sendLegacy(call);
+          channels(call).connector.onmessage!(value());
+          // The malformed first attempt closed the connector latch.
+          channels(call).connector.onmessage!(connector);
+          return reject(unavailable);
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: unavailable }),
+        ]);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(causeKeys(finals()[0].properties)).toHaveLength(4);
+        expect(connectorKeys(finals()[0].properties)).toEqual([]);
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("adds no snapshot to a successful command", async () => {
+      await run(async (call) => {
+        sendLegacy(call);
+        channels(call).connector.onmessage!(connector);
+        (call.onEvent as MockChannel).onmessage!({ type: "exit", exitCode: 0 });
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a snapshot after settlement and releases its callback", async () => {
+      let call!: NativeCall;
+      await run((native) => {
+        call = native;
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      const { connector: v5 } = channels(call);
+      expect(v5.cleanupCallback).toHaveBeenCalledTimes(1);
+      v5.onmessage!(connector);
+      expect(finals()).toHaveLength(1);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a snapshot observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run((call) => {
+          sendLegacy(call);
+          identity.mockReturnValue("another-user");
+          channels(call).connector.onmessage!(connector);
+          identity.mockReturnValue("user-456");
+          channels(call).connector.onmessage!(connector);
+          return reject(unavailable);
+        });
+        expect(finals()).toHaveLength(1);
+        expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+        expect(connectorKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("drops a snapshot that arrives after the connection is stopped", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          sendLegacy(call);
+          await pending;
+          channels(call).connector.onmessage!(connector);
+          return reject(unavailable);
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("keeps interleaved invocations' snapshots separate", async () => {
+      let arrived = 0;
+      let release!: () => void;
+      const all = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          const commandId = (call.message as { commandId: string }).commandId;
+          if (commandId === "connected")
+            channels(call).connector.onmessage!(connector);
+          if (++arrived === 3) release();
+          await all;
+          sendLegacy(call);
+          if (commandId === "pending")
+            channels(call).connector.onmessage!({
+              ...connector,
+              phase: "pending",
+              elapsedMs: 7_999,
+            });
+          return reject(unavailable);
+        },
+        { commandIds: ["connected", "pending", "legacy-only"] },
+      );
+      const byCommand = Object.fromEntries(
+        finals().map((event) => [
+          event.properties!.commandId,
+          event.properties,
+        ]),
+      );
+      expect(byCommand.connected).toMatchObject(connectorGroup);
+      expect(byCommand.pending).toMatchObject({
+        native_authorization_connector_phase: "pending",
+        native_authorization_connector_elapsed_ms: 7_999,
+      });
+      expect(nativeKeys(byCommand["legacy-only"])).toHaveLength(8);
+      expect(connectorKeys(byCommand["legacy-only"])).toEqual([]);
+    });
+
+    it("keeps every other channel when only the connector channel cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const create = jest.mocked(Channel).getMockImplementation()!;
+      jest
+        .mocked(Channel)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+      const { calls, replies } = await run((call) => {
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      expect(calls).toHaveLength(1);
+      for (const key of [
+        "onEvent",
+        "onAuthorizationDiagnostic",
+        "onAuthorizationCauseDiagnostic",
+        "onAuthorizationResponseDiagnostic",
+        "onAuthorizationMitigationDiagnostic",
+        "onAuthorizationTransportDiagnostic",
+        "onAuthorizationIoDiagnostic",
+      ])
+        expect(calls[0]).toHaveProperty(key);
+      expect(calls[0]).not.toHaveProperty("onAuthorizationConnectorDiagnostic");
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(nativeKeys(finals()[0].properties)).toHaveLength(8);
+      expect(connectorKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("never requests a snapshot without the v1 receipt channel", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      jest.mocked(Channel).mockImplementationOnce(() => {
+        throw new Error("channel unavailable");
+      });
+      const { calls } = await run(() => reject(unavailable));
+      expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationConnectorDiagnostic");
+    });
+  });
+
   describe("approval rejection response", () => {
     const vercelId = "iad1::abcde-1700000000000-0123456789ab";
     const rejection = {
@@ -8468,10 +8859,10 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt, cause, response, mitigation, transport and IO
-      // channels besides the output one.
+      // optional receipt, cause, response, mitigation, transport, IO and
+      // connector channels besides the output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 7,
+        options?.version || options?.acknowledged === false ? 1 : 8,
       );
       const optional = [
         "onAuthorizationDiagnostic",
@@ -8480,6 +8871,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationMitigationDiagnostic",
         "onAuthorizationTransportDiagnostic",
         "onAuthorizationIoDiagnostic",
+        "onAuthorizationConnectorDiagnostic",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",

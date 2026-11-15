@@ -38,6 +38,9 @@ base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
 # reqwest's own default-tls backend; used only to recognize its error type.
 native-tls = "=0.2.14"
+# The Layer and Service traits reqwest's tower re-exports, at their locked versions.
+tower-layer = "=0.3.3"
+tower-service = "=0.3.3"
 os_info = "3.14"
 gethostname = "1.1"
 sha2 = "0.10"

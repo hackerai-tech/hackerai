@@ -24,12 +24,14 @@ import {
 } from "../desktop-runtime-identity";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   type NativeAuthorizationCauseDiagnostic,
+  type NativeAuthorizationConnectorDiagnostic,
   type NativeAuthorizationDiagnostic,
   type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
@@ -1334,6 +1336,224 @@ describe("native authorization send receipt", () => {
         ...cause,
         ...transport,
       });
+    });
+  });
+
+  describe("connector phase snapshot", () => {
+    const connector: NativeAuthorizationConnectorDiagnostic = {
+      native_authorization_connector_version: 1,
+      native_authorization_connector_phase: "connected",
+      native_authorization_connector_attempts: 1,
+      native_authorization_connector_elapsed_ms: 31,
+    };
+    const connectorKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key),
+      );
+
+    it.each<Partial<NativeAuthorizationConnectorDiagnostic>>([
+      {},
+      {
+        native_authorization_connector_phase: "pending",
+        native_authorization_connector_elapsed_ms: 60_000,
+      },
+      {
+        native_authorization_connector_phase: "failed",
+        native_authorization_connector_elapsed_ms: 0,
+      },
+      {
+        native_authorization_connector_phase: "not_started",
+        native_authorization_connector_attempts: 0,
+        native_authorization_connector_elapsed_ms: null,
+      },
+      {
+        native_authorization_connector_phase: "multiple",
+        native_authorization_connector_attempts: 2,
+        native_authorization_connector_elapsed_ms: null,
+      },
+      {
+        native_authorization_connector_phase: "multiple",
+        native_authorization_connector_attempts: 8,
+        native_authorization_connector_elapsed_ms: null,
+      },
+    ])(
+      "joins the snapshot to a valid v1 group on a terminal-error final: %p",
+      (change) => {
+        const expected = { ...connector, ...change };
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization: group,
+          nativeAuthorizationConnector: { ...expected, message: "PRIVATE" },
+        });
+        expect(final?.properties).toMatchObject({ ...group, ...expected });
+        const enriched = enrich({
+          ...final!.properties,
+          native_authorization_connector_host: "PRIVATE",
+        });
+        expect(enriched.properties).toMatchObject({ ...group, ...expected });
+        expect(connectorKeys(enriched.properties)).toHaveLength(4);
+        expect(nativeKeys(enriched.properties)).toHaveLength(8);
+        expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("never reports a snapshot without a valid v1 group", () => {
+      for (const nativeAuthorization of [
+        undefined,
+        { ...group, native_authorization_send_elapsed_ms: -1 },
+      ]) {
+        const final = settle({
+          ...terminalError,
+          nativeAuthorization,
+          nativeAuthorizationConnector: connector,
+        });
+        expect(final?.properties).toMatchObject({ terminalType: "error" });
+        expect(connectorKeys(final!.properties)).toEqual([]);
+        expect(
+          connectorKeys(
+            enrich({
+              terminalType: "error",
+              ...nativeAuthorization,
+              ...connector,
+            }).properties,
+          ),
+        ).toEqual([]);
+      }
+      // Nor on a successful or nonzero exit, a start or a summary.
+      const exitFinal = settle({
+        ...result,
+        terminalExitCode: 1,
+        nativeAuthorization: group,
+        nativeAuthorizationConnector: connector,
+      });
+      expect(connectorKeys(exitFinal!.properties)).toEqual([]);
+      expect(
+        connectorKeys(
+          enrich({ terminalType: "exit", ...group, ...connector }).properties,
+        ),
+      ).toEqual([]);
+      for (const event of [
+        "desktop_ack_command_started",
+        "desktop_ack_delivery_summary",
+      ])
+        expect(
+          connectorKeys(
+            sanitizeDesktopAckEvent({
+              event,
+              properties: { terminalType: "error", ...group, ...connector },
+            }).properties,
+          ),
+        ).toEqual([]);
+    });
+
+    it("never defaults a missing snapshot to a phase", () => {
+      const final = settle({ ...terminalError, nativeAuthorization: group });
+      expect(final?.properties).toMatchObject(group);
+      expect(connectorKeys(final!.properties)).toEqual([]);
+      expect(enrich({ terminalType: "error", ...group }).properties).toEqual({
+        terminalType: "error",
+        ...group,
+      });
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+      ["unsupported version", { native_authorization_connector_version: 2 }],
+      ["string version", { native_authorization_connector_version: "1" }],
+      [
+        "missing version",
+        { native_authorization_connector_version: undefined },
+      ],
+      ["guessed DNS phase", { native_authorization_connector_phase: "dns" }],
+      [
+        "guessed TLS phase",
+        { native_authorization_connector_phase: "tls_handshake" },
+      ],
+      ["private phase", { native_authorization_connector_phase: "PRIVATE" }],
+      ["missing phase", { native_authorization_connector_phase: undefined }],
+      ["string attempts", { native_authorization_connector_attempts: "1" }],
+      [
+        "missing attempts",
+        { native_authorization_connector_attempts: undefined },
+      ],
+      [
+        "a single phase for two calls",
+        { native_authorization_connector_attempts: 2 },
+      ],
+      [
+        "a single call without its time",
+        { native_authorization_connector_elapsed_ms: null },
+      ],
+      [
+        "a missing time",
+        { native_authorization_connector_elapsed_ms: undefined },
+      ],
+      ["unbounded time", { native_authorization_connector_elapsed_ms: 60_001 }],
+      ["negative time", { native_authorization_connector_elapsed_ms: -1 }],
+      ["fractional time", { native_authorization_connector_elapsed_ms: 0.5 }],
+      ["NaN time", { native_authorization_connector_elapsed_ms: NaN }],
+      ["string time", { native_authorization_connector_elapsed_ms: "31" }],
+      [
+        "multiple calls with one time",
+        {
+          native_authorization_connector_phase: "multiple",
+          native_authorization_connector_attempts: 2,
+        },
+      ],
+      [
+        "an unbounded call count",
+        {
+          native_authorization_connector_phase: "multiple",
+          native_authorization_connector_attempts: 9,
+          native_authorization_connector_elapsed_ms: null,
+        },
+      ],
+      [
+        "a call counted without starting",
+        {
+          native_authorization_connector_phase: "not_started",
+          native_authorization_connector_elapsed_ms: null,
+        },
+      ],
+    ])("drops only the snapshot for %s", (_case, change) => {
+      const invalid = { ...connector, ...change };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: group,
+        nativeAuthorizationConnector: invalid,
+      });
+      // The original v1 group is unaffected.
+      expect(final?.properties).toMatchObject(group);
+      expect(connectorKeys(final!.properties)).toEqual([]);
+      const enriched = enrich({ terminalType: "error", ...group, ...invalid });
+      expect(enriched.properties).toEqual({ terminalType: "error", ...group });
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    });
+
+    it("never runs a snapshot getter at before_send and keeps the v1 group", () => {
+      let reads = 0;
+      const properties: Record<string, unknown> = {
+        terminalType: "error",
+        ...group,
+        ...connector,
+      };
+      Object.defineProperty(
+        properties,
+        "native_authorization_connector_phase",
+        {
+          enumerable: true,
+          get() {
+            reads++;
+            throw new Error("PRIVATE");
+          },
+        },
+      );
+      const sanitized = sanitizeDesktopAckEvent({
+        event: "desktop_ack_command_settled",
+        properties,
+      }).properties!;
+      expect(reads).toBe(0);
+      expect(connectorKeys(sanitized)).toEqual([]);
+      expect(sanitized).toEqual({ terminalType: "error", ...group });
     });
   });
 });

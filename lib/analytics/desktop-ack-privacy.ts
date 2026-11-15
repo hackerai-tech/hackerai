@@ -1,11 +1,13 @@
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
+  NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
   NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
   readNativeAuthorizationCause,
+  readNativeAuthorizationConnector,
   readNativeAuthorizationDiagnostic,
   readNativeAuthorizationIo,
   readNativeAuthorizationMitigation,
@@ -165,6 +167,11 @@ export function sanitizeDesktopAckEvent<
       cause: nativeAuthorizationCause,
       transport: nativeAuthorizationTransport,
     });
+    // The connector group joins a valid v1 group the same way; an invalid one
+    // is dropped alone and never defaults to a phase.
+    const nativeAuthorizationConnector = nativeAuthorization
+      ? readNativeAuthorizationConnector(event.properties)
+      : null;
     // The response group is validated on its own, as the same kind of data
     // copy; its validity neither depends on nor admits the send groups.
     const nativeAuthorizationResponse =
@@ -186,6 +193,7 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_IO_PROPERTIES.has(key) &&
+            !NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
         )
@@ -215,6 +223,8 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, nativeAuthorizationTransport);
     if (nativeAuthorizationIo)
       Object.assign(event.properties, nativeAuthorizationIo);
+    if (nativeAuthorizationConnector)
+      Object.assign(event.properties, nativeAuthorizationConnector);
     if (nativeAuthorizationResponse)
       Object.assign(event.properties, nativeAuthorizationResponse);
     if (nativeAuthorizationMitigation)

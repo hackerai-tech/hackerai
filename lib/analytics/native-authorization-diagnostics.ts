@@ -24,6 +24,14 @@
  * cause. It is only reported together with valid v1, cause and unmapped
  * transport receipts for the same IO error.
  *
+ * A newer native app also sends a separate connector snapshot on its own
+ * channel, taken when the send failed: whether reqwest's connector was never
+ * called, still pending, had returned a connection or an error, or was called
+ * more than once (no single phase is claimed), with the single call's bounded
+ * monotonic time. `connected` is only the connector's own result, never a
+ * written or delivered request, and DNS, TCP and TLS are not distinguished. It
+ * is likewise only reported together with a valid v1 receipt.
+ *
  * A response receipt is independent of both: the native approval check
  * rejected an answered POST. It holds the HTTP status, a closed approval
  * class, the origin class, the compiled platform and the shape of the
@@ -142,6 +150,16 @@ const OS_FAMILIES = [
 ] as const;
 const IO_KEYS = ["version", "ioKind", "osFamily", "sourceDepth"] as const;
 
+const CONNECTOR_PHASES = [
+  "not_started",
+  "pending",
+  "connected",
+  "failed",
+  "multiple",
+] as const;
+const MAX_CONNECTOR_ATTEMPTS = 8;
+const CONNECTOR_KEYS = ["version", "phase", "attempts", "elapsedMs"] as const;
+
 /** `json_error` covers both an unreadable body and an undecodable one. */
 const APPROVALS = [
   "not_checked",
@@ -186,6 +204,7 @@ type IoKind = (typeof IO_KINDS)[number];
 type IoKindDetail = (typeof IO_KIND_DETAILS)[number];
 type UnmappedIoKind = (typeof UNMAPPED_IO_KINDS)[number];
 type OsFamily = (typeof OS_FAMILIES)[number];
+type ConnectorPhase = (typeof CONNECTOR_PHASES)[number];
 type Approval = (typeof APPROVALS)[number];
 type RequestIdShape = (typeof REQUEST_ID_SHAPES)[number];
 type Mitigation = (typeof MITIGATIONS)[number];
@@ -698,6 +717,103 @@ export function readNativeAuthorizationIo(
           osFamily,
           sourceDepth,
         } as NativeAuthorizationSendIo)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAuthorizationSendConnector {
+  readonly phase: ConnectorPhase;
+  readonly attempts: number;
+  readonly elapsedMs: number | null;
+}
+
+export interface NativeAuthorizationConnectorDiagnostic {
+  readonly native_authorization_connector_version: 1;
+  /** The connector's own state at the send failure; never a request write. */
+  readonly native_authorization_connector_phase: ConnectorPhase;
+  readonly native_authorization_connector_attempts: number;
+  /** The single call's time; null when there is no single call. */
+  readonly native_authorization_connector_elapsed_ms: number | null;
+}
+
+const CONNECTOR_PROPERTIES = [
+  "native_authorization_connector_version",
+  "native_authorization_connector_phase",
+  "native_authorization_connector_attempts",
+  "native_authorization_connector_elapsed_ms",
+] as const satisfies readonly (keyof NativeAuthorizationConnectorDiagnostic)[];
+
+export const NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES: ReadonlySet<string> =
+  new Set(CONNECTOR_PROPERTIES);
+
+/** The native snapshot's invariants: no call has no time, one call has its
+ * own bounded time, and 2..8 calls claim no single phase or time. */
+const isConnector = (
+  phase: unknown,
+  attempts: unknown,
+  elapsedMs: unknown,
+): boolean =>
+  CONNECTOR_PHASES.some((value) => value === phase) &&
+  typeof attempts === "number" &&
+  Number.isSafeInteger(attempts) &&
+  (phase === "not_started"
+    ? attempts === 0 && elapsedMs === null
+    : phase === "multiple"
+      ? attempts >= 2 &&
+        attempts <= MAX_CONNECTOR_ATTEMPTS &&
+        elapsedMs === null
+      : attempts === 1 && isElapsed(elapsedMs));
+
+/** Copy only the closed native connector schema; anything else is dropped. */
+export function parseNativeAuthorizationSendConnector(
+  value: unknown,
+): NativeAuthorizationSendConnector | null {
+  try {
+    const values = readClosedObject(value, CONNECTOR_KEYS);
+    if (!values) return null;
+    const [version, phase, attempts, elapsedMs] = values;
+    if (version !== 1 || !isConnector(phase, attempts, elapsedMs)) return null;
+    return Object.freeze({
+      phase,
+      attempts,
+      elapsedMs,
+    } as NativeAuthorizationSendConnector);
+  } catch {
+    return null;
+  }
+}
+
+export function nativeAuthorizationConnectorDiagnostic(
+  connector: NativeAuthorizationSendConnector,
+): NativeAuthorizationConnectorDiagnostic {
+  return Object.freeze({
+    native_authorization_connector_version: 1,
+    native_authorization_connector_phase: connector.phase,
+    native_authorization_connector_attempts: connector.attempts,
+    native_authorization_connector_elapsed_ms: connector.elapsedMs,
+  });
+}
+
+/** Read the complete connector group from any property bag's own data
+ * properties, or nothing at all. Callers join it only to a valid v1 group;
+ * a missing group is unknown, never `not_started`. */
+export function readNativeAuthorizationConnector(
+  source: unknown,
+): NativeAuthorizationConnectorDiagnostic | null {
+  if (typeof source !== "object" || source === null) return null;
+  try {
+    const [version, phase, attempts, elapsedMs] = readDataProperties(
+      source,
+      CONNECTOR_PROPERTIES,
+    );
+    return version === 1 && isConnector(phase, attempts, elapsedMs)
+      ? nativeAuthorizationConnectorDiagnostic({
+          phase,
+          attempts,
+          elapsedMs,
+        } as NativeAuthorizationSendConnector)
       : null;
   } catch {
     return null;

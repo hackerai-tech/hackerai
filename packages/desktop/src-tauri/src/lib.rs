@@ -1,3 +1,4 @@
+mod authorization_connector_diagnostics;
 mod authorization_response_diagnostics;
 mod authorization_send_diagnostics;
 mod platform;
@@ -1077,16 +1078,18 @@ async fn redeem_authorized_message<R: tauri::Runtime>(
                 authorization_response_diagnostics::ResponseMitigationReceipt,
             ),
         >,
+        None::<fn(authorization_connector_diagnostics::ConnectorPhaseSnapshot)>,
     )
     .await
 }
 
-async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G>(
+async fn redeem_authorized_message_observed<R: tauri::Runtime, F, G, H>(
     authorization_id: &str,
     mut message: serde_json::Value,
     window: &tauri::WebviewWindow<R>,
     send_failure_observer: Option<F>,
     response_rejection_observer: Option<G>,
+    connector_phase_observer: Option<H>,
 ) -> Result<serde_json::Value, String>
 where
     F: FnOnce(
@@ -1098,6 +1101,7 @@ where
         authorization_response_diagnostics::ResponseRejectionReceipt,
         authorization_response_diagnostics::ResponseMitigationReceipt,
     ),
+    H: FnOnce(authorization_connector_diagnostics::ConnectorPhaseSnapshot),
 {
     if authorization_id.len() != 64
         || !authorization_id
@@ -1119,14 +1123,23 @@ where
     let endpoint = desktop_authorization_endpoint(&loaded_url)?;
     let origin_class = authorization_origin_class(&loaded_url);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::none())
+    // Without a connector observer the builder is unchanged and unlayered.
+    let (client_builder, connector_phase) = authorization_connector_diagnostics::observe_connector(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none()),
+        connector_phase_observer,
+    );
+    let client = client_builder
         .build()
         .map_err(|_| "Desktop authorization client unavailable".to_string())?;
     let request = client
         .post(endpoint)
         .json(&serde_json::json!({ "id": authorization_id, "digest": digest }));
+    let send_failure_observer = authorization_connector_diagnostics::with_connector_phase(
+        send_failure_observer,
+        connector_phase,
+    );
     let response =
         authorization_send_diagnostics::observed_send(request, origin_class, send_failure_observer)
             .await
@@ -1462,7 +1475,11 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     // An unmapped first IO error's remaining kind and OS code family, on its
     // own channel so the transport detail's shape and buckets are frozen.
     on_authorization_io_diagnostic: Option<serde_json::Value>,
+    // The send failure's connector phase, on its own channel so every send
+    // receipt's shape is frozen. Without it the client keeps no connector layer.
+    on_authorization_connector_diagnostic: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    use authorization_connector_diagnostics::ConnectorPhaseSnapshot;
     use authorization_response_diagnostics::{ResponseMitigationReceipt, ResponseRejectionReceipt};
     use authorization_send_diagnostics::{
         SendFailureCause, SendFailureReceipt, SendIoSupplement, SendTransportDetail,
@@ -1515,12 +1532,21 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             }
         }
     });
+    let connector_phase_observer =
+        authorization_diagnostic_channel_id(on_authorization_connector_diagnostic)
+            .map(|id| id.channel_on::<R, ConnectorPhaseSnapshot>(webview()))
+            .map(|channel| {
+                move |snapshot: ConnectorPhaseSnapshot| {
+                    let _ = channel.send(snapshot);
+                }
+            });
     let message = redeem_authorized_message_observed(
         &authorization_id,
         message,
         &window,
         send_failure_observer,
         response_rejection_observer,
+        connector_phase_observer,
     )
     .await?;
     authorized_operation_type(&message, &["command"])?;
@@ -2376,6 +2402,35 @@ mod tests {
             .map(|_| ())
     }
 
+    // The published ABI with the IO supplement argument has no connector
+    // argument.
+    #[tauri::command(rename = "execute_authorized_stream_command")]
+    async fn io_authorized_command_fixture<R: tauri::Runtime>(
+        window: tauri::WebviewWindow<R>,
+        authorization_id: String,
+        message: serde_json::Value,
+        on_event: tauri::ipc::Channel<StreamEvent>,
+        on_authorization_diagnostic: Option<serde_json::Value>,
+        on_authorization_cause_diagnostic: Option<serde_json::Value>,
+        on_authorization_response_diagnostic: Option<serde_json::Value>,
+        on_authorization_mitigation_diagnostic: Option<serde_json::Value>,
+        on_authorization_transport_diagnostic: Option<serde_json::Value>,
+        on_authorization_io_diagnostic: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let _ = (
+            on_event,
+            on_authorization_diagnostic,
+            on_authorization_cause_diagnostic,
+            on_authorization_response_diagnostic,
+            on_authorization_mitigation_diagnostic,
+            on_authorization_transport_diagnostic,
+            on_authorization_io_diagnostic,
+        );
+        redeem_authorized_message(&authorization_id, message, &window)
+            .await
+            .map(|_| ())
+    }
+
     #[test]
     fn authorization_diagnostics_optional_arguments_keep_original_command_errors() {
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
@@ -2387,6 +2442,7 @@ mod tests {
             "response",
             "mitigation",
             "transport",
+            "io",
             "current",
         ] {
             let builder = mock_builder().manage(StreamCommandState::default());
@@ -2404,6 +2460,9 @@ mod tests {
                 "transport" => builder.invoke_handler(tauri::generate_handler![
                     transport_authorized_command_fixture
                 ]),
+                "io" => {
+                    builder.invoke_handler(tauri::generate_handler![io_authorized_command_fixture])
+                }
                 _ => builder
                     .invoke_handler(tauri::generate_handler![execute_authorized_stream_command]),
             };
@@ -2414,9 +2473,18 @@ mod tests {
                 .build()
                 .unwrap();
             type Optional = Option<serde_json::Value>;
-            type Optionals = (Optional, Optional, Optional, Optional, Optional, Optional);
+            type Optionals = (
+                Optional,
+                Optional,
+                Optional,
+                Optional,
+                Optional,
+                Optional,
+                Optional,
+            );
             let invoke =
-                |id: &str, (diagnostic, cause, response, mitigation, transport, io): Optionals| {
+                |id: &str,
+                 (diagnostic, cause, response, mitigation, transport, io, connector): Optionals| {
                     let mut body = serde_json::json!({
                         "authorizationId": id,
                         "message": { "type": "command", "commandId": "synthetic", "command": "true" },
@@ -2440,6 +2508,9 @@ mod tests {
                     if let Some(value) = io {
                         body["onAuthorizationIoDiagnostic"] = value;
                     }
+                    if let Some(value) = connector {
+                        body["onAuthorizationConnectorDiagnostic"] = value;
+                    }
                     get_ipc_response(
                         &window,
                         tauri::webview::InvokeRequest {
@@ -2462,58 +2533,26 @@ mod tests {
                 Some(serde_json::json!("__CHANNEL__:2")),
             ];
             // Each optional channel alone, the published send-and-cause pair,
-            // three-, four- and five-channel sets, then all six together as
-            // current frontends send them.
+            // three- to six-channel sets, then all seven together as current
+            // frontends send them.
             let channel = |id: u8| Some(serde_json::json!(format!("__CHANNEL__:{id}")));
-            let variants: Vec<_> = optional
-                .iter()
-                .map(|value| (value.clone(), None, None, None, None, None))
-                .chain(
-                    optional
-                        .iter()
-                        .map(|value| (None, value.clone(), None, None, None, None)),
-                )
-                .chain(
-                    optional
-                        .iter()
-                        .map(|value| (None, None, value.clone(), None, None, None)),
-                )
-                .chain(
-                    optional
-                        .iter()
-                        .map(|value| (None, None, None, value.clone(), None, None)),
-                )
-                .chain(
-                    optional
-                        .iter()
-                        .map(|value| (None, None, None, None, value.clone(), None)),
-                )
-                .chain(
-                    optional
-                        .iter()
-                        .map(|value| (None, None, None, None, None, value.clone())),
-                )
-                .chain([
-                    (channel(2), channel(3), None, None, None, None),
-                    (channel(2), channel(3), channel(4), None, None, None),
-                    (channel(2), channel(3), channel(4), channel(5), None, None),
-                    (
-                        channel(2),
-                        channel(3),
-                        channel(4),
-                        channel(5),
-                        channel(6),
-                        None,
-                    ),
-                    (
-                        channel(2),
-                        channel(3),
-                        channel(4),
-                        channel(5),
-                        channel(6),
-                        channel(7),
-                    ),
-                ])
+            let alone = |slot: usize, value: &Optional| {
+                let mut optionals: [Optional; 7] = Default::default();
+                optionals[slot] = value.clone();
+                let [a, b, c, d, e, f, g] = optionals;
+                (a, b, c, d, e, f, g)
+            };
+            let first = |count: u8| {
+                let mut optionals: [Optional; 7] = Default::default();
+                for (slot, id) in (2..2 + count).enumerate() {
+                    optionals[slot] = channel(id);
+                }
+                let [a, b, c, d, e, f, g] = optionals;
+                (a, b, c, d, e, f, g)
+            };
+            let variants: Vec<Optionals> = (0..7)
+                .flat_map(|slot| optional.iter().map(move |value| alone(slot, value)))
+                .chain((2..=7).map(first))
                 .collect();
             for variant in variants.clone() {
                 assert_eq!(
