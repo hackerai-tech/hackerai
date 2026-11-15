@@ -11,6 +11,10 @@ jest.mock("@/lib/db/actions", () => ({
   updateNote: jest.fn(),
   deleteNote: jest.fn(),
 }));
+const mockEvent = jest.fn();
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { event: (...args: unknown[]) => mockEvent(...args) },
+}));
 
 const {
   createNote: mockCreateNote,
@@ -399,6 +403,7 @@ describe("relevant-recall note tools", () => {
     const saved = JSON.parse(JSON.stringify(pruned.messages)) as UIMessage[];
 
     mockGetNoteContent.mockClear();
+    mockEvent.mockClear();
     const onFormatterFailure = jest.fn();
     const modelMessages = await convertToModelMessages(saved, {
       tools: createPromptSerializationTools(
@@ -420,6 +425,8 @@ describe("relevant-recall note tools", () => {
     });
     expect(onFormatterFailure).not.toHaveBeenCalled();
     expect(mockGetNoteContent).not.toHaveBeenCalled();
+    // Replaying history is not a read.
+    expect(mockEvent).not.toHaveBeenCalled();
   });
 
   it("bounds historical get_note text to the response cap at a safe character", () => {
@@ -443,5 +450,117 @@ describe("relevant-recall note tools", () => {
     expect(kept).not.toMatch(
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
     );
+  });
+});
+
+describe("get_note read telemetry", () => {
+  const revision = "0123456789abcdef";
+  const page = (content: string, offset = 0, length = content.length) => ({
+    success: true,
+    note: {
+      note_id: "SECRET-ID",
+      title: "SECRET-TITLE",
+      category: "findings",
+      tags: ["SECRET-TAG"],
+      target: "secret.example",
+      updated_at: 1,
+      content,
+      content_offset: offset,
+      content_length: length,
+      content_revision: revision,
+    },
+  });
+  /** Properties of each notes_read_result, without the stable attribution. */
+  const reads = () =>
+    mockEvent.mock.calls.map(([name, properties]) => {
+      expect(name).toBe("notes_read_result");
+      const { userId, feature_flag, duration_ms, ...rest } = properties as {
+        [key: string]: unknown;
+      };
+      expect([userId, feature_flag]).toEqual([
+        "user-1",
+        "notes_relevant_recall_v1",
+      ]);
+      expect(Number.isInteger(duration_ms)).toBe(true);
+      return rest;
+    });
+
+  beforeEach(() => {
+    mockGetNoteContent.mockReset();
+    mockEvent.mockReset();
+  });
+
+  it("records each executed read, its continuation and whether more remains", async () => {
+    const tool = createGetNote(context);
+    mockGetNoteContent.mockResolvedValueOnce(page("SECRET-BODY"));
+    await runTool(tool, { note_id: "SECRET-ID" });
+    // A later page of a longer note, read through its continuation cursor.
+    mockGetNoteContent.mockResolvedValueOnce(
+      page("x".repeat(40_000), 40, 80_000),
+    );
+    const cursor = encodeNoteCursor("SECRET-ID", revision, 40);
+    const result = (await runTool(tool, { note_id: "SECRET-ID", cursor })) as {
+      note: { next_cursor?: string };
+    };
+    expect(result.note.next_cursor).toBeDefined();
+
+    expect(reads()).toEqual([
+      { outcome: "success", continuation: false, has_more: false },
+      { outcome: "success", continuation: true, has_more: true },
+    ]);
+    // Rendering the output for the model is not another read.
+    modelText(tool, result);
+    expect(mockEvent).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(/SECRET|n2:|xxxx/);
+  });
+
+  it("records failed and retried cursor reads without cursors or error text", async () => {
+    const tool = createGetNote(context);
+    const stale = encodeNoteCursor("SECRET-ID", revision, 40);
+    mockGetNoteContent.mockResolvedValueOnce({
+      success: false,
+      error:
+        "Note 'SECRET-ID' changed since the previous page. Restart get_note without a cursor to read the current version.",
+    });
+    await runTool(tool, { note_id: "SECRET-ID", cursor: stale });
+    // A malformed cursor fails before any lookup.
+    await runTool(tool, { note_id: "SECRET-ID", cursor: "n2:SECRET" });
+    mockGetNoteContent.mockRejectedValueOnce(new Error("SECRET-ERROR"));
+    await runTool(tool, { note_id: "SECRET-ID" });
+    // The model restarts without a cursor, as the error instructs.
+    mockGetNoteContent.mockResolvedValueOnce(page("SECRET-BODY"));
+    await runTool(tool, { note_id: "SECRET-ID", cursor: null });
+
+    expect(mockGetNoteContent).toHaveBeenCalledTimes(3);
+    expect(reads()).toEqual([
+      { outcome: "error", continuation: true },
+      { outcome: "error", continuation: true },
+      { outcome: "error", continuation: false },
+      { outcome: "success", continuation: false, has_more: false },
+    ]);
+    expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(
+      /SECRET|n2:|Restart/,
+    );
+  });
+
+  it("returns the same read result when telemetry throws", async () => {
+    mockEvent.mockImplementation(() => {
+      throw new Error("analytics down");
+    });
+    const tool = createGetNote(context);
+    mockGetNoteContent.mockResolvedValueOnce(page("body"));
+    expect(await runTool(tool, { note_id: "SECRET-ID" })).toEqual({
+      success: true,
+      note: page("body").note,
+    });
+    mockGetNoteContent.mockResolvedValueOnce({
+      success: false,
+      error: "Note 'x' not found",
+    });
+    expect(await runTool(tool, { note_id: "x" })).toEqual({
+      success: false,
+      error: "Note 'x' not found",
+    });
+    expect(mockEvent).toHaveBeenCalledTimes(2);
   });
 });

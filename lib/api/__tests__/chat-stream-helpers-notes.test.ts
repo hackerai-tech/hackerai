@@ -475,6 +475,13 @@ describe("relevant recall injection and refresh", () => {
     mockEvent.mockReset();
   });
 
+  /** Outcome of each recorded event, by event name, in order. */
+  const recorded = () =>
+    mockEvent.mock.calls.map(
+      ([name, properties]) =>
+        `${name}:${(properties as { outcome?: string }).outcome ?? ""}`,
+    );
+
   it("replaces the general dump and records one exposure for a non-empty block", async () => {
     mockRecallCandidates.mockResolvedValue([alpha]);
     const result = await injectNotesIntoMessages([userMessage], {
@@ -484,14 +491,37 @@ describe("relevant recall injection and refresh", () => {
     const text = (result[0].parts[0] as { text: string }).text;
     expect(text).toContain("Alpha IDOR");
     expect(mockGetNotes).not.toHaveBeenCalled();
-    expect(mockEvent).toHaveBeenCalledTimes(1);
+    expect(recorded()).toEqual([
+      "notes_recall_result:hit",
+      "notes_recall_exposed:",
+    ]);
+  });
+
+  it("records a lookup without exposure when nothing matches", async () => {
+    mockRecallCandidates.mockResolvedValue([
+      { ...alpha, target: "beta.example" },
+    ]);
+    expect(await injectNotesIntoMessages([userMessage], recallOpts)).toEqual([
+      userMessage,
+    ]);
+    expect(recorded()).toEqual(["notes_recall_result:no_match"]);
   });
 
   it("continues without notes and without exposure when recall fails", async () => {
     mockRecallCandidates.mockRejectedValue(new Error("unavailable"));
     const result = await injectNotesIntoMessages([userMessage], recallOpts);
     expect(result).toEqual([userMessage]);
-    expect(mockEvent).not.toHaveBeenCalled();
+    expect(recorded()).toEqual(["notes_recall_result:error"]);
+  });
+
+  it("counts each refresh as a lookup without recording another exposure", async () => {
+    mockRecallCandidates.mockResolvedValue([alpha]);
+    const refreshed = await refreshNotesInModelMessages(
+      [{ role: "user", content: "retest alpha.example invoices" }],
+      recallOpts,
+    );
+    expect(refreshed[0].content).toContain("Alpha IDOR");
+    expect(recorded()).toEqual(["notes_recall_result:hit"]);
   });
 
   it("never recalls when notes are opted out", async () => {
@@ -507,6 +537,7 @@ describe("relevant recall injection and refresh", () => {
       shouldIncludeNotes: false,
     });
     expect(mockRecallCandidates).not.toHaveBeenCalled();
+    expect(mockEvent).not.toHaveBeenCalled();
   });
 
   it("keeps the previous block when a refresh lookup fails", async () => {

@@ -14,6 +14,7 @@ import {
   parseRecheckAfter,
   safeCutIndex,
 } from "@/lib/notes/policy";
+import { recordNoteReadResult } from "@/lib/notes/analytics";
 import { safeCountTokens } from "@/lib/token-utils";
 import {
   createNoteTool,
@@ -398,37 +399,63 @@ export const createListNotes = (context: ToolContext, recall = false) => {
   });
 };
 
+async function readNotePage(
+  context: ToolContext,
+  { note_id, cursor }: GetNoteToolInput,
+) {
+  const position = decodeNoteCursor(cursor, note_id);
+  if (!position.ok) return { success: false, error: position.error };
+  try {
+    const result = await getNoteContent({
+      userId: context.userID,
+      noteId: note_id,
+      offset: position.offset,
+      ...(position.revision !== undefined && {
+        revision: position.revision,
+      }),
+    });
+    if (!result.success || !result.note) {
+      return {
+        success: false,
+        error: result.error || `Note '${note_id}' not found`,
+      };
+    }
+    return { success: true, note: fitNotePage(result.note) };
+  } catch (error) {
+    console.error("Get note tool error:", error);
+    return {
+      success: false,
+      error: `Failed to read note: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /**
  * Read one owned note in full, in pages capped at an exact token budget.
  */
 export const createGetNote = (context: ToolContext) =>
   tool({
     ...getNoteTool,
-    execute: async ({ note_id, cursor }: GetNoteToolInput) => {
-      const position = decodeNoteCursor(cursor, note_id);
-      if (!position.ok) return { success: false, error: position.error };
+    execute: async (input: GetNoteToolInput) => {
+      const startedAt = Date.now();
+      let output: Awaited<ReturnType<typeof readNotePage>> | undefined;
       try {
-        const result = await getNoteContent({
-          userId: context.userID,
-          noteId: note_id,
-          offset: position.offset,
-          ...(position.revision !== undefined && {
-            revision: position.revision,
-          }),
-        });
-        if (!result.success || !result.note) {
-          return {
-            success: false,
-            error: result.error || `Note '${note_id}' not found`,
-          };
-        }
-        return { success: true, note: fitNotePage(result.note) };
-      } catch (error) {
-        console.error("Get note tool error:", error);
-        return {
-          success: false,
-          error: `Failed to read note: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        output = await readNotePage(context, input);
+        return output;
+      } finally {
+        const continuation = Boolean(input.cursor);
+        const page = output?.note;
+        recordNoteReadResult(
+          context.userID,
+          startedAt,
+          page
+            ? {
+                outcome: "success",
+                continuation,
+                hasMore: page.next_cursor !== undefined,
+              }
+            : { outcome: "error", continuation },
+        );
       }
     },
     toModelOutput({ output }) {
