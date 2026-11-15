@@ -14,6 +14,10 @@ import {
   readNativeAuthorizationResponse,
   readNativeAuthorizationTransport,
 } from "./native-authorization-diagnostics";
+import {
+  DESKTOP_TERMINAL_ERROR_PROPERTIES,
+  readDesktopTerminalErrorDiagnostic,
+} from "./desktop-terminal-error-diagnostics";
 
 const STOP_SOURCES = [
   "bridge_stop",
@@ -184,6 +188,13 @@ export function sanitizeDesktopAckEvent<
     const nativeAuthorizationMitigation = nativeAuthorizationResponse
       ? readNativeAuthorizationMitigation(event.properties)
       : null;
+    // The terminal error kind is independent of every native authorization
+    // group, and likewise survives only as the validated data copy.
+    const terminalError =
+      event.event === "desktop_ack_command_settled" &&
+      event.properties.terminalType === "error"
+        ? readDesktopTerminalErrorDiagnostic(event.properties)
+        : null;
     const properties = event.properties;
     event.properties = Object.fromEntries(
       Object.keys(properties)
@@ -195,7 +206,8 @@ export function sanitizeDesktopAckEvent<
             !NATIVE_AUTHORIZATION_IO_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES.has(key) &&
-            !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key),
+            !NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES.has(key) &&
+            !DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
         )
         .map((key) => [key, properties[key]] as const)
         .filter(
@@ -229,6 +241,7 @@ export function sanitizeDesktopAckEvent<
       Object.assign(event.properties, nativeAuthorizationResponse);
     if (nativeAuthorizationMitigation)
       Object.assign(event.properties, nativeAuthorizationMitigation);
+    if (terminalError) Object.assign(event.properties, terminalError);
   }
   delete event.$set;
   delete event.$set_once;

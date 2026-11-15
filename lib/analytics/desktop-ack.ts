@@ -27,6 +27,10 @@ import {
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "./native-authorization-diagnostics";
+import {
+  readDesktopTerminalErrorDiagnostic,
+  type DesktopTerminalErrorDiagnostic,
+} from "./desktop-terminal-error-diagnostics";
 
 interface DesktopAckContext {
   connectionId: string | null;
@@ -53,6 +57,8 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
   /** Same response's mitigation marker; only joined to a valid response. */
   nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
+  /** Same invocation's first terminal error source; only for a terminal error. */
+  terminalError?: DesktopTerminalErrorDiagnostic;
 };
 
 const emptyCounts = () => ({
@@ -309,6 +315,10 @@ export class DesktopAckTelemetry {
             result.nativeAuthorizationMitigation,
           )
         : null;
+      const terminalError =
+        result.terminalType === "error"
+          ? readDesktopTerminalErrorDiagnostic(result.terminalError)
+          : null;
       this.capture(
         "desktop_ack_command_settled",
         {
@@ -349,6 +359,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorizationConnector,
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
+          ...terminalError,
         },
         dedupeKey,
       );

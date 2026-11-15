@@ -46,6 +46,11 @@ import {
   isDesktopAckStopSource,
   type DesktopAckStopSource,
 } from "@/lib/analytics/desktop-ack-privacy";
+import {
+  classifyNativeTerminalError,
+  desktopTerminalErrorDiagnostic,
+  type DesktopTerminalErrorKind,
+} from "@/lib/analytics/desktop-terminal-error-diagnostics";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
@@ -1439,6 +1444,16 @@ export class DesktopSandboxBridge {
     let responseReceipt: NativeAuthorizationResponseReceipt | null = null;
     let responseMitigation: NativeAuthorizationResponseMitigation | null = null;
     let invocationRejected = false;
+    // The stream keeps only the first terminal it is handed, so the kind
+    // latches with it, synchronously before append can settle. A later
+    // terminal, a fenced callback or settlement itself can never set it.
+    let terminalLatched = false;
+    let terminalErrorKind: DesktopTerminalErrorKind | null = null;
+    const latchTerminal = (errorKind: DesktopTerminalErrorKind | null) => {
+      if (terminalLatched) return;
+      terminalLatched = true;
+      if (errorKind && !receiptFenced()) terminalErrorKind = errorKind;
+    };
     const onSettled = this.ackTelemetry.start({
       connectionId,
       commandId: command.commandId,
@@ -1461,10 +1476,14 @@ export class DesktopSandboxBridge {
         connectorOpen = false;
         responseOpen = false;
         mitigationOpen = false;
+        terminalLatched = true;
         onSettled(
           {
             ...settlement,
             terminalExitCode,
+            ...(terminalErrorKind && {
+              terminalError: desktopTerminalErrorDiagnostic(terminalErrorKind),
+            }),
             ...(invocationRejected &&
               sendReceipt && {
                 nativeAuthorization: nativeAuthorizationDiagnostic(
@@ -1626,12 +1645,18 @@ export class DesktopSandboxBridge {
       }
       const channel = new Channel<StreamChunk>();
       channel.onmessage = (chunk) => {
-        if (chunk.type === "exit") terminalExitCode = chunk.exitCode ?? null;
+        if (chunk.type === "exit") {
+          terminalExitCode = chunk.exitCode ?? null;
+          latchTerminal(null);
+        }
+        if (chunk.type === "error")
+          latchTerminal(classifyNativeTerminalError(chunk.message));
         if (shouldForwardStreamChunk(chunk)) stream.append(chunk);
       };
       try {
         if (wasDesktopRunStopped(command.chatId, command.triggerRunId)) {
           terminalExitCode = 130;
+          latchTerminal(null);
           stream.append({ type: "exit", exitCode: 130 });
         } else {
           await this.invokeAuthorizedDesktopOperation(
@@ -1675,6 +1700,7 @@ export class DesktopSandboxBridge {
         }
       } catch (error) {
         invocationRejected = true;
+        latchTerminal("invocation_rejected");
         stream.append({
           type: "error",
           message: error instanceof Error ? error.message : String(error),
