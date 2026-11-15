@@ -248,16 +248,33 @@ describe("goal status failure diagnostics", () => {
       }),
       "goal_chat_unavailable",
       "abcdef0123456789",
+      "get_goal",
     ],
     [
       new TypeError("PRIVATE_URL", { cause: new Error("PRIVATE_CAUSE") }),
       "type_error",
       "none",
+      "retrieve_run",
+    ],
+    [
+      Object.assign(new ConvexError("[Request ID: 0123456789abcdef] x"), {
+        data: {
+          code: "CHAT_ACCESS_SUSPENDED",
+          message: "PRIVATE_SUSPENSION",
+        },
+      }),
+      "chat_access_suspended",
+      "0123456789abcdef",
+      "clear_active_run",
     ],
   ])(
     "records one finite cause and safe request join without changing the unavailable response",
-    async (error, kind, requestId) => {
-      reconcile.mockRejectedValueOnce(error);
+    async (error, kind, requestId, step) => {
+      reconcile.mockImplementationOnce(async (_chat, _user, onStep) => {
+        onStep("get_goal");
+        if (step !== "get_goal") onStep(step);
+        throw error;
+      });
       const response = await GET(statusRequest());
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({
@@ -267,6 +284,7 @@ describe("goal status failure diagnostics", () => {
       expect(warn).toHaveBeenCalledWith("agent_goal_status_unavailable", {
         diagnostic_version: 1,
         failure_stage: "goal_reconciliation",
+        reconciliation_step: step,
         failure_kind: kind,
         convex_request_id: requestId,
       });
@@ -276,6 +294,37 @@ describe("goal status failure diagnostics", () => {
       expect(mockCancel).not.toHaveBeenCalled();
     },
   );
+
+  it("does not attribute a failure after successful reconciliation to its last step", async () => {
+    reconcile.mockImplementationOnce(async (_chat, _user, onStep) => {
+      onStep("get_goal");
+      onStep("capture_lifecycle");
+      return { state: "paused" };
+    });
+    const json = jest.spyOn(MockResponse, "json").mockImplementationOnce(() => {
+      throw new Error("PRIVATE_SERIALIZATION");
+    });
+    try {
+      const response = await GET(statusRequest());
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        message: "Goal access unavailable",
+      });
+    } finally {
+      json.mockRestore();
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("agent_goal_status_unavailable", {
+      diagnostic_version: 1,
+      failure_stage: "goal_reconciliation",
+      reconciliation_step: "unknown",
+      failure_kind: "other_error",
+      convex_request_id: "none",
+    });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
+  });
 
   it("keeps logging best effort and attributes nonstandard auth lookup failures", async () => {
     auth.mockRejectedValueOnce(new Error("PRIVATE_AUTH_ERROR"));
@@ -295,6 +344,7 @@ describe("goal status failure diagnostics", () => {
         convex_request_id: "none",
       }),
     );
+    expect(warn.mock.calls[0][1]).not.toHaveProperty("reconciliation_step");
     expect(reconcile).not.toHaveBeenCalled();
   });
 
@@ -329,10 +379,49 @@ describe("goal status failure diagnostics", () => {
       expect(fields).toEqual({
         diagnostic_version: 1,
         failure_stage: "goal_reconciliation",
+        reconciliation_step: "unknown",
         failure_kind: "other_error",
         convex_request_id: "none",
       });
     expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE_");
+  });
+
+  it("attributes the actual reconciliation read without a retry or control write", async () => {
+    const { getConvexClient } = require("@/lib/db/convex-client");
+    const query = jest.fn(async () => {
+      throw Object.assign(
+        new ConvexError("[Request ID: ABCDEF0123456789] Server Error"),
+        { data: "Goal chat unavailable" },
+      );
+    });
+    getConvexClient.mockReturnValue({ query, mutation: mockMutation });
+    reconcile.mockImplementationOnce(
+      jest.requireActual("@/lib/goals/server").reconcileGoal,
+    );
+    const originalKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+    process.env.CONVEX_SERVICE_ROLE_KEY = "synthetic-goal-status-key";
+    try {
+      const response = await GET(statusRequest());
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        message: "Goal access unavailable",
+      });
+    } finally {
+      if (originalKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+      else process.env.CONVEX_SERVICE_ROLE_KEY = originalKey;
+      getConvexClient.mockImplementation(() => ({ mutation: mockMutation }));
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("agent_goal_status_unavailable", {
+      diagnostic_version: 1,
+      failure_stage: "goal_reconciliation",
+      reconciliation_step: "get_goal",
+      failure_kind: "goal_chat_unavailable",
+      convex_request_id: "abcdef0123456789",
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 });
 

@@ -7,6 +7,11 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import type { InitialChatPersistenceStep } from "@/lib/db/actions";
+import {
+  classifyGoalReconciliationFailure,
+  GOAL_RECONCILIATION_STEPS,
+  type GoalReconciliationStep,
+} from "@/lib/goals/reconciliation-diagnostics";
 
 const MAX_ERROR_FIELD_LENGTH = 1000;
 const MAX_STACK_FIELD_LENGTH = 2000;
@@ -59,6 +64,7 @@ type AgentRouteErrorContext = {
   stage?: string;
   initialPersistenceStep?: InitialChatPersistenceStep;
   guardBoundary?: AgentStartGuardBoundary;
+  goalReconciliationStep?: GoalReconciliationStep;
 };
 
 const getRequestIdKind = (requestId: unknown) =>
@@ -100,6 +106,32 @@ const getGuardBoundary = (context: AgentRouteErrorContext) => {
   } catch {
     return "unreadable";
   }
+};
+
+/** Finite reconcile_goal attribution for the existing 500; never error contents. */
+const getGoalReconciliationFields = (
+  error: unknown,
+  context: AgentRouteErrorContext,
+) => {
+  let step: GoalReconciliationStep | "unknown" = "unknown";
+  try {
+    const value = Object.getOwnPropertyDescriptor(
+      context,
+      "goalReconciliationStep",
+    )?.value;
+    if (GOAL_RECONCILIATION_STEPS.some((known) => known === value))
+      step = value;
+  } catch {
+    // An unreadable marker stays unknown rather than guessing a step.
+  }
+  const { failureKind, convexRequestId } =
+    classifyGoalReconciliationFailure(error);
+  return {
+    goal_reconciliation_diagnostic_version: 1,
+    goal_reconciliation_step: step,
+    goal_reconciliation_failure_kind: failureKind,
+    goal_reconciliation_convex_request_id: convexRequestId,
+  };
 };
 
 /** A receipt for this returned 403, not proof the denial was legitimate. */
@@ -276,6 +308,12 @@ export function handleAgentRouteError({
       ...(context.stage === "persist_user_message" &&
       context.initialPersistenceStep
         ? { initial_persistence_step: context.initialPersistenceStep }
+        : {}),
+      ...(action === "start" &&
+      (endpoint === AGENT_API_ENDPOINT ||
+        endpoint === LEGACY_AGENT_API_ENDPOINT) &&
+      context.stage === "reconcile_goal"
+        ? getGoalReconciliationFields(error, context)
         : {}),
       ...serializeRouteError(error),
     }),
