@@ -9,9 +9,57 @@ export type Operation = { kind: "command" | "file" | "pty"; id: string };
 /** Client-side readiness step that rejected; never broker delivery or execution. */
 export type OperationReadinessPhase =
   "subscription_ready" | "readiness_publish";
+/**
+ * Category of the rejection's own numeric `code` data property. Names follow the
+ * relay client's public codes; they do not establish the physical cause, the
+ * rejecting layer, delivery, non-execution or recovery.
+ */
+export type OperationReadinessRejectionCode =
+  | "timeout"
+  | "transport_closed"
+  | "client_disconnected"
+  | "client_closed"
+  | "subscription_unsubscribed"
+  | "transport_write_error"
+  | "connection_closed"
+  | "other_code"
+  | "unavailable";
 export type OperationReadinessFailure = Operation & {
   phase: OperationReadinessPhase;
+  rejectionCode: OperationReadinessRejectionCode;
 };
+
+const REJECTION_CODES = new Map<number, OperationReadinessRejectionCode>([
+  [1, "timeout"],
+  [2, "transport_closed"],
+  [3, "client_disconnected"],
+  [4, "client_closed"],
+  [7, "subscription_unsubscribed"],
+  [10, "transport_write_error"],
+  [11, "connection_closed"],
+]);
+
+/** Never invokes accessors or reads any other part of the rejection. */
+function readinessRejectionCode(
+  error: unknown,
+): OperationReadinessRejectionCode {
+  try {
+    if (typeof error !== "object" || error === null) return "unavailable";
+    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+    const code = descriptor && "value" in descriptor ? descriptor.value : null;
+    if (
+      typeof code !== "number" ||
+      !Number.isInteger(code) ||
+      code < 0 ||
+      code > 65535
+    )
+      return "unavailable";
+    return REJECTION_CODES.get(code) ?? "other_code";
+  } catch {
+    // A proxy trap may throw; the original rejection is still rethrown.
+    return "unavailable";
+  }
+}
 
 export function sandboxOperationChannel(
   userId: string,
@@ -127,7 +175,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     private userId: string,
     private connectionId: string,
     private readonly stopOutput?: (operation: Operation) => void,
-    // Observation only: receives no error, message or payload.
+    // Observation only: receives a code category, never the error, message or payload.
     private readonly onReadinessFailure?: (
       failure: OperationReadinessFailure,
     ) => void,
@@ -205,6 +253,9 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     const subscription = this.client.newSubscription(
       sandboxOperationChannel(this.userId, this.connectionId, op.kind, op.id),
     );
+    // The queue replaces a non-Error rejection, dropping its code, so the
+    // category of the last rejected readiness publish is recorded beforehand.
+    let publishRejection: OperationReadinessRejectionCode = "unavailable";
     const route: Route<S> = {
       subscription,
       queue: new CentrifugoPublishQueue(async (fragment) => {
@@ -217,6 +268,8 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           await subscription.publish(fragment);
         } catch (error) {
           const type = (fragment as Message).type;
+          if (type === "operation_ready" && this.onReadinessFailure)
+            publishRejection = readinessRejectionCode(error);
           // Readiness and terminal controls are idempotent by operation ID. Never replay output
           // chunks, fragments, or execution requests after uncertain delivery.
           if (
@@ -227,7 +280,13 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           )
             throw error;
           if (this.stopped || this.routes.get(key) !== route) return;
-          await subscription.publish(fragment);
+          try {
+            await subscription.publish(fragment);
+          } catch (retryError) {
+            if (type === "operation_ready" && this.onReadinessFailure)
+              publishRejection = readinessRejectionCode(retryError);
+            throw retryError;
+          }
         }
       }),
       timer: setTimeout(() => this.close(key), this.deadline(message, op)),
@@ -304,7 +363,15 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       // A rejection caused by stop() or route teardown is not a readiness failure.
       if (phase && !this.stopped && this.routes.get(key) === route) {
         try {
-          this.onReadinessFailure?.({ kind: op.kind, id: op.id, phase });
+          this.onReadinessFailure?.({
+            kind: op.kind,
+            id: op.id,
+            phase,
+            rejectionCode:
+              phase === "readiness_publish"
+                ? publishRejection
+                : readinessRejectionCode(error),
+          });
         } catch {
           // Diagnostics must not change cleanup or the rejected error.
         }

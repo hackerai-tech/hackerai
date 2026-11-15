@@ -1142,7 +1142,7 @@ export class DesktopSandboxBridge {
             );
           });
       },
-      ({ phase, kind, id }) => {
+      ({ phase, kind, id, rejectionCode }) => {
         // Only this live router's connection, for this bridge's account.
         if (
           this.isStoppingOrStopped ||
@@ -1156,6 +1156,7 @@ export class DesktopSandboxBridge {
           phase,
           kind,
           operationId: id,
+          rejectionCode,
         });
       },
     );

@@ -7,7 +7,10 @@ import {
 /**
  * A Desktop operation-channel readiness step rejected on this client. The phase
  * says which client-side step failed; it does not establish broker delivery,
- * non-execution or customer recovery. Captured once per failed operation on the
+ * non-execution or customer recovery. The optional rejection code category names
+ * the rejection's observed public numeric code, not its physical cause or the
+ * layer that produced it; v1 events without it remain valid and unmeasured.
+ * Captured once per failed operation on the
  * existing relay error event, outside the shared relay summary buffer, which
  * can outlive an account switch.
  */
@@ -16,6 +19,18 @@ export const DESKTOP_OPERATION_READINESS_VERSION = 1;
 
 const PHASES = new Set(["subscription_ready", "readiness_publish"]);
 const KINDS = new Set(["command", "file", "pty"]);
+const REJECTION_CODE = "operation_readiness_rejection_code";
+const REJECTION_CODES = new Set([
+  "timeout",
+  "transport_closed",
+  "client_disconnected",
+  "client_closed",
+  "subscription_unsubscribed",
+  "transport_write_error",
+  "connection_closed",
+  "other_code",
+  "unavailable",
+]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Opaque account IDs (WorkOS user_...). Excludes URLs, emails and whitespace.
 const OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -66,6 +81,7 @@ export function projectDesktopOperationReadiness(
   const phase = read("operation_readiness_phase");
   const kind = read("operation_readiness_kind");
   const operationId = read("operation_readiness_operation_id");
+  const rejectionCode = read(REJECTION_CODE);
   const connectionId = read("connectionId");
   const buildState = read("build_state");
   const buildCommit = read("hackerai_frontend_build_commit");
@@ -73,6 +89,12 @@ export function projectDesktopOperationReadiness(
   if (version !== DESKTOP_OPERATION_READINESS_VERSION) return null;
   if (typeof phase !== "string" || !PHASES.has(phase)) return null;
   if (typeof kind !== "string" || !KINDS.has(kind)) return null;
+  // Optional: earlier v1 events did not measure it.
+  if (
+    rejectionCode !== undefined &&
+    (typeof rejectionCode !== "string" || !REJECTION_CODES.has(rejectionCode))
+  )
+    return null;
   if (!isUuid(operationId) || !isUuid(connectionId)) return null;
   // Native capture overwrites an invalid build commit with null.
   const build =
@@ -93,6 +115,7 @@ export function projectDesktopOperationReadiness(
     operation_readiness_phase: phase,
     operation_readiness_kind: kind,
     operation_readiness_operation_id: operationId,
+    ...(rejectionCode !== undefined && { [REJECTION_CODE]: rejectionCode }),
     ...build,
   };
 }
@@ -108,6 +131,7 @@ export function captureDesktopOperationReadinessFailure(input: {
   phase: unknown;
   kind: unknown;
   operationId: unknown;
+  rejectionCode: unknown;
 }): boolean {
   try {
     const { owner } = input;
@@ -118,6 +142,8 @@ export function captureDesktopOperationReadinessFailure(input: {
       getIdentifiedAnalyticsUserId() !== owner
     )
       return false;
+    // Optional only for earlier v1 events; the current router always measures it.
+    if (typeof input.rejectionCode !== "string") return false;
     const candidate: Record<string, unknown> = {
       ...ENVELOPE,
       connectionId: input.connectionId,
@@ -125,6 +151,7 @@ export function captureDesktopOperationReadinessFailure(input: {
       operation_readiness_phase: input.phase,
       operation_readiness_kind: input.kind,
       operation_readiness_operation_id: input.operationId,
+      [REJECTION_CODE]: input.rejectionCode,
       ...readBuildContext(),
     };
     const properties = projectDesktopOperationReadiness((key) =>
@@ -197,6 +224,12 @@ export function sanitizeDesktopOperationReadinessEvent<T extends object>(
     const read = (key: string) => readOwnData(properties, key)?.value;
     // A queued event must not be exported under a different current owner.
     if (read("distinct_id") !== owner) return null;
+    // The optional category, when present in any form, must be an own string.
+    if (
+      REJECTION_CODE in properties &&
+      typeof read(REJECTION_CODE) !== "string"
+    )
+      return null;
     const schema = projectDesktopOperationReadiness(read);
     if (!schema) return null;
 
