@@ -688,6 +688,23 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         source: "subscription",
       },
     ],
+    extra_usage_bundle_reservations: [
+      {
+        _id: "bundle-reservation-user",
+        user_id: userId,
+        credit_dollars: 1000,
+        paid_dollars: 700,
+        stripe_checkout_session_id: "cs_bundle_user",
+        return_path: "/c/private-chat",
+        status: "consumed",
+      },
+      {
+        _id: "bundle-reservation-other",
+        user_id: otherUserId,
+        return_path: "/c/other-chat",
+        status: "reserved",
+      },
+    ],
     extra_usage_purchases: [
       {
         _id: "purchase-user",
@@ -1086,6 +1103,26 @@ describe("userDeletion", () => {
     ).toMatchObject({
       user_id: "user_other",
     });
+    expect(
+      row(tables, "extra_usage_bundle_reservations", "bundle-reservation-user"),
+    ).toMatchObject({
+      user_id: DELETED_USER_ID,
+      credit_dollars: 1000,
+      paid_dollars: 700,
+      stripe_checkout_session_id: "cs_bundle_user",
+      status: "consumed",
+    });
+    expect(
+      row(tables, "extra_usage_bundle_reservations", "bundle-reservation-user")
+        ?.return_path,
+    ).toBeUndefined();
+    expect(
+      row(
+        tables,
+        "extra_usage_bundle_reservations",
+        "bundle-reservation-other",
+      ),
+    ).toMatchObject({ user_id: "user_other", return_path: "/c/other-chat" });
     expect(row(tables, "paid_start_events", "paid-user-entity")).toMatchObject({
       entity_id: DELETED_USER_ID,
     });

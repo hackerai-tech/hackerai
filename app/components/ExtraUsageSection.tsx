@@ -5,7 +5,10 @@ import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { getExtraUsageBundle } from "@/lib/billing/extra-usage-bundles";
+import {
+  EXTRA_USAGE_BUNDLES,
+  getExtraUsageBundle,
+} from "@/lib/billing/extra-usage-bundles";
 import { toast } from "sonner";
 import {
   TurnOffExtraUsageDialog,
@@ -29,19 +32,61 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 
+type BundleCapSnapshot = {
+  policyVersion: string;
+  periodMonth: string;
+  capDollars: number;
+  usedDollars: number;
+  pendingDollars: number;
+  remainingDollars: number;
+  historyComplete: boolean;
+};
+
+/** Allowance context only; amounts are face-value credit dollars. */
+const bundleCapAnalytics = (cap: BundleCapSnapshot) => ({
+  bundle_cap_policy_version: cap.policyVersion,
+  bundle_cap_period: cap.periodMonth,
+  bundle_cap_dollars: cap.capDollars,
+  bundle_cap_used_dollars: cap.usedDollars,
+  bundle_cap_pending_dollars: cap.pendingDollars,
+  bundle_cap_remaining_dollars: cap.remainingDollars,
+  bundle_cap_history_complete: cap.historyComplete,
+});
+
 const ExtraUsageSection = () => {
   const bundleSavingsId = useId();
-  const bundlesEnabled = useQuery(api.extraUsage.areBundlesAvailable) === true;
+  // Server time decides the cap period, but a query only re-runs when its
+  // data or arguments change. A second, refresh-keyed subscription re-reads
+  // the period on dialog open and at the UTC reset; the base subscription keeps
+  // the last answer on screen while that refresh loads.
+  const [capRefresh, setCapRefresh] = useState(0);
+  const baseCapStatus = useQuery(api.extraUsageBundles.getBundleCapStatus, {});
+  const refreshedCapStatus = useQuery(
+    api.extraUsageBundles.getBundleCapStatus,
+    capRefresh > 0 ? { refresh: capRefresh } : "skip",
+  );
+  // Null when the existing bundle sales gate is closed for this user.
+  const bundleCapStatus = refreshedCapStatus ?? baseCapStatus;
+  const bundlesEnabled = !!bundleCapStatus;
   const bundleExposure = useRef(false);
+  // Reuse one attempt per bundle so a retry resumes its reservation/session.
+  const bundleAttemptRef = useRef<{
+    bundleId: string;
+    attemptId: string;
+  } | null>(null);
   useEffect(() => {
-    if (bundlesEnabled && !bundleExposure.current) {
+    if (bundleCapStatus && !bundleExposure.current) {
       bundleExposure.current = true;
       captureAuthenticatedEvent("extra_usage_bundles_viewed", {
         surface: "extra_usage_settings",
         offer_version: "v1",
+        ...bundleCapAnalytics(bundleCapStatus),
+        bundle_cap_eligible:
+          bundleCapStatus.remainingDollars >=
+          Math.min(...EXTRA_USAGE_BUNDLES.map((offer) => offer.creditDollars)),
       });
     }
-  }, [bundlesEnabled]);
+  }, [bundleCapStatus]);
   // User customization for extra usage enabled flag
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -73,6 +118,20 @@ const ExtraUsageSection = () => {
   const [showSpendingLimitDialog, setShowSpendingLimitDialog] = useState(false);
   const [showAutoReloadDialog, setShowAutoReloadDialog] = useState(false);
   const capturedBuyCtaImpressionRef = useRef(false);
+
+  // While the purchase dialog is open, re-check the server at the UTC reset.
+  // Client time only schedules the re-check; the server decides the period.
+  const capResetsAt = bundleCapStatus?.resetsAt;
+  useEffect(() => {
+    if (!showBuyDialog || typeof capResetsAt !== "number") return;
+    const untilReset = capResetsAt - Date.now();
+    const delay = Math.min(
+      untilReset > 0 ? untilReset + 1_000 : 15_000,
+      2_147_483_647,
+    );
+    const timer = setTimeout(() => setCapRefresh((n) => n + 1), delay);
+    return () => clearTimeout(timer);
+  }, [showBuyDialog, capResetsAt, capRefresh]);
 
   // Extra usage toggle handler
   const handleToggleExtraUsage = async (enabled: boolean) => {
@@ -132,7 +191,13 @@ const ExtraUsageSection = () => {
       const paidDollars = bundleId
         ? getExtraUsageBundle(bundleId).paidDollars
         : amountDollars;
-      const checkoutAttemptId = newCheckoutAttemptId();
+      const checkoutAttemptId =
+        bundleId && bundleAttemptRef.current?.bundleId === bundleId
+          ? bundleAttemptRef.current.attemptId
+          : newCheckoutAttemptId();
+      if (bundleId) {
+        bundleAttemptRef.current = { bundleId, attemptId: checkoutAttemptId };
+      }
       const result = await createPurchaseSession({
         amountDollars,
         ...(bundleId && { bundleId }),
@@ -156,12 +221,35 @@ const ExtraUsageSection = () => {
             source: "buy_extra_usage_dialog",
             amount_dollars: paidDollars,
             credit_amount_dollars: amountDollars,
+            discount_dollars: amountDollars - paidDollars,
             bundle_id: bundleId,
             stripe_checkout_session_id: result.checkoutSessionId,
+            ...(result.bundleCap && bundleCapAnalytics(result.bundleCap)),
+            ...(result.reservationReused && {
+              bundle_reservation_reused: true,
+            }),
           }),
         );
         window.location.href = result.url;
       } else {
+        if (
+          result.errorCode === "bundle_cap_exceeded" ||
+          result.errorCode === "bundle_cap_unavailable"
+        ) {
+          captureAuthenticatedEvent("extra_usage_bundle_cap_blocked", {
+            surface: "extra_usage_settings",
+            checkout_attempt_id: checkoutAttemptId,
+            bundle_id: bundleId,
+            amount_dollars: paidDollars,
+            credit_amount_dollars: amountDollars,
+            reason: result.errorCode,
+            ...(result.bundleCap && bundleCapAnalytics(result.bundleCap)),
+          });
+        }
+        // A non-retryable answer ends this attempt; ambiguous ones keep it.
+        if (bundleId && result.retryable !== true) {
+          bundleAttemptRef.current = null;
+        }
         toast.error(result.error || "Failed to create checkout session");
       }
     } catch (error) {
@@ -313,6 +401,7 @@ const ExtraUsageSection = () => {
                   source: "current_balance_row",
                   cta_text: "Buy credit",
                 });
+                if (bundlesEnabled) setCapRefresh((n) => n + 1);
                 setShowBuyDialog(true);
               }}
               disabled={isPurchasing}
@@ -436,6 +525,7 @@ const ExtraUsageSection = () => {
 
       <BuyExtraUsageDialog
         bundlesEnabled={bundlesEnabled}
+        bundleCap={bundleCapStatus ?? undefined}
         open={showBuyDialog}
         onOpenChange={setShowBuyDialog}
         onPurchase={handlePurchaseCredits}

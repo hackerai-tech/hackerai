@@ -9,6 +9,9 @@ type ExtraUsagePurchaseLogArgs = {
   stripePaymentIntentId?: string;
   stripeInvoiceId?: string;
   paymentStatus?: string | null;
+  bundleId?: string;
+  bundleReservationId?: string;
+  bundleCapPeriod?: string;
   result?: string;
   reason?: string;
   error?: unknown;
@@ -87,6 +90,9 @@ export function logExtraUsagePurchase(
     stripe_payment_intent_id: args.stripePaymentIntentId,
     stripe_invoice_id: args.stripeInvoiceId,
     payment_status: args.paymentStatus,
+    bundle_id: args.bundleId,
+    bundle_reservation_id: args.bundleReservationId,
+    bundle_cap_period: args.bundleCapPeriod,
     result: args.result,
     reason: args.reason,
     ...errorDetails(args.error),

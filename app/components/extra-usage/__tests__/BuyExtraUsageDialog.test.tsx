@@ -86,4 +86,97 @@ describe("BuyExtraUsageDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Purchase" }));
     expect(onPurchase).toHaveBeenLastCalledWith(75);
   });
+
+  it("disables bundles over the monthly allowance while keeping custom amounts", () => {
+    const onPurchase = jest.fn(async () => {});
+    const { rerender } = render(
+      <BuyExtraUsageDialog
+        open
+        onOpenChange={jest.fn()}
+        onPurchase={onPurchase}
+        isLoading={false}
+        paymentMethodMode="checkout"
+        bundlesEnabled
+        bundleCap={{
+          capDollars: 2000,
+          remainingDollars: 1000,
+          resetsAt: Date.UTC(2026, 11, 1),
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "$1,000 of $2,000 monthly bundle credit left. Resets Dec 1 (UTC).",
+      ),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /\$1,000 credit/ }));
+    expect(
+      screen.getByRole("button", { name: "Pay $700 for $1,000 credit" }),
+    ).toBeEnabled();
+
+    // A live allowance update blocks the stale selection with an explanation
+    // instead of silently turning the click into a custom purchase.
+    rerender(
+      <BuyExtraUsageDialog
+        open
+        onOpenChange={jest.fn()}
+        onPurchase={onPurchase}
+        isLoading={false}
+        paymentMethodMode="checkout"
+        bundlesEnabled
+        bundleCap={{
+          capDollars: 2000,
+          remainingDollars: 250,
+          resetsAt: Date.UTC(2026, 11, 1),
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /^\$1,000 credit Pay/ }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /\$250 credit/ })).toBeEnabled();
+    const staleSubmit = screen.getByRole("button", {
+      name: "Pay $700 for $1,000 credit",
+    });
+    expect(staleSubmit).toBeDisabled();
+    expect(
+      screen.getByText(
+        "This bundle is over your remaining monthly bundle limit. Choose another option.",
+      ),
+    ).toBeVisible();
+    fireEvent.click(staleSubmit);
+    expect(onPurchase).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Purchase amount"), {
+      target: { value: "$1500" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Purchase" }));
+    expect(onPurchase).toHaveBeenLastCalledWith(1500);
+  });
+
+  it("lets a pending bundle checkout be resumed when no allowance remains", () => {
+    const onPurchase = jest.fn(async () => {});
+    render(
+      <BuyExtraUsageDialog
+        open
+        onOpenChange={jest.fn()}
+        onPurchase={onPurchase}
+        isLoading={false}
+        paymentMethodMode="checkout"
+        bundlesEnabled
+        bundleCap={{
+          capDollars: 2000,
+          remainingDollars: 0,
+          resetsAt: Date.UTC(2026, 11, 1),
+          resumableBundleIds: ["usage-1000-v1"],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /\$250 credit/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /\$1,000 credit/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resume checkout" }));
+
+    expect(onPurchase).toHaveBeenCalledWith(1000, "usage-1000-v1");
+  });
 });
