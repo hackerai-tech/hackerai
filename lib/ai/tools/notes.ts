@@ -432,6 +432,13 @@ export const createGetNote = (context: ToolContext) =>
       }
     },
     toModelOutput({ output }) {
+      // Saved history may hold text instead of a page: pruning and storage
+      // compaction replace older get_note outputs with a placeholder string.
+      if (typeof output === "string")
+        return {
+          type: "text" as const,
+          value: clampTokens(output, NOTE_TOOL_RESPONSE_TOKENS),
+        };
       const failure = errorText(output);
       if (failure) return { type: "text" as const, value: failure };
       return {
