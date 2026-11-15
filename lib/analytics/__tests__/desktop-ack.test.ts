@@ -1012,6 +1012,36 @@ describe("native authorization send receipt", () => {
       }).properties!,
     });
 
+    it.each(["linux", "PRIVATE"])(
+      "copies the validated send snapshot without a second getter read (%s)",
+      (laterPlatform) => {
+        let reads = 0;
+        const properties = {
+          terminalType: "error",
+          ...windows,
+          ...cause,
+          ...transport,
+          ...io,
+        };
+        Object.defineProperty(properties, "native_platform", {
+          enumerable: true,
+          get() {
+            return ++reads === 1 ? "windows" : laterPlatform;
+          },
+        });
+        const sanitized = sanitizeDesktopAckEvent({
+          event: "desktop_ack_command_settled",
+          properties,
+        }).properties;
+        expect(reads).toBe(1);
+        expect(sanitized.native_platform).toBe("windows");
+        expect(sanitized.native_authorization_io_os_family).toBe(
+          "winsock_host_not_found",
+        );
+        expect(JSON.stringify(sanitized)).not.toContain("PRIVATE");
+      },
+    );
+
     it.each<[string, Groups]>([
       ["a Winsock family on Windows", { send: windows, io }],
       [

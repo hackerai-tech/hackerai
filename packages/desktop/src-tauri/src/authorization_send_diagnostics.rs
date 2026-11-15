@@ -1561,7 +1561,7 @@ mod tests {
             }))
             .build()
             .unwrap()
-            .post("http://synthetic.invalid/api/desktop/authorized-operation")
+            .post("https://synthetic.invalid/api/desktop/authorized-operation")
             .json(&serde_json::json!({ "id": "synthetic", "digest": "synthetic" }))
     }
 

@@ -182,6 +182,7 @@ export function sanitizeDesktopAckEvent<
       Object.keys(properties)
         .filter(
           (key) =>
+            !NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key) &&
             !NATIVE_AUTHORIZATION_IO_PROPERTIES.has(key) &&
@@ -191,12 +192,10 @@ export function sanitizeDesktopAckEvent<
         .map((key) => [key, properties[key]] as const)
         .filter(
           ([key, value]) =>
-            (NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key)
-              ? nativeAuthorization
-              : (event.event === "desktop_ack_delivery_summary"
-                  ? SUMMARY_PROPERTIES
-                  : ALLOWED_PROPERTIES
-                ).has(key)) &&
+            (event.event === "desktop_ack_delivery_summary"
+              ? SUMMARY_PROPERTIES
+              : ALLOWED_PROPERTIES
+            ).has(key) &&
             (!AGE_PROPERTIES.has(key) ||
               (event.event === "desktop_ack_command_settled" &&
                 isDesktopAckAge(value))) &&
@@ -207,6 +206,9 @@ export function sanitizeDesktopAckEvent<
                 isDesktopAckStopSource(value))),
         ),
     );
+    // Copy the same validated send snapshot used by the joined receipts.
+    if (nativeAuthorizationDiagnostic)
+      Object.assign(event.properties, nativeAuthorizationDiagnostic);
     if (nativeAuthorizationCause)
       Object.assign(event.properties, nativeAuthorizationCause);
     if (nativeAuthorizationTransport)
