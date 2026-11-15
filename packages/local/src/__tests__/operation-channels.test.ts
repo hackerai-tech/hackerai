@@ -632,6 +632,133 @@ describe("operation channels", () => {
     expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  describe("readiness failure observation", () => {
+    let observe: jest.Mock;
+    let observed: OperationChannelRouter<Subscription>;
+    beforeEach(() => {
+      observe = jest.fn();
+      observed = new OperationChannelRouter<Subscription>(
+        client,
+        "user-1",
+        "conn-1",
+        undefined,
+        observe,
+      );
+    });
+    afterEach(() => observed.stop());
+
+    const failingSubscription = (
+      setup: (sub: Subscription) => void,
+    ): Subscription => {
+      const sub = new Subscription();
+      setup(sub);
+      client.newSubscription.mockReturnValueOnce(sub);
+      return sub;
+    };
+
+    it("attributes a rejected subscription to its phase without changing the failure", async () => {
+      const error = new Error("subscribe denied");
+      const sub = failingSubscription((s) => s.ready.mockRejectedValue(error));
+      const handle = jest.fn();
+      const failure = observed.dispatch(request("cmd-a"), handle);
+      await expect(failure).rejects.toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [{ kind: "command", id: "cmd-a", phase: "subscription_ready" }],
+      ]);
+      expect(sub.publish).not.toHaveBeenCalled();
+      expect(handle).not.toHaveBeenCalled();
+      expect(client.removeSubscription).toHaveBeenCalledWith(sub);
+      // The tombstone still suppresses a redelivered start.
+      await observed.dispatch(request("cmd-a"), handle);
+      expect(client.newSubscription).toHaveBeenCalledTimes(1);
+      expect(handle).not.toHaveBeenCalled();
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("attributes a rejected readiness publication without adding a retry", async () => {
+      const error = new Error("connection lost");
+      const sub = failingSubscription((s) =>
+        s.publish.mockRejectedValue(error),
+      );
+      const handle = jest.fn();
+      await expect(
+        observed.dispatch(request("file-a", "file_write"), handle),
+      ).rejects.toBe(error);
+      expect(observe.mock.calls).toEqual([
+        [{ kind: "file", id: "file-a", phase: "readiness_publish" }],
+      ]);
+      expect(sub.publish.mock.calls).toEqual([
+        [{ type: "operation_ready", requestId: "file-a" }],
+      ]);
+      expect(handle).not.toHaveBeenCalled();
+      expect(client.removeSubscription).toHaveBeenCalledWith(sub);
+    });
+
+    it("observes once after the existing single timeout retry is exhausted", async () => {
+      const timeout = { code: 1, message: "timeout" };
+      const sub = failingSubscription((s) =>
+        s.publish.mockRejectedValue(timeout),
+      );
+      const handle = jest.fn();
+      await expect(
+        observed.dispatch(request("pty-a", "pty_create"), handle),
+      ).rejects.toThrow("timeout");
+      expect(sub.publish).toHaveBeenCalledTimes(2);
+      expect(observe.mock.calls).toEqual([
+        [{ kind: "pty", id: "pty-a", phase: "readiness_publish" }],
+      ]);
+      expect(handle).not.toHaveBeenCalled();
+    });
+
+    it("keeps the original error, cleanup and tombstone when the observer throws", async () => {
+      observe.mockImplementation(() => {
+        throw new Error("diagnostic failure");
+      });
+      const error = new Error("subscribe denied");
+      const sub = failingSubscription((s) => s.ready.mockRejectedValue(error));
+      const handle = jest.fn();
+      await expect(observed.dispatch(request("cmd-b"), handle)).rejects.toBe(
+        error,
+      );
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(client.removeSubscription).toHaveBeenCalledWith(sub);
+      await observed.dispatch(request("cmd-b"), handle);
+      expect(client.newSubscription).toHaveBeenCalledTimes(1);
+      expect(handle).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("does not observe success, handler failures or teardown during readiness", async () => {
+      const handle = jest.fn();
+      await observed.dispatch(request("ok"), handle);
+      expect(handle).toHaveBeenCalledTimes(1);
+
+      // Execution errors after readiness are not readiness failures.
+      const executionError = new Error("handler failed");
+      await expect(
+        observed.dispatch(request("throws"), () => {
+          throw executionError;
+        }),
+      ).rejects.toBe(executionError);
+
+      let reject!: (error: Error) => void;
+      failingSubscription((s) =>
+        s.ready.mockReturnValue(
+          new Promise<void>((_resolve, fail) => {
+            reject = fail;
+          }),
+        ),
+      );
+      const pending = observed.dispatch(request("stopping"), handle);
+      observed.stop();
+      reject(new Error("unsubscribed"));
+      await expect(pending).rejects.toThrow("unsubscribed");
+      expect(observe).not.toHaveBeenCalled();
+    });
+  });
+
   it("stop during readiness prevents execution and releases every subscription", async () => {
     let ready!: () => void;
     const sub = new Subscription();

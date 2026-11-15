@@ -819,6 +819,127 @@ describe("PostHogProvider", () => {
     view.unmount();
   });
 
+  it("exports only the committed owner's strict Desktop operation readiness failure after SDK enrichment", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const { before_send: beforeSend } = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => Record<string, unknown> | null;
+    };
+
+    const retained = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+      $lib: "web",
+      $lib_version: "1.447.5",
+      $is_identified: true,
+      state: "error",
+      clientSurface: "desktop_bridge",
+      source: "operation_channel",
+      errorType: "operation_readiness",
+      connectionId: "0193a5b2-7c41-7a10-8f00-111111111111",
+      operation_readiness_version: 1,
+      operation_readiness_phase: "subscription_ready",
+      operation_readiness_kind: "command",
+      operation_readiness_operation_id: "0193a5b2-7c41-7a10-8f00-222222222222",
+      build_state: "measured",
+      hackerai_frontend_build_commit: "a".repeat(40),
+    };
+    const accessor = jest.fn(() => "private");
+    const enriched = (properties: Record<string, unknown>) => ({
+      uuid: "0193a5b2-7c41-7a10-8f00-333333333333",
+      event: "desktop_bridge_relay_error",
+      properties: Object.defineProperties(
+        {
+          ...properties,
+          $current_url: "https://hackerai.co/c/private?code=private",
+          $pathname: "/c/private",
+          $set: { email: "private" },
+          error: "private relay reason",
+          command: "cat /home/private",
+          // Forged caller identity; a browser has no native runtime.
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+        },
+        { stack: { get: accessor, enumerable: true } },
+      ),
+      timestamp: new Date(1_794_094_000_000),
+    });
+
+    const sanitized = beforeSend(enriched(retained));
+    expect(sanitized).toEqual({
+      uuid: "0193a5b2-7c41-7a10-8f00-333333333333",
+      event: "desktop_bridge_relay_error",
+      properties: retained,
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toMatch(/private|native_/);
+    expect(accessor).not.toHaveBeenCalled();
+    // A forged tuple or one queued under another owner is dropped.
+    expect(
+      beforeSend(enriched({ ...retained, operation_readiness_kind: "shell" })),
+    ).toBeNull();
+    expect(
+      beforeSend(enriched({ ...retained, distinct_id: "user-other" })),
+    ).toBeNull();
+    // Other relay errors keep their existing shape.
+    const relayError = {
+      event: "desktop_bridge_relay_error",
+      properties: {
+        distinct_id: "user-123",
+        state: "error",
+        errorType: "heartbeat",
+        error: "kept",
+      },
+    };
+    expect(beforeSend(relayError)).toEqual(relayError);
+
+    // The private-page gate still runs before the event-specific projection.
+    try {
+      expect(
+        beforeSend({
+          ...enriched(retained),
+          properties: {
+            ...retained,
+            $current_url: "https://hackerai.co/abuse/report",
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+
+    // Retained callbacks after consent withdrawal or an owner switch, before
+    // the global analytics identity resets.
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    expect(beforeSend(enriched(retained))).toBeNull();
+    view.rerender(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    mockUseAuth.mockReturnValue({ user: { id: "user-b" } });
+    view.rerender(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    expect(beforeSend(enriched(retained))).toBeNull();
+    view.unmount();
+  });
+
   it.each([
     ["withdraws consent", false, { id: "user-123" }],
     ["switches account", true, { id: "user-b" }],
@@ -1784,6 +1905,50 @@ describe("Desktop runtime identity", () => {
           $current_url: "https://hackerai.co/c/PRIVATE",
           $set: { email: "PRIVATE" },
           body: "PRIVATE",
+          // Forged caller or SDK identity is replaced by measured values.
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+          native_os_version: "PRIVATE",
+        },
+      });
+      expect(sent?.properties).toEqual({ ...retained, ...identity });
+      expect(JSON.stringify(sent)).not.toMatch(/PRIVATE|0\.0\.99|windows/);
+      view.unmount();
+    } finally {
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    }
+  });
+
+  it("adds only the fresh measured identity to the strict operation readiness failure", async () => {
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    try {
+      const { beforeSend, view } = await renderDesktop();
+      const retained = {
+        token: "phc_test",
+        distinct_id: "user-123",
+        $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+        $lib: "web",
+        state: "error",
+        clientSurface: "desktop_bridge",
+        source: "operation_channel",
+        errorType: "operation_readiness",
+        connectionId: "0193a5b2-7c41-7a10-8f00-111111111111",
+        operation_readiness_version: 1,
+        operation_readiness_phase: "readiness_publish",
+        operation_readiness_kind: "pty",
+        operation_readiness_operation_id:
+          "0193a5b2-7c41-7a10-8f00-222222222222",
+        build_state: "measured",
+        hackerai_frontend_build_commit: "a".repeat(40),
+      };
+      const sent = beforeSend({
+        event: "desktop_bridge_relay_error",
+        properties: {
+          ...retained,
+          $current_url: "https://hackerai.co/c/PRIVATE",
+          error: "PRIVATE",
           // Forged caller or SDK identity is replaced by measured values.
           native_app_version: "0.0.99",
           native_platform: "windows",
