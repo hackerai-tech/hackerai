@@ -900,7 +900,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(agentRouteSrc).toMatch(/AGENT_API_ENDPOINT/);
     expect(legacyAgentRouteSrc).toMatch(/LEGACY_AGENT_API_ENDPOINT/);
-    expect(transportSrc).toMatch(/fetchWithErrorHandlers\(AGENT_API_ENDPOINT/);
+    expect(transportSrc).toMatch(
+      /fetchWithErrorHandlers\(\s*AGENT_API_ENDPOINT/,
+    );
     expect(routeSrc).toMatch(/endpoint,/);
     expect(taskSrc).toMatch(
       /payloadEndpoint\s*\?\?\s*LEGACY_AGENT_API_ENDPOINT/,
