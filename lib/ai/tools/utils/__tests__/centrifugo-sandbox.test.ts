@@ -376,37 +376,88 @@ describe("CentrifugoSandbox", () => {
       expect(control.publish).toHaveBeenCalledTimes(1);
       expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
+      const records = receiverRecords();
+      if (!isDesktop) {
+        expect(records).toEqual([]);
+        return;
+      }
+      const uncertain = {
+        dispatch_uncertain_version: 1,
+        dispatch_uncertain_reason:
+          failure === "publish reply lost"
+            ? "publish_timeout"
+            : "operation_ready_timeout",
+      };
+      const index = records.findIndex(
+        (record) => record.phase === "dispatch_uncertain",
+      );
+      expect(index).toBeGreaterThan(0);
+      for (const record of records.slice(0, index)) {
+        expect(record).not.toHaveProperty("dispatch_uncertain_version");
+        expect(record).not.toHaveProperty("dispatch_uncertain_reason");
+      }
+      expect([records[index], records.at(-1)]).toEqual([
+        expect.objectContaining(uncertain),
+        expect.objectContaining({ phase: "cleanup", ...uncertain }),
+      ]);
     },
   );
 
-  it("keeps uncertain Desktop dispatch bounded and non-retryable when no output arrives", async () => {
-    const sandbox = new CentrifugoSandbox(
-      "user-1",
-      {
-        ...defaultConnection,
-        isDesktop: true,
-        capabilities: { commands: true, operationChannels: true },
-      },
-      defaultConfig,
-    );
-    const result = sandbox.commands
-      .run("once", { timeoutMs: 10_000 })
-      .catch((error) => error);
-    await jest.advanceTimersByTimeAsync(0);
-    const reply = mockSubscriptions[0];
-    reply.emit("subscribed");
-    await jest.advanceTimersByTimeAsync(6000);
-    expect(reply.unsubscribe).not.toHaveBeenCalled();
-    await jest.advanceTimersByTimeAsync(39_000);
-    await expect(result).resolves.toMatchObject({
-      dispatched: true,
-      retryable: false,
-    });
-    expect((await result).message).toContain("Command timeout after 45000ms");
-    expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
-    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
-  });
+  it.each([
+    ["readiness reply lost", "operation_ready_timeout"],
+    ["publish reply lost", "publish_timeout"],
+  ])(
+    "keeps uncertain Desktop dispatch bounded and non-retryable when no output arrives after %s",
+    async (failure, reason) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const result = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 10_000 })
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      if (failure === "publish reply lost")
+        control.publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(6000);
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(39_000);
+      await expect(result).resolves.toMatchObject({
+        dispatched: true,
+        retryable: false,
+      });
+      expect((await result).message).toContain("Command timeout after 45000ms");
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      const uncertain = {
+        dispatch_uncertain_version: 1,
+        dispatch_uncertain_reason: reason,
+      };
+      const records = receiverRecords();
+      expect(
+        records.filter((record) => "dispatch_uncertain_reason" in record),
+      ).toEqual([
+        expect.objectContaining({ phase: "dispatch_uncertain", ...uncertain }),
+        expect.objectContaining({
+          phase: "command_wait",
+          dispatch_phase: "uncertain",
+          ...uncertain,
+        }),
+        expect.objectContaining({ phase: "cleanup", ...uncertain }),
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_COMMAND");
+    },
+  );
 
   it("cancels the original Desktop command after its readiness reply is lost", async () => {
     const sandbox = new CentrifugoSandbox(

@@ -67,9 +67,87 @@ describe("receiver diagnostics", () => {
       terminal_type: "exit",
       suppressed_transitions: 991,
     });
+    expect(records.at(-1)).not.toHaveProperty("dispatch_uncertain_version");
+    expect(records.at(-1)).not.toHaveProperty("dispatch_uncertain_reason");
     expect(JSON.stringify(records)).not.toMatch(
       /PRIVATE_OUTPUT|PRIVATE_COMMAND/,
     );
+  });
+
+  it("attributes uncertain dispatch on its transition, passive snapshot and cleanup", () => {
+    jest.useFakeTimers();
+    try {
+      const log = jest.spyOn(console, "info").mockImplementation(() => {});
+      const diagnostics = createReceiverDiagnostics(
+        { enabled: true, commandId: "id" },
+        () => ({
+          sequence: -1,
+          terminalReceived: false,
+          cancelRequested: false,
+          dispatched: true,
+          command: "PRIVATE_COMMAND",
+        }),
+      );
+      diagnostics.start();
+      diagnostics.dispatchPhase("operation_ready");
+      diagnostics.dispatchUncertain("operation_ready_timeout");
+      jest.advanceTimersByTime(10_000);
+      diagnostics.finish("deadline");
+      const records = log.mock.calls.map(([value]) => JSON.parse(value));
+      const uncertain = {
+        dispatch_uncertain_version: 1,
+        dispatch_uncertain_reason: "operation_ready_timeout",
+      };
+      expect(records).toEqual([
+        expect.objectContaining({ phase: "started" }),
+        expect.objectContaining({ phase: "dispatch_uncertain", ...uncertain }),
+        expect.objectContaining({
+          phase: "command_wait",
+          dispatch_phase: "uncertain",
+          ...uncertain,
+        }),
+        expect.objectContaining({
+          phase: "cleanup",
+          reason: "deadline",
+          ...uncertain,
+        }),
+      ]);
+      expect(records[0]).not.toHaveProperty("dispatch_uncertain_version");
+      expect(records[0]).not.toHaveProperty("dispatch_uncertain_reason");
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_COMMAND");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps the uncertain dispatch reason on cleanup after its transition is capped", () => {
+    const log = jest.spyOn(console, "info").mockImplementation(() => {});
+    const diagnostics = createReceiverDiagnostics(
+      { enabled: true, commandId: "id" },
+      () => ({
+        sequence: -1,
+        terminalReceived: false,
+        cancelRequested: false,
+        dispatched: true,
+      }),
+    );
+    diagnostics.start();
+    for (let i = 0; i < 20; i++) diagnostics.transition("client_retry");
+    diagnostics.dispatchUncertain("publish_timeout");
+    diagnostics.finish("deadline");
+    const records = log.mock.calls.map(([value]) => JSON.parse(value));
+    expect(records).toHaveLength(13);
+    expect(records.map((record) => record.phase)).not.toContain(
+      "dispatch_uncertain",
+    );
+    expect(records.at(-1)).toMatchObject({
+      event: "desktop_command_receiver",
+      schema_version: 1,
+      phase: "cleanup",
+      suppressed_transitions: 10,
+      dispatch_uncertain_version: 1,
+      dispatch_uncertain_reason: "publish_timeout",
+    });
   });
 
   it("does not emit for legacy transports and tolerates a failing log sink", () => {
@@ -87,6 +165,7 @@ describe("receiver diagnostics", () => {
       state,
     );
     disabled.start();
+    disabled.dispatchUncertain("publish_timeout");
     disabled.finish("deadline");
     expect(log).not.toHaveBeenCalled();
     const enabled = createReceiverDiagnostics(
@@ -95,7 +174,9 @@ describe("receiver diagnostics", () => {
     );
     expect(() => {
       enabled.start();
+      enabled.dispatchUncertain("operation_ready_timeout");
       enabled.finish("deadline");
     }).not.toThrow();
+    expect(log).toHaveBeenCalledTimes(3);
   });
 });

@@ -1766,7 +1766,11 @@ ${CONNECTED_AGENT_BROWSER_GUIDANCE}`;
                   // failed to execute. Keep its original receiver and deadline;
                   // never resend execution. Stop must still target this command.
                   publishedCommand = true;
-                  diagnostics.transition("dispatch_uncertain");
+                  diagnostics.dispatchUncertain(
+                    err instanceof RelayOperationReadinessTimeout
+                      ? "operation_ready_timeout"
+                      : "publish_timeout",
+                  );
                   if (cancelRequested || opts?.signal?.aborted) publishCancel();
                   return;
                 }
