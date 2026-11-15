@@ -63,6 +63,9 @@ const INDEX_FIELDS: Record<string, Record<string, string[]>> = {
   processed_webhooks: {
     by_event_id: ["event_id"],
   },
+  extra_usage_bundle_reservations: {
+    by_stripe_checkout_session_id: ["stripe_checkout_session_id"],
+  },
 };
 
 function createQueryResult(rows: Row[]) {
@@ -111,6 +114,7 @@ function createMockCtx(initialTables: Partial<Tables> = {}) {
     extra_usage_purchases: [],
     processed_checkout_sessions: [],
     processed_webhooks: [],
+    extra_usage_bundle_reservations: [],
     ...initialTables,
   };
 

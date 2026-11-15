@@ -27,6 +27,7 @@ jest.mock("convex/values", () => ({
     union: jest.fn(() => "union"),
     null: jest.fn(() => "null"),
     boolean: jest.fn(() => "boolean"),
+    literal: jest.fn(() => "literal"),
   },
 }));
 jest.mock("../lib/logger", () => ({
@@ -135,7 +136,29 @@ function makeCtx(userId = "user_member", organizationId?: string) {
       })),
     },
     runQuery: jest.fn(async () => null),
-    runMutation: jest.fn(async () => null),
+    // Bundle checkouts reserve monthly allowance first; the cap itself is
+    // covered against real mutation handlers in extraUsageBundles.test.ts.
+    runMutation: jest.fn(async (_reference: unknown, args: any) =>
+      args && "checkoutAttemptId" in args && "stripeCustomerId" in args
+        ? {
+            status: "reserved",
+            reused: false,
+            mayCreate: true,
+            createAttempts: 1,
+            reservationId: "reservation_fixture",
+            periodMonth: "2026-11",
+            policyVersion: "bundle-cap-v1",
+            checkoutAttemptId: args.checkoutAttemptId,
+            createdAt: 0,
+            stripeCustomerId: args.stripeCustomerId,
+            applicationOrigin: args.applicationOrigin,
+            returnPath: args.returnPath,
+            cap: { policyVersion: "bundle-cap-v1" },
+          }
+        : args && "reservationId" in args
+          ? true
+          : null,
+    ),
   };
 }
 
@@ -302,8 +325,11 @@ describe("extraUsageActions billing authorization", () => {
             amountDollars: "250",
             paidAmountDollars: "200",
             bundleId: "usage-250-v1",
+            bundleReservationId: "reservation_fixture",
+            bundleCapPeriod: "2026-11",
           }),
         }),
+        { idempotencyKey: "extra_usage_bundle:reservation_fixture" },
       );
       for (const priceId of [
         GRANDFATHERED_PRO_MONTHLY_PRICE_ID,

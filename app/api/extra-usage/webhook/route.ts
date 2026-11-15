@@ -1,4 +1,7 @@
-import { readExtraUsagePurchase } from "@/lib/billing/extra-usage-bundles";
+import {
+  extraUsagePurchaseValueProperties,
+  readExtraUsagePurchase,
+} from "@/lib/billing/extra-usage-bundles";
 import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -42,7 +45,9 @@ function errorMessage(error: unknown): string {
  * - Endpoint URL: https://your-domain.com/api/extra-usage/webhook
  * - Events to listen: checkout.session.completed,
  *   checkout.session.async_payment_succeeded,
- *   checkout.session.async_payment_failed
+ *   checkout.session.async_payment_failed,
+ *   checkout.session.expired (releases monthly bundle holds promptly; the
+ *   checkout action also reconciles expired sessions on the next attempt)
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -94,6 +99,58 @@ export async function POST(req: NextRequest) {
 
   // Handle the event
   switch (event.type) {
+    case "checkout.session.expired": {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const metadata = session.metadata;
+      // Only discounted bundles hold allowance; other expiries need no work.
+      if (
+        metadata?.type !== "extra_usage_purchase" ||
+        !metadata.bundleId ||
+        !metadata.userId
+      ) {
+        return NextResponse.json({ received: true });
+      }
+      const bundleLog = {
+        route: WEBHOOK_LOG_CONTEXT.route,
+        requestHeaders: req.headers,
+        userId: metadata.userId,
+        stripeCheckoutSessionId: session.id,
+        paymentStatus: session.payment_status,
+        bundleId: metadata.bundleId,
+        bundleReservationId: metadata.bundleReservationId,
+        bundleCapPeriod: metadata.bundleCapPeriod,
+      };
+      try {
+        const { released } = await getConvexClient().mutation(
+          api.extraUsageBundles.releaseBundleSessionFromStripe,
+          {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            userId: metadata.userId,
+            stripeCheckoutSessionId: session.id,
+            ...(metadata.bundleReservationId && {
+              bundleReservationId: metadata.bundleReservationId,
+            }),
+            reason: "stripe_session_expired",
+          },
+        );
+        logExtraUsagePurchase("info", "extra_usage_bundle_hold_expired", {
+          ...bundleLog,
+          result: released ? "released" : "not_held",
+        });
+      } catch (error) {
+        logExtraUsagePurchase("error", "extra_usage_bundle_release_failed", {
+          ...bundleLog,
+          result: "release_failed",
+          reason: "stripe_session_expired",
+          error,
+        });
+        return NextResponse.json(
+          { error: "Failed to release bundle hold" },
+          { status: 500 },
+        );
+      }
+      return NextResponse.json({ received: true });
+    }
     case "checkout.session.completed":
     case "checkout.session.async_payment_succeeded":
     case "checkout.session.async_payment_failed": {
@@ -127,6 +184,11 @@ export async function POST(req: NextRequest) {
         );
       }
       const { amountDollars } = purchase;
+      const bundleLog = {
+        bundleId: purchase.bundleId,
+        bundleReservationId: purchase.bundleReservationId,
+        bundleCapPeriod: purchase.bundleCapPeriod,
+      };
       const stripeCustomerId = stripeObjectId(session.customer);
       const stripePaymentIntentId = stripeObjectId(session.payment_intent);
       const stripeInvoiceId = stripeObjectId(session.invoice);
@@ -173,6 +235,21 @@ export async function POST(req: NextRequest) {
             route: "webhook",
             lastError: "stripe_async_payment_failed",
           });
+          if (purchase.bundleId) {
+            // Stripe confirmed this session can no longer be paid.
+            await convex.mutation(
+              api.extraUsageBundles.releaseBundleSessionFromStripe,
+              {
+                serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+                userId,
+                stripeCheckoutSessionId: session.id,
+                ...(purchase.bundleReservationId && {
+                  bundleReservationId: purchase.bundleReservationId,
+                }),
+                reason: "stripe_async_payment_failed",
+              },
+            );
+          }
         } catch (recordError) {
           logExtraUsagePurchase(
             "error",
@@ -221,6 +298,7 @@ export async function POST(req: NextRequest) {
           stripePaymentIntentId,
           stripeInvoiceId,
           paymentStatus: session.payment_status,
+          ...bundleLog,
           result: "payment_pending",
         });
         return NextResponse.json({ received: true });
@@ -238,6 +316,9 @@ export async function POST(req: NextRequest) {
             bundleId: purchase.bundleId,
             paidAmountDollars: purchase.paidAmountDollars,
           }),
+          ...(purchase.bundleReservationId && {
+            bundleReservationId: purchase.bundleReservationId,
+          }),
           stripeCheckoutSessionId: session.id,
           stripePaymentIntentId,
           stripeInvoiceId,
@@ -251,6 +332,9 @@ export async function POST(req: NextRequest) {
           ...(purchase.bundleId && {
             bundleId: purchase.bundleId,
             paidAmountDollars: purchase.paidAmountDollars,
+          }),
+          ...(purchase.bundleReservationId && {
+            bundleReservationId: purchase.bundleReservationId,
           }),
           idempotencyKey: `cs_${session.id}`,
           revenueSource: "extra_usage_purchase",
@@ -277,27 +361,30 @@ export async function POST(req: NextRequest) {
             stripePaymentIntentId,
             stripeInvoiceId,
             paymentStatus: session.payment_status,
+            ...bundleLog,
             result: result.alreadyProcessed ? "already_processed" : "credited",
           },
         );
         try {
-          phLogger.event(
-            PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
-            paidFunnelProperties({
-              userId,
-              checkout_attempt_id: session.metadata.checkoutAttemptId,
-              checkout_type: "extra_usage_purchase",
-              amount_dollars: purchase.paidAmountDollars ?? amountDollars,
-              credit_amount_dollars: amountDollars,
-              bundle_id: purchase.bundleId,
-              stripe_customer_id: stripeCustomerId,
-              stripe_checkout_session_id: session.id,
-              stripe_payment_intent_id: stripePaymentIntentId,
-              payment_status: session.payment_status,
-              $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
-            }),
-          );
-          after(() => phLogger.flush());
+          // Report once: only the route that actually granted the credit.
+          if (!result.alreadyProcessed) {
+            phLogger.event(
+              PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded,
+              paidFunnelProperties({
+                userId,
+                checkout_attempt_id: session.metadata.checkoutAttemptId,
+                checkout_type: "extra_usage_purchase",
+                ...extraUsagePurchaseValueProperties(purchase),
+                fulfillment_route: "webhook",
+                stripe_customer_id: stripeCustomerId,
+                stripe_checkout_session_id: session.id,
+                stripe_payment_intent_id: stripePaymentIntentId,
+                payment_status: session.payment_status,
+                $insert_id: `${PAID_FUNNEL_EVENTS.addCreditCheckoutSucceeded}:${session.id}`,
+              }),
+            );
+            after(() => phLogger.flush());
+          }
         } catch (analyticsError) {
           logExtraUsagePurchase(
             "warn",
@@ -362,6 +449,7 @@ export async function POST(req: NextRequest) {
           stripePaymentIntentId,
           stripeInvoiceId,
           paymentStatus: session.payment_status,
+          ...bundleLog,
           result: "failed",
           error,
         });

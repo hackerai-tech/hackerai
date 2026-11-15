@@ -59,6 +59,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "referral_rewards",
     "revenue_events",
     "extra_usage_purchases",
+    "extra_usage_bundle_reservations",
+    "extra_usage_bundle_attempts",
     "paid_start_events",
     "unit_economics_daily",
     "user_suspensions",
@@ -932,6 +934,16 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "extra_usage_purchases", "by_user_created_at", (q) =>
     q.eq("user_id", userId),
   );
+  const bundleReservationsBatch = await collectByIndexBatch<
+    Doc<"extra_usage_bundle_reservations">
+  >(ctx, budget, "extra_usage_bundle_reservations", "by_user_attempt", (q) =>
+    q.eq("user_id", userId),
+  );
+  const bundleAttemptsBatch = await collectByIndexBatch<
+    Doc<"extra_usage_bundle_attempts">
+  >(ctx, budget, "extra_usage_bundle_attempts", "by_user_attempt", (q) =>
+    q.eq("user_id", userId),
+  );
   const paidStartsByUserBatch = await collectByIndexBatch<
     Doc<"paid_start_events">
   >(ctx, budget, "paid_start_events", "by_user_day", (q) =>
@@ -969,6 +981,8 @@ async function cleanupUserDataForUser(
     revenueByUserBatch,
     revenueByEntityBatch,
     extraUsagePurchasesBatch,
+    bundleReservationsBatch,
+    bundleAttemptsBatch,
     paidStartsByUserBatch,
     paidStartsByEntityBatch,
     unitEconomicsByUserBatch,
@@ -1125,6 +1139,29 @@ async function cleanupUserDataForUser(
     stats,
     "extra_usage_purchases",
     extraUsagePurchases,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  // Bundle holds mirror the purchase ledger: amounts and Stripe references stay
+  // for reconciliation; the user link and the chat-scoped return path do not.
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_bundle_reservations",
+    bundleReservationsBatch.docs,
+    () => ({
+      user_id: DELETED_USER_ID,
+      return_path: undefined,
+      updated_at: now,
+    }),
+    mode,
+  );
+  // Attempt mappings keep their link to the retained hold, not to the user.
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "extra_usage_bundle_attempts",
+    bundleAttemptsBatch.docs,
     () => ({ user_id: DELETED_USER_ID, updated_at: now }),
     mode,
   );

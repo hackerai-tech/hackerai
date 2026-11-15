@@ -2,8 +2,9 @@
 
 import { runWalletSettlement, linkWalletReload } from "./lib/settlementAction";
 
-import { action } from "./lib/serviceFunctions";
+import { action, type ActionCtx } from "./lib/serviceFunctions";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
@@ -473,8 +474,631 @@ async function retireAutoReloadInvoice(
 }
 
 // =============================================================================
+// Discounted bundle checkout (monthly cap)
+// =============================================================================
+
+type BundleCapSnapshot = {
+  policyVersion: string;
+  periodMonth: string;
+  resetsAt: number;
+  capDollars: number;
+  usedDollars: number;
+  pendingDollars: number;
+  remainingDollars: number;
+  historyComplete: boolean;
+};
+
+type PendingBundleHold =
+  | {
+      kind: "reservation";
+      reservationId: Id<"extra_usage_bundle_reservations">;
+      bundleId: string;
+      stripeCheckoutSessionId?: string;
+      stripeCustomerId: string;
+      createdAt: number;
+    }
+  | { kind: "legacy"; bundleId: string; stripeCheckoutSessionId: string };
+
+type BundleCheckoutErrorCode =
+  | "bundle_cap_exceeded"
+  | "bundle_cap_unavailable"
+  | "bundle_checkout_pending"
+  | "bundle_checkout_unresolved"
+  | "bundle_checkout_failed"
+  | "bundle_checkout_complete"
+  | "bundle_attempt_conflict";
+
+type PurchaseSessionResult = {
+  url: string | null;
+  error?: string;
+  checkoutSessionId?: string;
+  errorCode?: BundleCheckoutErrorCode;
+  retryable?: boolean;
+  reservationReused?: boolean;
+  /** Attempt ID the checkout was created under; clients adopt it. */
+  checkoutAttemptId?: string;
+  bundleCap?: BundleCapSnapshot;
+};
+
+type BundleReleaseReason = "stripe_session_expired" | "stripe_payment_canceled";
+
+/**
+ * Unlinked holds younger than this probably have a create call in flight, so
+ * reconciliation does not search for their session yet. Searching never
+ * releases a hold by itself; only a verified unpaid final session does.
+ */
+const UNLINKED_BUNDLE_HOLD_SEARCH_AFTER_MS = 5 * 60_000;
+const MAX_BUNDLE_HOLDS_RECONCILED = 10;
+const UNRESOLVED_BUNDLE_CHECKOUT_MESSAGE =
+  "We couldn't confirm your earlier checkout for this bundle, so it stays reserved. Custom amounts at standard price are still available, or contact support to resolve it.";
+const MAX_CHECKOUT_ATTEMPT_ID_LENGTH = 100;
+
+const bundleCapSnapshotValidator = v.object({
+  policyVersion: v.string(),
+  periodMonth: v.string(),
+  resetsAt: v.number(),
+  capDollars: v.number(),
+  usedDollars: v.number(),
+  pendingDollars: v.number(),
+  remainingDollars: v.number(),
+  historyComplete: v.boolean(),
+});
+
+const formatUtcResetDate = (resetsAt: number) =>
+  new Date(resetsAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+
+/** Stripe-confirmed unpaid outcomes only; open or pending sessions keep holds. */
+function unpaidBundleSessionReason(
+  session: Stripe.Checkout.Session,
+): BundleReleaseReason | null {
+  if (
+    session.payment_status === "paid" ||
+    session.payment_status === "no_payment_required"
+  )
+    return null;
+  if (session.status === "expired") return "stripe_session_expired";
+  const paymentIntent = session.payment_intent;
+  if (
+    session.status === "complete" &&
+    paymentIntent &&
+    typeof paymentIntent === "object" &&
+    paymentIntent.status === "canceled"
+  )
+    return "stripe_payment_canceled";
+  return null;
+}
+
+/** Stripe rejected the request itself, so no session exists for its key. */
+const isDefinitiveStripeCreateFailure = (error: unknown): boolean => {
+  const type = (error as { type?: string } | null)?.type;
+  return (
+    type === "StripeInvalidRequestError" ||
+    type === "StripeAuthenticationError" ||
+    type === "StripePermissionError"
+  );
+};
+
+/**
+ * Find the session created with an unlinked reservation's key and link it.
+ * Absence is never proof that no session exists: a lost create response, a
+ * listing page limit or eventual consistency all look the same.
+ */
+async function discoverReservationSession(
+  ctx: ActionCtx,
+  hold: {
+    reservationId: Id<"extra_usage_bundle_reservations">;
+    stripeCustomerId: string;
+    createdAt: number;
+  },
+): Promise<string | null> {
+  const page = await getStripe().checkout.sessions.list({
+    customer: hold.stripeCustomerId,
+    created: { gte: Math.floor(hold.createdAt / 1000) - 60 },
+    limit: 100,
+  });
+  const session = page.data.find(
+    (candidate) =>
+      candidate.metadata?.bundleReservationId === hold.reservationId,
+  );
+  if (!session) return null;
+  await ctx.runMutation(internal.extraUsageBundles.attachBundleSession, {
+    reservationId: hold.reservationId,
+    stripeCheckoutSessionId: session.id,
+  });
+  return session.id;
+}
+
+const logUnresolvedBundleHold = (
+  userId: string,
+  reservationId: string,
+  reason: "session_not_found" | "stripe_lookup_failed",
+  error?: unknown,
+) =>
+  convexLogger.error("extra_usage_bundle_hold_unresolved", {
+    user_id: userId,
+    reservation_id: reservationId,
+    reason,
+    remediation:
+      "Search Stripe Checkout sessions for metadata.bundleReservationId; release the hold only if its session is expired or unpaid.",
+    ...(error !== undefined && { error: serializeErrorForLog(error) }),
+  });
+
+/**
+ * Release holds whose Checkout sessions Stripe confirms can no longer be paid.
+ * Any lookup failure or unresolved hold keeps its allowance and is logged.
+ */
+async function reconcilePendingBundleHolds(
+  ctx: ActionCtx,
+  userId: string,
+  holds: PendingBundleHold[],
+): Promise<boolean> {
+  const stripe = getStripe();
+  let releasedAny = false;
+  for (const hold of holds.slice(0, MAX_BUNDLE_HOLDS_RECONCILED)) {
+    try {
+      let sessionId = hold.stripeCheckoutSessionId;
+      if (!sessionId && hold.kind === "reservation") {
+        if (Date.now() - hold.createdAt < UNLINKED_BUNDLE_HOLD_SEARCH_AFTER_MS)
+          continue;
+        sessionId = (await discoverReservationSession(ctx, hold)) ?? undefined;
+        if (!sessionId) {
+          logUnresolvedBundleHold(
+            userId,
+            hold.reservationId,
+            "session_not_found",
+          );
+          continue;
+        }
+      }
+      const session = await stripe.checkout.sessions.retrieve(sessionId!, {
+        expand: ["payment_intent"],
+      });
+      const reason = unpaidBundleSessionReason(session);
+      if (reason) {
+        releasedAny =
+          (await ctx.runMutation(internal.extraUsageBundles.releaseBundleHold, {
+            userId,
+            reason,
+            stripeCheckoutSessionId: session.id,
+            ...(hold.kind === "reservation" && {
+              bundleReservationId: hold.reservationId,
+            }),
+          })) || releasedAny;
+      }
+    } catch (error) {
+      convexLogger.warn("extra_usage_bundle_hold_reconcile_failed", {
+        user_id: userId,
+        hold_kind: hold.kind,
+        reservation_id:
+          hold.kind === "reservation" ? hold.reservationId : undefined,
+        stripe_checkout_session_id: hold.stripeCheckoutSessionId,
+        error: serializeErrorForLog(error),
+      });
+    }
+  }
+  return releasedAny;
+}
+
+/**
+ * Hold monthly bundle allowance, then create (or resume) the reservation's
+ * Checkout session. Stripe calls reuse the reservation's idempotency key, so a
+ * retry of the same attempt can never add a second hold or session.
+ */
+async function createBundleCheckoutSession(
+  ctx: ActionCtx,
+  input: {
+    userId: string;
+    bundle: ReturnType<typeof getExtraUsageBundle>;
+    checkoutAttemptId: string;
+    stripeCustomerId: string;
+    applicationOrigin: string;
+    returnPath?: string;
+    resumeAfterPurchase?: boolean;
+    enableExtraUsageAfterPurchase?: boolean;
+  },
+  allowExpiredRestart = true,
+): Promise<PurchaseSessionResult> {
+  const stripe = getStripe();
+  const reserveArgs = {
+    userId: input.userId,
+    bundleId: input.bundle.id,
+    checkoutAttemptId: input.checkoutAttemptId,
+    stripeCustomerId: input.stripeCustomerId,
+    applicationOrigin: input.applicationOrigin,
+    returnPath: input.returnPath,
+    resumeAfterPurchase: input.resumeAfterPurchase,
+    enableExtraUsageAfterPurchase: input.enableExtraUsageAfterPurchase,
+  };
+  let reservation = await ctx.runMutation(
+    internal.extraUsageBundles.reserveBundle,
+    reserveArgs,
+  );
+  if (
+    reservation.status === "blocked" &&
+    reservation.pendingHolds.length > 0 &&
+    (await reconcilePendingBundleHolds(
+      ctx,
+      input.userId,
+      reservation.pendingHolds,
+    ))
+  ) {
+    reservation = await ctx.runMutation(
+      internal.extraUsageBundles.reserveBundle,
+      reserveArgs,
+    );
+  }
+
+  const logContext = {
+    user_id: input.userId,
+    bundle_id: input.bundle.id,
+    credit_dollars: input.bundle.creditDollars,
+    checkout_attempt_id: input.checkoutAttemptId,
+  };
+
+  if (reservation.status === "attempt_conflict") {
+    return {
+      url: null,
+      error: "Checkout attempt does not match this bundle. Please try again.",
+      errorCode: "bundle_attempt_conflict",
+      retryable: false,
+    };
+  }
+  if (reservation.status === "unavailable") {
+    return {
+      url: null,
+      error:
+        "Discounted bundles are temporarily unavailable. Standard top-ups still work.",
+      errorCode: "bundle_cap_unavailable",
+      retryable: false,
+      bundleCap: reservation.cap,
+    };
+  }
+  if (reservation.status === "blocked") {
+    const { cap } = reservation;
+    convexLogger.info("extra_usage_bundle_cap_blocked", {
+      ...logContext,
+      policy_version: cap.policyVersion,
+      period_month: cap.periodMonth,
+      remaining_dollars: cap.remainingDollars,
+      pending_dollars: cap.pendingDollars,
+      used_dollars: cap.usedDollars,
+    });
+    return {
+      url: null,
+      error: `This bundle exceeds your monthly bundle limit: $${cap.remainingDollars.toLocaleString("en-US")} of $${cap.capDollars.toLocaleString("en-US")} left until ${formatUtcResetDate(cap.resetsAt)} (UTC). Custom amounts are still available.`,
+      errorCode: "bundle_cap_exceeded",
+      retryable: false,
+      bundleCap: cap,
+    };
+  }
+
+  const resumed = reservation.status === "legacy_pending" || reservation.reused;
+  const canonicalAttemptId =
+    reservation.status === "reserved"
+      ? reservation.checkoutAttemptId
+      : undefined;
+  const result = (fields: Omit<PurchaseSessionResult, "bundleCap">) => ({
+    ...(canonicalAttemptId && { checkoutAttemptId: canonicalAttemptId }),
+    ...fields,
+    bundleCap: reservation.cap,
+    ...(resumed && { reservationReused: true }),
+  });
+
+  /**
+   * Resume an existing pending session: return it while open, release and
+   * restart once if Stripe says it can no longer be paid, otherwise report it.
+   */
+  const resumeSession = async (
+    sessionId: string,
+    reservationId?: Id<"extra_usage_bundle_reservations">,
+  ): Promise<PurchaseSessionResult> => {
+    let existing: Stripe.Checkout.Session;
+    try {
+      existing = await stripe.checkout.sessions.retrieve(sessionId, {
+        expand: ["payment_intent"],
+      });
+    } catch (error) {
+      convexLogger.warn("extra_usage_bundle_checkout_resume_failed", {
+        ...logContext,
+        reservation_id: reservationId,
+        stripe_checkout_session_id: sessionId,
+        error: serializeErrorForLog(error),
+      });
+      return result({
+        url: null,
+        error: "Could not resume your checkout. Please try again.",
+        errorCode: "bundle_checkout_pending",
+        retryable: true,
+      });
+    }
+    // Pre-cap sessions have no reservation; their metadata holds the attempt.
+    const sessionAttemptId =
+      canonicalAttemptId ?? existing.metadata?.checkoutAttemptId;
+    const attemptFields = sessionAttemptId
+      ? { checkoutAttemptId: sessionAttemptId }
+      : {};
+    if (existing.status === "open" && existing.url) {
+      return result({
+        ...attemptFields,
+        url: existing.url,
+        checkoutSessionId: existing.id,
+      });
+    }
+    if (existing.payment_status === "paid") {
+      // Recover a lost success redirect or delayed webhook through the same
+      // idempotent fulfillment endpoint instead of leaving paid credit pending.
+      return result({
+        ...attemptFields,
+        url: `${input.applicationOrigin}/api/extra-usage/confirm?session_id=${encodeURIComponent(existing.id)}`,
+        checkoutSessionId: existing.id,
+      });
+    }
+    const unpaidReason = unpaidBundleSessionReason(existing);
+    if (
+      unpaidReason &&
+      allowExpiredRestart &&
+      (await ctx.runMutation(internal.extraUsageBundles.releaseBundleHold, {
+        userId: input.userId,
+        reason: unpaidReason,
+        stripeCheckoutSessionId: existing.id,
+        ...(reservationId && { bundleReservationId: reservationId }),
+      }))
+    ) {
+      return await createBundleCheckoutSession(ctx, input, false);
+    }
+    return result({
+      url: null,
+      error:
+        existing.payment_status === "paid"
+          ? "This checkout has already been completed."
+          : "Your payment for this bundle is still processing.",
+      errorCode: "bundle_checkout_complete",
+      retryable: false,
+    });
+  };
+
+  if (reservation.status === "legacy_pending") {
+    return await resumeSession(reservation.stripeCheckoutSessionId);
+  }
+
+  const reservationId = reservation.reservationId;
+  if (reservation.stripeCheckoutSessionId) {
+    return await resumeSession(
+      reservation.stripeCheckoutSessionId,
+      reservationId,
+    );
+  }
+
+  if (!reservation.mayCreate) {
+    // Past the idempotency replay window a new POST could mint a second
+    // payable session, so only search for the one this key may have created.
+    let sessionId: string | null;
+    try {
+      sessionId = await discoverReservationSession(ctx, {
+        reservationId,
+        stripeCustomerId: reservation.stripeCustomerId,
+        createdAt: reservation.createdAt,
+      });
+    } catch (error) {
+      logUnresolvedBundleHold(
+        input.userId,
+        reservationId,
+        "stripe_lookup_failed",
+        error,
+      );
+      return result({
+        url: null,
+        error: "Could not check your earlier checkout. Please try again.",
+        errorCode: "bundle_checkout_pending",
+        retryable: true,
+      });
+    }
+    if (sessionId) return await resumeSession(sessionId, reservationId);
+    logUnresolvedBundleHold(input.userId, reservationId, "session_not_found");
+    return result({
+      url: null,
+      error: UNRESOLVED_BUNDLE_CHECKOUT_MESSAGE,
+      errorCode: "bundle_checkout_unresolved",
+      retryable: false,
+    });
+  }
+
+  // Every input comes from the reservation, so replaying the idempotency key
+  // on retry sends identical parameters and returns the original session.
+  const cancelUrl = reservation.returnPath
+    ? new URL(reservation.returnPath, reservation.applicationOrigin).toString()
+    : reservation.applicationOrigin;
+  let session: Stripe.Checkout.Session;
+  try {
+    session = await stripe.checkout.sessions.create(
+      {
+        customer: reservation.stripeCustomerId,
+        mode: "payment",
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: "HackerAI Extra Usage Credits",
+                description: `$${input.bundle.creditDollars} in extra usage credits`,
+              },
+              unit_amount: input.bundle.paidDollars * 100,
+            },
+            quantity: 1,
+          },
+        ],
+        invoice_creation: { enabled: true },
+        saved_payment_method_options: {
+          allow_redisplay_filters: ["always", "limited"],
+          payment_method_save: "enabled",
+        },
+        metadata: {
+          type: "extra_usage_purchase",
+          userId: input.userId,
+          amountDollars: String(input.bundle.creditDollars),
+          bundleId: input.bundle.id,
+          paidAmountDollars: String(input.bundle.paidDollars),
+          bundleReservationId: reservationId,
+          bundleCapPeriod: reservation.periodMonth,
+          bundleCapPolicyVersion: reservation.policyVersion,
+          checkoutAttemptId: reservation.checkoutAttemptId,
+          ...(reservation.returnPath && {
+            returnPath: reservation.returnPath,
+          }),
+          ...(reservation.resumeAfterPurchase && {
+            resumeAfterPurchase: "true",
+          }),
+          ...(reservation.enableExtraUsageAfterPurchase && {
+            enableExtraUsageAfterPurchase: "true",
+          }),
+        },
+        success_url: `${reservation.applicationOrigin}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: cancelUrl,
+      },
+      { idempotencyKey: `extra_usage_bundle:${reservationId}` },
+    );
+  } catch (error) {
+    const definitive = isDefinitiveStripeCreateFailure(error);
+    let released = false;
+    // Only the first call for this key proves no session exists; after a
+    // retry, an earlier call may have created one. The mutation re-checks.
+    if (definitive && reservation.createAttempts === 1) {
+      released = await ctx.runMutation(
+        internal.extraUsageBundles.releaseBundleHold,
+        {
+          userId: input.userId,
+          reason: "stripe_create_rejected",
+          bundleReservationId: reservationId,
+        },
+      );
+    }
+    convexLogger.warn("extra_usage_bundle_checkout_create_failed", {
+      ...logContext,
+      reservation_id: reservationId,
+      create_attempts: reservation.createAttempts,
+      failure_kind: definitive ? "definitive" : "indeterminate",
+      hold_released: released,
+      error: serializeErrorForLog(error),
+    });
+    return result(
+      released
+        ? {
+            url: null,
+            error:
+              error instanceof Stripe.errors.StripeError
+                ? error.message
+                : "Could not start checkout. Please try again.",
+            errorCode: "bundle_checkout_failed",
+            retryable: true,
+          }
+        : {
+            url: null,
+            error:
+              "Checkout is taking longer than expected. Try again to resume it.",
+            errorCode: "bundle_checkout_pending",
+            retryable: true,
+          },
+    );
+  }
+
+  let attached = true;
+  try {
+    attached = await ctx.runMutation(
+      internal.extraUsageBundles.attachBundleSession,
+      { reservationId, stripeCheckoutSessionId: session.id },
+    );
+  } catch (error) {
+    // The hold still counts; fulfillment and reconciliation link it later
+    // through the session's bundleReservationId metadata.
+    convexLogger.warn("extra_usage_bundle_session_link_failed", {
+      ...logContext,
+      reservation_id: reservationId,
+      stripe_checkout_session_id: session.id,
+      error: serializeErrorForLog(error),
+    });
+  }
+  if (!attached) {
+    // The hold was released while this create ran; never sell without one.
+    try {
+      await stripe.checkout.sessions.expire(session.id);
+    } catch (error) {
+      convexLogger.error("extra_usage_bundle_orphan_session_expire_failed", {
+        ...logContext,
+        reservation_id: reservationId,
+        stripe_checkout_session_id: session.id,
+        error: serializeErrorForLog(error),
+      });
+    }
+    return result({
+      url: null,
+      error: "Checkout could not be started. Please try again.",
+      errorCode: "bundle_checkout_failed",
+      retryable: true,
+    });
+  }
+
+  try {
+    await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
+      userId: input.userId,
+      amountDollars: input.bundle.creditDollars,
+      bundleId: input.bundle.id,
+      paidAmountDollars: input.bundle.paidDollars,
+      stripeCheckoutSessionId: session.id,
+    });
+  } catch (error) {
+    convexLogger.warn("purchase_session_record_failed", {
+      user_id: input.userId,
+      amount_dollars: input.bundle.creditDollars,
+      session_id: session.id,
+      error: serializeErrorForLog(error),
+    });
+  }
+
+  convexLogger.info("purchase_session_created", {
+    ...logContext,
+    amount_dollars: input.bundle.creditDollars,
+    session_id: session.id,
+    reservation_id: reservationId,
+    reservation_reused: reservation.reused,
+    policy_version: reservation.policyVersion,
+    period_month: reservation.periodMonth,
+  });
+
+  return result({ url: session.url, checkoutSessionId: session.id });
+}
+
+// =============================================================================
 // Convex Actions
 // =============================================================================
+
+/**
+ * Release the signed-in user's bundle holds whose Checkout sessions Stripe
+ * confirms can no longer be paid, so an expired checkout cannot keep bundle
+ * cards disabled. Never creates a session or grants credit; open, paid and
+ * unresolved holds keep their allowance.
+ */
+export const reconcileBundleHolds = action({
+  args: {},
+  returns: v.object({ released: v.boolean() }),
+  handler: async (ctx): Promise<{ released: boolean }> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || !extraUsageBundlesEnabled(identity.subject))
+      return { released: false };
+    const holds: PendingBundleHold[] = await ctx.runQuery(
+      internal.extraUsageBundles.listPendingBundleHolds,
+      { userId: identity.subject },
+    );
+    if (holds.length === 0) return { released: false };
+    return {
+      released: await reconcilePendingBundleHolds(ctx, identity.subject, holds),
+    };
+  },
+});
 
 /**
  * Get user's payment status (has valid payment method)
@@ -548,8 +1172,23 @@ export const createPurchaseSession = action({
     url: v.union(v.string(), v.null()),
     error: v.optional(v.string()),
     checkoutSessionId: v.optional(v.string()),
+    errorCode: v.optional(
+      v.union(
+        v.literal("bundle_cap_exceeded"),
+        v.literal("bundle_cap_unavailable"),
+        v.literal("bundle_checkout_pending"),
+        v.literal("bundle_checkout_unresolved"),
+        v.literal("bundle_checkout_failed"),
+        v.literal("bundle_checkout_complete"),
+        v.literal("bundle_attempt_conflict"),
+      ),
+    ),
+    retryable: v.optional(v.boolean()),
+    reservationReused: v.optional(v.boolean()),
+    checkoutAttemptId: v.optional(v.string()),
+    bundleCap: v.optional(bundleCapSnapshotValidator),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<PurchaseSessionResult> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       return { url: null, error: "Not authenticated" };
@@ -577,6 +1216,12 @@ export const createPurchaseSession = action({
       }
       if (args.amountDollars !== bundle.creditDollars)
         return { url: null, error: "Bundle amount mismatch" };
+      if (
+        args.checkoutAttemptId !== undefined &&
+        (!args.checkoutAttemptId ||
+          args.checkoutAttemptId.length > MAX_CHECKOUT_ATTEMPT_ID_LENGTH)
+      )
+        return { url: null, error: "Invalid checkout attempt" };
     }
     // Validate amount
     if (!Number.isInteger(args.amountDollars)) {
@@ -665,8 +1310,19 @@ export const createPurchaseSession = action({
             url: null,
             error: "An active paid subscription is required",
           };
+        return await createBundleCheckoutSession(ctx, {
+          userId: identity.subject,
+          bundle,
+          // Stale clients may omit an attempt; they then get no retry reuse.
+          checkoutAttemptId: args.checkoutAttemptId ?? crypto.randomUUID(),
+          stripeCustomerId,
+          applicationOrigin,
+          returnPath: args.returnPath,
+          resumeAfterPurchase: args.resumeAfterPurchase,
+          enableExtraUsageAfterPurchase: args.enableExtraUsageAfterPurchase,
+        });
       }
-      const amountCents = (bundle?.paidDollars ?? args.amountDollars) * 100;
+      const amountCents = args.amountDollars * 100;
 
       const session = await stripe.checkout.sessions.create({
         customer: stripeCustomerId,
@@ -695,10 +1351,6 @@ export const createPurchaseSession = action({
           type: "extra_usage_purchase",
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
-          ...(bundle && {
-            bundleId: bundle.id,
-            paidAmountDollars: String(bundle.paidDollars),
-          }),
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
@@ -716,10 +1368,6 @@ export const createPurchaseSession = action({
         await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
           userId: identity.subject,
           amountDollars: args.amountDollars,
-          ...(bundle && {
-            bundleId: bundle.id,
-            paidAmountDollars: bundle.paidDollars,
-          }),
           stripeCheckoutSessionId: session.id,
         });
       } catch (error) {

@@ -19,6 +19,7 @@ import {
   extraUsagePointsToDollars as pointsToDollars,
 } from "./lib/extraUsagePricing";
 import { validateMonthlyCapDollars } from "./lib/extraUsageValidation";
+import { consumeBundleReservation } from "./lib/extraUsageBundleCap";
 import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
 type ExtraUsagePurchaseStatus = "created" | "paid_seen" | "credited" | "failed";
@@ -638,6 +639,7 @@ export const recordPurchasePaidSeen = mutation({
     stripeCheckoutSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
     stripeInvoiceId: v.optional(v.string()),
+    bundleReservationId: v.optional(v.string()),
     route: v.union(
       v.literal("confirm"),
       v.literal("webhook"),
@@ -647,6 +649,17 @@ export const recordPurchasePaidSeen = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    if (args.bundleId !== undefined) {
+      // Paid sessions consume their monthly bundle hold before crediting so a
+      // later credit failure cannot leave the allowance double counted.
+      await consumeBundleReservation(ctx, {
+        userId: args.userId,
+        bundleId: args.bundleId,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        bundleReservationId: args.bundleReservationId,
+      });
+    }
 
     await upsertExtraUsagePurchase(ctx, {
       userId: args.userId,
@@ -734,6 +747,7 @@ export const addCredits = mutation({
       v.union(v.literal("confirm"), v.literal("webhook"), v.literal("repair")),
     ),
     enableExtraUsage: v.optional(v.boolean()),
+    bundleReservationId: v.optional(v.string()),
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -918,6 +932,16 @@ export const addCredits = mutation({
     });
 
     await markPurchaseCredited();
+
+    if (args.bundleId !== undefined && args.stripeCheckoutSessionId) {
+      // The cap never gates fulfillment; this only records the consumed hold.
+      await consumeBundleReservation(ctx, {
+        userId: args.userId,
+        bundleId: args.bundleId,
+        stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+        bundleReservationId: args.bundleReservationId,
+      });
+    }
 
     convexLogger.info("credits_added", {
       user_id: args.userId,

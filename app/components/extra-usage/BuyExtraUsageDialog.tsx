@@ -18,11 +18,21 @@ import {
 } from "@/lib/billing/extra-usage-bundles";
 import { toast } from "sonner";
 
+/** Server-computed monthly bundle allowance; the server still enforces it. */
+export type BundleCapInfo = {
+  capDollars: number;
+  remainingDollars: number;
+  resetsAt: number;
+  /** Offers with a pending checkout; resuming takes no new allowance. */
+  resumableBundleIds?: readonly string[];
+};
+
 type BuyExtraUsageDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPurchase: (amountDollars: number, bundleId?: string) => Promise<void>;
   bundlesEnabled?: boolean;
+  bundleCap?: BundleCapInfo;
   isLoading: boolean;
   title?: string;
   description?: string;
@@ -89,9 +99,12 @@ const formatWithCommas = (value: string): string => {
 /** Remove commas for parsing */
 const removeCommas = (value: string): string => value.replace(/,/g, "");
 
+const formatDollars = (value: number) => `$${value.toLocaleString("en-US")}`;
+
 type ContentProps = {
   onPurchase: (amountDollars: number, bundleId?: string) => Promise<void>;
   bundlesEnabled?: boolean;
+  bundleCap?: BundleCapInfo;
   isLoading: boolean;
   onClose: () => void;
   title: string;
@@ -110,12 +123,23 @@ const BuyExtraUsageDialogContent = ({
   paymentMethodMode,
   recommendedAmountDollars,
   bundlesEnabled,
+  bundleCap,
 }: ContentProps) => {
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
+  const isBundleResumable = (bundleId: string) =>
+    !!bundleCap?.resumableBundleIds?.includes(bundleId);
+  const isBundleAvailable = (bundle: { id: string; creditDollars: number }) =>
+    !bundleCap ||
+    isBundleResumable(bundle.id) ||
+    bundle.creditDollars <= bundleCap.remainingDollars;
   const selectedBundle =
     bundlesEnabled && selectedBundleId
       ? getExtraUsageBundle(selectedBundleId)
       : undefined;
+  // A live allowance update can make the selection unavailable. Keep it
+  // selected but blocked, so it never silently becomes a custom purchase.
+  const selectedBundleUnavailable =
+    !!selectedBundle && !isBundleAvailable(selectedBundle);
   const [purchaseAmountOverride, setPurchaseAmountOverride] = useState<
     string | null
   >(null);
@@ -185,6 +209,7 @@ const BuyExtraUsageDialogContent = ({
 
   const handlePurchase = async () => {
     if (selectedBundle) {
+      if (selectedBundleUnavailable) return;
       await onPurchase(selectedBundle.creditDollars, selectedBundle.id);
       return;
     }
@@ -220,7 +245,7 @@ const BuyExtraUsageDialogContent = ({
                     className="h-auto min-h-14 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 whitespace-normal py-2 text-left sm:flex sm:min-h-16 sm:flex-col sm:py-3 sm:text-center"
                     aria-pressed={selectedBundle?.id === bundle.id}
                     onClick={() => setSelectedBundleId(bundle.id)}
-                    disabled={isLoading}
+                    disabled={isLoading || !isBundleAvailable(bundle)}
                   >
                     <span>
                       ${bundle.creditDollars.toLocaleString("en-US")} credit
@@ -232,9 +257,28 @@ const BuyExtraUsageDialogContent = ({
                   </Button>
                 ))}
               </div>
+              {selectedBundleUnavailable && (
+                <p className="text-sm text-red-500">
+                  This bundle is over your remaining monthly bundle limit.
+                  Choose another option.
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">
                 One-time purchases. Auto-reload uses standard pricing.
               </p>
+              {bundleCap && (
+                <p className="text-xs text-muted-foreground">
+                  {formatDollars(bundleCap.remainingDollars)} of{" "}
+                  {formatDollars(bundleCap.capDollars)} monthly bundle credit
+                  left. Resets{" "}
+                  {new Date(bundleCap.resetsAt).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    timeZone: "UTC",
+                  })}{" "}
+                  (UTC).
+                </p>
+              )}
             </div>
           )}
           {bundlesEnabled && (
@@ -375,13 +419,19 @@ const BuyExtraUsageDialogContent = ({
         <div className="flex flex-col gap-3">
           <Button
             onClick={handlePurchase}
-            disabled={isLoading || (!selectedBundle && !isValidAmount)}
+            disabled={
+              isLoading ||
+              selectedBundleUnavailable ||
+              (!selectedBundle && !isValidAmount)
+            }
             className="w-full h-11"
           >
             {isLoading
               ? "Processing..."
               : selectedBundle
-                ? `Pay $${selectedBundle.paidDollars} for $${selectedBundle.creditDollars.toLocaleString("en-US")} credit`
+                ? isBundleResumable(selectedBundle.id)
+                  ? "Resume checkout"
+                  : `Pay $${selectedBundle.paidDollars} for $${selectedBundle.creditDollars.toLocaleString("en-US")} credit`
                 : "Purchase"}
           </Button>
         </div>
@@ -401,6 +451,7 @@ const BuyExtraUsageDialog = ({
   paymentMethodMode = "personal",
   recommendedAmountDollars,
   bundlesEnabled,
+  bundleCap,
 }: BuyExtraUsageDialogProps) => {
   const handleOpenChange = (newOpen: boolean) => {
     onOpenChange(newOpen);
@@ -420,6 +471,7 @@ const BuyExtraUsageDialog = ({
             paymentMethodMode={paymentMethodMode}
             recommendedAmountDollars={recommendedAmountDollars}
             bundlesEnabled={bundlesEnabled}
+            bundleCap={bundleCap}
           />
         )}
       </DialogContent>

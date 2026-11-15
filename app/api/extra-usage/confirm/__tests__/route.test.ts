@@ -2,6 +2,7 @@ import { GET } from "../route";
 import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { logExtraUsagePurchase } from "@/lib/billing/extra-usage-purchase-logging";
+import { phLogger } from "@/lib/posthog/server";
 
 jest.mock("next/server", () => ({
   after: jest.fn(),
@@ -89,4 +90,56 @@ it("forwards face value and cash separately and returns to the original chat", a
   expect(target.pathname).toBe("/c/fixture");
   expect(target.searchParams.get("extra-usage-purchased")).toBe("true");
   expect(target.searchParams.get("amount")).toBe("250");
+});
+
+describe("purchase success analytics", () => {
+  const reservedSession = {
+    ...session,
+    metadata: {
+      ...session.metadata,
+      bundleReservationId: "reservation_fixture",
+      bundleCapPeriod: "2026-11",
+      bundleCapPolicyVersion: "bundle-cap-v1",
+    },
+  };
+
+  it("reports the purchase once, from the route that granted the credit", async () => {
+    (stripe.checkout.sessions.retrieve as jest.Mock).mockResolvedValue(
+      reservedSession,
+    );
+    await GET(request());
+
+    expect(mutation).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ bundleReservationId: "reservation_fixture" }),
+    );
+    expect(phLogger.event).toHaveBeenCalledTimes(1);
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "add_credit_checkout_succeeded",
+      expect.objectContaining({
+        amount_dollars: 200,
+        credit_amount_dollars: 250,
+        discount_dollars: 50,
+        bundle_cap_period: "2026-11",
+        bundle_cap_policy_version: "bundle-cap-v1",
+        fulfillment_route: "confirm",
+        stripe_checkout_session_id: "cs_bundle",
+      }),
+    );
+  });
+
+  it("does not report again when the webhook already credited the session", async () => {
+    (stripe.checkout.sessions.retrieve as jest.Mock).mockResolvedValue(
+      reservedSession,
+    );
+    mutation.mockResolvedValue({ alreadyProcessed: true });
+    const response = await GET(request());
+
+    expect(phLogger.event).not.toHaveBeenCalled();
+    expect(
+      new URL(response.headers.get("location")!).searchParams.get(
+        "extra-usage-purchased",
+      ),
+    ).toBe("true");
+  });
 });

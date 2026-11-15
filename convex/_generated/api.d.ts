@@ -31,6 +31,7 @@ import type * as engagementScopeValidators from "../engagementScopeValidators.js
 import type * as engagementScopes from "../engagementScopes.js";
 import type * as extraUsage from "../extraUsage.js";
 import type * as extraUsageActions from "../extraUsageActions.js";
+import type * as extraUsageBundles from "../extraUsageBundles.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
@@ -54,6 +55,7 @@ import type * as lib_branchedChatTitle from "../lib/branchedChatTitle.js";
 import type * as lib_browserHandoffState from "../lib/browserHandoffState.js";
 import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js";
 import type * as lib_chatHistoryAccess from "../lib/chatHistoryAccess.js";
+import type * as lib_extraUsageBundleCap from "../lib/extraUsageBundleCap.js";
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
@@ -141,6 +143,7 @@ declare const fullApi: ApiFromModules<{
   engagementScopes: typeof engagementScopes;
   extraUsage: typeof extraUsage;
   extraUsageActions: typeof extraUsageActions;
+  extraUsageBundles: typeof extraUsageBundles;
   feedback: typeof feedback;
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
@@ -164,6 +167,7 @@ declare const fullApi: ApiFromModules<{
   "lib/browserHandoffState": typeof lib_browserHandoffState;
   "lib/chatAccessSuspensions": typeof lib_chatAccessSuspensions;
   "lib/chatHistoryAccess": typeof lib_chatHistoryAccess;
+  "lib/extraUsageBundleCap": typeof lib_extraUsageBundleCap;
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
