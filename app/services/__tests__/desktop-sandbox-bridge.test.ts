@@ -13,6 +13,7 @@ import {
   captureAuthenticatedEvent,
   captureQueuedAuthenticatedEvent,
   getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
 } from "@/lib/analytics/client";
 import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -76,6 +77,7 @@ jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
   captureQueuedAuthenticatedEvent: jest.fn().mockReturnValue(true),
   getIdentifiedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
+  getPermittedAnalyticsUserId: jest.fn().mockReturnValue("user-456"),
   subscribeAuthenticatedAnalytics: jest.fn(() => () => {}),
 }));
 
@@ -304,6 +306,203 @@ it("publishes native file replies only on the requested operation channel", asyn
   } finally {
     await bridge.stop();
   }
+});
+
+// ── operation readiness diagnostics ───────────────────────────────────
+
+describe("operation readiness failure diagnostics", () => {
+  const connectionId = "0193a5b2-7c41-7a10-8f00-111111111111";
+  const commandId = "0193a5b2-7c41-7a10-8f00-222222222222";
+  const originalBuild = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+  const readinessEvents = () =>
+    jest
+      .mocked(captureAuthenticatedEvent)
+      .mock.calls.filter(
+        ([event, properties]) =>
+          event === "desktop_bridge_relay_error" &&
+          properties?.errorType === "operation_readiness",
+      );
+
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = "A".repeat(40);
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-456");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-456");
+  });
+
+  afterEach(() => {
+    if (originalBuild === undefined)
+      delete process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    else process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT = originalBuild;
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-456");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-456");
+  });
+
+  async function startWithOperation(
+    configure: (operation: typeof mockSubscription) => void,
+  ) {
+    const bridge = new DesktopSandboxBridge(
+      buildConfig({
+        connectDesktop: jest.fn().mockResolvedValue({
+          connectionId,
+          centrifugoToken: createTestJwt("user-456"),
+          centrifugoWsUrl: "ws://localhost:8000/connection/websocket",
+        }),
+      }),
+    );
+    await bridge.start();
+    const operation = {
+      ...mockSubscription,
+      on: jest.fn(),
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
+      removeAllListeners: jest.fn(),
+      publish: jest.fn().mockResolvedValue(undefined),
+      ready: jest.fn().mockResolvedValue(undefined),
+    };
+    configure(operation);
+    mockClient.newSubscription.mockReturnValueOnce(operation);
+    const consoleError = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const deliver = () =>
+      getPublicationHandler()({
+        data: {
+          type: "command",
+          commandId,
+          command: "cat /home/PRIVATE/secret.txt",
+          cwd: "/home/PRIVATE",
+          targetConnectionId: connectionId,
+          operationChannel: true,
+        },
+      });
+    return { bridge, operation, consoleError, deliver };
+  }
+
+  it.each([
+    [
+      "subscription_ready",
+      (operation: typeof mockSubscription) =>
+        operation.ready.mockRejectedValue(new Error("PRIVATE ready reason")),
+    ],
+    [
+      "readiness_publish",
+      (operation: typeof mockSubscription) =>
+        operation.publish.mockRejectedValue(new Error("PRIVATE publish")),
+    ],
+  ] as const)(
+    "reports one bounded %s failure on the existing relay error event",
+    async (phase, configure) => {
+      const { bridge, operation, consoleError, deliver } =
+        await startWithOperation(configure);
+      try {
+        deliver();
+        await waitFor(() =>
+          expect(consoleError).toHaveBeenCalledWith(
+            "[DesktopSandboxBridge] Operation subscription failed:",
+            expect.any(Error),
+          ),
+        );
+        expect(readinessEvents()).toEqual([
+          [
+            "desktop_bridge_relay_error",
+            {
+              state: "error",
+              clientSurface: "desktop_bridge",
+              source: "operation_channel",
+              errorType: "operation_readiness",
+              connectionId,
+              operation_readiness_version: 1,
+              operation_readiness_phase: phase,
+              operation_readiness_kind: "command",
+              operation_readiness_operation_id: commandId,
+              build_state: "measured",
+              hackerai_frontend_build_commit: "a".repeat(40),
+            },
+          ],
+        ]);
+        expect(JSON.stringify(readinessEvents())).not.toMatch(/PRIVATE/);
+        // The failed start was neither executed nor retried on redelivery.
+        expect(mockClient.removeSubscription).toHaveBeenCalledWith(operation);
+        deliver();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(
+          mockClient.newSubscription.mock.calls.filter(([channel]) =>
+            String(channel).startsWith("sandbox:operation:"),
+          ),
+        ).toHaveLength(1);
+        expect(readinessEvents()).toHaveLength(1);
+        const { invoke } = jest.requireMock<typeof TauriCore>(
+          "@tauri-apps/api/core",
+        );
+        expect(
+          jest
+            .mocked(invoke)
+            .mock.calls.filter(([command]) =>
+              [
+                "execute_authorized_stream_command",
+                "execute_stream_command",
+              ].includes(command),
+            ),
+        ).toEqual([]);
+      } finally {
+        consoleError.mockRestore();
+        await bridge.stop();
+      }
+    },
+  );
+
+  it.each([
+    [
+      "the analytics owner switched accounts",
+      () => {
+        jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-other");
+        jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-other");
+      },
+    ],
+    [
+      "identification was withdrawn",
+      () => jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null),
+    ],
+    [
+      "consent was withdrawn",
+      () => jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null),
+    ],
+  ])("does not report when %s", async (_name, change) => {
+    const { bridge, consoleError, deliver } = await startWithOperation(
+      (operation) => operation.ready.mockRejectedValue(new Error("denied")),
+    );
+    try {
+      change();
+      deliver();
+      await waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(readinessEvents()).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+      await bridge.stop();
+    }
+  });
+
+  it("does not report a readiness rejection that settles after the bridge stopped", async () => {
+    let reject!: (error: Error) => void;
+    const { bridge, operation, consoleError, deliver } =
+      await startWithOperation((operation) =>
+        operation.ready.mockReturnValue(
+          new Promise<void>((_resolve, fail) => {
+            reject = fail;
+          }),
+        ),
+      );
+    try {
+      deliver();
+      await waitFor(() => expect(operation.ready).toHaveBeenCalled());
+      await bridge.stop();
+      reject(new Error("unsubscribed"));
+      await waitFor(() => expect(consoleError).toHaveBeenCalled());
+      expect(readinessEvents()).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });
 
 // ── desktop capability registration ───────────────────────────────────

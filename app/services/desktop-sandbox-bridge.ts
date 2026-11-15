@@ -44,6 +44,7 @@ import {
   type DesktopAckStopSource,
 } from "@/lib/analytics/desktop-ack-privacy";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
+import { captureDesktopOperationReadinessFailure } from "@/lib/analytics/desktop-operation-readiness";
 import { isUnauthenticatedConvexError } from "@/lib/auth/expected-auth-errors";
 import {
   readClosedConvexAuthProviderState,
@@ -1140,6 +1141,22 @@ export class DesktopSandboxBridge {
               "[DesktopSandboxBridge] Output overflow cleanup failed",
             );
           });
+      },
+      ({ phase, kind, id }) => {
+        // Only this live router's connection, for this bridge's account.
+        if (
+          this.isStoppingOrStopped ||
+          this.operationRouter !== operationRouter ||
+          this.connectionId !== connectionId
+        )
+          return;
+        captureDesktopOperationReadinessFailure({
+          owner: userId,
+          connectionId,
+          phase,
+          kind,
+          operationId: id,
+        });
       },
     );
     this.operationRouter = operationRouter;

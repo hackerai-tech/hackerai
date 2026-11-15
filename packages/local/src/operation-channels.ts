@@ -6,6 +6,12 @@ import {
 
 type Message = Record<string, unknown>;
 export type Operation = { kind: "command" | "file" | "pty"; id: string };
+/** Client-side readiness step that rejected; never broker delivery or execution. */
+export type OperationReadinessPhase =
+  "subscription_ready" | "readiness_publish";
+export type OperationReadinessFailure = Operation & {
+  phase: OperationReadinessPhase;
+};
 
 export function sandboxOperationChannel(
   userId: string,
@@ -121,6 +127,10 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     private userId: string,
     private connectionId: string,
     private readonly stopOutput?: (operation: Operation) => void,
+    // Observation only: receives no error, message or payload.
+    private readonly onReadinessFailure?: (
+      failure: OperationReadinessFailure,
+    ) => void,
   ) {}
 
   private key(op: Operation): string {
@@ -270,14 +280,17 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       /* readiness/publish failures propagate to the operation */
     });
     subscription.subscribe();
+    let phase: OperationReadinessPhase | undefined = "subscription_ready";
     try {
       await subscription.ready(5000);
       if (this.stopped || this.routes.get(key) !== route) return;
+      phase = "readiness_publish";
       await route.queue.publish({
         type: "operation_ready",
         [`${op.kind === "file" ? "request" : op.kind === "pty" ? "session" : "command"}Id`]:
           op.id,
       });
+      phase = undefined;
       if (!this.stopped && this.routes.get(key) === route) {
         handle(message);
         started = true;
@@ -288,6 +301,14 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
         pendingControls.length = 0;
       }
     } catch (error) {
+      // A rejection caused by stop() or route teardown is not a readiness failure.
+      if (phase && !this.stopped && this.routes.get(key) === route) {
+        try {
+          this.onReadinessFailure?.({ kind: op.kind, id: op.id, phase });
+        } catch {
+          // Diagnostics must not change cleanup or the rejected error.
+        }
+      }
       this.close(key);
       throw error;
     }

@@ -46,6 +46,7 @@ import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-p
 import { sanitizeServerActionClientContextEvent } from "@/lib/analytics/server-action-privacy";
 import { sanitizeFileActionAuthDiagnosticEvent } from "@/lib/analytics/file-auth-diagnostics";
 import { sanitizeAgentStartHttp413DiagnosticEvent } from "@/lib/analytics/agent-start-privacy";
+import { sanitizeDesktopOperationReadinessEvent } from "@/lib/analytics/desktop-operation-readiness";
 import {
   captureXReferralVisit,
   clearXReferralDedupe,
@@ -101,7 +102,7 @@ export function PostHogProvider({
   const privatePage = isAbuseReportingPath(pathname ?? "");
   const privateReplaySession = useRef(false);
   // Latest committed owner for the server action, file action, Agent start,
-  // navigator and React boundary diagnostics. A
+  // Desktop operation readiness, navigator and React boundary diagnostics. A
   // previously installed before_send can run after a commit that withdraws
   // consent, signs out, switches account or enters a private page, but before
   // the passive effect below resets analytics identity.
@@ -253,19 +254,22 @@ export function PostHogProvider({
               owner: committedDiagnosticOwner(),
               token: posthogKey,
             });
-            const sanitizedEvent = sanitizeAgentStartHttp413DiagnosticEvent(
-              sanitizeFileActionAuthDiagnosticEvent(
-                sanitizeServerActionClientContextEvent(
-                  sanitizeContextFeedbackEvent(
-                    sanitizeChatPerformanceEvent(
-                      sanitizeDesktopAckEvent(
-                        sanitizeAgentCancellationEvent(
-                          sanitizeDiffViewEvent(
-                            sanitizeFrontendExceptionUrlProperties(event),
+            const sanitizedEvent = sanitizeDesktopOperationReadinessEvent(
+              sanitizeAgentStartHttp413DiagnosticEvent(
+                sanitizeFileActionAuthDiagnosticEvent(
+                  sanitizeServerActionClientContextEvent(
+                    sanitizeContextFeedbackEvent(
+                      sanitizeChatPerformanceEvent(
+                        sanitizeDesktopAckEvent(
+                          sanitizeAgentCancellationEvent(
+                            sanitizeDiffViewEvent(
+                              sanitizeFrontendExceptionUrlProperties(event),
+                            ),
                           ),
                         ),
                       ),
                     ),
+                    committedDiagnosticExpectation,
                   ),
                   committedDiagnosticExpectation,
                 ),
