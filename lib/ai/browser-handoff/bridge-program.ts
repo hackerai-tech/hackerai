@@ -38,6 +38,11 @@ const BRIDGE_ERROR_REASONS = [
   "unreadable",
 ] as const;
 const BRIDGE_NONFRAME_MESSAGE_CAP = 16;
+/**
+ * Frame exit with no output: the daemon's stream claimed no attached browser,
+ * the same claim stream_status admission and the relay already treat as closed.
+ */
+export const BROWSER_BRIDGE_CLOSED_EXIT = 7;
 // The daemon's own protocol claims, not verified browser health.
 const BRIDGE_STATUS_CLAIM = ["true", "false", "other", "not_observed"] as const;
 
@@ -223,6 +228,8 @@ function connect() {
             : message.connected === false ? 'false' : 'other';
           lastScreencasting = message.screencasting === true ? 'true'
             : message.screencasting === false ? 'false' : 'other';
+          // Only a strict false; the first outcome wins over any later frame.
+          if (message.connected === false) finish(${BROWSER_BRIDGE_CLOSED_EXIT});
         }
         return;
       }
