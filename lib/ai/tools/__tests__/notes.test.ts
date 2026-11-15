@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { asSchema } from "ai";
+import { asSchema, convertToModelMessages, type UIMessage } from "ai";
 
 import type { ToolContext } from "@/types";
 
@@ -37,6 +37,10 @@ const { safeCountTokens } =
   require("@/lib/token-utils") as typeof import("@/lib/token-utils");
 const { safeCutIndex } =
   require("@/lib/notes/policy") as typeof import("@/lib/notes/policy");
+const { createPromptSerializationTools } =
+  require("../prompt-serialization") as typeof import("../prompt-serialization");
+const { pruneToolOutputs } =
+  require("@/lib/chat/compaction/prune-tool-outputs") as typeof import("@/lib/chat/compaction/prune-tool-outputs");
 
 const context = { userID: "user-1", chatId: "chat-1" } as ToolContext;
 
@@ -340,9 +344,104 @@ describe("relevant-recall note tools", () => {
       success: false,
       error: "Note 'x' not found",
     });
-    expect(await runTool(createGetNote(context), { note_id: "x" })).toEqual({
+    const tool = createGetNote(context);
+    const result = await runTool(tool, { note_id: "x" });
+    expect(result).toEqual({
       success: false,
       error: "Note 'x' not found",
     });
+    expect(modelText(tool, result)).toBe("Error: Note 'x' not found");
+  });
+
+  it("serializes a pruned get_note result from saved history without reading the note", async () => {
+    const content = "synthetic note evidence ".repeat(40);
+    mockGetNoteContent.mockResolvedValue({
+      success: true,
+      note: {
+        note_id: "note-1",
+        title: "Recon",
+        category: "findings",
+        tags: [],
+        updated_at: 1,
+        content,
+        content_offset: 0,
+        content_length: content.length,
+        content_revision: "0123456789abcdef",
+      },
+    });
+    const liveTool = createGetNote(context);
+    const output = await runTool(liveTool, { note_id: "note-1" });
+    const history = [
+      { id: "user", role: "user", parts: [{ type: "text", text: "Recall" }] },
+      {
+        id: "assistant",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          {
+            type: "tool-get_note",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { note_id: "note-1" },
+            output,
+          },
+        ],
+      },
+    ] as UIMessage[];
+
+    // get_note is not a protected tool, so pruning replaces its output with
+    // the app's text placeholder, which is then saved as chat history.
+    const pruned = pruneToolOutputs(history, 0, 0);
+    const placeholder = (
+      pruned.messages[1].parts[1] as unknown as { output: unknown }
+    ).output;
+    expect(placeholder).toBe("[Tool: get_note completed]");
+    const saved = JSON.parse(JSON.stringify(pruned.messages)) as UIMessage[];
+
+    mockGetNoteContent.mockClear();
+    const onFormatterFailure = jest.fn();
+    const modelMessages = await convertToModelMessages(saved, {
+      tools: createPromptSerializationTools(
+        { get_note: createGetNote(context) },
+        { onFormatterFailure },
+      ),
+    });
+
+    expect(modelMessages.at(-1)).toEqual({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-1",
+          toolName: "get_note",
+          output: { type: "text", value: placeholder },
+        },
+      ],
+    });
+    expect(onFormatterFailure).not.toHaveBeenCalled();
+    expect(mockGetNoteContent).not.toHaveBeenCalled();
+  });
+
+  it("bounds historical get_note text to the response cap at a safe character", () => {
+    const tool = createGetNote(context);
+    const short = "[Tool: get_note completed] 漏洞🔐";
+    expect(modelText(tool, short)).toBe(short);
+
+    const long = Array.from(
+      { length: 6_000 },
+      (_, i) => `${i} 漏洞🔐 payload-${i}`,
+    ).join("\n");
+    const text = modelText(tool, long);
+    expect(safeCountTokens(text)).toBeLessThanOrEqual(
+      NOTE_TOOL_RESPONSE_TOKENS,
+    );
+    expect(text.endsWith("…")).toBe(true);
+    const kept = text.slice(0, -1);
+    expect(kept.length).toBeGreaterThan(1_000);
+    expect(long.startsWith(kept)).toBe(true);
+    // No lone surrogate halves from cutting inside an emoji.
+    expect(kept).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    );
   });
 });
