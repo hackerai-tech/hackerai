@@ -1741,6 +1741,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
+ "tower-layer",
+ "tower-service",
  "url",
  "uuid",
 ]

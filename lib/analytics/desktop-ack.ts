@@ -13,12 +13,14 @@ import {
 } from "./desktop-ack-privacy";
 import {
   readNativeAuthorizationCause,
+  readNativeAuthorizationConnector,
   readNativeAuthorizationDiagnostic,
   readNativeAuthorizationIo,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
   readNativeAuthorizationTransport,
   type NativeAuthorizationCauseDiagnostic,
+  type NativeAuthorizationConnectorDiagnostic,
   type NativeAuthorizationDiagnostic,
   type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
@@ -44,6 +46,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   /** Same first IO error's supplement; only joined to valid send, cause and
    * unmapped transport groups that describe it. */
   nativeAuthorizationIo?: NativeAuthorizationIoDiagnostic;
+  /** Same send failure's connector snapshot; only joined to a valid send
+   * receipt. */
+  nativeAuthorizationConnector?: NativeAuthorizationConnectorDiagnostic;
   /** Same-invocation approval rejection; independent of the send groups. */
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
   /** Same response's mitigation marker; only joined to a valid response. */
@@ -292,6 +297,9 @@ export class DesktopAckTelemetry {
           transport: nativeAuthorizationTransport,
         },
       );
+      const nativeAuthorizationConnector = nativeAuthorization
+        ? readNativeAuthorizationConnector(result.nativeAuthorizationConnector)
+        : null;
       const nativeAuthorizationResponse =
         result.terminalType === "error"
           ? readNativeAuthorizationResponse(result.nativeAuthorizationResponse)
@@ -338,6 +346,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorizationCause,
           ...nativeAuthorizationTransport,
           ...nativeAuthorizationIo,
+          ...nativeAuthorizationConnector,
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
         },
