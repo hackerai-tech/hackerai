@@ -3,14 +3,22 @@ import { ChatSDKError } from "@/lib/errors";
 
 class MockResponse {
   readonly status: number;
+  readonly headers: Headers;
   private readonly body: unknown;
 
-  constructor(body: unknown, init?: { status?: number }) {
+  constructor(
+    body: unknown,
+    init?: { status?: number; headers?: HeadersInit },
+  ) {
     this.body = body;
     this.status = init?.status ?? 200;
+    this.headers = new Headers(init?.headers);
   }
 
-  static json(body: unknown, init?: { status?: number }) {
+  static json(
+    body: unknown,
+    init?: { status?: number; headers?: HeadersInit },
+  ) {
     return new MockResponse(body, init);
   }
 
@@ -948,9 +956,16 @@ describe("Agent trigger route lifecycle", () => {
     const response = createAgentTriggerPayloadTooLargeResponse();
 
     expect(response.status).toBe(413);
-    await expect(response.json()).resolves.toMatchObject({
+    // Lets the client tell the route's own rejection from a platform 413.
+    expect(response.headers.get("x-hackerai-agent-start-rejection")).toBe(
+      "trigger_payload_too_large",
+    );
+    await expect(response.json()).resolves.toEqual({
       code: "bad_request:api",
-      cause: expect.stringContaining("too large to start"),
+      message:
+        "The request couldn't be processed. Please check your input and try again.",
+      cause:
+        "This Agent request is too large to start. Remove some attachments or start a new chat and try again.",
     });
   });
 

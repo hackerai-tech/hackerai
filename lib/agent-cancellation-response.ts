@@ -1,4 +1,5 @@
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import { isPlatformRequestId as isRequestId } from "@/lib/platform-request-id";
 
 /**
  * Bounded identity of the HTTP response behind a terminal Agent cancellation
@@ -48,17 +49,6 @@ const receipts = new WeakMap<object, CancellationResponseReceipt>();
 
 const VERCEL_DEPLOYMENT_HOST =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app$/;
-// One or two region hops, then the opaque request ID Vercel assigns.
-const VERCEL_REQUEST_ID =
-  /^(?:[a-z]{3}\d::){1,2}[a-z0-9]{4,8}-\d{10,17}-[a-f0-9]{8,32}$/;
-
-function isRequestId(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length <= 128 &&
-    VERCEL_REQUEST_ID.exec(value)?.[0] === value
-  );
-}
 
 function isHttpStatus(value: unknown): value is number {
   return (

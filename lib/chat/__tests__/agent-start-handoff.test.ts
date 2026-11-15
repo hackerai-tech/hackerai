@@ -8,9 +8,21 @@ import {
   retrieveTriggerRunStatus,
 } from "../trigger-browser-realtime";
 
+import {
+  confirmAuthenticatedAnalyticsUserId,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} from "@/lib/analytics/client";
+import { ChatSDKError } from "@/lib/errors";
+
 jest.mock("../trigger-browser-realtime", () => ({
   readTriggerRunStream: jest.fn(),
   retrieveTriggerRunStatus: jest.fn(),
+}));
+const mockCapture = jest.fn();
+jest.mock("posthog-js", () => ({
+  __esModule: true,
+  default: { __loaded: true, capture: mockCapture },
 }));
 
 const pendingResponse = () => {
@@ -205,3 +217,260 @@ it.each(["finish", "abort"])(
     }
   },
 );
+
+describe("Agent start HTTP 413 diagnostics", () => {
+  const EVENT = "agent_start_http413_diagnostic";
+  const REQUEST_ID = "iad1::8x2kq-1794094000000-0123456789ab";
+  const originalKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
+  const utf8 = (value: string) => new TextEncoder().encode(value).length;
+  const identify = (userId: string | null) => {
+    setAuthenticatedAnalyticsUserId(userId);
+    if (userId) confirmAuthenticatedAnalyticsUserId(userId);
+  };
+  const diagnostics = () =>
+    mockCapture.mock.calls
+      .filter(([event]) => event === EVENT)
+      .map(([, properties]) => properties as Record<string, unknown>);
+  // The fetch boundary: a non-OK response whose body only the parser reads.
+  const rejection = ({
+    status = 413,
+    headers = {},
+    json,
+    text = "",
+  }: {
+    status?: number;
+    headers?: Record<string, string>;
+    json?: unknown;
+    text?: string;
+  }) => {
+    const parsed = jest.fn(async () => {
+      if (json === undefined) throw new SyntaxError("Not JSON");
+      return json;
+    });
+    return {
+      ok: false,
+      status,
+      headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+      clone: jest.fn(() => ({ json: parsed })),
+      text: jest.fn(async () => text),
+    };
+  };
+  const startBody = JSON.stringify({
+    chatId: "handoff-chat",
+    messages: [{ parts: [{ type: "text", text: "PRIVATE_PROMPT €😀" }] }],
+  });
+
+  beforeAll(async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
+    await loadPostHogClient();
+  });
+
+  afterAll(() => {
+    if (originalKey === undefined) delete process.env.NEXT_PUBLIC_POSTHOG_KEY;
+    else process.env.NEXT_PUBLIC_POSTHOG_KEY = originalKey;
+  });
+
+  beforeEach(() => {
+    identify("user-a");
+    mockCapture.mockClear();
+  });
+
+  afterEach(() => identify(null));
+
+  it("reports a route 413 once and rejects with the unchanged JSON error", async () => {
+    const response = rejection({
+      headers: {
+        "x-hackerai-agent-start-rejection": "trigger_payload_too_large",
+        "x-vercel-id": REQUEST_ID,
+      },
+      json: {
+        code: "bad_request:api",
+        cause: "This Agent request is too large to start.",
+      },
+    });
+    jest.mocked(fetch).mockResolvedValueOnce(response as unknown as Response);
+    const startInit = { method: "POST", body: startBody };
+
+    const error = await fetchAgentLongStream(startInit).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ChatSDKError);
+    expect(error).toMatchObject({
+      type: "bad_request",
+      surface: "api",
+      cause: "This Agent request is too large to start.",
+      statusCode: 413,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(fetch).mock.calls[0]).toEqual([
+      "/api/agent",
+      expect.objectContaining({ method: "POST", body: startBody }),
+    ]);
+    expect(response.clone).toHaveBeenCalledTimes(1);
+    expect(response.text).not.toHaveBeenCalled();
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({
+        http_status: 413,
+        request_body_state: "measured",
+        request_body_utf8_bytes: utf8(startBody),
+        app_rejection_marker_state: "known",
+        vercel_error_state: "absent",
+        platform_request_id_state: "valid",
+        platform_request_id: REQUEST_ID,
+      }),
+    ]);
+    expect(JSON.stringify(mockCapture.mock.calls)).not.toMatch(
+      /PRIVATE|handoff-chat|too large/,
+    );
+    expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
+  });
+
+  it("attributes a plain-text platform 413 without changing its error", async () => {
+    const response = rejection({
+      headers: { "x-vercel-error": "FUNCTION_PAYLOAD_TOO_LARGE" },
+      text: "Request Entity Too Large",
+    });
+    jest.mocked(fetch).mockResolvedValueOnce(response as unknown as Response);
+
+    const error = await fetchAgentLongStream({
+      method: "POST",
+      body: startBody,
+    }).catch((e) => e);
+
+    expect(error).toMatchObject({
+      type: "bad_request",
+      surface: "api",
+      cause: "Request Entity Too Large",
+      statusCode: 413,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(response.text).toHaveBeenCalledTimes(1);
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({
+        app_rejection_marker_state: "absent",
+        vercel_error_state: "known",
+        platform_request_id_state: "absent",
+      }),
+    ]);
+  });
+
+  it("measures the body fetch received when the caller's body is an accessor", async () => {
+    let reads = 0;
+    const accessorInit = {
+      method: "POST",
+      get body() {
+        reads += 1;
+        return JSON.stringify({
+          chatId: "handoff-chat",
+          pad: "é".repeat(reads),
+        });
+      },
+    };
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(rejection({}) as unknown as Response);
+
+    await fetchAgentLongStream(accessorInit).catch((e) => e);
+
+    // The existing chat ID read and request copy; measurement adds no read.
+    expect(reads).toBe(3);
+    const sentBody = jest.mocked(fetch).mock.calls[0][1]?.body as string;
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({ request_body_utf8_bytes: utf8(sentBody) }),
+    ]);
+  });
+
+  it("keeps errors unchanged and silent for malformed headers, other failures, success and aborts", async () => {
+    jest.mocked(fetch).mockResolvedValueOnce({
+      ...rejection({ status: 413, text: "Too large" }),
+      get headers(): Headers {
+        throw new Error("PRIVATE");
+      },
+    } as unknown as Response);
+    await expect(
+      fetchAgentLongStream({ method: "POST", body: startBody }),
+    ).rejects.toMatchObject({ cause: "Too large", statusCode: 413 });
+    expect(diagnostics()).toEqual([
+      expect.objectContaining({ platform_request_id_state: "unreadable" }),
+    ]);
+    mockCapture.mockClear();
+
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(
+        rejection({ status: 403, text: "Forbidden" }) as unknown as Response,
+      );
+    await expect(
+      fetchAgentLongStream({ method: "POST", body: startBody }),
+    ).rejects.toMatchObject({ cause: "Forbidden", statusCode: 403 });
+
+    const pending = pendingResponse();
+    jest.mocked(fetch).mockReturnValueOnce(pending.promise);
+    const detached = fetchAgentLongStream(init()).catch((e) => e);
+    cancelAgentLongRealtimeStreams("handoff-chat");
+    pending.resolve(handleResponse("run-success"));
+    expect(await detached).toMatchObject({ name: "AbortError" });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      fetchAgentLongStream(init(controller.signal)),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["GET", "GET"],
+    ["an absent", undefined],
+  ])("observes only an actual POST, not %s method", async (_name, method) => {
+    const response = rejection({ text: "Request Entity Too Large" });
+    jest.mocked(fetch).mockResolvedValueOnce(response as unknown as Response);
+
+    await expect(
+      fetchAgentLongStream({ method, body: startBody }),
+    ).rejects.toMatchObject({
+      cause: "Request Entity Too Large",
+      statusCode: 413,
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(fetch).mock.calls[0][1]).toMatchObject({
+      body: startBody,
+      ...(method && { method }),
+    });
+    expect(response.text).toHaveBeenCalledTimes(1);
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    // A lowercase POST is still an Agent start.
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(rejection({}) as unknown as Response);
+    await fetchAgentLongStream({ method: "post", body: startBody }).catch(
+      (e) => e,
+    );
+    expect(diagnostics()).toHaveLength(1);
+  });
+
+  it("drops a 413 after the owner changes mid-request, even back to the same owner", async () => {
+    const pending = pendingResponse();
+    jest.mocked(fetch).mockReturnValueOnce(pending.promise);
+    const switched = fetchAgentLongStream({
+      method: "POST",
+      body: startBody,
+    }).catch((e) => e);
+    identify("user-b");
+    identify("user-a");
+    pending.resolve(rejection({ text: "Too large" }) as unknown as Response);
+    expect(await switched).toMatchObject({ statusCode: 413 });
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    // The next attempt has its own owner snapshot and event identity.
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(rejection({}) as unknown as Response);
+    await fetchAgentLongStream({ method: "POST", body: startBody }).catch(
+      (e) => e,
+    );
+    expect(diagnostics()).toHaveLength(1);
+  });
+});

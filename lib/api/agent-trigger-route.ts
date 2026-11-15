@@ -90,6 +90,10 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 import {
+  AGENT_START_REJECTION_HEADER,
+  AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
+} from "@/lib/agent-start-response";
+import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
@@ -162,7 +166,12 @@ export const createAgentTriggerPayloadTooLargeResponse = () =>
       cause:
         "This Agent request is too large to start. Remove some attachments or start a new chat and try again.",
     },
-    { status: 413 },
+    {
+      status: 413,
+      headers: {
+        [AGENT_START_REJECTION_HEADER]: AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
+      },
+    },
   );
 
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
