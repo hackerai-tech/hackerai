@@ -18,6 +18,7 @@ import {
 import type * as TauriCore from "@tauri-apps/api/core";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
+import { DESKTOP_TERMINAL_ERROR_PROPERTIES } from "@/lib/analytics/desktop-terminal-error-diagnostics";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_CONNECTOR_PROPERTIES,
@@ -8823,6 +8824,213 @@ describe("native authorization send receipt", () => {
           ...mitigationGroup,
         });
         expect(mitigationKeys(byCommand["send-failure"])).toEqual([]);
+      });
+    });
+  });
+
+  describe("first terminal error kind", () => {
+    const timeout = "Command timed out after 30000ms";
+    const kindKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
+      );
+    const emit = (call: NativeCall, chunk: Record<string, unknown>) =>
+      (call.onEvent as MockChannel).onmessage!(chunk);
+    const kindOf = (properties: Record<string, unknown> = {}) =>
+      kindKeys(properties).length
+        ? {
+            version: properties.desktop_terminal_error_diagnostic_version,
+            kind: properties.desktop_terminal_error_kind,
+          }
+        : null;
+
+    it.each<[string, (call: NativeCall) => Promise<unknown>, object, unknown]>([
+      [
+        "a native timeout",
+        async (call) => emit(call, { type: "error", message: timeout }),
+        { type: "error", message: timeout },
+        "native_command_timeout",
+      ],
+      [
+        "a native process failure",
+        async (call) =>
+          emit(call, { type: "error", message: "Process error: PRIVATE" }),
+        { type: "error", message: "Process error: PRIVATE" },
+        "native_process_error",
+      ],
+      [
+        "an unknown native payload",
+        async (call) =>
+          emit(call, { type: "error", message: "PRIVATE timed out" }),
+        { type: "error", message: "PRIVATE timed out" },
+        "native_other",
+      ],
+      [
+        "an invocation rejection",
+        () => reject("PRIVATE rejection"),
+        { type: "error", message: "PRIVATE rejection" },
+        "invocation_rejected",
+      ],
+      [
+        "a successful exit",
+        async (call) => emit(call, { type: "exit", exitCode: 0 }),
+        { type: "exit", exitCode: 0 },
+        null,
+      ],
+    ])(
+      "attributes %s on the acknowledged final only",
+      async (_case, native, terminal, kind) => {
+        const { replies } = await run(native);
+        // The product wire is the identical single terminal frame.
+        expect(sequencedFrames(replies[0])).toEqual([
+          {
+            ...terminal,
+            commandId: "auth-send",
+            sequence: 0,
+            outputProtocol: "ack-v1",
+          },
+        ]);
+        expect(finals()).toHaveLength(1);
+        const final = finals()[0];
+        expect(final.properties).toMatchObject({
+          outcome: "acknowledged",
+          terminalType: (terminal as { type: string }).type,
+        });
+        expect(kindOf(final.properties)).toEqual(kind && { version: 1, kind });
+        const enriched = sanitizeDesktopAckEvent({
+          ...final,
+          properties: { ...final.properties, $current_url: "PRIVATE" },
+        });
+        expect(kindOf(enriched.properties)).toEqual(kindOf(final.properties));
+        const started = captures().find(
+          (event) => event.event === "desktop_ack_command_started",
+        );
+        expect(kindKeys(started?.properties)).toEqual([]);
+        expect(JSON.stringify([captures(), enriched])).not.toContain("PRIVATE");
+      },
+    );
+
+    it("keeps the first terminal's kind when later terminals and a rejection follow", async () => {
+      const { replies } = await run(async (call) => {
+        emit(call, { type: "stdout", data: "PRIVATE OUTPUT" });
+        emit(call, { type: "error", message: timeout });
+        emit(call, { type: "error", message: "Process error: PRIVATE" });
+        emit(call, { type: "exit", exitCode: 1 });
+        emit(call, { type: "stdout", data: "PRIVATE LATE" });
+        return reject("PRIVATE rejection");
+      });
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "stdout", data: "PRIVATE OUTPUT" }),
+        expect.objectContaining({ type: "error", message: timeout }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        terminalType: "error",
+        desktop_terminal_error_kind: "native_command_timeout",
+      });
+    });
+
+    it("adds no kind when the invocation rejects after a native exit", async () => {
+      const { replies } = await run(async (call) => {
+        emit(call, { type: "exit", exitCode: 0 });
+        emit(call, { type: "error", message: timeout });
+        return reject("PRIVATE rejection");
+      });
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "exit", exitCode: 0, sequence: 0 }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "acknowledged",
+        terminalType: "exit",
+        terminalExitCode: 0,
+      });
+      expect(kindKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a first terminal observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        const { replies } = await run(async (call) => {
+          identity.mockReturnValue("another-user");
+          emit(call, { type: "error", message: timeout });
+          // The closed latch keeps a rejection from attributing it instead.
+          identity.mockReturnValue("user-456");
+          return reject("PRIVATE rejection");
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: timeout }),
+        ]);
+        // The existing ACK owner gate still emits the original owner's final.
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+        expect(kindKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it.each(["bridge stop", "transport disconnect", "replacement connection"])(
+      "keeps a settled final unchanged by callbacks after %s",
+      async (mode) => {
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await run(
+          async (call) => {
+            emit(call, { type: "error", message: "Process error: PRIVATE" });
+            await pending;
+            emit(call, { type: "error", message: timeout });
+            return reject("PRIVATE rejection");
+          },
+          {
+            beforeAck: async (bridge) => {
+              if (mode === "transport disconnect")
+                getClientHandler("disconnected")({ code: 1, reason: "closed" });
+              else await bridge.stop();
+              if (mode === "replacement connection") await bridge.start();
+              release();
+              await jest.advanceTimersByTimeAsync(0);
+            },
+          },
+        );
+        expect(finals()).toHaveLength(1);
+        expect(finals()[0].properties).toMatchObject({
+          outcome: "incomplete",
+          reason: "stopped",
+          terminalType: "error",
+          terminalAcknowledged: false,
+          desktop_terminal_error_diagnostic_version: 1,
+          desktop_terminal_error_kind: "native_process_error",
+        });
+        expect(JSON.stringify(captures())).not.toContain("PRIVATE");
+      },
+    );
+
+    it("attributes a legacy invocation with no protocol additions", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const { calls } = await run(
+        async (call) => emit(call, { type: "error", message: timeout }),
+        { version: "0.0.72" },
+      );
+      expect(jest.mocked(Channel)).toHaveBeenCalledTimes(1);
+      expect(calls).toHaveLength(1);
+      expect(Object.keys(calls[0]).sort()).toEqual(
+        [
+          "cmd",
+          "command",
+          "commandId",
+          "cwd",
+          "env",
+          "onEvent",
+          "timeoutMs",
+        ].sort(),
+      );
+      expect(calls[0].cmd).toBe("execute_stream_command");
+      expect(finals()[0].properties).toMatchObject({
+        terminalType: "error",
+        desktop_terminal_error_kind: "native_command_timeout",
       });
     });
   });

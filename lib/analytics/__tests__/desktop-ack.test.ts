@@ -38,6 +38,10 @@ import {
   type NativeAuthorizationResponseDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "../native-authorization-diagnostics";
+import {
+  DESKTOP_TERMINAL_ERROR_PROPERTIES,
+  type DesktopTerminalErrorDiagnostic,
+} from "../desktop-terminal-error-diagnostics";
 
 jest.mock("../client", () => ({
   captureQueuedAuthenticatedEvent: jest.fn(),
@@ -2043,6 +2047,161 @@ describe("native authorization response receipt", () => {
         expect(JSON.stringify([final, sanitized])).not.toContain("PRIVATE");
       },
     );
+  });
+});
+
+describe("first terminal error kind", () => {
+  const kindGroup: DesktopTerminalErrorDiagnostic = {
+    desktop_terminal_error_diagnostic_version: 1,
+    desktop_terminal_error_kind: "native_command_timeout",
+  };
+  const sendGroup: NativeAuthorizationDiagnostic = {
+    native_authorization_diagnostic_version: 1,
+    native_authorization_send_timeout: true,
+    native_authorization_send_connect: false,
+    native_authorization_send_request: false,
+    native_authorization_send_elapsed_ms: 8000,
+    native_authorization_origin_class: "canonical_production",
+    native_app_version: "0.0.80",
+    native_platform: "darwin",
+  };
+  const terminalError = {
+    ...result,
+    terminalType: "error" as const,
+    terminalExitCode: null,
+  };
+  const kindKeys = (properties: Record<string, unknown> = {}) =>
+    Object.keys(properties).filter((key) =>
+      DESKTOP_TERMINAL_ERROR_PROPERTIES.has(key),
+    );
+  const settle = (settlement: Record<string, unknown>) => {
+    capture.mockClear();
+    telemetry.start({ connectionId: "connection", commandId: "command" })(
+      settlement as never,
+    );
+    return capture.mock.calls.find(
+      ([event]) => event.event === "desktop_ack_command_settled",
+    )?.[0];
+  };
+  const enrich = (properties: Record<string, unknown>) =>
+    sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: { ...properties, $current_url: "PRIVATE URL" },
+      $set: { email: "PRIVATE" },
+    });
+
+  it.each([
+    "native_command_timeout",
+    "native_process_error",
+    "native_other",
+    "invocation_rejected",
+  ] as const)(
+    "keeps %s beside existing groups through capture and before_send",
+    (kind) => {
+      const expected = { ...kindGroup, desktop_terminal_error_kind: kind };
+      const final = settle({
+        ...terminalError,
+        nativeAuthorization: sendGroup,
+        terminalError: { ...expected, message: "PRIVATE" },
+      });
+      expect(final?.properties).toMatchObject({
+        ...sendGroup,
+        ...expected,
+        terminalType: "error",
+        outcome: "acknowledged",
+      });
+      const enriched = enrich(final!.properties);
+      expect(enriched.properties).toMatchObject({ ...sendGroup, ...expected });
+      expect(kindKeys(enriched.properties)).toHaveLength(2);
+      expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+    },
+  );
+
+  it("never attaches a kind to an exit, unknown terminal, start or summary", () => {
+    for (const terminalType of ["exit", null]) {
+      const final = settle({
+        ...result,
+        terminalType,
+        terminalExitCode: terminalType ? 1 : null,
+        terminalError: kindGroup,
+      });
+      expect(final?.properties).toMatchObject({ terminalType });
+      expect(kindKeys(final!.properties)).toEqual([]);
+      expect(
+        kindKeys(enrich({ terminalType, ...kindGroup }).properties),
+      ).toEqual([]);
+    }
+    for (const event of [
+      "desktop_ack_command_started",
+      "desktop_ack_delivery_summary",
+    ])
+      expect(
+        kindKeys(
+          sanitizeDesktopAckEvent({
+            event,
+            properties: { terminalType: "error", ...kindGroup },
+          }).properties,
+        ),
+      ).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["a missing kind", { desktop_terminal_error_kind: undefined }],
+    [
+      "a missing version",
+      { desktop_terminal_error_diagnostic_version: undefined },
+    ],
+    [
+      "an unsupported version",
+      { desktop_terminal_error_diagnostic_version: 2 },
+    ],
+    ["a private kind", { desktop_terminal_error_kind: "PRIVATE" }],
+    [
+      "a raw native message",
+      { desktop_terminal_error_kind: "Process error: PRIVATE" },
+    ],
+  ])("drops only the kind group for %s", (_case, change) => {
+    const invalid = { ...kindGroup, ...change };
+    const final = settle({
+      ...terminalError,
+      nativeAuthorization: sendGroup,
+      terminalError: invalid,
+    });
+    expect(final?.properties).toMatchObject(sendGroup);
+    expect(kindKeys(final!.properties)).toEqual([]);
+    const enriched = enrich({
+      terminalType: "error",
+      ...sendGroup,
+      ...invalid,
+    });
+    expect(enriched.properties).toEqual({
+      terminalType: "error",
+      ...sendGroup,
+    });
+    expect(JSON.stringify([final, enriched])).not.toContain("PRIVATE");
+  });
+
+  it("never runs a kind accessor at capture or before_send", () => {
+    let reads = 0;
+    const withAccessor = (target: Record<string, unknown>) =>
+      Object.defineProperty(target, "desktop_terminal_error_kind", {
+        enumerable: true,
+        get() {
+          reads++;
+          return "PRIVATE";
+        },
+      });
+    const final = settle({
+      ...terminalError,
+      terminalError: withAccessor({ ...kindGroup }),
+    });
+    expect(kindKeys(final!.properties)).toEqual([]);
+    const sanitized = sanitizeDesktopAckEvent({
+      event: "desktop_ack_command_settled",
+      properties: withAccessor({ terminalType: "error", ...kindGroup }),
+    }).properties!;
+    expect(reads).toBe(0);
+    expect(sanitized).toEqual({ terminalType: "error" });
   });
 });
 
