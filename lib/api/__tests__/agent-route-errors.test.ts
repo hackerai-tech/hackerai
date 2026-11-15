@@ -31,6 +31,7 @@ jest.mock("next/server", () => {
   };
 });
 
+import { ConvexError } from "convex/values";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { ChatSDKError } from "@/lib/errors";
 
@@ -152,6 +153,156 @@ describe("handleAgentRouteError", () => {
       error_name: "object",
       error_message: JSON.stringify(error),
       error_code: "trigger_unavailable",
+    });
+  });
+});
+
+describe("Agent start goal reconciliation failures", () => {
+  let error: jest.SpyInstance;
+  beforeEach(() => {
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    error.mockRestore();
+  });
+
+  const reconciliationFields = [
+    "goal_reconciliation_diagnostic_version",
+    "goal_reconciliation_step",
+    "goal_reconciliation_failure_kind",
+    "goal_reconciliation_convex_request_id",
+  ];
+  const suspended = () =>
+    Object.assign(
+      new ConvexError("[Request ID: ABCDEF0123456789] Server Error"),
+      {
+        data: {
+          code: "CHAT_ACCESS_SUSPENDED",
+          message: "PRIVATE_SUSPENSION_MESSAGE",
+          suspensionCategory: "PRIVATE_CATEGORY",
+        },
+      },
+    );
+  const fail = async (
+    failure: unknown,
+    {
+      endpoint = "/api/agent",
+      action = "start",
+      context = {},
+    }: {
+      endpoint?: string;
+      action?: Parameters<typeof handleAgentRouteError>[0]["action"];
+      context?: Record<string, unknown>;
+    } = {},
+  ) => {
+    const response = handleAgentRouteError({
+      error: failure,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "Failed to start agent run",
+      context: context as any,
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: "Failed to start agent run",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    return JSON.parse(String(error.mock.calls[0][0]));
+  };
+
+  test.each(["/api/agent", "/api/agent-long"])(
+    "adds the finite reconcile step, kind and backend join on %s",
+    async (endpoint) => {
+      const fields = await fail(suspended(), {
+        endpoint,
+        context: {
+          stage: "reconcile_goal",
+          goalReconciliationStep: "finish_goal",
+        },
+      });
+      expect(fields).toMatchObject({
+        event: "agent_route_failed",
+        endpoint,
+        action: "start",
+        stage: "reconcile_goal",
+        goal_reconciliation_diagnostic_version: 1,
+        goal_reconciliation_step: "finish_goal",
+        goal_reconciliation_failure_kind: "chat_access_suspended",
+        goal_reconciliation_convex_request_id: "abcdef0123456789",
+      });
+      // Structured Convex data stays out of the existing error event.
+      expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+    },
+  );
+
+  test.each([
+    ["a later start stage", {}, { stage: "persist_user_message" }],
+    ["a non-start action", { action: "resume" }, { stage: "reconcile_goal" }],
+    [
+      "another endpoint",
+      { endpoint: "/api/chat" },
+      { stage: "reconcile_goal" },
+    ],
+  ] as const)("leaves %s unchanged", async (_label, options, context) => {
+    const fields = await fail(suspended(), {
+      ...options,
+      context: { ...context, goalReconciliationStep: "finish_goal" },
+    });
+    for (const key of reconciliationFields)
+      expect(fields).not.toHaveProperty(key);
+  });
+
+  const stepAccessor = jest.fn(() => "finish_goal");
+  test.each([
+    ["absent", {}],
+    ["outside the closed set", { goalReconciliationStep: "PRIVATE_STEP" }],
+    [
+      "an accessor",
+      Object.defineProperty({}, "goalReconciliationStep", {
+        get: stepAccessor,
+        enumerable: false,
+      }),
+    ],
+  ])("reports a step that is %s as unknown", async (_label, marker) => {
+    const context = Object.defineProperties(
+      { stage: "reconcile_goal" },
+      Object.getOwnPropertyDescriptors(marker),
+    );
+    const fields = await fail(new TypeError("fetch failed"), { context });
+    expect(fields).toMatchObject({
+      goal_reconciliation_step: "unknown",
+      goal_reconciliation_failure_kind: "type_error",
+      goal_reconciliation_convex_request_id: "none",
+    });
+    expect(stepAccessor).not.toHaveBeenCalled();
+    expect(JSON.stringify(fields)).not.toContain("PRIVATE");
+  });
+
+  test("keeps the original 500 when the error cannot be inspected", async () => {
+    const dataGetter = jest.fn(() => "Goal chat unavailable");
+    const accessor = new Error("[Request ID: abcdef0123456789]");
+    Object.defineProperty(accessor, "data", { get: dataGetter });
+    const hostile = new Proxy(new Error("synthetic"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("PRIVATE_TRAP");
+      },
+    });
+    const context = {
+      stage: "reconcile_goal",
+      goalReconciliationStep: "get_goal",
+    };
+    expect(await fail(accessor, { context })).toMatchObject({
+      goal_reconciliation_failure_kind: "other_error",
+      goal_reconciliation_convex_request_id: "abcdef0123456789",
+    });
+    expect(dataGetter).not.toHaveBeenCalled();
+    error.mockClear();
+    expect(await fail(hostile, { context })).toMatchObject({
+      goal_reconciliation_step: "get_goal",
+      goal_reconciliation_failure_kind: "unreadable_error",
+      goal_reconciliation_convex_request_id: "none",
     });
   });
 });
@@ -352,7 +503,6 @@ describe("typed Agent service-unavailable receipts", () => {
   test.each([
     "bad_request",
     "unauthorized",
-    "forbidden",
     "not_found",
     "rate_limit",
   ] as const)("does not add a service-unavailable receipt for %s", (type) => {
@@ -367,6 +517,184 @@ describe("typed Agent service-unavailable receipts", () => {
         fallbackMessage: "fallback",
       }),
     ).toBe(original);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("typed Agent start forbidden receipts", () => {
+  const previousBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (previousBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+    else process.env.VERCEL_GIT_COMMIT_SHA = previousBuild;
+  });
+
+  const forbidden = (
+    endpoint: string,
+    action: Parameters<typeof handleAgentRouteError>[0]["action"],
+    context: Record<string, unknown> = {},
+    error = new ChatSDKError("forbidden:chat", "PRIVATE_CAUSE", {
+      suspensionCategory: "PRIVATE_METADATA",
+    }),
+  ) => {
+    const original = error.toResponse();
+    const toResponse = jest
+      .spyOn(error, "toResponse")
+      .mockReturnValue(original);
+    const response = handleAgentRouteError({
+      error,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "PRIVATE_FALLBACK",
+      context: context as any,
+    });
+    expect(response).toBe(original);
+    expect(toResponse).toHaveBeenCalledTimes(1);
+    return response;
+  };
+
+  test.each([
+    ["/api/agent", "A".repeat(40), { web_build_commit: "a".repeat(40) }],
+    ["/api/agent-long", "PRIVATE_BUILD", {}],
+  ] as const)(
+    "records one bounded receipt for a returned %s start403",
+    async (endpoint, build, buildField) => {
+      process.env.VERCEL_GIT_COMMIT_SHA = build;
+      const response = forbidden(endpoint, "start", {
+        requestId: "sin1::abcde-1794139010452-8943ba28f213",
+        stage: "load_chat_and_preferences",
+        guardBoundary: "chat_owner_gate",
+        userId: "PRIVATE_USER",
+        chatId: "PRIVATE_CHAT",
+        runId: "PRIVATE_RUN",
+        approvalSessionId: "PRIVATE_APPROVAL",
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        code: "forbidden:chat",
+        cause: "PRIVATE_CAUSE",
+        metadata: { suspensionCategory: "PRIVATE_METADATA" },
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(fields).toEqual({
+        timestamp: expect.any(String),
+        level: "warn",
+        event: "agent_start_forbidden_context",
+        service: "hackerai-web",
+        agent_start_forbidden_diagnostic_version: 1,
+        http_status: 403,
+        endpoint,
+        action: "start",
+        stage: "load_chat_and_preferences",
+        guard_boundary: "chat_owner_gate",
+        error_code: "forbidden:chat",
+        request_id_kind: "vercel",
+        request_id: "sin1::abcde-1794139010452-8943ba28f213",
+        ...buildField,
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  const accessor = jest.fn(() => "chat_owner_gate");
+  test.each([
+    ["absent", {}, "other"],
+    ["cleared", { guardBoundary: undefined }, "other"],
+    [
+      "outside the closed set",
+      { guardBoundary: "PRIVATE_LABEL" },
+      "unreadable",
+    ],
+    [
+      "an accessor",
+      Object.defineProperty({}, "guardBoundary", { get: accessor }),
+      "unreadable",
+    ],
+    [
+      "a throwing proxy",
+      new Proxy(
+        { stage: "access_gates" },
+        {
+          getOwnPropertyDescriptor(target, key) {
+            if (key === "guardBoundary") throw new Error("PRIVATE_TRAP");
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          },
+        },
+      ),
+      "unreadable",
+    ],
+  ])(
+    "projects a guard marker that is %s without guessing",
+    (_label, context, expected) => {
+      forbidden("/api/agent", "start", context as Record<string, unknown>);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(fields.guard_boundary).toBe(expected);
+      expect(fields.stage).toBe(
+        "stage" in context ? "access_gates" : "unknown",
+      );
+      expect(accessor).not.toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  test("bounds an unrecognized stage instead of logging it", () => {
+    forbidden("/api/agent", "start", {
+      stage: "PRIVATE_STAGE",
+      requestId: "https://PRIVATE_TARGET/path",
+    });
+    const fields = JSON.parse(warn.mock.calls[0][0]);
+    expect(fields).toMatchObject({
+      stage: "unknown",
+      request_id_kind: "unavailable",
+    });
+    expect(fields).not.toHaveProperty("request_id");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  test("returns the original response when the context or sink throws", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("PRIVATE_TRAP");
+        },
+      },
+    );
+    expect(forbidden("/api/agent", "start", hostile).status).toBe(403);
+    warn.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    expect(
+      forbidden("/api/agent-long", "start", {
+        guardBoundary: "account_access_gate",
+      }).status,
+    ).toBe(403);
+  });
+
+  test.each([
+    ["/api/agent", "status"],
+    ["/api/agent-long", "resume"],
+    ["/api/agent", "cancel"],
+    ["/api/agent", "approve"],
+    ["/api/agent", "reply"],
+    ["/api/chat", "start"],
+  ] as const)("does not record a 403 from %s %s", (endpoint, action) => {
+    expect(
+      forbidden(endpoint, action, { guardBoundary: "chat_owner_gate" }).status,
+    ).toBe(403);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("uses the actual returned status rather than the error type", () => {
+    const relabeled = new ChatSDKError("forbidden:chat");
+    relabeled.statusCode = 400;
+    expect(forbidden("/api/agent", "start", {}, relabeled).status).toBe(400);
     expect(warn).not.toHaveBeenCalled();
   });
 });

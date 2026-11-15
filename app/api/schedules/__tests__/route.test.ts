@@ -251,12 +251,19 @@ describe("schedule HTTP boundary", () => {
               connectionId: "stale",
               name: "Offline lab",
               capabilities: { commands: true },
-              isDesktop: false,
+              isDesktop: true,
             },
             {
               environmentId,
               connectionId: "live",
               name: "Connected lab",
+              capabilities: { commands: true },
+              isDesktop: true,
+            },
+            {
+              environmentId,
+              connectionId: "bearer-session",
+              name: "CLI identity is session-scoped",
               capabilities: { commands: true },
               isDesktop: false,
             },
@@ -265,15 +272,18 @@ describe("schedule HTTP boundary", () => {
     );
     mockPresence.mockResolvedValue({
       reliable: true,
-      onlineConnectionIds: new Set(["live"]),
+      onlineConnectionIds: new Set(["live", "bearer-session"]),
     });
     const response = await GET(request("GET"));
     expect((await response.json()).computers).toEqual([
-      { preference: `environment:${environmentId}`, name: "Connected lab" },
+      {
+        preference: `desktop-environment:${environmentId}`,
+        name: "Connected lab",
+      },
     ]);
     mockPresence.mockResolvedValue({
       reliable: false,
-      onlineConnectionIds: new Set(["live"]),
+      onlineConnectionIds: new Set(["live", "bearer-session"]),
     });
     expect((await (await GET(request("GET"))).json()).computers).toEqual([]);
   });

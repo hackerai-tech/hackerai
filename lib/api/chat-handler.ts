@@ -1,3 +1,10 @@
+import { setupChatStreamResumption } from "@/lib/api/chat-stream-resumption";
+import { isFindingRetestsEnabled } from "@/lib/findings/retest-policy";
+import {
+  getLatestUserTaskText,
+  isNotesRelevantRecallEnabled,
+} from "@/lib/notes/recall";
+import { isFindingHuntsEnabled } from "@/lib/findings/hunt-policy";
 import { createChatFinishObserver } from "@/lib/api/chat-finish-observer";
 import { markLoopRecoveryCheckpoint } from "@/lib/chat/message-reconciliation";
 import { resolvePaidProAutoModel } from "@/lib/ai/paid-model-routing";
@@ -84,6 +91,7 @@ import {
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
 import { UsageTracker } from "@/lib/usage-tracker";
+import type { UsageLogPersistence } from "@/lib/db/actions";
 import {
   getMaxTokensForSubscription,
   safeCountTokens,
@@ -95,6 +103,7 @@ import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
   captureToolCalls,
+  captureIncompleteUsageCost,
   captureUsageCost,
   captureUsageSettlement,
   createChatLogger,
@@ -137,7 +146,6 @@ import {
   handleInitialChatAndUserMessage,
   prepareForNewStream,
   saveMessage,
-  startStream,
   updateChat,
   updateChatTitle,
 } from "@/lib/db/actions";
@@ -287,6 +295,10 @@ export const createChatHandler = () => {
       PaidDailyFreeAllowanceReservation | undefined;
     let paidDailyFreeAllowanceFinalized = false;
     let paidDailyFreeAllowanceUsageTracker: UsageTracker | undefined;
+    // Set once the request's cost sources exist; reports known costs when the
+    // normal usage cost capture did not happen. Never affects billing.
+    let reportIncompleteAskUsageCost:
+      ((failureStage: "setup" | "settlement") => Promise<void>) | undefined;
     const releasePaidDailyFreeAllowanceReservation = async () => {
       if (
         !paidDailyFreeAllowanceUserId ||
@@ -378,8 +390,14 @@ export const createChatHandler = () => {
       });
       const requestMessages = requireChatMessagesArray(messages);
 
-      const { userId, subscription, organizationId, freeQuotaSubject } =
-        await getUserIDAndPro(req);
+      const {
+        userId,
+        subscription,
+        organizationId,
+        freeQuotaSubject: legacyQuotaSubject,
+        freeUsageQuotaSubject,
+      } = await getUserIDAndPro(req);
+      const freeQuotaSubject = freeUsageQuotaSubject ?? legacyQuotaSubject;
       paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
@@ -464,8 +482,16 @@ export const createChatHandler = () => {
       // overlaps the remaining preflight instead of adding a serial
       // round-trip at the end. getNotes never rejects (it returns [] on error).
       const shouldIncludeNotes = userCustomization?.include_notes ?? true;
+      // Relevant recall uses the same eligibility as the notes tools, so the
+      // free Ask path keeps its existing behavior. Evaluated once per request.
+      const notesRecallAssignment =
+        shouldIncludeNotes && (subscription !== "free" || isAgentMode(mode))
+          ? isNotesRelevantRecallEnabled(userId)
+          : Promise.resolve(false);
       const preloadedNotes = shouldIncludeNotes
-        ? getNotes({ userId, subscription })
+        ? notesRecallAssignment.then((recall) =>
+            recall ? [] : getNotes({ userId, subscription }),
+          )
         : undefined;
 
       const [projectContext, baseExtraUsageConfig] = await Promise.all([
@@ -586,6 +612,9 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
+      // Keep the entitled Max baseline stable while shared security steps run.
+      const maxBaselineModel =
+        selectedModelOverride === "hackerai-max" ? selectedModel : undefined;
       const abliteratedExperiment = await evaluateAbliteratedModel({
         inferenceEnvironment:
           process.env.VERCEL_ENV === "production" ||
@@ -655,7 +684,7 @@ export const createChatHandler = () => {
           abliteratedExperiment || deepSeekV4Pro0813Experiment,
         ),
       });
-      const requestHasImages =
+      let requestHasImages =
         countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
         uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
@@ -672,6 +701,13 @@ export const createChatHandler = () => {
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
+      const findingRetestAssignment = isAgentMode(mode)
+        ? isFindingRetestsEnabled(userId)
+        : Promise.resolve(false);
+      // Ask never receives hunt tools.
+      const findingHuntAssignment = isAgentMode(mode)
+        ? isFindingHuntsEnabled(userId)
+        : Promise.resolve(false);
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -948,7 +984,6 @@ export const createChatHandler = () => {
 
             const {
               cloudNetworkPrompt,
-              getCaptchaReceiptPrompt,
               tools,
               ensureSandbox,
               getTodoManager,
@@ -995,9 +1030,69 @@ export const createChatHandler = () => {
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
+                findingRetestToolsEnabled: await findingRetestAssignment,
+                notesRelevantRecallEnabled:
+                  notesEnabled && (await notesRecallAssignment),
+                findingHuntToolsEnabled: await findingHuntAssignment,
                 signal: userStopSignal.signal,
               },
             );
+
+            let usageCostReported = false;
+            let sandboxCostRecorded = false;
+            reportIncompleteAskUsageCost = async (failureStage) => {
+              if (usageCostReported) return;
+              try {
+                let usageMeasurement =
+                  usageTracker.measurementProperties(selectedModel);
+                if (!sandboxCostRecorded) {
+                  // Read-only: settlement remains the only path that adds
+                  // sandbox runtime to the tracker.
+                  // Sandbox diagnostics may fail during teardown. Preserve
+                  // model/tool measurements even when this component is unknown.
+                  const sandboxCost = await getSandboxSessionUsage()
+                    .then((usage) => usage.totalCostDollars)
+                    .catch(() => 0);
+                  usageMeasurement = {
+                    ...usageMeasurement,
+                    usage_observed_non_model_cost_dollars:
+                      usageMeasurement.usage_observed_non_model_cost_dollars +
+                      sandboxCost,
+                    usage_known_incurred_cost_dollars:
+                      usageMeasurement.usage_known_incurred_cost_dollars +
+                      sandboxCost,
+                  };
+                }
+                if (
+                  usageMeasurement.usage_known_incurred_cost_dollars <= 0 &&
+                  !usageTracker.hasIncurredMeasurement
+                ) {
+                  return;
+                }
+                usageCostReported = true;
+                captureIncompleteUsageCost({
+                  posthog,
+                  userId,
+                  subscription,
+                  organizationId,
+                  chatId,
+                  endpoint,
+                  mode,
+                  usageSettlementId: usageTracker.usageSettlementId,
+                  usageMeasurement,
+                  failureStage:
+                    failureStage === "setup" &&
+                    usageMeasurement.usage_model_records > 0
+                      ? "model_stream"
+                      : failureStage,
+                  canceled: userStopSignal.signal.aborted,
+                });
+              } catch (error) {
+                console.warn("[chat-handler] incomplete usage cost failed", {
+                  error_name: error instanceof Error ? error.name : "unknown",
+                });
+              }
+            };
 
             // Helper to send file metadata via stream for resumable stream clients
             // Uses accumulated metadata directly - no DB query needed!
@@ -1194,6 +1289,12 @@ export const createChatHandler = () => {
               userId,
               subscription,
               shouldIncludeNotes,
+              relevantRecall: (await notesRecallAssignment)
+                ? {
+                    taskText: getLatestUserTaskText(truncatedMessages),
+                    projectId: projectContext.projectId,
+                  }
+                : undefined,
             };
             finalMessages = await injectNotesIntoMessages(finalMessages, {
               ...noteInjectionOpts,
@@ -1267,11 +1368,18 @@ export const createChatHandler = () => {
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
+            let fallbackModel =
               abliteratedExperiment &&
               isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+                : getRetryFallbackModel(
+                    maxBaselineModel ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    {
+                      hasImageInputs: requestHasImages,
+                    },
+                  );
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1309,6 +1417,7 @@ export const createChatHandler = () => {
                       usageTracker.nonModelCost += sandboxCost;
                       chatLogger?.getBuilder().addToolCost(sandboxCost);
                     }
+                    sandboxCostRecorded = true;
 
                     if (!usageTracker.hasUsage) {
                       // Release an unused rescue lease so a failed provider start
@@ -1317,6 +1426,9 @@ export const createChatHandler = () => {
                         await releasePaidDailyFreeAllowanceReservation();
                         hasRecordedUsage = paidDailyFreeAllowanceFinalized;
                       }
+                      // Nothing billable survived, but discarded retries were
+                      // still incurred. Report them without charging.
+                      await reportIncompleteAskUsageCost?.("settlement");
                       return;
                     }
                     hasRecordedUsage = true;
@@ -1339,6 +1451,8 @@ export const createChatHandler = () => {
                     // mid-run settlement. This preserves authoritative step costs
                     // and estimates only the individual steps missing provider cost.
                     const settledCostDollars = usageCostRecord.costDollars;
+                    let usageLog: UsageLogPersistence | "not_applicable" =
+                      "not_applicable";
 
                     if (paidDailyFreeAllowanceReservation) {
                       const allowanceCostRecord =
@@ -1365,7 +1479,7 @@ export const createChatHandler = () => {
                           },
                         );
                       }
-                      usageTracker.log({
+                      usageLog = await usageTracker.log({
                         userId,
                         organizationId,
                         chatId,
@@ -1480,7 +1594,7 @@ export const createChatHandler = () => {
                         ...usageRecordArgs,
                         billingBreakdown,
                       });
-                      usageTracker.log({
+                      usageLog = await usageTracker.log({
                         userId,
                         organizationId,
                         chatId,
@@ -1501,6 +1615,8 @@ export const createChatHandler = () => {
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),
+                      usageSettlementId: usageTracker.usageSettlementId,
+                      usageLog,
                       regionalFreeLimits,
                       posthog,
                       userId,
@@ -1532,9 +1648,14 @@ export const createChatHandler = () => {
                           ),
                       }),
                     });
+                    usageCostReported = true;
                   },
                   finishPhase,
                 );
+              } catch (error) {
+                // Settlement outcome is unknown here; report known costs only.
+                await reportIncompleteAskUsageCost?.("settlement");
+                throw error;
               } finally {
                 await observeFinish(
                   "release_run_lock",
@@ -1722,13 +1843,24 @@ export const createChatHandler = () => {
                       activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
-              onProviderRequestStart: (configuredModel) => {
+              onProviderRequestStart: (configuredModel, hasImageInputs) => {
                 recordFlashRoutingExposure(configuredModel);
+                requestHasImages ||= Boolean(hasImageInputs);
+                if (
+                  selectedModelOverride === "hackerai-max" &&
+                  requestHasImages
+                ) {
+                  fallbackModel = getRetryFallbackModel(
+                    maxBaselineModel ?? selectedModel,
+                    mode,
+                    selectedModelOverride,
+                    { hasImageInputs: true },
+                  );
+                }
               },
               trackedProvider,
               currentSystemPrompt,
               cloudNetworkPrompt,
-              getCaptchaReceiptPrompt,
               tools,
               mode,
               endpoint,
@@ -3398,6 +3530,7 @@ export const createChatHandler = () => {
             // execute errors are consumed by createUIMessageStream, so the
             // outer request catch and stream onFinish cannot clean them up.
             preemptiveTimeout?.clear();
+            await reportIncompleteAskUsageCost?.("setup");
             if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
               await releasePaidDailyFreeAllowanceReservation();
             }
@@ -3448,23 +3581,11 @@ export const createChatHandler = () => {
           "Transfer-Encoding": "chunked",
         },
         async consumeSseStream({ stream: sseStream }) {
-          try {
-            const streamContext = getStreamContext();
-            if (streamContext) {
-              const streamId = generateId();
-              await startStream({ chatId, streamId });
-              await streamContext.createNewResumableStream(
-                streamId,
-                () => sseStream,
-              );
-            }
-          } catch (error) {
-            // Non-fatal: stream still works without resumability
-            phLogger.warn("Stream resumption setup failed", {
-              chatId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
+          await setupChatStreamResumption({
+            chatId,
+            stream: sseStream,
+            getStreamContext,
+          });
         },
       });
     } catch (error) {

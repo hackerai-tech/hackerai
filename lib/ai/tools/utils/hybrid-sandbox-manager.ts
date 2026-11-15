@@ -9,6 +9,11 @@ import {
   type SubscriptionErrorContext,
 } from "centrifuge";
 import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
+import { watchLocalRunConnection } from "@/lib/centrifugo/watch-local-run-connection";
+import {
+  LocalConnectionLostError,
+  type LocalStopReason,
+} from "@/lib/chat/local-connection-stop";
 import type {
   AnySandbox,
   SandboxBootInfo,
@@ -117,6 +122,9 @@ export function isSameLocalMachine(
   current: ConnectionInfo,
   candidate: ConnectionInfo,
 ): boolean {
+  // Runner IDs, names, and OS fields are client supplied. A replacement
+  // runner must be selected explicitly in the browser.
+  if (!current.isDesktop || !candidate.isDesktop) return false;
   if (current.environmentId || candidate.environmentId) {
     return Boolean(
       current.environmentId &&
@@ -135,6 +143,39 @@ export function isSameLocalMachine(
     current.osInfo.release === candidate.osInfo.release &&
     current.osInfo.hostname === candidate.osInfo.hostname
   );
+}
+
+/** Compare the original rejection with the abort reason without exposing it. */
+function localLookupAbortContext(
+  error: unknown,
+  context?: CloudSandboxAcquisitionContext,
+) {
+  let state: "unavailable" | "active" | "aborted" | "unreadable" =
+    "unavailable";
+  let matches: "unavailable" | "yes" | "no" | "unreadable" = "unavailable";
+  try {
+    const signal = context?.signal;
+    if (signal) {
+      const aborted = signal.aborted;
+      if (aborted === true) {
+        state = "aborted";
+        matches = signal.reason === error ? "yes" : "no";
+      } else if (aborted === false) {
+        state = "active";
+      } else {
+        state = "unreadable";
+        matches = "unreadable";
+      }
+    }
+  } catch {
+    state = "unreadable";
+    matches = "unreadable";
+  }
+  return {
+    local_lookup_abort_context_version: 1,
+    local_lookup_signal_state: state,
+    local_lookup_matches_abort_reason: matches,
+  };
 }
 
 const logStructured = (
@@ -305,6 +346,56 @@ export async function queryLiveSandboxConnectionIds(
 }
 
 export class HybridSandboxManager implements SandboxManager {
+  private onLocalConnectionLost?: (error: LocalConnectionLostError) => void;
+  private stopLocalConnectionWatch?: () => void;
+  private watchedConnectionId?: string;
+  /** The first loss; every later access rethrows it with its original cause. */
+  private localConnectionLost?: LocalConnectionLostError;
+
+  stopOnLocalDisconnect(
+    onLost: (error: LocalConnectionLostError) => void,
+  ): () => void {
+    this.onLocalConnectionLost = onLost;
+    if (this.currentConnectionId)
+      this.watchRunConnection(this.currentConnectionId);
+    return () => {
+      this.stopLocalConnectionWatch?.();
+      this.onLocalConnectionLost = undefined;
+    };
+  }
+
+  private loseRunConnection(
+    reason: LocalConnectionLostError | LocalStopReason,
+  ): LocalConnectionLostError {
+    if (!this.localConnectionLost) {
+      this.localConnectionLost =
+        reason instanceof LocalConnectionLostError
+          ? reason
+          : new LocalConnectionLostError(reason, {
+              connectionId: this.watchedConnectionId,
+            });
+      this.sandboxUnavailable = true;
+      this.stopLocalConnectionWatch?.();
+      this.onLocalConnectionLost?.(this.localConnectionLost);
+    }
+    return this.localConnectionLost;
+  }
+
+  private watchRunConnection(connectionId: string): void {
+    if (this.localConnectionLost) throw this.localConnectionLost;
+    if (!this.onLocalConnectionLost) return;
+    if (this.watchedConnectionId === connectionId) return;
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("watched_connection_replaced");
+    this.watchedConnectionId = connectionId;
+    this.stopLocalConnectionWatch = watchLocalRunConnection({
+      userId: this.userID,
+      connectionId,
+      onLost: (error) => {
+        this.loseRunConnection(error);
+      },
+    });
+  }
   private sandbox: SandboxInstance | null = null;
   private isLocal = false;
   private scheduledConnectionId: string | undefined;
@@ -458,6 +549,9 @@ export class HybridSandboxManager implements SandboxManager {
     connectionId: string,
     reason: "command_relay_unsubscribed",
   ): Promise<{ sandbox: SandboxInstance }> {
+    if (this.localConnectionLost) throw this.localConnectionLost;
+    if (this.onLocalConnectionLost)
+      throw this.loseRunConnection("local_recovery_requested");
     if (
       !this.sandbox ||
       !isCentrifugoSandbox(this.sandbox) ||
@@ -798,6 +892,7 @@ export class HybridSandboxManager implements SandboxManager {
     } catch (error) {
       logStructured("error", "local_sandbox_connections_list_failed", {
         user_id: this.userID,
+        ...localLookupAbortContext(error, this.cloudSandboxContext),
         error: error instanceof Error ? error.message : String(error),
       });
       if (this.sandboxPreference !== "e2b") {
@@ -820,6 +915,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    if (this.localConnectionLost) throw this.localConnectionLost;
     const generation = this.localAcquisitionGeneration;
     if (this.requiredConnectionIdAfterQuarantine) {
       throw new Error(
@@ -889,6 +985,8 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("selected_connection_unavailable");
     // Legacy session IDs and the Desktop alias select a computer just as
     // persistent environment IDs do. Fail before acquiring a different host
     // so all offline selections reach the reconnect-required recovery path.
@@ -944,6 +1042,7 @@ export class HybridSandboxManager implements SandboxManager {
     connection: ConnectionInfo,
     generation: number,
   ): Promise<void> {
+    this.watchRunConnection(connection.connectionId);
     await this.closeCurrentSandbox();
     this.assertLocalAcquisitionCurrent(generation);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
@@ -1076,6 +1175,7 @@ export class HybridSandboxManager implements SandboxManager {
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.isLocal = isCentrifugoSandbox(sandbox);
     if (this.isLocal && isCentrifugoSandbox(sandbox)) {
+      this.watchRunConnection(sandbox.getConnectionId());
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {
@@ -1086,6 +1186,9 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
+    if (this.onLocalConnectionLost && this.watchedConnectionId) {
+      throw this.loseRunConnection("local_reset_requested");
+    }
     const generation = ++this.localAcquisitionGeneration;
     // Settle acquisition before clearing its result; never destroy the VM.
     await this.cloudAcquisition?.catch(() => undefined);
@@ -1133,6 +1236,7 @@ export class HybridSandboxManager implements SandboxManager {
     );
 
     if (preferredConnection) {
+      this.watchRunConnection(preferredConnection.connectionId);
       if (
         preferredConnection.isDesktop &&
         preferredConnection.capabilities?.files !== true
@@ -1149,6 +1253,8 @@ export class HybridSandboxManager implements SandboxManager {
       return this.buildSandboxContext(preferredConnection);
     }
 
+    if (this.watchedConnectionId)
+      throw this.loseRunConnection("selected_connection_unavailable");
     throw selectedComputerOfflineError(
       this.selectedComputerLookup(connections),
       "prompt_context",

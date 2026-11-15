@@ -4,6 +4,7 @@ import { captureGoalLifecycle } from "@/lib/goals/analytics";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
 import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import type { GoalReconciliationStep } from "@/lib/goals/reconciliation-diagnostics";
 import type { GoalContract } from "@/lib/goals/contracts";
 import { validGoalRequest } from "@/lib/goals/contracts";
 import { resolveCloudWorkspaceRegion } from "@/lib/ai/tools/utils/cloud-workspace-routing";
@@ -11,6 +12,7 @@ import {
   readCloudWorkspaceState,
   assertCloudWorkspaceAvailable,
 } from "@/lib/ai/tools/utils/cloud-workspace-guard";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -41,7 +43,10 @@ import {
   AGENT_TRIGGER_TASK_ID,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
-import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
+import {
+  handleAgentRouteError,
+  type AgentStartGuardBoundary,
+} from "@/lib/api/agent-route-errors";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
@@ -86,6 +91,10 @@ import {
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { createAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
+import {
+  AGENT_START_REJECTION_HEADER,
+  AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
+} from "@/lib/agent-start-response";
 import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
@@ -159,7 +168,12 @@ export const createAgentTriggerPayloadTooLargeResponse = () =>
       cause:
         "This Agent request is too large to start. Remove some attachments or start a new chat and try again.",
     },
-    { status: 413 },
+    {
+      status: 413,
+      headers: {
+        [AGENT_START_REJECTION_HEADER]: AGENT_START_TRIGGER_PAYLOAD_TOO_LARGE,
+      },
+    },
   );
 
 const getAgentTriggerPriority = (subscription: SubscriptionTier) =>
@@ -652,6 +666,9 @@ export const createAgentTriggerPost = ({
       | "upload_files"
       | "close_sandbox"
       | undefined;
+    // Observational only: names the existing guard callsite still in progress.
+    let guardBoundary: AgentStartGuardBoundary | undefined;
+    let goalReconciliationStep: GoalReconciliationStep | undefined;
     const diagnosticContext: {
       requestId?: string;
       userId?: string;
@@ -729,8 +746,14 @@ export const createAgentTriggerPost = ({
 
       diagnosticContext.chatId = chatId.slice(0, 128);
       stage = "authenticate";
-      const { userId, subscription, organizationId, freeQuotaSubject } =
-        await resolveIdentity(req);
+      const {
+        userId,
+        subscription,
+        organizationId,
+        freeQuotaSubject: legacyQuotaSubject,
+        freeUsageQuotaSubject,
+      } = await resolveIdentity(req);
+      const freeQuotaSubject = freeUsageQuotaSubject ?? legacyQuotaSubject;
       diagnosticContext.userId = userId.slice(0, 128);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
@@ -738,28 +761,34 @@ export const createAgentTriggerPost = ({
           subscription,
         );
       stage = "access_gates";
+      guardBoundary = "account_access_gate";
       await assertUserCanMakeCostIncurringRequest(userId, {
         retryNetworkFailure: true,
         signal: req.signal,
       });
+      guardBoundary = undefined;
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
+      guardBoundary = "regional_subscription_gate";
       await enforceRegionalSubscriptionFirst({
         userId,
         subscription,
         country: regionalSubscriptionCountry,
         surface: "agent",
       });
+      guardBoundary = undefined;
       const userLocation = geolocation(req);
       const { triggerRegion: requestTriggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
       const genericDelegationEnabled = true;
 
+      guardBoundary = "free_agent_sandbox_gate";
       assertFreeAgentGates({
         mode: "agent",
         subscription,
         sandboxPreference,
       });
+      guardBoundary = undefined;
 
       stage = "workspace_routing";
       const triggerRegion =
@@ -831,26 +860,25 @@ export const createAgentTriggerPost = ({
           (regenerate &&
             (goalRequest.action !== "resume" ||
               goalRequest.expectedGeneration === undefined)))
-      )
+      ) {
+        guardBoundary = "persistent_goal_request_gate";
         throw new ChatSDKError(
           "forbidden:chat",
           "Persistent goals are unavailable for this request.",
         );
-      if (existingChat && existingChat.user_id !== userId)
+      }
+      if (existingChat && existingChat.user_id !== userId) {
+        guardBoundary = "chat_owner_gate";
         throw new ChatSDKError("forbidden:chat");
-      if (
-        isAutomaticContinuation &&
-        existingChat?.scheduled_local_execution &&
-        existingChat.finish_reason === "local-connection-lost"
-      )
-        throw new ChatSDKError(
-          "bad_request:api",
-          "Reconnect the scheduled computer and resume this task manually.",
-        );
+      }
       stage = "reconcile_goal";
       const existingGoal = existingChat
-        ? await reconcileGoal(chatId, userId)
+        ? await reconcileGoal(chatId, userId, (step) => {
+            goalReconciliationStep = step;
+          })
         : null;
+      // Later local guards did not fail inside a reconciliation step.
+      goalReconciliationStep = undefined;
       if (
         !goalRequest &&
         existingGoal &&
@@ -893,6 +921,15 @@ export const createAgentTriggerPost = ({
           organizationId,
         }),
       ]);
+      if (
+        isAutomaticContinuation &&
+        existingChat?.finish_reason === LOCAL_CONNECTION_LOST_FINISH_REASON
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "The local connection was lost. Resume manually from the chat when your computer is connected.",
+        );
+      }
       const isNewChat = !existingChat && !regenerate && !isAutoContinue;
       const autoReviewAssignment: AgentAutoReviewAssignment | undefined =
         agentPermissionMode === "auto_review"
@@ -1348,7 +1385,13 @@ export const createAgentTriggerPost = ({
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
-        context: { ...diagnosticContext, stage, initialPersistenceStep },
+        context: {
+          ...diagnosticContext,
+          stage,
+          initialPersistenceStep,
+          guardBoundary,
+          goalReconciliationStep,
+        },
       });
     } finally {
       clearInterval(slowRequestInterval);

@@ -7,7 +7,6 @@ import {
 } from "./lib/settlementReceiptValidators";
 import { goalFields } from "./lib/goalValidators";
 import { networkPolicy } from "./cloudNetworkValidators";
-import { captchaKind, captchaAttemptState } from "./captchaValidators";
 import { scopeRule, scopePolicy } from "./engagementScopeValidators";
 import {
   findingRevisionValidator,
@@ -27,8 +26,29 @@ import {
   scheduleRunStatus,
   localScheduleExecution,
 } from "./scheduleValidators";
+import {
+  abuseCaseFields,
+  abuseEventFields,
+  abuseResponseFields,
+} from "./lib/abuseValidators";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
+import {
+  httpRetestEnvironmentValidator,
+  httpRetestOutcomeValidator,
+  httpRetestReasonValidator,
+  httpRetestRecipeValidator,
+  httpRetestStepValidator,
+} from "./findingRetestValidators";
+import {
+  agentRetestEnvironmentValidator,
+  agentRetestEvidenceVerificationValidator,
+  agentRetestOutcomeValidator,
+} from "./findingAgentRetestValidators";
+import {
+  huntEnvironmentValidator,
+  huntStoredCandidateValidator,
+} from "./findingHuntValidators";
 import {
   researchCohortReportValidator,
   researchCoverageValidator,
@@ -204,6 +224,53 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  abuse_notifications: defineTable({
+    // Optional caseId keeps historical case-owned deliveries readable. New
+    // intake writes only a temporary encrypted queue entry and receipt metadata.
+    caseId: v.optional(v.id("abuse_cases")),
+    reference: v.optional(v.string()),
+    digest: v.optional(v.string()),
+    ciphertext: v.optional(v.string()),
+    receivedAt: v.optional(v.number()),
+    payloadExpiresAt: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("paused"),
+      v.literal("sending"),
+      v.literal("sent"),
+      v.literal("failed"),
+      v.literal("uncertain"),
+      v.literal("expired"),
+    ),
+    attempts: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_caseId", ["caseId"])
+    .index("by_reference", ["reference"])
+    .index("by_payloadExpiresAt", ["payloadExpiresAt"])
+    .index("by_expiresAt", ["expiresAt"])
+    .index("by_status", ["status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"]),
+  // Evidence is encrypted before transport; ordinary users have no read path.
+  abuse_cases: defineTable(abuseCaseFields)
+    .index("by_active_containment_user", ["activeContainmentUserId"])
+    .index("by_reference", ["reference"])
+    .index("by_status", ["status"]),
+  abuse_events: defineTable(abuseEventFields)
+    .index("by_caseId", ["caseId"])
+    .index("by_caseId_and_kind", ["caseId", "kind"]),
+  // At most one reviewed late-report response per case; no evidence text.
+  abuse_responses: defineTable(abuseResponseFields).index("by_caseId", [
+    "caseId",
+  ]),
+  abuse_rate_limits: defineTable({
+    bucket: v.string(),
+    count: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_bucket", ["bucket"])
+    .index("by_expiresAt", ["expiresAt"]),
   cloud_network_settings: defineTable({
     user_id: v.string(),
     policy: networkPolicy,
@@ -330,6 +397,11 @@ export default defineSchema({
       "last_checked_at",
     ])
     .index("by_schedule_and_occurrence", ["schedule_id", "occurrence"]),
+  chat_history_access: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
+
   chats: defineTable({
     next_actions: v.optional(nextActionsStateValidator),
     // Legacy field retained for existing chat documents only.
@@ -421,14 +493,26 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
-  // Provider expense audit, not a customer wallet ledger. No URLs, widget keys,
-  // cookies, API credentials or solutions are retained here.
+  // Historical provider expense audit for the retired CAPTCHA solver, not a
+  // customer wallet ledger. Retained for audit and account deletion;
+  // no new attempts are admitted. No URLs, widget keys, cookies, API
+  // credentials or solutions are retained here.
   captcha_attempts: defineTable({
     user_id: v.string(),
     chat_id: v.string(),
     run_id: v.string(),
-    kind: captchaKind,
-    state: captchaAttemptState,
+    kind: v.union(
+      v.literal("recaptcha_v2"),
+      v.literal("hcaptcha"),
+      v.literal("turnstile"),
+    ),
+    state: v.union(
+      v.literal("creating"),
+      v.literal("processing"),
+      v.literal("ready"),
+      v.literal("unsolvable"),
+      v.literal("unknown"),
+    ),
     task_id: v.optional(v.number()),
     cost_dollars: v.optional(v.number()),
     created_at: v.number(),
@@ -560,6 +644,15 @@ export default defineSchema({
     }),
 
   findings: defineTable({
+    project_id: v.optional(v.id("projects")),
+    evidence_status: v.optional(
+      v.union(
+        v.literal("source_review_only"),
+        v.literal("runtime_reproduced"),
+        v.literal("inconclusive"),
+      ),
+    ),
+    evidence_status_reason: v.optional(v.string()),
     finding_id: v.string(),
     user_id: v.string(),
     chat_id: v.string(),
@@ -717,9 +810,64 @@ export default defineSchema({
       "created_at",
     ])
     .index("by_user_chat_dedupe", ["user_id", "chat_id", "dedupe_key"])
+    .index("by_user_project_created", ["user_id", "project_id", "created_at"])
+    .index("by_user_project_status_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "created_at",
+    ])
+    .index("by_user_project_category_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_severity_created", [
+      "user_id",
+      "project_id",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "created_at",
+    ])
+    .index("by_user_project_status_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_category_severity_created", [
+      "user_id",
+      "project_id",
+      "category",
+      "severity",
+      "created_at",
+    ])
+    .index("by_user_project_status_category_severity_created", [
+      "user_id",
+      "project_id",
+      "status",
+      "category",
+      "severity",
+      "created_at",
+    ])
     .searchIndex("search_findings", {
       searchField: "search_text",
-      filterFields: ["user_id", "status", "category", "severity", "chat_id"],
+      filterFields: [
+        "user_id",
+        "project_id",
+        "status",
+        "category",
+        "severity",
+        "chat_id",
+      ],
     }),
 
   // Compact source-chat metadata keeps the Findings filter bounded without
@@ -733,6 +881,107 @@ export default defineSchema({
   })
     .index("by_user_and_latest", ["user_id", "latest_finding_at"])
     .index("by_user_chat", ["user_id", "chat_id"]),
+
+  // One Agent retest attempt for a finding. Provenance (message, run, stream)
+  // is server-supplied; the result is the Agent's own assessment and is
+  // immutable once finished. A record never changes the finding itself.
+  finding_agent_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this retest: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(agentRetestOutcomeValidator),
+    interrupted: v.optional(v.boolean()),
+    summary: v.optional(v.string()),
+    reproduction_steps: v.optional(v.array(v.string())),
+    expected_result: v.optional(v.string()),
+    observed_result: v.optional(v.string()),
+    evidence_refs: v.optional(v.array(v.string())),
+    evidence_verification: v.optional(agentRetestEvidenceVerificationValidator),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(agentRetestEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
+  // One Agent hunt for surfaces sharing a finding's root cause. Provenance is
+  // server-supplied. Candidates are saved one at a time, are immutable, and are
+  // never findings; the seed finding is never changed.
+  finding_variant_hunts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    assistant_message_id: v.string(),
+    // The active run that started this hunt: a Trigger run, or the chat's
+    // resumable stream for web Agent requests. Used to detect interruption.
+    trigger_run_id: v.optional(v.string()),
+    stream_id: v.optional(v.string()),
+    finding_updated_at: v.number(),
+    target: v.string(),
+    started_at: v.number(),
+    status: v.union(v.literal("running"), v.literal("finished")),
+    finished_at: v.optional(v.number()),
+    interrupted: v.optional(v.boolean()),
+    candidates: v.array(huntStoredCandidateValidator),
+    summary: v.optional(v.string()),
+    limitations: v.optional(v.array(v.string())),
+    environment: v.optional(huntEnvironmentValidator),
+    result_key: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_message", ["finding_id", "assistant_message_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
+
+  // Legacy executable HTTP retest data from Preview. Hidden and read-only:
+  // retained only so existing rows validate and are removed by deletion.
+  finding_retest_recipes: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    source: v.union(v.literal("user"), v.literal("agent")),
+    created_at: v.number(),
+  })
+    .index("by_finding_and_version", ["finding_id", "version"])
+    .index("by_user_and_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+
+  finding_retest_runs: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    finding_id: v.string(),
+    request_id: v.string(),
+    recipe_version: v.number(),
+    recipe: httpRetestRecipeValidator,
+    status: v.union(v.literal("running"), v.literal("finished")),
+    started_at: v.number(),
+    lease_expires_at: v.number(),
+    finished_at: v.optional(v.number()),
+    outcome: v.optional(httpRetestOutcomeValidator),
+    reason: v.optional(httpRetestReasonValidator),
+    steps: v.optional(v.array(httpRetestStepValidator)),
+    environment: v.optional(httpRetestEnvironmentValidator),
+    evidence_sha256: v.optional(v.string()),
+  })
+    .index("by_finding_and_started", ["finding_id", "started_at"])
+    .index("by_finding_and_status", ["finding_id", "status"])
+    .index("by_user_and_request", ["user_id", "request_id"])
+    .index("by_user_and_started", ["user_id", "started_at"])
+    .index("by_user_and_chat", ["user_id", "chat_id"]),
 
   files: defineTable({
     s3_key: v.optional(v.string()),
@@ -1101,6 +1350,8 @@ export default defineSchema({
   // complements processed_checkout_sessions: the processed table is only a
   // dedupe guard, while this row explains the observed purchase lifecycle.
   extra_usage_purchases: defineTable({
+    paid_amount_dollars: v.optional(v.number()),
+    bundle_id: v.optional(v.string()),
     user_id: v.string(),
     amount_dollars: v.number(),
     stripe_checkout_session_id: v.string(),
@@ -1366,8 +1617,39 @@ export default defineSchema({
     tags: v.array(v.string()),
     tokens: v.number(),
     updated_at: v.number(),
+    // Relevant recall metadata. Legacy rows omit all four and stay unscoped.
+    // Normalized exact host, origin or `label:` engagement label.
+    target: v.optional(v.string()),
+    // Derived from the authenticated source chat, never from model input.
+    project_id: v.optional(v.id("projects")),
+    // When the noted behavior was actually observed; distinct from edits.
+    observed_at: v.optional(v.number()),
+    recheck_after: v.optional(v.number()),
+    // Bounded title, tags and label words for recall keyword matching.
+    // Written by every note write; legacy rows are filled by noteMigrations.
+    search_metadata: v.optional(v.string()),
   })
     .index("by_note_id", ["note_id"])
+    .index("by_user_and_target_and_updated", [
+      "user_id",
+      "target",
+      "updated_at",
+    ])
+    // Recall reads each scope (unprojected, current project) separately so
+    // newer notes from other projects cannot crowd out eligible ones.
+    .index("by_user_and_project_and_target_and_updated", [
+      "user_id",
+      "project_id",
+      "target",
+      "updated_at",
+    ])
+    .index("by_user_and_project_and_target_and_category_and_updated", [
+      "user_id",
+      "project_id",
+      "target",
+      "category",
+      "updated_at",
+    ])
     .index("by_user_and_category", ["user_id", "category"])
     .index("by_user_and_category_and_updated", [
       "user_id",
@@ -1377,7 +1659,11 @@ export default defineSchema({
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",
-      filterFields: ["user_id", "category"],
+      filterFields: ["user_id", "category", "project_id"],
+    })
+    .searchIndex("search_note_metadata", {
+      searchField: "search_metadata",
+      filterFields: ["user_id", "project_id"],
     }),
 
   // Local Sandbox Tables
@@ -1386,9 +1672,21 @@ export default defineSchema({
     token: v.string(),
     token_created_at: v.number(),
     updated_at: v.number(),
+    // A reviewed abuse restriction replaces the token with an unreturned value
+    // and blocks reissue/Desktop connection until its case is resolved.
+    revoked_at: v.optional(v.number()),
+    revoked_source_id: v.optional(v.string()),
   })
     .index("by_user_id", ["user_id"])
     .index("by_token", ["token"]),
+
+  local_sandbox_heartbeats: defineTable({
+    connection_id: v.string(),
+    user_id: v.string(),
+    last_heartbeat: v.number(),
+  })
+    .index("by_connection_id", ["connection_id"])
+    .index("by_user_id", ["user_id"]),
 
   local_sandbox_connections: defineTable({
     user_id: v.string(),
@@ -1399,6 +1697,10 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
+    // Set by the authenticated registration entry point, never by the client.
+    registration_origin: v.optional(
+      v.union(v.literal("runner"), v.literal("desktop")),
+    ),
     // Keep accepting legacy cloud rows until production data has been purged.
     // No current writer creates them, and connection queries exclude them.
     mode: v.union(
@@ -1424,6 +1726,7 @@ export default defineSchema({
         operationChannels: v.optional(v.boolean()),
       }),
     ),
+    // Initial timestamp and fallback for sessions created before heartbeat separation.
     last_heartbeat: v.number(),
     status: v.union(v.literal("connected"), v.literal("disconnected")),
     created_at: v.number(),
@@ -1702,7 +2005,14 @@ export default defineSchema({
   // from user economics so platform overhead is never allocated or counted
   // more than once by accident.
   platform_costs_daily: defineTable({
-    vendor: v.union(v.literal("vercel"), v.literal("convex")),
+    vendor: v.union(
+      v.literal("aws"),
+      v.literal("vercel"),
+      v.literal("convex"),
+      v.literal("posthog"),
+      v.literal("workos"),
+      v.literal("upstash"),
+    ),
     entity_id: v.string(),
     day: v.string(),
     service_name: v.string(),
@@ -1724,6 +2034,13 @@ export default defineSchema({
     source_period_end: v.string(),
     source_observed_at: v.number(),
     source_charge_count: v.optional(v.number()),
+    cost_basis: v.optional(
+      v.union(
+        v.literal("provider_daily_spend"),
+        v.literal("billing_period_allocation"),
+      ),
+    ),
+    billing_reference: v.optional(v.string()),
     updated_at: v.number(),
   })
     .index("by_day", ["day"])
@@ -2037,14 +2354,36 @@ export default defineSchema({
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
     event_id: v.string(),
+    // Fraud source IDs let support resolution fence an in-flight delivery.
+    source_id: v.optional(v.string()),
     processed_at: v.number(),
-    // State-machine fields for atomic claim/finalize. Optional for
+    // State-machine fields for atomic claim/handled/finalize. Optional for
     // backwards compatibility — legacy rows (no status) are treated as
     // completed since they were inserted under the old "mark on entry"
     // semantics for events whose lifecycle has already concluded.
-    status: v.optional(v.union(v.literal("pending"), v.literal("completed"))),
+    status: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("cleanup_started"),
+        v.literal("review_required"),
+        v.literal("handled"),
+        v.literal("completed"),
+      ),
+    ),
     claimed_at: v.optional(v.number()),
-  }).index("by_event_id", ["event_id"]),
+    claim_token: v.optional(v.string()),
+    review_reason: v.optional(v.string()),
+    review_customer_id: v.optional(v.string()),
+    review_resolution: v.optional(v.string()),
+    reviewed_by: v.optional(v.string()),
+    reviewed_at: v.optional(v.number()),
+  })
+    .index("by_event_id", ["event_id"])
+    .index("by_status", ["status"])
+    .index("by_status_and_processed_at", ["status", "processed_at"])
+    .index("by_review_customer_id_and_status", ["review_customer_id", "status"])
+    .index("by_source_id_and_status", ["source_id", "status"])
+    .index("by_source_status_event_id", ["source_id", "status", "event_id"]),
 
   // Durable idempotency records for user-visible checkout session confirms.
   // Unlike webhook retry deduplication, these keys must not be time-purged

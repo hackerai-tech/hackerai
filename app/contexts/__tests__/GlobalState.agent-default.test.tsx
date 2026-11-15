@@ -11,13 +11,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
 
-const mockUseAutoSelectNewRemoteConnection = jest.fn();
 let mockDesktopBridgeActive = false;
-
-jest.mock("@/app/hooks/useAutoSelectNewRemoteConnection", () => ({
-  useAutoSelectNewRemoteConnection: (args: unknown) =>
-    mockUseAutoSelectNewRemoteConnection(args),
-}));
 
 jest.mock("@/app/hooks/useSandboxPreference", () => {
   const setSandboxPreference = jest.fn();
@@ -250,14 +244,6 @@ describe("GlobalStateProvider agent defaults", () => {
     await waitFor(() => {
       expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent("true");
     });
-    expect(mockUseAutoSelectNewRemoteConnection).toHaveBeenCalled();
-    expect(
-      mockUseAutoSelectNewRemoteConnection.mock.calls.some(
-        ([args]) =>
-          (args as { freeSubscriptionResolved: boolean })
-            .freeSubscriptionResolved,
-      ),
-    ).toBe(false);
   });
 
   it("preserves the paid model between a failed Tauri refresh and its retry", async () => {

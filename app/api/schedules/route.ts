@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
       ctx.args,
     );
     const candidates = connections.filter(
-      (c) => c.environmentId && c.capabilities.commands,
+      (c) => c.isDesktop && c.environmentId && c.capabilities.commands,
     );
     const presence = candidates.length
       ? await queryLiveSandboxConnectionIds(

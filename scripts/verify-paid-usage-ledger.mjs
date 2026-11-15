@@ -29,6 +29,10 @@ const limitLua = script(limitSource, "PAID_BUCKET_LIMIT_SCRIPT");
 const paidLua = script(bucketSource, "APPLY_PAID_BUCKET_RESET_SCRIPT");
 const holdLua = script(bucketSource, "FREEZE_DELINQUENT_BUCKET_SCRIPT");
 const initLua = script(bucketSource, "SET_MONTHLY_BUCKET_STATE_SCRIPT");
+const stashTierChangeLua = script(
+  bucketSource,
+  "STASH_TIER_CHANGE_BUCKET_SCRIPT",
+);
 const seatDebtLua = script(bucketSource, "APPLY_TEAM_SEAT_DEBT_SCRIPT");
 const directory = mkdtempSync(join(tmpdir(), "paid-ledger-"));
 const socket = join(directory, "redis.sock");
@@ -317,6 +321,44 @@ try {
       assert.equal(limit("annual", start + 30 * day)[1], 250000);
     },
   );
+  await check("annual refill clears prior tier debt before an upgrade", () => {
+    const key = "annual-refill-upgrade";
+    command(
+      "HSET",
+      key,
+      "tokens",
+      0,
+      "cycleAllocation",
+      600000,
+      "tierChangeConsumedOffset",
+      900000,
+      "refilledAt",
+      start,
+    );
+    assert.equal(
+      evalLua(limitLua, key, [600000, 30 * day, start + 30 * day, 100000])[1],
+      500000,
+    );
+    assert.equal(command("HGET", key, "tierChangeConsumedOffset"), "0");
+    const state = JSON.parse(
+      command(
+        "EVAL",
+        stashTierChangeLua,
+        3,
+        key,
+        `${key}:stash`,
+        `${key}:completed`,
+        600000,
+        start + 30 * day,
+        "pro-plus",
+        3600,
+        "sub-current",
+        "ultra",
+        "transition-1",
+      ),
+    );
+    assert.equal(state.consumedCredits, 100000);
+  });
   await check(
     "prorated monthly initialization retains its payment deadline",
     () => {

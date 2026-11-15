@@ -280,6 +280,12 @@ describe("provider registry", () => {
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
   });
 
+  it("resolves Max to Grok 4.6 with native image support", () => {
+    const key = resolveAgentTierToProviderKey("hackerai-max");
+    expect(myProvider.languageModel(key).modelId).toBe("x-ai/grok-4.6");
+    expect(supportsMultimodalToolResults(key)).toBe(true);
+  });
+
   it("resolves Standard to the exact native multimodal Flash snapshot", () => {
     const key = resolveAgentTierToProviderKey("hackerai-standard");
     expect(myProvider.languageModel(key).modelId).toBe(

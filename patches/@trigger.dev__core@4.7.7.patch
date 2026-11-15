@@ -1,0 +1,44 @@
+diff --git a/dist/commonjs/v3/runEngineWorker/workload/http.js b/dist/commonjs/v3/runEngineWorker/workload/http.js
+index 234d79d7d58248bf60aa84ecb73518fe7082986b..ad0d79808a531a7368cfc9d63b7793e1982ba96a 100644
+--- a/dist/commonjs/v3/runEngineWorker/workload/http.js
++++ b/dist/commonjs/v3/runEngineWorker/workload/http.js
+@@ -124,6 +124,17 @@ class WorkloadHttpClient {
+                 ...this.defaultHeaders(),
+             },
+             body: JSON.stringify(body),
++        }, {
++            // HackerAI patch: the controller drops an unacknowledged completion
++            // and moves on, so give this one idempotent request a longer budget.
++            // Same delays as wrapZodFetch's default; only the attempt cap differs.
++            retry: {
++                minTimeoutInMs: 500,
++                maxTimeoutInMs: 5000,
++                maxAttempts: 8,
++                factor: 2,
++                randomize: false,
++            },
+         });
+     }
+     async getSnapshotsSince(runId, snapshotId) {
+diff --git a/dist/esm/v3/runEngineWorker/workload/http.js b/dist/esm/v3/runEngineWorker/workload/http.js
+index b12b1c1d7fe8aa51c9572cde42cd08edcbdadb0b..90f0456df8b4c8e4a570d366b6c7d6d8267efdcc 100644
+--- a/dist/esm/v3/runEngineWorker/workload/http.js
++++ b/dist/esm/v3/runEngineWorker/workload/http.js
+@@ -121,6 +121,17 @@ export class WorkloadHttpClient {
+                 ...this.defaultHeaders(),
+             },
+             body: JSON.stringify(body),
++        }, {
++            // HackerAI patch: the controller drops an unacknowledged completion
++            // and moves on, so give this one idempotent request a longer budget.
++            // Same delays as wrapZodFetch's default; only the attempt cap differs.
++            retry: {
++                minTimeoutInMs: 500,
++                maxTimeoutInMs: 5000,
++                maxAttempts: 8,
++                factor: 2,
++                randomize: false,
++            },
+         });
+     }
+     async getSnapshotsSince(runId, snapshotId) {

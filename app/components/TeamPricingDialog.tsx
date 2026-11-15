@@ -14,6 +14,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "../contexts/GlobalState";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 import { PRICING } from "@/lib/pricing/features";
+import { recordTeamHistoryWrite } from "@/lib/posthog/team-history-write-diagnostics";
 
 interface TeamPricingDialogProps {
   isOpen: boolean;
@@ -107,6 +108,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
       billingPeriod === "yearly" ? "yearly" : "monthly",
     );
     url.hash = "team-pricing-seat-selection";
+    recordTeamHistoryWrite("team_seat_sync", url.href === window.location.href);
     window.history.replaceState({}, "", url.toString());
   }, [isOpen, seats, billingPeriod, isInitialized]);
 
@@ -139,6 +141,10 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
       url.searchParams.delete("numSeats");
       url.searchParams.delete("selectedPlan");
       url.hash = "";
+      recordTeamHistoryWrite(
+        "team_close_cleanup",
+        url.href === window.location.href,
+      );
       window.history.replaceState({}, "", url.toString());
       setIsInitialized(false);
     }

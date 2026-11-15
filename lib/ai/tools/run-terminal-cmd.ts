@@ -1,5 +1,4 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
-import { CAPTCHA_TOOL_HINT } from "../captcha/guidance";
 import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
@@ -40,6 +39,7 @@ import {
 import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
+  terminalRecordPersistenceFields,
   type PtySession,
 } from "./utils/pty-session-manager";
 import {
@@ -63,6 +63,7 @@ import {
   detectAgentBrowserUsage,
 } from "./utils/agent-browser-usage";
 import { AGENT_BROWSER_IDLE_TIMEOUT_MS } from "./utils/agent-browser-runtime";
+import { captureAgentBrowserOpenFailure } from "./utils/agent-browser-open-failure";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
@@ -83,11 +84,6 @@ import {
   terminalSandboxInstance,
 } from "./utils/terminal-execution-record";
 import type { AnySandbox } from "@/types";
-import {
-  getStandaloneSnapshotHint,
-  getAgentBrowserSnapshotSession,
-  isAgentBrowserSnapshotCommand,
-} from "@/lib/utils/agent-browser-command";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -145,11 +141,6 @@ type E2BCommandHandle = {
 };
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  // Private per-invocation execution identity, never serialized into tool output.
-  const challengeTargets = new Map<
-    string,
-    { sandbox: AnySandbox; sessionName: string }
-  >();
   const {
     sandboxManager,
     writer,
@@ -178,9 +169,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
-          ...(session.recordPersistenceFailed
-            ? { recordPersistenceFailed: true }
-            : {}),
+          ...terminalRecordPersistenceFields(session),
         }
       : {};
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
@@ -274,7 +263,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     if (!env && !required && !gateOnly) return undefined;
     let sessionEnv: Record<string, string> | undefined;
     try {
-      sessionEnv = await context.browserSessions?.prepare(sandbox);
+      sessionEnv = await context.browserSessions?.prepare(
+        sandbox,
+        gateOnly
+          ? "gate_only"
+          : interactiveShell
+            ? "interactive_shell"
+            : "recognized_browser_command",
+      );
     } catch (error) {
       if (!gateOnly) throw error;
       console.warn("[run-terminal-cmd] browser gate unavailable");
@@ -305,9 +301,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
   const terminalTool = tool({
     ...runTerminalCmdTool,
-    ...(context.checkBrowserChallenge && {
-      description: `${runTerminalCmdTool.description ?? ""}\n${CAPTCHA_TOOL_HINT}`,
-    }),
     execute: async (
       {
         command,
@@ -508,11 +501,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           });
           // A persistent shell can launch the browser in a later send, including
           // through a script. Establish its ownership before any input runs.
-          const agentBrowserEnv =
-            isE2B ||
-            (await context.browserSessions?.hasConnectedChallengeScope?.())
-              ? await prepareBrowserEnv(sandbox, command, true)
-              : undefined;
+          const agentBrowserEnv = isE2B
+            ? await prepareBrowserEnv(sandbox, command, true)
+            : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -839,30 +830,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
-          const agentBrowserEnv =
-            isE2BSandbox(sandboxInstance) ||
-            (await context.browserSessions?.hasConnectedChallengeScope?.())
-              ? await prepareBrowserEnv(sandboxInstance, command)
-              : undefined;
-          const snapshot = getAgentBrowserSnapshotSession(command);
-          if (context.checkBrowserChallenge && snapshot) {
-            const target = context.browserSessions
-              ? await context.browserSessions
-                  .captureChallengeTarget(
-                    sandboxInstance,
-                    snapshot.sessionName,
-                    agentBrowserEnv?.AGENT_BROWSER_SESSION,
-                  )
-                  .catch(() => undefined)
-              : {
-                  sandbox: sandboxInstance,
-                  sessionName:
-                    snapshot.sessionName ??
-                    agentBrowserEnv?.AGENT_BROWSER_SESSION ??
-                    "default",
-                };
-            if (target) challengeTargets.set(toolCallId, target);
-          }
+          const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+            ? await prepareBrowserEnv(sandboxInstance, command)
+            : undefined;
           captureAgentBrowserUsage({
             context,
             command,
@@ -1457,6 +1427,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 }
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
+                  !(error instanceof CommandExitError),
                 );
                 if (handler) {
                   handler.cleanup();
@@ -1609,84 +1580,18 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       ) => {
         // Terminal tools return one result, never an AsyncIterable.
         const execute = async () => {
-          try {
-            if (/^\s*hackerai-captcha\b/.test(input.command)) {
-              const request =
-                /^hackerai-captcha (solve|release) --session ([A-Za-z0-9_-]{1,80})$/.exec(
-                  input.command.trim(),
-                );
-              if (
-                !request ||
-                input.is_background ||
-                input.interactive ||
-                !context.requestBrowserChallenge
-              )
-                return {
-                  result: {
-                    exitCode: 1,
-                    output:
-                      "CAPTCHA runtime request unavailable or invalid. Use the exact foreground command returned by a standalone snapshot. No paid task was requested.",
-                  },
-                };
-              return {
-                result: {
-                  exitCode: 0,
-                  browserChallenge: await context.requestBrowserChallenge(
-                    request[1] as "solve" | "release",
-                    request[2],
-                    options.abortSignal,
-                  ),
-                },
-              };
-            }
-            const output = (await terminalTool.execute!(input, options)) as {
-              result: Record<string, unknown>;
-            };
-            // A completed direct snapshot discovers the on-demand capability.
-            // Only an explicit runtime request above can initiate a paid solve.
-            // The page is inspected through the owned browser, never from stdout.
-            if (
-              context.checkBrowserChallenge &&
-              !input.is_background &&
-              !input.interactive &&
-              output.result.exitCode === 0 &&
-              output.result.executionOutcome !== "unknown" &&
-              !output.result.error &&
-              !output.result.approvalDenied
-            ) {
-              if (!isAgentBrowserSnapshotCommand(input.command)) {
-                const snapshot = getStandaloneSnapshotHint(input.command);
-                return snapshot
-                  ? {
-                      result: {
-                        ...output.result,
-                        browserChallenge: {
-                          status: "snapshot_required",
-                          message: `To detect a CAPTCHA and load its solving instructions, run this command alone, without pipes, redirection or appended commands: ${snapshot}. No paid solve was attempted.`,
-                        },
-                      },
-                    }
-                  : output;
-              }
-              const target = challengeTargets.get(options.toolCallId);
-              if (!target) return output;
-              const browserChallenge = await context.checkBrowserChallenge(
-                options.abortSignal,
-                target,
-              );
-              if (
-                (browserChallenge.status !== "unavailable" &&
-                  browserChallenge.status !== "no_pending_challenge") ||
-                ("providerTaskCreated" in browserChallenge &&
-                  browserChallenge.providerTaskCreated === true)
-              ) {
-                return { result: { ...output.result, browserChallenge } };
-              }
-            }
-            return output;
-          } finally {
-            challengeTargets.delete(options.toolCallId);
-          }
+          const output = (await terminalTool.execute!(input, options)) as {
+            result: Record<string, unknown>;
+          };
+          captureAgentBrowserOpenFailure({
+            context,
+            command: input.command,
+            interactive: input.interactive,
+            isBackground: input.is_background,
+            aborted: options.abortSignal?.aborted === true,
+            result: output.result,
+          });
+          return output;
         };
         return input.is_background || input.interactive
           ? execute()

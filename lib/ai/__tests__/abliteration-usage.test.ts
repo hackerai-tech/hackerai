@@ -26,6 +26,42 @@ beforeAll(() => {
   globalThis.TextDecoderStream = TextDecoderStream;
   globalThis.structuredClone = (value) => deserialize(serialize(value));
 });
+
+it("accounts for BYOK summarization when OpenRouter credit cost is zero", async () => {
+  const openRouter = createOpenRouter({ apiKey: "synthetic-test-key" });
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        id: "gen-byok-summary",
+        created: 1,
+        model: "deepseek/deepseek-v4.1-flash-1017",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "Summary" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          ...wireUsage,
+          cost: 0,
+          is_byok: true,
+          cost_details: { upstream_inference_cost: 0.002 },
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    ),
+  );
+
+  const result = await generateSummaryText(
+    [],
+    openRouter("deepseek/deepseek-v4.1-flash-1017"),
+    "ask",
+    "Synthetic system prompt",
+    false,
+  );
+  expect(result.usage.cost).toBeCloseTo(0.002);
+});
 afterAll(() => {
   globalThis.fetch = originalFetch;
   globalThis.Headers = originalHeaders;
@@ -182,6 +218,7 @@ describe.each([
           usage: {
             ...wireUsage,
             cost: 0,
+            is_byok: true,
             cost_details: { upstream_inference_cost: 0.002 },
           },
         }),
@@ -210,5 +247,52 @@ describe.each([
     expect(record.modelCostDollars).toBeCloseTo(cost * 2 + 0.002, 8);
     expect(record.costDollars).toBeCloseTo(cost * 2 + 0.003, 8);
     expect(tracker.providerCost).toBeCloseTo(0.002, 8);
+  });
+
+  it("settles non-BYOK OpenRouter usage at its charged cost", async () => {
+    const openRouter = createOpenRouter({ apiKey: "synthetic-test-key" });
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "gen-non-byok",
+          created: 1,
+          model: "deepseek/deepseek-v4.1-flash-1017",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "Continuation" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: {
+            ...wireUsage,
+            cost: 0.0015,
+            is_byok: false,
+            cost_details: { upstream_inference_cost: 0.0012 },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const completion = await generateText({
+      model: openRouter("deepseek/deepseek-v4.1-flash-1017"),
+      prompt: "Synthetic non-BYOK request",
+    });
+    expect(completion.usage.raw).toMatchObject({
+      cost: 0.0015,
+      is_byok: false,
+      cost_details: { upstream_inference_cost: 0.0012 },
+    });
+    const tracker = new UsageTracker();
+    tracker.accumulateStep(completion.usage, completion.response.modelId);
+
+    expect(
+      tracker.createUsageCostRecord({
+        selectedModel: "deepseek/deepseek-v4.1-flash-1017",
+        configuredModelId: "deepseek/deepseek-v4.1-flash-1017",
+        rateLimitInfo: { remaining: 1000, limit: 1000, resetTime: new Date() },
+      }).modelCostDollars,
+    ).toBeCloseTo(0.0015, 8);
   });
 });

@@ -1,3 +1,6 @@
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: jest.fn(async () => {}),
+}));
 jest.mock("@/lib/cloud-recovery/store", () => ({
   readFailures: jest.fn(async () => null),
   clearResumeFailures: jest.fn(async () => {}),
@@ -10,7 +13,13 @@ jest.mock("../cloud-workspace-guard", () => ({
   readCloudWorkspaceState: jest.fn(async () => null),
 }));
 import { readCloudWorkspaceState } from "../cloud-workspace-guard";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 import { CentrifugoSandbox } from "../centrifugo-sandbox";
+const mockWatchLocalRunConnection = jest.fn(() => jest.fn());
+jest.mock("@/lib/centrifugo/watch-local-run-connection", () => ({
+  watchLocalRunConnection: (...args: unknown[]) =>
+    (mockWatchLocalRunConnection as jest.Mock)(...args),
+}));
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: class MockSandbox {
     static list = jest.fn();
@@ -61,6 +70,10 @@ import { ChatSDKError } from "@/lib/errors";
 import { serializeChatSDKErrorForStream } from "@/lib/errors";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
+import {
+  getLocalStopDiagnostic,
+  LocalConnectionLostError,
+} from "@/lib/chat/local-connection-stop";
 import type { PostHog } from "posthog-node";
 import { Centrifuge } from "centrifuge";
 import { EventEmitter } from "node:events";
@@ -412,16 +425,19 @@ describe("stable environment acquisition", () => {
     },
   );
 
-  it("uses the replacement session while persisting the same environment", async () => {
+  it("uses an authenticated Desktop replacement while persisting its environment", async () => {
     const previousWs = process.env.CENTRIFUGO_WS_URL;
     const previousSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     process.env.CENTRIFUGO_WS_URL = "ws://localhost:8000/connection/websocket";
     process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    const confirmFiles = jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
     try {
       const manager = new HybridSandboxManager(
         "user-1",
         jest.fn(),
-        "environment:machine-a",
+        "desktop-environment:machine-a",
         "service-key",
         null,
         "free",
@@ -429,12 +445,17 @@ describe("stable environment acquisition", () => {
       const session = makeConnection({
         environmentId: "machine-a",
         connectionId: "replacement",
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
       });
       jest.spyOn(manager, "listConnections").mockResolvedValue([session]);
       const result = await manager.getSandbox();
       expect((result.sandbox as any).getConnectionId()).toBe("replacement");
-      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+      expect(manager.getEffectivePreference()).toBe(
+        "desktop-environment:machine-a",
+      );
     } finally {
+      confirmFiles.mockRestore();
       if (previousWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
       else process.env.CENTRIFUGO_WS_URL = previousWs;
       if (previousSecret === undefined)
@@ -444,9 +465,155 @@ describe("stable environment acquisition", () => {
   });
 });
 
+describe("lookup failure abort evidence", () => {
+  it.each(["matched", "concurrent", "active", "absent"] as const)(
+    "retains the local lookup wrapper and bounds %s original-abort evidence",
+    async (scenario) => {
+      const error = new Error("Lookup unavailable");
+      const controller = new AbortController();
+      const reason = { private: "PRIVATE_REASON", toJSON: jest.fn() };
+      if (scenario === "matched") controller.abort(error);
+      if (scenario === "concurrent") controller.abort(reason);
+      const signal = scenario === "absent" ? undefined : controller.signal;
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "environment:machine-a",
+        "service-key",
+        null,
+        "pro",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { signal },
+      );
+      mockConvexMutation.mockReset();
+      mockConvexQuery.mockReset().mockRejectedValue(error);
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(manager.listConnections()).rejects.toMatchObject({
+          type: "bad_request",
+          surface: "sandbox",
+          metadata: { localConnectionLookupFailed: true },
+        });
+        expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+        expect(mockConvexMutation).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledTimes(1);
+        const fields = JSON.parse(log.mock.calls[0][0]);
+        expect(fields).toMatchObject({
+          event: "local_sandbox_connections_list_failed",
+          local_lookup_abort_context_version: 1,
+          local_lookup_signal_state:
+            scenario === "absent"
+              ? "unavailable"
+              : scenario === "active"
+                ? "active"
+                : "aborted",
+          local_lookup_matches_abort_reason:
+            scenario === "matched"
+              ? "yes"
+              : scenario === "concurrent"
+                ? "no"
+                : "unavailable",
+        });
+        expect(
+          Object.keys(fields)
+            .filter((key) => key.startsWith("local_lookup_"))
+            .sort(),
+        ).toEqual([
+          "local_lookup_abort_context_version",
+          "local_lookup_matches_abort_reason",
+          "local_lookup_signal_state",
+        ]);
+        expect(JSON.stringify(fields)).not.toContain("PRIVATE_REASON");
+        expect(reason.toJSON).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+        mockConvexQuery.mockReset();
+      }
+    },
+  );
+
+  it("retains cloud fallback after a lookup fails with an aborted acquisition signal", async () => {
+    const error = new Error("Lookup unavailable");
+    const controller = new AbortController();
+    controller.abort(error);
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { signal: controller.signal },
+    );
+    mockConvexMutation.mockReset();
+    mockConvexQuery.mockReset().mockRejectedValue(error);
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(manager.listConnections()).resolves.toEqual([]);
+      expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
+        local_lookup_signal_state: "aborted",
+        local_lookup_matches_abort_reason: "yes",
+      });
+    } finally {
+      log.mockRestore();
+      mockConvexQuery.mockReset();
+    }
+  });
+
+  it("keeps a local lookup failure unchanged when signal inspection throws", async () => {
+    const getter = jest.fn(() => {
+      throw new Error("PRIVATE_SIGNAL");
+    });
+    const signal = Object.defineProperty({}, "aborted", {
+      get: getter,
+    }) as AbortSignal;
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "environment:machine-a",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { signal },
+    );
+    mockConvexQuery
+      .mockReset()
+      .mockRejectedValue(new Error("Lookup unavailable"));
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(manager.listConnections()).rejects.toMatchObject({
+        metadata: { localConnectionLookupFailed: true },
+      });
+      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
+        local_lookup_signal_state: "unreadable",
+        local_lookup_matches_abort_reason: "unreadable",
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_SIGNAL");
+    } finally {
+      log.mockRestore();
+      mockConvexQuery.mockReset();
+    }
+  });
+});
+
 describe("isSameLocalMachine", () => {
   it("uses stable identity across host renames and refuses a different identity with matching metadata", () => {
-    const first = makeConnection({ environmentId: "machine-a" });
+    const first = makeConnection({
+      environmentId: "machine-a",
+      isDesktop: true,
+    });
     expect(
       isSameLocalMachine(first, {
         ...first,
@@ -473,7 +640,7 @@ describe("isSameLocalMachine", () => {
     },
   });
 
-  it("matches a restarted runner on the same host", () => {
+  it("refuses to infer a restarted runner from matching host metadata", () => {
     expect(
       isSameLocalMachine(
         kaliConnection,
@@ -483,34 +650,44 @@ describe("isSameLocalMachine", () => {
           lastSeen: Date.now(),
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("reconnects a legacy Git Bash report to its normalized Windows identity only on the same host", () => {
-    const previous = makeConnection({
-      ...kaliConnection,
-      isDesktop: true,
-      osInfo: { ...kaliConnection.osInfo!, platform: "mingw64_nt-10.0-22631" },
-    });
-    const replacement = {
-      ...previous,
-      connectionId: "replacement",
-      osInfo: { ...previous.osInfo!, platform: "win32" },
-    };
-    expect(isSameLocalMachine(previous, replacement)).toBe(true);
-    expect(
-      isSameLocalMachine(previous, {
-        ...replacement,
-        osInfo: { ...replacement.osInfo, hostname: "other-host" },
-      }),
-    ).toBe(false);
-    expect(
-      isSameLocalMachine(previous, {
-        ...replacement,
-        environmentId: "other-machine",
-      }),
-    ).toBe(false);
-  });
+  it.each([
+    ["mingw64_nt-10.0-22631", "win32"],
+    // Saved Desktop 0.0.74 registrations carry Rust's raw OS name.
+    ["windows", "win32"],
+    ["macos", "darwin"],
+  ])(
+    "reconnects a legacy %s report to its normalized %s identity only on the same host",
+    (legacy, canonical) => {
+      const previous = makeConnection({
+        ...kaliConnection,
+        isDesktop: true,
+        osInfo: { ...kaliConnection.osInfo!, platform: legacy },
+      });
+      const replacement = {
+        ...previous,
+        connectionId: "replacement",
+        osInfo: { ...previous.osInfo!, platform: canonical },
+      };
+      expect(isSameLocalMachine(previous, replacement)).toBe(true);
+      for (const other of [
+        {
+          ...replacement,
+          osInfo: { ...replacement.osInfo, hostname: "other-host" },
+        },
+        { ...replacement, environmentId: "other-machine" },
+        { ...replacement, isDesktop: false },
+        {
+          ...replacement,
+          osInfo: { ...replacement.osInfo, platform: "linux" },
+        },
+      ]) {
+        expect(isSameLocalMachine(previous, other)).toBe(false);
+      }
+    },
+  );
 
   it("rejects another host and connections without host identity", () => {
     expect(
@@ -597,6 +774,8 @@ describe("HybridSandboxManager browser automation prompt", () => {
     ["win32", false],
     ["mingw64_nt-10.0-22631", true],
     ["mingw64_nt-10.0-22631", false],
+    // Saved Desktop 0.0.74 registrations carry Rust's raw OS name.
+    ["windows", true],
   ] as const)(
     "uses Windows paths and shell guidance for %s (desktop=%s)",
     async (platform, isDesktop) => {
@@ -605,7 +784,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
           connectionId: "desktop-conn",
           name: "Desktop",
           isDesktop,
-          capabilities: { commands: true, files: true },
+          capabilities: { commands: true, pty: true, files: true },
           osInfo: {
             platform,
             arch: "x86_64",
@@ -639,6 +818,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
         "Git Bash when available, otherwise cmd.exe /C",
       );
       expect(context).toContain("echo $BASH_VERSION");
+      expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     },
   );
 
@@ -667,6 +847,7 @@ describe("HybridSandboxManager browser automation prompt", () => {
     expect(context).toContain("`npm install -g agent-browser`");
     expect(context).not.toContain("command -v agent-browser");
     expect(context).not.toContain("where agent-browser");
+    expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     await expect(cloud.getSandboxContextForPrompt()).resolves.toBeNull();
   });
 });
@@ -810,7 +991,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     ).toThrow("selected sandbox changed after approval");
   });
 
-  it("keeps approvals bound to a stable local environment across relay sessions", () => {
+  it("keeps Desktop approvals bound to an authenticated stable environment", () => {
     const local = (connectionId: string, environmentId: string) =>
       ({
         sandboxKind: "centrifugo" as const,
@@ -818,7 +999,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
         getConnectionInfo: () => ({
           connectionId,
           environmentId,
-          isDesktop: false,
+          isDesktop: true,
         }),
       }) as never;
     const first = local("session-a", "machine-a");
@@ -1226,12 +1407,16 @@ describe("HybridSandboxManager reset cleanup", () => {
     const originalWsUrl = process.env.CENTRIFUGO_WS_URL;
     const originalTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
     process.env.CENTRIFUGO_WS_URL = "ws://centrifugo.test/connection/websocket";
+    const confirmFiles = jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
     process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const stale = makeConnection({
       connectionId: "conn-stale",
       name: "4p3x",
-      isDesktop: false,
+      isDesktop: true,
+      capabilities: { commands: true, pty: true, files: true },
       osInfo: {
         platform: "linux",
         arch: "x86_64",
@@ -1285,7 +1470,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       expect((recovered.sandbox as any).getConnectionId()).toBe(
         "conn-replacement",
       );
-      expect(manager.getEffectivePreference()).toBe("conn-replacement");
+      expect(manager.getEffectivePreference()).toBe("desktop");
       expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
         serviceKey: "service-key",
         connectionId: "conn-stale",
@@ -1293,6 +1478,7 @@ describe("HybridSandboxManager reset cleanup", () => {
       });
       expect(setSandbox).toHaveBeenLastCalledWith(recovered.sandbox);
     } finally {
+      confirmFiles.mockRestore();
       warnSpy.mockRestore();
       if (originalWsUrl === undefined) delete process.env.CENTRIFUGO_WS_URL;
       else process.env.CENTRIFUGO_WS_URL = originalWsUrl;
@@ -1622,12 +1808,15 @@ describe("selected-computer failure diagnostics", () => {
   });
 
   it("distinguishes a quarantined selected connection from a missing registry match", async () => {
-    const selected = makeConnection({ environmentId: "private-selected" });
+    const selected = makeConnection({
+      environmentId: "private-selected",
+      isDesktop: true,
+    });
     mockConvexQuery.mockResolvedValue([selected]);
     const manager = new HybridSandboxManager(
       "user",
       jest.fn(),
-      "environment:private-selected",
+      "desktop-environment:private-selected",
       "key",
     );
     await manager.quarantineLocalConnection(
@@ -1671,13 +1860,14 @@ describe("selected-computer failure diagnostics", () => {
         .mockImplementation(() => {});
       const selected = makeConnection({
         environmentId: "private-selected",
+        isDesktop: true,
         lastSeen: 1,
       });
       mockConvexQuery.mockResolvedValue([selected]);
       const manager = new HybridSandboxManager(
         "user",
         jest.fn(),
-        "environment:private-selected",
+        "desktop-environment:private-selected",
         "key",
       );
       const error = await manager
@@ -1763,5 +1953,255 @@ describe("scheduled local session binding", () => {
     } finally {
       list.mockRestore();
     }
+  });
+});
+
+describe("Agent connection interruption", () => {
+  const priorWs = process.env.CENTRIFUGO_WS_URL;
+  const priorSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+  beforeEach(() => {
+    process.env.CENTRIFUGO_WS_URL = "ws://relay.test";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    jest
+      .spyOn(CentrifugoSandbox.prototype, "confirmNativeFileRelay")
+      .mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (priorWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+    else process.env.CENTRIFUGO_WS_URL = priorWs;
+    if (priorSecret === undefined) delete process.env.CENTRIFUGO_TOKEN_SECRET;
+    else process.env.CENTRIFUGO_TOKEN_SECRET = priorSecret;
+  });
+  it.each(["prompt", "acquisition"])(
+    "keeps an initially offline computer on reconnect-required recovery during %s",
+    async (phase) => {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        "desktop-environment:machine",
+        "key",
+        null,
+        "pro",
+      );
+      const onLost = jest.fn();
+      const stop = manager.stopOnLocalDisconnect(onLost);
+      jest.spyOn(manager, "listConnections").mockResolvedValue([]);
+      await expect(
+        phase === "prompt"
+          ? manager.getSandboxContextForPrompt()
+          : manager.getSandbox(),
+      ).rejects.toThrow("selected computer is disconnected");
+      expect(onLost).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+
+  it("pins the session before model/tool execution and refuses a replacement until a new run", async () => {
+    const manager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "desktop-environment:machine",
+      "key",
+      null,
+      "pro",
+    );
+    const onLost = jest.fn();
+    const dispose = manager.stopOnLocalDisconnect(onLost);
+    const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "first",
+        environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    ]);
+    await manager.getSandboxContextForPrompt();
+    expect(mockWatchLocalRunConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connectionId: "first" }),
+    );
+    list.mockResolvedValue([
+      makeConnection({
+        connectionId: "replacement",
+        environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    ]);
+    await expect(manager.getSandbox()).rejects.toThrow(
+      "local connection was lost",
+    );
+    expect(onLost).toHaveBeenCalledTimes(1);
+    await expect(
+      manager.recoverLocalConnection("first", "command_relay_unsubscribed"),
+    ).rejects.toThrow("local connection was lost");
+    expect(onLost).toHaveBeenCalledTimes(1);
+    dispose();
+    await expect(manager.getSandbox()).rejects.toThrow(
+      "local connection was lost",
+    );
+    const resumedManager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "desktop-environment:machine",
+      "key",
+      null,
+      "pro",
+    );
+    jest.spyOn(resumedManager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "replacement",
+        environmentId: "machine",
+        isDesktop: true,
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    ]);
+    const stop = resumedManager.stopOnLocalDisconnect(jest.fn());
+    await resumedManager.getSandboxContextForPrompt();
+    expect(mockWatchLocalRunConnection).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connectionId: "replacement" }),
+    );
+    stop();
+  });
+
+  describe("first local stop cause", () => {
+    const FIRST = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    const SUCCESSOR = "7a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c8d";
+
+    async function watchedManager() {
+      const manager = new HybridSandboxManager(
+        "u",
+        jest.fn(),
+        "desktop-environment:machine",
+        "key",
+        null,
+        "pro",
+      );
+      const onLost = jest.fn();
+      const dispose = manager.stopOnLocalDisconnect(onLost);
+      const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+        makeConnection({
+          connectionId: FIRST,
+          environmentId: "machine",
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, files: true },
+        }),
+      ]);
+      await manager.getSandboxContextForPrompt();
+      return { manager, onLost, dispose, list };
+    }
+
+    /** Every later access must rethrow the first stop, never a new generic one. */
+    async function expectFirstStopReused(
+      manager: HybridSandboxManager,
+      first: unknown,
+    ) {
+      await expect(manager.getSandbox()).rejects.toBe(first);
+      await expect(
+        manager.recoverLocalConnection(FIRST, "command_relay_unsubscribed"),
+      ).rejects.toBe(first);
+      await expect(manager.resetSandbox("retry")).rejects.toBe(first);
+      expect(manager.isSandboxUnavailable()).toBe(true);
+    }
+
+    type Watched = Awaited<ReturnType<typeof watchedManager>>;
+    const invalidations: Array<
+      [string, (watched: Watched) => Promise<unknown>]
+    > = [
+      ["local_reset_requested", ({ manager }) => manager.resetSandbox("retry")],
+      [
+        "local_recovery_requested",
+        ({ manager }) =>
+          manager.recoverLocalConnection(FIRST, "command_relay_unsubscribed"),
+      ],
+      [
+        "selected_connection_unavailable",
+        ({ manager, list }) => {
+          list.mockResolvedValue([]);
+          return manager.getSandbox();
+        },
+      ],
+      [
+        "watched_connection_replaced",
+        ({ manager, list }) => {
+          list.mockResolvedValue([
+            makeConnection({
+              connectionId: SUCCESSOR,
+              environmentId: "machine",
+              isDesktop: true,
+              capabilities: { commands: true, pty: true, files: true },
+            }),
+          ]);
+          return manager.getSandbox();
+        },
+      ],
+    ];
+
+    it.each(invalidations)(
+      "passes and rethrows the same %s stop",
+      async (reason, invalidate) => {
+        const watched = await watchedManager();
+        const { manager, onLost, dispose } = watched;
+        const thrown = await invalidate(watched).catch((error) => error);
+        expect(thrown).toBeInstanceOf(LocalConnectionLostError);
+        expect(onLost).toHaveBeenCalledTimes(1);
+        expect(onLost.mock.calls[0][0]).toBe(thrown);
+        expect(getLocalStopDiagnostic(thrown)).toEqual({
+          reason,
+          connectionId: FIRST,
+        });
+        await expectFirstStopReused(manager, thrown);
+        expect(onLost).toHaveBeenCalledTimes(1);
+        dispose();
+      },
+    );
+
+    it("keeps the watcher's first cause through later manager invalidations", async () => {
+      const { manager, onLost, dispose, list } = await watchedManager();
+      const watcherLost = (
+        mockWatchLocalRunConnection.mock.calls.at(-1) as unknown as [
+          { onLost: (error: LocalConnectionLostError) => void },
+        ]
+      )[0].onLost;
+      const observed = new LocalConnectionLostError("observer_reconnecting", {
+        connectionId: FIRST,
+        hadPositivePresence: true,
+        lastPositivePresenceAgeMs: 1_000,
+      });
+      watcherLost(observed);
+      watcherLost(new LocalConnectionLostError("selected_host_left"));
+      expect(onLost.mock.calls).toEqual([[observed]]);
+      list.mockResolvedValue([
+        makeConnection({
+          connectionId: SUCCESSOR,
+          environmentId: "machine",
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, files: true },
+        }),
+      ]);
+      await expect(manager.getSandboxContextForPrompt()).rejects.toBe(observed);
+      await expectFirstStopReused(manager, observed);
+      expect(onLost).toHaveBeenCalledTimes(1);
+      expect(observed.stopReason).toBe("observer_reconnecting");
+      dispose();
+    });
+  });
+
+  it("does not watch or stop a Cloud run", async () => {
+    const manager = new HybridSandboxManager(
+      "u",
+      jest.fn(),
+      "e2b",
+      "key",
+      null,
+      "pro",
+    );
+    const previousCalls = mockWatchLocalRunConnection.mock.calls.length;
+    const onLost = jest.fn();
+    const stop = manager.stopOnLocalDisconnect(onLost);
+    expect(await manager.getSandboxContextForPrompt()).toBeNull();
+    expect(mockWatchLocalRunConnection.mock.calls.length).toBe(previousCalls);
+    expect(onLost).not.toHaveBeenCalled();
+    stop();
   });
 });

@@ -70,7 +70,6 @@ import {
   reconnectOnlineStatus,
   useOnlineStatus,
 } from "@/app/hooks/useOnlineStatus";
-import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { GoalTargetIcon } from "@/components/icons/goal-target";
@@ -79,6 +78,7 @@ import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
@@ -103,6 +103,7 @@ interface ChatInputProps {
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
+  landingAppearance?: boolean;
   hasMessages?: boolean;
   hideStop?: boolean;
   isNewChat?: boolean;
@@ -305,6 +306,7 @@ const ChatInputContent = ({
   onSendNow,
   status,
   isCentered = false,
+  landingAppearance = false,
   hasMessages = false,
   hideStop = false,
   isNewChat = false,
@@ -396,6 +398,11 @@ const ChatInputContent = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [composerFocused, setComposerFocused] = useState(false);
   const isMobile = useIsMobile();
+  // Tab suggestions need a large viewport and a fine pointer (including hybrid
+  // touch devices with a mouse or trackpad). Unsupported queries never match.
+  const predictionCapable = useMediaQuery(
+    "(min-width: 768px) and (any-pointer: fine)",
+  );
   const sandboxInactive = !isEmptyNewChat && !composerFocused;
   const mobileSandboxHidden = isMobile === true && sandboxInactive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
@@ -1134,14 +1141,16 @@ const ChatInputContent = ({
       goalMode ||
       hasActiveGoalRun ||
       pauseGoalOnSend ||
-      isMobile !== false ||
+      !!approvalRequest ||
+      isWaitingForReply,
+    // Temporary conditions hide the same batch without consuming it.
+    suspended:
+      !predictionCapable ||
       isOffline ||
       !!effectiveSendDisabledReason ||
       isResolvingInitialState ||
       isUploadingFiles ||
       uploadedFiles.length > 0 ||
-      !!approvalRequest ||
-      isWaitingForReply ||
       !!editingQueuedMessageId ||
       messageQueue.length > 0,
   });
@@ -1417,7 +1426,6 @@ const ChatInputContent = ({
                 onReconnect={() => {
                   if (selectedNativeDesktop) retryDesktopBridge();
                   else {
-                    requestRemoteConnectionSelection(sandboxPreference);
                     openSettingsDialog("Remote Control");
                   }
                 }}
@@ -1583,7 +1591,7 @@ const ChatInputContent = ({
             />
           )}
           <div
-            className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-h-[96px] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors dark:border-border ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex shrink-0 max-h-[min(300px,50dvh)] min-w-0 touch-manipulation flex-col gap-3 overflow-hidden border border-black/8 py-3 transition-colors dark:border-border ${landingAppearance ? "min-h-[130px] shadow-[0_18px_55px_rgba(0,0,0,0.24)]" : "min-h-[96px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)]"} ${hasQuestionPanel ? "rounded-b-[22px]" : uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
             data-testid="chat-input-surface"
             data-panels-joined={hasJoinedComposerPanels || undefined}
             onPointerDownCapture={holdComposerFocusForPointer}
@@ -1625,7 +1633,6 @@ const ChatInputContent = ({
               onAcceptPrediction={() => nextActions.accept(0, "keyboard")}
               onPredictionExposed={nextActions.exposed}
               onPredictionTyping={nextActions.recordTyping}
-              composerFocused={composerFocused}
               onDismissPrediction={nextActions.dismiss}
               composerRef={composerTextareaRef}
               draftId={draftId}

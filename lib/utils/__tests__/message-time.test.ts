@@ -1,5 +1,33 @@
-import { describe, expect, it } from "@jest/globals";
+import { beforeEach, describe, expect, it } from "@jest/globals";
+import {
+  differenceInCalendarDays,
+  format,
+  isSameDay,
+  isSameYear,
+} from "date-fns";
 import { formatMessageActionTimestamp } from "../message-time";
+
+jest.mock("date-fns", () => {
+  const actual = jest.requireActual<typeof import("date-fns")>("date-fns");
+  return {
+    ...actual,
+    differenceInCalendarDays: jest.fn(actual.differenceInCalendarDays),
+    format: jest.fn(actual.format),
+    isSameDay: jest.fn(actual.isSameDay),
+    isSameYear: jest.fn(actual.isSameYear),
+  };
+});
+
+beforeEach(() => {
+  const actual = jest.requireActual<typeof import("date-fns")>("date-fns");
+  jest
+    .mocked(differenceInCalendarDays)
+    .mockReset()
+    .mockImplementation(actual.differenceInCalendarDays);
+  jest.mocked(format).mockReset().mockImplementation(actual.format);
+  jest.mocked(isSameDay).mockReset().mockImplementation(actual.isSameDay);
+  jest.mocked(isSameYear).mockReset().mockImplementation(actual.isSameYear);
+});
 
 describe("formatMessageActionTimestamp", () => {
   it("shows only the time for messages from the same day", () => {
@@ -44,5 +72,55 @@ describe("formatMessageActionTimestamp", () => {
   it("returns null for missing or invalid timestamps", () => {
     expect(formatMessageActionTimestamp(undefined)).toBeNull();
     expect(formatMessageActionTimestamp(Number.NaN)).toBeNull();
+  });
+
+  it.each([
+    ["day_compare", 29, isSameDay],
+    ["format_time", 29, format],
+    ["days_diff", 28, differenceInCalendarDays],
+    ["format_weekday", 28, format],
+    ["year_compare", 20, isSameYear],
+    ["format_date", 20, format],
+  ] as const)(
+    "observes the actual %s failure and rethrows the original value",
+    (phase, day, operation) => {
+      const original = Object.freeze(new Error("PRIVATE_ERROR_CANARY"));
+      jest.mocked(operation).mockImplementationOnce(() => {
+        throw original;
+      });
+      const observed = jest.fn();
+      let caught: unknown;
+      try {
+        formatMessageActionTimestamp(
+          new Date(2026, 4, day).getTime(),
+          new Date(2026, 4, 29),
+          observed,
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(original);
+      expect(observed).toHaveBeenCalledTimes(1);
+      expect(observed).toHaveBeenCalledWith(phase);
+      expect(JSON.stringify(observed.mock.calls)).not.toContain(
+        "PRIVATE_ERROR_CANARY",
+      );
+    },
+  );
+
+  it("preserves the exact original error when optional diagnostics throw", () => {
+    const original = Object.freeze(new Error("original"));
+    jest.mocked(isSameDay).mockImplementationOnce(() => {
+      throw original;
+    });
+    let caught: unknown;
+    try {
+      formatMessageActionTimestamp(Date.now(), undefined, () => {
+        throw new Error("diagnostic failure");
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBe(original);
   });
 });

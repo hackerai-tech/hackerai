@@ -1,4 +1,30 @@
-import { getPlatformDisplayName, escapeShellValue } from "../platform-utils";
+import {
+  getPlatformDisplayName,
+  escapeShellValue,
+  normalizeSandboxPlatform,
+} from "../platform-utils";
+
+describe("normalizeSandboxPlatform", () => {
+  it.each([
+    // Desktop get_desktop_os_info publishes Rust std::env::consts::OS.
+    ["windows", "win32"],
+    ["macos", "darwin"],
+    ["linux", "linux"],
+    ["MINGW64_NT-10.0-22631", "win32"],
+    ["msys_nt-10.0-22631", "win32"],
+    ["win32", "win32"],
+    ["darwin", "darwin"],
+  ])("maps %s to %s", (reported, expected) => {
+    expect(normalizeSandboxPlatform(reported)).toBe(expected);
+  });
+
+  it.each(["Windows", "MacOS", "windows_nt", "win", "mac", "freebsd", ""])(
+    "does not guess a Node platform from %j",
+    (reported) => {
+      expect(normalizeSandboxPlatform(reported)).toBe(reported);
+    },
+  );
+});
 
 describe("getPlatformDisplayName", () => {
   it("returns macOS for darwin", () => {

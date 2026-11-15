@@ -311,7 +311,19 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
     ).map((match) => match[1]);
 
-    expect(importSources).toEqual(["../../findings/quality", "ai", "zod"]);
+    expect(importSources).toEqual([
+      "../../findings/evidence-status",
+      "../../findings/quality",
+      "ai",
+      "zod",
+    ]);
+    const evidenceStatusSource = fs.readFileSync(
+      path.resolve(__dirname, "../../findings/evidence-status.ts"),
+      "utf8",
+    );
+    expect(evidenceStatusSource.match(/^import.*$/gm)).toEqual([
+      'import { z } from "zod";',
+    ]);
     expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
     const qualitySource = fs.readFileSync(
       path.resolve(__dirname, "../../findings/quality.ts"),
@@ -391,7 +403,7 @@ describe("agent-long-transport — direct UI stream reader", () => {
     expect(triggerBrowserRealtimeSrc).toMatch(/method:\s*"POST"/);
     expect(triggerBrowserRealtimeSrc).not.toMatch(/\/api\/v1\/runs/);
     expect(transportSrc).toMatch(/statusEndpoint/);
-    expect(statusSrc).toMatch(/runs\.retrieve\(runId\)/);
+    expect(statusSrc).toMatch(/runs\.retrieve\(\s*runId\s*[,)]/);
     expect(statusSrc).toMatch(/ApiError/);
     expect(statusSrc).toMatch(/MISSING_RUN_STATUSES/);
     expect(statusSrc).toMatch(/Run not found/);
@@ -888,7 +900,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(agentRouteSrc).toMatch(/AGENT_API_ENDPOINT/);
     expect(legacyAgentRouteSrc).toMatch(/LEGACY_AGENT_API_ENDPOINT/);
-    expect(transportSrc).toMatch(/fetchWithErrorHandlers\(AGENT_API_ENDPOINT/);
+    expect(transportSrc).toMatch(
+      /fetchWithErrorHandlers\(\s*AGENT_API_ENDPOINT/,
+    );
     expect(routeSrc).toMatch(/endpoint,/);
     expect(taskSrc).toMatch(
       /payloadEndpoint\s*\?\?\s*LEGACY_AGENT_API_ENDPOINT/,
@@ -980,6 +994,38 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("awaits ledger writes and reports each settlement's cost once", () => {
+    // A detached ledger write can be lost when the request or worker ends.
+    for (const source of [chatHandlerSrc, taskSrc, subagentSrc]) {
+      expect(source).not.toMatch(/(?<!await )usageTracker\.log\(/);
+      expect(source).toMatch(
+        /usageSettlementId: usageTracker\.usageSettlementId/,
+      );
+    }
+    expect(
+      chatHandlerSrc.match(/usageLog = await usageTracker\.log\(/g),
+    ).toHaveLength(2);
+    expect(taskSrc.match(/usageLog = await usageTracker\.log\(/g)).toHaveLength(
+      2,
+    );
+    // Ask has no run-level finalizer; setup and settlement failures report
+    // known costs through the same identity as the normal capture.
+    expect(chatHandlerSrc).toMatch(
+      /preemptiveTimeout\?\.clear\(\);\s*await reportIncompleteAskUsageCost\?\.\("setup"\);/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /catch \(error\) \{[\s\S]{0,120}await reportIncompleteAskUsageCost\?\.\("settlement"\);\s*throw error;/,
+    );
+    expect(taskSrc).toMatch(/runReporting\.finalize\(\{\s*usageMeasurement,/);
+    // Child costs use the child run's identity and never enter the parent.
+    expect(subagentSrc).toMatch(
+      /triggerRunId: ctx\.run\.id,\s*subagent: \{\s*id: row\.subagent_id,/,
+    );
+    expect(subagentSrc).toMatch(
+      /settleUsage\(\)\.catch\(\(\) => \{\s*reportIncompleteUsageCost\(\);/,
+    );
+  });
+
   test("captures Trigger usage and active-time attribution on Agent completion", () => {
     expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
     expect(taskSrc).toMatch(
@@ -988,8 +1034,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /triggerTotalCostUsd:\s*currentUsage\.totalCostDollars/,
     );
+    // addTriggerRunCost keeps Trigger compute in billable non-model cost;
+    // usage-tracker tests cover that behavior.
     expect(taskSrc).toMatch(
-      /usageTracker\.nonModelCost\s*\+=\s*triggerRunCost/,
+      /usageTracker\.addTriggerRunCost\(triggerRunCost\)/,
     );
     expect(taskSrc).toMatch(
       /getTriggerRunCostDollars:\s*\(\)\s*=>\s*getTriggerRunUsage\(\)\.totalCostDollars/,
@@ -1317,8 +1365,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?ctx\.run\.id,[\s\S]*?"parent_canceled",[\s\S]*?cleanup\.userId,[\s\S]*?cleanup\.chatId,[\s\S]*?\)\.catch/,
     );
     expect(taskSrc).toMatch(
-      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
     );
+  });
+
+  test("the parent closes its approval inbox before joining durable waits", () => {
+    // Session closure wakes pending approval waitpoints; workspace teardown
+    // still follows child settlement in the separate contract above.
+    const close = taskSrc.indexOf(
+      "await triggerSessions.close(payload.approvalSessionId",
+    );
+    const join = taskSrc.indexOf("await approvalSessionWaits.finish()");
+    expect(close).toBeGreaterThan(-1);
+    expect(join).toBeGreaterThan(close);
+    expect(taskSrc.match(/await triggerSessions\.close\(/g)).toHaveLength(1);
   });
 
   test("all Agent permission modes enable generic delegation without a rollout flag", () => {
@@ -1669,7 +1729,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitForAgentUiStream(streamPipe)");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
+      "getTerminalProviderStreamError(",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1725,9 +1785,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
-    const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(\n          terminalAgentState,",
-    );
+    const terminalCheckIdx = taskSrc.indexOf("getTerminalProviderStreamError(");
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
     expect(terminalCheckIdx).toBeGreaterThan(-1);

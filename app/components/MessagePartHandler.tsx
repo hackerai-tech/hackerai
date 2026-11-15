@@ -1,6 +1,12 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
+import { SandboxAttachmentContext } from "./SandboxAttachmentLink";
+import {
+  mayContainSandboxAttachmentLink,
+  resolveSandboxAttachments,
+  sandboxDeliveryReceiptSignature,
+} from "@/lib/chat/sandbox-attachment-links";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { FileHandler } from "./tools/FileHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
@@ -10,6 +16,14 @@ import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { ReportToolHandler } from "./tools/ReportToolHandler";
 import { FindingToolHandler } from "./tools/FindingToolHandler";
+import {
+  FindingRetestToolHandler,
+  type FindingRetestToolName,
+} from "./tools/FindingRetestToolHandler";
+import {
+  FindingHuntToolHandler,
+  type FindingHuntToolName,
+} from "./tools/FindingHuntToolHandler";
 import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
 import { FindingCard } from "./findings/FindingCard";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
@@ -77,6 +91,40 @@ const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>;
 });
 
+function AssistantTextPart({
+  message,
+  text,
+  isAnimating,
+  sharedFileDetails,
+}: {
+  message: UIMessage;
+  text: string;
+  isAnimating: boolean;
+  sharedFileDetails?: FileDetails[];
+}) {
+  const hasSandboxLinkCandidate = mayContainSandboxAttachmentLink(text);
+  const sandboxAttachments = useMemo(
+    () =>
+      hasSandboxLinkCandidate
+        ? resolveSandboxAttachments(message.parts, sharedFileDetails)
+        : null,
+    [hasSandboxLinkCandidate, message.parts, sharedFileDetails],
+  );
+
+  // Always render the provider so a link appearing mid-stream does not change
+  // the tree shape and remount the streamed Markdown blocks.
+  return (
+    <div
+      data-performance-message-id={message.id}
+      data-performance-text-length={text.length}
+    >
+      <SandboxAttachmentContext.Provider value={sandboxAttachments}>
+        <MemoizedMarkdown content={text} isAnimating={isAnimating} />
+      </SandboxAttachmentContext.Provider>
+    </div>
+  );
+}
+
 // Deep equality check for tool inputs — avoids JSON.stringify overhead while
 // correctly handling nested objects/arrays (e.g. tool-file edits, todo_write todos).
 function deepEqual(a: any, b: any): boolean {
@@ -139,6 +187,19 @@ export function areMessagePartHandlerPropsEqual(
   if (
     prevProps.part?.type === "tool-get_terminal_files" &&
     prevProps.sharedFileDetails !== nextProps.sharedFileDetails
+  )
+    return false;
+
+  // A sandbox link can become downloadable after its text finished streaming:
+  // delivery receipts and file metadata arrive separately from the text part.
+  if (
+    prevProps.part?.type === "text" &&
+    prevProps.message.role !== "user" &&
+    mayContainSandboxAttachmentLink(nextProps.part?.text) &&
+    (prevProps.sharedFileDetails !== nextProps.sharedFileDetails ||
+      (prevProps.message !== nextProps.message &&
+        sandboxDeliveryReceiptSignature(prevProps.message.parts) !==
+          sandboxDeliveryReceiptSignature(nextProps.message.parts)))
   )
     return false;
 
@@ -257,15 +318,12 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
       // For assistant messages, use memoized markdown rendering
       return (
-        <div
-          data-performance-message-id={message.id}
-          data-performance-text-length={text.length}
-        >
-          <MemoizedMarkdown
-            content={text}
-            isAnimating={status === "streaming" && isLastMessage === true}
-          />
-        </div>
+        <AssistantTextPart
+          message={message}
+          text={text}
+          isAnimating={status === "streaming" && isLastMessage === true}
+          sharedFileDetails={sharedFileDetails}
+        />
       );
     }
 
@@ -406,6 +464,11 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
 
+    case "tool-get_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="get_note" />
+      );
+
     case "tool-list_reports":
       return (
         <ReportToolHandler
@@ -428,6 +491,27 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
     case "tool-create_vulnerability_report":
       return <FindingToolHandler part={part} status={status} />;
+    case "tool-get_finding_retests":
+    case "tool-start_finding_retest":
+    case "tool-complete_finding_retest":
+      return (
+        <FindingRetestToolHandler
+          part={part}
+          status={status}
+          toolName={part.type.slice("tool-".length) as FindingRetestToolName}
+        />
+      );
+    case "tool-get_finding_hunts":
+    case "tool-start_finding_hunt":
+    case "tool-record_finding_hunt_candidate":
+    case "tool-complete_finding_hunt":
+      return (
+        <FindingHuntToolHandler
+          part={part}
+          status={status}
+          toolName={part.type.slice("tool-".length) as FindingHuntToolName}
+        />
+      );
 
     case "data-shared-finding":
       return part.data ? (

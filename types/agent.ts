@@ -11,6 +11,7 @@ import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox"
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
+import type { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 
 // Union type for cloud providers and local CentrifugoSandbox.
 export type AnySandbox = Sandbox | CentrifugoSandbox;
@@ -33,6 +34,10 @@ export interface SandboxInfo {
 export interface SandboxManager {
   pinScheduledConnection?(connectionId: string): void;
   stopScheduledConnection?(): void;
+  /** End this run when its local connection is lost; a successor requires a new run. */
+  stopOnLocalDisconnect?(
+    onLost: (error: LocalConnectionLostError) => void,
+  ): () => void;
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
@@ -692,16 +697,6 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
-  /** Read-only detection after a completed snapshot; never starts a paid task. */
-  checkBrowserChallenge?: (
-    signal?: AbortSignal,
-    target?: { sandbox: AnySandbox; sessionName: string },
-  ) => Promise<Record<string, unknown>>;
-  requestBrowserChallenge?: (
-    action: "solve" | "release",
-    sessionName: string,
-    signal?: AbortSignal,
-  ) => Promise<Record<string, unknown>>;
   browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;

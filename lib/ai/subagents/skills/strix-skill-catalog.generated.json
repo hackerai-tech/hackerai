@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "06015506625a78b981ae0b34be40239fc1b389be",
+  "sourceCommit": "fe3b30ea8f424c1bd2ddc0433b539dd6637ee5f1",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -129,10 +129,10 @@
       "filename": "dependency_cve_scanning",
       "name": "dependency-cve-scanning",
       "description": "Supply-chain / SCA playbook — scan repository lockfiles for known dependency CVEs and report them with create_dependency_report (no dynamic PoC required)",
-      "contentBytes": 19806,
+      "contentBytes": 20605,
       "internal": false,
       "sourcePath": "custom/dependency_cve_scanning.md",
-      "sourceSha256": "49a94cda76b22f1882e24d353be3b14bcac6496a40d25123d165b73ec291b613"
+      "sourceSha256": "6cb4cd828172dda4f8fe89282e53b5f1e52bb4738af74876c7b74fa51f2dfdbe"
     },
     {
       "id": "custom/npx_confusion",
@@ -206,10 +206,10 @@
       "filename": "graphql",
       "name": "graphql",
       "description": "GraphQL security testing covering introspection, resolver injection, batching attacks, and authorization bypass",
-      "contentBytes": 8527,
+      "contentBytes": 8774,
       "internal": false,
       "sourcePath": "protocols/graphql.md",
-      "sourceSha256": "884bc5aabeee41a0e3731af9406b8a8b3d5eaf2d3df4f82e7abaec52ea39eb80"
+      "sourceSha256": "0c133decf9c1a7aebea2ee29eeba59dff7223f3ff45c12e85576f9cf8b03e24c"
     },
     {
       "id": "protocols/oauth",
@@ -217,10 +217,10 @@
       "filename": "oauth",
       "name": "oauth",
       "description": "OAuth 2.0 and OIDC flow security testing covering redirect manipulation, token leakage, PKCE bypass, and client misconfiguration",
-      "contentBytes": 9151,
+      "contentBytes": 9428,
       "internal": false,
       "sourcePath": "protocols/oauth.md",
-      "sourceSha256": "05602f134b076d9c4af19586863787ad9f69e7bef3b27546d9fa43a4a17af2e3"
+      "sourceSha256": "ede8b207c545d352cb70891f808b4ffabe82863347415429962255e98cd1f5cb"
     },
     {
       "id": "reconnaissance/asset_discovery",
@@ -437,10 +437,10 @@
       "filename": "csrf",
       "name": "csrf",
       "description": "CSRF testing covering token bypass, SameSite cookies, CORS misconfigurations, and state-changing request abuse",
-      "contentBytes": 8000,
+      "contentBytes": 8536,
       "internal": false,
       "sourcePath": "vulnerabilities/csrf.md",
-      "sourceSha256": "aaf01a435e09734d8fbc18424727336a473f38c1241b33d212ae1cebe6820974"
+      "sourceSha256": "4348560ebe4768fd1cf33f770cb5f03882eb95767021215b727466c105afa644"
     },
     {
       "id": "vulnerabilities/header_injection",
@@ -470,10 +470,10 @@
       "filename": "idor",
       "name": "idor",
       "description": "IDOR/BOLA testing for object-level authorization failures and cross-account data access",
-      "contentBytes": 10257,
+      "contentBytes": 10795,
       "internal": false,
       "sourcePath": "vulnerabilities/idor.md",
-      "sourceSha256": "2b97ead5254ab3e3fec92c3edafcd3eb619e59264c9f743c844bdadfcc1d0659"
+      "sourceSha256": "fb2add80106c302c95b1e5710fe7ec26a3c6d60713ed7da487443389924e597f"
     },
     {
       "id": "vulnerabilities/information_disclosure",
@@ -536,10 +536,10 @@
       "filename": "nosql_injection",
       "name": "nosql-injection",
       "description": "NoSQL injection testing covering MongoDB operator injection, authentication bypass, blind extraction, GraphQL variable injection, and Redis/DynamoDB/Elasticsearch/Neo4j-specific attack surfaces",
-      "contentBytes": 14619,
+      "contentBytes": 15031,
       "internal": false,
       "sourcePath": "vulnerabilities/nosql_injection.md",
-      "sourceSha256": "1bddffe3071fb6a831d59a9c7d4909e13f0865582b01d65fdfe7d66b86159f45"
+      "sourceSha256": "200db1c3cb7059934d011161031515bf262a3c3ddf1e2558203510dad42c65af"
     },
     {
       "id": "vulnerabilities/open_redirect",
@@ -573,6 +573,17 @@
       "internal": false,
       "sourcePath": "vulnerabilities/prototype_pollution.md",
       "sourceSha256": "06e0b2da334bb6a5faf9126653968905e9cfe17b667f98c1fe859febbac3e4d8"
+    },
+    {
+      "id": "vulnerabilities/query_language_injection",
+      "category": "vulnerabilities",
+      "filename": "query_language_injection",
+      "name": "query-language-injection",
+      "description": "Query-language injection testing for scalar search, filter, selector, and authorization inputs compiled into JSONPath, JMESPath, OData, Lucene, LDAP, Cypher, XPath, or similar expressions. Requires a per-sink four-cell balanced true/false matrix before generic spraying or no-issue closure",
+      "contentBytes": 9747,
+      "internal": false,
+      "sourcePath": "vulnerabilities/query_language_injection.md",
+      "sourceSha256": "c651e3b5ba0fa603d5c420044563eead261bfc56aaaa267a3dcd2f447375630a"
     },
     {
       "id": "vulnerabilities/race_conditions",

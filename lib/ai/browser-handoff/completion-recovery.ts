@@ -36,7 +36,23 @@ function createProseLineFilter(): (line: string) => boolean {
   };
 }
 
-function requestedHandoff(params: StreamOptions["params"]): boolean {
+function hasHandoffCall(messages: StreamOptions["params"]["prompt"]): boolean {
+  return messages.some((message) =>
+    (message.role === "assistant" || message.role === "tool") &&
+    Array.isArray(message.content)
+      ? message.content.some(
+          (part) =>
+            (part.type === "tool-call" || part.type === "tool-result") &&
+            part.toolName === "browser_handoff",
+        )
+      : false,
+  );
+}
+
+function requestedHandoff(
+  params: StreamOptions["params"],
+  goalObjective?: string,
+): boolean {
   const userIndex = params.prompt.findLastIndex((m) => m.role === "user");
   const user = params.prompt[userIndex];
   if (user?.role !== "user") return false;
@@ -44,6 +60,9 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n")
+    // Goals and saved notes are appended to this text as platform reminders.
+    // They are not a new user request to repeat an already completed handoff.
+    .replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "")
     .replace(/[\u2018\u2019]/g, "'")
     .split("\n")
     .filter(createProseLineFilter())
@@ -78,21 +97,25 @@ function requestedHandoff(params: StreamOptions["params"]): boolean {
       !/^\s*(?:only\s+)?(?:after|once|when|until)\s+(?:i|we)\b/i.test(prefix)
     );
   });
-  if (!requested) return false;
+  if (!requested) {
+    // A Goal reply (for example "Beta") need not repeat its saved browser
+    // instructions. Recover only the first handoff; never replay a real call,
+    // including one that failed. The latest reply's refusal above still wins.
+    return (
+      !!goalObjective &&
+      !hasHandoffCall(params.prompt) &&
+      requestedHandoff({
+        ...params,
+        prompt: [
+          { role: "user", content: [{ type: "text", text: goalObjective }] },
+          ...params.prompt.slice(userIndex + 1),
+        ],
+      })
+    );
+  }
   // Never repair a second wait after a real call, including an errored call:
   // its outcome must be handled by the Agent rather than silently retried.
-  return !params.prompt
-    .slice(userIndex + 1)
-    .some((message) =>
-      (message.role === "assistant" || message.role === "tool") &&
-      Array.isArray(message.content)
-        ? message.content.some(
-            (part) =>
-              (part.type === "tool-call" || part.type === "tool-result") &&
-              part.toolName === "browser_handoff",
-          )
-        : false,
-    );
+  return !hasHandoffCall(params.prompt.slice(userIndex + 1));
 }
 
 function promisedImmediateHandoff(text: string): boolean {
@@ -102,6 +125,9 @@ function promisedImmediateHandoff(text: string): boolean {
     .replace(/\*+|__/g, "")
     .replace(/(?<!\w)_(?=\S)|(?<=\S)_(?!\w)/g, "");
   if (
+    /(?:^|[.!?]\s+|\n)\s*(?:please\s+)?take control of (?:the|this) (?:cloud )?browser (?:right )?now(?:\s+from (?:the )?(?:computer|browser) sidebar)?\s*[:.!]/i.test(
+      prose,
+    ) ||
     /(?:^|[.!?]\s+|\n)\s*(?:(?:i'm|i am)\s+)?handing (?:the )?(?:browser )?control(?: over)?(?: to you)? (?:right )?now\s*(?:[.!—–:]|$)/i.test(
       prose,
     )
@@ -135,6 +161,7 @@ export function recoverBrowserHandoffCompletion(
   options: {
     state: { attempted?: boolean };
     canRecover: (signal?: AbortSignal) => Promise<boolean>;
+    goalObjective?: string;
   },
 ): LanguageModel {
   if (typeof model === "string" || model.specificationVersion !== "v3")
@@ -154,7 +181,7 @@ export function recoverBrowserHandoffCompletion(
           params.toolChoice?.type === "none" ||
           (params.toolChoice?.type === "tool" &&
             params.toolChoice.toolName !== "browser_handoff") ||
-          !requestedHandoff(params)
+          !requestedHandoff(params, options.goalObjective)
         )
           return result;
         let text = "";
@@ -196,7 +223,10 @@ export function recoverBrowserHandoffCompletion(
                     type: "tool-call",
                     toolCallId: `handoff_recovery_${randomUUID()}`,
                     toolName: "browser_handoff",
-                    input: "{}",
+                    input: JSON.stringify({
+                      reason:
+                        "The user explicitly requested control of this browser.",
+                    }),
                   });
                   controller.enqueue({
                     ...part,

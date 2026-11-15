@@ -3,6 +3,7 @@ import {
   listWorkspaceInventory,
   startWorkspaceCreation,
 } from "./cloud-workspace-identity";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 import {
   CloudWorkspaceUnavailableError,
   readCloudWorkspaceState,
@@ -32,9 +33,12 @@ import {
   SandboxError,
   TimeoutError,
   classifyE2BError,
+  getE2BConnectConflictMessageSignal,
+  getE2BErrorKind,
   getUserFacingE2BErrorMessage,
 } from "./e2b-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
+import { checkpointCloudErrorContext } from "./persistence-failure";
 import {
   E2BRegionUnavailableError,
   getE2BClusterRouting,
@@ -57,6 +61,7 @@ export {
 
 type SandboxReadyPath = SandboxBootInfo["path"];
 type E2BAcquisitionPhase = "routing" | "discovery" | "connect" | "create";
+type GetInfoErrorContext = ReturnType<typeof checkpointCloudErrorContext>;
 
 const SAFE_E2B_CODES = new Set([
   "RATE_LIMIT",
@@ -81,6 +86,20 @@ export class E2BAcquisitionError extends Error {
       e2b_error_category: ReturnType<typeof classifyE2BError>;
       e2b_error_code?: string;
       e2b_http_status?: number;
+      e2b_workspace_identity_diagnostic_version?: 1;
+      e2b_workspace_identity_operation?: "get_info" | "validate";
+      e2b_workspace_identity_error_kind?: ReturnType<typeof getE2BErrorKind>;
+      e2b_workspace_identity_get_info_context_version?: 1;
+      e2b_workspace_identity_get_info_error_kind?: GetInfoErrorContext["cloud_error_kind"];
+      e2b_workspace_identity_get_info_reported_status?: GetInfoErrorContext["cloud_http_status"];
+      e2b_workspace_identity_get_info_type_error_signal?: GetInfoErrorContext["cloud_type_error_signal"];
+      e2b_workspace_identity_get_info_transport_code?: GetInfoErrorContext["cloud_transport_code"];
+      e2b_workspace_identity_requested_target_fingerprint?: string | null;
+      e2b_workspace_identity_requested_cluster?: E2BCluster | null;
+      e2b_connect_conflict_message_signal_version?: 1;
+      e2b_connect_conflict_message_signal?: ReturnType<
+        typeof getE2BConnectConflictMessageSignal
+      >;
     },
   ) {
     super(message);
@@ -90,6 +109,30 @@ export class E2BAcquisitionError extends Error {
 
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
+
+/** Preserve the existing cluster/target hash domain for cross-phase correlation.
+ * Invalid inputs or hashing failures yield null; matching hashes do not validate identity.
+ */
+function fingerprintE2BTarget(
+  cluster: E2BCluster | null,
+  sandboxId: string | null | undefined,
+): string | null {
+  if (
+    !cluster ||
+    typeof sandboxId !== "string" ||
+    !/^[a-z0-9][a-z0-9-]{0,127}$/i.test(sandboxId)
+  )
+    return null;
+  try {
+    // Preserve the existing connect namespace so requested and validated
+    // observations can be correlated; equality alone does not validate identity.
+    return createHash("sha256")
+      .update(`e2b-connect:v1:${cluster}:${sandboxId}`)
+      .digest("hex");
+  } catch {
+    return null;
+  }
+}
 
 // Used to prefer a compatible workspace; version changes never authorize deletion.
 const SANDBOX_VERSION = CURRENT_E2B_SANDBOX_VERSION;
@@ -128,6 +171,7 @@ export const ensureSandboxConnection = async (
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion = "us-east-1", signal } = options;
   signal?.throwIfAborted();
+  await assertUserCanMakeCostIncurringRequest(userID);
   // The SDK aborts fetch with this shared deadline signal. Paused restores use
   // a longer SDK timeout as well; the total acquisition deadline remains authoritative.
   const requestOptions = { signal };
@@ -143,6 +187,8 @@ export const ensureSandboxConnection = async (
   let connectRequestTimeoutMs: number | null = null;
   let connectSandboxId: string | null = null;
   let connectCluster: E2BCluster | null = null;
+  let identityOperation: "get_info" | "validate" | undefined;
+  let identityRequestedCluster: E2BCluster | null = null;
   const createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -154,6 +200,7 @@ export const ensureSandboxConnection = async (
   let failedTarget:
     { sandboxId: string; template: string; sandboxVersion: string } | undefined;
   let connectGatewayTimeout: SandboxError | undefined;
+  let connectRejection: unknown;
   const connectSelectedSandbox = async (
     sandboxId: string,
     connectOptions: Parameters<typeof Sandbox.connect>[1],
@@ -161,6 +208,7 @@ export const ensureSandboxConnection = async (
     try {
       return await Sandbox.connect(sandboxId, connectOptions);
     } catch (error) {
+      connectRejection = error;
       if (error instanceof SandboxError && error.statusCode === 504)
         connectGatewayTimeout = error;
       throw error;
@@ -175,11 +223,14 @@ export const ensureSandboxConnection = async (
       // discovery choose an older copy or create an empty replacement.
       phase = "connect";
       options.reportStage?.("workspace_identity");
+      identityOperation = "get_info";
+      identityRequestedCluster = createCluster.cluster;
       const info = await Sandbox.getInfo(options.destinationId, {
         ...createCluster.connectionOptions,
         ...requestOptions,
         requestTimeoutMs: 10_000,
       });
+      identityOperation = "validate";
       if (
         info.sandboxId !== options.destinationId ||
         !["running", "paused"].includes(info.state) ||
@@ -194,6 +245,7 @@ export const ensureSandboxConnection = async (
           ))
       )
         throw new Error("Pinned E2B workspace identity mismatch");
+      identityOperation = undefined;
       if (
         info.state === "paused" &&
         info.metadata?.template &&
@@ -494,9 +546,19 @@ export const ensureSandboxConnection = async (
         ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })
         : {};
     const status = candidate.status ?? candidate.statusCode;
-    const diagnostics = {
+    const diagnostics: E2BAcquisitionError["diagnostics"] = {
       e2b_phase: phase,
       e2b_error_category: classifyE2BError(error),
+      ...(identityOperation && {
+        e2b_workspace_identity_diagnostic_version: 1 as const,
+        e2b_workspace_identity_operation: identityOperation,
+        e2b_workspace_identity_error_kind: getE2BErrorKind(error),
+        // This is the requested target before identity validation, never a
+        // verified connection. Keep the existing connect fields unchanged.
+        e2b_workspace_identity_requested_target_fingerprint:
+          fingerprintE2BTarget(identityRequestedCluster, options.destinationId),
+        e2b_workspace_identity_requested_cluster: identityRequestedCluster,
+      }),
       ...(typeof candidate.code === "string" &&
       SAFE_E2B_CODES.has(candidate.code)
         ? { e2b_error_code: candidate.code }
@@ -508,22 +570,38 @@ export const ensureSandboxConnection = async (
         ? { e2b_http_status: status }
         : {}),
     };
-    let connectTargetFingerprint: string | null = null;
+    // Only the original connect rejection is eligible. The closed signal
+    // describes its message text, not provider state or the customer's cause.
+    const connectConflictSignal =
+      phase === "connect" && error === connectRejection
+        ? getE2BConnectConflictMessageSignal(error)
+        : undefined;
+    if (connectConflictSignal) {
+      diagnostics.e2b_connect_conflict_message_signal_version = 1;
+      diagnostics.e2b_connect_conflict_message_signal = connectConflictSignal;
+    }
     if (
-      phase === "connect" &&
-      connectCluster &&
-      typeof connectSandboxId === "string" &&
-      /^[a-z0-9][a-z0-9-]{0,127}$/i.test(connectSandboxId)
+      diagnostics.e2b_workspace_identity_operation === "get_info" &&
+      diagnostics.e2b_workspace_identity_error_kind === "other_error"
     ) {
-      try {
-        // Correlate provider-selected identities without logging their raw IDs.
-        connectTargetFingerprint = createHash("sha256")
-          .update(`e2b-connect:v1:${connectCluster}:${connectSandboxId}`)
-          .digest("hex");
-      } catch {
-        // Diagnostic enrichment must not replace the acquisition failure.
+      const context = checkpointCloudErrorContext(error);
+      diagnostics.e2b_workspace_identity_get_info_context_version = 1;
+      diagnostics.e2b_workspace_identity_get_info_error_kind =
+        context.cloud_error_kind;
+      // This is the error's reported statusCode, not a response observation.
+      diagnostics.e2b_workspace_identity_get_info_reported_status =
+        context.cloud_http_status;
+      if (context.cloud_type_error_signal !== undefined) {
+        diagnostics.e2b_workspace_identity_get_info_type_error_signal =
+          context.cloud_type_error_signal;
+        diagnostics.e2b_workspace_identity_get_info_transport_code =
+          context.cloud_transport_code;
       }
     }
+    const connectTargetFingerprint =
+      phase === "connect"
+        ? fingerprintE2BTarget(connectCluster, connectSandboxId)
+        : null;
     console.error(
       JSON.stringify({
         timestamp: new Date().toISOString(),

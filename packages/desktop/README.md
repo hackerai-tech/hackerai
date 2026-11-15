@@ -124,22 +124,37 @@ desktop patch version. After the `Build Desktop App` run succeeds (including
 approval of the `trusted-signing` Windows job), promote those exact artifacts:
 
 1. Copy the numeric run ID from the successful build URL.
-2. Go to Actions → **Promote Desktop Build** → **Run workflow**.
-3. Enter the source run ID and start the workflow within the seven-day artifact
-   retention window.
-4. Review the generated draft release and publish it.
+2. Within the seven-day artifact retention window, dispatch promotion from a
+   GitHub CLI session with repository write access:
+
+   ```bash
+   gh api -X POST repos/{owner}/{repo}/dispatches \
+     -f event_type=desktop_promote \
+     -f 'client_payload[source_run_id]=123456789'
+   ```
+
+   Replace `123456789` with that run ID. The `repository_dispatch` event runs
+   the release workflow from `main`, regardless of the caller's checkout.
+
+3. Review the generated draft release and publish it.
 
 Promotion verifies the source run, embedded version, required platform assets,
-and updater signatures. It creates the release tag with `GITHUB_TOKEN`, so the
-tag does not trigger another set of platform builds.
+and updater signatures. It creates the release tag with `GITHUB_TOKEN`.
 
-Pushing a `desktop-v*` tag remains a fallback when no valid candidate artifacts
-are available, but it performs a fresh release build:
+If no valid candidate artifacts remain, request a new build from trusted `main`
+workflow code, wait for it to pass, then promote its run ID:
 
 ```bash
-git tag desktop-v0.1.0 <commit>
-git push origin desktop-v0.1.0
+gh api -X POST repos/{owner}/{repo}/dispatches -f event_type=desktop_build
 ```
+
+Pushing a tag does not build or promote a Desktop release.
+
+Keep repository Actions policies active for the historical workflow files:
+`.github/workflows/desktop-promote.yml` permits only `repository_dispatch`, and
+`.github/workflows/desktop-build.yml` permits only `workflow_run` and
+`repository_dispatch`. These server-side rules reject old branch or tag versions
+of the workflows that still declare manual or tag-push release triggers.
 
 ## Code Signing
 

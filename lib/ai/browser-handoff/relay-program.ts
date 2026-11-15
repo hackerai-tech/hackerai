@@ -164,32 +164,50 @@ export function browserRelayProgram() {
   );
 }
 
+export const RELAY_RENEW_FAILURE_CODES = {
+  invalid_deadline: 41,
+  lock_busy: 42,
+  revoked_or_closed: 43,
+  expired_or_invalid_lease: 44,
+  missing_path: 45,
+  permission: 46,
+  filesystem_error: 47,
+} as const;
+
 // Requests can finish out of order, including after an HTTP timeout. Serialize
 // the read/max/replace so an older deadline cannot undo a successful renewal.
 export const RELAY_RENEW_PROGRAM = String.raw`
 const fs = require('node:fs');
 const d = process.argv[1], deadline = Number(process.argv[2]);
 (async () => {
-  if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('Invalid lease');
+  if (!Number.isFinite(deadline) || deadline <= Date.now()) return ${RELAY_RENEW_FAILURE_CODES.invalid_deadline};
   let locked = false;
   for (let i = 0; i < 100; i++) {
     try { fs.mkdirSync(d + '/lease.lock', {mode: 0o700}); locked = true; break; }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  if (!locked) throw new Error('Renewal busy');
+  if (!locked) return ${RELAY_RENEW_FAILURE_CODES.lock_busy};
   const next = d + '/lease.next-' + process.pid;
   try {
-    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) throw new Error('Revoked');
+    if (fs.existsSync(d + '/revoked') || fs.existsSync(d + '/closed')) return ${RELAY_RENEW_FAILURE_CODES.revoked_or_closed};
     const previous = Number(fs.readFileSync(d + '/lease', 'utf8'));
-    if (!Number.isFinite(previous) || previous <= Date.now()) throw new Error('Expired');
+    if (!Number.isFinite(previous) || previous <= Date.now()) return ${RELAY_RENEW_FAILURE_CODES.expired_or_invalid_lease};
     fs.writeFileSync(next, String(Math.max(previous, deadline)), {mode: 0o600});
     fs.renameSync(next, d + '/lease');
   } finally {
     fs.rmSync(next, {force: true});
     fs.rmdirSync(d + '/lease.lock');
   }
-})().catch(() => { process.exitCode = 1; });
+})().then(code => {
+  if (code !== undefined) process.exitCode = code;
+}, error => {
+  process.exitCode = error.code === 'ENOENT'
+    ? ${RELAY_RENEW_FAILURE_CODES.missing_path}
+    : error.code === 'EACCES' || error.code === 'EPERM'
+      ? ${RELAY_RENEW_FAILURE_CODES.permission}
+      : ${RELAY_RENEW_FAILURE_CODES.filesystem_error};
+});
 `;
 
 export const RELAY_START_PROGRAM = String.raw`
@@ -226,36 +244,136 @@ process.stdin.on('end', async () => {
 });
 `;
 
+// The failing STOP program's only output, read solely from that invocation's
+// result: first failure, then aggregate counts capped at 16, never per-relay
+// results, paths or messages. Stage and code are 1-based indexes into these
+// lists; a drain deadline uses 0 0. Version 2 appends the alive branch (and
+// code, for `_error` branches) last observed by the first relay to reach its
+// drain deadline, or 0 0 without a deadline.
+export const RELAY_STOP_ALIVE_BRANCHES = [
+  "pid_read_error",
+  "pid_invalid",
+  "signal_error",
+  "linux_matching_cmdline",
+  "linux_cmdline_error",
+  "nonlinux_present",
+] as const;
+export const RELAY_STOP_RECEIPT_STAGES = [
+  "scan_root",
+  "write_revoked",
+  "drain_check",
+  "write_closed",
+] as const;
+export const RELAY_STOP_RECEIPT_CODES = [
+  "missing",
+  "permission",
+  "not_directory",
+  "is_directory",
+  "read_only",
+  "no_space",
+  "fd_limit",
+  "other",
+] as const;
+const RELAY_STOP_ERRNO_CODES: ReadonlyArray<
+  [string, (typeof RELAY_STOP_RECEIPT_CODES)[number]]
+> = [
+  ["ENOENT", "missing"],
+  ["EACCES", "permission"],
+  ["EPERM", "permission"],
+  ["ENOTDIR", "not_directory"],
+  ["EISDIR", "is_directory"],
+  ["EROFS", "read_only"],
+  ["ENOSPC", "no_space"],
+  ["EDQUOT", "no_space"],
+  ["EMFILE", "fd_limit"],
+  ["ENFILE", "fd_limit"],
+];
+const relayStopErrnoIndexes = JSON.stringify(
+  RELAY_STOP_ERRNO_CODES.map(([errno, code]) => [
+    errno,
+    RELAY_STOP_RECEIPT_CODES.indexOf(code) + 1,
+  ]),
+);
+
 // Live relays must acknowledge their ordered socket close. A confirmed dead
 // process cannot accept more input and must not permanently block recovery.
 export const RELAY_STOP_PROGRAM = String.raw`
 const fs = require('node:fs');
 const root = process.argv[1], only = process.argv[2];
-function alive(directory) {
+const errnoCodes = new Map(${relayStopErrnoIndexes});
+const errnoCode = code => errnoCodes.get(code) || ${RELAY_STOP_RECEIPT_CODES.length};
+let first, deadlines = 0, failures = 0, deadlineAlive = '0 0';
+function failed(stage, error) {
+  let code = ${RELAY_STOP_RECEIPT_CODES.length};
+  try { code = errnoCodes.get(error.code) || code; } catch {}
+  failures++;
+  if (first === undefined) first = '1 ' + stage + ' ' + code;
+}
+process.on('exit', exitCode => {
+  if (exitCode === 0 || first === undefined) return;
+  const cap = count => Math.min(count, 16);
+  try { fs.writeSync(1, 'relay-stop-receipt/2 ' + first + ' ' + cap(deadlines) + ' ' + cap(failures) + ' ' + deadlineAlive + '\n'); } catch {}
+});
+// Records which check kept the relay alive, from values each check already read.
+function alive(directory, seen) {
   let pid;
-  try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch { return true; }
-  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
-  try { process.kill(pid, 0); } catch (error) { return error.code !== 'ESRCH'; }
+  try { pid = Number(fs.readFileSync(directory + '/pid', 'utf8')); } catch (error) {
+    // This failure never read its code before; never invoke a getter for it.
+    let code = ${RELAY_STOP_RECEIPT_CODES.length};
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+      if (descriptor && 'value' in descriptor) code = errnoCode(descriptor.value);
+    } catch {}
+    seen.alive = '1 ' + code;
+    return true;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) { seen.alive = '2 0'; return true; }
+  try { process.kill(pid, 0); } catch (error) {
+    const code = error.code;
+    if (code === 'ESRCH') return false;
+    seen.alive = '3 ' + errnoCode(code);
+    return true;
+  }
   if (process.platform === 'linux') {
     // A reused PID belongs to a different process, not this relay.
-    try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(directory); }
-    catch (error) { return error.code !== 'ENOENT'; }
+    try {
+      if (!fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').includes(directory)) return false;
+      seen.alive = '4 0';
+      return true;
+    } catch (error) {
+      const code = error.code;
+      if (code === 'ENOENT') return false;
+      seen.alive = '5 ' + errnoCode(code);
+      return true;
+    }
   }
+  seen.alive = '6 0';
   return true;
 }
 (async () => {
-  const dirs = only ? [only] : fs.readdirSync(root).filter(n => /^relay-[a-f0-9]{24}$/.test(n)).map(n => root + '/' + n);
+  let dirs;
+  try {
+    dirs = only ? [only] : fs.readdirSync(root).filter(n => /^relay-[a-f0-9]{24}$/.test(n)).map(n => root + '/' + n);
+  } catch (error) { failed(1, error); throw error; }
   await Promise.all(dirs.map(async directory => {
-    if (!fs.existsSync(directory)) return;
-    fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
-    for (let i = 0; i < 100; i++) {
-      if (fs.existsSync(directory + '/closed')) return;
-      if (!alive(directory)) {
-        fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
-        return;
+    let stage = 2;
+    const seen = {};
+    try {
+      if (!fs.existsSync(directory)) return;
+      fs.writeFileSync(directory + '/revoked', '1', {mode: 0o600});
+      stage = 3;
+      for (let i = 0; i < 100; i++) {
+        if (fs.existsSync(directory + '/closed')) return;
+        if (!alive(directory, seen)) {
+          stage = 4;
+          fs.writeFileSync(directory + '/closed', '1', {mode: 0o600});
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    } catch (error) { failed(stage, error); throw error; }
+    if (deadlines++ === 0) deadlineAlive = seen.alive;
+    if (first === undefined) first = '0 0 0';
     process.exitCode = 1;
   }));
 })().catch(() => { process.exitCode = 1; });

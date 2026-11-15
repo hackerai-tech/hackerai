@@ -1,4 +1,6 @@
+import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { stripe } from "../stripe";
+import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
 import {
   PRO_YEARLY_PRICE_LOOKUP_KEY,
   isCurrentProYearlyPrice,
@@ -70,7 +72,9 @@ function resolveQuantity(
   return { valid: true, value: requestedQuantity };
 }
 
-export const POST = async (req: NextRequest) => {
+const handleSubscriptionDetails = async (req: NextRequest) => {
+  const rejection = rejectUnsafeRequest(req, { jsonBody: true });
+  if (rejection) return rejection;
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan = body?.plan;
@@ -600,3 +604,5 @@ export const POST = async (req: NextRequest) => {
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 };
+
+export const POST = withServiceQueryRecovery(handleSubscriptionDetails);

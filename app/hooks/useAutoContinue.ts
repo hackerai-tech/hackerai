@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
 import type { ChatStatus, MessageMetadata, Todo } from "@/types";
 import {
   useDataStreamState,
@@ -18,6 +19,7 @@ const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
 
 export interface UseAutoContinueParams {
   sendDisabledReason?: string;
+  finishReason?: string;
   chatId: string;
   status: ChatStatus;
   chatMode: string;
@@ -43,6 +45,7 @@ export function useAutoContinue({
   agentPermissionMode,
   selectedModel,
   sendDisabledReason,
+  finishReason,
 }: UseAutoContinueParams) {
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
@@ -111,6 +114,26 @@ export function useAutoContinue({
   // Depends on both `status` and `dataStream` so it re-evaluates when
   // the signal arrives after the stream has already ended (status already "ready").
   useEffect(() => {
+    if (
+      finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON ||
+      (sendDisabledReason && sandboxPreference !== "e2b")
+    ) {
+      // Never retain a pending automatic continuation across a local disconnect.
+      // Reopening Desktop restores availability, not permission to resume work.
+      if (
+        autoContinueRunScheduledRef.current &&
+        !autoContinueRunStartedRef.current
+      ) {
+        autoContinueCountRef.current = Math.max(
+          0,
+          autoContinueCountRef.current - 1,
+        );
+        setAutoContinueCount(autoContinueCountRef.current);
+      }
+      clearAutoContinueLifecycle();
+      setIsAutoResuming(false);
+      return;
+    }
     if (sendDisabledReason) {
       const keepPending =
         pendingAutoContinueRef.current || autoContinueRunScheduledRef.current;
@@ -183,6 +206,8 @@ export function useAutoContinue({
   }, [
     status,
     sendDisabledReason,
+    finishReason,
+    sandboxPreference,
     dataStream,
     chatMode,
     hasManuallyStoppedRef,

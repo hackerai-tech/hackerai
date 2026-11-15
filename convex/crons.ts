@@ -117,6 +117,12 @@ export const runOldFeedbackPurge = internalAction({
 });
 
 const crons = cronJobs();
+crons.interval(
+  "maintain temporary abuse email queue",
+  { minutes: 5 },
+  internal.abuseNotifications.resumePaused,
+  {},
+);
 
 crons.interval(
   "purge orphan files older than 24h",

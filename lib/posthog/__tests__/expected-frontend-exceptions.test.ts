@@ -7,9 +7,16 @@ import {
   getComposerChangeDiagnostics,
   recordComposerChange,
 } from "../composer-change-diagnostics";
+import {
+  recordReactBoundaryCatch,
+  registerReactBoundaryScope,
+  startReactBoundaryDiagnostics,
+} from "../react-boundary-diagnostics";
 
 jest.mock("@/lib/analytics/client", () => ({
   getIdentifiedAnalyticsUserId: () => "synthetic-user",
+  getPermittedAnalyticsUserId: () => "synthetic-user",
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 describe("shouldDropExpectedFrontendException", () => {
@@ -763,6 +770,411 @@ describe("shouldDropExpectedFrontendException", () => {
         hackerai_exception_category: "stack_overflow",
       });
     }
+  });
+
+  describe("capture-time exception structure", () => {
+    const CAPTURE_PREFIX = "hackerai_exception_capture_";
+    const appSource = "turbopack:///[project]/app/components/chat.tsx";
+    const nextSource =
+      "turbopack:///[project]/node_modules/next/src/client/components/segment-cache/fetch.ts";
+    const captureFields = (properties: Record<string, unknown>) =>
+      Object.fromEntries(
+        Object.entries(properties).filter(([key]) =>
+          key.startsWith(CAPTURE_PREFIX),
+        ),
+      );
+    const capture = (properties: Record<string, unknown>) =>
+      captureFields(
+        enrichFrontendExceptionEvent({ event: "$exception", properties })
+          .properties,
+      );
+    const withFrames = (frames: unknown[]) => ({
+      $exception_list: [
+        { type: "TypeError", value: "Load failed", stacktrace: { frames } },
+      ],
+    });
+
+    it("records the list shape that reached enrichment without parsing it", () => {
+      class PrivateConstructorName {}
+      const cases: [string, Record<string, unknown>][] = [
+        ["missing", {}],
+        ["missing", { $exception_list: undefined }],
+        ["null", { $exception_list: null }],
+        ["array_empty", { $exception_list: [] }],
+        ["array_one", { $exception_list: [{ type: "TypeError" }] }],
+        [
+          "array_many",
+          { $exception_list: [{ type: "Error" }, { type: "TypeError" }] },
+        ],
+        ["string", { $exception_list: '[{"type":"TypeError"}]' }],
+        ["object", { $exception_list: { 0: { type: "TypeError" } } }],
+        ["object", { $exception_list: new PrivateConstructorName() }],
+        ["other", { $exception_list: 1 }],
+        ["other", { $exception_list: true }],
+      ];
+      for (const [shape, properties] of cases) {
+        const fields = capture(properties);
+        expect(fields.hackerai_exception_capture_list_shape).toBe(shape);
+        expect(JSON.stringify(fields)).not.toContain("PrivateConstructorName");
+      }
+    });
+
+    it("distinguishes a serialized list from the direct shape the bare filter drops", () => {
+      const entry = {
+        type: "TypeError",
+        value: "Load failed",
+        mechanism: { handled: false },
+      };
+      const serializedList = JSON.stringify([entry]);
+      const direct = {
+        event: "$exception",
+        properties: { $exception_list: [entry] },
+      };
+      const serialized = {
+        event: "$exception",
+        properties: { $exception_list: serializedList },
+      };
+
+      expect(shouldDropExpectedFrontendException(direct)).toBe(true);
+      expect(shouldDropExpectedFrontendException(serialized)).toBe(false);
+      expect(
+        captureFields(enrichFrontendExceptionEvent(direct).properties),
+      ).toEqual({
+        hackerai_exception_capture_version: 1,
+        hackerai_exception_capture_list_shape: "array_one",
+        hackerai_exception_capture_frame_source_count_bucket: "0",
+        hackerai_exception_capture_frame_source_family: "none",
+        hackerai_exception_capture_exact_transport_message: true,
+      });
+      const enriched = enrichFrontendExceptionEvent(serialized);
+      expect(captureFields(enriched.properties)).toEqual({
+        hackerai_exception_capture_version: 1,
+        hackerai_exception_capture_list_shape: "string",
+        hackerai_exception_capture_frame_source_count_bucket: "0",
+        hackerai_exception_capture_frame_source_family: "none",
+        hackerai_exception_capture_exact_transport_message: false,
+      });
+      expect(enriched.properties.$exception_list).toBe(serializedList);
+    });
+
+    it("summarizes the frame sources the existing filters collected", () => {
+      const injected = "chrome-extension://PRIVATE/content.js";
+      const repeated = (length: number) =>
+        Array.from({ length }, () => ({ source: appSource }));
+      const cases: [unknown[], string, string][] = [
+        [[], "0", "none"],
+        [[{ lineno: 1, colno: 2 }], "0", "none"],
+        [[{ source: "" }], "1", "all_empty"],
+        [[{ source: "" }, { raw_frame: { filename: "" } }], "2_5", "all_empty"],
+        [
+          [{ source: injected }, { filename: "iabjs://PRIVATE_logger" }],
+          "2_5",
+          "injected_only",
+        ],
+        [
+          [
+            { source: nextSource },
+            { raw_frame: { filename: "/_next/static/chunks/PRIVATE.js" } },
+          ],
+          "2_5",
+          "next_pattern_only",
+        ],
+        [[{ source: nextSource }, { source: appSource }], "2_5", "other"],
+        [[{ source: "" }, { source: injected }], "2_5", "other"],
+        // The existing collector reads both a frame's source and raw filename.
+        [
+          [{ source: appSource, raw_frame: { filename: appSource } }],
+          "2_5",
+          "other",
+        ],
+        [repeated(1), "1", "other"],
+        [repeated(5), "2_5", "other"],
+        [repeated(6), "6_16", "other"],
+        [repeated(16), "6_16", "other"],
+        [repeated(17), "over16", "other"],
+      ];
+      for (const [frames, bucket, family] of cases) {
+        const fields = capture(withFrames(frames));
+        expect([
+          fields.hackerai_exception_capture_frame_source_count_bucket,
+          fields.hackerai_exception_capture_frame_source_family,
+        ]).toEqual([bucket, family]);
+        expect(JSON.stringify(fields)).not.toMatch(
+          /PRIVATE|extension|iabjs|turbopack|_next|project/,
+        );
+      }
+    });
+
+    it("reports only an exact existing transport message", () => {
+      const cases: [Record<string, unknown>, boolean][] = [
+        [{ $exception_values: ["Load failed"] }, true],
+        [{ $exception_values: ["Failed to fetch"] }, true],
+        [{ $exception_list: [{ type: "TypeError", value: "timeout" }] }, true],
+        [{ $exception_values: ["TypeError: Load failed"] }, false],
+        [{ $exception_values: ["Load failed (PRIVATE)"] }, false],
+        [{ $exception_values: ["load failed"] }, false],
+        [{ $exception_values: ["Unexpected application error"] }, false],
+      ];
+      for (const [properties, exact] of cases) {
+        expect(
+          capture(properties)
+            .hackerai_exception_capture_exact_transport_message,
+        ).toBe(exact);
+      }
+    });
+
+    it("replaces caller-supplied capture fields before collecting inputs", () => {
+      const list = [
+        {
+          type: "TypeError",
+          value: "Unexpected application error",
+          stacktrace: { frames: [{ source: appSource }] },
+        },
+      ];
+      const values = ["Unexpected application error"];
+      const expected = {
+        hackerai_exception_capture_version: 1,
+        hackerai_exception_capture_list_shape: "array_one",
+        hackerai_exception_capture_frame_source_count_bucket: "1",
+        hackerai_exception_capture_frame_source_family: "other",
+        hackerai_exception_capture_exact_transport_message: false,
+      };
+      const enriched = enrichFrontendExceptionEvent({
+        event: "$exception",
+        properties: {
+          $exception_list: list,
+          $exception_values: values,
+          hackerai_exception_capture_version: 999,
+          hackerai_exception_capture_list_shape: "PRIVATE",
+          hackerai_exception_capture_exact_transport_message: true,
+          hackerai_exception_capture_raw_message: "Load failed",
+          hackerai_exception_capture_frames: [
+            { source: "chrome-extension://PRIVATE/content.js" },
+          ],
+        },
+      });
+
+      expect(captureFields(enriched.properties)).toEqual(expected);
+      expect(JSON.stringify(enriched.properties)).not.toContain("PRIVATE");
+      expect(enriched.properties.$exception_list).toBe(list);
+      expect(enriched.properties.$exception_values).toBe(values);
+      expect(list[0].stacktrace.frames).toEqual([{ source: appSource }]);
+      expect(
+        captureFields(enrichFrontendExceptionEvent(enriched).properties),
+      ).toEqual(expected);
+    });
+
+    it("emits only the closed capture fields and leaves filter decisions unchanged", () => {
+      const fixtures: (() => Record<string, unknown>)[] = [
+        () => ({ $exception_values: ["Load failed"] }),
+        () => withFrames([]),
+        () => withFrames([{ source: nextSource }]),
+        () => withFrames([{ source: "moz-extension://PRIVATE/user.js" }]),
+        () => withFrames([{ source: "" }]),
+        () => withFrames([{ source: appSource }]),
+        () => ({ $exception_list: '[{"value":"Load failed"}]' }),
+        () => ({ $exception_values: ["ChunkLoadError"] }),
+        () => ({ $exception_values: ["Unexpected application error"] }),
+        () => ({ $exception_list: { value: "Failed to fetch" } }),
+      ];
+      const closed: Record<string, readonly unknown[]> = {
+        hackerai_exception_capture_version: [1],
+        hackerai_exception_capture_list_shape: [
+          "missing",
+          "null",
+          "array_empty",
+          "array_one",
+          "array_many",
+          "string",
+          "object",
+          "other",
+        ],
+        hackerai_exception_capture_frame_source_count_bucket: [
+          "0",
+          "1",
+          "2_5",
+          "6_16",
+          "over16",
+        ],
+        hackerai_exception_capture_frame_source_family: [
+          "none",
+          "all_empty",
+          "injected_only",
+          "next_pattern_only",
+          "other",
+        ],
+        hackerai_exception_capture_exact_transport_message: [true, false],
+      };
+      for (const properties of fixtures) {
+        const before = shouldDropExpectedFrontendException({
+          event: "$exception",
+          properties: properties(),
+        });
+        const enriched = enrichFrontendExceptionEvent({
+          event: "$exception",
+          properties: properties(),
+        });
+        expect(shouldDropExpectedFrontendException(enriched)).toBe(before);
+        const fields = captureFields(enriched.properties);
+        expect(Object.keys(fields).sort()).toEqual(Object.keys(closed).sort());
+        for (const [key, value] of Object.entries(fields)) {
+          expect(closed[key]).toContain(value);
+        }
+      }
+      const ordinary = { event: "custom_event", properties: { count: 1 } };
+      expect(enrichFrontendExceptionEvent(ordinary).properties).toEqual({
+        count: 1,
+      });
+    });
+  });
+
+  describe("React boundary nearby context", () => {
+    const PREFIX = "hackerai_react_boundary_";
+    const MESSAGE = "Cannot read properties of null (reading 'removeChild')";
+    const boundaryFields = (properties: Record<string, unknown> | undefined) =>
+      Object.fromEntries(
+        Object.entries(properties ?? {}).filter(([key]) =>
+          key.startsWith(PREFIX),
+        ),
+      );
+    const exception = (list: unknown) => ({
+      event: "$exception",
+      properties: {
+        $exception_list: list,
+        // Forged or stale fields from an earlier pass never survive.
+        hackerai_react_boundary_recent_catch_state: "PRIVATE_STALE",
+        hackerai_react_boundary_raw_message: "PRIVATE_STALE",
+      },
+    });
+    const entry = (type: unknown, value: unknown) => ({
+      type,
+      value,
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+    });
+    let stop: () => void;
+    let dispose: () => void;
+
+    beforeEach(() => {
+      jest.spyOn(performance, "now").mockReturnValue(5000);
+      stop = startReactBoundaryDiagnostics();
+      dispose = registerReactBoundaryScope("chat_content");
+      recordReactBoundaryCatch("chat_content");
+    });
+
+    afterEach(() => {
+      dispose();
+      stop();
+      jest.restoreAllMocks();
+    });
+
+    it.each([MESSAGE, `TypeError: ${MESSAGE}`])(
+      "adds closed nearby context to the single exact retained TypeError (%s)",
+      (value) => {
+        const list = [entry("TypeError", value)];
+        const event = exception(list);
+        expect(shouldDropExpectedFrontendException(event)).toBe(false);
+        const enriched = enrichFrontendExceptionEvent(event, {
+          reactBoundaryDiagnosticOwner: "synthetic-user",
+        });
+        expect(boundaryFields(enriched.properties)).toEqual({
+          hackerai_react_boundary_context_version: 1,
+          hackerai_react_boundary_observer_state: "active",
+          hackerai_react_boundary_chat_content_mounted: true,
+          hackerai_react_boundary_chat_layout_mounted: false,
+          hackerai_react_boundary_unknown_scope_mounted: false,
+          hackerai_react_boundary_recent_catch_state: "observed",
+          hackerai_react_boundary_recent_scope: "chat_content",
+          hackerai_react_boundary_recent_age: "lt_50ms",
+        });
+        expect(enriched.properties.$exception_list).toBe(list);
+        expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+        expect(JSON.stringify(enriched.properties)).not.toMatch(
+          /PRIVATE|synthetic-user/,
+        );
+      },
+    );
+
+    it.each([
+      ["no committed owner", undefined],
+      ["a null committed owner", null],
+      ["another committed owner", "other-user"],
+    ])("attaches nothing with %s", (_label, owner) => {
+      const enriched = enrichFrontendExceptionEvent(
+        exception([entry("TypeError", MESSAGE)]),
+        owner === undefined ? {} : { reactBoundaryDiagnosticOwner: owner },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+    });
+
+    it("does not lend the navigator owner to the React boundary context", () => {
+      const enriched = enrichFrontendExceptionEvent(
+        exception([entry("TypeError", MESSAGE)]),
+        { navigatorDiagnosticOwner: "synthetic-user" },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+    });
+
+    it.each([
+      ["another error type", [entry("Error", MESSAGE)]],
+      [
+        "an undefined receiver",
+        [
+          entry(
+            "TypeError",
+            "Cannot read properties of undefined (reading 'removeChild')",
+          ),
+        ],
+      ],
+      [
+        "another null property",
+        [
+          entry(
+            "TypeError",
+            "Cannot read properties of null (reading 'insertBefore')",
+          ),
+        ],
+      ],
+      ["a suffixed message", [entry("TypeError", `${MESSAGE}.`)]],
+      [
+        "another prefix",
+        [entry("TypeError", `Uncaught TypeError: ${MESSAGE}`)],
+      ],
+      ["a batch", [entry("TypeError", MESSAGE), entry("TypeError", MESSAGE)]],
+      ["a serialized list", JSON.stringify([entry("TypeError", MESSAGE)])],
+      ["an object list", { 0: entry("TypeError", MESSAGE) }],
+      [
+        "an unreadable value",
+        [
+          Object.defineProperty({ type: "TypeError" }, "value", {
+            get: () => {
+              throw new Error("PRIVATE getter");
+            },
+          }),
+        ],
+      ],
+    ])("keeps %s without React boundary context", (_label, list) => {
+      const event = exception(list);
+      const dropped = shouldDropExpectedFrontendException(event);
+      const enriched = enrichFrontendExceptionEvent(event, {
+        reactBoundaryDiagnosticOwner: "synthetic-user",
+      });
+      expect(boundaryFields(enriched.properties)).toEqual({});
+      expect(enriched.properties.$exception_list).toBe(list);
+      expect(enriched.properties.hackerai_exception_category).toBe("unknown");
+      expect(shouldDropExpectedFrontendException(enriched)).toBe(dropped);
+    });
+
+    it("keeps a value-only exception without React boundary context", () => {
+      const enriched = enrichFrontendExceptionEvent(
+        {
+          event: "$exception",
+          properties: { $exception_values: [MESSAGE] },
+        },
+        { reactBoundaryDiagnosticOwner: "synthetic-user" },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+      expect(enriched.properties.$exception_values).toEqual([MESSAGE]);
+    });
   });
 
   it("removes query strings and fragments from retained exception URLs", () => {

@@ -11,6 +11,7 @@ import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { v4 as uuidv4 } from "uuid";
 import {
   NEXT_ACTIONS_REASON_HEADER,
+  isRetryableNextActionsConflict,
   nextActionsDeliveryReason,
   type NextActionsDeliveryReason,
   type NextActionsFailurePhase,
@@ -43,7 +44,11 @@ type Options = {
   latestMessageId?: string;
   latestMessageIsAssistant?: boolean;
   status: string;
+  // `blocked` revokes the current suggestion (consumed and deleted).
+  // `suspended` only hides it: no new request starts, a sent request may
+  // settle hidden, and the same batch returns once the condition clears.
   blocked: boolean;
+  suspended?: boolean;
   input: string;
   getInput: () => string;
   setInput: (text: string) => void;
@@ -130,7 +135,7 @@ export function useNextActions(options: Options): NextActionsController {
       request.current?.abort();
       request.current = null;
       batchRef.current = null;
-       
+
       setBatch(null);
     }
     keyRef.current = key;
@@ -204,7 +209,7 @@ export function useNextActions(options: Options): NextActionsController {
     previousMode.current = options.chatMode;
     // Revoke before paint, including a pending result that could otherwise
     // reappear after switching back. Keep any already accepted draft intact.
-     
+
     invalidate();
   }, [
     options.chatMode,
@@ -223,14 +228,17 @@ export function useNextActions(options: Options): NextActionsController {
       now.modeReady !== false &&
       (!batchRef.current || batchRef.current.mode === now.chatMode) &&
       now.status === "ready" &&
-      (!batchRef.current ||
-        batchRef.current.messageId === now.latestMessageId) &&
-      !now.hasAttachments(),
+      (!batchRef.current || batchRef.current.messageId === now.latestMessageId),
     );
   }, [current, keyRef]);
+  const isSuspended = useCallback(
+    () =>
+      current.current.suspended === true || current.current.hasAttachments(),
+    [current],
+  );
   const canUse = useCallback(
-    () => canRetain() && current.current.getInput() === "",
-    [canRetain],
+    () => canRetain() && !isSuspended() && current.current.getInput() === "",
+    [canRetain, isSuspended],
   );
 
   useEffect(() => {
@@ -238,7 +246,7 @@ export function useNextActions(options: Options): NextActionsController {
     pending.current = null;
     attempted.current.clear();
     batchRef.current = null;
-     
+
     setBatch(null);
     return () => request.current?.abort();
   }, [options.chatId, options.userId]);
@@ -261,7 +269,6 @@ export function useNextActions(options: Options): NextActionsController {
     if (options.status === "error") pending.current = null;
     if (!key) return;
     if (!canRetain()) {
-       
       if (batchRef.current || request.current) invalidate();
       return;
     }
@@ -366,6 +373,12 @@ export function useNextActions(options: Options): NextActionsController {
           report("aborted");
           return;
         }
+        if (!sent && isSuspended()) {
+          // Defer an unsent request without marking it attempted, so the same
+          // source can start once the temporary condition clears.
+          controller.abort();
+          return;
+        }
         remember(attempted.current, attemptKey);
         httpAttempts++;
         httpStatus = undefined;
@@ -399,6 +412,7 @@ export function useNextActions(options: Options): NextActionsController {
         }
         if (
           response.status === 409 &&
+          isRetryableNextActionsConflict(serverReason) &&
           attempt < 3 &&
           !controller.signal.aborted
         ) {
@@ -466,10 +480,12 @@ export function useNextActions(options: Options): NextActionsController {
     options.chatMode,
     options.modeReady,
     options.blocked,
+    options.suspended,
     options.input,
     options.latestMessageId,
     canUse,
     canRetain,
+    isSuspended,
     invalidate,
     current,
     keyRef,
@@ -498,6 +514,7 @@ export function useNextActions(options: Options): NextActionsController {
     batch &&
     options.status === "ready" &&
     !options.blocked &&
+    !options.suspended &&
     options.modeReady !== false &&
     batch.mode === options.chatMode &&
     options.input === "" &&
@@ -527,6 +544,8 @@ export function useNextActions(options: Options): NextActionsController {
     },
     accept: (index, method) => {
       const source = batchRef.current;
+      // A hidden batch is kept for restoration, never accepted or consumed.
+      if (isSuspended()) return false;
       if (!source || !canUse() || !source.suggestions[index]) {
         invalidate();
         return false;
@@ -539,6 +558,10 @@ export function useNextActions(options: Options): NextActionsController {
       return true;
     },
     prepareSubmission: () => {
+      // While a turn is active the composer only queues or steers. Keep the
+      // in-flight parent eligible; latest-source fences reject it if a queued
+      // message later runs, and completion attribution stays pending.
+      if (current.current.status !== "ready") return () => {};
       const selection = accepted.current;
       const text = current.current.getInput();
       submissionInProgress.current = true;

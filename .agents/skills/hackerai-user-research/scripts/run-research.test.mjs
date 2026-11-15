@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+  readFile,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -10,6 +19,10 @@ import {
   formatGatewayError,
   gatewayRequest,
   loadResearchKey,
+  parseArgs,
+  runResearch,
+  readPayload,
+  readProtectedJson,
 } from "./run-research.mjs";
 
 async function localKeyFixture(t, value) {
@@ -242,4 +255,343 @@ test("gateway error formatting allow-lists the top-level error code", () => {
   });
 
   assert.equal(error, "Research gateway returned 502: request_failed");
+});
+
+async function requestFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "research-recovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const payloadPath = join(root, "request.json");
+  await writeFile(
+    payloadPath,
+    JSON.stringify({
+      question: "synthetic research question",
+      userIds: ["user_test"],
+    }),
+    { mode: 0o600 },
+  );
+  return { root, payloadPath, handlePath: `${payloadPath}.run.json` };
+}
+const quiet = { log: () => {} };
+
+test("stdin starts a bounded request and persists only a protected recovery handle", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs([
+    "--payload",
+    "-",
+    "--handle",
+    f.handlePath,
+    "--no-wait",
+  ]);
+  const result = await runResearch(args, {
+    ...quiet,
+    key: "synthetic-secret",
+    input: [JSON.stringify({ question: "private request text" })],
+    request: async (url, key, init) => {
+      assert.equal(
+        String(url),
+        "https://hackerai.co/api/internal/user-research",
+      );
+      assert.equal(init.method, "POST");
+      assert.ok(init.headers["idempotency-key"]);
+      return { runId: "run_test" };
+    },
+  });
+  assert.equal(result.runId, "run_test");
+  assert.equal((await stat(f.handlePath)).mode & 0o077, 0);
+  assert.doesNotMatch(
+    await readFile(f.handlePath, "utf8"),
+    /synthetic-secret|private request text/,
+  );
+  await assert.rejects(readPayload(args, ["x".repeat(32769)]), /32 KiB/);
+});
+
+test("a lost start response keeps the same retry key; resuming a known run only performs GET", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);
+  let keySeen;
+  await assert.rejects(
+    runResearch(args, {
+      ...quiet,
+      request: async (url, key, init) => {
+        keySeen = init.headers["idempotency-key"];
+        throw new Error("response lost after server acceptance");
+      },
+    }),
+  );
+  const result = await runResearch(args, {
+    ...quiet,
+    request: async (url, key, init) => {
+      assert.equal(init.headers["idempotency-key"], keySeen);
+      return { runId: "run_accepted" };
+    },
+  });
+  assert.equal(result.runId, "run_accepted");
+  await rm(f.payloadPath);
+  const resumed = await runResearch(parseArgs(["--resume", f.handlePath]), {
+    ...quiet,
+    request: async (url, key, init) => {
+      assert.equal(init, undefined);
+      assert.equal(url.searchParams.get("runId"), "run_accepted");
+      return { status: "completed", result: { analysisId: "analysis_test" } };
+    },
+  });
+  assert.equal(resumed.analysisId, "analysis_test");
+});
+
+test("lost stdin submissions resume the protected exact request without original inputs", async (t) => {
+  const f = await requestFixture(t);
+  const payload = { question: "private stdin question", userIds: ["user_test"] };
+  let retryKey;
+  await assert.rejects(
+    runResearch(parseArgs(["--payload", "-", "--handle", f.handlePath]), {
+      ...quiet,
+      key: "synthetic-gateway-key",
+      input: [JSON.stringify(payload)],
+      request: async (url, key, init) => {
+        retryKey = init.headers["idempotency-key"];
+        throw new Error("start response lost");
+      },
+    }),
+  );
+  const pending = `${f.handlePath}.request.json`;
+  assert.equal((await stat(pending)).mode & 0o077, 0);
+  assert.deepEqual(JSON.parse(await readFile(pending, "utf8")), payload);
+  assert.doesNotMatch(await readFile(pending, "utf8"), /synthetic-gateway-key/);
+  await rm(f.payloadPath);
+  await assert.rejects(
+    runResearch(parseArgs(["--status", f.handlePath]), {
+      ...quiet,
+      request: async () => assert.fail("status must not retry submission"),
+    }),
+    /unknown/,
+  );
+  let posts = 0;
+  const result = await runResearch(parseArgs(["--resume", f.handlePath]), {
+    ...quiet,
+    request: async (url, key, init) => {
+      if (init?.method === "POST") {
+        posts++;
+        assert.equal(init.headers["idempotency-key"], retryKey);
+        assert.deepEqual(JSON.parse(init.body), payload);
+        return { runId: "run_recovered" };
+      }
+      assert.equal(url.searchParams.get("runId"), "run_recovered");
+      assert.equal(JSON.parse(await readFile(f.handlePath, "utf8")).runId, "run_recovered");
+      await assert.rejects(stat(pending), { code: "ENOENT" });
+      return { status: "completed", result: { analysisId: "analysis_recovered" } };
+    },
+  });
+  assert.equal(posts, 1);
+  assert.equal(result.analysisId, "analysis_recovered");
+});
+
+test("modified pending requests cannot be submitted through resume", async (t) => {
+  const f = await requestFixture(t);
+  await assert.rejects(runResearch(parseArgs(["--payload", f.payloadPath]), {
+    ...quiet,
+    request: async () => { throw new Error("lost"); },
+  }));
+  await writeFile(`${f.handlePath}.request.json`, JSON.stringify({question: "different request"}));
+  await assert.rejects(runResearch(parseArgs(["--resume", f.handlePath]), {
+    ...quiet,
+    request: async () => assert.fail("modified request must not reach the gateway"),
+  }), /does not match/);
+});
+
+test("changed payloads and expired unknown submissions cannot replay an existing handle", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);
+  const createdAt = Date.now() - 24 * 60 * 60 * 1000;
+  await assert.rejects(
+    runResearch(args, {
+      ...quiet,
+      now: () => createdAt,
+      request: async () => {
+        throw new Error("lost");
+      },
+    }),
+  );
+  let calls = 0;
+  const request = async () => {
+    calls++;
+    return { runId: "run_wrong" };
+  };
+  await assert.rejects(
+    runResearch(args, { ...quiet, request }),
+    /do not replay/,
+  );
+  await writeFile(
+    f.payloadPath,
+    JSON.stringify({ question: "changed question" }),
+  );
+  await assert.rejects(
+    runResearch(args, { ...quiet, request }),
+    /different request/,
+  );
+  await assert.rejects(
+    runResearch(parseArgs(["--resume", f.handlePath]), { ...quiet, request }),
+    /unknown/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("status and no-wait resume reuse the known run without a new submission", async (t) => {
+  const f = await requestFixture(t);
+  await runResearch(parseArgs(["--payload", f.payloadPath, "--no-wait"]), {
+    ...quiet,
+    request: async () => ({ runId: "run_known" }),
+  });
+  let calls = 0;
+  const request = async (url, key, init) => {
+    calls++;
+    assert.equal(init, undefined);
+    return { status: "running" };
+  };
+  assert.equal(
+    (
+      await runResearch(parseArgs(["--status", f.handlePath]), {
+        ...quiet,
+        request,
+      })
+    ).status,
+    "running",
+  );
+  assert.equal(calls, 1);
+  await runResearch(parseArgs(["--resume", f.handlePath, "--no-wait"]), {
+    ...quiet,
+    request,
+  });
+  assert.equal(calls, 1);
+});
+
+test("payloads and handles reject public files, symlinks and malformed JSON without echoing content", async (t) => {
+  const f = await requestFixture(t);
+  await chmod(f.payloadPath, 0o644);
+  await assert.rejects(readProtectedJson(f.payloadPath, 32768), /owner-only/);
+  await chmod(f.payloadPath, 0o600);
+  await writeFile(f.payloadPath, "private invalid content");
+  await assert.rejects(readProtectedJson(f.payloadPath, 32768), (error) => {
+    assert.doesNotMatch(error.message, /private invalid content/);
+    return true;
+  });
+  await symlink(f.payloadPath, f.handlePath);
+  await assert.rejects(readProtectedJson(f.handlePath, 4096));
+  for (const argv of [
+    [],
+    ["--payload", "-"],
+    ["--status", "a", "--payload", "b"],
+    ["--payload", "a", "--payload", "b"],
+  ])
+    assert.throws(() => parseArgs(argv));
+});
+
+test("cohort exports compile selection before submission and omit raw queries and payer identities", async (t) => {
+  const f = await requestFixture(t);
+  const cohortPath = join(f.root, "cohort.json");
+  await writeFile(
+    f.payloadPath,
+    JSON.stringify({
+      question: "bounded cohort question",
+      cohortLabel: "selected group",
+    }),
+  );
+  await writeFile(
+    cohortPath,
+    JSON.stringify({
+      posthogProjectId: 144137,
+      cohortSelectedAt: Date.now(),
+      selectionQuery: "private selection query",
+      candidates: [
+        {
+          userId: "user_selected",
+          payerId: "cus_private",
+          internal: false,
+          test: false,
+          fraud: false,
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  let posted;
+  await runResearch(
+    parseArgs([
+      "--payload",
+      f.payloadPath,
+      "--cohort",
+      cohortPath,
+      "--no-wait",
+    ]),
+    {
+      ...quiet,
+      request: async (url, key, init) => {
+        posted = JSON.parse(init.body);
+        return { runId: "run_cohort" };
+      },
+    },
+  );
+  assert.deepEqual(posted.userIds, ["user_selected"]);
+  assert.doesNotMatch(
+    JSON.stringify(posted),
+    /private selection query|cus_private/,
+  );
+});
+
+test("concurrent starts publish one complete retry identity and converge on the same accepted run", async (t) => {
+  const f = await requestFixture(t);
+  const args = parseArgs(["--payload", f.payloadPath, "--no-wait"]);
+  const keys = [];
+  const request = async (url, key, init) => {
+    keys.push(init.headers["idempotency-key"]);
+    return { runId: "run_shared" };
+  };
+  const results = await Promise.all([
+    runResearch(args, { ...quiet, request }),
+    runResearch(args, { ...quiet, request }),
+  ]);
+  assert.ok(results.every((result) => result.runId === "run_shared"));
+  assert.equal(new Set(keys).size, 1);
+  assert.equal(
+    JSON.parse(await readFile(f.handlePath, "utf8")).runId,
+    "run_shared",
+  );
+});
+
+test("cohort validation explains the exact selection failure without reflecting private fields", async (t) => {
+  const f = await requestFixture(t);
+  const cohortPath = join(f.root, "cohort.json");
+  await writeFile(
+    f.payloadPath,
+    JSON.stringify({ question: "bounded cohort question" }),
+  );
+  await writeFile(
+    cohortPath,
+    JSON.stringify({
+      posthogProjectId: 144137,
+      cohortSelectedAt: Date.now(),
+      selectionQuery: "private query text",
+      candidates: [
+        { userId: "user_test", internal: true, test: false, fraud: false },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  let calls = 0;
+  await assert.rejects(
+    runResearch(
+      parseArgs(["--payload", f.payloadPath, "--cohort", cohortPath]),
+      {
+        ...quiet,
+        request: async () => {
+          calls++;
+        },
+      },
+    ),
+    (error) => {
+      assert.match(error.message, /No eligible research users remain/);
+      assert.doesNotMatch(error.message, /private query text|user_test/);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
 });

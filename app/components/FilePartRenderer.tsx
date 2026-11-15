@@ -17,8 +17,8 @@ import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
-import { isTauriEnvironment, openDownloadsFolder } from "../hooks/useTauri";
-import { startBlobDownload } from "@/lib/utils/file-download";
+import { useAttachmentDownload } from "../hooks/useAttachmentDownload";
+import { useS3ActionDiagnostics } from "../hooks/useS3ActionDiagnostics";
 
 const FilePartRendererComponent = ({
   part,
@@ -26,7 +26,10 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
-  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const getFileUrlAction = useS3ActionDiagnostics(
+    "inline_image",
+    useAction(api.s3Actions.getFileUrlAction),
+  );
   const fileUrlCache = useFileUrlCacheContext();
   // Use ref to access cache without adding to useEffect dependencies
   // This prevents re-renders from triggering URL refetches
@@ -37,7 +40,8 @@ const FilePartRendererComponent = ({
     src: string;
     alt: string;
   } | null>(null);
-  const [downloadingFile, setDownloadingFile] = useState(false);
+  const { downloadAttachment, isDownloading: downloadingFile } =
+    useAttachmentDownload();
   // Initialize fileUrl from cache or part.url to prevent flash on remount
   const [fileUrl, setFileUrl] = useState<string | null>(() => {
     // First check cache for S3 files
@@ -138,84 +142,17 @@ const FilePartRendererComponent = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [part.url, part.fileId, part.mediaType, getFileUrlAction]);
 
-  const handleDownload = useCallback(async (url: string, fileName: string) => {
-    try {
-      setDownloadingFile(true);
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("File download request failed");
-      const blob = await response.blob();
-      startBlobDownload(blob, fileName);
-
-      if (isTauriEnvironment()) {
-        toast.success(`Downloaded ${fileName}`, {
-          description: "Saved to Downloads folder",
-          action: {
-            label: "Show in folder",
-            onClick: () => openDownloadsFolder(),
-          },
-        });
-      }
-    } catch (error) {
-      console.error("Error downloading file:", error);
-      toast.error("Failed to download file");
-      window.open(url, "_blank", "noopener,noreferrer");
-    } finally {
-      setDownloadingFile(false);
-    }
-  }, []);
-
+  // Non-images are fetched lazily on click through the shared download owner.
   const handleNonImageFileClick = useCallback(
     async (fileName: string) => {
-      const cache = fileUrlCacheRef.current;
-
-      // Recheck expiry on every click; component state can outlive a signed URL.
-      if (cache && part.fileId) {
-        const cachedUrl = cache.getCachedUrl(part.fileId);
-        if (cachedUrl) {
-          await handleDownload(cachedUrl, fileName);
-          return;
-        }
-      }
-
-      // Clear error state before attempting fetch (allows recovery from transient failures)
-      setUrlError(null);
-
-      // Fetch URL lazily on click
-      try {
-        let url: string | null = null;
-
-        if (part.fileId) {
-          url = await getFileUrlAction({ fileId: part.fileId });
-
-          // Cache it for future clicks
-          if (url && cache) {
-            cache.setCachedUrl(part.fileId, url);
-          }
-        } else if (part.url) {
-          url = part.url;
-        }
-
-        if (url) {
-          await handleDownload(url, fileName);
-        } else {
-          setUrlError("Failed to get download URL");
-          toast.error("Failed to get download URL");
-        }
-      } catch (error) {
-        console.error("Failed to fetch download URL:", error);
-        const errorMessage =
-          error instanceof ConvexError
-            ? (error.data as { message?: string })?.message ||
-              error.message ||
-              "Failed to fetch download URL"
-            : error instanceof Error
-              ? error.message
-              : "Failed to fetch download URL";
-        // Keep the download control available so a temporary failure can be retried.
-        toast.error(errorMessage);
-      }
+      const outcome = await downloadAttachment({
+        fileId: part.fileId,
+        url: part.url,
+        fileName,
+      });
+      if (outcome === "unavailable") setUrlError("Failed to get download URL");
     },
-    [handleDownload, part.fileId, part.url, getFileUrlAction],
+    [downloadAttachment, part.fileId, part.url],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -460,7 +397,7 @@ const FilePartRendererComponent = ({
   return (
     <>
       {renderedFilePart}
-      {/* Image Viewer Modal - rendered via portal to escape contentVisibility containment */}
+      {/* Image Viewer Modal - rendered via portal to escape ancestor containment (timeline rows, dialogs) */}
       {selectedImage &&
         typeof document !== "undefined" &&
         createPortal(

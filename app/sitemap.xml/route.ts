@@ -6,6 +6,7 @@ const PUBLIC_URLS = [
   { path: "/pricing", lastModified: PUBLIC_PAGE_LAST_MODIFIED.pricing },
   { path: "/download", lastModified: PUBLIC_PAGE_LAST_MODIFIED.download },
   { path: "/trust", lastModified: PUBLIC_PAGE_LAST_MODIFIED.trust },
+  { path: "/abuse", lastModified: PUBLIC_PAGE_LAST_MODIFIED.abuse },
   {
     path: "/privacy-policy",
     lastModified: PUBLIC_PAGE_LAST_MODIFIED.privacy,

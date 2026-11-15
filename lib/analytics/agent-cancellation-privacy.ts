@@ -1,3 +1,5 @@
+import { projectCancellationResponseReceipt } from "@/lib/agent-cancellation-response";
+
 // Applied after SDK enrichment, so registered properties and URLs cannot leak.
 const ALLOWED_PROPERTIES = new Set([
   "token",
@@ -58,11 +60,22 @@ export function sanitizeAgentCancellationEvent<
         : undefined;
   if (!allowedProperties) return event;
   if (event.properties) {
-    event.properties = Object.fromEntries(
-      Object.entries(event.properties).filter(([key]) =>
-        allowedProperties.has(key),
+    // Project before filtering, from own data properties only: a failed
+    // settlement may carry its validated v1 response receipt, nothing else.
+    const receipt =
+      event.event === "agent_run_cancellation_settled" &&
+      Object.getOwnPropertyDescriptor(event.properties, "outcome")?.value ===
+        "error"
+        ? projectCancellationResponseReceipt(event.properties)
+        : undefined;
+    event.properties = {
+      ...Object.fromEntries(
+        Object.entries(event.properties).filter(([key]) =>
+          allowedProperties.has(key),
+        ),
       ),
-    );
+      ...receipt,
+    };
   }
   delete event.$set;
   delete event.$set_once;

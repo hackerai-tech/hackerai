@@ -4,10 +4,25 @@ import React, { Component, ReactNode } from "react";
 import { ConvexError } from "convex/values";
 import { toast } from "sonner";
 import { isExpectedConvexErrorCode } from "@/lib/utils/expected-convex-errors";
+import {
+  captureAuthenticatedEvent,
+  getIdentifiedAnalyticsUserId,
+  getPermittedAnalyticsUserId,
+} from "@/lib/analytics/client";
+import {
+  NULL_REMOVE_CHILD_MESSAGE,
+  recordReactBoundaryCatch,
+  registerReactBoundaryScope,
+  toReactBoundaryDiagnosticScope,
+} from "@/lib/posthog/react-boundary-diagnostics";
+
+type DiagnosticScope = "chat_content" | "chat_layout";
 
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+  /** Static label for failure context; never derived from the error. */
+  diagnosticScope?: DiagnosticScope;
 }
 
 interface State {
@@ -16,6 +31,10 @@ interface State {
 }
 
 export class ConvexErrorBoundary extends Component<Props, State> {
+  // One attempt per caught Error object, even if capture fails.
+  private reportedFailures = new WeakSet<object>();
+  private unregisterScope?: () => void;
+
   constructor(props: Props) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -25,7 +44,32 @@ export class ConvexErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
+  componentDidMount() {
+    this.unregisterScope = registerReactBoundaryScope(
+      this.props.diagnosticScope,
+    );
+  }
+
+  componentDidUpdate(prevProps: Props) {
+    if (
+      toReactBoundaryDiagnosticScope(prevProps.diagnosticScope) ===
+      toReactBoundaryDiagnosticScope(this.props.diagnosticScope)
+    )
+      return;
+    this.unregisterScope?.();
+    this.unregisterScope = registerReactBoundaryScope(
+      this.props.diagnosticScope,
+    );
+  }
+
+  componentWillUnmount() {
+    this.unregisterScope?.();
+    this.unregisterScope = undefined;
+  }
+
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    // First and non-throwing, so a failing console or toast cannot skip it.
+    this.captureFailureContext(error);
     // Handle ConvexError with toast
     if (error instanceof ConvexError) {
       const errorData = error.data as { code?: string; message?: string };
@@ -54,6 +98,41 @@ export class ConvexErrorBoundary extends Component<Props, State> {
       toast.error("Something went wrong", {
         description: "Please try refreshing the page.",
       });
+    }
+  }
+
+  /**
+   * Record that this boundary caught the observed React DOM null-removeChild
+   * family. Reads only the closed name/message predicate: no stack, component
+   * stack, DOM or URL. Neither the event nor the recent catch is linked to the
+   * retained exception.
+   */
+  private captureFailureContext(error: unknown) {
+    try {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        this.reportedFailures.has(error)
+      )
+        return;
+      if (
+        (error as Error).name !== "TypeError" ||
+        (error as Error).message !== NULL_REMOVE_CHILD_MESSAGE
+      )
+        return;
+      // captureAuthenticatedEvent does not check ownership itself.
+      const owner = getIdentifiedAnalyticsUserId();
+      if (!owner || getPermittedAnalyticsUserId() !== owner) return;
+      this.reportedFailures.add(error);
+      const scope = this.props.diagnosticScope;
+      recordReactBoundaryCatch(scope);
+      captureAuthenticatedEvent("react_boundary_failure_context", {
+        version: 1,
+        failure_family: "null_remove_child",
+        boundary_scope: toReactBoundaryDiagnosticScope(scope),
+      });
+    } catch {
+      // Optional diagnostics cannot change the existing fallback handling.
     }
   }
 

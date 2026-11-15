@@ -9,9 +9,16 @@ export const suites = [
     name: "research",
     files: [
       ".agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
+      ".agents/skills/hackerai-user-research/scripts/build-cohort.test.mjs",
     ],
   },
-  { name: "desktop", files: ["scripts/desktop-qa/qa.test.mjs"] },
+  {
+    name: "desktop",
+    files: [
+      "scripts/desktop-qa/qa.test.mjs",
+      "scripts/desktop-qa/verify-targets.test.mjs",
+    ],
+  },
   {
     name: "diagnostics",
     files: readdirSync(resolve(root, "scripts/diagnostics"))
@@ -19,10 +26,31 @@ export const suites = [
       .map((file) => `scripts/diagnostics/${file}`),
   },
   {
+    name: "markdown",
+    files: readdirSync(resolve(root, "scripts/markdown"))
+      .filter((file) => file.endsWith(".test.mjs"))
+      .map((file) => `scripts/markdown/${file}`),
+  },
+  {
     name: "testing",
     files: readdirSync(resolve(root, "scripts/testing"))
       .filter((file) => file.endsWith(".test.mjs"))
       .map((file) => `scripts/testing/${file}`),
+  },
+  {
+    name: "trigger-runtime",
+    files: [
+      "scripts/trigger-runtime/completion-ack.test.mjs",
+      "scripts/trigger-runtime/child-completion.test.mjs",
+      "scripts/trigger-runtime/child-flush.test.mjs",
+      "scripts/trigger-runtime/s2-uncaught.test.mjs",
+      "scripts/trigger-runtime/stream-cleanup.test.mjs",
+      "scripts/trigger-runtime/wait-stop.test.mjs",
+    ],
+  },
+  {
+    name: "billing",
+    files: ["scripts/billing/import-operating-costs.test.mjs"],
   },
 ];
 
@@ -50,6 +78,27 @@ export function changedFiles(cwd = root) {
   ];
 }
 
+// The markdown suite bundles application modules into a real Streamdown render.
+// Select it for the renderer owners; other application files keep the generic
+// rule below and CI runs every suite.
+const markdownRendererPaths = new Set([
+  "app/components/MemoizedMarkdown.tsx",
+  "app/components/SandboxAttachmentLink.tsx",
+  "app/components/CodeHighlight.tsx",
+  "app/components/MarkdownTable.tsx",
+  "app/hooks/useAttachmentDownload.ts",
+  "lib/chat/sandbox-attachment-links.ts",
+]);
+
+// The trigger-runtime wait-stop fixture runs the actual wait_for_user tool and
+// its stop helper against the installed SDK.
+const triggerRuntimeAppPaths = new Set([
+  "lib/ai/tools/wait-for-user.ts",
+  "lib/ai/tools/utils/wait-for-user-stop.ts",
+  "lib/chat/user-input-questions.ts",
+  "lib/chat/agent-user-wait.ts",
+]);
+
 /** Select inspected tooling dependencies, falling back to all for unknown paths. */
 export function selectSuites(paths) {
   const selected = new Set(["testing"]);
@@ -69,8 +118,19 @@ export function selectSuites(paths) {
       path === "docs/safe-local-diagnostics.md"
     )
       selected.add("diagnostics");
-    // These tooling suites use isolated fixtures and do not import application
-    // modules. Unknown paths (including configs, lockfiles and new tooling) run
+    else if (
+      path.startsWith("scripts/markdown/") ||
+      markdownRendererPaths.has(path)
+    )
+      selected.add("markdown");
+    else if (triggerRuntimeAppPaths.has(path)) selected.add("trigger-runtime");
+    else if (
+      path.startsWith("scripts/billing/") ||
+      path === "lib/billing/operating-costs.ts"
+    )
+      selected.add("billing");
+    // Other application paths are not imported by the tooling suites above.
+    // Unknown paths (including configs, lockfiles and new tooling) run
     // everything; expand this allowlist only after inspecting dependencies.
     else if (/^(app|lib|convex|types|__mocks__|public|e2e)\//.test(path))
       continue;

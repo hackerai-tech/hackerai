@@ -1,6 +1,8 @@
 import type { LimitRescueRequest } from "@/types/chat";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { toast } from "sonner";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import type { ChatStatus } from "@/types";
 import { ChatMode } from "@/types/chat";
 import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { Button } from "@/components/ui/button";
@@ -16,10 +18,10 @@ import {
 import type { SelectedModel } from "@/types/chat";
 import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
-const LOCAL_CONNECTION_LOST_FINISH_REASON = "local-connection-lost";
-
 interface FinishReasonNoticeProps {
   finishReason?: string;
+  continueDisabledReason?: string;
+  status?: ChatStatus;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
   onContinue?: (
@@ -32,9 +34,12 @@ export const FinishReasonNotice = ({
   finishReason,
   mode,
   onContinue,
+  continueDisabledReason,
+  status,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const pendingRef = useRef(false);
+  const disabledReasonId = useId();
   const [pending, setPending] = useState(false);
   const resume = async (
     selectedModelOverride?: SelectedModel,
@@ -55,6 +60,48 @@ export const FinishReasonNotice = ({
   };
 
   if (!finishReason) return null;
+
+  if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
+    if (status === "streaming") return null;
+    const disabledReason =
+      continueDisabledReason ||
+      (mode === "ask" ? "Switch to Agent to resume." : undefined);
+    const resuming = pending || status === "submitted";
+    return (
+      <div className="mt-2 w-full" role="status" aria-live="polite">
+        <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0 flex-1 basis-60">
+            <p>
+              The connection to your computer was lost, so this run stopped.
+            </p>
+            <p className="mt-1 text-sm">
+              Saved progress is available. A command that was running may not
+              have finished.
+            </p>
+            {disabledReason && (
+              <p id={disabledReasonId} className="mt-1 text-sm text-foreground">
+                {disabledReason}
+              </p>
+            )}
+          </div>
+          {onContinue && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="min-w-26 text-foreground"
+              disabled={!!disabledReason || resuming}
+              aria-busy={resuming}
+              aria-describedby={disabledReason ? disabledReasonId : undefined}
+              onClick={() => void resume()}
+            >
+              {resuming ? "Resuming…" : "Resume"}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (isAutoContinuing) {
     return (
@@ -103,16 +150,6 @@ export const FinishReasonNotice = ({
       return <>Agent stopped unexpectedly. Saved progress is available.</>;
     }
 
-    if (finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON) {
-      return (
-        <>
-          The selected computer disconnected. Reconnect it, review the saved
-          progress, then resume. Commands may have completed before the
-          connection was lost.
-        </>
-      );
-    }
-
     if (finishReason === "timeout" || finishReason === "preemptive-timeout") {
       return (
         <>Reached the time limit for this turn. Completed work was saved.</>
@@ -157,10 +194,7 @@ export const FinishReasonNotice = ({
   // Replaying an unchanged request can restart the cycle that was just halted.
   const showContinue = !!onContinue && finishReason !== DOOM_LOOP_FINISH_REASON;
   const continueButtonLabel =
-    finishReason === CLIENT_SAVED_FINISH_REASON ||
-    finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
-      ? "Resume task"
-      : "Continue";
+    finishReason === CLIENT_SAVED_FINISH_REASON ? "Resume task" : "Continue";
 
   return (
     <div className="mt-2 w-full" role="status">
@@ -171,7 +205,9 @@ export const FinishReasonNotice = ({
             type="button"
             size="sm"
             variant="outline"
-            disabled={pending}
+            disabled={
+              pending || !!continueDisabledReason || status === "submitted"
+            }
             onClick={() => void resume()}
           >
             {pending ? "Resuming…" : continueButtonLabel}

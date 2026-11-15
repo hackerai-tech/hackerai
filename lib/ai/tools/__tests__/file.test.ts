@@ -74,6 +74,7 @@ function makeContext(
 async function runTool(
   tool: ReturnType<typeof createFile>,
   input: Record<string, unknown>,
+  abortSignal?: AbortSignal,
 ) {
   const execute = (
     tool as unknown as {
@@ -82,7 +83,7 @@ async function runTool(
   ).execute;
   return execute(input, {
     toolCallId: "call-1",
-    abortSignal: undefined,
+    abortSignal,
     messages: [],
   });
 }

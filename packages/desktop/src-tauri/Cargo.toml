@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "HackerAI Desktop Application"
 authors = ["HackerAI"]
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.90"
 
 [lib]
 name = "hackerai_desktop_lib"
@@ -15,14 +15,14 @@ name = "hackerai-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2.12", features = [] }
 tauri-plugin-os = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
@@ -36,6 +36,14 @@ tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
+# reqwest's own default-tls backend; used only to recognize its error type.
+native-tls = "=0.2.14"
+# The Layer and Service traits reqwest's tower re-exports, at their locked versions.
+tower-layer = "=0.3.3"
+tower-service = "=0.3.3"
+os_info = "3.14"
+gethostname = "1.1"
+sha2 = "0.10"
 portable-pty = "0.8"
 cap-std = "3.4.5"
 cap-fs-ext = "3.4.5"

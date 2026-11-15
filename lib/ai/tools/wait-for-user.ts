@@ -5,6 +5,7 @@ import { z } from "zod";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
 
 import type { ToolContext } from "@/types";
+import { completeWaitOnStop } from "@/lib/ai/tools/utils/wait-for-user-stop";
 import { setActiveAgentUserWait } from "@/lib/db/agent-user-wait";
 import { phLogger } from "@/lib/posthog/server";
 
@@ -20,10 +21,15 @@ type UserReply = {
 export const createWaitForUserTool = (
   context: ToolContext,
   options: {
+    /**
+     * The run's first product stop. Not the model request signal: a provider
+     * deadline must not cancel a wait for the user.
+     */
+    signal?: AbortSignal;
     beforeSuspend?: () => Promise<void>;
     pauseActiveTime?: () => void;
     resumeActiveTime?: () => void;
-    abortRun?: () => void;
+    abortRun?: (outcome: "timed_out" | "failed") => void;
     revalidateAfterSuspend?: (toolCallId: string) => Promise<void>;
   } = {},
 ) =>
@@ -45,18 +51,28 @@ export const createWaitForUserTool = (
         runId,
         toolCallId: execution.toolCallId,
       };
-      const token = await wait.createToken({
-        idempotencyKey: `agent-user-wait:${runId}:${execution.toolCallId}`,
-        // Leave time for the run's final answer and cleanup before Trigger's
-        // four-hour maxDuration expires.
-        timeout: "3h",
-      });
+      // A failure that lands after the first stop must not replace its reason.
+      const firstStopOr = (error: unknown): never => {
+        options.signal?.throwIfAborted();
+        throw error;
+      };
+      options.signal?.throwIfAborted();
+      const token = await wait
+        .createToken({
+          idempotencyKey: `agent-user-wait:${runId}:${execution.toolCallId}`,
+          // Leave time for the run's final answer and cleanup before Trigger's
+          // four-hour maxDuration expires.
+          timeout: "3h",
+        })
+        .catch(firstStopOr);
+      options.signal?.throwIfAborted();
       const acquired = await setActiveAgentUserWait({
         ...identity,
         tokenId: token.id,
         ...(input.questions ? { questions: input.questions } : {}),
-      });
+      }).catch(firstStopOr);
       if (acquired !== "acquired") {
+        options.signal?.throwIfAborted();
         return {
           success: false,
           error:
@@ -66,23 +82,61 @@ export const createWaitForUserTool = (
         };
       }
 
-      phLogger.event("agent_wait_for_user_started", {
-        userId: context.userID,
-        chat_id: context.chatId,
-        trigger_run_id: runId,
-      });
-
       let activeTimePaused = false;
       let waitFailed = false;
+      // Timeout and mismatch results abort the run themselves; only a reply
+      // can still be overtaken by a product stop during the release below.
+      let replied = false;
       try {
+        // A stop while acquiring must not park; finally releases the slot.
+        options.signal?.throwIfAborted();
+        phLogger.event("agent_wait_for_user_started", {
+          userId: context.userID,
+          chat_id: context.chatId,
+          trigger_run_id: runId,
+        });
         await options.beforeSuspend?.();
+        options.signal?.throwIfAborted();
         options.pauseActiveTime?.();
         activeTimePaused = true;
-        const result = await wait.forToken<UserReply>(token);
+        options.signal?.throwIfAborted();
+        // Always await this original waiter: the SDK releases its wait guard
+        // and usage pause only when it settles. A stop completes this token so
+        // the waiter can settle, then the first stop reason wins over any
+        // reply, timeout or SDK error without reading the output.
+        const waiting = wait.forToken<UserReply>(token);
+        let originalWaitSettled = false;
+        // A stopped wait's completion receipt, recorded once the request
+        // finishes, even while the original waiter is still pending. An
+        // accepted completion is not proof that the waiter woke up.
+        const stopCompletion = completeWaitOnStop(
+          options.signal,
+          token,
+          (report) =>
+            phLogger.event("agent_wait_for_user_stop_completion", {
+              userId: context.userID,
+              chat_id: context.chatId,
+              trigger_run_id: runId,
+              version: 1,
+              completion_outcome: report.outcome,
+              http_status: report.httpStatus,
+              elapsed_ms: report.elapsedMs,
+              abort_source: report.abortSource,
+              original_wait_settled_at_receipt: originalWaitSettled,
+            }),
+        );
+        let result: Awaited<typeof waiting>;
+        try {
+          result = await waiting;
+        } finally {
+          originalWaitSettled = true;
+          await stopCompletion.settle();
+        }
         options.resumeActiveTime?.();
         activeTimePaused = false;
+        options.signal?.throwIfAborted();
         if (!result.ok) {
-          options.abortRun?.();
+          options.abortRun?.("timed_out");
           return {
             success: false,
             wait_outcome: "timed_out",
@@ -98,18 +152,20 @@ export const createWaitForUserTool = (
           typeof reply.text !== "string" ||
           !reply.text.trim()
         ) {
-          options.abortRun?.();
+          options.abortRun?.("failed");
           return {
             success: false,
             error: "The reply did not match this Agent wait.",
           };
         }
         await options.revalidateAfterSuspend?.(execution.toolCallId);
+        options.signal?.throwIfAborted();
         phLogger.event("agent_wait_for_user_resumed", {
           userId: context.userID,
           chat_id: context.chatId,
           trigger_run_id: runId,
         });
+        replied = true;
         return {
           success: true,
           wait_outcome: "message_arrived",
@@ -118,8 +174,10 @@ export const createWaitForUserTool = (
         };
       } catch (error) {
         waitFailed = true;
-        options.abortRun?.();
-        throw error;
+        // Read the first stop before abortRun, which aborts the same signal.
+        const thrown = options.signal?.aborted ? options.signal.reason : error;
+        options.abortRun?.("failed");
+        throw thrown;
       } finally {
         if (activeTimePaused) options.resumeActiveTime?.();
         // A delivered reply must release its slot before another question can
@@ -132,7 +190,8 @@ export const createWaitForUserTool = (
           } catch {
             if (attempt === 2) {
               if (!waitFailed) {
-                options.abortRun?.();
+                if (replied) options.signal?.throwIfAborted();
+                options.abortRun?.("failed");
                 throw new Error("Could not release the Agent reply wait");
               }
               // Preserve the original failure. Terminal run cleanup will also
@@ -144,6 +203,7 @@ export const createWaitForUserTool = (
             );
           }
         }
+        if (replied) options.signal?.throwIfAborted();
       }
     },
   });

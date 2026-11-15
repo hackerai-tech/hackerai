@@ -29,6 +29,34 @@ test("application changes skip isolated tooling but tooling dependencies and unk
     "testing",
   ]);
   for (const path of [
+    "scripts/markdown/sandbox-download.fixture.tsx",
+    "app/components/MemoizedMarkdown.tsx",
+    "lib/chat/sandbox-attachment-links.ts",
+  ]) {
+    assert.deepEqual(names([path]), ["markdown", "testing"], path);
+  }
+  assert.deepEqual(names(["app/components/MessageItem.tsx"]), ["testing"]);
+  assert.deepEqual(names(["lib/billing/operating-costs.ts"]), [
+    "testing",
+    "billing",
+  ]);
+  assert.deepEqual(names(["scripts/billing/import-operating-costs.mjs"]), [
+    "testing",
+    "billing",
+  ]);
+  // The wait-stop fixture loads these application modules.
+  for (const path of [
+    "lib/ai/tools/wait-for-user.ts",
+    "lib/ai/tools/utils/wait-for-user-stop.ts",
+    "lib/chat/user-input-questions.ts",
+    "lib/chat/agent-user-wait.ts",
+  ]) {
+    assert.deepEqual(names([path]), ["testing", "trigger-runtime"], path);
+  }
+  assert.deepEqual(names(["lib/ai/tools/utils/sandbox-manager.ts"]), [
+    "testing",
+  ]);
+  for (const path of [
     "package.json",
     "pnpm-lock.yaml",
     "jest.setup.js",

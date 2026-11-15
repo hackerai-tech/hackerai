@@ -5,6 +5,7 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { phLogger } from "@/lib/posthog/server";
+import { checkpointCloudErrorContext } from "@/lib/ai/tools/utils/persistence-failure";
 import {
   normalizeBrowserInput,
   normalizeBrowserInputBatch,
@@ -12,9 +13,12 @@ import {
 import {
   BrowserPreviewUnavailable,
   type BrowserCaptureFailureContext,
+  type BrowserInputFailureContext,
   captureBrowserFrame,
   connectBrowserSandbox,
   getActiveBrowserSessionName,
+  browserRelayRenewFailureContext,
+  browserRelayStopFailureContext,
   browserSessionReadFailureContext,
   getPrivateStreamPort,
   sendBrowserInput,
@@ -183,6 +187,11 @@ const unavailablePost = (
   action: unknown,
   session?: NonNullable<Awaited<ReturnType<typeof resolveSession>>>["session"],
   recoveryResponse = false,
+  failureDiagnostic?: {
+    context?: BrowserCaptureFailureContext;
+    frameAgeExceeded?: boolean;
+    inputContext?: BrowserInputFailureContext;
+  },
 ) => {
   const response = recoveryResponse
     ? json({ state: "recovery" }, 503)
@@ -195,6 +204,45 @@ const unavailablePost = (
         : undefined;
     const requestId = request.headers.get("x-vercel-id");
     const build = process.env.NEXT_PUBLIC_HACKERAI_BUILD_COMMIT;
+    // TAKE reads the port with one SDK command before its own guards. Reuse
+    // the closed SDK projections without labeling this failure a renewal.
+    let streamPortContext: Record<string, unknown> | undefined;
+    if (action === "take" && stage === "read_stream_port") {
+      try {
+        const cloud = checkpointCloudErrorContext(error);
+        const command = browserRelayRenewFailureContext(error);
+        streamPortContext = {
+          post_stream_port_diagnostic_version: 1,
+          post_stream_port_error_kind:
+            command.relay_renew_error_kind === "command_exit" ||
+            command.relay_renew_error_kind === "timeout"
+              ? command.relay_renew_error_kind
+              : error instanceof BrowserPreviewUnavailable
+                ? "preview_unavailable"
+                : cloud.cloud_error_kind,
+          post_stream_port_http_status: cloud.cloud_http_status,
+          post_stream_port_command_exit_code:
+            command.relay_renew_command_exit_code,
+          ...(cloud.cloud_type_error_signal === undefined
+            ? {}
+            : {
+                post_stream_port_type_error_signal:
+                  cloud.cloud_type_error_signal,
+                post_stream_port_transport_code: cloud.cloud_transport_code,
+              }),
+        };
+      } catch {
+        // Keep the existing event and response if optional projection fails.
+      }
+    }
+    let relayStopContext = {};
+    if (stage === "drain_relays") {
+      try {
+        relayStopContext = browserRelayStopFailureContext(error);
+      } catch {
+        // Optional stop diagnostics cannot discard the existing event or response.
+      }
+    }
     phLogger.info("agent_browser_preview_post_unavailable", {
       diagnostic_version: 1,
       action:
@@ -211,6 +259,27 @@ const unavailablePost = (
           ? action
           : "unknown",
       failure_stage: stage,
+      ...(stage === "capture_frame" && {
+        post_capture_diagnostic_version: 1,
+        post_capture_context_status: failureDiagnostic?.context
+          ? "recorded"
+          : failureDiagnostic?.frameAgeExceeded
+            ? "frame_age_guard"
+            : "not_observed",
+        ...failureDiagnostic?.context,
+      }),
+      ...((stage === "release_pointer" || stage === "send_input") && {
+        post_input_diagnostic_version: 1,
+        post_input_context_status: failureDiagnostic?.inputContext
+          ? "recorded"
+          : "not_observed",
+        ...failureDiagnostic?.inputContext,
+      }),
+      ...streamPortContext,
+      ...relayStopContext,
+      ...(action === "heartbeat" && stage === "renew_relay"
+        ? browserRelayRenewFailureContext(error)
+        : {}),
       preview_state: recoveryResponse
         ? "recovery"
         : state === "loading"
@@ -443,6 +512,8 @@ export async function POST(
     );
     if (!claimed) return json({ state: "stale" }, 409);
     let paused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
+    let inputContext: BrowserInputFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -486,6 +557,9 @@ export async function POST(
           },
         ],
         streamPort,
+        (context) => {
+          inputContext = context;
+        },
       );
       // Both jobs use the same paused browser. Drain both before rollback so
       // a late relay cannot outlive a failed capture and reopen revoked input.
@@ -497,6 +571,9 @@ export async function POST(
           body.browserSessionName,
           true,
           streamPort,
+          (context) => {
+            captureContext = context;
+          },
         ),
         startBrowserRelay(
           sandbox,
@@ -560,6 +637,8 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        { context: captureContext, inputContext },
       );
     }
   }
@@ -607,6 +686,9 @@ export async function POST(
     );
     if (!started) return json({ state: "stale" }, 409);
     let unpaused = false;
+    let captureContext: BrowserCaptureFailureContext | undefined;
+    let inputContext: BrowserInputFailureContext | undefined;
+    let captureFrameAgeExceeded = false;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -621,24 +703,39 @@ export async function POST(
       // Also cover the HTTP fallback and a vanished relay. The resuming state
       // excludes new input until the pointer is released and a frame is fresh.
       stage = "release_pointer";
-      await sendBrowserInput(sandbox, session, body.browserSessionName, [
-        {
-          type: "input_mouse",
-          eventType: "mouseReleased",
-          x: 0,
-          y: 0,
-          button: "left",
+      await sendBrowserInput(
+        sandbox,
+        session,
+        body.browserSessionName,
+        [
+          {
+            type: "input_mouse",
+            eventType: "mouseReleased",
+            x: 0,
+            y: 0,
+            button: "left",
+          },
+        ],
+        undefined,
+        (context) => {
+          inputContext = context;
         },
-      ]);
+      );
       stage = "capture_frame";
       const frame = await captureBrowserFrame(
         sandbox,
         session,
         body.browserSessionName,
         true,
+        undefined,
+        (context) => {
+          captureContext = context;
+        },
       );
-      if (Date.now() - frame.capturedAt > 15_000)
+      if (Date.now() - frame.capturedAt > 15_000) {
+        captureFrameAgeExceeded = true;
         throw new BrowserPreviewUnavailable("disconnected");
+      }
       stage = "save_exit_note";
       const continuation = await saveNote();
       stage = "unpause_browser";
@@ -677,6 +774,12 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        {
+          context: captureContext,
+          frameAgeExceeded: captureFrameAgeExceeded,
+          inputContext,
+        },
       );
     }
   }
@@ -783,6 +886,7 @@ export async function POST(
       },
     );
     if (!valid) return json({ state: "recovery" }, 409);
+    let inputContext: BrowserInputFailureContext | undefined;
     try {
       stage = "connect_sandbox";
       const sandbox = await connectBrowserSandbox(session);
@@ -809,6 +913,10 @@ export async function POST(
         session,
         session.controlledSessionName,
         events,
+        undefined,
+        (context) => {
+          inputContext = context;
+        },
       );
       return json({ ok: true });
     } catch (error) {
@@ -819,6 +927,8 @@ export async function POST(
         sessionId,
         body.action,
         session,
+        false,
+        { inputContext },
       );
     } finally {
       await convex

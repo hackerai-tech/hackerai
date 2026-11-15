@@ -57,6 +57,7 @@ describe("pruneToolOutputs", () => {
                 exitCode: null,
                 waitExpired: true,
                 recordPath: "/tmp/records/abcd1234.json",
+                recordPersistenceStatus: "pending",
                 output:
                   "[Full output (5000 chars) saved to: /tmp/evidence.txt]\n" +
                   "x".repeat(5000),
@@ -89,6 +90,8 @@ describe("pruneToolOutputs", () => {
       expect(placeholder).toContain("status wait_expired");
       expect(placeholder).toContain("record /tmp/records/abcd1234.json");
       expect(placeholder).toContain("saved output /tmp/evidence.txt");
+      expect(placeholder).toContain("record persistence pending");
+      expect(placeholder).not.toContain("record persistence failed");
       expect(placeholder).not.toContain("x".repeat(100));
     },
   );
@@ -1261,6 +1264,7 @@ describe("pruneModelMessages", () => {
             session: "abcd1234",
             status: "running",
             recordPath: "/tmp/record.json",
+            recordPersistenceStatus: "pending",
             outputPath: "/tmp/output.txt",
             output: "evidence\n".repeat(1000),
           },
@@ -1299,6 +1303,8 @@ describe("pruneModelMessages", () => {
       expect(output.value).toContain("status running");
       expect(output.value).toContain("record /tmp/record.json");
       expect(output.value).toContain("output /tmp/output.txt");
+      expect(output.value).toContain("record persistence pending");
+      expect(output.value).not.toContain("record persistence failed");
       expect(output.value).not.toContain("evidence");
     },
   );

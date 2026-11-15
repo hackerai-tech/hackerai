@@ -1,5 +1,7 @@
 "use client";
 
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { isTauriEnvironment } from "./useTauri";
@@ -34,16 +36,32 @@ export function useSelectedComputerConnection() {
       (desktopEnvironmentId !== undefined &&
         sandboxPreference === `desktop-environment:${desktopEnvironmentId}`));
   const [now, setNow] = useState(Date.now);
+  const selectedDesktopIds = (localConnections ?? [])
+    .filter(
+      (connection) =>
+        connection.isDesktop &&
+        connectionMatchesPreference(connection, sandboxPreference),
+    )
+    .map((connection) => connection.connectionId)
+    .sort();
+  const heartbeats = useQuery(
+    api.localSandbox.getConnectionHeartbeats,
+    !selectedNativeDesktop && selectedDesktopIds.length > 0
+      ? { connectionIds: selectedDesktopIds }
+      : "skip",
+  );
   const latestHeartbeat = Math.max(
-    ...(localConnections ?? [])
-      .filter(
-        (connection) =>
-          connection.isDesktop &&
-          connectionMatchesPreference(connection, sandboxPreference),
+    ...(heartbeats ?? [])
+      .filter((heartbeat) =>
+        selectedDesktopIds.includes(heartbeat.connectionId),
       )
-      .map((connection) => connection.lastSeen)
+      .map((heartbeat) => heartbeat.lastSeen)
       .filter(Number.isFinite),
   );
+  const heartbeatPending =
+    !selectedNativeDesktop &&
+    selectedDesktopIds.length > 0 &&
+    heartbeats === undefined;
   useEffect(() => {
     if (selectedNativeDesktop || !Number.isFinite(latestHeartbeat)) return;
     // A closed/crashed computer may never persist its disconnect. Age the
@@ -64,8 +82,8 @@ export function useSelectedComputerConnection() {
         (connection) =>
           connectionMatchesPreference(connection, sandboxPreference) &&
           (!connection.isDesktop ||
-            (Number.isFinite(connection.lastSeen) &&
-              now - connection.lastSeen <= LOCAL_SANDBOX_PRESENCE_GRACE_MS)),
+            (Number.isFinite(latestHeartbeat) &&
+              now - latestHeartbeat <= LOCAL_SANDBOX_PRESENCE_GRACE_MS)),
       );
 
   const initialConnectionPending = useInitialConnectionPending({
@@ -75,7 +93,7 @@ export function useSelectedComputerConnection() {
   });
   const computerConnectionPending = selectedNativeDesktop
     ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
-    : initialConnectionPending;
+    : heartbeatPending || initialConnectionPending;
   const selectedComputerUnavailable =
     isAgentMode(chatMode) && sandboxPreference !== "e2b" && !connected;
   const sendDisabledReason = selectedComputerUnavailable

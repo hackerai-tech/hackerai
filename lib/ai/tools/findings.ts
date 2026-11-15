@@ -21,7 +21,9 @@ import {
   type CreateVulnerabilityReportInput,
 } from "./schemas";
 
-async function prepareFindingEvidence<T extends { evidence_refs?: string[] }>(
+export async function prepareFindingEvidence<
+  T extends { evidence_refs?: string[] },
+>(
   input: T,
   getCurrentSandbox: () => AnySandbox | null,
   abortSignal?: AbortSignal,

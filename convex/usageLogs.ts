@@ -85,6 +85,28 @@ export const logUsage = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // One settlement produces one ledger row. A replay must not add a second
+    // daily delta; a reused ID from another account scope is a caller bug.
+    if (args.usage_settlement_id) {
+      const existing = await ctx.db
+        .query("usage_logs")
+        .withIndex("by_usage_settlement_id", (q) =>
+          q.eq("usage_settlement_id", args.usage_settlement_id),
+        )
+        .first();
+      if (existing) {
+        if (
+          existing.user_id !== args.user_id ||
+          existing.organization_id !== args.organization_id
+        ) {
+          throw new Error(
+            "Usage settlement ID is already recorded for another account",
+          );
+        }
+        return null;
+      }
+    }
+
     const nonModelCostDollars = Number.isFinite(args.non_model_cost_dollars)
       ? args.non_model_cost_dollars!
       : 0;

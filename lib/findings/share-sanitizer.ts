@@ -14,6 +14,18 @@ type SharedFindingPart = {
 };
 
 const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
+// Retest and hunt parts carry private targets, observations and evidence paths.
+const PRIVATE_FINDING_FOLLOWUP_TOOLS = new Set([
+  "get_finding_retests",
+  "start_finding_retest",
+  "complete_finding_retest",
+  "get_http_retest_recipe",
+  "save_http_retest_recipe",
+  "get_finding_hunts",
+  "start_finding_hunt",
+  "record_finding_hunt_candidate",
+  "complete_finding_hunt",
+]);
 
 const sanitizeFindingToolPart = (part: any): SharedFindingPart | null => {
   const output = part?.output?.result ?? part?.output;
@@ -52,6 +64,13 @@ const sanitizeFindingToolPart = (part: any): SharedFindingPart | null => {
 
 export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
   parts.flatMap((part) => {
+    if (
+      (part?.type === "dynamic-tool" &&
+        PRIVATE_FINDING_FOLLOWUP_TOOLS.has(part?.toolName)) ||
+      (typeof part?.type === "string" &&
+        PRIVATE_FINDING_FOLLOWUP_TOOLS.has(part.type.replace(/^tool-/, "")))
+    )
+      return [];
     if (
       part?.type === "dynamic-tool" &&
       [

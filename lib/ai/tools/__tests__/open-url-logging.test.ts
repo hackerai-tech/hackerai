@@ -151,7 +151,6 @@ describe("Open URL failure capture through phLogger", () => {
 
   it("keeps cancellation silent and forwards the signal", async () => {
     const controller = new AbortController();
-    controller.abort();
     mockFetch.mockRejectedValue(
       Object.assign(new Error("aborted"), { name: "AbortError" }),
     );

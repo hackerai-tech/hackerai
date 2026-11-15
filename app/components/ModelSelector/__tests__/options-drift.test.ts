@@ -17,7 +17,7 @@ describe("ModelSelector tier provider drift", () => {
   it.each([
     ["hackerai-standard", "model-deepseek-v4.1-flash-1017-pro"],
     ["hackerai-pro", "model-deepseek-v4.1-flash-1017-pro"],
-    ["hackerai-max", "model-glm-5.3"],
+    ["hackerai-max", "model-grok-4.6"],
   ] as const)("resolves the Agent provider for %s", (tier, model) => {
     expect(resolveAgentTierToProviderKey(tier)).toBe(model);
   });

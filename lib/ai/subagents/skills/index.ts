@@ -1,3 +1,9 @@
+import strixContent from "./strix-skill-content.generated.json";
+import {
+  compileSubagentSkillContent,
+  hasUnsupportedWorkerToolReference,
+} from "./runtime-content";
+
 import strixRegistry from "./strix-skill-catalog.generated.json";
 
 import { MAX_SUBAGENT_SKILLS } from "../contracts";
@@ -18,16 +24,48 @@ export type SubagentSkill = {
 
 type GeneratedSkill = SubagentSkill & { internal: boolean };
 
+const runtimeContents = new Map<string, string>();
+const incompatibleSkills: Array<{ id: string; error: string }> = [];
+export const listIncompatibleSubagentSkills = () => [...incompatibleSkills];
+export const getSubagentRuntimeSkillContent = (id: string) =>
+  runtimeContents.get(id);
+const contents = strixContent.contents as Record<string, string>;
+
 const selectableSkills: SubagentSkill[] = (
   strixRegistry.skills as GeneratedSkill[]
 )
   .filter((skill) => !skill.internal)
-  .map((skill) => ({
-    ...skill,
-    description:
-      getSubagentSkillSafetyOverride(skill.id)?.catalogDescription ??
-      skill.description,
-  }))
+  .flatMap((skill) => {
+    const source = contents[skill.id];
+    const override = getSubagentSkillSafetyOverride(skill.id);
+    const compiled = source
+      ? compileSubagentSkillContent(skill, source)
+      : { success: false as const, error: "Skill content is missing" };
+    const description = override?.catalogDescription ?? skill.description;
+    if (
+      !compiled.success ||
+      hasUnsupportedWorkerToolReference(description) ||
+      hasUnsupportedWorkerToolReference(override?.instructions ?? "")
+    ) {
+      incompatibleSkills.push({
+        id: skill.id,
+        error: compiled.success
+          ? "Skill metadata or override references an unsupported worker tool"
+          : compiled.error,
+      });
+      return [];
+    }
+    runtimeContents.set(skill.id, compiled.content);
+    return [
+      {
+        ...skill,
+        description,
+        contentBytes: new TextEncoder().encode(
+          compiled.content + (override?.instructions ?? ""),
+        ).byteLength,
+      },
+    ];
+  })
   .sort((left, right) => left.id.localeCompare(right.id));
 const skillsById = new Map(selectableSkills.map((skill) => [skill.id, skill]));
 const aliases = new Map<string, SubagentSkill[]>();

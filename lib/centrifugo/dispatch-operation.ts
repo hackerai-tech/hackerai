@@ -3,6 +3,7 @@ import { presenceHasConnectionId } from "./presence";
 import { sandboxConnectionChannel } from "./types";
 import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
 import { LocalCommandRelayUnsubscribedError } from "@/lib/ai/tools/utils/local-sandbox-errors";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 
 /** Publication completed, but the client's readiness reply was not observed. */
 export class RelayOperationReadinessTimeout extends Error {
@@ -11,6 +12,13 @@ export class RelayOperationReadinessTimeout extends Error {
     this.name = "RelayOperationReadinessTimeout";
   }
 }
+
+export type IsolatedOperationPhase =
+  | "control_ready"
+  | "presence"
+  | "publish"
+  | "operation_ready"
+  | "ready_received";
 
 /** Use the connection channel only while dispatching, then stop receiving its fanout. */
 export async function dispatchIsolatedOperation(
@@ -21,7 +29,16 @@ export async function dispatchIsolatedOperation(
   isActive: () => boolean,
   reply: Subscription,
   onBeforePublish?: () => void,
+  onPhase?: (phase: IsolatedOperationPhase) => void,
+  desktop = false,
 ): Promise<void> {
+  const observe = (phase: IsolatedOperationPhase) => {
+    try {
+      onPhase?.(phase);
+    } catch {
+      // Diagnostics must never change command publication or cleanup.
+    }
+  };
   let onReady: (ctx: PublicationContext) => void;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let rejectReady!: (error: Error) => void;
@@ -48,12 +65,19 @@ export async function dispatchIsolatedOperation(
   });
   control.subscribe();
   try {
+    observe("control_ready");
     await control.ready(5000);
+    observe("presence");
     const presence = await control.presence();
     if (!presenceHasConnectionId(presence, connectionId))
       throw new LocalCommandRelayUnsubscribedError(connectionId);
+    observe("publish");
+    const authorizationId = desktop
+      ? await authorizeDesktopOperation(userId, connectionId, request)
+      : undefined;
     for (const fragment of fragmentCentrifugoMessage({
       ...request,
+      ...(authorizationId ? { authorizationId } : {}),
       operationChannel: true,
     })) {
       if (!isActive())
@@ -61,11 +85,13 @@ export async function dispatchIsolatedOperation(
       onBeforePublish?.();
       await control.publish(fragment);
     }
+    observe("operation_ready");
     timeout = setTimeout(
       () => rejectReady(new RelayOperationReadinessTimeout()),
       5000,
     );
     await ready;
+    observe("ready_received");
   } finally {
     clearTimeout(timeout);
     reply.removeListener("publication", onReady!);

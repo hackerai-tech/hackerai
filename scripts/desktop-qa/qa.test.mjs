@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import {
   validateConfig,
   verifyApp,
@@ -104,11 +104,30 @@ test("rejects Production, mixed local targets, credentials and unknown fields", 
     mutate(c);
     assert.throws(() => validateConfig(c));
   }
-  const c = config();
-  c.environment = "preview";
-  c.frontend = "https://hackerai-example.vercel.app";
-  c.worker.environment = "preview";
-  assert.equal(validateConfig(c).environment, "preview");
+});
+
+// An immutable deployment URL loaded in the native WebView opens Vercel's
+// deployment-protection login instead of the app.
+const hostedDeployment = "https://hackerai-k3x9qv2mz-hackerai.vercel.app";
+const localFrontendGuidance =
+  /requires a loopback frontend.*serve this worktree's frontend locally.*Vercel Preview only for web-only browser QA/;
+
+test("rejects hosted frontends for local and Preview native QA with local-frontend guidance", () => {
+  for (const environment of ["local", "preview"])
+    for (const frontend of [
+      hostedDeployment,
+      "https://hackerai-git-qa-branch-hackerai.vercel.app",
+      "https://hackerai.co",
+    ]) {
+      const c = config();
+      c.environment = environment;
+      c.worker.environment =
+        environment === "local" ? "development" : "preview";
+      c.frontend = frontend;
+      assert.throws(() => validateConfig(c), {
+        message: localFrontendGuidance,
+      });
+    }
 });
 
 test("allows a local frontend with verified Preview services without relaxing worker selection", () => {
@@ -118,11 +137,46 @@ test("allows a local frontend with verified Preview services without relaxing wo
   c.backend.url = "https://example.convex.cloud";
   c.relay = "wss://preview-relay.example.test";
   assert.equal(validateConfig(c).frontend, "http://127.0.0.1:3100");
+  for (const frontend of ["http://localhost:3100", "http://[::1]:3100"]) {
+    c.frontend = frontend;
+    assert.equal(validateConfig(c).frontend, frontend);
+  }
+  c.frontend = "http://127.0.0.1:3100";
   c.worker.environment = "production";
   assert.throws(() => validateConfig(c));
   c.worker.environment = "preview";
   c.frontend = "http://192.168.1.10:3100";
   assert.throws(() => validateConfig(c));
+});
+
+test("start rejects a hosted frontend before checking the app, probing services or creating a session", async (t) => {
+  const root = await temp(t);
+  const c = config();
+  c.environment = "preview";
+  c.worker.environment = "preview";
+  c.frontend = hostedDeployment;
+  c.backend.url = "https://example.convex.cloud";
+  c.relay = "wss://preview-relay.example.test";
+  // A valid executable that records its launch, so only validation stops it.
+  const launched = join(root, "launched");
+  const child = `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(launched)}, "");\n`;
+  await mkdir(join(root, "bin"));
+  c.app.executable = "bin/qa-app.cjs";
+  c.app.sha256 = createHash("sha256").update(child).digest("hex");
+  await writeFile(join(root, c.app.executable), child, { mode: 0o700 });
+  await writeFile(join(root, "config.json"), JSON.stringify(c));
+  const fetched = [];
+  t.mock.method(globalThis, "fetch", (url) => {
+    fetched.push(String(url));
+    return Promise.reject(new Error("unexpected network access"));
+  });
+  await assert.rejects(
+    main(["start", "hosted-frontend", join(root, "config.json")], root),
+    { message: localFrontendGuidance },
+  );
+  assert.deepEqual(fetched, []);
+  await assert.rejects(readFile(launched), { code: "ENOENT" });
+  await assert.rejects(readFile(join(root, ".artifacts")), { code: "ENOENT" });
 });
 
 test("serve rejects HTTPS before trying to launch its HTTP server", async (t) => {
@@ -378,4 +432,100 @@ test("a synchronous spawn failure restores the callers signal listeners", async 
     signals.map((name) => process.listenerCount(name)),
     before,
   );
+});
+
+test("start verifies targets but never passes control-plane tokens to its child", async (t) => {
+  const gitEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.startsWith("GIT_")),
+  );
+  for (const name of Object.keys(gitEnvironment)) delete process.env[name];
+  t.after(() => Object.assign(process.env, gitEnvironment));
+  const root = await temp(t);
+  const c = config();
+  const server = createServer((req, res) => res.end("local-worktree"));
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => server.close(done)));
+  c.frontend = c.backend.url = `http://127.0.0.1:${server.address().port}`;
+  c.relay = c.backend.url;
+  await mkdir(join(root, ".convex/local/default"), { recursive: true });
+  await writeFile(
+    join(root, ".convex/local/default/config.json"),
+    JSON.stringify({
+      deploymentName: "local-worktree",
+      ports: { cloud: server.address().port },
+    }),
+  );
+  await mkdir(join(root, ".artifacts"));
+  const output = join(root, "child-flags.json");
+  const child = `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify({ convex: !!process.env.CONVEX_ACCESS_TOKEN, trigger: !!process.env.TRIGGER_ACCESS_TOKEN }));\n`;
+  c.app.executable = ".artifacts/qa-app.cjs";
+  c.app.sha256 = createHash("sha256").update(child).digest("hex");
+  await writeFile(join(root, c.app.executable), child, { mode: 0o700 });
+  await mkdir(join(root, "scripts"));
+  await writeFile(
+    join(root, "scripts/verify-local-dependencies.mjs"),
+    await readFile("scripts/verify-local-dependencies.mjs"),
+  );
+  await writeFile(join(root, "package.json"), "{}");
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=QA Fixture",
+      "-c",
+      "user.email=qa@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "fixture",
+    ],
+    { cwd: root },
+  );
+  await writeFile(join(root, "config.json"), JSON.stringify(c));
+  const originalFetch = globalThis.fetch;
+  const verifiedPaths = [];
+  t.mock.method(globalThis, "fetch", (url, init) => {
+    if (String(url).startsWith("https://api.trigger.dev/")) {
+      verifiedPaths.push(new URL(url).pathname);
+      assert.equal(
+        init.headers.authorization,
+        "Bearer synthetic-control-token",
+      );
+      return Promise.resolve(
+        Response.json(
+          String(url).endsWith("workers/current")
+            ? { worker: { id: "test", version: "unverified" } }
+            : { externalRef: "proj_example" },
+        ),
+      );
+    }
+    return originalFetch(url, init);
+  });
+  const oldConvex = process.env.CONVEX_ACCESS_TOKEN;
+  const oldTrigger = process.env.TRIGGER_ACCESS_TOKEN;
+  process.env.CONVEX_ACCESS_TOKEN = "synthetic-control-token";
+  process.env.TRIGGER_ACCESS_TOKEN = "synthetic-control-token";
+  t.after(() => {
+    for (const [name, value] of [
+      ["CONVEX_ACCESS_TOKEN", oldConvex],
+      ["TRIGGER_ACCESS_TOKEN", oldTrigger],
+    ]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  await main(["start", "token-isolation", join(root, "config.json")], root);
+  assert.deepEqual(verifiedPaths, [
+    "/api/v1/projects/proj_example",
+    "/api/v1/projects/proj_example/dev/workers/current",
+  ]);
+  assert.deepEqual(JSON.parse(await readFile(output, "utf8")), {
+    convex: false,
+    trigger: false,
+  });
 });

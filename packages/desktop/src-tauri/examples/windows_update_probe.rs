@@ -35,6 +35,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args.len() != 5 {
         return Err("expected mode, loopback feed, public key file, state directory".into());
     }
+    if !matches!(args[1].as_str(), "install" | "decline" | "reject") {
+        return Err("expected install, decline or reject mode".into());
+    }
     let state = Path::new(&args[4]);
     if let Some((_, outcome)) = update_safety::Receipt::take(state, version)? {
         let result = serde_json::json!({"version": version, "outcome": format!("{outcome:?}")});
@@ -67,6 +70,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?
         .ok_or("expected newer version")?;
     let bytes = update.download(|_, _| {}, || {}).await?;
+    #[cfg(windows)]
+    if args[1] == "reject" {
+        let mut extraction_rejected = false;
+        let result = update_safety::install_after_approval(
+            &update_safety::UpdateGate::default(),
+            state,
+            version,
+            &update.version,
+            true,
+            || {
+                let result = update.install(bytes);
+                extraction_rejected =
+                    matches!(&result, Err(tauri_plugin_updater::Error::Extract(_)));
+                result.map_err(|e| e.to_string())
+            },
+        );
+        if result.is_ok() || !extraction_rejected {
+            return Err("expected signed package rejection at ZIP extraction".into());
+        }
+        assert!(state.join("pending-desktop-update.json").exists());
+        fs::write(
+            state.join("result.json"),
+            serde_json::json!({"version": version, "outcome":"Rejected"}).to_string(),
+        )?;
+        return Ok(());
+    }
     if args[1] == "install" {
         // Model a user tool outside the installation directory. Running a
         // second copy of the installed app would instead lock the exe being replaced.

@@ -13,12 +13,24 @@ const ERROR_KINDS = new Set([
   "RateLimitExceededException",
   "NoApiKeyProvidedException",
   "ApiKeyRequiredException",
+  "AuthKitError",
+  "CallbackError",
   "TokenRefreshError",
   "JWTExpired",
   "JWTInvalid",
   "JWTClaimValidationFailed",
   "JWSInvalid",
   "JOSEError",
+  "JOSEAlgNotAllowed",
+  "JOSENotSupported",
+  "JWEDecryptionFailed",
+  "JWEInvalid",
+  "JWKInvalid",
+  "JWKSInvalid",
+  "JWKSNoMatchingKey",
+  "JWKSMultipleMatchingKeys",
+  "JWKSTimeout",
+  "JWSSignatureVerificationFailed",
 ]);
 
 const ERROR_CODES = new Set([
@@ -37,6 +49,22 @@ const ERROR_CODES = new Set([
   "access_denied",
   "temporarily_unavailable",
   "server_error",
+  // Stable public JOSE codes survive constructor renaming in server bundles.
+  "ERR_JOSE_GENERIC",
+  "ERR_JWT_CLAIM_VALIDATION_FAILED",
+  "ERR_JWT_EXPIRED",
+  "ERR_JOSE_ALG_NOT_ALLOWED",
+  "ERR_JOSE_NOT_SUPPORTED",
+  "ERR_JWE_DECRYPTION_FAILED",
+  "ERR_JWE_INVALID",
+  "ERR_JWS_INVALID",
+  "ERR_JWT_INVALID",
+  "ERR_JWK_INVALID",
+  "ERR_JWKS_INVALID",
+  "ERR_JWKS_NO_MATCHING_KEY",
+  "ERR_JWKS_MULTIPLE_MATCHING_KEYS",
+  "ERR_JWKS_TIMEOUT",
+  "ERR_JWS_SIGNATURE_VERIFICATION_FAILED",
 ]);
 
 type Description = {
@@ -119,7 +147,7 @@ export function getRefreshFailureDiagnostics(error: unknown) {
     // Optional getters/proxies cannot interrupt the existing auth callback.
   }
   return {
-    auth_refresh_diagnostic_version: 1,
+    auth_refresh_diagnostic_version: 2,
     auth_refresh_error_kind: root.kind,
     auth_refresh_error_status: root.status,
     auth_refresh_error_status_shape: root.statusShape,

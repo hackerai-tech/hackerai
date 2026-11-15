@@ -712,7 +712,8 @@ describe("terminal execution records", () => {
       expect(kill).toHaveBeenCalledTimes(1);
       await jest.advanceTimersByTimeAsync(2100);
       await closing;
-      expect(session.recordPersistenceFailed).toBe(true);
+      expect(session.recordPersistenceFailed).toBe(false);
+      expect(session.recordPersistenceStatus).toBe("pending");
       release();
       await jest.advanceTimersByTimeAsync(0);
       expect(saved.at(-1)).toMatchObject({

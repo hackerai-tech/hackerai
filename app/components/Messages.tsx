@@ -1,4 +1,6 @@
 import type { LimitRescueRequest } from "@/types/chat";
+import { LOCAL_CONNECTION_LOST_FINISH_REASON } from "@/lib/chat/local-connection-stop";
+import { FinishReasonNotice } from "./FinishReasonNotice";
 import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
 import {
   useState,
@@ -222,6 +224,7 @@ interface MessagesProps {
   isMobile?: boolean;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
+  continueDisabledReason?: string;
   uploadStatus?: { message: string; isUploading: boolean } | null;
   summarizationStatus?: {
     status: "started" | "completed";
@@ -259,6 +262,7 @@ export const Messages = ({
   isMobile,
   tempChatFileDetails,
   finishReason,
+  continueDisabledReason,
   uploadStatus,
   summarizationStatus,
   mode,
@@ -730,8 +734,20 @@ export const Messages = ({
   const showPendingAgentReasoning =
     shouldShowLoadingDots && mode === "agent" && !isAutoResuming;
   const timelineExtraData = useMemo(
-    () => ({ editingMessageId, status }),
-    [editingMessageId, status],
+    () => ({
+      editingMessageId,
+      status,
+      finishReason,
+      continueDisabledReason,
+      onContinue,
+    }),
+    [
+      editingMessageId,
+      status,
+      finishReason,
+      continueDisabledReason,
+      onContinue,
+    ],
   );
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
@@ -821,6 +837,7 @@ export const Messages = ({
               feedbackInputMessageId={feedbackInputMessageId}
               tempChatFileDetails={tempChatFileDetails}
               finishReason={finishReason}
+              continueDisabledReason={continueDisabledReason}
               mode={mode}
               agentRunSpendCapWarning={agentRunSpendCapWarning}
               branchedFromChatId={branchedFromChatId}
@@ -898,6 +915,7 @@ export const Messages = ({
       editingMessageId,
       feedbackInputMessageId,
       finishReason,
+      continueDisabledReason,
       captureScrollPosition,
       getCachedUrl,
       handleBranchMessage,
@@ -934,7 +952,12 @@ export const Messages = ({
       </div>
     ) : null;
 
+  const showLocalStopWithoutAssistant =
+    finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON &&
+    status !== "streaming" &&
+    (lastAssistantMessageIndex ?? -1) <= (lastUserMessageIndex ?? -1);
   const timelineFooter =
+    showLocalStopWithoutAssistant ||
     showSummarizationSeparately ||
     uploadStatus?.isUploading ||
     shouldShowLoadingDots ||
@@ -943,6 +966,15 @@ export const Messages = ({
         className="mx-auto flex min-h-20 w-full max-w-full flex-col items-start sm:max-w-[768px]"
         data-testid="messages-timeline-footer"
       >
+        {showLocalStopWithoutAssistant && (
+          <FinishReasonNotice
+            finishReason={finishReason}
+            mode={mode}
+            status={status}
+            continueDisabledReason={continueDisabledReason}
+            onContinue={onContinue}
+          />
+        )}
         {showSummarizationSeparately && (
           <SummarizationStatusDivider
             status={summarizationStatus?.status}
@@ -966,7 +998,26 @@ export const Messages = ({
         {error && finishReason !== "timeout" && (
           <MessageErrorState
             error={error}
-            onRetry={onRetry}
+            onRetry={
+              finishReason === LOCAL_CONNECTION_LOST_FINISH_REASON
+                ? async (options) => {
+                    if (continueDisabledReason) {
+                      toast.error(continueDisabledReason);
+                      return;
+                    }
+                    try {
+                      await onContinue?.(
+                        options?.selectedModel,
+                        options?.limitRescue,
+                      );
+                    } catch {
+                      toast.error(
+                        "Could not resume. Your saved progress is still available.",
+                      );
+                    }
+                  }
+                : onRetry
+            }
             onReconnect={onReconnect}
             mode={mode}
           />

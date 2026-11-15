@@ -9,6 +9,14 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
+import {
+  getExtraUsageBundle,
+  extraUsageBundlesEnabled,
+} from "../lib/billing/extra-usage-bundles";
+import { planLookupKeyToTier } from "../lib/analytics/paid-funnel";
+import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "../lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "../lib/pricing/pro-yearly";
+import { includedUsagePointsForStripePrice } from "../lib/billing/included-usage";
 import { BILLING_ERRORS } from "../lib/billing/billing-errors";
 import { redactSensitiveErrorMessage } from "../lib/utils/error-redaction";
 
@@ -97,11 +105,15 @@ function isAllowedApplicationOrigin(url: URL): boolean {
   return allowedOrigins.has(url.origin);
 }
 
-async function getStripeCustomerId(userId: string): Promise<string | null> {
+async function getStripeCustomerId(
+  userId: string,
+  organizationId?: string,
+): Promise<string | null> {
   const workos = getWorkOS();
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId,
+    ...(organizationId && { organizationId }),
     statuses: ["active"],
   });
 
@@ -109,7 +121,11 @@ async function getStripeCustomerId(userId: string): Promise<string | null> {
     return null;
   }
 
-  const billingMembership = memberships.data.find(canManageOrganizationBilling);
+  const billingMembership = memberships.data.find(
+    (membership) =>
+      (!organizationId || membership.organizationId === organizationId) &&
+      canManageOrganizationBilling(membership),
+  );
   if (!billingMembership) {
     return null;
   }
@@ -521,6 +537,7 @@ export const getPaymentStatus = action({
 export const createPurchaseSession = action({
   args: {
     amountDollars: v.number(),
+    bundleId: v.optional(v.string()),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
     returnPath: v.optional(v.string()),
@@ -549,6 +566,18 @@ export const createPurchaseSession = action({
       return { url: null, error: BILLING_ERRORS.accountSuspended };
     }
 
+    let bundle;
+    if (args.bundleId !== undefined) {
+      if (!extraUsageBundlesEnabled(identity.subject))
+        return { url: null, error: "Bundles are not available" };
+      try {
+        bundle = getExtraUsageBundle(args.bundleId);
+      } catch {
+        return { url: null, error: "Unknown bundle" };
+      }
+      if (args.amountDollars !== bundle.creditDollars)
+        return { url: null, error: "Bundle amount mismatch" };
+    }
     // Validate amount
     if (!Number.isInteger(args.amountDollars)) {
       return { url: null, error: "Amount must be a whole dollar value" };
@@ -586,7 +615,21 @@ export const createPurchaseSession = action({
     }
 
     try {
-      const stripeCustomerId = await getStripeCustomerId(identity.subject);
+      // WorkOS access tokens bind the active organization in the signed org_id claim.
+      const activeOrganizationId =
+        typeof identity.org_id === "string" && identity.org_id
+          ? identity.org_id
+          : undefined;
+      if (bundle && !activeOrganizationId) {
+        return {
+          url: null,
+          error: "Select your personal organization before buying a bundle",
+        };
+      }
+      const stripeCustomerId = await getStripeCustomerId(
+        identity.subject,
+        bundle ? activeOrganizationId : undefined,
+      );
       if (!stripeCustomerId) {
         return {
           url: null,
@@ -595,7 +638,35 @@ export const createPurchaseSession = action({
       }
 
       const stripe = getStripe();
-      const amountCents = args.amountDollars * 100;
+      if (bundle) {
+        const subscriptions = await stripe.subscriptions.list({
+          customer: stripeCustomerId,
+          status: "active",
+          limit: 100,
+        });
+        if (
+          !subscriptions.data.some((subscription) =>
+            subscription.items.data.some((item) => {
+              // Lookup keys move to new prices; existing Pro subscribers retain these IDs.
+              if (
+                item.price.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID ||
+                item.price.id === GRANDFATHERED_PRO_YEARLY_PRICE_ID ||
+                includedUsagePointsForStripePrice(item.price.id) !== undefined
+              )
+                return true;
+              const tier = planLookupKeyToTier(
+                item.price.lookup_key ?? undefined,
+              );
+              return tier === "pro" || tier === "pro-plus" || tier === "ultra";
+            }),
+          )
+        )
+          return {
+            url: null,
+            error: "An active paid subscription is required",
+          };
+      }
+      const amountCents = (bundle?.paidDollars ?? args.amountDollars) * 100;
 
       const session = await stripe.checkout.sessions.create({
         customer: stripeCustomerId,
@@ -624,6 +695,10 @@ export const createPurchaseSession = action({
           type: "extra_usage_purchase",
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: String(bundle.paidDollars),
+          }),
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
@@ -641,6 +716,10 @@ export const createPurchaseSession = action({
         await ctx.runMutation(internal.extraUsage.recordPurchaseCreated, {
           userId: identity.subject,
           amountDollars: args.amountDollars,
+          ...(bundle && {
+            bundleId: bundle.id,
+            paidAmountDollars: bundle.paidDollars,
+          }),
           stripeCheckoutSessionId: session.id,
         });
       } catch (error) {

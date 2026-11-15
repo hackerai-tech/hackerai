@@ -62,6 +62,11 @@ import {
 import type { ProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
+import {
+  buildRelevantNotesSection,
+  recordRelevantRecallExposure,
+  type RelevantRecallScope,
+} from "@/lib/notes/recall";
 import { logger } from "@/lib/logger";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { ChatSDKError } from "@/lib/errors";
@@ -589,7 +594,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
+ * V4.1 Flash in Agent. Max uses Grok 4.6 for text and images. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -747,6 +752,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
 type FallbackOptions = {
   /** Max uses explicit recovery so each model gets its own reasoning policy. */
   selectedModelOverride?: SelectedModel;
+  /** Authenticated paid Agent request using Auto (including the default selector). */
+  isPaidAutoAgentRequest?: boolean;
   /** Preserve the authenticated free Ask policy across model retries. */
   isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
@@ -789,9 +796,12 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   mode: ChatMode,
   selectedModelOverride?: SelectedModel,
+  options: { hasImageInputs?: boolean } = {},
 ): ModelName {
   if (mode === "agent" && selectedModelOverride === "hackerai-max") {
-    // Grok is admitted only by the context-aware final recovery decision.
+    if (modelName === "model-grok-4.6" && !options.hasImageInputs)
+      return "model-glm-5.3";
+    // Images and the control route retain DeepSeek recovery.
     return DEEPSEEK_1017_MODEL_KEY;
   }
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
@@ -1085,9 +1095,10 @@ export function buildProviderOptions(
       modelName === "ask-model-free-deepseek-v41");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
-  // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
-  // mode-scoped for any future route that does not also include Grok.
+  // Agent DeepSeek routes default to high; paid Auto opts into max below.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
+  const usesMaxDeepSeekReasoning =
+    isAgentDeepSeekV4 && options.isPaidAutoAgentRequest === true;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
   const reasoningFallbackSlugs = options.excludedModelSlugs?.length
     ? getFallbackSlugs(modelName, mode, {
@@ -1135,6 +1146,10 @@ export function buildProviderOptions(
         ],
       }
     : baseProviderRouting;
+  // Max uses the same high effort for native Grok text and vision, including
+  // continuation steps whose caller still carries an older reasoning override.
+  const usesFixedMaxGrokReasoning =
+    isGrok46 && options.selectedModelOverride === "hackerai-max";
   // GLM titles need mandatory reasoning, kept low for the small output budget.
   const reasoning = isExplicitPaidFlashTier
     ? {
@@ -1163,7 +1178,8 @@ export function buildProviderOptions(
                 effort: "medium",
               }
             : routesThroughHighReasoningModel
-              ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+              ? !usesFixedMaxGrokReasoning &&
+                isHighOrGreaterReasoningOverride(options.reasoningOverride)
                 ? options.reasoningOverride
                 : {
                     enabled: true,
@@ -1185,7 +1201,11 @@ export function buildProviderOptions(
   return {
     openrouter: {
       ...(!usesDefaultGlmFlashAgentReasoning && {
-        reasoning: isFreeAsk ? { enabled: true, effort: "low" } : reasoning,
+        reasoning: isFreeAsk
+          ? { enabled: true, effort: "low" }
+          : usesMaxDeepSeekReasoning
+            ? { enabled: true, effort: "max" }
+            : reasoning,
       }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
@@ -1200,10 +1220,14 @@ export function buildProviderOptions(
       ...(userId && { user: userId }),
       ...buildPromptCacheOptions(modelId ?? "", options.cacheSessionId)
         .openrouter,
-      ...((providerRouting || isExplicitPaidFlashTier) && {
+      ...((providerRouting ||
+        isExplicitPaidFlashTier ||
+        usesMaxDeepSeekReasoning) && {
         provider: {
           ...providerRouting,
-          ...(isExplicitPaidFlashTier && { require_parameters: true }),
+          ...((isExplicitPaidFlashTier || usesMaxDeepSeekReasoning) && {
+            require_parameters: true,
+          }),
         },
       }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
@@ -1271,20 +1295,61 @@ export function appendSystemReminderToLastUserMessage(
   return result;
 }
 
+export type NoteInjectionOpts = {
+  userId: string;
+  subscription: SubscriptionTier;
+  shouldIncludeNotes: boolean;
+  /**
+   * Present only when notes_relevant_recall_v1 was evaluated on for this
+   * request. Replaces the general-notes dump with bounded relevant recall.
+   */
+  relevantRecall?: RelevantRecallScope;
+};
+
+const NOTE_MUTATION_TOOLS = new Set([
+  "create_note",
+  "update_note",
+  "delete_note",
+]);
+
+/** Failed note mutations change nothing, so they never trigger a refresh. */
+export function hasSuccessfulNoteMutation(toolResults: unknown): boolean {
+  return (
+    Array.isArray(toolResults) &&
+    toolResults.some((result) => {
+      const entry = result as { toolName?: string; output?: unknown };
+      return (
+        NOTE_MUTATION_TOOLS.has(entry?.toolName ?? "") &&
+        (entry.output as { success?: unknown } | undefined)?.success !== false
+      );
+    })
+  );
+}
+
+/** Renders the current notes block; rejects when the lookup fails. */
+async function loadNotesSection(opts: NoteInjectionOpts): Promise<string> {
+  if (opts.relevantRecall) {
+    return (
+      await buildRelevantNotesSection({
+        userId: opts.userId,
+        scope: opts.relevantRecall,
+      })
+    ).section;
+  }
+  return generateNotesSection(await getNotes({ ...opts, throwOnError: true }));
+}
+
 /**
  * Fetches user notes and injects them into messages via <system-reminder>.
  * Returns the (possibly updated) messages array.
  */
 export async function injectNotesIntoMessages(
   messages: UIMessage[],
-  opts: {
-    userId: string;
-    subscription: SubscriptionTier;
-    shouldIncludeNotes: boolean;
+  opts: NoteInjectionOpts & {
     /**
      * Notes fetch started earlier in the request so it overlaps other
      * preflight work instead of adding a round-trip right before the model
-     * call. Falls back to fetching here when absent.
+     * call. Falls back to fetching here when absent. Ignored by recall.
      */
     preloadedNotes?: Promise<Awaited<ReturnType<typeof getNotes>>>;
   },
@@ -1292,12 +1357,23 @@ export async function injectNotesIntoMessages(
   if (!opts.shouldIncludeNotes) return messages;
 
   try {
-    const notes = await (opts.preloadedNotes ??
-      getNotes({
+    let notesContent: string;
+    if (opts.relevantRecall) {
+      const recalled = await buildRelevantNotesSection({
         userId: opts.userId,
-        subscription: opts.subscription,
-      }));
-    const notesContent = generateNotesSection(notes);
+        scope: opts.relevantRecall,
+      });
+      recordRelevantRecallExposure(opts.userId, recalled);
+      notesContent = recalled.section;
+    } else {
+      notesContent = generateNotesSection(
+        await (opts.preloadedNotes ??
+          getNotes({
+            userId: opts.userId,
+            subscription: opts.subscription,
+          })),
+      );
+    }
     if (!notesContent) return messages;
 
     return appendSystemReminderToLastUserMessage(messages, notesContent);
@@ -1352,20 +1428,14 @@ export function replaceNotesBlock(
  */
 export async function refreshNotesInModelMessages(
   messages: Array<Record<string, unknown>>,
-  opts: {
-    userId: string;
-    subscription: SubscriptionTier;
-    shouldIncludeNotes: boolean;
-  },
+  opts: NoteInjectionOpts,
 ): Promise<Array<Record<string, unknown>>> {
   if (!opts.shouldIncludeNotes) return messages;
 
   try {
-    const notes = await getNotes({
-      userId: opts.userId,
-      subscription: opts.subscription,
-    });
-    const newNotesContent = generateNotesSection(notes);
+    // A failed lookup throws and keeps the existing block; it must never be
+    // mistaken for every note having been deleted.
+    const newNotesContent = await loadNotesSection(opts);
 
     // First pass: try to replace (or remove) an existing notes block.
     // replaceNotesBlock handles empty newNotesContent by removing the block.
@@ -1415,28 +1485,19 @@ export async function refreshNotesInModelMessages(
 /** Updated facts are new history, not an edit to an already-sent user request. */
 export async function getAppendedNotesUpdate(
   toolResults: unknown[],
-  opts: {
-    userId: string;
-    subscription: SubscriptionTier;
-    shouldIncludeNotes: boolean;
-  },
+  opts: NoteInjectionOpts,
   force = false,
 ): Promise<string | undefined> {
   if (
     !opts.shouldIncludeNotes ||
-    (!force &&
-      !toolResults.some((result) =>
-        ["create_note", "update_note", "delete_note"].includes(
-          (result as { toolName?: string })?.toolName ?? "",
-        ),
-      ))
+    (!force && !hasSuccessfulNoteMutation(toolResults))
   )
     return;
   try {
-    const notes = generateNotesSection(
-      await getNotes({ ...opts, throwOnError: true }),
-    );
-    return `Current saved notes. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No saved notes remain."}`;
+    const notes = await loadNotesSection(opts);
+    return opts.relevantRecall
+      ? `Current relevant saved notes for this task. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No relevant saved notes."}`
+      : `Current saved notes. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No saved notes remain."}`;
   } catch {
     return; // A failed lookup must never be represented as notes being deleted.
   }
@@ -1488,23 +1549,11 @@ export async function applyPrepareStepReminders(
   messages: Array<Record<string, unknown>>,
   opts: {
     toolResults: unknown[];
-    noteInjectionOpts: {
-      userId: string;
-      subscription: SubscriptionTier;
-      shouldIncludeNotes: boolean;
-    };
+    noteInjectionOpts: NoteInjectionOpts;
   },
 ): Promise<Array<Record<string, unknown>>> {
-  // Refresh notes if a note tool was used
-  const wasNoteModified =
-    Array.isArray(opts.toolResults) &&
-    opts.toolResults.some((r) =>
-      ["create_note", "update_note", "delete_note"].includes(
-        (r as { toolName?: string })?.toolName ?? "",
-      ),
-    );
-
-  if (wasNoteModified) {
+  // Refresh notes only after a note actually changed, never on every step.
+  if (hasSuccessfulNoteMutation(opts.toolResults)) {
     return (await refreshNotesInModelMessages(
       messages,
       opts.noteInjectionOpts,

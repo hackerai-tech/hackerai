@@ -16,7 +16,7 @@ const connection = {
   connectionId: "session",
   name: "Lab",
   capabilities: { commands: true },
-  isDesktop: false,
+  isDesktop: true,
 };
 beforeEach(() => {
   jest.clearAllMocks();
@@ -31,7 +31,10 @@ it("requires live presence and cannot select another computer or another user's 
     onlineConnectionIds: new Set(["other-session"]),
   });
   expect(
-    await findScheduledConnection("owner", `environment:${environmentId}`),
+    await findScheduledConnection(
+      "owner",
+      `desktop-environment:${environmentId}`,
+    ),
   ).toBeNull();
   expect(mockQuery).toHaveBeenCalledWith(
     expect.anything(),
@@ -42,13 +45,13 @@ it("requires live presence and cannot select another computer or another user's 
     onlineConnectionIds: new Set(["session"]),
   });
   expect(
-    await findScheduledConnection("owner", `environment:${environmentId}`),
-  ).toEqual(connection);
-  expect(
     await findScheduledConnection(
       "owner",
       `desktop-environment:${environmentId}`,
     ),
+  ).toEqual(connection);
+  expect(
+    await findScheduledConnection("owner", `environment:${environmentId}`),
   ).toBeNull();
 });
 it("fails closed when live relay presence cannot be established", async () => {
@@ -57,7 +60,7 @@ it("fails closed when live relay presence cannot be established", async () => {
     onlineConnectionIds: new Set(["session"]),
   });
   await expect(
-    findScheduledConnection("owner", `environment:${environmentId}`),
+    findScheduledConnection("owner", `desktop-environment:${environmentId}`),
   ).rejects.toThrow("verify");
 });
 it("stops once on loss of the pinned session and never resumes when a replacement appears", async () => {

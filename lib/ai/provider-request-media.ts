@@ -1,6 +1,23 @@
 import type { ModelMessage, UIMessage } from "ai";
 
+export type ProviderImageReferenceMatchCounts = Pick<
+  ProviderRequestMediaCounts,
+  | "image_parts"
+  | "user_image_parts"
+  | "assistant_image_parts"
+  | "tool_image_parts"
+  | "other_image_parts"
+  | "url_expiry_hint_expired_images"
+  | "url_expiry_hint_near_images"
+  | "url_expiry_hint_later_images"
+  | "url_expiry_hint_unknown_images"
+  | "user_url_images_with_file_reference_match"
+  | "user_url_images_without_file_reference_match"
+>;
+
 export interface ProviderRequestMediaCounts {
+  /** Optional exact candidate counts; never includes the reference itself. */
+  failed_image_reference?: ProviderImageReferenceMatchCounts;
   image_parts: number;
   user_image_parts: number;
   assistant_image_parts: number;
@@ -103,6 +120,7 @@ export const getProviderRequestMediaCounts = (
   messages: readonly ModelMessage[],
   nowMs = Date.now(),
   sourceMessages?: readonly UIMessage[],
+  failedImageReference?: string,
 ): ProviderRequestMediaCounts => {
   let fileReferenceUrls: Set<string> | undefined;
   try {
@@ -151,6 +169,23 @@ export const getProviderRequestMediaCounts = (
       user_url_images_without_file_reference_match: 0,
     }),
   } satisfies ProviderRequestMediaCounts;
+  if (failedImageReference !== undefined) {
+    counts.failed_image_reference = {
+      image_parts: 0,
+      user_image_parts: 0,
+      assistant_image_parts: 0,
+      tool_image_parts: 0,
+      other_image_parts: 0,
+      url_expiry_hint_expired_images: 0,
+      url_expiry_hint_near_images: 0,
+      url_expiry_hint_later_images: 0,
+      url_expiry_hint_unknown_images: 0,
+      ...(fileReferenceUrls !== undefined && {
+        user_url_images_with_file_reference_match: 0,
+        user_url_images_without_file_reference_match: 0,
+      }),
+    };
+  }
   const addImage = (role: string, value: unknown, providerId = false) => {
     counts.image_parts++;
     const roleKey =
@@ -170,6 +205,20 @@ export const getProviderRequestMediaCounts = (
       const expiryField =
         `url_expiry_hint_${imageUrlExpiryHint(value, nowMs)}_images` as const;
       counts[expiryField] = (counts[expiryField] ?? 0) + 1;
+      const reference = value instanceof URL ? value.href : (value as string);
+      const matches = counts.failed_image_reference;
+      if (matches && reference === failedImageReference) {
+        matches.image_parts++;
+        matches[roleKey]++;
+        matches[expiryField] = (matches[expiryField] ?? 0) + 1;
+        if (role === "user" && fileReferenceUrls !== undefined) {
+          const field = fileReferenceUrls.has(reference)
+            ? "user_url_images_with_file_reference_match"
+            : "user_url_images_without_file_reference_match";
+          matches[field] = (matches[field] ?? 0) + 1;
+        }
+      }
+
       if (role === "user" && fileReferenceUrls !== undefined) {
         const field = fileReferenceUrls.has(
           value instanceof URL ? value.href : (value as string),

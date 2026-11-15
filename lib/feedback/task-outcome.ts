@@ -11,6 +11,10 @@ import {
   INFERENCE_CYBER_FLAG,
 } from "../experiments/abliteration-keys";
 import type { AbliteratedAssignment } from "../experiments/abliterated-model";
+import {
+  MAX_GROK_46_KEY,
+  MAX_GROK_46_FEEDBACK_PHASE,
+} from "../experiments/max-grok-46";
 
 export const PAID_TASK_OUTCOME_FLAG = "paid_task_outcome_feedback_v1";
 // Feedback delivery is independent of the model's existing allocation.
@@ -28,8 +32,12 @@ export const PRO_THREE_STEPS_TASK_OUTCOME_PHASE =
 
 // Keep historical reservations readable while new assignments use their own
 // immutable phase. A routing change must never relabel the old cohort.
-export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
+export function experimentTaskOutcomePhase(
+  key: AbliteratedAssignment["key"] | typeof MAX_GROK_46_KEY,
+) {
   switch (key) {
+    case MAX_GROK_46_KEY:
+      return MAX_GROK_46_FEEDBACK_PHASE;
     case ABLITERATED_MAX_EXPERIMENT_KEY:
       return EXPERIMENT_TASK_OUTCOME_PHASE;
     case ABLITERATED_PAID_FIRST_STEP_KEY:

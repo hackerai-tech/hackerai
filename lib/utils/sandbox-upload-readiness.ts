@@ -9,8 +9,11 @@ export async function checkAttachmentReadiness(
 ) {
   if (!isE2BSandbox(sandbox)) return;
   signal?.throwIfAborted();
+  // requestTimeoutMs bounds only the wait for a process ID, so an unavailable
+  // command channel still fails after five seconds. timeoutMs covers the whole
+  // login shell; a workspace that starts it slowly is not unavailable.
   const result = await runAttachmentCommand(sandbox, "true", signal, {
-    timeoutMs: 5_000,
+    timeoutMs: 30_000,
     requestTimeoutMs: 5_000,
   });
   signal?.throwIfAborted();

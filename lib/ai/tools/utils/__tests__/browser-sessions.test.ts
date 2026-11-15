@@ -1,5 +1,15 @@
+/** @jest-environment node */
 import type { AnySandbox } from "@/types";
 import { BrowserSessions } from "../browser-sessions";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { phLogger } from "@/lib/posthog/server";
+
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: jest.fn(),
+}));
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { info: jest.fn() },
+}));
 
 function sandbox() {
   return {
@@ -8,30 +18,118 @@ function sandbox() {
   };
 }
 
-describe("managed browser ownership", () => {
-  it.each([true, false])(
-    "checks the managed rollout once while sharing concurrent preparation: %s",
-    async (enabled) => {
+describe("browser preparation attribution", () => {
+  const scope = {
+    userId: "opaque-user",
+    chatId: "opaque-chat",
+    runId: "run_opaque",
+    agentId: "agent_opaque",
+    serviceKey: "PRIVATE_SERVICE_KEY",
+  };
+  let mutation: jest.Mock;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mutation = jest.fn(async () => true);
+    jest.mocked(getConvexClient).mockReturnValue({ mutation } as never);
+  });
+
+  it.each([
+    "gate_only",
+    "recognized_browser_command",
+    "interactive_shell",
+    "internal",
+  ] as const)(
+    "retains the first %s reason across concurrent reuse",
+    async (reason) => {
       const target = sandbox();
-      const decide = jest.fn(async () => enabled);
-      const owner = new BrowserSessions(undefined, undefined, undefined, {
-        enabled: decide,
-      });
-      const [a, b] = await Promise.all([
-        owner.prepare(target as unknown as AnySandbox),
-        owner.prepare(target as unknown as AnySandbox),
+      target.commands.run.mockImplementation(async () => ({
+        exitCode: 0,
+        stdout: "/usr/bin",
+      }));
+      const owner = new BrowserSessions(scope);
+      const [first, reused] = await Promise.all([
+        owner.prepare(target as unknown as AnySandbox, reason),
+        owner.prepare(
+          target as unknown as AnySandbox,
+          "recognized_browser_command",
+        ),
       ]);
-      expect(a).toEqual(b);
+      expect(first).toEqual(reused);
+      expect(phLogger.info).toHaveBeenCalledTimes(1);
+      expect(phLogger.info).toHaveBeenCalledWith(
+        "browser_session_preparation_diagnostics",
+        {
+          diagnostic_version: 1,
+          observation_scope: "initial_registered_root",
+          preparation_reason: reason,
+          browser_session_id: expect.stringMatching(/^[a-f0-9]{32}$/),
+          trigger_run_id: "run_opaque",
+          agent_id: "agent_opaque",
+        },
+      );
       expect(target.commands.run).toHaveBeenCalledTimes(1);
-      expect(decide).toHaveBeenCalledTimes(1);
-      const command = (
-        target.commands.run.mock.calls[0] as unknown as [string]
-      )[0];
-      if (enabled) expect(command).toContain("hackerai.cloudflareChallenge");
-      else expect(command).not.toContain("hackerai.cloudflareChallenge");
       await owner.cleanup();
     },
   );
+
+  it("reports only after successful registration without replacing the creation reason", async () => {
+    const target = sandbox();
+    target.commands.run.mockImplementation(async () => ({
+      exitCode: 0,
+      stdout: "/usr/bin",
+    }));
+    mutation.mockResolvedValueOnce(false);
+    const owner = new BrowserSessions(scope);
+    await owner.prepare(target as unknown as AnySandbox, "gate_only");
+    expect(phLogger.info).not.toHaveBeenCalled();
+    await owner.prepare(
+      target as unknown as AnySandbox,
+      "recognized_browser_command",
+    );
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "browser_session_preparation_diagnostics",
+      expect.objectContaining({ preparation_reason: "gate_only" }),
+    );
+    expect(target.commands.run).toHaveBeenCalledTimes(1);
+    await owner.cleanup();
+  });
+
+  it("cannot leak arbitrary reasons or scope contents, and delivery failure leaves setup usable", async () => {
+    const target = sandbox();
+    target.commands.run.mockImplementation(async () => ({
+      exitCode: 0,
+      stdout: "/usr/bin",
+    }));
+    const owner = new BrowserSessions({
+      ...scope,
+      runId: "PRIVATE_SERVICE_KEY",
+      agentId: "https://private.example",
+    });
+    jest.mocked(phLogger.info).mockImplementationOnce(() => {
+      throw new Error("sink unavailable");
+    });
+    const env = await owner.prepare(
+      target as unknown as AnySandbox,
+      "https://private.example" as never,
+    );
+    expect(env.AGENT_BROWSER_SOCKET_DIR).toMatch(
+      /^\/dev\/shm\/hackerai-browser-/,
+    );
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "browser_session_preparation_diagnostics",
+      expect.objectContaining({
+        preparation_reason: "internal",
+        trigger_run_id: "unknown",
+        agent_id: "unknown",
+      }),
+    );
+    await owner.prepare(target as unknown as AnySandbox);
+    expect(phLogger.info).toHaveBeenCalledTimes(1);
+    await owner.cleanup();
+  });
+});
+
+describe("managed browser ownership", () => {
   it("isolates parent, sibling, and later-run sockets and encryption keys", async () => {
     const target = sandbox();
     const owners = [

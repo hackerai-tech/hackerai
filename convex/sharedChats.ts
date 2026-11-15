@@ -1,3 +1,4 @@
+import { createChatHistoryAccess } from "./lib/chatHistoryAccess";
 import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import { query, mutation } from "./lib/serviceFunctions";
 import { v } from "convex/values";
@@ -7,6 +8,7 @@ import {
   isUserBlockedFromChatHistory,
 } from "./lib/suspensionGuards";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { sanitizeTerminalPartForShare } from "../lib/chat/shared-terminal-sanitizer";
 import {
   getVisibleSharedChatByShareId,
   listVisibleSharedMessages,
@@ -383,6 +385,8 @@ export const forkSharedChat = mutation({
       update_time: Date.now(),
     });
 
+    await createChatHistoryAccess(ctx, newChatId, identity.subject);
+
     // Copy messages to new chat
     for (const msg of frozenMessages) {
       const newMessageId = crypto.randomUUID();
@@ -391,7 +395,9 @@ export const forkSharedChat = mutation({
       // as broken "Unknown file" cards in the regular chat view.
       const sanitizedParts = sanitizeFindingPartsForShare(
         stripOpenRouterReasoningMetadataFromParts(msg.parts),
-      ).filter((part: any) => part.type !== "file");
+      )
+        .filter((part: any) => part.type !== "file")
+        .map(sanitizeTerminalPartForShare);
       await ctx.db.insert("messages", {
         id: newMessageId,
         chat_id: newChatId,

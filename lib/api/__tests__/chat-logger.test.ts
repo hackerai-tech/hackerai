@@ -1,5 +1,9 @@
 import { rethrowBrowserHandoffReadError } from "@/lib/ai/browser-handoff/read-error";
-import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  agentRunEventUuid,
+  createAgentRunReporting,
+} from "@/lib/analytics/agent-run-reporting";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import { describe, expect, it, jest } from "@jest/globals";
 import fs from "fs";
 import path from "path";
@@ -16,6 +20,7 @@ const {
   captureAgentCompletionAnalytics,
   captureAgentRun,
   captureToolCalls,
+  captureIncompleteUsageCost,
   captureUsageCost,
   captureUsageSettlement,
   isUsageSettlementSuccessSampled,
@@ -753,6 +758,107 @@ describe("captureAgentRun", () => {
     );
   });
 
+  it("adds the first local stop cause to the normal terminal event once, with its run identity", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    const connectionId = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+    const reporting = createAgentRunReporting({
+      posthog,
+      runId: "run_local",
+      userId: "user_123",
+      chatId: "chat_123",
+      subscription: "pro",
+      endpoint: "/api/agent",
+    });
+    reporting.recordLocalStop(
+      new LocalConnectionLostError("subscription_reconnecting", {
+        connectionId,
+        hadPositivePresence: false,
+        callbackCode: 2500,
+        clientState: "connected",
+        socketCloseCode: 1000,
+        socketCloseWasClean: true,
+        // Never the close reason or socket URL.
+        ...({ reason: "PRIVATE", url: "wss://PRIVATE" } as {}),
+      }),
+    );
+    reporting.captureTerminal(captureAgentCompletionAnalytics, {
+      posthog,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/agent",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: { type: "desktop" },
+      outcome: "aborted",
+      abortSource: "unknown",
+      hasResponseContent: false,
+      chatLogger: undefined,
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      finishReason: "local-connection-lost",
+      triggerRunId: "run_local",
+      abliteratedProviderSummary: undefined,
+    });
+    reporting.finalize({ canceled: false });
+
+    const runs = capture.mock.calls
+      .map(([event]: any) => event)
+      .filter((event: any) => event.event === "hackerai-agent_run");
+    expect(runs).toHaveLength(1);
+    expect(runs[0].uuid).toBe(
+      agentRunEventUuid("run_local", "hackerai-agent_run"),
+    );
+    expect(runs[0].properties).toMatchObject({
+      outcome: "aborted",
+      finish_reason: "local-connection-lost",
+      local_stop_diagnostic_version: 1,
+      local_stop_reason: "subscription_reconnecting",
+      local_stop_connection_id: connectionId,
+      local_stop_had_positive_presence: false,
+      local_stop_callback_code: 2500,
+      local_stop_client_state: "connected",
+      local_stop_socket_close_code: 1000,
+      local_stop_socket_close_was_clean: true,
+    });
+    expect(runs[0].properties).not.toHaveProperty(
+      "local_stop_last_positive_presence_age_ms",
+    );
+    expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    ["no stop", undefined],
+    ["a generic error", new Error("PRIVATE canary")],
+    [
+      "a forged error",
+      Object.assign(Object.create(LocalConnectionLostError.prototype), {
+        local_stop_reason: "PRIVATE canary",
+      }),
+    ],
+    [
+      "a proxied error",
+      new Proxy(new LocalConnectionLostError("selected_host_left"), {}),
+    ],
+  ])("adds no local stop fields for %s", (_name, localConnectionLostError) => {
+    const capture = jest.fn();
+    captureAgentRun({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      mode: "agent",
+      subscription: "pro",
+      sandboxInfo: null,
+      outcome: "aborted",
+      selectedModel: "agent-model",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      localConnectionLostError,
+    });
+    expect(JSON.stringify(capture.mock.calls)).not.toMatch(
+      /local_stop_|PRIVATE/,
+    );
+  });
+
   it("does not capture agent run events for ask mode", () => {
     const capture = jest.fn();
 
@@ -786,6 +892,11 @@ describe("resolveAgentAbortSource", () => {
     ],
     ["agent_spend_cap", { stoppedDueToAgentRunSpendCap: true }],
     ["elapsed_timeout", { stoppedDueToElapsedTimeout: true }],
+    [
+      "user_wait_timeout",
+      { stopSource: "wait_for_user_timeout", requestCancelled: true },
+    ],
+    ["user_wait_failed", { stopSource: "wait_for_user" }],
     ["user_stop", { userStopRequested: true }],
     ["request_cancel", { requestCancelled: true }],
     ["unknown", {}],
@@ -1573,6 +1684,151 @@ describe("captureUsageCost", () => {
     expect(capture.mock.calls[0][0].properties).not.toHaveProperty(
       "response_model",
     );
+  });
+
+  const recordedUsage = {
+    model: "auto",
+    type: "included",
+    inputTokens: 100,
+    outputTokens: 50,
+    totalTokens: 150,
+    costDollars: 0.01,
+    includedCostDollars: 0.01,
+    extraUsageCostDollars: 0,
+    uncoveredCostDollars: 0,
+    includedPointsDeducted: 0,
+    extraUsagePointsDeducted: 0,
+    uncoveredPoints: 0,
+    usageDeductionFailed: false,
+    modelCostDollars: 0.01,
+    nonModelCostDollars: 0,
+    costSource: "provider",
+  };
+  const askContext = {
+    userId: "user_123",
+    subscription: "free",
+    chatId: "chat_123",
+    endpoint: "/api/chat",
+    mode: "ask",
+  };
+
+  it("gives Free Ask a settlement ID and a stable identity shared by the fallback", () => {
+    const capture = jest.fn();
+    const posthog = { capture } as any;
+    captureUsageCost({
+      ...askContext,
+      posthog,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_free",
+      usageLog: "not_applicable",
+    });
+    captureIncompleteUsageCost({
+      ...askContext,
+      posthog,
+      usageSettlementId: "settlement_free",
+      failureStage: "settlement",
+      canceled: false,
+    });
+
+    const [recorded, incomplete] = capture.mock.calls.map(
+      ([event]) => event as any,
+    );
+    expect(recorded.uuid).toEqual(expect.any(String));
+    // PostHog keeps one record if both captures are ever sent.
+    expect(incomplete.uuid).toBe(recorded.uuid);
+    expect(recorded.properties).toMatchObject({
+      usage_settlement_id: "settlement_free",
+      usage_log_status: "not_applicable",
+    });
+    expect(recorded.properties).not.toHaveProperty(
+      "usage_settlement_summary_version",
+    );
+  });
+
+  it("reports a failed ledger write as fixed fields without changing cost", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      subscription: "pro",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_paid",
+      usageLog: { status: "failed", failureCategory: "write_failed" },
+    });
+    expect(capture.mock.calls[0][0].properties).toMatchObject({
+      cost_accounting_status: "recorded",
+      cost_dollars: 0.01,
+      usage_log_status: "failed",
+      usage_log_failure_category: "write_failed",
+    });
+  });
+
+  it("keeps child execution cost in its own run-scoped record", () => {
+    const capture = jest.fn();
+    captureUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usage: recordedUsage,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      subagent: { id: "sa_1", parentTriggerRunId: "run_parent" },
+      triggerRunUsage: {
+        totalCostDollars: 0.02,
+        computeCostDollars: 0.02,
+        baseCostDollars: 0,
+        durationMs: 10,
+      },
+    });
+    const event = capture.mock.calls[0][0] as any;
+    expect(event.uuid).toBe(
+      agentRunEventUuid("run_child", "hackerai-usage_cost"),
+    );
+    expect(event.uuid).not.toBe(
+      agentRunEventUuid("run_parent", "hackerai-usage_cost"),
+    );
+    expect(event.properties).toMatchObject({
+      cost_scope: "subagent",
+      subagent_id: "sa_1",
+      parent_trigger_run_id: "run_parent",
+      trigger_run_id: "run_child",
+      trigger_cost_is_final: false,
+    });
+  });
+
+  it("reports unknown full cost with a lower bound that counts Trigger once", () => {
+    const capture = jest.fn();
+    captureIncompleteUsageCost({
+      ...askContext,
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      posthog: { capture } as any,
+      usageSettlementId: "settlement_child",
+      triggerRunId: "run_child",
+      usageMeasurement: {
+        usage_known_incurred_cost_dollars: 1.25,
+        usage_trigger_run_cost_dollars: 0.25,
+        usage_discarded_retry_cost_dollars: 0.5,
+      },
+      latestTriggerCostDollars: 0.375,
+      failureStage: "settlement",
+      canceled: true,
+    });
+    expect(capture.mock.calls[0][0]).toMatchObject({
+      uuid: agentRunEventUuid("run_child", "hackerai-usage_cost"),
+      properties: {
+        cost_accounting_status: "incomplete",
+        cost_dollars: null,
+        model_cost_dollars: null,
+        non_model_cost_dollars: null,
+        usage_discarded_retry_cost_dollars: 0.5,
+        // 1.25 known, with the 0.25 settled snapshot replaced by 0.375.
+        known_incurred_cost_lower_bound_dollars: 1.375,
+        known_trigger_cost_dollars: 0.375,
+        failure_kind: "canceled",
+      },
+    });
   });
 });
 
@@ -2844,6 +3100,51 @@ describe("createChatLogger OpenRouter metadata", () => {
 
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
       expect(wideEvent.usage.total_cost).toBeCloseTo(0.0030955);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("logs OpenRouter's charged cost for non-BYOK usage", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const chatLogger = createChatLogger({
+        chatId: "chat_non_byok_provider_cost",
+        endpoint: "/api/chat",
+      });
+      chatLogger.setRequestDetails({ mode: "ask", isRegenerate: false });
+      chatLogger.setUser({ id: "user_123", subscription: "pro" });
+      chatLogger.setChat(
+        {
+          messageCount: 1,
+          estimatedInputTokens: 100,
+          isNewChat: false,
+          notesEnabled: false,
+        },
+        "model-opus-4.6",
+      );
+      chatLogger.setStreamResponse(
+        "anthropic/claude-opus-4.6",
+        {
+          inputTokens: 5264,
+          outputTokens: 18,
+          raw: {
+            cost: 0.0015,
+            cost_details: { upstream_inference_cost: 0.0012 },
+          },
+        },
+        { openrouter_is_byok: false },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+
+      const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.usage.total_cost).toBeCloseTo(0.0015);
     } finally {
       logSpy.mockRestore();
     }

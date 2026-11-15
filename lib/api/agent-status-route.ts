@@ -9,6 +9,7 @@ import { getChatById, setActiveTriggerRun } from "@/lib/db/actions";
 
 import { recoverCrashedAgentRun } from "./agent-crash-recovery";
 import { AgentCrashRecoveryReplayLimitError } from "./agent-crash-recovery-error";
+import { createTriggerRunReadDiagnostics } from "./trigger-run-read-diagnostics";
 
 type AgentStatusRequestBody = {
   chatId?: unknown;
@@ -91,6 +92,8 @@ export const createAgentStatusPost =
     let chatId: string | undefined;
     let runId: string | undefined;
     let ownedRun: { chatId: string; runId: string } | undefined;
+    let triggerRunRead:
+      ReturnType<typeof createTriggerRunReadDiagnostics> | undefined;
     const requestId =
       req.headers.get("x-request-id") ??
       req.headers.get("x-vercel-id") ??
@@ -114,6 +117,7 @@ export const createAgentStatusPost =
             chat_id: ownedRun?.chatId,
             trigger_run_id: ownedRun?.runId,
             stage,
+            ...(stage === "retrieve_trigger_run" && triggerRunRead?.snapshot()),
             ...(stage === "authenticate" && {
               auth_phase_diagnostic_version: 1,
               auth_phase: authPhase ?? "not_observed",
@@ -174,7 +178,11 @@ export const createAgentStatusPost =
 
       ownedRun = { chatId: chat.id, runId: chat.active_trigger_run_id };
       stage = "retrieve_trigger_run";
-      const run = (await runs.retrieve(runId)) as TriggerRunStatus;
+      triggerRunRead = createTriggerRunReadDiagnostics();
+      const run = (await runs.retrieve(
+        runId,
+        triggerRunRead.requestOptions,
+      )) as TriggerRunStatus;
       if (!runBelongsToChatOwner(run, { chatId, userId })) {
         const metadataRecord =
           run.metadata != null &&

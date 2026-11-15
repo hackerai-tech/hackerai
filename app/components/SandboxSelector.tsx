@@ -191,25 +191,22 @@ export function SandboxSelector({
         : remoteConnections,
     [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
   );
-  const remoteOptions: ConnectionOption[] = liveRemoteConnections
-    .filter(
-      (conn, index, all) =>
-        all.findIndex(
-          (candidate) =>
-            environmentPreference(candidate) === environmentPreference(conn),
-        ) === index,
-    )
-    .map((conn) => ({
-      id: value === conn.connectionId ? value : environmentPreference(conn),
-      label: conn.osInfo?.hostname || conn.name,
-      shortLabel: conn.osInfo?.hostname || conn.name,
-      icon: Laptop,
-    }));
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
+    (conn) => {
+      const name = conn.osInfo?.hostname || conn.name;
+      const label = `${name} (${conn.connectionId.slice(0, 8)})`;
+      return {
+        id: environmentPreference(conn),
+        label,
+        shortLabel: label,
+        icon: Laptop,
+      };
+    },
+  );
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
 
   // A connected Convex row can briefly exist before the command relay has
-  // subscribed. Confirm live Centrifugo presence before automatically choosing
-  // a remote runner over a reconnecting embedded bridge.
+  // subscribed. Confirm live presence before presenting it as selectable.
   useEffect(() => {
     if (!remotePresenceRequest.enabled) return;
 
@@ -260,17 +257,10 @@ export function SandboxSelector({
   useEffect(() => {
     if (!isFreeUser || !connections?.length) return;
 
-    const firstRemote = shouldVerifyRemotePresence
-      ? onlineRemoteConnectionIds
-        ? liveRemoteConnections[0]
-        : undefined
-      : remoteConnections[0];
     const preferredLocal =
       desktopConnection && desktopIsSelectable
         ? environmentPreference(desktopConnection)
-        : firstRemote
-          ? environmentPreference(firstRemote)
-          : undefined;
+        : undefined;
     if (!preferredLocal) return;
 
     if (value === "e2b") {
@@ -284,10 +274,6 @@ export function SandboxSelector({
     desktopConnection,
     desktopIsSelectable,
     isTauri,
-    shouldVerifyRemotePresence,
-    onlineRemoteConnectionIds,
-    liveRemoteConnections,
-    remoteConnections,
   ]);
 
   const selectedComputerLabel =

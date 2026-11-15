@@ -12,12 +12,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CreditCard, Pencil, Wallet } from "lucide-react";
+import {
+  EXTRA_USAGE_BUNDLES,
+  getExtraUsageBundle,
+} from "@/lib/billing/extra-usage-bundles";
 import { toast } from "sonner";
 
 type BuyExtraUsageDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onPurchase: (amountDollars: number) => Promise<void>;
+  onPurchase: (amountDollars: number, bundleId?: string) => Promise<void>;
+  bundlesEnabled?: boolean;
   isLoading: boolean;
   title?: string;
   description?: string;
@@ -85,7 +90,8 @@ const formatWithCommas = (value: string): string => {
 const removeCommas = (value: string): string => value.replace(/,/g, "");
 
 type ContentProps = {
-  onPurchase: (amountDollars: number) => Promise<void>;
+  onPurchase: (amountDollars: number, bundleId?: string) => Promise<void>;
+  bundlesEnabled?: boolean;
   isLoading: boolean;
   onClose: () => void;
   title: string;
@@ -103,7 +109,13 @@ const BuyExtraUsageDialogContent = ({
   lineItemLabel,
   paymentMethodMode,
   recommendedAmountDollars,
+  bundlesEnabled,
 }: ContentProps) => {
+  const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
+  const selectedBundle =
+    bundlesEnabled && selectedBundleId
+      ? getExtraUsageBundle(selectedBundleId)
+      : undefined;
   const [purchaseAmountOverride, setPurchaseAmountOverride] = useState<
     string | null
   >(null);
@@ -172,6 +184,10 @@ const BuyExtraUsageDialogContent = ({
     purchaseAmount !== "" && !isNaN(parsedAmount) && parsedAmount > MAX_AMOUNT;
 
   const handlePurchase = async () => {
+    if (selectedBundle) {
+      await onPurchase(selectedBundle.creditDollars, selectedBundle.id);
+      return;
+    }
     if (!isValidAmount) return;
     await onPurchase(parsedAmount);
   };
@@ -184,9 +200,51 @@ const BuyExtraUsageDialogContent = ({
       <div className="flex flex-col gap-5 pt-4">
         <div>
           <p className="text-muted-foreground text-sm mb-3">{description}</p>
+          {bundlesEnabled && (
+            <div className="mb-5 space-y-2">
+              <p id="bundle-label" className="text-sm font-medium">
+                Discounted bundles
+              </p>
+              <div
+                role="group"
+                aria-labelledby="bundle-label"
+                className="grid grid-cols-1 sm:grid-cols-3 gap-2"
+              >
+                {EXTRA_USAGE_BUNDLES.map((bundle) => (
+                  <Button
+                    key={bundle.id}
+                    type="button"
+                    variant={
+                      selectedBundle?.id === bundle.id ? "default" : "outline"
+                    }
+                    className="h-auto min-h-14 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 whitespace-normal py-2 text-left sm:flex sm:min-h-16 sm:flex-col sm:py-3 sm:text-center"
+                    aria-pressed={selectedBundle?.id === bundle.id}
+                    onClick={() => setSelectedBundleId(bundle.id)}
+                    disabled={isLoading}
+                  >
+                    <span>
+                      ${bundle.creditDollars.toLocaleString("en-US")} credit
+                    </span>
+                    <span>Pay ${bundle.paidDollars}</span>
+                    <span className="text-xs font-normal col-span-2">
+                      Save {bundle.discountPercent}%
+                    </span>
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                One-time purchases. Auto-reload uses standard pricing.
+              </p>
+            </div>
+          )}
+          {bundlesEnabled && (
+            <p className="text-sm font-medium mb-2">
+              Or top up at standard price
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-2 mb-3">
             {PRESET_AMOUNTS.map((amount) => {
-              const isSelected = parsedAmount === amount;
+              const isSelected = !selectedBundle && parsedAmount === amount;
               const isRecommended = recommendedAmountDollars === amount;
 
               return (
@@ -196,7 +254,9 @@ const BuyExtraUsageDialogContent = ({
                   variant={isSelected ? "default" : "outline"}
                   className="h-auto min-h-11 flex-col gap-0.5 py-2"
                   aria-pressed={isSelected}
+                  disabled={isLoading}
                   onClick={() => {
+                    setSelectedBundleId(null);
                     setPurchaseAmountOverride(String(amount));
                   }}
                 >
@@ -224,13 +284,16 @@ const BuyExtraUsageDialogContent = ({
           </label>
           <Input
             id="extra-usage-purchase-amount"
-            placeholder="$15"
+            placeholder={selectedBundle ? "Custom amount" : "$15"}
             className="w-full"
             type="text"
-            value={`$${formatWithCommas(purchaseAmount)}`}
+            inputMode="numeric"
+            disabled={isLoading}
+            value={selectedBundle ? "" : `$${formatWithCommas(purchaseAmount)}`}
             onChange={(e) => {
               // Remove $ and commas, keep only digits (whole dollars only)
               const val = e.target.value.replace(/[^0-9]/g, "");
+              setSelectedBundleId(null);
               setPurchaseAmountOverride(val);
             }}
             aria-label="Purchase amount"
@@ -247,23 +310,36 @@ const BuyExtraUsageDialogContent = ({
         <div className="space-y-2">
           <hr className="mb-5 border-border" />
           <div className="flex justify-between text-sm">
-            <span>{lineItemLabel}</span>
-            <span>${formatWithCommas(String(parsedAmount))}</span>
+            <span>{selectedBundle ? "Credit added" : lineItemLabel}</span>
+            <span>
+              $
+              {formatWithCommas(
+                String(selectedBundle?.creditDollars ?? parsedAmount),
+              )}
+            </span>
           </div>
           <div className="flex justify-between pt-2 text-sm font-medium">
             <span>Total due</span>
-            <span>${formatWithCommas(String(parsedAmount))}</span>
+            <span>
+              $
+              {formatWithCommas(
+                String(selectedBundle?.paidDollars ?? parsedAmount),
+              )}
+            </span>
           </div>
           <p className="text-xs text-muted-foreground">
-            Credits add to your balance. Any monthly spending limit still
-            applies.
+            {bundlesEnabled
+              ? "Your monthly spending limit counts credit used, not the discounted price paid."
+              : "Credits add to your balance. Any monthly spending limit still applies."}
           </p>
         </div>
         <div className="mt-2">
           <div className="flex items-center justify-between p-5 border border-border rounded-lg">
             <span className="font-medium text-sm">Payment method</span>
             <div className="flex items-center gap-3">
-              {paymentMethodMode === "checkout" ? (
+              {selectedBundle ? (
+                <p className="text-sm">Choose at checkout</p>
+              ) : paymentMethodMode === "checkout" ? (
                 <p className="text-sm flex items-center gap-2">
                   <CreditCard className="h-5 w-5" />
                   Team billing account
@@ -282,7 +358,7 @@ const BuyExtraUsageDialogContent = ({
                   Link by Stripe
                 </p>
               )}
-              {paymentMethodMode === "personal" && (
+              {paymentMethodMode === "personal" && !selectedBundle && (
                 <button
                   type="button"
                   className="text-muted-foreground hover:text-foreground"
@@ -299,10 +375,14 @@ const BuyExtraUsageDialogContent = ({
         <div className="flex flex-col gap-3">
           <Button
             onClick={handlePurchase}
-            disabled={isLoading || !isValidAmount}
+            disabled={isLoading || (!selectedBundle && !isValidAmount)}
             className="w-full h-11"
           >
-            {isLoading ? "Processing..." : "Purchase"}
+            {isLoading
+              ? "Processing..."
+              : selectedBundle
+                ? `Pay $${selectedBundle.paidDollars} for $${selectedBundle.creditDollars.toLocaleString("en-US")} credit`
+                : "Purchase"}
           </Button>
         </div>
       </div>
@@ -320,6 +400,7 @@ const BuyExtraUsageDialog = ({
   lineItemLabel = "Extra usage",
   paymentMethodMode = "personal",
   recommendedAmountDollars,
+  bundlesEnabled,
 }: BuyExtraUsageDialogProps) => {
   const handleOpenChange = (newOpen: boolean) => {
     onOpenChange(newOpen);
@@ -327,7 +408,7 @@ const BuyExtraUsageDialog = ({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto">
         {open && (
           <BuyExtraUsageDialogContent
             onPurchase={onPurchase}
@@ -338,6 +419,7 @@ const BuyExtraUsageDialog = ({
             lineItemLabel={lineItemLabel}
             paymentMethodMode={paymentMethodMode}
             recommendedAmountDollars={recommendedAmountDollars}
+            bundlesEnabled={bundlesEnabled}
           />
         )}
       </DialogContent>

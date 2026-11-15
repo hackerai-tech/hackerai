@@ -1,3 +1,5 @@
+import type { IsolatedOperationPhase } from "./dispatch-operation";
+
 type ReceiverState = {
   sequence: number;
   terminalReceived: boolean;
@@ -22,6 +24,10 @@ export type ReceiverCleanupReason =
   | "disconnected"
   | "client_error";
 
+/** Which wait timed out after command publication started. */
+export type DispatchUncertainReason =
+  "publish_timeout" | "operation_ready_timeout";
+
 /** Server-side, content-free counterpart to Desktop sender settlement telemetry.
  * A published cursor proves broker acceptance, not receipt by the sender.
  * Bound transition logs independently of retries; always retain final counters.
@@ -42,6 +48,17 @@ export function createReceiverDiagnostics(
   let terminalType: "exit" | "error" | undefined;
   let cancelConfirmed: boolean | undefined;
   let lastPublishError: "timeout" | "other" | undefined;
+  let dispatchPhase: IsolatedOperationPhase | "not_started" | "uncertain" =
+    "not_started";
+  let uncertainReason: DispatchUncertainReason | undefined;
+  const uncertainty = () =>
+    uncertainReason
+      ? {
+          dispatch_uncertain_version: 1,
+          dispatch_uncertain_reason: uncertainReason,
+        }
+      : {};
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
   const emit = (
     phase: string,
     details: Record<string, string | number | boolean | undefined> = {},
@@ -83,7 +100,21 @@ export function createReceiverDiagnostics(
     }
   };
   return {
-    start: () => emit("started"),
+    start() {
+      emit("started");
+      if (context.enabled && !closed && !waitTimer) {
+        // One passive snapshot before a web request's platform deadline.
+        waitTimer = setTimeout(() => {
+          emit("command_wait", {
+            dispatch_phase: dispatchPhase,
+            ...uncertainty(),
+          });
+        }, 10_000);
+      }
+    },
+    dispatchPhase(phase: IsolatedOperationPhase) {
+      dispatchPhase = phase;
+    },
     subscribed(recovered: boolean) {
       generation++;
       emit("subscribed", { recovered });
@@ -95,10 +126,14 @@ export function createReceiverDiagnostics(
         | "cancel_requested"
         | "sequence_gap"
         | "subscription_retry"
-        | "client_retry"
-        | "dispatch_uncertain",
+        | "client_retry",
     ) {
       emit(phase);
+    },
+    dispatchUncertain(reason: DispatchUncertainReason) {
+      dispatchPhase = "uncertain";
+      uncertainReason = reason;
+      emit("dispatch_uncertain", uncertainty());
     },
     cursorAttempt(resume: boolean) {
       if (resume) resumeAttempts++;
@@ -131,7 +166,8 @@ export function createReceiverDiagnostics(
         });
     },
     finish(reason: ReceiverCleanupReason) {
-      emit("cleanup", { reason }, true);
+      clearTimeout(waitTimer);
+      emit("cleanup", { reason, ...uncertainty() }, true);
       closed = true;
     },
   };

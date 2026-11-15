@@ -1,9 +1,6 @@
 import { createCloudNetworkPrompt } from "@/lib/cloud-network/prompt";
 import { BrowserSessions } from "./utils/browser-sessions";
 import { createBrowserHandoff } from "./browser-handoff";
-import { createBrowserChallengeHandler } from "../captcha/browser-challenge";
-import { createCaptchaJournal } from "../captcha/journal";
-import { isCaptchaEligible, CAPTCHA_SOLVER_FLAG } from "../captcha/policy";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -22,6 +19,7 @@ import {
   createListNotes,
   createUpdateNote,
   createDeleteNote,
+  createGetNote,
 } from "./notes";
 import {
   createCreateVulnerabilityReport,
@@ -29,6 +27,17 @@ import {
   createGetReport,
   createUpdateVulnerabilityReport,
 } from "./findings";
+import {
+  createCompleteFindingRetest,
+  createGetFindingRetests,
+  createStartFindingRetest,
+} from "./finding-retests";
+import {
+  createCompleteFindingHunt,
+  createGetFindingHunts,
+  createRecordFindingHuntCandidate,
+  createStartFindingHunt,
+} from "./finding-hunts";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -60,10 +69,7 @@ import {
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
-import {
-  phLogger,
-  getPostHogBooleanFlagDecisionForUser,
-} from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -91,6 +97,16 @@ export type CreateToolsRuntimePolicy = {
   keepE2BLeaseAliveForRun?: boolean;
   browserAgentId?: string;
   onBrowserOwnershipLost?: () => void;
+  /** Expose Agent retest history tools only when the caller has already
+   * evaluated the finding retest rollout for this user. The tools re-check
+   * the flag and fail closed on every call. */
+  findingRetestToolsEnabled?: boolean;
+  /** notes_relevant_recall_v1 decision for this request: compact list_notes,
+   * target/observation metadata and get_note. Off keeps the legacy tools. */
+  notesRelevantRecallEnabled?: boolean;
+  /** Expose variant hunt tools only when the caller already evaluated the
+   * hunt rollout for this user. Starting a hunt re-checks the flag. */
+  findingHuntToolsEnabled?: boolean;
 };
 
 export type SandboxSessionUsage = {
@@ -129,6 +145,7 @@ export const createTools = (
   auxiliaryVision?: ToolContext["auxiliaryVision"],
   runtimePolicy: CreateToolsRuntimePolicy = {},
 ) => {
+  const notesRecall = runtimePolicy.notesRelevantRecallEnabled === true;
   let sandbox: AnySandbox | null = null;
   let sandboxCostSegmentStartedAt: number | null = null;
   let sandboxCostProvider: CloudSandboxProvider | null = null;
@@ -265,41 +282,6 @@ export const createTools = (
     triggerRunId,
   });
 
-  // Pin preparation for this run so a rollout change cannot switch an existing
-  // connected browser into a different namespace. Paid requests recheck the flag.
-  let captchaPreparationDecision: Promise<boolean> | undefined;
-  const captchaPreparationEnabled = (): Promise<boolean> => {
-    if (
-      !serviceKey ||
-      requestToolApproval ||
-      (runtimePolicy.browserAgentId ?? "parent") !== "parent" ||
-      !isCaptchaEligible(runtimePolicy.environment)
-    )
-      return Promise.resolve(false);
-    return (captchaPreparationDecision ??= (async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return (
-          (await Promise.race([
-            getPostHogBooleanFlagDecisionForUser(
-              CAPTCHA_SOLVER_FLAG,
-              userID,
-              undefined,
-              { sendFeatureFlagEvents: false },
-            ),
-            new Promise<false>((resolve) => {
-              timer = setTimeout(() => resolve(false), 1000);
-            }),
-          ])) === true
-        );
-      } catch {
-        return false;
-      } finally {
-        clearTimeout(timer);
-      }
-    })());
-  };
-
   const browserSessions = triggerRunId
     ? new BrowserSessions(
         serviceKey
@@ -313,13 +295,6 @@ export const createTools = (
             }
           : undefined,
         runtimePolicy.onBrowserOwnershipLost,
-        captchaPreparationEnabled,
-        {
-          enabled: async () =>
-            runtimePolicy.environment === "PREVIEW" &&
-            !!process.env.TWOCAPTCHA_API_KEY &&
-            (await captchaPreparationEnabled()),
-        },
       )
     : undefined;
   const context: ToolContext = {
@@ -353,30 +328,6 @@ export const createTools = (
     auxiliaryVision,
   };
 
-  // Keep attempt accounting across model fallback/schema rebuilds in this run.
-  const checkBrowserChallenge =
-    browserSessions &&
-    serviceKey &&
-    triggerRunId &&
-    !requestToolApproval &&
-    (runtimePolicy.browserAgentId ?? "parent") === "parent" &&
-    isCaptchaEligible(runtimePolicy.environment)
-      ? createBrowserChallengeHandler(
-          context,
-          runtimePolicy.environment,
-          runtimePolicy.signal,
-          undefined,
-          createCaptchaJournal({
-            serviceKey,
-            userId: userID,
-            chatId,
-            runId: triggerRunId,
-          }),
-        )
-      : undefined;
-  context.checkBrowserChallenge = checkBrowserChallenge?.inspect;
-  context.requestBrowserChallenge = checkBrowserChallenge?.request;
-
   const buildTools = (): ToolSet => {
     // Create all available tools. This is intentionally a factory rather than a
     // one-time object so model-specific tool schemas can be rebuilt for
@@ -405,11 +356,32 @@ export const createTools = (
         context,
         () => sandbox,
       ),
+      ...(runtimePolicy.findingRetestToolsEnabled && {
+        get_finding_retests: createGetFindingRetests(context),
+        start_finding_retest: createStartFindingRetest(context),
+        complete_finding_retest: createCompleteFindingRetest(
+          context,
+          () => sandbox,
+        ),
+      }),
+      ...(runtimePolicy.findingHuntToolsEnabled && {
+        get_finding_hunts: createGetFindingHunts(context),
+        start_finding_hunt: createStartFindingHunt(context),
+        record_finding_hunt_candidate: createRecordFindingHuntCandidate(
+          context,
+          () => sandbox,
+        ),
+        complete_finding_hunt: createCompleteFindingHunt(
+          context,
+          () => sandbox,
+        ),
+      }),
       ...(notesEnabled && {
-        create_note: createCreateNote(context),
-        list_notes: createListNotes(context),
-        update_note: createUpdateNote(context),
+        create_note: createCreateNote(context, notesRecall),
+        list_notes: createListNotes(context, notesRecall),
+        update_note: createUpdateNote(context, notesRecall),
         delete_note: createDeleteNote(context),
+        ...(notesRecall && { get_note: createGetNote(context) }),
       }),
       ...(process.env.PERPLEXITY_API_KEY && {
         web_search: createWebSearch(context),
@@ -439,6 +411,7 @@ export const createTools = (
             list_notes: allTools.list_notes,
             update_note: allTools.update_note,
             delete_note: allTools.delete_note,
+            ...(notesRecall && { get_note: allTools.get_note }),
           }),
           ...(process.env.PERPLEXITY_API_KEY && {
             web_search: createWebSearch(context),
@@ -544,8 +517,6 @@ export const createTools = (
   };
 
   return {
-    getCaptchaReceiptPrompt: () =>
-      checkBrowserChallenge?.getReceiptPrompt() ?? "",
     cloudNetworkPrompt: createCloudNetworkPrompt(
       userID,
       () =>

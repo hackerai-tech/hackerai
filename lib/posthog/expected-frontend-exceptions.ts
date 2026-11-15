@@ -1,5 +1,12 @@
 import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex-errors";
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
+import { getRecentMessageNavigatorDiagnostics } from "./message-navigator-diagnostics";
+import { getRecentMessageTimestampDiagnostics } from "./message-time-diagnostics";
+import {
+  getReactBoundaryDiagnostics,
+  NULL_REMOVE_CHILD_MESSAGE,
+} from "./react-boundary-diagnostics";
+import { getTeamHistoryWriteDiagnostics } from "./team-history-write-diagnostics";
 import {
   getUnhandledRejectionDiagnostics,
   getNearbyDispatchDiagnostics,
@@ -418,11 +425,182 @@ function nearbyDispatchGroup(
       return "wallet_property_typeerror";
     const frames = exception.stacktrace?.frames;
     if (
+      exception.type === "ReferenceError" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 128 &&
+      /^[A-Za-z_$][\w$]{0,63} is not defined$/.test(exception.value) &&
+      Array.isArray(frames) &&
+      (frames.length === 1 || frames.length === 2) &&
+      (frames.length === 1 ? [frames[0]] : [frames[0], frames[1]]).every(
+        (frame) => frame?.filename === "<anonymous>" && frame?.in_app === false,
+      )
+    )
+      return "anonymous_missing_identifier_referenceerror";
+    if (
       exception.type === "Error" &&
       exception.mechanism.synthetic === true &&
       (frames === undefined || (Array.isArray(frames) && frames.length === 0))
     )
       return "synthetic_stackless_error";
+    if (
+      exception.type === "Error" &&
+      exception.value.length === 2 &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length === 3
+    ) {
+      const current = new URL(properties.$current_url);
+      const chatDocumentPath = /^\/c\/[A-Za-z0-9_-]{1,128}\/?$/;
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        chatDocumentPath.test(current.pathname) &&
+        frames.every(
+          /** Interpret filenames transiently; stored source and in_app do not prove authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              chatDocumentPath.test(source.pathname) &&
+              source.pathname.replace(/\/$/, "") !==
+                current.pathname.replace(/\/$/, "")
+            );
+          },
+        )
+      )
+        return "chat_document_short_error";
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        frames.every(
+          /** Compare transient URLs exactly; never export their paths or infer authorship. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              source.pathname === current.pathname
+            );
+          },
+        )
+      )
+        return "same_document_short_error";
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        chatDocumentPath.test(current.pathname) &&
+        // Array.from turns sparse holes into rejected undefined frames.
+        Array.from(frames).every(
+          /** An origin-root filename does not identify which script threw. */
+          (frame) => {
+            if (
+              typeof frame?.filename !== "string" ||
+              frame.filename.length > 4096 ||
+              /[?#]/.test(frame.filename)
+            )
+              return false;
+            const source = new URL(frame.filename);
+            return (
+              source.origin === current.origin &&
+              !source.username &&
+              !source.password &&
+              source.pathname === "/"
+            );
+          },
+        )
+      )
+        return "chat_root_document_short_error";
+    }
+    // Reuse native context only for the observed retained five-to-seven-frame shape.
+    if (
+      exception.type === "RangeError" &&
+      exception.value === "Maximum call stack size exceeded." &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length >= 5 &&
+      frames.length <= 7
+    ) {
+      const current = new URL(properties.$current_url);
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        Array.from(frames).every((frame) => {
+          // Only compare bounded SDK filenames transiently; never export paths
+          // or infer script authorship from a document URL or resolved source.
+          if (
+            typeof frame?.filename !== "string" ||
+            frame.filename.length > 4096
+          )
+            return false;
+          const source = new URL(frame.filename);
+          return (
+            source.origin === current.origin &&
+            !source.username &&
+            !source.password &&
+            source.pathname === current.pathname
+          );
+        })
+      )
+        return "same_document_stack_overflow";
+    }
+    if (
+      exception.type === "DOMException" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 256 &&
+      (frames === undefined || (Array.isArray(frames) && frames.length === 0))
+    )
+      return "stackless_dom_exception";
+    // The SDK's client frame, not stored resolved positions or in_app, is compared.
+    if (
+      exception.type === "SyntaxError" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      exception.value.length <= 256 &&
+      typeof properties.$current_url === "string" &&
+      properties.$current_url.length <= 4096 &&
+      Array.isArray(frames) &&
+      frames.length === 1 &&
+      typeof frames[0]?.filename === "string" &&
+      frames[0].filename.length <= 4096
+    ) {
+      const current = new URL(properties.$current_url);
+      const source = new URL(frames[0].filename);
+      if (
+        current.protocol === "https:" &&
+        !current.username &&
+        !current.password &&
+        source.origin === current.origin &&
+        !source.username &&
+        !source.password &&
+        source.pathname === current.pathname
+      )
+        return "same_document_singleframe_syntaxerror";
+    }
     if (
       exception.type === "SyntaxError" &&
       exception.mechanism.synthetic === false &&
@@ -437,14 +615,118 @@ function nearbyDispatchGroup(
       )
         return "stackless_unexpected_token_syntaxerror";
     }
+    if (
+      exception.type === "Error" &&
+      exception.mechanism.synthetic === false &&
+      exception.mechanism.type === "generic" &&
+      // Coarse UTF-16 units, never an exact stored-byte or frame-source match.
+      exception.value.length > 256 &&
+      exception.value.length <= 4096
+    )
+      return "long_generic_error";
   } catch {
     /* Optional attribution cannot change the retained exception. */
   }
 }
 
-/** Enrich retained exceptions with bounded build and recent-context diagnostics. */
+/** The browser's History rate limit; it does not identify which writer spent the budget. */
+function isHistoryReplaceStateRateLimit(properties: Record<string, unknown>) {
+  try {
+    const list = properties.$exception_list;
+    if (!Array.isArray(list) || list.length !== 1) return false;
+    const exception = list[0];
+    const value = exception?.value;
+    return (
+      exception?.type === "DOMException" &&
+      typeof value === "string" &&
+      value.length <= 256 &&
+      value.startsWith("SecurityError: ") &&
+      /\bhistory\.replaceState\b/i.test(value) &&
+      /\bmore than 100(?!\d)/.test(value)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The single retained React DOM null-removeChild TypeError, compared exactly. */
+function isNullRemoveChildTypeError(properties: Record<string, unknown>) {
+  try {
+    const list = properties.$exception_list;
+    if (!Array.isArray(list) || list.length !== 1) return false;
+    const exception = list[0];
+    const value = exception?.value;
+    return (
+      exception?.type === "TypeError" &&
+      (value === NULL_REMOVE_CHILD_MESSAGE ||
+        value === `TypeError: ${NULL_REMOVE_CHILD_MESSAGE}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+const getExceptionListShape = (list: unknown): string => {
+  if (list === undefined) return "missing";
+  if (list === null) return "null";
+  if (Array.isArray(list)) {
+    if (list.length === 0) return "array_empty";
+    return list.length === 1 ? "array_one" : "array_many";
+  }
+  // A serialized list stays "string"; parsing it would describe another schema.
+  if (typeof list === "string") return "string";
+  return typeof list === "object" ? "object" : "other";
+};
+
+const getFrameSourceCountBucket = (count: number): string => {
+  if (count <= 1) return String(count);
+  if (count <= 5) return "2_5";
+  return count <= 16 ? "6_16" : "over16";
+};
+
+/** Reuse the filters' own predicates; a family never claims first-party authorship. */
+const getFrameSourceFamily = (frameSources: string[]): string => {
+  if (frameSources.length === 0) return "none";
+  if (frameSources.every((source) => source === "")) return "all_empty";
+  if (hasOnlyInjectedThirdPartyFrames(frameSources)) return "injected_only";
+  if (hasOnlyExpectedNextServerActionFrames(frameSources))
+    return "next_pattern_only";
+  return "other";
+};
+
+/** Closed capture-time structure of the inputs the filters just evaluated. */
+const getExceptionCaptureStructure = (
+  properties: Record<string, unknown>,
+  strings: string[],
+  frameSources: string[],
+) => ({
+  hackerai_exception_capture_version: 1,
+  hackerai_exception_capture_list_shape: getExceptionListShape(
+    properties.$exception_list,
+  ),
+  hackerai_exception_capture_frame_source_count_bucket:
+    getFrameSourceCountBucket(frameSources.length),
+  hackerai_exception_capture_frame_source_family:
+    getFrameSourceFamily(frameSources),
+  hackerai_exception_capture_exact_transport_message:
+    hasBrowserFetchTransportMessage(strings),
+});
+
+/**
+ * Enrich retained exceptions with bounded build and recent-context diagnostics.
+ * `navigatorDiagnosticOwner` and `reactBoundaryDiagnosticOwner` are the
+ * caller's current committed analytics owner; without one, the matching
+ * failure context is not attached.
+ */
 export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event: T,
+  {
+    navigatorDiagnosticOwner = null,
+    reactBoundaryDiagnosticOwner = null,
+  }: {
+    navigatorDiagnosticOwner?: string | null;
+    reactBoundaryDiagnosticOwner?: string | null;
+  } = {},
 ): T {
   if (event.event !== "$exception") return event;
 
@@ -453,7 +735,12 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   for (const key of Object.keys(properties)) {
     if (
       key.startsWith("hackerai_recent_rejection_") ||
-      key.startsWith("hackerai_nearby_dispatch_")
+      key.startsWith("hackerai_recent_formatter_") ||
+      key.startsWith("hackerai_recent_navigator_") ||
+      key.startsWith("hackerai_nearby_dispatch_") ||
+      key.startsWith("hackerai_team_history_write_") ||
+      key.startsWith("hackerai_react_boundary_") ||
+      key.startsWith("hackerai_exception_capture_")
     )
       delete properties[key];
   }
@@ -468,6 +755,13 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
   event.properties = {
     ...properties,
     hackerai_exception_category: category,
+    ...getExceptionCaptureStructure(properties, strings, frameSources),
+    ...(category === "stack_overflow"
+      ? getRecentMessageTimestampDiagnostics()
+      : {}),
+    ...(category === "stack_overflow"
+      ? getRecentMessageNavigatorDiagnostics(navigatorDiagnosticOwner)
+      : {}),
     ...(category === "react_max_update_depth"
       ? getComposerChangeDiagnostics()
       : {}),
@@ -475,6 +769,12 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
       ? getUnhandledRejectionDiagnostics()
       : {}),
     ...(dispatchGroup ? getNearbyDispatchDiagnostics(dispatchGroup) : {}),
+    ...(isHistoryReplaceStateRateLimit(properties)
+      ? getTeamHistoryWriteDiagnostics()
+      : {}),
+    ...(isNullRemoveChildTypeError(properties)
+      ? getReactBoundaryDiagnostics(reactBoundaryDiagnosticOwner)
+      : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
       ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }
       : {}),

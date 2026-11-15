@@ -1,10 +1,9 @@
+import { SidebarContent, SidebarFile, WebSearchResult } from "@/types/chat";
 import {
-  SidebarContent,
-  SidebarFile,
-  SidebarNote,
-  SidebarNotes,
-  WebSearchResult,
-} from "@/types/chat";
+  buildNotesSidebarContent,
+  NOTES_TOOL_NAMES,
+  type NotesToolName,
+} from "@/app/components/tools/notes-tool-utils";
 import {
   formatSendInput,
   getTerminalExecutionPhase,
@@ -59,9 +58,14 @@ const getWebSearchQuery = (input: unknown): string => {
 /**
  * Extract sidebar content from a single message. Exported for incremental processing
  * (e.g. only reprocess the last message during streaming).
+ *
+ * `isRunActive` is whether the run that owns this message is still going. When
+ * it is known to be false, terminal calls that never received a result are
+ * interrupted rather than executing. Leave it undefined when run state is unknown.
  */
 export function extractSidebarContentFromMessage(
   message: Message,
+  isRunActive?: boolean,
 ): SidebarContent[] {
   const contentList: SidebarContent[] = [];
   if (message.role !== "assistant" || !message.parts) return contentList;
@@ -185,6 +189,7 @@ export function extractSidebarContentFromMessage(
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
+        isRunActive,
       });
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;
@@ -256,7 +261,6 @@ export function extractSidebarContentFromMessage(
           ? rawSnapshot
           : streamingOutput || rawSnapshot || undefined
         : undefined;
-
       contentList.push({
         command,
         output: stripAgentOnlyTerminalGuidance(finalOutput),
@@ -286,6 +290,7 @@ export function extractSidebarContentFromMessage(
         autoReviewStatus: autoReviewStatusByToolCallId.get(
           part.toolCallId || "",
         ),
+        isRunActive,
       });
 
       // Skip if no command/brief available yet
@@ -808,74 +813,21 @@ export function extractSidebarContentFromMessage(
     }
 
     // Notes tools
-    const notesToolTypes = [
-      "tool-create_note",
-      "tool-list_notes",
-      "tool-update_note",
-      "tool-delete_note",
-    ];
-
-    if (notesToolTypes.includes(part.type)) {
-      const toolName = part.type.replace("tool-", "") as
-        "create_note" | "list_notes" | "update_note" | "delete_note";
-
-      const actionMap: Record<string, SidebarNotes["action"]> = {
-        create_note: "create",
-        list_notes: "list",
-        update_note: "update",
-        delete_note: "delete",
-      };
-
-      const action = actionMap[toolName] || "list";
-      const input = part.input || {};
-      const result = part.output?.result || part.output || {};
-
-      let notes: SidebarNote[] = [];
-      let totalCount = 0;
-      let affectedTitle: string | undefined;
-      let newNoteId: string | undefined;
-      let original: SidebarNotes["original"];
-      let modified: SidebarNotes["modified"];
-
-      if (action === "list" && result?.notes) {
-        notes = result.notes;
-        totalCount = result.total_count || notes.length;
-      } else if (action === "create" && input) {
-        notes = [
-          {
-            note_id: result?.note_id || "pending",
-            title: input.title || "",
-            content: input.content || "",
-            category: input.category || "general",
-            tags: input.tags || [],
-            updated_at: Date.now(),
-          },
-        ];
-        totalCount = 1;
-        affectedTitle = input.title;
-        newNoteId = result?.note_id;
-      } else if (action === "update") {
-        // For update, use original/modified for before/after comparison
-        original = result?.original;
-        modified = result?.modified;
-        affectedTitle = modified?.title || input?.title || input?.note_id;
-        totalCount = 1;
-      } else if (action === "delete") {
-        affectedTitle = result?.deleted_title || input?.note_id;
-        totalCount = 0;
-      }
-
-      contentList.push({
-        action,
-        notes,
-        totalCount,
-        isExecuting: part.state !== "output-available",
-        toolCallId: part.toolCallId || "",
-        affectedTitle,
-        newNoteId,
-        original,
-        modified,
-      });
+    const notesToolName = part.type.replace("tool-", "") as NotesToolName;
+    if (
+      part.type.startsWith("tool-") &&
+      NOTES_TOOL_NAMES.includes(notesToolName)
+    ) {
+      contentList.push(
+        buildNotesSidebarContent({
+          toolName: notesToolName,
+          input: part.input || {},
+          output: part.output,
+          state: part.state,
+          errorText: part.errorText,
+          toolCallId: part.toolCallId,
+        }),
+      );
     }
 
     if (
@@ -985,10 +937,22 @@ export function extractSidebarContentFromMessage(
   return contentList;
 }
 
+/**
+ * Only the last message can belong to an active run, so earlier messages are
+ * treated as ended whenever run state is known.
+ */
 export function extractAllSidebarContent(
   messages: Message[],
+  isRunActive?: boolean,
 ): SidebarContent[] {
-  return messages.flatMap(extractSidebarContentFromMessage);
+  return messages.flatMap((message, index) =>
+    extractSidebarContentFromMessage(
+      message,
+      isRunActive === undefined
+        ? undefined
+        : isRunActive && index === messages.length - 1,
+    ),
+  );
 }
 
 const getToolCallId = (content: SidebarContent): string | undefined =>

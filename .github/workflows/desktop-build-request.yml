@@ -1,0 +1,22 @@
+name: Request Desktop Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/desktop/**"
+      - ".github/workflows/desktop-build.yml"
+      - ".github/workflows/desktop-build-request.yml"
+      - ".github/scripts/prepare-desktop-release.sh"
+      - ".github/scripts/*universal-dmg.sh"
+      - ".github/scripts/redact-notary-output.py"
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request trusted Desktop build
+        run: echo "Desktop build requested from main"

@@ -1,12 +1,9 @@
-import strixContent from "./strix-skill-content.generated.json";
-
 import {
   STRIX_SUBAGENT_SKILL_SOURCE_COMMIT,
   resolveSubagentSkills,
+  getSubagentRuntimeSkillContent,
 } from "./index";
 import { getSubagentSkillSafetyOverride } from "./safety-overrides";
-
-const contents = strixContent.contents as Record<string, string>;
 
 const escapeReservedPromptBoundaries = (value: string): string =>
   value
@@ -30,7 +27,7 @@ export const renderSubagentSkillKnowledge = (
   }
   const sections = resolved.skills
     .map((skill) => {
-      const content = contents[skill.id];
+      const content = getSubagentRuntimeSkillContent(skill.id);
       if (!content)
         throw new Error(`Missing vendored skill content: ${skill.id}`);
       const safetyOverride = getSubagentSkillSafetyOverride(skill.id);

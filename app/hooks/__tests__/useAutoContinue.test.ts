@@ -71,7 +71,7 @@ describe("useAutoContinue", () => {
   });
 
   it.each([false, true])(
-    "keeps an automatic continuation pending across disconnect (scheduled: %s)",
+    "discards a local automatic continuation across disconnect (scheduled: %s)",
     (scheduled) => {
       const sendMessage = jest.fn();
       const params = buildParams({
@@ -90,9 +90,29 @@ describe("useAutoContinue", () => {
       expect(result.current.autoContinueCount).toBe(0);
       rerender({ ...params, sendDisabledReason: undefined });
       act(() => jest.advanceTimersByTime(1000));
-      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(sendMessage).not.toHaveBeenCalled();
     },
   );
+
+  it("drops queued continuation when a persisted local stop arrives and stays idle after reconnect", () => {
+    const sendMessage = jest.fn();
+    const params = buildParams({ sendMessage, sandboxPreference: "desktop" });
+    const { result, rerender } = renderHook(
+      (p: UseAutoContinueParams) => useTestHarness(p),
+      {
+        initialProps: params,
+        wrapper: createWrapper(),
+      },
+    );
+    pushAutoContinue(result);
+    rerender({ ...params, finishReason: "local-connection-lost" });
+    act(() => jest.advanceTimersByTime(1000));
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(result.current.isAutoContinuing).toBe(false);
+    rerender(params);
+    act(() => jest.advanceTimersByTime(1000));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
 
   it("sets isAutoResuming to true when data-auto-continue arrives", () => {
     const params = buildParams({ status: "streaming" });

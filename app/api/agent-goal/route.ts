@@ -6,13 +6,16 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import {
+  classifyGoalReconciliationFailure,
+  type GoalReconciliationStep,
+} from "@/lib/goals/reconciliation-diagnostics";
 import { getChatById } from "@/lib/db/actions";
 import {
   cancelAgentTriggerRun,
   closeAgentApprovalSession,
 } from "@/lib/api/agent-approval-session";
 import { ChatSDKError } from "@/lib/errors";
-import { ConvexError } from "convex/values";
 import { phLogger } from "@/lib/posthog/server";
 
 const controlRequest = z.discriminatedUnion("action", [
@@ -37,51 +40,35 @@ export const maxDuration = 30;
 /** Own goal-read recovery until the status response finishes, separately from controls. */
 async function handleGet(req: NextRequest) {
   let failureStage: "auth_lookup" | "goal_reconciliation" = "auth_lookup";
+  let reconciliationStep: GoalReconciliationStep | undefined;
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
     failureStage = "goal_reconciliation";
     const chatId = req.nextUrl.searchParams.get("chatId");
-    const goal = chatId ? await reconcileGoal(chatId, userId) : null;
+    const goal = chatId
+      ? await reconcileGoal(chatId, userId, (step) => {
+          reconciliationStep = step;
+        })
+      : null;
+    // A later failure did not happen inside a reconciliation step.
+    reconciliationStep = undefined;
     return Response.json({
       enabled: subscription !== "free",
       ...(chatId ? { goal: goal?.deletedAt ? null : goal } : {}),
     });
   } catch (e) {
     if (e instanceof ChatSDKError) return e.toResponse();
-    let failureKind = "thrown_value";
-    let requestId = "none";
-    try {
-      failureKind =
-        e instanceof TypeError
-          ? "type_error"
-          : e instanceof ConvexError
-            ? "convex_error"
-            : e instanceof Error
-              ? "other_error"
-              : "thrown_value";
-      if (e && typeof e === "object") {
-        // Inspect data properties only; never emit private error/goal contents.
-        if (
-          Object.getOwnPropertyDescriptor(e, "data")?.value ===
-          "Goal chat unavailable"
-        )
-          failureKind = "goal_chat_unavailable";
-        const message = Object.getOwnPropertyDescriptor(e, "message")?.value;
-        if (typeof message === "string" && message.length <= 4096)
-          requestId =
-            message
-              .match(/\[Request ID:\s*([a-f0-9]{16})\]/i)?.[1]
-              .toLowerCase() ?? "none";
-      }
-    } catch {
-      failureKind = "unreadable_error";
-    }
+    const { failureKind, convexRequestId } =
+      classifyGoalReconciliationFailure(e);
     try {
       phLogger.warn("agent_goal_status_unavailable", {
         diagnostic_version: 1,
         failure_stage: failureStage,
+        ...(failureStage === "goal_reconciliation"
+          ? { reconciliation_step: reconciliationStep ?? "unknown" }
+          : {}),
         failure_kind: failureKind,
-        convex_request_id: requestId,
+        convex_request_id: convexRequestId,
       });
     } catch {
       // Diagnostics must not replace the existing response or retry the operation.

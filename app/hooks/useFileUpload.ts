@@ -23,6 +23,7 @@ import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { useS3ActionDiagnostics } from "./useS3ActionDiagnostics";
 import {
   getLocalFileMetadata,
   isTauriEnvironment,
@@ -212,8 +213,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const removingFilesRef = useRef(new Set<object>());
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
-  const generateS3UploadUrlAction = useAction(
-    api.s3Actions.generateS3UploadUrlAction,
+  const generateS3UploadUrlAction = useS3ActionDiagnostics(
+    "upload",
+    useAction(api.s3Actions.generateS3UploadUrlAction),
   );
 
   const shouldUseLocalDesktopAttachments =

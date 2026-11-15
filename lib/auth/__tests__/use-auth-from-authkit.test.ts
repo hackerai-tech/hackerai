@@ -6,10 +6,32 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
-import { renderHook, act } from "@testing-library/react";
+import { Component, createElement, type ReactNode } from "react";
+import { renderHook, act, render } from "@testing-library/react";
 import { useAuthFromAuthKit, AuthKitDeps } from "../use-auth-from-authkit";
 import { CrossTabMutex } from "../cross-tab-mutex";
 import * as sharedToken from "../shared-token";
+import {
+  readClosedConvexAuthTokenDecision,
+  readConvexAuthProviderState,
+  readConvexAuthTokenDecision,
+} from "../convex-auth-diagnostics";
+
+// The closed fields the Desktop bridge may report for the committed provider.
+function tokenDecision() {
+  const { attempt: _attempt, ...fields } = readClosedConvexAuthTokenDecision(
+    readConvexAuthTokenDecision,
+  );
+  return fields;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 describe("useAuthFromAuthKit", () => {
   let mockStorage: Record<string, string>;
@@ -111,6 +133,496 @@ describe("useAuthFromAuthKit", () => {
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
       expect(result.current.isLoading).toBe(true);
+    });
+  });
+
+  describe("committed provider state diagnostics", () => {
+    let auth: { user: { id: string } | null; loading: boolean };
+
+    beforeEach(() => {
+      auth = { user: { id: "user-123" }, loading: false };
+      mockDeps.useAuth = () => ({
+        user: auth.user,
+        loading: auth.loading,
+        sessionId: auth.user ? `session-${auth.user.id}` : undefined,
+        refreshAuth: mockRefreshAuth,
+      });
+    });
+
+    async function enterTokenRecovery(
+      result: { current: ReturnType<typeof useAuthFromAuthKit> },
+      rerender: () => void,
+    ) {
+      mockGetAccessToken.mockRejectedValueOnce(new Error("Network error"));
+      await act(async () => {
+        await result.current.fetchAccessToken();
+      });
+      rerender();
+    }
+
+    it("reports AuthKit loading, readiness and owner absence as committed", () => {
+      auth.loading = true;
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      expect(view.result.current.isLoading).toBe(true);
+      expect(readConvexAuthProviderState()).toBe("authkit_loading");
+
+      auth.loading = false;
+      view.rerender();
+      expect(view.result.current.isLoading).toBe(false);
+      expect(readConvexAuthProviderState()).toBe("ready");
+
+      auth = { user: null, loading: true };
+      view.rerender();
+      expect(readConvexAuthProviderState()).toBe("owner_absent");
+
+      view.unmount();
+      expect(readConvexAuthProviderState()).toBe("unavailable");
+    });
+
+    it("attributes recovery loading to token recovery rather than AuthKit", async () => {
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(readConvexAuthProviderState()).toBe("ready");
+        await enterTokenRecovery(view.result, view.rerender);
+        // Convex sees the same loading flag either way; provenance differs.
+        expect(view.result.current.isLoading).toBe(true);
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        auth.loading = true;
+        view.rerender();
+        expect(readConvexAuthProviderState()).toBe(
+          "authkit_loading_and_token_recovery",
+        );
+
+        auth.loading = false;
+        view.rerender();
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        mockGetAccessToken.mockResolvedValue("fresh-token");
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10_000);
+        });
+        expect(view.result.current.isLoading).toBe(false);
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("does not carry recovery provenance into a new account context", async () => {
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        await enterTokenRecovery(view.result, view.rerender);
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+
+        auth = { user: { id: "user-456" }, loading: false };
+        view.rerender();
+        expect(view.result.current.isLoading).toBe(false);
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("does not let an older provider's cleanup clear a newer provider", () => {
+      const older = renderHook(() => useAuthFromAuthKit(mockDeps));
+      auth.loading = true;
+      const newer = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(readConvexAuthProviderState()).toBe("authkit_loading");
+        older.unmount();
+        expect(readConvexAuthProviderState()).toBe("authkit_loading");
+      } finally {
+        newer.unmount();
+        older.unmount();
+      }
+      expect(readConvexAuthProviderState()).toBe("unavailable");
+    });
+
+    it("does not publish an abandoned render", () => {
+      class Boundary extends Component<
+        { children: ReactNode },
+        { failed: boolean }
+      > {
+        state = { failed: false };
+        static getDerivedStateFromError() {
+          return { failed: true };
+        }
+        render() {
+          return this.state.failed ? null : this.props.children;
+        }
+      }
+      function Abandoned(): ReactNode {
+        useAuthFromAuthKit({
+          ...mockDeps,
+          useAuth: () => ({
+            user: { id: "user-123" },
+            loading: true,
+            refreshAuth: mockRefreshAuth,
+          }),
+        });
+        throw new Error("render abandoned");
+      }
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const committed = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const abandoned = render(
+          createElement(Boundary, null, createElement(Abandoned)),
+        );
+        expect(readConvexAuthProviderState()).toBe("ready");
+        abandoned.unmount();
+        expect(readConvexAuthProviderState()).toBe("ready");
+      } finally {
+        committed.unmount();
+        error.mockRestore();
+      }
+    });
+  });
+
+  describe("token decision diagnostics", () => {
+    let auth: { user: { id: string } | null };
+
+    beforeEach(() => {
+      auth = { user: { id: "user-123" } };
+      mockDeps.isCrossTabEnabled = () => false;
+      mockDeps.useAuth = () => ({
+        user: auth.user,
+        loading: false,
+        sessionId: auth.user ? `session-${auth.user.id}` : undefined,
+        refreshAuth: mockRefreshAuth,
+      });
+    });
+
+    function withoutCachedToken() {
+      mockDeps.useAccessToken = () => ({
+        getAccessToken: mockGetAccessToken,
+        accessToken: undefined,
+        refresh: mockRefresh,
+      });
+    }
+
+    it("records a pending then returned token without retaining it", async () => {
+      const getter = deferred<string | undefined>();
+      mockGetAccessToken.mockReturnValueOnce(getter.promise);
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(readConvexAuthTokenDecision()).toBeUndefined();
+        const pending = view.result.current.fetchAccessToken();
+        expect(tokenDecision()).toEqual({
+          mode: "ordinary",
+          outcome: "pending",
+          result: "pending",
+          age: "lt_1s",
+          context: "same",
+        });
+
+        getter.resolve("private-canary-token");
+        expect(await pending).toBe("private-canary-token");
+        expect(mockGetAccessToken).toHaveBeenCalledTimes(1);
+        expect(tokenDecision()).toEqual({
+          mode: "ordinary",
+          outcome: "token",
+          result: "token",
+          age: "lt_1s",
+          context: "same",
+        });
+        expect(JSON.stringify(readConvexAuthTokenDecision())).not.toContain(
+          "canary",
+        );
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it.each([
+      [
+        "a missing token after a failed session check",
+        () => {
+          mockGetAccessToken.mockResolvedValue(undefined);
+          mockRefreshAuth.mockResolvedValue({ error: "Network error" });
+        },
+        "current-token",
+        "cached_fallback",
+        "token",
+      ],
+      [
+        "a missing token after a failed session check without a cached token",
+        () => {
+          withoutCachedToken();
+          mockGetAccessToken.mockResolvedValue(undefined);
+          mockRefreshAuth.mockResolvedValue({ error: "Network error" });
+        },
+        null,
+        "cached_fallback",
+        "null",
+      ],
+      [
+        "a missing token after an ended session",
+        () => mockGetAccessToken.mockResolvedValue(undefined),
+        null,
+        "null",
+        "null",
+      ],
+      [
+        "a provider exception",
+        () => mockGetAccessToken.mockRejectedValue(new Error("private-error")),
+        "current-token",
+        "exception_fallback",
+        "token",
+      ],
+      [
+        "a provider exception without a cached token",
+        () => {
+          withoutCachedToken();
+          mockGetAccessToken.mockRejectedValue(new Error("private-error"));
+        },
+        null,
+        "exception_fallback",
+        "null",
+      ],
+    ] as const)(
+      "records %s without changing the returned value",
+      async (_label, arrange, returned, outcome, result) => {
+        arrange();
+        const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+        try {
+          expect(await view.result.current.fetchAccessToken()).toBe(returned);
+          expect(mockGetAccessToken).toHaveBeenCalledTimes(1);
+          expect(tokenDecision()).toMatchObject({
+            mode: "ordinary",
+            outcome,
+            result,
+          });
+          expect(JSON.stringify(readConvexAuthTokenDecision())).not.toMatch(
+            /current-token|private-error/,
+          );
+        } finally {
+          view.unmount();
+        }
+      },
+    );
+
+    it("records forced refresh and its cooldown fallback", async () => {
+      mockRefresh
+        .mockResolvedValueOnce("refreshed-token")
+        .mockRejectedValueOnce(new Error("rate limited"));
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const force = () =>
+          view.result.current.fetchAccessToken({ forceRefreshToken: true });
+        expect(await force()).toBe("refreshed-token");
+        expect(tokenDecision()).toMatchObject({
+          mode: "forced_refresh",
+          outcome: "token",
+          result: "token",
+        });
+        expect(await force()).toBe("refreshed-token");
+        expect(tokenDecision()).toMatchObject({
+          mode: "forced_refresh",
+          outcome: "exception_fallback",
+          result: "token",
+        });
+
+        // The cooldown still skips the provider and returns the cached token.
+        expect(await force()).toBe("refreshed-token");
+        expect(mockRefresh).toHaveBeenCalledTimes(2);
+        expect(tokenDecision()).toMatchObject({
+          mode: "forced_refresh",
+          outcome: "cooldown_fallback",
+          result: "token",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("records a cooldown fallback that returns null without a cached token", async () => {
+      withoutCachedToken();
+      mockRefresh.mockRejectedValueOnce(new Error("rate limited"));
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const force = () =>
+          view.result.current.fetchAccessToken({ forceRefreshToken: true });
+        expect(await force()).toBeNull();
+        expect(tokenDecision()).toMatchObject({
+          outcome: "exception_fallback",
+          result: "null",
+        });
+        expect(await force()).toBeNull();
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+        expect(tokenDecision()).toMatchObject({
+          mode: "forced_refresh",
+          outcome: "cooldown_fallback",
+          result: "null",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("does not let a callback invoked for an older context replace newer evidence", async () => {
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const oldFetch = view.result.current.fetchAccessToken;
+        auth.user = { id: "user-456" };
+        view.rerender();
+        mockGetAccessToken.mockResolvedValueOnce("new-account-token");
+        expect(await view.result.current.fetchAccessToken()).toBe(
+          "new-account-token",
+        );
+        const latest = readConvexAuthTokenDecision()?.attempt;
+
+        // Convex can still hold the old callback; its existing context guard
+        // discards the result after the same provider call.
+        mockGetAccessToken.mockResolvedValueOnce("old-account-token");
+        expect(await oldFetch()).toBeNull();
+        expect(mockGetAccessToken).toHaveBeenCalledTimes(2);
+        expect(readConvexAuthTokenDecision()?.attempt).toBe(latest);
+        expect(tokenDecision()).toEqual({
+          mode: "ordinary",
+          outcome: "token",
+          result: "token",
+          age: "lt_1s",
+          context: "same",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("records no owner without calling the provider", async () => {
+      auth.user = null;
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        expect(await view.result.current.fetchAccessToken()).toBeNull();
+        expect(mockGetAccessToken).not.toHaveBeenCalled();
+        expect(tokenDecision()).toMatchObject({
+          mode: "ordinary",
+          outcome: "no_owner",
+          result: "null",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("keeps a newer attempt's evidence when an older one completes later", async () => {
+      const older = deferred<string | undefined>();
+      mockGetAccessToken.mockReturnValueOnce(older.promise);
+      mockRefresh.mockResolvedValueOnce("refreshed-token");
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const olderRequest = view.result.current.fetchAccessToken();
+        expect(
+          await view.result.current.fetchAccessToken({
+            forceRefreshToken: true,
+          }),
+        ).toBe("refreshed-token");
+
+        older.resolve("older-token");
+        expect(await olderRequest).toBe("older-token");
+        expect(tokenDecision()).toMatchObject({
+          mode: "forced_refresh",
+          outcome: "token",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("reports an attempt superseded by an auth context switch", async () => {
+      const getter = deferred<string | undefined>();
+      mockGetAccessToken.mockReturnValueOnce(getter.promise);
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        const oldRequest = view.result.current.fetchAccessToken();
+        auth.user = { id: "user-456" };
+        view.rerender();
+        expect(tokenDecision()).toMatchObject({
+          outcome: "pending",
+          context: "superseded",
+        });
+
+        getter.resolve("old-account-token");
+        expect(await oldRequest).toBeNull();
+        expect(tokenDecision()).toMatchObject({
+          mode: "ordinary",
+          outcome: "context_superseded",
+          result: "null",
+          context: "superseded",
+        });
+
+        mockGetAccessToken.mockResolvedValueOnce("new-account-token");
+        expect(await view.result.current.fetchAccessToken()).toBe(
+          "new-account-token",
+        );
+        expect(tokenDecision()).toMatchObject({
+          outcome: "token",
+          context: "same",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("records recovery attempts behind the token-recovery state", async () => {
+      mockGetAccessToken.mockRejectedValueOnce(new Error("Network error"));
+      const view = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        await act(async () => {
+          await view.result.current.fetchAccessToken();
+        });
+        expect(readConvexAuthProviderState()).toBe("token_recovery");
+        expect(tokenDecision()).toMatchObject({
+          mode: "ordinary",
+          outcome: "exception_fallback",
+        });
+
+        const retry = deferred<string | undefined>();
+        mockGetAccessToken.mockReturnValueOnce(retry.promise);
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(10_000);
+        });
+        expect(tokenDecision()).toMatchObject({
+          mode: "recovery",
+          outcome: "pending",
+        });
+        await act(async () => retry.resolve("fresh-token"));
+        expect(view.result.current.isLoading).toBe(false);
+        // Recovery's getter produced a token, but it returns nothing to Convex.
+        expect(tokenDecision()).toMatchObject({
+          mode: "recovery",
+          outcome: "token",
+          result: "no_result",
+          context: "same",
+        });
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it("stops reporting an unmounted provider, even after its late completion", async () => {
+      const older = deferred<string | undefined>();
+      mockGetAccessToken.mockReturnValueOnce(older.promise);
+      const discarded = renderHook(() => useAuthFromAuthKit(mockDeps));
+      const olderRequest = discarded.result.current.fetchAccessToken();
+      const current = renderHook(() => useAuthFromAuthKit(mockDeps));
+      try {
+        // The newer committed provider has not attempted a token yet.
+        expect(readConvexAuthTokenDecision()).toBeUndefined();
+        discarded.unmount();
+        older.resolve("late-token");
+        await olderRequest;
+        expect(readConvexAuthTokenDecision()).toBeUndefined();
+
+        mockGetAccessToken.mockResolvedValueOnce("current-provider-token");
+        await current.result.current.fetchAccessToken();
+        expect(tokenDecision()).toMatchObject({ outcome: "token" });
+      } finally {
+        current.unmount();
+        discarded.unmount();
+      }
+      expect(readConvexAuthTokenDecision()).toBeUndefined();
     });
   });
 

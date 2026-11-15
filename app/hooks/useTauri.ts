@@ -189,6 +189,19 @@ export async function pickLocalFiles(): Promise<string[]> {
   if (!detectTauri()) return [];
 
   try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<string[]>("pick_local_files");
+  } catch (error) {
+    // Keep older installed binaries usable until they receive the native
+    // picker update. A new binary's ACL denial must not select this fallback.
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open native file picker:", error);
+      toast.error("Failed to open file picker");
+      return [];
+    }
+  }
+
+  try {
     const dialog = await import("@tauri-apps/plugin-dialog");
     const selected = await dialog.open({
       multiple: true,
@@ -360,9 +373,36 @@ export async function saveFileToLocal(
   return invoke<string | null>("save_file_with_dialog", { filename, content });
 }
 
+/** Binary reports use a separate command so older Desktop versions fail safely
+ * instead of saving base64 text under a .pdf extension. */
+export async function saveBinaryFileToLocal(
+  filename: string,
+  content: Uint8Array,
+): Promise<string | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  let binary = "";
+  for (let offset = 0; offset < content.length; offset += 8192)
+    binary += String.fromCharCode(...content.subarray(offset, offset + 8192));
+  return invoke<string | null>("save_binary_file_with_dialog", {
+    filename,
+    contentBase64: btoa(binary),
+  });
+}
+
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_downloads_folder");
+    return true;
+  } catch (error) {
+    if (!/not found|unknown command|not registered/i.test(String(error))) {
+      console.error("[Tauri] Failed to open Downloads folder:", error);
+      return false;
+    }
   }
 
   try {

@@ -6,8 +6,17 @@ import {
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
+import { knownIncurredCostLowerBound } from "@/lib/analytics/serving-cost";
+import {
+  getLocalStopDiagnostic,
+  LOCAL_CONNECTION_LOST_FINISH_REASON,
+  localStopAnalyticsProperties,
+} from "@/lib/chat/local-connection-stop";
 
-type RunEvent = "hackerai-agent_run" | "hackerai-usage_cost";
+type RunEvent =
+  | "hackerai-agent_run"
+  | "hackerai-usage_cost"
+  | "hackerai-usage_cost_observation";
 type FailureStage = "setup" | "preparation" | "model_stream";
 type FailureKind = "error" | "canceled" | "usage_limit" | "elapsed_timeout";
 
@@ -133,10 +142,13 @@ export function createAgentRunReporting(context: {
     ReturnType<typeof selectedComputerFailureDiagnostics> | undefined;
   let failureSignals: FailureSignalContext | undefined;
   const captured = new Set<RunEvent>();
+  let settlementCostCaptured = false;
   let terminalOutcome: "success" | "error" | "aborted" | undefined;
   let terminalAbortSource: string | undefined;
   let terminalFinishReason: string | undefined;
   let terminalStepLimitReached: boolean | undefined;
+  // Holds only a constructed LocalConnectionLostError from the first abort.
+  let localStop: object | undefined;
 
   function once<T>(event: RunEvent, capture: (args: T) => void, args: T) {
     if (captured.has(event)) return;
@@ -159,6 +171,16 @@ export function createAgentRunReporting(context: {
     },
     setStage(next: FailureStage) {
       stage = next;
+    },
+    /**
+     * Call only with the first abort reason. A stop observed after the first
+     * failure or terminal outcome (e.g. during error cleanup) did not end this
+     * run and cannot attach a cause to that earlier result.
+     */
+    recordLocalStop(firstAbortReason: unknown) {
+      if (localStop || failure || terminalOutcome) return;
+      if (getLocalStopDiagnostic(firstAbortReason))
+        localStop = firstAbortReason as object;
     },
     /** Keep the first failure's signal snapshot even if cleanup cancels later. */
     fail(error: unknown, kind: FailureKind = "error") {
@@ -218,6 +240,7 @@ export function createAgentRunReporting(context: {
             "error",
             "other",
             "unknown",
+            LOCAL_CONNECTION_LOST_FINISH_REASON,
           ].includes(finishReason)
         )
           terminalFinishReason ??= finishReason;
@@ -234,6 +257,8 @@ export function createAgentRunReporting(context: {
             "budget_exhausted",
             "agent_spend_cap",
             "elapsed_timeout",
+            "user_wait_timeout",
+            "user_wait_failed",
             "user_stop",
             "request_cancel",
             "unknown",
@@ -245,23 +270,88 @@ export function createAgentRunReporting(context: {
       once(
         "hackerai-agent_run",
         capture,
-        agentModelContextVariant
-          ? { ...args, agentModelContextVariant, agentModelContextFlag }
+        agentModelContextVariant || localStop
+          ? {
+              ...args,
+              ...(agentModelContextVariant && {
+                agentModelContextVariant,
+                agentModelContextFlag,
+              }),
+              ...(localStop && { localConnectionLostError: localStop }),
+            }
           : args,
       );
     },
     captureCost<T>(capture: (args: T) => void, args: T) {
-      once("hackerai-usage_cost", capture, args);
+      once(
+        "hackerai-usage_cost",
+        (value: T) => {
+          capture(value);
+          settlementCostCaptured = true;
+        },
+        args,
+      );
     },
     /** Fill missing reports without changing outcomes, settlement or capture identity. */
     finalize(snapshot: {
       canceled: boolean;
       triggerCostDollars?: number;
       triggerDurationMs?: number;
+      /** Legacy: provider-reported cost only; excludes estimates and retries. */
       observedAccumulatedCostDollars?: number;
+      /** UsageTracker measurement, including discarded and estimated steps. */
+      usageMeasurement?: {
+        usage_known_incurred_cost_dollars?: number;
+        usage_trigger_run_cost_dollars?: number;
+      } & Record<string, unknown>;
     }) {
       if (!context.posthog) return;
-      const kind = failure?.kind ?? (snapshot.canceled ? "canceled" : "error");
+      const costRecorded = settlementCostCaptured;
+      const latestTriggerCost = knownAmount(snapshot.triggerCostDollars);
+      const settledTriggerCost = knownAmount(
+        snapshot.usageMeasurement?.usage_trigger_run_cost_dollars,
+      );
+      if (
+        costRecorded &&
+        latestTriggerCost !== null &&
+        settledTriggerCost !== null
+      ) {
+        // The recorded event carries the settlement-time Trigger snapshot.
+        // Only this run's later compute is additive to it.
+        once(
+          "hackerai-usage_cost_observation",
+          () =>
+            context.posthog!.capture({
+              distinctId: context.userId,
+              uuid: agentRunEventUuid(
+                context.runId,
+                "hackerai-usage_cost_observation",
+              ),
+              event: "hackerai-usage_cost_observation",
+              properties: {
+                observation_version: 1,
+                trigger_run_id: context.runId,
+                chat_id: context.chatId,
+                subscription: context.subscription,
+                subscription_tier: context.subscription,
+                endpoint: context.endpoint,
+                settled_trigger_cost_dollars: settledTriggerCost,
+                latest_trigger_cost_dollars: latestTriggerCost,
+                unrecorded_trigger_cost_dollars: Math.max(
+                  0,
+                  latestTriggerCost - settledTriggerCost,
+                ),
+                trigger_cost_is_final: false,
+                $process_person_profile: false,
+              },
+            }),
+          undefined,
+        );
+      }
+      // A first local stop ends the run like a cancellation, not a failure.
+      const kind =
+        failure?.kind ??
+        (snapshot.canceled || localStop ? "canceled" : "error");
       const outcome =
         terminalOutcome ?? (kind === "error" ? "error" : "aborted");
       const properties = {
@@ -280,7 +370,8 @@ export function createAgentRunReporting(context: {
         terminal_reporting_source: "run_finally",
         failure_stage: failure?.stage ?? stage,
         failure_category: failure?.category ?? "missing_finalization",
-        failure_kind: failure?.kind ?? (snapshot.canceled ? "canceled" : null),
+        failure_kind:
+          failure?.kind ?? (snapshot.canceled || localStop ? "canceled" : null),
         ...selectedComputerDiagnostics,
         ...(failureSignals && {
           failure_signal_context_version: 1,
@@ -291,7 +382,12 @@ export function createAgentRunReporting(context: {
           finalization_trigger_aborted: snapshot.canceled === true,
         }),
         outcome,
-        finish_reason: terminalFinishReason ?? "unknown",
+        // Never relabel an authoritative error as the local stop's finish.
+        finish_reason:
+          terminalFinishReason ??
+          (localStop && outcome === "aborted"
+            ? LOCAL_CONNECTION_LOST_FINISH_REASON
+            : "unknown"),
         step_limit_reached: terminalStepLimitReached ?? null,
         ...(outcome === "aborted" && {
           abort_source:
@@ -300,7 +396,10 @@ export function createAgentRunReporting(context: {
               ? "budget_exhausted"
               : kind === "elapsed_timeout"
                 ? "elapsed_timeout"
-                : "request_cancel"),
+                : // Match resolveAgentAbortSource for a local stop.
+                  localStop && !snapshot.canceled
+                  ? "unknown"
+                  : "request_cancel"),
         }),
         $process_person_profile: false,
       };
@@ -317,8 +416,22 @@ export function createAgentRunReporting(context: {
               event,
               properties: {
                 ...properties,
+                ...(event === "hackerai-agent_run" &&
+                  localStopAnalyticsProperties(localStop)),
                 ...(event === "hackerai-usage_cost"
                   ? {
+                      ...snapshot.usageMeasurement,
+                      // Known work only; unreported calls keep it a lower bound.
+                      known_incurred_cost_lower_bound_dollars:
+                        knownIncurredCostLowerBound({
+                          knownIncurredCostDollars:
+                            snapshot.usageMeasurement
+                              ?.usage_known_incurred_cost_dollars,
+                          trackedTriggerCostDollars:
+                            snapshot.usageMeasurement
+                              ?.usage_trigger_run_cost_dollars,
+                          latestTriggerCostDollars: snapshot.triggerCostDollars,
+                        }),
                       // This is a coverage record, not a billable/full-cost estimate.
                       cost_accounting_status: "incomplete",
                       usage_settlement_status: "unknown",

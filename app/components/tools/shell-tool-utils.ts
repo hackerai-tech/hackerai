@@ -10,7 +10,10 @@ import {
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
 import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
-import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import {
+  isUserStoppedToolError,
+  LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT,
+} from "@/lib/chat/tool-abort-utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,15 +29,21 @@ export function getTerminalExecutionPhase({
   toolState,
   autoReviewStatus,
   errorText,
+  isRunActive,
 }: {
   toolState?: string;
   autoReviewStatus?: AgentAutoReviewLifecycleStatus;
   errorText?: string;
+  isRunActive?: boolean;
 }): TerminalExecutionPhase | undefined {
   if (toolState === "output-error") {
+    if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+      return "interrupted";
     return isUserStoppedToolError(errorText) ? "stopped" : "failed";
   }
   if (toolState === "output-available") return "completed";
+  if (toolState === "input-available" && isRunActive === false)
+    return "interrupted";
   if (
     toolState === "approval-requested" ||
     autoReviewStatus === "needs_approval"
@@ -179,6 +188,8 @@ export function getTerminalFailureAction(
   errorText?: string,
   action?: string,
 ): string {
+  if (errorText === LOCAL_CONNECTION_LOST_TOOL_ERROR_TEXT)
+    return "Command interrupted";
   if (action === "wait") return "Couldn’t check command output";
   return isToolInputValidationError(errorText)
     ? "Invalid command"
@@ -490,18 +501,20 @@ export function computeShellTerminalBlock(
     ((isShellTool && isInteractiveAction) ||
       (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
-    !isActive && errorText
-      ? getTerminalFailureAction(errorText, shellAction)
-      : useBriefOnly
-        ? briefText
-        : getShellActionLabel({
-            isShellTool,
-            action: shellAction,
-            isActive,
-            interactive: !isShellTool ? legacyInteractive : undefined,
-            isBackground: !isShellTool ? legacyIsBackground : undefined,
-            exitCode: hasResult ? exitCode : undefined,
-          });
+    executionPhase === "interrupted"
+      ? "Command interrupted"
+      : !isActive && errorText
+        ? getTerminalFailureAction(errorText, shellAction)
+        : useBriefOnly
+          ? briefText
+          : getShellActionLabel({
+              isShellTool,
+              action: shellAction,
+              isActive,
+              interactive: !isShellTool ? legacyInteractive : undefined,
+              isBackground: !isShellTool ? legacyIsBackground : undefined,
+              exitCode: hasResult ? exitCode : undefined,
+            });
   const blockTarget = useBriefOnly ? undefined : displayTarget;
 
   // sessionSnapshot is xterm-headless-cleaned — prefer it when present; fall

@@ -34,14 +34,28 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Read-only view of a non-OK response; the body stays with the error parser. */
+export type HttpErrorResponseMetadata = Readonly<
+  Pick<Response, "status" | "headers">
+>;
+
 export async function fetchWithErrorHandlers(
   input: RequestInfo | URL,
   init?: RequestInit,
+  options?: {
+    /** Synchronous diagnostic hook; it can never change the thrown error. */
+    onHttpErrorResponse?: (response: HttpErrorResponseMetadata) => void;
+  },
 ) {
   try {
     const response = await fetch(input, init);
 
     if (!response.ok) {
+      try {
+        options?.onHttpErrorResponse?.(response);
+      } catch {
+        // Diagnostics must never replace the original error or its status.
+      }
       let errorBody: unknown;
       try {
         errorBody = await response.clone().json();

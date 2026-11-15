@@ -1,3 +1,8 @@
+const mockSuspensionGate = jest.fn();
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: (...args: unknown[]) =>
+    mockSuspensionGate(...args),
+}));
 import type { Sandbox } from "@e2b/code-interpreter";
 import {
   assertCloudWorkspaceAvailable,
@@ -400,4 +405,45 @@ it("refuses a customer claim when a preservation field appeared before fencing",
     }),
   ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
   expect(mockEval).not.toHaveBeenCalled();
+});
+
+test("recovers only the same case's exact cleanup fence after interruption", async () => {
+  mockConfigured = true;
+  const state = {
+    version: 1,
+    phase: "cleanup",
+    token: "abuse:case-a",
+    migration: recovered,
+  };
+  mockGet.mockResolvedValue(state);
+  mockEval.mockResolvedValue(1);
+  await expect(
+    claimCloudWorkspaceCleanup("subject", false, {
+      token: "abuse:case-b",
+      sandboxId: "verified-destination",
+      region: "us-east-1",
+    }),
+  ).rejects.toThrow();
+  await expect(
+    claimCloudWorkspaceCleanup("subject", false, {
+      token: "abuse:case-a",
+      sandboxId: "other",
+      region: "us-east-1",
+    }),
+  ).rejects.toThrow();
+  const fence = await claimCloudWorkspaceCleanup("subject", false, {
+    token: "abuse:case-a",
+    sandboxId: "verified-destination",
+    region: "us-east-1",
+  });
+  await fence.finish(false);
+  expect(mockEval.mock.calls.at(-1)?.[2][1]).toBe(JSON.stringify(recovered));
+});
+test("a suspended account cannot acquire or resume a workspace before touching Redis", async () => {
+  mockGet.mockClear();
+  mockSuspensionGate.mockRejectedValueOnce(new Error("Restricted"));
+  await expect(
+    assertCloudWorkspaceAvailable("subject", "workspace"),
+  ).rejects.toThrow("Restricted");
+  expect(mockGet).not.toHaveBeenCalled();
 });

@@ -14,6 +14,7 @@ export type FindingOutcome =
   "success" | "rejected" | "failed" | "canceled" | "uncertain" | "initiated";
 export interface FindingEvent {
   operation: FindingOperation;
+  phase?: "request" | "save";
   outcome: FindingOutcome;
   reason?:
     | "provenance"
@@ -30,7 +31,7 @@ export interface FindingEvent {
   duration_ms?: number;
   evidence_warning?: boolean;
   surface?: "computer_sidebar" | "findings_page" | "detail";
-  format?: "markdown" | "csv";
+  format?: "markdown" | "csv" | "pdf" | "html" | "json" | "sarif";
   answer?: "useful" | "needs_correction" | "not_checked";
   closure_reason?: "already_fixed" | "wont_fix" | "false_positive";
   result_count?: number;
@@ -41,6 +42,7 @@ export function findingEventProperties(event: FindingEvent) {
   return {
     finding_event_version: 1,
     operation: event.operation,
+    ...(event.phase && { phase: event.phase }),
     outcome: event.outcome,
     ...(event.reason && { reason: event.reason }),
     ...(event.finding_id && { finding_id: event.finding_id }),

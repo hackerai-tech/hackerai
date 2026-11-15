@@ -7,6 +7,7 @@ import {
   jest,
 } from "@jest/globals";
 import fs from "node:fs";
+import type { AgentCgroupMemoryFields } from "../agent-cgroup-memory";
 
 import { AgentLongMemoryTelemetry } from "../agent-long-memory-telemetry";
 import type {
@@ -63,6 +64,57 @@ describe("AgentLongMemoryTelemetry", () => {
   afterEach(() => {
     jest.restoreAllMocks();
     Object.defineProperty(process, "platform", originalPlatform);
+  });
+
+  it("adds kernel group scope only to an existing selected checkpoint", () => {
+    const read = jest.fn<() => AgentCgroupMemoryFields>().mockReturnValue({
+      cgroup_memory_version: 1,
+      cgroup_memory_status: "available",
+      cgroup_memory_scope: "self_membership",
+      cgroup_memory_current_bytes: 700 * MIB,
+      cgroup_memory_peak_bytes: 960 * MIB,
+      cgroup_memory_limit_kind: "bounded",
+      cgroup_memory_limit_bytes: 1024 * MIB,
+      cgroup_lifetime_oom_kill_events: 0,
+    });
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_group",
+      chatId: "chat_group",
+      userId: "user_group",
+      emit,
+      now: () => 1_000,
+      readCgroupMemory: read,
+    });
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(false);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      cgroup_memory_current_bytes: 700 * MIB,
+      cgroup_memory_peak_bytes: 960 * MIB,
+      cgroup_memory_limit_bytes: 1024 * MIB,
+      cgroup_lifetime_oom_kill_events: 0,
+    });
+  });
+
+  it("retains the original checkpoint if the optional kernel reader throws", () => {
+    const emit = jest.fn();
+    const telemetry = new AgentLongMemoryTelemetry({
+      runId: "run_group_unavailable",
+      chatId: "chat_group",
+      userId: "user_group",
+      emit,
+      readCgroupMemory: () => {
+        throw new Error("private-kernel-reader-canary");
+      },
+    });
+    expect(telemetry.checkpoint({ phase: "provider_request" })).toBe(true);
+    expect(emit.mock.calls[0]?.[0]).toMatchObject({
+      event: "agent_long_memory_checkpoint",
+      rss_bytes: expect.any(Number),
+    });
+    expect(JSON.stringify(emit.mock.calls)).not.toContain("private-kernel");
   });
 
   it("reports current lifecycle and cumulative widths on existing quiet-stream checkpoints", () => {
@@ -174,6 +226,7 @@ describe("AgentLongMemoryTelemetry", () => {
       userId: "user_rss",
       emit,
       now: () => 1000,
+      readCgroupMemory: () => ({}),
       readMemory: () => ({
         rss: 300 * MIB,
         heapTotal: 180 * MIB,
@@ -213,6 +266,7 @@ describe("AgentLongMemoryTelemetry", () => {
       chatId: "chat_rss",
       userId: "user_rss",
       emit,
+      readCgroupMemory: () => ({}),
     });
     expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
       true,
@@ -244,6 +298,7 @@ describe("AgentLongMemoryTelemetry", () => {
         chatId: "chat_rss",
         userId: "user_rss",
         emit,
+        readCgroupMemory: () => ({}),
       });
       expect(telemetry.checkpoint({ phase: "run_failed", force: true })).toBe(
         true,

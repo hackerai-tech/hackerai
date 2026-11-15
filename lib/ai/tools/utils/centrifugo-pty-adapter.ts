@@ -18,6 +18,7 @@
 
 import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
 import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
+import { authorizeDesktopOperation } from "@/lib/desktop/authorized-operation";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -172,6 +173,7 @@ export async function createCentrifugoPtyHandle(
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
   const isolated = sandbox.supportsOperationChannels();
+  const desktop = sandbox.getConnectionInfo().isDesktop === true;
   const channel = isolated
     ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
     : sandboxConnectionChannel(userId, connectionId);
@@ -237,7 +239,17 @@ export async function createCentrifugoPtyHandle(
   const publish = async (payload: PtyOutgoingPayload): Promise<void> => {
     if (!subscription) throw new Error(`${LOG_PREFIX} subscription not ready`);
     try {
-      await subscription.publish(payload);
+      const authorizationId = desktop
+        ? await authorizeDesktopOperation(
+            userId,
+            connectionId,
+            payload as unknown as Record<string, unknown>,
+          )
+        : undefined;
+      await subscription.publish({
+        ...payload,
+        ...(authorizationId ? { authorizationId } : {}),
+      });
     } catch (err) {
       if (err instanceof Error) throw err;
       const msg =
@@ -298,7 +310,7 @@ export async function createCentrifugoPtyHandle(
         exited,
         new Promise<void>((resolve) => setTimeout(resolve, 1500)),
       ]);
-      resolveExitedOnce({ exitCode: null });
+      resolveExitedOnce({ exitCode: null, observationFailed: true });
       cleanup();
     },
 
@@ -328,7 +340,7 @@ export async function createCentrifugoPtyHandle(
     }, TIMEOUT_MS);
 
     // Transport failure handler: pre-ready we reject the create promise;
-    // post-ready we resolve `exited` with a null exitCode so awaiters of
+    // post-ready we resolve `exited` as a failed observation so awaiters of
     // handle.exited don't hang forever on a dropped subscription.
     const failTransport = (message: string) => {
       if (!settled) {
@@ -338,7 +350,7 @@ export async function createCentrifugoPtyHandle(
         reject(new Error(`${LOG_PREFIX} ${message}`));
       } else {
         console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
-        resolveExitedOnce({ exitCode: null });
+        resolveExitedOnce({ exitCode: null, observationFailed: true });
         cleanup();
       }
     };
@@ -400,7 +412,7 @@ export async function createCentrifugoPtyHandle(
               console.error(
                 `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
               );
-              resolveExitedOnce({ exitCode: null });
+              resolveExitedOnce({ exitCode: null, observationFailed: true });
               cleanup();
             }
             break;
@@ -445,8 +457,11 @@ export async function createCentrifugoPtyHandle(
             createPayload as unknown as Record<string, unknown>,
             () => !cleanedUp,
             subscription!,
+            undefined,
+            undefined,
+            desktop,
           )
-        : subscription!.publish(createPayload);
+        : publish(createPayload);
       dispatch.catch((err: unknown) => {
         failTransport(
           `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,

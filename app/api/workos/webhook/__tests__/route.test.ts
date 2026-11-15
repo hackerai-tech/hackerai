@@ -4,6 +4,7 @@ const mockConstructEvent = jest.fn();
 const mockMutation = jest.fn();
 const mockCaptureUserEmailVerified = jest.fn();
 const mockLoggerWarn = jest.fn();
+const mockLoggerError = jest.fn();
 
 jest.mock("next/server", () => ({
   after: jest.fn(),
@@ -18,6 +19,7 @@ jest.mock("next/server", () => ({
 jest.mock("@/lib/logger", () => ({
   logger: {
     warn: mockLoggerWarn,
+    error: mockLoggerError,
   },
 }));
 
@@ -48,6 +50,8 @@ describe("POST /api/workos/webhook", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockMutation.mockReset();
+    mockLoggerError.mockReset();
+    mockConstructEvent.mockReset();
     process.env.WORKOS_WEBHOOK_SECRET = "test-webhook-secret";
     process.env.CONVEX_SERVICE_ROLE_KEY = "test-service-role-key";
   });
@@ -102,6 +106,140 @@ describe("POST /api/workos/webhook", () => {
       );
     },
   );
+
+  it("joins a failed verified claim without replaying the claim or handler", async () => {
+    const eventId = "event_01HDF4BKFX4QW1FJ7N3P9R2M6A";
+    const requestId = "tgb7w-1794258226246-c08ea5aec887";
+    const error = new TypeError("fetch failed");
+    mockConstructEvent.mockResolvedValue({
+      id: eventId,
+      event: "authentication.email_verification_succeeded",
+      data: { userId: "private-user", email: "private@example.com" },
+    });
+    mockMutation.mockRejectedValue(error);
+    const { POST } = await import("../route");
+    const response = await POST({
+      headers: {
+        get: (name: string) =>
+          name === "x-vercel-id" ? requestId : "private-signature",
+      },
+      json: async () => ({ secret: "private-payload" }),
+    } as any);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Failed to claim webhook" });
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockCaptureUserEmailVerified).not.toHaveBeenCalled();
+    expect(mockLoggerError).toHaveBeenCalledTimes(1);
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      "[WorkOS Webhook] Claim failed:",
+      error,
+      {
+        event: "workos.webhook_claim_failed",
+        workos_claim_diagnostic_version: 1,
+        failure_stage: "claim",
+        workos_event_id: eventId,
+        workos_event_type: "authentication.email_verification_succeeded",
+        request_id: requestId,
+        service: "hackerai-web",
+        route: "/api/workos/webhook",
+      },
+    );
+    expect(JSON.stringify(mockLoggerError.mock.calls[0]?.[2])).not.toMatch(
+      /private|secret|signature|payload|service-role/,
+    );
+  });
+
+  it("omits unrecognized IDs and maps unknown event types without exposing payloads", async () => {
+    mockConstructEvent.mockResolvedValue({
+      id: "event_private@example.com",
+      event: "private-event-type",
+      data: { secret: "private-payload" },
+    });
+    mockMutation.mockRejectedValue(new Error("fetch failed"));
+    const { POST } = await import("../route");
+    const response = await POST({
+      headers: { get: () => "private-header" },
+      json: async () => ({}),
+    } as any);
+    expect(response.status).toBe(500);
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockLoggerError.mock.calls[0]?.[2]).toEqual({
+      event: "workos.webhook_claim_failed",
+      workos_claim_diagnostic_version: 1,
+      failure_stage: "claim",
+      workos_event_type: "other",
+      service: "hackerai-web",
+      route: "/api/workos/webhook",
+    });
+  });
+
+  it.each(["logger", "metadata"])(
+    "preserves the original 500 if optional %s observation throws",
+    async (failure) => {
+      const verifiedEvent = {
+        id: "event_01HDF4BKFX4QW1FJ7N3P9R2M6A",
+        event: "user.created",
+      };
+      mockConstructEvent.mockResolvedValue(
+        failure === "metadata"
+          ? new Proxy(verifiedEvent, {
+              getOwnPropertyDescriptor() {
+                throw new Error("unreadable metadata");
+              },
+            })
+          : verifiedEvent,
+      );
+      if (failure === "logger")
+        mockLoggerError.mockImplementation(() => {
+          throw new Error("logger unavailable");
+        });
+      mockMutation.mockRejectedValue(new Error("fetch failed"));
+      const { POST } = await import("../route");
+      const response = await POST({
+        headers: { get: () => "signature" },
+        json: async () => ({}),
+      } as any);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        error: "Failed to claim webhook",
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      expect(mockCaptureUserEmailVerified).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["already_processed", "claim_held"])(
+    "preserves %s acknowledgement without a claim-failure audit",
+    async (state) => {
+      mockConstructEvent.mockResolvedValue({
+        id: "event-held",
+        event: "authentication.email_verification_succeeded",
+        data: { userId: "user-test" },
+      });
+      mockMutation.mockResolvedValue({ state });
+      const { POST } = await import("../route");
+      const response = await POST({
+        headers: { get: () => "signature" },
+        json: async () => ({}),
+      } as any);
+      expect(response.status).toBe(200);
+      expect(mockMutation).toHaveBeenCalledTimes(1);
+      expect(mockCaptureUserEmailVerified).not.toHaveBeenCalled();
+      expect(mockLoggerError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not claim or emit verified-event context for a rejected signature", async () => {
+    mockConstructEvent.mockRejectedValue(new Error("signature rejected"));
+    const { POST } = await import("../route");
+    const response = await POST({
+      headers: { get: () => "signature" },
+      json: async () => ({}),
+    } as any);
+    expect(response.status).toBe(400);
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockLoggerError).not.toHaveBeenCalled();
+  });
 
   it("treats a missing signature as a warning-level client rejection", async () => {
     const { POST } = await import("../route");

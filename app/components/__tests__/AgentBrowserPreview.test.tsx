@@ -1362,6 +1362,85 @@ it("does not overwrite a newer streamed image with a delayed refresh", async () 
   );
 });
 
+it.each(["503", "transport", "no-frame"])(
+  "backs off %s failures before the first frame and resumes after recovery",
+  async (failure) => {
+    let available = false;
+    const requestedAt: number[] = [];
+    global.fetch = jest.fn(async () => {
+      requestedAt.push(Date.now());
+      if (available) return response({ frame });
+      if (failure === "transport") throw new TypeError("Network unavailable");
+      return response({ state: "waiting" }, failure === "no-frame");
+    });
+    const view = await mount();
+    const startedAt = requestedAt[0];
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(23_000);
+    });
+    // Persistent unavailable previews must slow to one request per eight
+    // seconds, even when no initial image has ever arrived.
+    expect(requestedAt.map((time) => time - startedAt)).toEqual([
+      0, 1000, 3000, 7000, 15_000, 23_000,
+    ]);
+    expect(
+      screen.queryByAltText("Current Agent browser viewport"),
+    ).not.toBeInTheDocument();
+
+    available = true;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
+    });
+    expect(
+      screen.getByAltText("Current Agent browser viewport"),
+    ).toHaveAttribute("src", frame.image);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+    });
+    expect(requestedAt.at(-1)! - requestedAt.at(-2)!).toBe(1600);
+
+    // A later failure starts a new short recovery sequence, rather than
+    // inheriting the eight-second delay from the initial outage.
+    available = false;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1600);
+      await jest.advanceTimersByTimeAsync(1000);
+    });
+    expect(requestedAt.at(-1)! - requestedAt.at(-2)!).toBe(1000);
+    const beforeUnmount = requestedAt.length;
+    view.unmount();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(30_000);
+    });
+    expect(requestedAt).toHaveLength(beforeUnmount);
+  },
+);
+
+it("discards the old session's pending preview retry when the session changes", async () => {
+  global.fetch = jest.fn(async () => response({ state: "waiting" }, false));
+  const view = await mount();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(3000);
+  });
+  mockSession = { sessionId: "session-b", state: "agent" };
+  view.rerender(
+    <AgentBrowserPreview
+      chatId="chat"
+      agentId="parent"
+      liveSelection
+      browserRequested
+    />,
+  );
+  await act(async () => {});
+  (global.fetch as jest.Mock).mockClear();
+  await act(async () => {
+    await jest.advanceTimersByTimeAsync(30_000);
+  });
+  expect(global.fetch).toHaveBeenCalledTimes(5);
+  for (const [url] of (global.fetch as jest.Mock).mock.calls)
+    expect(url).toBe("/api/agent/browser/session-b");
+});
+
 it("refreshes repeatedly cached passive frames with an authoritative screenshot", async () => {
   const updated = { ...frame, image: "data:image/png;base64,updated" };
   const defaultFetch = (global.fetch as jest.Mock).getMockImplementation()!;

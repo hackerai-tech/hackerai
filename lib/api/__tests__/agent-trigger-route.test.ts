@@ -1,16 +1,32 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
+import { ConvexError } from "convex/values";
 import { ChatSDKError } from "@/lib/errors";
 
 class MockResponse {
   readonly status: number;
+  readonly headers: Headers;
   private readonly body: unknown;
 
-  constructor(body: unknown, init?: { status?: number }) {
+  constructor(
+    body: unknown,
+    init?: { status?: number; headers?: HeadersInit },
+  ) {
     this.body = body;
     this.status = init?.status ?? 200;
+    this.headers = new Headers(init?.headers);
   }
 
-  static json(body: unknown, init?: { status?: number }) {
+  static json(
+    body: unknown,
+    init?: { status?: number; headers?: HeadersInit },
+  ) {
     return new MockResponse(body, init);
   }
 
@@ -38,9 +54,11 @@ const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
 const mockGoalMutation = jest.fn<any>();
+const mockGoalQuery = jest.fn<any>();
+const mockRetrieveRun = jest.fn<any>();
 const mockReconcileGoal = jest.fn<any>().mockResolvedValue(null);
 jest.mock("@/lib/db/convex-client", () => ({
-  getConvexClient: () => ({ mutation: mockGoalMutation }),
+  getConvexClient: () => ({ mutation: mockGoalMutation, query: mockGoalQuery }),
 }));
 jest.mock("@/lib/goals/server", () => ({
   goalServiceKey: () => "synthetic",
@@ -75,6 +93,7 @@ jest.mock("next/server", () => ({
 jest.mock("@trigger.dev/sdk", () => ({
   auth: { createPublicToken: mockCreatePublicToken },
   idempotencyKeys: { create: jest.fn() },
+  runs: { retrieve: mockRetrieveRun },
   sessions: { start: jest.fn() },
   tasks: { trigger: mockTriggerTask },
 }));
@@ -362,6 +381,28 @@ describe("web request correlation at Agent dispatch", () => {
       expect.objectContaining({ messages }),
     );
   });
+
+  it.each(["full_access", "ask_approval"])(
+    "persists the authenticated shared usage subject for %s Agent runs",
+    async (mode) => {
+      mockGetUserIDAndPro.mockResolvedValueOnce({
+        userId: "user-1",
+        subscription: "free",
+        freeQuotaSubject: "legacy-account-identity",
+        freeUsageQuotaSubject: "new-shared-mailbox-quota",
+      });
+      const response = await start("/api/agent", mode, requestId, {
+        freeQuotaSubject: "untrusted-request-identity",
+        sandboxPreference: "desktop",
+      });
+      expect(response.status).toBe(200);
+      const payload =
+        mode === "full_access"
+          ? mockTriggerTask.mock.calls[0][1]
+          : sessions.start.mock.calls[0][0].triggerConfig.basePayload;
+      expect(payload.freeQuotaSubject).toBe("new-shared-mailbox-quota");
+    },
+  );
 
   it.each(dispatchPaths)(
     "routes %s %s to the existing workspace before dispatch",
@@ -926,9 +967,16 @@ describe("Agent trigger route lifecycle", () => {
     const response = createAgentTriggerPayloadTooLargeResponse();
 
     expect(response.status).toBe(413);
-    await expect(response.json()).resolves.toMatchObject({
+    // Lets the client tell the route's own rejection from a platform 413.
+    expect(response.headers.get("x-hackerai-agent-start-rejection")).toBe(
+      "trigger_payload_too_large",
+    );
+    await expect(response.json()).resolves.toEqual({
       code: "bad_request:api",
-      cause: expect.stringContaining("too large to start"),
+      message:
+        "The request couldn't be processed. Please check your input and try again.",
+      cause:
+        "This Agent request is too large to start. Remove some attachments or start a new chat and try again.",
     });
   });
 
@@ -1737,6 +1785,7 @@ describe("regional subscription gate before Agent dispatch", () => {
   it.each(["/api/agent", "/api/agent-long"] as const)(
     "blocks %s before chat persistence or paid worker dispatch",
     async (endpoint) => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       const response = await createAgentTriggerPost({ endpoint })({
         headers: new Headers({ "x-vercel-ip-country": "NG" }),
         cookies: { get: () => undefined },
@@ -1760,8 +1809,206 @@ describe("regional subscription gate before Agent dispatch", () => {
       });
       expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
       expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+        event: "agent_start_forbidden_context",
+        endpoint,
+        stage: "access_gates",
+        guard_boundary: "regional_subscription_gate",
+        error_code: "forbidden:chat",
+        request_id_kind: "unavailable",
+      });
+      // Eligibility country and identities stay out of the receipt.
+      expect(warn.mock.calls[0][0]).not.toMatch(/NG|US|user-free|test-chat/);
+      warn.mockRestore();
     },
   );
+});
+
+describe("returned Agent start 403 receipts", () => {
+  const { sessions } = require("@trigger.dev/sdk");
+  const { getChatById, getUserCustomization } = require("@/lib/db/actions");
+  const suspensions = require("@/lib/suspensions");
+  const requestId = "iad1::iad1-1792071667623-a1bd20d0daef";
+  const previousBuild = process.env.VERCEL_GIT_COMMIT_SHA;
+  let warn: ReturnType<typeof jest.spyOn>;
+  let error: ReturnType<typeof jest.spyOn>;
+  let toResponse: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.VERCEL_GIT_COMMIT_SHA;
+    getChatById.mockReset().mockResolvedValue(null);
+    getUserCustomization.mockResolvedValue(null);
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "PRIVATE_USER",
+      subscription: "pro",
+    });
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+    toResponse = jest.spyOn(ChatSDKError.prototype, "toResponse");
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+    toResponse.mockRestore();
+    if (previousBuild === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+    else process.env.VERCEL_GIT_COMMIT_SHA = previousBuild;
+  });
+
+  const start = (endpoint: string, body: Record<string, unknown> = {}) =>
+    createAgentTriggerPost({ endpoint: endpoint as any })({
+      headers: new Headers({ "x-vercel-id": requestId }),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "PRIVATE_CHAT",
+        sandboxPreference: "desktop",
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "PRIVATE_PROMPT" }],
+          },
+        ],
+        ...body,
+      }),
+    } as any);
+
+  const expectReceipt = async (
+    response: any,
+    endpoint: string,
+    stage: string,
+    guardBoundary: string,
+  ) => {
+    expect(response.status).toBe(403);
+    // The handler returns the one Response built from the typed error.
+    expect(toResponse).toHaveBeenCalledTimes(1);
+    expect(response).toBe(toResponse.mock.results[0].value);
+    expect(mockTriggerTask).not.toHaveBeenCalled();
+    expect(sessions.start).not.toHaveBeenCalled();
+    expect(mockGoalMutation).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual({
+      timestamp: expect.any(String),
+      level: "warn",
+      event: "agent_start_forbidden_context",
+      service: "hackerai-web",
+      agent_start_forbidden_diagnostic_version: 1,
+      http_status: 403,
+      endpoint,
+      action: "start",
+      stage,
+      guard_boundary: guardBoundary,
+      error_code: "forbidden:chat",
+      request_id_kind: "vercel",
+      request_id: requestId,
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  };
+
+  it("attributes an account access denial on /api/agent without altering its body", async () => {
+    suspensions.assertUserCanMakeCostIncurringRequest.mockRejectedValueOnce(
+      new ChatSDKError("forbidden:chat", "PRIVATE_SUSPENSION_MESSAGE", {
+        suspensionCategory: "PRIVATE_CATEGORY",
+      }),
+    );
+    const response = await start("/api/agent");
+    expect(await response.json()).toEqual({
+      code: "forbidden:chat",
+      message:
+        "This chat belongs to another user. Please check the chat ID and try again.",
+      cause: "PRIVATE_SUSPENSION_MESSAGE",
+      metadata: { suspensionCategory: "PRIVATE_CATEGORY" },
+    });
+    expect(getChatById).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    await expectReceipt(
+      response,
+      "/api/agent",
+      "access_gates",
+      "account_access_gate",
+    );
+  });
+
+  it("attributes the free cloud Agent denial on /api/agent-long", async () => {
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "PRIVATE_USER",
+      subscription: "free",
+    });
+    const response = await start("/api/agent-long", {
+      sandboxPreference: undefined,
+    });
+    expect(await response.json()).toMatchObject({
+      cause: expect.stringContaining("requires a local sandbox"),
+    });
+    expect(mockResolveWorkspaceRegion).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    await expectReceipt(
+      response,
+      "/api/agent-long",
+      "access_gates",
+      "free_agent_sandbox_gate",
+    );
+  });
+
+  it("attributes an ineligible persistent goal request on /api/agent", async () => {
+    const response = await start("/api/agent", {
+      goal: { action: "resume" },
+      regenerate: true,
+      messages: [],
+    });
+    expect(await response.json()).toMatchObject({
+      cause: "Persistent goals are unavailable for this request.",
+    });
+    expect(mockReconcileGoal).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    await expectReceipt(
+      response,
+      "/api/agent",
+      "load_chat_and_preferences",
+      "persistent_goal_request_gate",
+    );
+  });
+
+  it("attributes a foreign chat on /api/agent-long without logging its owner", async () => {
+    getChatById.mockResolvedValue({
+      id: "PRIVATE_CHAT",
+      user_id: "PRIVATE_OWNER",
+    });
+    const response = await start("/api/agent-long");
+    expect(await response.json()).toEqual({
+      code: "forbidden:chat",
+      message:
+        "This chat belongs to another user. Please check the chat ID and try again.",
+    });
+    expect(getChatById).toHaveBeenCalledTimes(1);
+    expect(mockReconcileGoal).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    await expectReceipt(
+      response,
+      "/api/agent-long",
+      "load_chat_and_preferences",
+      "chat_owner_gate",
+    );
+  });
+
+  it("does not attribute a later 403 to guards that already passed", async () => {
+    mockHandleInitialChatAndUserMessage.mockRejectedValueOnce(
+      new ChatSDKError("forbidden:chat"),
+    );
+    const response = await start("/api/agent");
+    expect(
+      suspensions.assertUserCanMakeCostIncurringRequest,
+    ).toHaveBeenCalledTimes(1);
+    expect(mockHandleInitialChatAndUserMessage).toHaveBeenCalledTimes(1);
+    await expectReceipt(
+      response,
+      "/api/agent",
+      "persist_user_message",
+      "other",
+    );
+  });
 });
 
 describe("goal reservations on oversized dispatch", () => {
@@ -1967,4 +2214,168 @@ describe("goal reservations on oversized dispatch", () => {
       expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("goal reconciliation failures at Agent start", () => {
+  const { sessions } = require("@trigger.dev/sdk");
+  const { getChatById, getUserCustomization } = require("@/lib/db/actions");
+  const originalKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  let warn: ReturnType<typeof jest.spyOn>;
+  let error: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CONVEX_SERVICE_ROLE_KEY = "synthetic-reconcile-key";
+    getChatById
+      .mockReset()
+      .mockResolvedValue({ id: "chat-1", user_id: "user-1" });
+    getUserCustomization.mockResolvedValue(null);
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-1",
+      subscription: "pro",
+    });
+    mockGoalQuery
+      .mockReset()
+      .mockResolvedValue({ activeRunId: "run-1", state: "running" });
+    mockRetrieveRun.mockReset().mockResolvedValue({
+      status: "FAILED",
+      metadata: { chatId: "chat-1", userId: "user-1" },
+    });
+    mockGoalMutation.mockReset();
+    mockTriggerTask.mockReset();
+    // Exercise the actual reconciliation with only its I/O faked.
+    mockReconcileGoal.mockImplementationOnce(
+      jest.requireActual<typeof import("@/lib/goals/server")>(
+        "@/lib/goals/server",
+      ).reconcileGoal,
+    );
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
+    mockReconcileGoal.mockReset().mockResolvedValue(null);
+    if (originalKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = originalKey;
+  });
+
+  const start = (endpoint: string) =>
+    createAgentTriggerPost({ endpoint: endpoint as any })({
+      headers: new Headers(),
+      cookies: { get: () => undefined },
+      json: async () => ({
+        chatId: "chat-1",
+        sandboxPreference: "desktop",
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: "private-prompt-canary" }],
+          },
+        ],
+      }),
+    } as any);
+
+  it.each([
+    ["/api/agent", "get_goal", "goal_chat_unavailable"],
+    ["/api/agent-long", "finish_goal", "chat_access_suspended"],
+  ] as const)(
+    "adds the finite %s %s failure to the existing 500 without admitting the run",
+    async (endpoint, step, kind) => {
+      const failure = Object.assign(
+        new ConvexError("[Request ID: ABCDEF0123456789] Server Error"),
+        {
+          data:
+            step === "get_goal"
+              ? "Goal chat unavailable"
+              : {
+                  code: "CHAT_ACCESS_SUSPENDED",
+                  message: "suspension-data-canary",
+                },
+        },
+      );
+      if (step === "get_goal") mockGoalQuery.mockRejectedValueOnce(failure);
+      else mockGoalMutation.mockRejectedValueOnce(failure);
+      const response = await start(endpoint);
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        code: "bad_request:api",
+        message: "Something went wrong. Please try again later.",
+        cause: "Failed to start agent run",
+      });
+      expect(error).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.parse(error.mock.calls[0][0] as string);
+      expect(diagnostic).toMatchObject({
+        event: "agent_route_failed",
+        endpoint,
+        action: "start",
+        stage: "reconcile_goal",
+        goal_reconciliation_diagnostic_version: 1,
+        goal_reconciliation_step: step,
+        goal_reconciliation_failure_kind: kind,
+        goal_reconciliation_convex_request_id: "abcdef0123456789",
+      });
+      expect(JSON.stringify(error.mock.calls)).not.toContain("canary");
+      expect(warn).not.toHaveBeenCalled();
+      // The failed read or settlement is not retried or followed by recovery.
+      expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+      expect(mockRetrieveRun).toHaveBeenCalledTimes(
+        step === "get_goal" ? 0 : 1,
+      );
+      expect(mockGoalMutation).toHaveBeenCalledTimes(
+        step === "get_goal" ? 0 : 1,
+      );
+      expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+      expect(sessions.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not attribute a later dispatch failure to completed reconciliation", async () => {
+    mockGoalQuery.mockResolvedValueOnce({ state: "paused" });
+    mockTriggerTask.mockRejectedValueOnce(new Error("queue unavailable"));
+    expect((await start("/api/agent")).status).toBe(500);
+    expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+    expect(mockTriggerTask).toHaveBeenCalledTimes(1);
+    const diagnostic = JSON.parse(error.mock.calls[0][0] as string);
+    expect(diagnostic.stage).toBe("tasks.trigger");
+    for (const key of Object.keys(diagnostic))
+      expect(key).not.toMatch(/^goal_reconciliation_/);
+  });
+
+  it("does not attribute a local guard failure after reconciliation returns to its last step", async () => {
+    // The actual reconcileGoal returns this goal; the route's own guard read fails.
+    mockGoalQuery.mockResolvedValueOnce(
+      Object.defineProperty({}, "state", {
+        get() {
+          throw new Error("synthetic post-reconcile failure");
+        },
+      }),
+    );
+    const response = await start("/api/agent");
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      code: "bad_request:api",
+      message: "Something went wrong. Please try again later.",
+      cause: "Failed to start agent run",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(error.mock.calls[0][0] as string)).toMatchObject({
+      event: "agent_route_failed",
+      stage: "reconcile_goal",
+      goal_reconciliation_diagnostic_version: 1,
+      goal_reconciliation_step: "unknown",
+      goal_reconciliation_failure_kind: "other_error",
+      goal_reconciliation_convex_request_id: "none",
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(mockGoalQuery).toHaveBeenCalledTimes(1);
+    expect(mockRetrieveRun).not.toHaveBeenCalled();
+    expect(mockGoalMutation).not.toHaveBeenCalled();
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+    expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    expect(mockTriggerTask).not.toHaveBeenCalled();
+  });
 });

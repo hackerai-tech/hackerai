@@ -36,6 +36,9 @@ jest.mock("convex/server", () => ({
 
 jest.mock("../_generated/api", () => ({
   internal: {
+    findings: {
+      syncChatFindingProject: "internal.findings.syncChatFindingProject",
+    },
     chats: {
       cleanupChatSummaryTelemetryBatch:
         "internal.chats.cleanupChatSummaryTelemetryBatch",
@@ -111,6 +114,7 @@ const makeCtx = ({
 
   return {
     ctx: {
+      scheduler: { runAfter: jest.fn<any>().mockResolvedValue(undefined) },
       auth: {
         getUserIdentity: jest
           .fn<any>()
@@ -462,6 +466,11 @@ describe("moveChatToProject", () => {
       }),
     ).resolves.toBe(true);
 
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.findings.syncChatFindingProject",
+      { chatId: "chat-1", userId: "user-1", cursor: null },
+    );
     expect(get).toHaveBeenCalledWith("project-1");
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: "project-1",
@@ -514,6 +523,11 @@ describe("moveChatToProject", () => {
       }),
     ).resolves.toBe(true);
 
+    expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.findings.syncChatFindingProject",
+      { chatId: "chat-1", userId: "user-1", cursor: null },
+    );
     expect(get).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: undefined,

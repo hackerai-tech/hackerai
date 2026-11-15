@@ -17,6 +17,7 @@ import {
   resolveServedModelForCostAccounting,
   shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 
 import { getAgentContextBudget } from "@/lib/ai/agent-context-budget";
 import { getSummarizationThresholdTokens } from "@/lib/chat/summarization/constants";
@@ -229,6 +230,82 @@ describe("Abliteration reasoning by selected tier", () => {
 });
 
 describe("buildProviderOptions fallback chain", () => {
+  it("serializes max reasoning through the installed OpenRouter streaming adapter", async () => {
+    const {
+      Response,
+    } = require("next/dist/compiled/@edge-runtime/primitives/fetch");
+    const fetchMock = jest.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("data: [DONE]\n\n", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const provider = createOpenRouter({
+      apiKey: "test-only",
+      fetch: fetchMock,
+    });
+    const options = buildProviderOptions(
+      true,
+      "user-1",
+      "model-deepseek-v4-flash-vision-pro",
+      "agent",
+      { isPaidAutoAgentRequest: true },
+    );
+    const originalTextDecoderStream = globalThis.TextDecoderStream;
+    globalThis.TextDecoderStream = require("node:stream/web").TextDecoderStream;
+    try {
+      await provider.chat(DEEPSEEK_VISION_SLUG).doStream({
+        prompt: [
+          { role: "user", content: [{ type: "text", text: "Say hello" }] },
+        ],
+        providerOptions: options,
+      });
+    } finally {
+      globalThis.TextDecoderStream = originalTextDecoderStream;
+    }
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.reasoning).toEqual({ enabled: true, effort: "max" });
+    expect(body.provider).toEqual({ require_parameters: true });
+  });
+
+  it.each([
+    DEEPSEEK_1017_MODEL_KEY,
+    "model-deepseek-v4-flash-vision-pro",
+    "model-deepseek-v4-flash-vision",
+    "model-deepseek-v4-flash-0731",
+    "model-deepseek-v4-pro-0813",
+  ])("uses max reasoning for paid Auto Agent on %s", (modelName) => {
+    const opts = buildProviderOptions(false, "user-1", modelName, "agent", {
+      isPaidAutoAgentRequest: true,
+      reasoningOverride: { enabled: true, effort: "high" },
+      ignoredProviderSlugs: ["together"],
+    });
+    expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort: "max" });
+    expect(opts.openrouter.provider).toEqual({
+      require_parameters: true,
+      ignore: ["together"],
+    });
+    expect(opts.openrouter.models).toEqual(
+      buildProviderOptions(false, "user-1", modelName, "agent").openrouter
+        .models,
+    );
+  });
+
+  it.each([
+    ["ask", "model-deepseek-v4-flash-vision-pro", "high"],
+    ["ask", "ask-model-free-deepseek-v41", "low"],
+    ["agent", "model-grok-4.6", "high"],
+    ["agent", "model-glm-5.3", "high"],
+  ] as const)("keeps %s/%s reasoning at %s", (mode, modelName, effort) => {
+    const opts = buildProviderOptions(true, "user-1", modelName, mode, {
+      isPaidAutoAgentRequest: true,
+    });
+    expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort });
+    expect(opts.openrouter.provider ?? {}).not.toHaveProperty(
+      "require_parameters",
+    );
+  });
+
   it.each([
     "ask-model-free",
     "ask-model-free-glm",
@@ -918,6 +995,39 @@ describe("buildProviderOptions fallback chain", () => {
         enabled: true,
         effort: "high",
       });
+    },
+  );
+
+  it.each([
+    undefined,
+    { enabled: true, effort: "low" },
+    { enabled: true, effort: "max" },
+    { enabled: false },
+    { enabled: true, effort: "high", exclude: true },
+  ])(
+    "pins Max Grok text and vision to high reasoning with override %p",
+    (reasoningOverride) => {
+      const opts = buildProviderOptions(
+        true,
+        "user-1",
+        "model-grok-4.6",
+        "agent",
+        {
+          selectedModelOverride: "hackerai-max",
+          reasoningOverride,
+          hasMultimodalToolResults: true,
+        },
+      );
+      expect(opts.openrouter.reasoning).toEqual({
+        enabled: true,
+        effort: "high",
+      });
+      expect(opts.openrouter).not.toHaveProperty("models");
+      expect(
+        getRetryFallbackModel("model-grok-4.6", "agent", "hackerai-max", {
+          hasImageInputs: true,
+        }),
+      ).toBe(DEEPSEEK_1017_MODEL_KEY);
     },
   );
 

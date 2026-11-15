@@ -1,3 +1,7 @@
+import {
+  assertChatHistoryOwner,
+  createChatHistoryAccess,
+} from "./lib/chatHistoryAccess";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
@@ -1225,10 +1229,7 @@ export const getMessagesByChatId = query({
     await assertUserCanAccessChatHistory(ctx, user.subject);
 
     try {
-      await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
+      await assertChatHistoryOwner(ctx, args.chatId, user.subject);
 
       const result = await ctx.db
         .query("messages")
@@ -2196,6 +2197,8 @@ export const branchChat = mutation({
         project_id: originalChat.project_id,
         update_time: Date.now(),
       });
+
+      await createChatHistoryAccess(ctx, newChatId, user.subject);
 
       // Copy messages to new chat, tracking old→new ID mapping for summary remapping
       const messageIdMap = new Map<string, string>();

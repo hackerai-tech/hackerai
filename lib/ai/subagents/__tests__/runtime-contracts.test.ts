@@ -19,7 +19,9 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).toContain("SUBAGENT_MAX_ACTIVE_SECONDS");
     expect(source).toContain("SUBAGENT_RESULT_DEADLINE_SECONDS");
     expect(source).toContain('event: "subagent_deadline_reminder_sent"');
-    expect(source).toContain("conversationMessages.push(deadlineMessage)");
+    expect(source).toMatch(
+      /deadlineReminderSent = true;\s+modelContext\.inject\(\{[\s\S]*?Runtime deadline approaching/,
+    );
     expect(source).toContain("SUBAGENT_MAX_STEPS");
     expect(source).toContain("row.cost_limit_dollars");
     expect(source).toContain("usage as triggerUsage");
@@ -27,7 +29,7 @@ describe("security validation subagent runtime contracts", () => {
       "resolveTriggerRunCost(triggerUsage.getCurrent())",
     );
     expect(source).toContain(
-      "usageTracker.nonModelCost += triggerRunUsage.totalCostDollars",
+      "usageTracker.addTriggerRunCost(triggerRunUsage.totalCostDollars)",
     );
     expect(source).toContain("retry: { maxAttempts: 1 }");
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
@@ -205,9 +207,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(acceptResult).toContain("getNotes: getBrowserHandoffNotes");
     expect(acceptResult).toContain("waitForControl: waitForBrowserHandoff");
     expect(acceptResult).toContain("modelNoteIds: modelHandoffNoteIds");
-    expect(child).toContain(
-      "modelHandoffNoteIds = handoffNotes.map(({ id }) => id)",
-    );
+    expect(child).toContain("modelHandoffNoteIds = notes.map(({ id }) => id)");
     const onFinish = child.slice(
       child.indexOf("onFinish: async () =>"),
       child.indexOf("onStepFinish: async"),
@@ -277,8 +277,10 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain('attachOutcome === "terminal"');
     expect(child).toContain("reusePersistedTerminalState");
     expect(child).toContain('event: "subagent_terminal_state_reused"');
-    expect(child).toContain('failureCode: "setup_failed"');
-    expect(child).toContain('errorCategory: "setup_failed"');
+    expect(child).toContain(
+      'restricted ? "account_restricted" : "setup_failed"',
+    );
+    expect(child).toContain("errorCategory: failureCode");
     expect(child).toContain("onError: (error) =>");
     expect(child).toContain("const terminalFailure = activeTimedOut");
     expect(child).toContain(": spendCapExceeded");

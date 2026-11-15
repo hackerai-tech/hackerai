@@ -3,10 +3,14 @@
  */
 
 /**
- * Desktop's uname probe historically published MSYS/Git Bash kernel names.
- * They identify Windows hosts even though their command shell is POSIX.
+ * Map reported OS names to Node `process.platform` IDs. Desktop's native OS
+ * info reports Rust `std::env::consts::OS` names. Its uname probe historically
+ * published MSYS/Git Bash kernel names; they identify Windows hosts even
+ * though their command shell is POSIX.
  */
 export function normalizeSandboxPlatform(platform: string): string {
+  if (platform === "windows") return "win32";
+  if (platform === "macos") return "darwin";
   return /^(?:mingw32|mingw64|msys)_nt(?:-|$)/i.test(platform)
     ? "win32"
     : platform;

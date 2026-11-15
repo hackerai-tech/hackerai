@@ -5,10 +5,6 @@ const mockIsE2BSandbox = jest.fn();
 const mockLoggerWarn = jest.fn();
 let mockTrackSandboxUsage: ((sandbox: unknown) => void) | undefined;
 const mockNetworkQuery = jest.fn();
-const mockCaptchaSolve = jest.fn();
-jest.mock("../../captcha/solver", () => ({
-  createTwoCaptchaSolver: () => ({ solve: mockCaptchaSolve }),
-}));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({
     query: mockNetworkQuery,
@@ -17,15 +13,7 @@ jest.mock("@/lib/db/convex-client", () => ({
 }));
 
 jest.mock("../run-terminal-cmd", () => ({
-  createRunTerminalCmd: jest.fn((context) => ({
-    execute: async (input: { action: string }) =>
-      input.action === "inspect"
-        ? context.checkBrowserChallenge?.(undefined, {
-            sandbox: {},
-            sessionName: "default",
-          })
-        : context.requestBrowserChallenge?.("solve", "default"),
-  })),
+  createRunTerminalCmd: jest.fn(() => ({})),
 }));
 jest.mock("../interact-terminal-session", () => ({
   createInteractTerminalSession: jest.fn(() => ({})),
@@ -92,99 +80,8 @@ import { createTools } from "..";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { E2B_COST_PER_MS } from "../utils/e2b-cost";
-import { BrowserSessions } from "../utils/browser-sessions";
-import { DETECT_CHALLENGES_SCRIPT } from "../../captcha/detection";
 
 describe("sandbox acquisition serialization", () => {
-  it("retains the CAPTCHA attempt budget across provider fallback and excludes untrusted runtimes", async () => {
-    const originalEnv = process.env;
-    process.env = {
-      ...originalEnv,
-
-      TWOCAPTCHA_API_KEY: "test-provider-key",
-    };
-    const evaluator = jest
-      .spyOn(BrowserSessions.prototype, "getChallengeBrowser")
-      .mockResolvedValue({
-        identity: "owner:default",
-        evaluate: async (script) =>
-          script === DETECT_CHALLENGES_SCRIPT
-            ? {
-                url: "https://www.google.com/recaptcha/api2/demo",
-                documentId: "1",
-                interstitial: false,
-                widgets: [
-                  {
-                    kind: "recaptcha_v2",
-                    siteKey: "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-",
-                    invisible: false,
-                    observationId: "0123456789abcdef0123456789abcdef",
-                    tokenPresent: false,
-                  },
-                ],
-              }
-            : { status: "token_delivered" },
-      });
-    mockCaptchaSolve.mockResolvedValue({
-      token: "test-response",
-      costDollars: 0.003,
-    });
-    try {
-      const args: Parameters<typeof createTools> = [
-        "user-1",
-        "chat-1",
-        {} as never,
-        "agent",
-        {} as never,
-      ];
-      args[9] = "service-key";
-      args[20] = "run-1";
-      args[22] = { environment: "PREVIEW" };
-      const preview = createTools(...args);
-      expect(preview.getCaptchaReceiptPrompt()).toBe("");
-      expect(preview.tools.browser_challenge).toBeUndefined();
-      await expect(
-        preview.tools.run_terminal_cmd.execute!(
-          { action: "inspect" },
-          { toolCallId: "inspect", messages: [] },
-        ),
-      ).resolves.toMatchObject({ status: "solve_available" });
-      expect(mockCaptchaSolve).not.toHaveBeenCalled();
-      await expect(
-        preview.tools.run_terminal_cmd.execute!(
-          { action: "solve" },
-          { toolCallId: "first", messages: [] },
-        ),
-      ).resolves.toMatchObject({ status: "token_delivered" });
-      await expect(
-        preview.getToolsForModel("fallback-model").run_terminal_cmd.execute!(
-          { action: "solve" },
-          { toolCallId: "fallback", messages: [] },
-        ),
-      ).resolves.toMatchObject({ status: "snapshot_required" });
-      expect(mockCaptchaSolve).toHaveBeenCalledTimes(1);
-      expect(preview.getCaptchaReceiptPrompt()).toContain("Provider: 2Captcha");
-      expect(preview.getCaptchaReceiptPrompt()).toContain("0.003 USD");
-      expect(createTools(...args).getCaptchaReceiptPrompt()).toBe("");
-      args[22] = { environment: "DEVELOPMENT" };
-      await expect(
-        createTools(...args).tools.run_terminal_cmd.execute!(
-          { action: "solve" },
-          { toolCallId: "production", messages: [] },
-        ),
-      ).resolves.toBeUndefined();
-      args[22] = { environment: "PREVIEW", browserAgentId: "child-1" };
-      await expect(
-        createTools(...args).tools.run_terminal_cmd.execute!(
-          { action: "solve" },
-          { toolCallId: "child", messages: [] },
-        ),
-      ).resolves.toBeUndefined();
-    } finally {
-      evaluator.mockRestore();
-      process.env = originalEnv;
-    }
-  });
   beforeEach(() => {
     jest.clearAllMocks();
     jest.mocked(getPostHogBooleanFlagDecisionForUser).mockResolvedValue(true);
@@ -198,22 +95,12 @@ describe("sandbox acquisition serialization", () => {
     jest.useRealTimers();
   });
 
-  it.each([
-    "flag off",
-    "flag unavailable",
-    "approval",
-    "child",
-    "untrusted",
-    "Preview",
-    "Production",
-  ])(
-    "gates connected browser preparation before touching its configuration: %s",
-    async (variant) => {
+  it.each(["PREVIEW", "PRODUCTION"])(
+    "builds %s parent tools without CAPTCHA hooks, flag lookups or connected-browser setup",
+    async (environment) => {
       const originalEnv = process.env;
-      process.env = {}; // Missing provider key must still permit eligible detection.
-      const flag = jest.mocked(getPostHogBooleanFlagDecisionForUser);
-      if (variant === "flag off") flag.mockResolvedValue(false);
-      if (variant === "flag unavailable") flag.mockResolvedValue(null);
+      // A leftover provider key must not re-enable any solver path.
+      process.env = { ...originalEnv, TWOCAPTCHA_API_KEY: "test-provider-key" };
       const args: Parameters<typeof createTools> = [
         "user-1",
         "chat-1",
@@ -223,32 +110,16 @@ describe("sandbox acquisition serialization", () => {
       ];
       args[9] = "service-key";
       args[20] = "run-1";
-      args[22] = {
-        environment:
-          variant === "Production"
-            ? "PRODUCTION"
-            : variant === "untrusted"
-              ? "DEVELOPMENT"
-              : "PREVIEW",
-        ...(variant === "child" && { browserAgentId: "child-1" }),
-      };
-      if (variant === "approval") args[16] = jest.fn();
+      args[22] = { environment };
       try {
-        createTools(...args);
-        const sessions = jest.mocked(createRunTerminalCmd).mock.calls.at(-1)![0]
-          .browserSessions!;
-        const run = jest.fn(
-          async (_command: string, options: { stdin: string }) => {
-            const { request } = JSON.parse(options.stdin);
-            return {
-              exitCode: 0,
-              stdout: JSON.stringify({
-                root: `/tmp/hackerai-captcha-${request.owner}`,
-                name: `captcha-${request.owner}`,
-              }),
-            };
-          },
+        const created = createTools(...args);
+        const context = jest.mocked(createRunTerminalCmd).mock.calls.at(-1)![0];
+        expect(Object.keys(context).join(" ")).not.toMatch(
+          /captcha|challenge/i,
         );
+        expect(Object.keys(created).join(" ")).not.toMatch(/captcha/i);
+        expect(created.tools.browser_handoff).toBeDefined();
+        const run = jest.fn();
         const target = {
           commands: { run },
           sandboxKind: "centrifugo",
@@ -256,28 +127,10 @@ describe("sandbox acquisition serialization", () => {
           getConnectionInfo: () => ({ connectionId: "local" }),
           isWindows: () => false,
         } as never;
-        const [a, b] = await Promise.all([
-          sessions.prepare(target),
-          sessions.prepare(target),
-        ]);
-        expect(b).toEqual(a);
-        const eligible = ["Preview", "Production"].includes(variant);
-        if (eligible) {
-          expect(a.AGENT_BROWSER_CONFIG).toBeDefined();
-          expect(run).toHaveBeenCalledTimes(1);
-          expect(
-            JSON.parse(run.mock.calls[0][1].stdin).request,
-          ).not.toHaveProperty("initScript");
-          expect(flag).toHaveBeenCalledTimes(1);
-          // Turning the flag off must not silently switch the existing namespace.
-          flag.mockResolvedValue(false);
-          expect(await sessions.prepare(target)).toEqual(a);
-          expect(flag).toHaveBeenCalledTimes(1);
-        } else {
-          expect(a).toEqual({});
-          expect(run).not.toHaveBeenCalled();
-        }
-        await sessions.cleanup();
+        expect(await context.browserSessions!.prepare(target)).toEqual({});
+        expect(run).not.toHaveBeenCalled();
+        expect(getPostHogBooleanFlagDecisionForUser).not.toHaveBeenCalled();
+        await created.cleanupBrowserSessions();
       } finally {
         process.env = originalEnv;
       }

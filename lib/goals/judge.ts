@@ -7,6 +7,7 @@ import {
   type UIMessage,
   type LanguageModelUsage,
 } from "ai";
+import { Lexer, type MarkedToken, type Token } from "marked";
 import { z } from "zod";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { api } from "@/convex/_generated/api";
@@ -249,6 +250,96 @@ export function buildGoalCompletionEvidence(
   };
 }
 
+/** Request prose without code, blockquotes, withdrawn text or link targets. */
+function requestProse(text: string) {
+  const inline = (tokens: readonly Token[] = []): string =>
+    tokens
+      .map((token) => {
+        const t = token as MarkedToken;
+        switch (t.type) {
+          case "text":
+            return t.tokens ? inline(t.tokens) : t.text;
+          case "escape":
+            return t.text;
+          case "strong":
+          case "em":
+          case "link":
+            return inline(t.tokens);
+          case "br":
+            return "\n";
+          default: // codespan, del (withdrawn), html, image, checkbox
+            return "";
+        }
+      })
+      .join("");
+  // Each block ends its own line so a request can open the next block.
+  const blocks = (tokens: readonly Token[]): string =>
+    tokens
+      .map((token) => {
+        const t = token as MarkedToken;
+        switch (t.type) {
+          case "paragraph":
+          case "heading":
+          case "text":
+            return `${t.tokens ? inline(t.tokens) : t.text}\n`;
+          case "list":
+            return t.items.map((item) => blocks(item.tokens)).join("");
+          case "table":
+            return [t.header, ...t.rows]
+              .map((row) => `${row.map((c) => inline(c.tokens)).join(" | ")}\n`)
+              .join("");
+          default: // code, blockquote, html, def, hr, space
+            return "";
+        }
+      })
+      .join("");
+  return blocks(Lexer.lex(text));
+}
+
+const withoutQuotes = (text: string) =>
+  text.replace(/"[^"\n]*"|“[^”\n]*”/g, "");
+
+const normalizeRequestText = (text: string) =>
+  text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * A model verdict cannot pause a Goal unless the Agent actually requested input.
+ * Code, blockquotes and quoted strings are examples, not requests. Structured
+ * questions count in any language only when copied from the remaining prose;
+ * quoted choices must match exactly, but the request cannot be only a quote.
+ */
+function hasUserFacingInputRequest(
+  text: string,
+  questions: readonly { question: string }[] | null,
+): boolean {
+  const rendered = requestProse(text);
+  const prose = withoutQuotes(rendered);
+  const isGrounded = (question: string) => {
+    const full = normalizeRequestText(requestProse(question));
+    const unquoted = normalizeRequestText(
+      withoutQuotes(requestProse(question)),
+    );
+    return (
+      !!unquoted &&
+      normalizeRequestText(rendered).includes(full) &&
+      normalizeRequestText(prose).includes(unquoted)
+    );
+  };
+  return (
+    // A query string such as "/reports?run=1" is not a question.
+    /[？؟]|\?(?=$|[\s)\]"'”’])/.test(prose) ||
+    !!questions?.some((q) => isGrounded(q.question)) ||
+    /\b(?:please|kindly)\s+(?:provide|confirm|choose|select|share|tell|send|clarify|approve)\b/i.test(
+      prose,
+    ) ||
+    /\b(?:i|we)\s+(?:need|require)\s+(?:your|you to)\b/i.test(prose) ||
+    // Imperative requests open a sentence or list item: "Provide the URL."
+    /(?:^[ \t]*|[.!:]\s+)(?:[-*•]\s+|\d+[.)]\s+)?(?:provide|confirm|choose|select|share|send|specify|clarify|approve|tell me|let me know)\b/im.test(
+      prose,
+    )
+  );
+}
+
 /** Independent, bounded check. Evidence is data and never authorizes a tool action. */
 export async function judgeGoalCompletion(
   goal: Doc<"agent_goals">,
@@ -396,7 +487,8 @@ export async function judgeGoalCompletion(
         runId,
         "completion",
         signal,
-        check === 0 ? 2 : 1,
+        // The consistency recheck needs the same bounded transient recovery.
+        2,
       );
       let responseEvidence: GoalJudgment["responseEvidence"];
       if (
@@ -466,6 +558,9 @@ export async function judgeGoalCompletion(
       const invalidCompletion =
         decision.verdict === "done" &&
         (!gatePassed || (!responseEvidence && missingCriteria > 0));
+      const invalidInputRequest =
+        decision.verdict === "needs_input" &&
+        !hasUserFacingInputRequest(finalText, decision.questions);
       // Repair an inconsistent verdict locally before paying for another Agent
       // run. Ordinary partial-progress turns do not need a second model call.
       const recheck =
@@ -479,7 +574,10 @@ export async function judgeGoalCompletion(
         run_id: runId,
         check,
         model_verdict: decision.verdict,
-        resolved_verdict: invalidCompletion ? "continue" : decision.verdict,
+        resolved_verdict:
+          invalidCompletion || invalidInputRequest
+            ? "continue"
+            : decision.verdict,
         verification_gate_passed: gatePassed,
         missing_criteria_count: missingCriteria,
         rejected_reference_count: decision.evidence.length - verified.length,
@@ -497,6 +595,13 @@ export async function judgeGoalCompletion(
           verdict: "continue",
           reason:
             "Completion still requires verified tool evidence for every criterion and the verification command.",
+          evidence: verified,
+        };
+      }
+      if (invalidInputRequest) {
+        return {
+          verdict: "continue",
+          reason: "The Agent did not ask for input, so work can continue.",
           evidence: verified,
         };
       }

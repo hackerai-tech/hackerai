@@ -1,5 +1,10 @@
+import {
+  getAttachmentDownloadFailureContext,
+  recordAttachmentDownloadFailure,
+} from "../attachment-download-diagnostics";
 import { AcknowledgedCommandOutput } from "@/lib/centrifugo/acknowledged-command-output";
 import { phLogger } from "@/lib/posthog/server";
+import { WINDOWS_COMMAND_SHELL_GUIDANCE } from "@/lib/ai/windows-guidance";
 /**
  * Tests for CentrifugoSandbox real-time command relay.
  *
@@ -22,6 +27,7 @@ import {
 import { Centrifuge } from "centrifuge";
 import { win32 } from "node:path";
 import {
+  chmodSync,
   existsSync,
   statSync,
   readFileSync,
@@ -50,7 +56,18 @@ import {
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
 } from "@/packages/local/src/centrifugo-transport";
+import {
+  getSandboxUploadFailureMetadata,
+  uploadSandboxFiles,
+} from "@/lib/utils/sandbox-file-utils";
+import { getLocalCopyFailureContext } from "../local-copy-failure-context";
+import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
+import {
+  DesktopFileBridgeError,
+  desktopFileUnavailableMessage,
+} from "@/lib/centrifugo/desktop-file-errors";
 
+jest.mock("server-only", () => ({}), { virtual: true });
 jest.mock("@/lib/centrifugo/traffic", () => ({
   ...jest.requireActual("@/lib/centrifugo/traffic"),
   recordRelayReceivedBytes: jest.fn(),
@@ -96,6 +113,10 @@ jest.mock("centrifuge", () => ({
 
 jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("mock-jwt-token"),
+}));
+
+jest.mock("@/lib/desktop/authorized-operation", () => ({
+  authorizeDesktopOperation: jest.fn().mockResolvedValue("a".repeat(64)),
 }));
 
 jest.mock("@/lib/centrifugo/types", () => ({
@@ -215,6 +236,80 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  it.each(["presence", "ready_received"] as const)(
+    "identifies a long Desktop command waiting at %s without replaying it",
+    async (phase) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const result = sandbox.commands.run("PRIVATE_COMMAND", {
+        timeoutMs: 60_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      let releasePresence!: (
+        value: Awaited<ReturnType<MockSubscription["presence"]>>,
+      ) => void;
+      if (phase === "presence") {
+        control.presence.mockReturnValueOnce(
+          new Promise((resolve) => {
+            releasePresence = resolve;
+          }),
+        );
+      }
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      if (phase === "ready_received") {
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+      }
+      await jest.advanceTimersByTimeAsync(10_000);
+      const waits = () =>
+        receiverRecords().filter((record) => record.phase === "command_wait");
+      expect(waits()).toEqual([
+        expect.objectContaining({
+          command_id: FIXED_UUID,
+          dispatch_phase: phase,
+          terminal_received: false,
+          command_dispatched: phase === "ready_received",
+          elapsed_ms: 10_000,
+        }),
+      ]);
+      expect(JSON.stringify(waits())).not.toContain("PRIVATE_COMMAND");
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(waits()).toHaveLength(1);
+      if (phase === "presence") {
+        expect(control.publish).not.toHaveBeenCalled();
+        releasePresence({
+          clients: {
+            "sandbox-client": { connInfo: { connectionId: "conn-1" } },
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        reply.emit("publication", {
+          data: { type: "operation_ready", commandId: FIXED_UUID },
+        });
+      }
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(result).resolves.toMatchObject({ exitCode: 0 });
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
   it.each([
     [true, "readiness reply lost"],
     [true, "publish reply lost"],
@@ -281,37 +376,88 @@ describe("CentrifugoSandbox", () => {
       expect(control.publish).toHaveBeenCalledTimes(1);
       expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
+      const records = receiverRecords();
+      if (!isDesktop) {
+        expect(records).toEqual([]);
+        return;
+      }
+      const uncertain = {
+        dispatch_uncertain_version: 1,
+        dispatch_uncertain_reason:
+          failure === "publish reply lost"
+            ? "publish_timeout"
+            : "operation_ready_timeout",
+      };
+      const index = records.findIndex(
+        (record) => record.phase === "dispatch_uncertain",
+      );
+      expect(index).toBeGreaterThan(0);
+      for (const record of records.slice(0, index)) {
+        expect(record).not.toHaveProperty("dispatch_uncertain_version");
+        expect(record).not.toHaveProperty("dispatch_uncertain_reason");
+      }
+      expect([records[index], records.at(-1)]).toEqual([
+        expect.objectContaining(uncertain),
+        expect.objectContaining({ phase: "cleanup", ...uncertain }),
+      ]);
     },
   );
 
-  it("keeps uncertain Desktop dispatch bounded and non-retryable when no output arrives", async () => {
-    const sandbox = new CentrifugoSandbox(
-      "user-1",
-      {
-        ...defaultConnection,
-        isDesktop: true,
-        capabilities: { commands: true, operationChannels: true },
-      },
-      defaultConfig,
-    );
-    const result = sandbox.commands
-      .run("once", { timeoutMs: 10_000 })
-      .catch((error) => error);
-    await jest.advanceTimersByTimeAsync(0);
-    const reply = mockSubscriptions[0];
-    reply.emit("subscribed");
-    await jest.advanceTimersByTimeAsync(6000);
-    expect(reply.unsubscribe).not.toHaveBeenCalled();
-    await jest.advanceTimersByTimeAsync(39_000);
-    await expect(result).resolves.toMatchObject({
-      dispatched: true,
-      retryable: false,
-    });
-    expect((await result).message).toContain("Command timeout after 45000ms");
-    expect(mockSubscriptions[1].publish).toHaveBeenCalledTimes(1);
-    expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
-  });
+  it.each([
+    ["readiness reply lost", "operation_ready_timeout"],
+    ["publish reply lost", "publish_timeout"],
+  ])(
+    "keeps uncertain Desktop dispatch bounded and non-retryable when no output arrives after %s",
+    async (failure, reason) => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const result = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 10_000 })
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      const control = new MockSubscription();
+      if (failure === "publish reply lost")
+        control.publish.mockRejectedValueOnce({ code: 1, message: "timeout" });
+      mockClients[0].newSubscription.mockReturnValueOnce(control);
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(6000);
+      expect(reply.unsubscribe).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(39_000);
+      await expect(result).resolves.toMatchObject({
+        dispatched: true,
+        retryable: false,
+      });
+      expect((await result).message).toContain("Command timeout after 45000ms");
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      expect(reply.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      const uncertain = {
+        dispatch_uncertain_version: 1,
+        dispatch_uncertain_reason: reason,
+      };
+      const records = receiverRecords();
+      expect(
+        records.filter((record) => "dispatch_uncertain_reason" in record),
+      ).toEqual([
+        expect.objectContaining({ phase: "dispatch_uncertain", ...uncertain }),
+        expect.objectContaining({
+          phase: "command_wait",
+          dispatch_phase: "uncertain",
+          ...uncertain,
+        }),
+        expect.objectContaining({ phase: "cleanup", ...uncertain }),
+      ]);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_COMMAND");
+    },
+  );
 
   it("cancels the original Desktop command after its readiness reply is lost", async () => {
     const sandbox = new CentrifugoSandbox(
@@ -1533,6 +1679,331 @@ describe("CentrifugoSandbox", () => {
         }
       },
     );
+
+    const probeRecords = () =>
+      receiverLog.mock.calls
+        .map(([value]) => {
+          try {
+            return JSON.parse(value);
+          } catch {
+            return {};
+          }
+        })
+        .filter((record) => record.event === "desktop_file_capability_probe");
+    const probeRecord = {
+      event: "desktop_file_capability_probe",
+      service: "chat-handler",
+      connection_id: "conn-1",
+    };
+
+    it.each([
+      ["Invalid Desktop operation authorization", "authorization_invalid"],
+      ["Desktop origin is unavailable", "origin_unavailable_or_denied"],
+      [
+        "Desktop origin is not allowed for native authorization",
+        "origin_unavailable_or_denied",
+      ],
+      [
+        "Desktop authorization client unavailable",
+        "authorization_client_unavailable",
+      ],
+      [
+        "Desktop operation authorization unavailable",
+        "authorization_send_unavailable",
+      ],
+      ["Desktop operation was not authorized", "authorization_denied"],
+      [
+        "Invalid Desktop authorization response",
+        "authorization_response_invalid",
+      ],
+      ["Desktop operation was not authorized: PRIVATE_PATH", "other"],
+      ["desktop operation was not authorized", "other"],
+      [" Invalid Desktop authorization response", "other"],
+      ["Invalid Desktop operation", "other"],
+      ["PRIVATE_PATH_AND_CONTENT", "other"],
+    ])(
+      "records only a closed native receiver error class for %j: %s",
+      async (message, receiverErrorClass) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply, control } = await dispatchProbe(sandbox);
+        // Another request's reply must not settle or classify this probe.
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: "Desktop operation was not authorized",
+          },
+        });
+        reply.emit("publication", {
+          data: { type: "file_error", requestId: FIXED_UUID, message },
+        });
+        const error = await pending;
+
+        expect(error).toBeInstanceOf(DesktopFileBridgeError);
+        expect(error).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: receiverErrorClass,
+          },
+        ]);
+        expect(JSON.stringify(receiverLog.mock.calls)).not.toContain("PRIVATE");
+        expect(control.publish).toHaveBeenCalledTimes(1);
+        await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+        expect(probeRecords()).toHaveLength(1);
+        expect(mockClients).toHaveLength(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it.each([
+      { path: "success", record: { outcome: "recovered" } },
+      {
+        path: "timeout",
+        record: { outcome: "unavailable", failure: "timeout" },
+      },
+      {
+        path: "subscription_error",
+        record: { outcome: "unavailable", failure: "subscription_error" },
+      },
+      {
+        path: "native_ipc_denied",
+        record: {
+          outcome: "unavailable",
+          failure: "native_error",
+          file_failure: "native_ipc_denied",
+        },
+      },
+      {
+        path: "filesystem",
+        record: {
+          outcome: "unavailable",
+          failure: "native_error",
+          file_failure: "filesystem",
+        },
+      },
+    ] as const)(
+      "omits the native receiver error class after $path",
+      async ({ path, record }) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply } = await dispatchProbe(sandbox);
+        const authorizationMessage = "Desktop operation was not authorized";
+        if (path === "success")
+          reply.emit("publication", {
+            data: {
+              type: "file_stat_result",
+              requestId: FIXED_UUID,
+              kind: "not_file",
+              path: "/project",
+            },
+          });
+        else if (path === "timeout") await jest.advanceTimersByTimeAsync(3000);
+        else if (path === "subscription_error")
+          reply.emit("error", {
+            type: "subscribe",
+            error: { code: 105, message: authorizationMessage },
+          });
+        else
+          reply.emit("publication", {
+            data: {
+              type: "file_error",
+              requestId: FIXED_UUID,
+              ...(path === "native_ipc_denied"
+                ? { message: authorizationMessage, fileFailure: path }
+                : { message: `Metadata error: ${authorizationMessage}` }),
+            },
+          });
+        await pending;
+
+        expect(probeRecords()).toEqual([{ ...probeRecord, ...record }]);
+      },
+    );
+
+    // The exact shape a current Desktop bridge publishes for a failed stat.
+    const receiverDiagnostic = {
+      version: 1,
+      stage: "native_invoke",
+      adapter: "published_legacy_native",
+    };
+
+    it("records the matched receiver stage without changing the probe outcome", async () => {
+      const sandbox = unavailableDesktop();
+      const { pending, reply, control } = await dispatchProbe(sandbox);
+      // Another request's diagnostic must not attach to this probe.
+      reply.emit("publication", {
+        data: {
+          type: "file_error",
+          requestId: "other-request",
+          message: "PRIVATE_OTHER",
+          receiverDiagnostic: { ...receiverDiagnostic, stage: "module_load" },
+        },
+      });
+      reply.emit("publication", {
+        data: {
+          type: "file_error",
+          requestId: FIXED_UUID,
+          message: "PRIVATE_NATIVE_FAILURE C:\\Users\\private",
+          receiverDiagnostic,
+        },
+      });
+      const error = await pending;
+
+      expect(error).toBeInstanceOf(DesktopFileBridgeError);
+      expect(error).toMatchObject({
+        fileFailure: "unknown",
+        message: desktopFileUnavailableMessage("unknown"),
+      });
+      expect(probeRecords()).toEqual([
+        {
+          ...probeRecord,
+          outcome: "unavailable",
+          failure: "native_error",
+          file_failure: "unknown",
+          receiver_error_class: "other",
+          receiver_stage_version: 1,
+          receiver_stage: "native_invoke",
+          receiver_adapter: "published_legacy_native",
+        },
+      ]);
+      expect(JSON.stringify(receiverLog.mock.calls)).not.toContain("PRIVATE");
+      expect(sandbox.supportsNativeFileRelay()).toBe(false);
+      expect(control.publish).toHaveBeenCalledTimes(1);
+      await expect(sandbox.confirmNativeFileRelay()).rejects.toBe(error);
+      expect(probeRecords()).toHaveLength(1);
+    });
+
+    it.each([
+      ["timeout", "timeout"],
+      ["resolved_published_legacy", "resolved_published_legacy"],
+      // A raw version or unknown value is dropped; the stage group survives.
+      ["a raw native version", "0.0.72"],
+      ["an arbitrary value", "PRIVATE_C:\\Users\\private"],
+    ])(
+      "records the matched receiver version lookup from %s only when closed",
+      async (_name, nativeVersionLookup) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply } = await dispatchProbe(sandbox);
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: "other-request",
+            message: "PRIVATE_OTHER",
+            receiverDiagnostic: {
+              ...receiverDiagnostic,
+              nativeVersionLookup: "rejected",
+            },
+          },
+        });
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message: "PRIVATE_NATIVE_FAILURE",
+            receiverDiagnostic: { ...receiverDiagnostic, nativeVersionLookup },
+          },
+        });
+        expect(await pending).toMatchObject({
+          fileFailure: "unknown",
+          message: desktopFileUnavailableMessage("unknown"),
+        });
+
+        const closed = !/\d|PRIVATE/.test(nativeVersionLookup);
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "unknown",
+            receiver_error_class: "other",
+            receiver_stage_version: 1,
+            receiver_stage: "native_invoke",
+            receiver_adapter: "published_legacy_native",
+            ...(closed && {
+              receiver_native_version_lookup: nativeVersionLookup,
+            }),
+          },
+        ]);
+        const logs = JSON.stringify(receiverLog.mock.calls);
+        expect(logs).not.toContain("PRIVATE");
+        expect(logs).not.toContain("0.0.72");
+      },
+    );
+
+    it.each([
+      ["an old producer", undefined],
+      ["an unknown version", { ...receiverDiagnostic, version: 2 }],
+      [
+        "an inconsistent group",
+        { ...receiverDiagnostic, stage: "loopback_request" },
+      ],
+      [
+        "an arbitrary stage",
+        { ...receiverDiagnostic, stage: "PRIVATE_C:\\Users\\private" },
+      ],
+      ["a string", "PRIVATE_native_invoke"],
+      ["an array", ["native_invoke", "published_legacy_native"]],
+    ])(
+      "keeps the original native failure and omits stage fields from %s",
+      async (_name, value) => {
+        const sandbox = unavailableDesktop();
+        const { pending, reply } = await dispatchProbe(sandbox);
+        reply.emit("publication", {
+          data: {
+            type: "file_error",
+            requestId: FIXED_UUID,
+            message: "Desktop operation was not authorized",
+            fileFailure: "native_ipc_denied",
+            ...(value === undefined ? {} : { receiverDiagnostic: value }),
+          },
+        });
+        expect(await pending).toMatchObject({
+          fileFailure: "native_ipc_denied",
+          message: desktopFileUnavailableMessage("native_ipc_denied"),
+        });
+        expect(probeRecords()).toEqual([
+          {
+            ...probeRecord,
+            outcome: "unavailable",
+            failure: "native_error",
+            file_failure: "native_ipc_denied",
+          },
+        ]);
+        expect(JSON.stringify(receiverLog.mock.calls)).not.toContain("PRIVATE");
+      },
+    );
+
+    it("omits a matched receiver stage when the probe deadline won", async () => {
+      const sandbox = unavailableDesktop();
+      const { pending, reply } = await dispatchProbe(sandbox);
+      // The ACK never settles, so the reply is finalized after the deadline.
+      reply.publish.mockReturnValueOnce(new Promise(() => {}));
+      await jest.advanceTimersByTimeAsync(2500);
+      reply.emit("publication", {
+        data: {
+          type: "file_error",
+          requestId: FIXED_UUID,
+          message: "PRIVATE_NATIVE_FAILURE",
+          receiverDiagnostic,
+        },
+      });
+      await jest.advanceTimersByTimeAsync(1000);
+      await pending;
+
+      expect(probeRecords()).toEqual([
+        {
+          ...probeRecord,
+          outcome: "unavailable",
+          failure: "timeout",
+          file_failure: "unknown",
+        },
+      ]);
+    });
 
     it.each([
       { isDesktop: false, files: false, operationChannels: true },
@@ -4664,6 +5135,762 @@ describe("CentrifugoSandbox", () => {
     });
   });
 
+  describe("download rejection boundary diagnostics", () => {
+    function downloadSandbox() {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "linux",
+          arch: "x86_64",
+          release: "test",
+          hostname: "test",
+        },
+      });
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      sandbox.commands.run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      }));
+      return sandbox;
+    }
+
+    it.each([
+      ["shellContext", "shell_context"],
+      ["detectHttpClient", "http_client"],
+      ["detectCurlCaps", "curl_capabilities"],
+      ["preparePowerShellCommand", "powershell_prepare"],
+    ])(
+      "retains the exact %s setup rejection without inventing a command result",
+      async (method, phase) => {
+        const sandbox = downloadSandbox();
+        if (method === "preparePowerShellCommand")
+          (sandbox as any).httpClient = "powershell";
+        const original = Object.freeze(new Error("private setup detail"));
+        jest.spyOn(sandbox as any, method).mockRejectedValueOnce(original);
+        const failure = await sandbox.files
+          .downloadFromUrl(
+            "https://private.example/secret?token=hidden",
+            "/tmp/private-file",
+          )
+          .catch((error) => error);
+        expect(failure).toBe(original);
+        expect(sandbox.commands.run).not.toHaveBeenCalled();
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: phase,
+          attachment_download_attempt: 0,
+          attachment_download_result_state: "not_observed",
+          attachment_download_error_kind: "error",
+          attachment_download_result_context_present: false,
+        });
+        expect(context).not.toHaveProperty("attachment_download_exit_code");
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|secret|hidden|token/,
+        );
+      },
+    );
+
+    it("distinguishes a rejected command from a nonzero returned result", async () => {
+      const sandbox = downloadSandbox();
+      const original = Object.freeze(
+        new TypeError("private command rejection"),
+      );
+      (sandbox.commands.run as jest.Mock).mockRejectedValueOnce(original);
+      const failure = await sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      expect(failure).toBe(original);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(getAttachmentDownloadFailureContext(failure)).toMatchObject({
+        attachment_download_phase: "download_command",
+        attachment_download_attempt: 1,
+        attachment_download_result_state: "not_observed",
+        attachment_download_error_kind: "type_error",
+        attachment_download_result_context_present: false,
+      });
+      expect(getAttachmentDownloadFailureContext(failure)).not.toHaveProperty(
+        "attachment_download_exit_code",
+      );
+    });
+
+    it("does not reuse a prior attempt result when the next command rejects", async () => {
+      const sandbox = downloadSandbox();
+      const original = Object.freeze(new Error("private terminal rejection"));
+      (sandbox.commands.run as jest.Mock)
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "curl: (6) Could not resolve host",
+          exitCode: 6,
+        })
+        .mockRejectedValueOnce(original);
+      const failure = sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await failure).toBe(original);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      expect(getAttachmentDownloadFailureContext(original)).toMatchObject({
+        attachment_download_attempt: 2,
+        attachment_download_result_state: "not_observed",
+        attachment_download_phase: "download_command",
+        attachment_download_result_context_present: false,
+      });
+      expect(getAttachmentDownloadFailureContext(original)).not.toHaveProperty(
+        "attachment_download_exit_code",
+      );
+    });
+
+    it("preserves the original pre-aborted reason without dispatch", async () => {
+      const sandbox = downloadSandbox();
+      const signal = new AbortController();
+      const original = Object.freeze(new Error("private stop reason"));
+      signal.abort(original);
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file", {
+          signal: signal.signal,
+        }),
+      ).rejects.toBe(original);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(getAttachmentDownloadFailureContext(original)).toMatchObject({
+        attachment_download_phase: "entry",
+        attachment_download_attempt: 0,
+        attachment_download_result_state: "not_observed",
+      });
+    });
+
+    it("preserves primitive rejections without fabricating an error object", async () => {
+      const sandbox = downloadSandbox();
+      (sandbox.commands.run as jest.Mock).mockRejectedValueOnce(
+        "private rejection",
+      );
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file"),
+      ).rejects.toBe("private rejection");
+      expect(
+        getAttachmentDownloadFailureContext("private rejection"),
+      ).toBeUndefined();
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    });
+
+    const directoryKeys = [
+      "attachment_download_directory_probe_version",
+      "attachment_download_directory_probe_state",
+      "attachment_download_target_dir_exists",
+      "attachment_download_target_dir_writable",
+      "attachment_download_directory_probe_truncated",
+    ];
+    const notFound = {
+      stdout: "",
+      stderr: "curl: (22) The requested URL returned error: 404",
+      exitCode: 22,
+    };
+    const failureMessage = (diagnostics: string) =>
+      `Failed to download file: ${notFound.stderr}\n` +
+      `  source: [redacted-url]\n` +
+      `  destination: [redacted-destination-path]\n` +
+      `  command: curl\n` +
+      `  exitCode: 22\n` +
+      `  diagnostics: ${diagnostics}`;
+    const dfPrivate =
+      "Filesystem Size Used Avail Use% Mounted on\n/dev/private-disk 10G 9G 1G 90% /private-mount\n";
+
+    it.each([
+      [
+        `target_dir_exists=true\ntarget_dir_writable=false\n${dfPrivate}`,
+        { exists: true, writable: false, truncated: false },
+      ],
+      // Original stdout beyond the existing 1024 bound is reported as cut.
+      [
+        `target_dir_exists=false\n${"x".repeat(2000)}\ntarget_dir_writable=true\n`,
+        { exists: false, writable: null, truncated: true },
+      ],
+    ])(
+      "records the returned directory probe without changing the failure: %#",
+      async (stdout, expected) => {
+        const sandbox = downloadSandbox();
+        (sandbox.commands.run as jest.Mock)
+          .mockResolvedValueOnce(notFound)
+          .mockResolvedValueOnce({ stdout, stderr: "", exitCode: 0 });
+        const failure = await sandbox.files
+          .downloadFromUrl(
+            "https://private.example/secret?token=hidden",
+            "/tmp/private-dir/file",
+          )
+          .catch((error) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.message).toBe(failureMessage(stdout.slice(0, 1024)));
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        expect(sandbox.commands.run).toHaveBeenLastCalledWith(
+          expect.stringContaining("df -h /tmp 2>&1 | sed -n '1,2p'"),
+          { displayName: "", timeoutMs: 5_000, signal: undefined },
+        );
+        const context = getAttachmentDownloadFailureContext(failure);
+        expect(context).toMatchObject({
+          attachment_download_exit_code: 22,
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_attempt: 1,
+          attachment_download_result_state: "nonzero",
+          attachment_download_directory_probe_version: 1,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: expected.exists,
+          attachment_download_target_dir_writable: expected.writable,
+          attachment_download_directory_probe_truncated: expected.truncated,
+        });
+        expect(JSON.stringify(context)).not.toMatch(
+          /private|secret|hidden|Filesystem|Mounted|dev\/|=true|=false/,
+        );
+      },
+    );
+
+    it("keeps a rejected directory probe unmeasured rather than false", async () => {
+      const sandbox = downloadSandbox();
+      (sandbox.commands.run as jest.Mock)
+        .mockResolvedValueOnce(notFound)
+        .mockRejectedValueOnce(new Error("private probe relay failure"));
+      const failure = await sandbox.files
+        .downloadFromUrl("https://example.com/file", "/tmp/file")
+        .catch((error) => error);
+      expect(failure.message).toBe(failureMessage("unavailable"));
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+      const context = getAttachmentDownloadFailureContext(failure)!;
+      expect(context).toMatchObject({
+        attachment_download_phase: "failure_diagnostics",
+        attachment_download_directory_probe_version: 1,
+        attachment_download_directory_probe_state: "unavailable",
+      });
+      for (const key of directoryKeys.slice(2))
+        expect(context[key as keyof typeof context]).toBeNull();
+    });
+
+    it.each(["resolves", "rejects"])(
+      "preserves cancellation when the directory probe %s after abort",
+      async (outcome) => {
+        const sandbox = downloadSandbox();
+        const controller = new AbortController();
+        const reason = Object.freeze(new Error("private stop reason"));
+        (sandbox.commands.run as jest.Mock)
+          .mockResolvedValueOnce(notFound)
+          .mockImplementationOnce(async () => {
+            controller.abort(reason);
+            if (outcome === "rejects") throw reason;
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          });
+        await expect(
+          sandbox.files.downloadFromUrl(
+            "https://example.com/file",
+            "/tmp/file",
+            {
+              signal: controller.signal,
+            },
+          ),
+        ).rejects.toBe(reason);
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        const context = getAttachmentDownloadFailureContext(reason);
+        expect(context).toMatchObject({
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_result_state: "nonzero",
+          attachment_download_result_context_present: false,
+        });
+        for (const key of directoryKeys)
+          expect(context).not.toHaveProperty(key);
+      },
+    );
+
+    it("adds no directory probe to a successful download", async () => {
+      const sandbox = downloadSandbox();
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file",
+      );
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(sandbox.commands.run).not.toHaveBeenCalledWith(
+        expect.stringContaining("target_dir_exists"),
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("command receiver rejection diagnostics", () => {
+    const receiverFields = (error: unknown) =>
+      Object.fromEntries(
+        Object.entries(getAttachmentDownloadFailureContext(error) ?? {}).filter(
+          ([key]) =>
+            key.startsWith("attachment_command_receiver_") ||
+            key.startsWith("attachment_command_setup_"),
+        ),
+      );
+    const receiver = (
+      reason: string,
+      observed: {
+        connected?: boolean;
+        subscribed?: boolean;
+        publicationStarted?: boolean;
+        publishCompleted?: boolean;
+        firstMessage?: boolean;
+      },
+    ) => ({
+      attachment_command_receiver_version: 1,
+      attachment_command_receiver_reason: reason,
+      attachment_command_receiver_connected_observed:
+        observed.connected ?? false,
+      attachment_command_receiver_subscribed_observed:
+        observed.subscribed ?? false,
+      attachment_command_receiver_publication_started:
+        observed.publicationStarted ?? false,
+      attachment_command_receiver_publish_completed:
+        observed.publishCompleted ?? false,
+      attachment_command_receiver_first_message_observed:
+        observed.firstMessage ?? false,
+    });
+    // An earlier test replaces the client factory with auto-replying clients;
+    // these receivers must only observe what each test emits.
+    let previousFactory: ReturnType<
+      ReturnType<typeof jest.mocked<typeof Centrifuge>>["getMockImplementation"]
+    >;
+    beforeEach(() => {
+      const factory = jest.mocked(Centrifuge);
+      previousFactory = factory.getMockImplementation();
+      factory.mockImplementation(() => {
+        const client = new MockCentrifugeClient();
+        mockClients.push(client);
+        return client as unknown as Centrifuge;
+      });
+    });
+    afterEach(() => {
+      if (previousFactory)
+        jest.mocked(Centrifuge).mockImplementation(previousFactory);
+    });
+    const PRIVATE_URL = "https://private.example/PRIVATE_SECRET?token=hidden";
+    const PRIVATE_PATH = "/tmp/hackerai-upload/PRIVATE_DEST.png";
+    const RECEIVER_USER = "user-receiver";
+    // Scoped to this sandbox's own clients and token requests, so unrelated
+    // relay work cannot be mistaken for these command receivers.
+    function receiverSandbox(linux = true) {
+      const sandbox = new CentrifugoSandbox(
+        RECEIVER_USER,
+        {
+          ...defaultConnection,
+          ...(linux && {
+            osInfo: {
+              platform: "linux",
+              arch: "x64",
+              release: "6.1",
+              hostname: "devbox",
+            },
+          }),
+        },
+        defaultConfig,
+      );
+      const run = sandbox.commands.run;
+      const rejections: unknown[] = [];
+      (sandbox as any).commands.run = jest.fn(
+        (...args: Parameters<typeof run>) =>
+          run(...args).catch((error: unknown) => {
+            rejections.push(error);
+            throw error;
+          }),
+      );
+      const seen = new Set<MockCentrifugeClient>();
+      const nextReceiver = async () => {
+        const active = (sandbox as any).activeClients as MockCentrifugeClient[];
+        const next = () => active.find((client) => !seen.has(client));
+        for (let tick = 0; tick < 20 && !next(); tick++)
+          await jest.advanceTimersByTimeAsync(0);
+        const client = next();
+        expect(client).toBeDefined();
+        seen.add(client!);
+        expect(client!.newSubscription).toHaveBeenCalledTimes(1);
+        const sub = client!.newSubscription.mock.results[0].value;
+        return { client: client!, sub };
+      };
+      return { sandbox, rejections, nextReceiver };
+    }
+    // Attempt 1 never subscribes; attempt 2 publishes and reaches its deadline.
+    async function exhaustSetupProbe(
+      sandbox: CentrifugoSandbox,
+      nextReceiver: ReturnType<typeof receiverSandbox>["nextReceiver"],
+    ) {
+      const failure = sandbox.files
+        .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH)
+        .catch((error: unknown) => error);
+      await nextReceiver();
+      await jest.advanceTimersByTimeAsync(35_000);
+      await jest.advanceTimersByTimeAsync(500);
+      const { sub } = await nextReceiver();
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(35_000);
+      return failure;
+    }
+    const setupRetryWarnings = (warn: jest.SpyInstance) =>
+      warn.mock.calls.filter(([message]) =>
+        String(message).startsWith("[centrifugo-setup]"),
+      );
+
+    it("records a pre-publication presence rejection on the original relay error", async () => {
+      const { sandbox, nextReceiver } = receiverSandbox(false);
+      const rejection = sandbox.commands
+        .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+        .catch((error: unknown) => error);
+      const { client, sub } = await nextReceiver();
+      sub.presence.mockResolvedValueOnce({ clients: {} });
+      client.emit("connected");
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      const error = await rejection;
+      expect(error).toBeInstanceOf(LocalCommandRelayUnsubscribedError);
+      expect(sub.publish).not.toHaveBeenCalled();
+      expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(client.disconnect).toHaveBeenCalledTimes(1);
+      expect(receiverFields(error)).toEqual(
+        receiver("presence_missing", { connected: true, subscribed: true }),
+      );
+    });
+
+    it.each([false, true])(
+      "records a post-publication deadline (first message observed: %s)",
+      async (output) => {
+        const { sandbox, nextReceiver } = receiverSandbox(false);
+        const rejection = sandbox.commands
+          .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+          .catch((error: unknown) => error);
+        const { client, sub } = await nextReceiver();
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).toHaveBeenCalledTimes(1);
+        if (output)
+          sub.emit("publication", {
+            data: { type: "stdout", commandId: FIXED_UUID, data: "PRIVATE" },
+          });
+        await jest.advanceTimersByTimeAsync(6_001);
+        const error = await rejection;
+        // Existing dispatch flags and cleanup are unchanged.
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: true,
+          retryable: false,
+        });
+        expect(error.message).toContain("Command timeout after 6000ms");
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(receiverFields(error)).toEqual(
+          receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+            firstMessage: output,
+          }),
+        );
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toMatch(/PRIVATE|conn-1/);
+      },
+    );
+
+    it.each([
+      [
+        "subscription_error",
+        (sub: MockSubscription) =>
+          sub.emit("error", {
+            type: "subscribe",
+            error: { code: 103, message: "PRIVATE_REASON" },
+          }),
+      ],
+      [
+        "disconnected",
+        (_sub: MockSubscription, client: MockCentrifugeClient) =>
+          client.emit("disconnected", { code: 3000, reason: "PRIVATE_REASON" }),
+      ],
+      [
+        "client_error",
+        (_sub: MockSubscription, client: MockCentrifugeClient) =>
+          client.emit("error", {
+            type: "connect",
+            error: { code: 3500, message: "PRIVATE_REASON" },
+          }),
+      ],
+    ] as const)(
+      "records a terminal %s before subscription",
+      async (reason, fail) => {
+        const { sandbox, nextReceiver } = receiverSandbox(false);
+        const rejection = sandbox.commands
+          .run("PRIVATE_COMMAND", { timeoutMs: 1000 })
+          .catch((error: unknown) => error);
+        const { client, sub } = await nextReceiver();
+        client.emit("connected");
+        fail(sub, client);
+        const error = await rejection;
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: false,
+          retryable: false,
+        });
+        expect(error.message).toContain("PRIVATE_REASON");
+        expect(sub.publish).not.toHaveBeenCalled();
+        expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
+        expect(client.disconnect).toHaveBeenCalledTimes(1);
+        expect(receiverFields(error)).toEqual(
+          receiver(reason, { connected: true }),
+        );
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toContain("PRIVATE");
+      },
+    );
+
+    it("marks only the exhausted final setup attempt with its own receiver observations", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const error = await exhaustSetupProbe(sandbox, nextReceiver);
+        expect(rejections).toHaveLength(2);
+        expect(error).toBe(rejections[1]);
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: true,
+          retryable: false,
+        });
+        expect(setupRetryWarnings(warn)).toHaveLength(1);
+        expect(sandbox.commands.run).toHaveBeenCalledTimes(2);
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_phase: "http_client",
+          attachment_download_attempt: 0,
+          attachment_download_result_state: "not_observed",
+        });
+        expect(receiverFields(error)).toEqual({
+          ...receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+          }),
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        });
+        // The retried attempt keeps its own receiver evidence, unmarked.
+        expect(rejections[0]).toMatchObject({
+          dispatched: false,
+          retryable: true,
+        });
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+        expect(
+          JSON.stringify(getAttachmentDownloadFailureContext(error)),
+        ).not.toMatch(/PRIVATE|private\.example|hidden|command -v|conn-1/);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("leaves a retried setup attempt unmarked when the retry succeeds", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const download = sandbox.files.downloadFromUrl(
+          PRIVATE_URL,
+          PRIVATE_PATH,
+        );
+        await nextReceiver();
+        await jest.advanceTimersByTimeAsync(35_500);
+        // Curl path, curl capabilities, then the download itself.
+        for (const stdout of [
+          "/usr/bin/curl\n",
+          "--retry-all-errors --retry-connrefused\n",
+          "",
+        ]) {
+          const { sub } = await nextReceiver();
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          sub.emit("publication", {
+            data: { type: "stdout", commandId: FIXED_UUID, data: stdout },
+          });
+          sub.emit("publication", {
+            data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+          });
+          await jest.advanceTimersByTimeAsync(0);
+        }
+        await expect(download).resolves.toBeUndefined();
+        expect(setupRetryWarnings(warn)).toHaveLength(1);
+        expect(rejections).toHaveLength(1);
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("records a final pre-receiver token failure without fabricating a receiver", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const tokens = jest
+          .mocked(generateCentrifugoToken)
+          .mockImplementation(async (userId) => {
+            if (
+              userId === RECEIVER_USER &&
+              tokens.mock.calls.filter(([id]) => id === RECEIVER_USER)
+                .length === 2
+            )
+              throw new Error("PRIVATE_TOKEN_FAILURE");
+            return "mock-jwt-token";
+          });
+        const { sandbox, rejections, nextReceiver } = receiverSandbox();
+        const failure = sandbox.files
+          .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH)
+          .catch((error: unknown) => error);
+        await nextReceiver();
+        await jest.advanceTimersByTimeAsync(35_500);
+        const error = await failure;
+        expect(
+          tokens.mock.calls.filter(([id]) => id === RECEIVER_USER),
+        ).toHaveLength(2);
+        // Only the first attempt created a receiver.
+        expect((sandbox as any).activeClients).toHaveLength(0);
+        expect(rejections).toHaveLength(2);
+        expect(error).toBe(rejections[1]);
+        expect(error).toMatchObject({
+          name: "LocalCommandDispatchError",
+          dispatched: false,
+          retryable: false,
+        });
+        expect(receiverFields(error)).toEqual({
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        });
+        expect(receiverFields(rejections[0])).toEqual(receiver("deadline", {}));
+      } finally {
+        jest
+          .mocked(generateCentrifugoToken)
+          .mockResolvedValue("mock-jwt-token");
+        warn.mockRestore();
+      }
+    });
+
+    it("preserves a setup Stop reason without marking an attempt or receiver", async () => {
+      const { sandbox, nextReceiver } = receiverSandbox();
+      const controller = new AbortController();
+      const reason = Object.freeze(new Error("PRIVATE_STOP"));
+      const failure = sandbox.files
+        .downloadFromUrl(PRIVATE_URL, PRIVATE_PATH, {
+          signal: controller.signal,
+        })
+        .catch((error: unknown) => error);
+      await nextReceiver();
+      controller.abort(reason);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(await failure).toBe(reason);
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(getAttachmentDownloadFailureContext(reason)).toMatchObject({
+        attachment_download_phase: "http_client",
+      });
+      expect(receiverFields(reason)).toEqual({});
+    });
+
+    it("carries only closed receiver and setup fields to existing staging sinks", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const event = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+      try {
+        const { sandbox, nextReceiver } = receiverSandbox();
+        const rejection = await exhaustSetupProbe(sandbox, nextReceiver);
+        jest
+          .spyOn(sandbox.files, "downloadFromUrl")
+          .mockRejectedValue(rejection);
+        jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "PRIVATE_PROBE",
+          exitCode: 1,
+        });
+        warn.mockClear();
+        const pending = uploadSandboxFiles(
+          [{ kind: "url", url: PRIVATE_URL, localPath: PRIVATE_PATH }],
+          async () => sandbox,
+          {
+            logContext: {
+              service: "agent-long",
+              requestId: "run-setup",
+              userId: "user-1",
+              chatId: "chat-setup",
+            },
+          },
+        );
+        for (let tick = 0; tick < 20; tick++)
+          await jest.advanceTimersByTimeAsync(10_000);
+        const result = await pending;
+        expect(result.failedCount).toBe(1);
+
+        const records = (spy: jest.SpyInstance, name: string) =>
+          spy.mock.calls
+            .map(([value]) => {
+              try {
+                return JSON.parse(value);
+              } catch {
+                return {};
+              }
+            })
+            .filter((record) => record.event === name);
+        const events = (name: string) =>
+          event.mock.calls
+            .filter(([eventName]) => eventName === name)
+            .map(([, fields]) => fields);
+        const sinks = [
+          ...events("sandbox_attachment_failure_diagnostics"),
+          ...records(warn, "sandbox_attachment_failure_diagnostics"),
+          ...events("sandbox_attachment_staging_failed"),
+          ...records(error, "sandbox_attachment_staging_failed"),
+          getSandboxUploadFailureMetadata(result),
+        ];
+        expect(sinks).toHaveLength(5);
+        const expected = {
+          ...receiver("deadline", {
+            subscribed: true,
+            publicationStarted: true,
+            publishCompleted: true,
+          }),
+          attachment_command_setup_version: 1,
+          attachment_command_setup_attempt: 2,
+        };
+        for (const sink of sinks) {
+          const fields = Object.fromEntries(
+            Object.entries(sink ?? {}).filter(
+              ([key]) =>
+                key.startsWith("attachment_download_") ||
+                key.startsWith("attachment_command_"),
+            ),
+          );
+          expect(fields).toMatchObject({
+            ...expected,
+            attachment_download_phase: "http_client",
+          });
+          expect(
+            Object.fromEntries(
+              Object.entries(fields).filter(
+                ([key]) =>
+                  key.startsWith("attachment_command_receiver_") ||
+                  key.startsWith("attachment_command_setup_"),
+              ),
+            ),
+          ).toEqual(expected);
+          expect(JSON.stringify(fields)).not.toMatch(
+            /PRIVATE|private\.example|hidden|command -v|conn-1/,
+          );
+        }
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+        event.mockRestore();
+      }
+    });
+  });
+
   describe("git-bash on Windows", () => {
     // When the Windows remote runs git-bash (default since PR #346),
     // every file op must emit POSIX syntax with MSYS-form paths
@@ -4799,7 +6026,7 @@ describe("CentrifugoSandbox", () => {
 
       expect(runs[0]).toBe("echo $BASH_VERSION");
       expect(runs[1]).toContain(
-        'if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload"',
+        '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && curl ',
       );
       expect(runs[1]).toContain(
         '"https://example.com/image.png?X-Amz-Algorithm=test&X-Amz-Credential=opaque&X-Amz-Signature=opaque"',
@@ -4866,6 +6093,213 @@ describe("CentrifugoSandbox", () => {
       expect(runs[1]).toContain("mkdir -p '/tmp/hackerai-upload'");
       expect(runs[1]).not.toContain("if not exist");
       expect(sandbox.isWindows()).toBe(false);
+    });
+
+    // Desktop 0.0.74 registers Rust's `windows`; its relay may run either shell.
+    it.each([
+      {
+        shell: "cmd",
+        probe: "$BASH_VERSION\r\n",
+        copy: '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && copy /Y "C:\\Users\\qa\\source.pdf" "C:\\temp\\hackerai-upload\\dest.pdf" >nul',
+      },
+      {
+        shell: "Git Bash",
+        probe: "5.2.37(1)-release\n",
+        copy: "mkdir -p '/c/Users/qa/AppData/Local/Temp/hackerai-upload' && cp -f '/c/Users/qa/source.pdf' '/c/Users/qa/AppData/Local/Temp/hackerai-upload/dest.pdf'",
+      },
+    ])(
+      "probes a raw Rust windows host before copying through $shell",
+      async ({ probe, copy }) => {
+        const sandbox = createDesktopSandbox(undefined, "windows");
+        const runs: string[] = [];
+        jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            runs.push(command);
+            return {
+              stdout:
+                command === "echo $BASH_VERSION"
+                  ? probe
+                  : command ===
+                      "/usr/bin/cygpath -w -- '/tmp/hackerai-upload/dest.pdf'"
+                    ? "C:\\Users\\qa\\AppData\\Local\\Temp\\hackerai-upload\\dest.pdf\n"
+                    : "",
+              stderr: "",
+              exitCode: 0,
+            };
+          });
+
+        await sandbox.files.copyLocal(
+          "C:\\Users\\qa\\source.pdf",
+          "/tmp/hackerai-upload/dest.pdf",
+        );
+
+        expect(sandbox.isWindows()).toBe(true);
+        expect(runs[0]).toBe("echo $BASH_VERSION");
+        expect(runs.at(-1)).toBe(copy);
+      },
+    );
+
+    // Required Windows CI selects these by the "Windows file" name.
+    describe("real cmd Windows file transfers", () => {
+      const windowsTest = process.platform === "win32" ? it : it.skip;
+      // Desktop/local cmd launch: verbatim arguments wrapped in outer quotes.
+      const runCmd = (env?: NodeJS.ProcessEnv) => async (command: string) => {
+        const shell = windowsSystemExecutable("cmd.exe");
+        const spec = buildShellSpawn(shell, "/C", command);
+        return promisify(execFile)(shell, spec.args, {
+          ...spec.options,
+          timeout: 10_000,
+          ...(env && { env }),
+        }).then(
+          (result) => ({
+            stdout: String(result.stdout),
+            stderr: String(result.stderr),
+            exitCode: 0,
+          }),
+          (error) => ({
+            stdout: String(error.stdout ?? ""),
+            stderr: String(error.stderr ?? ""),
+            exitCode: Number(error.code) || -1,
+          }),
+        );
+      };
+      const realCmdSandbox = (env?: NodeJS.ProcessEnv) => {
+        // Rust's raw OS name; the adapter must discover cmd with its probe.
+        const sandbox = createDesktopSandbox(undefined, "windows");
+        jest.spyOn(sandbox.commands, "run").mockImplementation(runCmd(env));
+        return sandbox;
+      };
+
+      windowsTest(
+        "copies into new and existing directories and rejects failed copies",
+        async () => {
+          jest.useRealTimers();
+          mkdirSync("C:\\temp", { recursive: true });
+          const base = mkdtempSync("C:\\temp\\hackerai-cmd-copy-");
+          const source = win32.join(base, "source report.txt");
+          // POSIX /tmp maps to C:\temp under cmd; `)` must stay quoted.
+          const destination = `/tmp/${win32.basename(base)}/out (1)/copy.txt`;
+          const copied = win32.join(base, "out (1)", "copy.txt");
+          const sandbox = realCmdSandbox();
+          try {
+            writeFileSync(source, "first");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("first");
+
+            // The directory exists now; an IF-scoped copy would be skipped.
+            writeFileSync(source, "second λ");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("second λ");
+
+            await expect(
+              sandbox.files.copyLocal(
+                win32.join(base, "missing.txt"),
+                destination,
+              ),
+            ).rejects.toThrow("Failed to prepare local file");
+            chmodSync(copied, 0o444);
+            writeFileSync(source, "blocked");
+            await expect(
+              sandbox.files.copyLocal(source, destination),
+            ).rejects.toThrow("Failed to prepare local file");
+            expect(readFileSync(copied, "utf8")).toBe("second λ");
+
+            writeFileSync(win32.join(base, "blocker"), "");
+            await expect(
+              sandbox.files.copyLocal(
+                source,
+                win32.join(base, "blocker", "sub", "copy.txt"),
+              ),
+            ).rejects.toThrow("Failed to prepare local file");
+
+            chmodSync(copied, 0o666);
+            writeFileSync(source, "recovered");
+            await sandbox.files.copyLocal(source, destination);
+            expect(readFileSync(copied, "utf8")).toBe("recovered");
+          } finally {
+            if (existsSync(copied)) chmodSync(copied, 0o666);
+            rmSync(base, { recursive: true, force: true });
+          }
+        },
+        30_000,
+      );
+
+      windowsTest(
+        "downloads into new and existing directories and skips the download after mkdir fails",
+        async () => {
+          jest.useRealTimers();
+          mkdirSync("C:\\temp", { recursive: true });
+          const base = mkdtempSync("C:\\temp\\hackerai-cmd-download-");
+          const bin = win32.join(base, "bin");
+          const fixture = win32.join(base, "fixture.bin");
+          const log = win32.join(base, "downloads.log");
+          mkdirSync(bin);
+          // Synthetic downloader at the network boundary. cmd resolves `curl`
+          // from PATH, so the adapter's command line runs unchanged.
+          writeFileSync(
+            win32.join(bin, "curl.cmd"),
+            [
+              "@echo off",
+              `>>"${log}" echo invoked`,
+              ":next",
+              'if "%~1"=="" exit /b 2',
+              'if "%~1"=="-o" goto write',
+              "shift",
+              "goto next",
+              ":write",
+              `copy /b /y "${fixture}" "%~2" >nul`,
+              "exit /b",
+              "",
+            ].join("\r\n"),
+          );
+          const sandbox = realCmdSandbox({
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(
+                ([key]) => key.toUpperCase() !== "PATH",
+              ),
+            ),
+            PATH: `${bin};${process.env.PATH ?? ""}`,
+          });
+          (sandbox as any).httpClient = "curl";
+          (sandbox as any).curlCaps = {
+            retryAllErrors: true,
+            retryConnrefused: true,
+            sslNoRevoke: true,
+          };
+          const url = "https://example.com/synthetic.bin";
+          const destination = `/tmp/${win32.basename(base)}/out (1)/download.bin`;
+          const downloaded = win32.join(base, "out (1)", "download.bin");
+          const invocations = () =>
+            existsSync(log)
+              ? readFileSync(log, "utf8").trim().split(/\r?\n/).length
+              : 0;
+          try {
+            writeFileSync(fixture, "first");
+            await sandbox.files.downloadFromUrl(url, destination);
+            expect(readFileSync(downloaded, "utf8")).toBe("first");
+
+            // The directory exists now; an IF-scoped download would be skipped.
+            const updated = Buffer.from([0, 255, 13, 10, 0x6c]);
+            writeFileSync(fixture, updated);
+            await sandbox.files.downloadFromUrl(url, destination);
+            expect(readFileSync(downloaded)).toEqual(updated);
+            expect(invocations()).toBe(2);
+
+            writeFileSync(win32.join(base, "blocker"), "");
+            await expect(
+              sandbox.files.downloadFromUrl(
+                url,
+                win32.join(base, "blocker", "sub", "download.bin"),
+              ),
+            ).rejects.toThrow("Failed to download file");
+            expect(invocations()).toBe(2);
+          } finally {
+            rmSync(base, { recursive: true, force: true });
+          }
+        },
+        30_000,
+      );
     });
 
     it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
@@ -5659,46 +7093,86 @@ describe("CentrifugoSandbox", () => {
       );
     });
 
-    it("redacts source and destination paths from direct download failures", async () => {
-      const { sandbox } = createWindowsBashSandbox();
-      const signedUrl =
-        "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
-        "a".repeat(160) +
-        "&X-Amz-Signature=secret";
-      const localPath = "C:/temp/hackerai-upload/private-image.png";
-      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
-        if (cmd.includes("target_dir_exists")) {
+    it.each([23, 28])(
+      "redacts source and destination paths from direct download failures (exit%s)",
+      async (exitCode) => {
+        const { sandbox } = createWindowsBashSandbox();
+        const signedUrl =
+          "https://storage.example.com/opaque-object/private-image.png?X-Amz-Credential=" +
+          "a".repeat(160) +
+          "&X-Amz-Signature=secret";
+        const localPath = "C:/temp/hackerai-upload/private-image.png";
+        (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+          if (cmd.includes("target_dir_exists")) {
+            return {
+              stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          }
           return {
-            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
-            stderr: "",
-            exitCode: 0,
+            stdout: "",
+            stderr:
+              exitCode === 28
+                ? `curl: (28) Resolving timed out after 10000 milliseconds /opaque-object/private-image.png C:\\sandbox\\private-image.png`
+                : `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
+            exitCode,
           };
-        }
-        return {
-          stdout: "",
-          stderr: `curl: (23) failed to write /opaque-object/private-image.png to C:\\sandbox\\private-image.png`,
-          exitCode: 23,
-        };
-      });
+        });
 
-      const failure = sandbox.files
-        .downloadFromUrl(signedUrl, localPath)
-        .catch((error: unknown) => error);
-      await jest.advanceTimersByTimeAsync(5_000);
-      const error = await failure;
+        const failure = sandbox.files
+          .downloadFromUrl(signedUrl, localPath)
+          .catch((error: unknown) => error);
+        await jest.advanceTimersByTimeAsync(5_000);
+        const error = await failure;
 
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("source: [redacted-url]");
-      expect((error as Error).message).toContain(
-        "destination: [redacted-destination-path]",
-      );
-      expect((error as Error).message).not.toContain("storage.example.com");
-      expect((error as Error).message).not.toContain("opaque-object");
-      expect((error as Error).message).not.toContain("private-image.png");
-      expect((error as Error).message).not.toContain(localPath);
-      expect((error as Error).message).not.toContain("X-Amz-Credential");
-      expect((error as Error).message).not.toContain("X-Amz-Signature");
-    });
+        expect(error).toBeInstanceOf(Error);
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_diagnostic_version: 1,
+          attachment_download_platform: "windows",
+          attachment_download_shell: "bash",
+          attachment_download_http_client: "curl",
+          attachment_download_exit_code: exitCode,
+          attachment_download_stderr_signal: "other",
+          attachment_download_boundary_version: 1,
+          attachment_download_phase: "failure_diagnostics",
+          attachment_download_attempt: 3,
+          attachment_download_result_state: "nonzero",
+          attachment_download_result_context_present: true,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: true,
+          attachment_download_directory_probe_truncated: false,
+        });
+        // Three download attempts plus the one existing directory probe.
+        expect((sandbox as any).commands.run).toHaveBeenCalledTimes(4);
+        if (exitCode === 28)
+          expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+            attachment_download_timeout_version: 1,
+            attachment_download_timeout_hint: "resolving",
+          });
+        else
+          expect(getAttachmentDownloadFailureContext(error)).not.toHaveProperty(
+            "attachment_download_timeout_version",
+          );
+        const diagnostic = JSON.stringify(
+          getAttachmentDownloadFailureContext(error),
+        );
+        expect(diagnostic).not.toMatch(
+          /storage\.example|private-image|X-Amz|sandbox/,
+        );
+        expect((error as Error).message).toContain("source: [redacted-url]");
+        expect((error as Error).message).toContain(
+          "destination: [redacted-destination-path]",
+        );
+        expect((error as Error).message).not.toContain("storage.example.com");
+        expect((error as Error).message).not.toContain("opaque-object");
+        expect((error as Error).message).not.toContain("private-image.png");
+        expect((error as Error).message).not.toContain(localPath);
+        expect((error as Error).message).not.toContain("X-Amz-Credential");
+        expect((error as Error).message).not.toContain("X-Amz-Signature");
+      },
+    );
 
     it.each([
       { client: "curl", exitCode: 26, desktop: true, platform: "windows" },
@@ -6255,11 +7729,14 @@ describe("CentrifugoSandbox", () => {
         .spyOn(console, "warn")
         .mockImplementation(() => {});
       const { sandbox, runs } = createWindowsCmdSandbox();
+      // Synthetic cmd-shaped lines: CRLF and the space echo keeps before `||`.
+      const probeOutput =
+        "target_dir_exists=true\r\ntarget_dir_writable=true \r\n";
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         runs.push(cmd);
         if (cmd.includes("target_dir_exists")) {
           return {
-            stdout: "target_dir_exists=true\ntarget_dir_writable=true\n",
+            stdout: probeOutput,
             stderr: "",
             exitCode: 0,
           };
@@ -6272,24 +7749,167 @@ describe("CentrifugoSandbox", () => {
       });
 
       try {
-        const assertion = expect(
-          sandbox.files.downloadFromUrl(
+        const failure = sandbox.files
+          .downloadFromUrl(
             "https://example.com/image.png",
             "/tmp/hackerai-upload/image.png",
-          ),
-        ).rejects.toThrow("Failed to download file");
+          )
+          .catch((error: unknown) => error);
         await jest.advanceTimersByTimeAsync(5_000);
-        await assertion;
+        const error = (await failure) as Error;
+        expect(error.message).toMatch(/^Failed to download file/);
+        expect(error.message.endsWith(`  diagnostics: ${probeOutput}`)).toBe(
+          true,
+        );
+        expect(getAttachmentDownloadFailureContext(error)).toMatchObject({
+          attachment_download_shell: "cmd",
+          attachment_download_attempt: 3,
+          attachment_download_directory_probe_state: "returned",
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: true,
+          attachment_download_directory_probe_truncated: false,
+        });
 
         const diagCmd = runs[runs.length - 1];
         expect(diagCmd).toContain("target_dir_exists");
         expect(diagCmd).toContain("target_dir_writable");
         expect(diagCmd).toContain("pushd");
         expect(diagCmd).not.toContain("dir ");
+        expect(
+          runs.filter((cmd) => cmd.includes("target_dir_exists")),
+        ).toHaveLength(1);
       } finally {
         consoleWarnSpy.mockRestore();
       }
     });
+
+    const runRealCmd = async (command: string) => {
+      const shell = windowsSystemExecutable("cmd.exe");
+      const spec = buildShellSpawn(shell, "/c", command);
+      return promisify(execFile)(shell, spec.args, {
+        ...spec.options,
+        timeout: 10_000,
+      }).then(
+        (result) => ({
+          stdout: String(result.stdout),
+          stderr: String(result.stderr),
+          exitCode: 0,
+        }),
+        (error) => ({
+          stdout: String(error.stdout ?? ""),
+          stderr: String(error.stderr ?? ""),
+          exitCode: Number(error.code) || -1,
+        }),
+      );
+    };
+
+    (process.platform === "win32" ? it : it.skip)(
+      "records the actual cmd.exe directory probe for a writable Windows file destination",
+      async () => {
+        jest.useRealTimers();
+        mkdirSync("C:\\temp", { recursive: true });
+        const directory = mkdtempSync("C:\\temp\\hackerai-download-probe-");
+        const { sandbox } = createWindowsCmdSandbox();
+        const calls: Array<[string, unknown]> = [];
+        let probeStdout = "";
+        (sandbox as any).commands.run = jest.fn(
+          async (command: string, options?: unknown) => {
+            calls.push([command, options]);
+            // Inject only the preceding nonzero download; the existing
+            // diagnostic command runs unchanged in the actual cmd.exe.
+            if (!command.includes("target_dir_exists"))
+              return {
+                stdout: "",
+                stderr: "curl: (22) The requested URL returned error: 404",
+                exitCode: 22,
+              };
+            const result = await runRealCmd(command);
+            probeStdout = result.stdout;
+            return result;
+          },
+        );
+        try {
+          const error = (await sandbox.files
+            .downloadFromUrl(
+              "https://example.com/image.png",
+              win32.join(directory, "image.png"),
+            )
+            .catch((failure: unknown) => failure)) as Error;
+          expect(calls).toEqual([
+            [
+              expect.stringContaining("curl -fsSL"),
+              { displayName: "Downloading: image.png", timeoutMs: 120_000 },
+            ],
+            [
+              expect.stringContaining("target_dir_writable"),
+              { displayName: "", timeoutMs: 5_000, signal: undefined },
+            ],
+          ]);
+          // Closed observations of the existing cmd branch shape. A writable
+          // line the command does not emit stays unmeasured, never false.
+          const observations: Record<string, boolean | null> = {
+            "target_dir_exists=true\r\n": null,
+            "target_dir_exists=true\r\ntarget_dir_writable=true\r\n": true,
+            "target_dir_exists=true\r\ntarget_dir_writable=true \r\n": true,
+          };
+          expect(Object.keys(observations)).toContain(probeStdout);
+          expect(error.message.endsWith(`  diagnostics: ${probeStdout}`)).toBe(
+            true,
+          );
+          const context = getAttachmentDownloadFailureContext(error);
+          expect(context).toMatchObject({
+            attachment_download_shell: "cmd",
+            attachment_download_exit_code: 22,
+            attachment_download_attempt: 1,
+            attachment_download_directory_probe_state: "returned",
+            attachment_download_target_dir_exists: true,
+            attachment_download_target_dir_writable: observations[probeStdout],
+            attachment_download_directory_probe_truncated: false,
+          });
+          expect(JSON.stringify(context)).not.toContain(
+            win32.basename(directory),
+          );
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+      30_000,
+    );
+
+    (process.platform === "win32" ? it : it.skip)(
+      "keeps the space cmd.exe echoes before || in Windows file directory probe lines",
+      async () => {
+        jest.useRealTimers();
+        // The existing probe's `echo flag || echo fallback` idiom, fixed values.
+        const { stdout, exitCode } = await runRealCmd(
+          "(echo target_dir_exists=true || echo target_dir_exists=false) & (echo target_dir_writable=false || echo target_dir_writable=true)",
+        );
+        expect({ stdout, exitCode }).toEqual({
+          stdout: "target_dir_exists=true \r\ntarget_dir_writable=false \r\n",
+          exitCode: 0,
+        });
+        expect(
+          getAttachmentDownloadFailureContext(
+            recordAttachmentDownloadFailure(new Error(), {
+              platform: "windows",
+              shell: "cmd",
+              httpClient: "curl",
+              exitCode: 23,
+              stderr: "",
+              directoryProbe: {
+                state: "returned",
+                output: stdout,
+                truncated: false,
+              },
+            }),
+          ),
+        ).toMatchObject({
+          attachment_download_target_dir_exists: true,
+          attachment_download_target_dir_writable: false,
+        });
+      },
+      30_000,
+    );
 
     it("downloadFromUrl retries local command wrapper timeouts", async () => {
       const { sandbox } = createWindowsBashSandbox();
@@ -6487,6 +8107,397 @@ describe("CentrifugoSandbox", () => {
     );
   });
 
+  describe("local copy failure diagnostics", () => {
+    const COPY_COMMAND_ID = "33333333-3333-4333-8333-333333333333";
+    // Existing `local_copy_failure_reason` predates this versioned context.
+    const copyFields = (fields: Record<string, unknown> = {}) =>
+      Object.fromEntries(
+        Object.entries(fields).filter(
+          ([key]) =>
+            key.startsWith("local_copy_") &&
+            key !== "local_copy_failure_reason",
+        ),
+      );
+
+    it("does not attribute an observed copy error to a later URL transfer", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "",
+        stderr: "Permission denied",
+        exitCode: 1,
+      });
+      let copyError: unknown;
+      try {
+        await sandbox.files.copyLocal("/private/source", "/tmp/copy");
+      } catch (error) {
+        copyError = error;
+      }
+      expect(getLocalCopyFailureContext(copyError)).toBeDefined();
+      jest.spyOn(sandbox.files, "downloadFromUrl").mockRejectedValue(copyError);
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/fixture",
+            localPath: "/tmp/url",
+          },
+        ],
+        async () => sandbox,
+      );
+      expect(result.failedCount).toBe(1);
+      expect(copyFields(getSandboxUploadFailureMetadata(result))).toEqual({});
+    });
+
+    it.each([
+      {
+        platform: "linux",
+        shell: "bash",
+        source: "/home/PRIVATE_USER/PRIVATE_SOURCE.pdf",
+        stderr: "bash: line 1: cp: command not found",
+        exitCode: 127,
+        category: "missing_utility",
+        pathShape: "posix_absolute",
+        command:
+          "mkdir -p '/tmp/hackerai-upload' && cp -f '/home/PRIVATE_USER/PRIVATE_SOURCE.pdf' '/tmp/hackerai-upload/PRIVATE_DEST.pdf'",
+      },
+      {
+        platform: "win32",
+        shell: "cmd",
+        source: "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf",
+        stderr: "The syntax of the command is incorrect.",
+        exitCode: 1,
+        category: "shell_syntax",
+        pathShape: "windows_drive_absolute",
+        command:
+          '(if not exist "C:\\temp\\hackerai-upload" mkdir "C:\\temp\\hackerai-upload") && copy /Y "C:\\Users\\PRIVATE_USER\\PRIVATE_SOURCE.pdf" "C:\\temp\\hackerai-upload\\PRIVATE_DEST.pdf" >nul',
+      },
+    ])(
+      "carries the actual $shell copy receipt and classified stderr to existing staging sinks",
+      async ({
+        platform,
+        shell,
+        source,
+        stderr,
+        exitCode,
+        category,
+        pathShape,
+        command,
+      }) => {
+        crypto.randomUUID = jest.fn(() => COPY_COMMAND_ID) as any;
+        const sandbox = createDesktopSandbox(undefined, platform);
+        if (shell === "cmd") (sandbox as any).shellKind = "cmd";
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const pending = uploadSandboxFiles(
+            [
+              {
+                kind: "localPath",
+                path: source,
+                localPath: "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+              },
+            ],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "agent-long",
+                requestId: "run-copy",
+                userId: "user-1",
+                chatId: "chat-copy",
+              },
+            },
+          );
+          for (let tick = 0; tick < 10 && !mockSubscriptions[0]; tick++)
+            await jest.advanceTimersByTimeAsync(0);
+          const reply = mockSubscriptions[0];
+          reply.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          expect(reply.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ commandId: COPY_COMMAND_ID, command }),
+          );
+          reply.emit("publication", {
+            data: {
+              type: "stderr",
+              commandId: COPY_COMMAND_ID,
+              data: `${stderr}\r\nPRIVATE_STDERR_CANARY`,
+            },
+          });
+          reply.emit("publication", {
+            data: { type: "exit", commandId: COPY_COMMAND_ID, exitCode },
+          });
+          const result = await pending;
+
+          expect(result.failureDetails?.[0]).toMatchObject({
+            kind: "localPath",
+            exitCode,
+          });
+          const expected = {
+            local_copy_diagnostic_version: 1,
+            local_copy_selected_shell: shell,
+            local_copy_receiver_mode: "desktop_shared",
+            local_copy_source_path_shape: pathShape,
+            local_copy_destination_path_shape: pathShape,
+            local_copy_command_failure_category: category,
+            local_copy_stderr_scan_truncated: false,
+            local_copy_receipt_available: true,
+            local_copy_command_id: COPY_COMMAND_ID,
+            local_copy_acknowledged_output: false,
+            local_copy_terminal_ack_published: false,
+          };
+          const events = (name: string) =>
+            event.mock.calls
+              .filter(([eventName]) => eventName === name)
+              .map(([, fields]) => fields);
+          const consoleRecords = (spy: jest.SpyInstance, name: string) =>
+            spy.mock.calls
+              .map(([value]) => {
+                try {
+                  return JSON.parse(value);
+                } catch {
+                  return {};
+                }
+              })
+              .filter((record) => record.event === name);
+          const sinks = [
+            ...events("sandbox_attachment_failure_diagnostics"),
+            ...consoleRecords(warn, "sandbox_attachment_failure_diagnostics"),
+            ...events("sandbox_attachment_staging_failed"),
+            ...consoleRecords(error, "sandbox_attachment_staging_failed"),
+            getSandboxUploadFailureMetadata(result),
+          ];
+          expect(sinks).toHaveLength(5);
+          for (const sink of sinks) expect(copyFields(sink)).toEqual(expected);
+          expect(JSON.stringify(sinks.map(copyFields))).not.toMatch(
+            /PRIVATE|hackerai-upload|cp -f|copy \/Y/,
+          );
+        } finally {
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
+
+    it.each(["returned", "thrown"] as const)(
+      "reports only the terminal fallback copy context when the final attempt is %s",
+      async (finalAttempt) => {
+        const sandbox = createDesktopSandbox(undefined, "linux");
+        const event = jest
+          .spyOn(phLogger, "event")
+          .mockImplementation(() => {});
+        const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command) => {
+            if (command.includes("for base in"))
+              return {
+                stdout: "/home/PRIVATE_USER/hackerai-upload/fallback/a.pdf",
+                stderr: "",
+                exitCode: 0,
+              };
+            if (command.includes("'/tmp/hackerai-upload/PRIVATE_DEST.pdf'"))
+              return {
+                stdout: "",
+                stderr: "cp: cannot create regular file: Permission denied",
+                exitCode: 1,
+              };
+            if (finalAttempt === "thrown")
+              throw new Error("PRIVATE relay failure");
+            return {
+              stdout: "",
+              stderr:
+                "bash: -c: line 1: syntax error near unexpected token `('",
+              exitCode: 2,
+            };
+          });
+        try {
+          const result = await uploadSandboxFiles(
+            [
+              {
+                kind: "localPath",
+                path: "/home/PRIVATE_USER/PRIVATE_SOURCE.pdf",
+                localPath: "/tmp/hackerai-upload/PRIVATE_DEST.pdf",
+              },
+            ],
+            async () => sandbox,
+            {
+              logContext: {
+                service: "chat-handler",
+                userId: "user-1",
+                chatId: "chat-copy",
+              },
+            },
+          );
+          expect(run).toHaveBeenCalledTimes(3);
+          expect(result.failedCount).toBe(1);
+          const metadata = copyFields(getSandboxUploadFailureMetadata(result));
+          const staging = event.mock.calls.find(
+            ([name]) => name === "sandbox_attachment_staging_failed",
+          )?.[1];
+          if (finalAttempt === "thrown") {
+            // The initial permission failure must not stand in for the final one.
+            expect(metadata).toEqual({});
+            expect(copyFields(staging)).toEqual({});
+          } else {
+            const expected = {
+              local_copy_diagnostic_version: 1,
+              local_copy_selected_shell: "bash",
+              local_copy_receiver_mode: "desktop_shared",
+              local_copy_source_path_shape: "posix_absolute",
+              local_copy_destination_path_shape: "posix_absolute",
+              local_copy_command_failure_category: "shell_syntax",
+              local_copy_stderr_scan_truncated: false,
+              // A result not produced by this adapter's relay has no receipt.
+              local_copy_receipt_available: false,
+            };
+            expect(metadata).toEqual(expected);
+            expect(copyFields(staging)).toEqual(expected);
+          }
+        } finally {
+          run.mockRestore();
+          event.mockRestore();
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      },
+    );
+
+    it("binds a sequenced terminal ACK to the returned copy failure", async () => {
+      crypto.randomUUID = jest.fn(() => COPY_COMMAND_ID) as any;
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          osInfo: {
+            platform: "linux",
+            arch: "x64",
+            release: "6.8",
+            hostname: "PRIVATE_HOST",
+          },
+          capabilities: { commands: true, operationChannels: true },
+        },
+        defaultConfig,
+      );
+      const pending = sandbox.files
+        .copyLocal("/tmp/source.pdf", "/tmp/hackerai-upload/dest.pdf")
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const reply = mockSubscriptions[0];
+      reply.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: { type: "operation_ready", commandId: COPY_COMMAND_ID },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      reply.emit("publication", {
+        data: {
+          type: "exit",
+          commandId: COPY_COMMAND_ID,
+          exitCode: 1,
+          sequence: 0,
+          outputProtocol: "ack-v1",
+        },
+      });
+      const error = await pending;
+      expect(error).toMatchObject({
+        message: "Failed to prepare local file: exit status 1",
+        exitCode: 1,
+      });
+      expect(getLocalCopyFailureContext(error)).toMatchObject({
+        local_copy_receiver_mode: "desktop_isolated",
+        local_copy_command_failure_category: "unknown",
+        local_copy_receipt_available: true,
+        local_copy_command_id: COPY_COMMAND_ID,
+        local_copy_acknowledged_output: true,
+        local_copy_terminal_ack_published: true,
+      });
+    });
+
+    it.each([
+      ["linux", "", "empty"],
+      ["linux", "PRIVATE_RELATIVE.pdf", "relative"],
+      ["linux", "/tmp/PRIVATE\u0007NAME.pdf", "invalid_control"],
+      ["win32", "\\\\PRIVATE_HOST\\share\\a.pdf", "unc"],
+      ["win32", "D:\\PRIVATE\\a.pdf", "windows_drive_absolute"],
+    ])(
+      "projects the effective %s source path %j as %s only",
+      async (platform, source, shape) => {
+        const sandbox = createDesktopSandbox(undefined, platform);
+        if (platform === "win32") (sandbox as any).shellKind = "cmd";
+        jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "PRIVATE_STDERR",
+          exitCode: 1,
+        });
+        const error = await sandbox.files
+          .copyLocal(source, "/tmp/hackerai-upload/PRIVATE_DEST.pdf")
+          .catch((failure: unknown) => failure);
+        const context = getLocalCopyFailureContext(error);
+        expect(context).toMatchObject({
+          local_copy_source_path_shape: shape,
+          local_copy_destination_path_shape:
+            platform === "win32" ? "windows_drive_absolute" : "posix_absolute",
+          local_copy_receipt_available: false,
+        });
+        expect(JSON.stringify(context)).not.toMatch(/PRIVATE|\.pdf/);
+      },
+    );
+
+    it("bounds the stderr scan and keeps other observations when receiver mode fails", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      // The classifier marker lies past the scan budget, so it is not proven.
+      const stderr = `${"x".repeat(16_384)}\nbash: cp: command not found`;
+      jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+        stdout: "PRIVATE_STDOUT",
+        stderr,
+        exitCode: 127,
+      });
+      jest
+        .spyOn(sandbox, "supportsOperationChannels")
+        .mockImplementation(() => {
+          throw new Error("PRIVATE mode");
+        });
+      const error = await sandbox.files
+        .copyLocal("/tmp/source.pdf", "/tmp/dest.pdf")
+        .catch((failure: unknown) => failure);
+      expect(error).toMatchObject({
+        message: `Failed to prepare local file: ${stderr}`,
+        exitCode: 127,
+      });
+      expect(getLocalCopyFailureContext(error)).toEqual({
+        local_copy_diagnostic_version: 1,
+        local_copy_selected_shell: "bash",
+        local_copy_source_path_shape: "posix_absolute",
+        local_copy_destination_path_shape: "posix_absolute",
+        local_copy_command_failure_category: "unknown",
+        local_copy_stderr_scan_truncated: true,
+        local_copy_receipt_available: false,
+      });
+    });
+
+    it("records nothing for a thrown copy command or a successful copy", async () => {
+      const sandbox = createDesktopSandbox(undefined, "linux");
+      const thrown = new Error("PRIVATE relay failure");
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockRejectedValueOnce(thrown)
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 });
+      await expect(
+        sandbox.files.copyLocal("/tmp/source.pdf", "/tmp/dest.pdf"),
+      ).rejects.toBe(thrown);
+      expect(getLocalCopyFailureContext(thrown)).toBeUndefined();
+      await expect(
+        sandbox.files.copyLocal("/tmp/source.pdf", "/tmp/dest.pdf"),
+      ).resolves.toBeUndefined();
+      expect(run).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("getSandboxContext", () => {
     it("describes the desktop login shell without assuming Bash or a Linux home", () => {
       const sandbox = new CentrifugoSandbox(
@@ -6551,29 +8562,34 @@ describe("CentrifugoSandbox", () => {
         "command -v agent-browser && agent-browser --version",
       );
       expect(context).toContain("`npm install -g agent-browser`");
+      expect(context).not.toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
     });
 
-    it("uses a cmd-compatible browser probe on Windows", () => {
-      const sandbox = createSandbox({
-        osInfo: {
-          platform: "win32",
-          arch: "x86_64",
-          release: "11",
-          hostname: "windows-box",
-        },
-      });
+    it.each(["win32", "windows"])(
+      "uses a cmd-compatible browser probe on Windows (%s)",
+      (platform) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform,
+            arch: "x86_64",
+            release: "11",
+            hostname: "windows-box",
+          },
+        });
 
-      const context = sandbox.getSandboxContext();
+        const context = sandbox.getSandboxContext();
 
-      expect(context).toContain(
-        "where agent-browser && agent-browser --version",
-      );
-      expect(context).not.toContain("command -v agent-browser");
-      expect(context).toContain(
-        "Git Bash when available, otherwise cmd.exe /C",
-      );
-      expect(context).not.toContain("Commands are invoked via cmd.exe /C");
-    });
+        expect(context).toContain(
+          "where agent-browser && agent-browser --version",
+        );
+        expect(context).not.toContain("command -v agent-browser");
+        expect(context).toContain(
+          "Git Bash when available, otherwise cmd.exe /C",
+        );
+        expect(context).toContain(WINDOWS_COMMAND_SHELL_GUIDANCE);
+        expect(context).not.toContain("Commands are invoked via cmd.exe /C");
+      },
+    );
 
     it("safely serializes project folders before adding them to the prompt", () => {
       const sandbox = createDesktopSandbox(

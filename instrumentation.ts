@@ -73,16 +73,42 @@ const getServerActionErrorMetadata = (
   };
 };
 
-/** Correlate unexpected root reads without exporting headers or error contents. */
+/**
+ * Correlate selected page reads, share POSTs, core chat/Agent-status POSTs and
+ * native Desktop authorization POST failures without request contents.
+ */
 function getRootRequestErrorMetadata(
   error: unknown,
   request: Parameters<Instrumentation.onRequestError>[1],
   context: Parameters<Instrumentation.onRequestError>[2],
   path: string,
 ) {
+  const isDesktopAuthorization =
+    path === "/api/desktop/authorized-operation" &&
+    request.method === "POST" &&
+    context.routerKind === "App Router" &&
+    context.routeType === "route";
+  // Next reports proxy throws as Pages Router/proxy even for App Router targets.
+  const isProxy =
+    context.routerKind === "Pages Router" && context.routeType === "proxy";
+  const isCorePost =
+    request.method === "POST" &&
+    (((path === "/" || path === "/c/[id]") &&
+      (isProxy ||
+        (context.routerKind === "App Router" &&
+          (context.routeType === "action" ||
+            context.routeType === "render")))) ||
+      (path === "/api/agent/status" &&
+        (isProxy ||
+          (context.routerKind === "App Router" &&
+            context.routeType === "route"))));
   if (
-    !["/", "/index", "/login"].includes(path) ||
-    (request.method !== "GET" && request.method !== "HEAD")
+    !isDesktopAuthorization &&
+    !isCorePost &&
+    (!["/", "/index", "/login", "/share/[shareId]"].includes(path) ||
+      (request.method !== "GET" &&
+        request.method !== "HEAD" &&
+        !(request.method === "POST" && path === "/share/[shareId]")))
   )
     return undefined;
   try {
@@ -127,7 +153,12 @@ export const onRequestError: Instrumentation.onRequestError = (
   context,
 ) => {
   // Next includes the query in request.path; OAuth callbacks can carry credentials.
-  const path = request.path.split(/[?#]/, 1)[0];
+  const requestPath = request.path.split(/[?#]/, 1)[0];
+  // Share and chat URLs carry resource identifiers. Keep only their route
+  // templates in both the existing error export and its finite native receipt.
+  const path = requestPath
+    .replace(/^\/share\/[^/]+\/?$/, "/share/[shareId]")
+    .replace(/^\/c\/[^/]+\/?$/, "/c/[id]");
 
   if (isEndedSessionRefreshError(error)) {
     phLogger.warn("auth_session_refresh_ended", {

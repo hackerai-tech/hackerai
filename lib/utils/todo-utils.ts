@@ -60,6 +60,41 @@ const hasBlankContent = (candidate: TodoLike): boolean => {
 
 const TODO_STATUSES = new Set<Todo["status"]>(TODO_STATUS_VALUES);
 
+/** Preserve the stored plan when an optional cancellation snapshot is incomplete. */
+export const isTodoSnapshotForCancellation = (
+  todos: unknown,
+): todos is Todo[] => {
+  try {
+    if (!Array.isArray(todos)) return false;
+    for (const todo of todos) {
+      if (!todo || typeof todo !== "object" || Array.isArray(todo))
+        return false;
+      const prototype = Object.getPrototypeOf(todo);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+      const fields = Object.getOwnPropertyDescriptors(todo);
+      if (
+        ["id", "content", "status"].some(
+          (key) => !fields[key]?.enumerable || !("value" in fields[key]),
+        ) ||
+        Object.keys(todo).some(
+          (key) =>
+            !["id", "content", "status", "sourceMessageId"].includes(key) ||
+            !("value" in fields[key]),
+        ) ||
+        !isTodoForDisplay(todo) ||
+        (fields.sourceMessageId?.enumerable &&
+          fields.sourceMessageId.value !== undefined &&
+          typeof fields.sourceMessageId.value !== "string")
+      )
+        return false;
+    }
+    return true;
+  } catch {
+    // Optional client metadata must not prevent cancellation.
+    return false;
+  }
+};
+
 const isTodoForDisplay = (candidate: unknown): candidate is Todo => {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
     return false;

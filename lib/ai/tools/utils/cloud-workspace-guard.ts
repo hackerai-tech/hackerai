@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { Sandbox } from "@e2b/code-interpreter";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
+import { failureSchema } from "@/lib/cloud-recovery/failure";
 
 export type RecoveredWorkspace = {
   version: 1;
@@ -135,6 +137,8 @@ export const cloudWorkspaceSelectionHistoryKey = (userId: string) =>
   `cloud_workspace_selection_history:v1:${userId}`;
 export const recoveryResultKeyFor = (userId: string) =>
   `cloud_workspace_recovery_result:v1:${userId}`;
+export const cloudResumeFailureKey = (userId: string) =>
+  `cloud_resume_failures:v1:${userId}`;
 const ACTIVITY_TTL_SECONDS = 15 * 60;
 const e2bUsers = new WeakMap<Sandbox, string>();
 
@@ -467,6 +471,7 @@ export async function assertCloudWorkspaceAvailable(
   sandboxId?: string,
   region?: TriggerRunRegion,
 ): Promise<void> {
+  await assertUserCanMakeCostIncurringRequest(userId);
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production") {
@@ -522,11 +527,21 @@ export async function assertCloudWorkspaceAvailable(
 export async function claimCloudWorkspaceCleanup(
   userId: string,
   permanent: boolean,
+  containment?: { token: string; sandboxId: string; region: TriggerRunRegion },
 ) {
   const observed = await readCloudWorkspaceState(userId);
+  const resuming = Boolean(
+    containment &&
+    !permanent &&
+    observed?.phase === "cleanup" &&
+    observed.token === containment.token &&
+    observed.migration?.destinationId === containment.sandboxId &&
+    observed.migration.region === containment.region,
+  );
   if (
     observed &&
     observed.phase !== "e2b" &&
+    !resuming &&
     !(observed.phase === "provisioning" && observed.step === "reserved") &&
     !(permanent && observed.phase === "deleted")
   )
@@ -534,9 +549,18 @@ export async function claimCloudWorkspaceCleanup(
   const migration =
     observed?.phase === "e2b"
       ? observed
-      : observed?.phase === "deleted"
+      : observed?.phase === "deleted" ||
+          (resuming && observed?.phase === "cleanup")
         ? observed.migration
         : undefined;
+  if (
+    containment &&
+    (permanent ||
+      !migration ||
+      migration.destinationId !== containment.sandboxId ||
+      migration.region !== containment.region)
+  )
+    throw new CloudWorkspaceUnavailableError("claim_conflict");
   // Unresolved recovery may involve files outside E2B. Do not claim complete
   // account cleanup or remove its persistent record without operator recovery.
   if (migration?.recoveryPending !== undefined)
@@ -550,10 +574,24 @@ export async function claimCloudWorkspaceCleanup(
   const state: CleanupState = {
     version: 1,
     phase: "cleanup",
-    token: randomUUID(),
+    token: containment?.token ?? randomUUID(),
     ...(migration && { migration }),
   };
   const serialized = JSON.stringify(state);
+  // Resume-failure evidence pins routing to its sandbox. Only the record that
+  // already named this cleanup's exact destination may be retired after
+  // success; unreadable, unrelated or later-changed evidence is preserved.
+  const failure = migration
+    ? await redis.get<unknown>(cloudResumeFailureKey(userId)).catch(() => null)
+    : null;
+  const obsoleteFailure =
+    failure &&
+    failureSchema.strict().safeParse(failure).success &&
+    (failure as { sandboxId?: unknown }).sandboxId ===
+      migration?.destinationId &&
+    (failure as { region?: unknown }).region === migration?.region
+      ? JSON.stringify(failure)
+      : "";
   let claimed;
   try {
     // Compare the complete record by value: formatting is not ownership, and
@@ -607,21 +645,40 @@ export async function claimCloudWorkspaceCleanup(
           })
         : success || !observed
           ? ""
-          : JSON.stringify(observed);
+          : JSON.stringify(resuming ? migration : observed);
       try {
         const finished = await redis.eval(
-          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end return 1`,
+          `local function equal(a, b)
+            if type(a) ~= type(b) then return false end
+            if type(a) ~= 'table' then return a == b end
+            for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+            for k in pairs(b) do if a[k] == nil then return false end end
+            return true
+          end
+          if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+          if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end
+          if ARGV[3] == '1' then redis.call('DEL', KEYS[2]) end
+          if ARGV[4] == '1' then redis.call('DEL', KEYS[3], KEYS[4]) end
+          if ARGV[5] ~= '' then
+            local ok, current = pcall(cjson.decode, redis.call('GET', KEYS[5]) or '')
+            if ok and equal(current, cjson.decode(ARGV[5])) then redis.call('DEL', KEYS[5]) end
+          end
+          return 1`,
           [
             cloudWorkspaceStateKey(userId),
             cloudWorkspaceRegionKey(userId),
             cloudWorkspaceSelectionHistoryKey(userId),
             cloudRecoveryHistoryKey(userId),
+            cloudResumeFailureKey(userId),
           ],
           [
             serialized,
             next,
             success ? "1" : "0",
             permanent && success ? "1" : "0",
+            // Callers report success only after verifying this destination is
+            // gone: every configured region, or the exact contained sandbox.
+            success ? obsoleteFailure : "",
           ],
         );
         if (finished !== 1) throw new CloudWorkspaceUnavailableError();

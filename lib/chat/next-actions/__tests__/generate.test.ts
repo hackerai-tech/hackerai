@@ -1,9 +1,10 @@
-import { generateText } from "ai";
+import { generateText, NoObjectGeneratedError } from "ai";
 import { generateNextActions } from "../generate";
 import { buildPredictionSources } from "../contracts";
 
 jest.mock("ai", () => ({
   generateText: jest.fn(),
+  NoObjectGeneratedError: jest.requireActual("ai").NoObjectGeneratedError,
   Output: { object: jest.fn((value) => value) },
 }));
 jest.mock("@/lib/ai/providers", () => ({
@@ -198,6 +199,40 @@ test("provider failures expose no private error details and keep unknown spend",
     }),
   );
   expect(JSON.stringify(result)).not.toContain("private provider payload");
+});
+
+test("retains the billed generation when structured output is invalid", async () => {
+  const receipt = completion(null) as unknown as {
+    usage: ConstructorParameters<typeof NoObjectGeneratedError>[0]["usage"];
+    response: ConstructorParameters<
+      typeof NoObjectGeneratedError
+    >[0]["response"];
+  };
+  jest.mocked(generateText).mockRejectedValueOnce(
+    new NoObjectGeneratedError({
+      message: "Private invalid output",
+      text: "Private model content",
+      usage: receipt.usage,
+      response: receipt.response,
+      finishReason: "stop",
+    }),
+  );
+  const result = await generateNextActions(
+    sources,
+    new AbortController().signal,
+  );
+  expect(result).toMatchObject({
+    suggestions: [],
+    unavailable: true,
+    providerCalls: 1,
+    pricedProviderCalls: 1,
+    unknownProviderCalls: 0,
+    cost: 0.001,
+    knownCost: 0.001,
+    inputTokens: 100,
+    outputTokens: 20,
+  });
+  expect(JSON.stringify(result)).not.toContain("Private");
 });
 
 test("passes persisted tool activity and actual answers to the predictor", async () => {

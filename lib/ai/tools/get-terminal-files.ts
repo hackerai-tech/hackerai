@@ -17,6 +17,7 @@ import {
   isCentrifugoSandbox,
 } from "./utils/sandbox-types";
 import { waitForForegroundCommands } from "./utils/foreground-commands";
+import { SandboxFileNotFoundError } from "./utils/sandbox-file-errors";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -409,8 +410,15 @@ export const createGetTerminalFiles = (context: ToolContext) => {
                   // Optional classification must preserve the original failure.
                 }
               }
-              if (abortSignal?.aborted) break;
-              // Continue to try next path
+              // Once a source exists, changing paths after an upload/signing or
+              // registration failure can silently deliver a different file with
+              // the same name. Only a confirmed missing source permits fallback.
+              if (
+                abortSignal?.aborted ||
+                !(e instanceof SandboxFileNotFoundError)
+              ) {
+                break;
+              }
             }
           }
 

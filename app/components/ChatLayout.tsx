@@ -33,7 +33,7 @@ const SettingsDialog = dynamic(
  */
 export function ChatLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ConvexErrorBoundary>
+    <ConvexErrorBoundary diagnosticScope="chat_layout">
       <ChatLayoutContent>{children}</ChatLayoutContent>
     </ConvexErrorBoundary>
   );

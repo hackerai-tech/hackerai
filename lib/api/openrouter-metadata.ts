@@ -16,6 +16,7 @@ export type OpenRouterModelMetadata = {
   openrouter_attempt?: number;
   openrouter_upstream_id?: string;
   openrouter_upstream_inference_cost?: number;
+  openrouter_charged_cost?: number;
   openrouter_selected_model?: string;
   openrouter_attempts?: OpenRouterAttemptMetadata[];
 };
@@ -47,6 +48,11 @@ const pickNumber = (value: unknown): number | undefined =>
 const pickPositiveNumber = (value: unknown): number | undefined => {
   const number = pickNumber(value);
   return number !== undefined && number > 0 ? number : undefined;
+};
+
+const pickNonNegativeNumber = (value: unknown): number | undefined => {
+  const number = pickNumber(value);
+  return number !== undefined && number >= 0 ? number : undefined;
 };
 
 const pickBoolean = (value: unknown): boolean | undefined =>
@@ -203,6 +209,7 @@ const metadataFromRouterPayload = (
     openrouter_router: pickString(metadata.router),
     openrouter_upstream_id: pickIdentifier(metadata.upstream_id),
     openrouter_upstream_inference_cost: pickUpstreamInferenceCost(metadata),
+    openrouter_charged_cost: pickNonNegativeNumber(metadata.total_cost),
     openrouter_selected_model:
       pickString(selectedEndpoint?.model) ??
       pickString(successfulAttempt?.model),
@@ -258,11 +265,13 @@ const metadataFromGenerationPayload = (
     provider_name: pickString(payload.provider_name),
     openrouter_generation_id: pickGenerationId({ id: payload.id }),
     openrouter_request_id: pickIdentifier(payload.request_id),
+    openrouter_is_byok: pickBoolean(payload.is_byok),
     openrouter_router: pickString(payload.router),
     openrouter_upstream_id: pickIdentifier(payload.upstream_id),
     openrouter_upstream_inference_cost: pickPositiveNumber(
       payload.upstream_inference_cost,
     ),
+    openrouter_charged_cost: pickNonNegativeNumber(payload.total_cost),
     openrouter_selected_model: options.includeSelectedModel
       ? pickString(payload.model)
       : undefined,
@@ -418,6 +427,8 @@ export function mergeOpenRouterMetadata(
     openrouter_upstream_inference_cost:
       primary.openrouter_upstream_inference_cost ??
       secondary.openrouter_upstream_inference_cost,
+    openrouter_charged_cost:
+      primary.openrouter_charged_cost ?? secondary.openrouter_charged_cost,
   });
 }
 

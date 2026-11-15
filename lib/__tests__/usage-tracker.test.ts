@@ -339,20 +339,101 @@ describe("UsageTracker", () => {
       );
     });
 
-    it("should prefer OpenRouter upstream inference cost over raw provider cost", () => {
+    it("charges both BYOK provider inference and an OpenRouter platform fee", () => {
       tracker.accumulateStep({
         inputTokens: 1000,
         outputTokens: 500,
         raw: {
           cost: 0.001,
+          is_byok: true,
           cost_details: {
             upstream_inference_cost: 0.003,
           },
         },
       });
 
-      expect(tracker.modelProviderCost).toBeCloseTo(0.003);
-      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.003);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.004);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.004);
+    });
+
+    it("adds a BYOK platform fee when route metadata arrives after usage", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.00015 },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.003, {
+        isByok: true,
+      });
+
+      expect(tracker.modelProviderCost).toBeCloseTo(0.00315);
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00315);
+    });
+
+    it("uses generation metadata for a BYOK fee missing from streamed usage", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0 },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.003, {
+        isByok: true,
+        chargedCost: 0.00015,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.00315);
+    });
+
+    it("keeps the charged non-BYOK cost after upstream metadata arrives", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.0015,
+          is_byok: false,
+          cost_details: { upstream_inference_cost: 0.0012 },
+        },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.0012, {
+        isByok: false,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0015);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0015);
+    });
+
+    it("uses charged cost when BYOK metadata is missing and cost is positive", () => {
+      const index = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: {
+          cost: 0.0015,
+          cost_details: { upstream_inference_cost: 0.0012 },
+        },
+      });
+      tracker.setAuthoritativeModelCostForStep(index, 0.0012, {});
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0015);
+    });
+
+    it("keeps BYOK and non-BYOK costs separate across model steps", () => {
+      const byok = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0, is_byok: true },
+      });
+      const nonByok = tracker.accumulateStep({
+        inputTokens: 1000,
+        outputTokens: 500,
+        raw: { cost: 0.0015, is_byok: false },
+      });
+      tracker.setAuthoritativeModelCostForStep(byok, 0.003, { isByok: true });
+      tracker.setAuthoritativeModelCostForStep(nonByok, 0.0012, {
+        isByok: false,
+      });
+
+      expect(tracker.computeCostDollars("model-default")).toBeCloseTo(0.0045);
+      expect(tracker.modelProviderCost).toBeCloseTo(0.0045);
     });
 
     it("should fall back to raw provider cost when OpenRouter upstream inference cost is not positive", () => {
@@ -799,6 +880,44 @@ describe("UsageTracker", () => {
         modelCostDollars: 0.01,
         nonModelCostDollars: 0,
         costSource: "provider",
+      });
+    });
+
+    it("resolves only after the ledger write and returns its failure status", async () => {
+      let finishWrite!: (value: unknown) => void;
+      const pendingWrite = new Promise((resolve) => {
+        finishWrite = resolve;
+      });
+      const localMockLog = jest.fn(() => pendingWrite);
+      let IsolatedTracker: typeof UsageTracker;
+      jest.isolateModules(() => {
+        jest.doMock("@/lib/db/actions", () => ({
+          logUsageRecord: localMockLog,
+        }));
+        IsolatedTracker = require("../usage-tracker").UsageTracker;
+      });
+      const t = new IsolatedTracker!();
+      t.accumulateStep({ inputTokens: 10, outputTokens: 5, raw: { cost: 1 } });
+
+      let settled = false;
+      const logged = t
+        .log({
+          userId: "user-123",
+          selectedModel: "model-default",
+          configuredModelId: "model-config",
+          rateLimitInfo: { remaining: 0, resetTime: new Date(), limit: 0 },
+        })
+        .then((result) => {
+          settled = true;
+          return result;
+        });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      finishWrite({ status: "failed", failureCategory: "write_failed" });
+      await expect(logged).resolves.toEqual({
+        status: "failed",
+        failureCategory: "write_failed",
       });
     });
 

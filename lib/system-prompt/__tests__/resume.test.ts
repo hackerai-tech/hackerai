@@ -42,8 +42,8 @@ it.each([
   expect(getResumeSection(reason)).toContain("<resume_context>");
 });
 
-it("checks uncertain local command outcomes before resuming after disconnect", () => {
+test("local resume preserves uncertainty about interrupted command outcomes", () => {
   const section = getResumeSection("local-connection-lost");
-  expect(section).toContain("Do not repeat completed work");
-  expect(section).toContain("inspect the current state before repeating");
+  expect(section).toContain("may have completed or may still be running");
+  expect(section).toContain("Never replay an uncertain mutation automatically");
 });

@@ -14,6 +14,7 @@ import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatMessageActionTimestamp } from "@/lib/utils/message-time";
+import { recordMessageTimestampFailure } from "@/lib/posthog/message-time-diagnostics";
 import { SourcesDialog } from "./SourcesDialog";
 
 interface MessageActionsProps {
@@ -194,7 +195,11 @@ export const MessageActions = ({
   const isLastAssistantLoading =
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
-  const formattedCreatedAt = formatMessageActionTimestamp(messageCreatedAt);
+  const formattedCreatedAt = formatMessageActionTimestamp(
+    messageCreatedAt,
+    undefined,
+    recordMessageTimestampFailure,
+  );
   const timestampDateTime =
     formattedCreatedAt !== null && typeof messageCreatedAt === "number"
       ? new Date(messageCreatedAt).toISOString()

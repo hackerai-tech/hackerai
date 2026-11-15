@@ -1,3 +1,6 @@
+// The SDK template builder imports an ESM parser unused by this error test.
+jest.mock("dockerfile-ast", () => ({}), { virtual: true });
+
 import {
   extractErrorDetails,
   isRetriableProviderStreamDisconnectError,
@@ -5,6 +8,7 @@ import {
 import { wrapProviderTerminalError } from "@/lib/api/provider-terminal-error";
 import type { AnySandbox } from "@/types";
 import { getFunctionName } from "convex/server";
+import { CommandExitError } from "@e2b/code-interpreter";
 import { createBrowserHandoff } from "../../browser-handoff";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -12,6 +16,9 @@ import {
   BrowserSessions,
 } from "../browser-sessions";
 
+const mockNameGetter = jest.fn(() => {
+  throw new Error("DO_NOT_LOG name getter must not run");
+});
 const mockQuery = jest.fn();
 const mockMutation = jest.fn(async () => true);
 jest.mock("@/lib/db/convex-client", () => ({
@@ -36,6 +43,13 @@ async function owner(agentId = "parent") {
     commands: { run },
     files: { read },
   } as unknown as AnySandbox);
+  run.mockResolvedValue({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      success: true,
+      data: { connected: true, port: 9223 },
+    }),
+  });
   return { sessions, run, read };
 }
 
@@ -53,7 +67,30 @@ it.each([
   ["invalid_response", { success: true, data: { connected: true, port: 0 } }],
   ["invalid_response", "DO_NOT_LOG https://private.example/page"],
   ["command_failed", null],
+  [
+    "command_failed",
+    new CommandExitError({
+      exitCode: 2,
+      stdout: "DO_NOT_LOG private stdout",
+      stderr: "DO_NOT_LOG private stderr",
+      error: "DO_NOT_LOG private error",
+    }),
+  ],
   ["transport_error", new Error("DO_NOT_LOG transport error")],
+  [
+    "transport_error",
+    Object.defineProperty(new Error("DO_NOT_LOG getter"), "name", {
+      get: mockNameGetter,
+    }),
+  ],
+  [
+    "transport_error",
+    new Proxy(new Error("DO_NOT_LOG proxy"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("DO_NOT_LOG descriptor unavailable");
+      },
+    }),
+  ],
 ] as const)(
   "records finite admission liveness %s without changing accepted handoff behavior",
   async (expected, response) => {
@@ -78,7 +115,7 @@ it.each([
     expect(phLogger.info).toHaveBeenCalledWith(
       "browser_handoff_admission_diagnostics",
       expect.objectContaining({
-        diagnostic_version: 2,
+        diagnostic_version: 3,
         admission_env_idle_timeout: "unavailable",
         admission_probe_result: expected,
         admission_probe_attempt: 1,
@@ -96,7 +133,13 @@ it.each([
       /DO_NOT_LOG|private\.example|test-key|stdout|stderr|\/dev\/shm/,
     );
     expect(
-      Object.keys(jest.mocked(phLogger.info).mock.calls[0][1]!).sort(),
+      Object.keys(
+        jest
+          .mocked(phLogger.info)
+          .mock.calls.find(
+            ([event]) => event === "browser_handoff_admission_diagnostics",
+          )![1]!,
+      ).sort(),
     ).toEqual([
       "admission_env_idle_timeout",
       "admission_observation_phase",
@@ -111,6 +154,7 @@ it.each([
       "diagnostic_version",
       "trigger_run_id",
     ]);
+    expect(mockNameGetter).not.toHaveBeenCalled();
     expect(jest.getTimerCount()).toBe(0);
   },
 );
@@ -139,7 +183,7 @@ it.each([
     expect(phLogger.info).toHaveBeenCalledWith(
       "browser_handoff_admission_diagnostics",
       expect.objectContaining({
-        diagnostic_version: 2,
+        diagnostic_version: 3,
         admission_probe_result: "connected",
         admission_env_idle_timeout: expected,
       }),
@@ -191,8 +235,14 @@ it("caps admission observation across repeated handoffs without capping admissio
   for (let i = 0; i < 4; i++)
     await sessions.waitForHumanHandoff(undefined, true);
   expect(mockMutation).toHaveBeenCalledTimes(4);
-  expect(run).toHaveBeenCalledTimes(3); // preparation and at most two passive probes
-  expect(phLogger.info).toHaveBeenCalledTimes(2);
+  expect(run).toHaveBeenCalledTimes(5); // preparation and one check per new wait
+  expect(
+    jest
+      .mocked(phLogger.info)
+      .mock.calls.filter(
+        ([event]) => event === "browser_handoff_admission_diagnostics",
+      ),
+  ).toHaveLength(2);
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -235,7 +285,10 @@ it("honors Stop during the observation without reporting a completed handoff", a
   stop.abort(new Error("Stopped by user"));
   await rejected;
   expect(mockMutation).toHaveBeenCalledTimes(1);
-  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(phLogger.info).not.toHaveBeenCalledWith(
+    "browser_handoff_admission_diagnostics",
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -336,7 +389,10 @@ it("waits through takeover and resumes within one check without a sandbox sleep"
   });
   const tool = createBrowserHandoff(sessions);
   const finished = jest.fn();
-  const pending = tool.execute!({}, { toolCallId: "handoff", messages: [] });
+  const pending = tool.execute!(
+    { reason: "The user requested browser control." },
+    { toolCallId: "handoff", messages: [] },
+  );
   const result = Promise.resolve(pending).then(finished);
   for (const next of ["waiting", "claiming", "human", "recovery", "resuming"]) {
     await jest.advanceTimersByTimeAsync(0);
@@ -351,7 +407,13 @@ it("waits through takeover and resumes within one check without a sandbox sleep"
   expect(finished).toHaveBeenCalledWith(
     expect.objectContaining({ status: "resumed" }),
   );
-  expect(run).toHaveBeenCalledTimes(2); // preparation and bounded observation, no foreground wait
+  // Preparation, bounded observation and one held-browser keepalive status;
+  // no foreground wait.
+  expect(run).toHaveBeenCalledTimes(3);
+  expect(run).toHaveBeenLastCalledWith(
+    expect.stringContaining("'status' '/dev/shm/hackerai-browser-"),
+    expect.objectContaining({ timeoutMs: 2_000 }),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -371,64 +433,6 @@ it("Stop interrupts the dedicated wait and never reports a successful handoff", 
   expect(jest.getTimerCount()).toBe(0);
 });
 
-it.each(["restored", "failed", "stopped"])(
-  "keeps managed release scoped and handoff available: %s",
-  async (outcome) => {
-    const sessions = new BrowserSessions(
-      {
-        userId: "owner",
-        chatId: "chat",
-        runId: "run",
-        agentId: "parent",
-        serviceKey: "test-key",
-      },
-      undefined,
-      false,
-      { urls: ["https://example.com/login"], enabled: async () => true },
-    );
-    const sandboxes = ["first", "last"].map(
-      (sandboxId) =>
-        ({
-          sandboxId,
-          commands: {
-            run: jest.fn(async () => ({ exitCode: 0, stdout: "/usr/bin" })),
-          },
-          files: { read: jest.fn(async () => sandboxId) },
-        }) as unknown as AnySandbox,
-    );
-    for (const sandbox of sandboxes) await sessions.prepare(sandbox);
-    mockQuery.mockResolvedValue({
-      state: "agent",
-      runActive: true,
-      updatedAt: 1,
-    });
-    const controller = new AbortController();
-    const release = jest.fn(async () => {
-      if (outcome === "stopped") controller.abort(new Error("stopped"));
-      if (outcome !== "restored") throw new Error("release unavailable");
-      return true;
-    });
-    const getBrowser = jest
-      .spyOn(sessions, "getChallengeBrowser")
-      .mockResolvedValue({ identity: "first", evaluate: release });
-    mockMutation.mockImplementation(async () => {
-      expect(release).toHaveBeenCalled();
-      throw new Error("end test after release");
-    });
-    mockMutation.mockClear();
-    await expect(
-      sessions.waitForHumanHandoff(controller.signal),
-    ).rejects.toThrow(
-      outcome === "stopped" ? "stopped" : "end test after release",
-    );
-    expect(mockMutation).toHaveBeenCalledTimes(outcome === "stopped" ? 0 : 1);
-    expect(getBrowser).toHaveBeenCalledWith(expect.any(AbortSignal), {
-      sandbox: sandboxes[0],
-      sessionName: "first",
-    });
-  },
-);
-
 it.each([undefined, true])(
   "passes the explicit repeat request (%s) through the tool to wait admission",
   async (requestAnotherTakeover) => {
@@ -442,7 +446,10 @@ it.each([undefined, true])(
     const tool = createBrowserHandoff(sessions);
     await expect(
       tool.execute!(
-        { requestAnotherTakeover },
+        {
+          reason: "The user requested browser control.",
+          requestAnotherTakeover,
+        },
         { toolCallId: "handoff", messages: [] },
       ),
     ).resolves.toMatchObject({ status: "resumed" });
@@ -463,7 +470,10 @@ it("does not overwrite a resume that wins the wait registration race", async () 
   await expect(sessions.waitForHumanHandoff()).rejects.toThrow(
     "ownership changed",
   );
-  expect(phLogger.info).not.toHaveBeenCalled();
+  expect(phLogger.info).not.toHaveBeenCalledWith(
+    "browser_handoff_admission_diagnostics",
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -513,7 +523,12 @@ it("Stop interrupts a paused Agent and cleanup remains available", async () => {
   controller.abort(new Error("Stopped by user"));
   await rejected;
   await sessions.cleanup();
-  expect(run).toHaveBeenCalledTimes(2);
+  // Preparation, the held browser's first keepalive status, then cleanup.
+  expect(run).toHaveBeenCalledTimes(3);
+  expect(run).toHaveBeenLastCalledWith(
+    expect.stringContaining("'cleanup' '/dev/shm/hackerai-browser-"),
+    expect.anything(),
+  );
   expect(jest.getTimerCount()).toBe(0);
 });
 

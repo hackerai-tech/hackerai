@@ -1,5 +1,6 @@
 import type { PostHog } from "posthog-node";
 import { ChatSDKError } from "@/lib/errors";
+import { LocalConnectionLostError } from "@/lib/chat/local-connection-stop";
 import {
   agentFailureCategory,
   agentFailureSignalContext,
@@ -162,6 +163,24 @@ describe("Agent run reporting", () => {
     },
   );
 
+  it.each(["user_wait_timeout", "user_wait_failed"])(
+    "retains %s when terminal capture fails before later cancellation",
+    (abortSource) => {
+      const { reporter, events } = setup();
+      reporter.captureTerminal(
+        () => {
+          throw new Error("enqueue unavailable");
+        },
+        { outcome: "aborted", abortSource },
+      );
+      reporter.finalize({ canceled: true });
+      expect(events()[0].properties).toMatchObject({
+        outcome: "aborted",
+        abort_source: abortSource,
+      });
+    },
+  );
+
   it.each([undefined, "stop", "length", "private arbitrary value"])(
     "retains only bounded observed finish reasons after failed capture: %s",
     (finishReason) => {
@@ -291,6 +310,81 @@ describe("Agent run reporting", () => {
     });
   });
 
+  it("retains discarded and estimated model costs with Trigger counted once", () => {
+    const { reporter, events } = setup();
+    reporter.fail(new Error("settlement write failed"));
+    reporter.finalize({
+      canceled: false,
+      triggerCostDollars: 0.375,
+      // Provider-reported only; would understate the known work.
+      observedAccumulatedCostDollars: 0.25,
+      usageMeasurement: {
+        usage_discarded_retry_cost_dollars: 1,
+        usage_trigger_run_cost_dollars: 0.25,
+        // 1 discarded + 0.5 estimated + 0.25 settled Trigger snapshot.
+        usage_known_incurred_cost_dollars: 1.75,
+      },
+    });
+    expect(events()[1].properties).toMatchObject({
+      cost_accounting_status: "incomplete",
+      cost_dollars: null,
+      usage_discarded_retry_cost_dollars: 1,
+      known_trigger_cost_dollars: 0.375,
+      known_incurred_cost_lower_bound_dollars: 1.875,
+    });
+  });
+
+  it.each([0, 0.25])(
+    "reports later Trigger compute from a %s snapshot without repeating its cost",
+    (settled) => {
+      const { reporter, capture, events } = setup();
+      reporter.captureCost(capture, { event: "hackerai-usage_cost" });
+      reporter.captureTerminal(capture, { event: "hackerai-agent_run" });
+      const snapshot = {
+        canceled: false,
+        triggerCostDollars: 0.375,
+        usageMeasurement: { usage_trigger_run_cost_dollars: settled },
+      };
+      reporter.finalize(snapshot);
+      reporter.finalize(snapshot);
+
+      const observations = events().filter(
+        (event) => event.event === "hackerai-usage_cost_observation",
+      );
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        uuid: agentRunEventUuid(
+          "run_failed",
+          "hackerai-usage_cost_observation",
+        ),
+        properties: {
+          settled_trigger_cost_dollars: settled,
+          latest_trigger_cost_dollars: 0.375,
+          unrecorded_trigger_cost_dollars: 0.375 - settled,
+          trigger_cost_is_final: false,
+        },
+      });
+      expect(
+        events().filter((event) => event.event === "hackerai-usage_cost"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not add an observation to an incomplete run's own Trigger cost", () => {
+    const { reporter, events } = setup();
+    const snapshot = {
+      canceled: false,
+      triggerCostDollars: 0.375,
+      usageMeasurement: { usage_trigger_run_cost_dollars: 0.25 },
+    };
+    reporter.finalize(snapshot);
+    reporter.finalize(snapshot);
+    expect(events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+  });
+
   it("tolerates missing PostHog configuration", () => {
     const reporter = createAgentRunReporting({
       posthog: null,
@@ -338,6 +432,157 @@ it("keeps reconnect-required Agent attempts unsuccessful in analytics", () => {
   expect(events()[1].properties).toMatchObject({
     cost_dollars: null,
     cost_accounting_status: "incomplete",
+  });
+});
+
+describe("first local stop cause", () => {
+  const CONNECTION = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+  const localStop = () =>
+    new LocalConnectionLostError("subscription_reconnecting", {
+      connectionId: CONNECTION,
+      hadPositivePresence: true,
+      lastPositivePresenceAgeMs: 5_000,
+      callbackCode: 1,
+      clientState: "connecting",
+      socketCloseCode: 1006,
+      socketCloseWasClean: false,
+    });
+  const localFields = {
+    local_stop_diagnostic_version: 1,
+    local_stop_reason: "subscription_reconnecting",
+    local_stop_connection_id: CONNECTION,
+    local_stop_had_positive_presence: true,
+    local_stop_last_positive_presence_age_ms: 5_000,
+    local_stop_callback_code: 1,
+    local_stop_client_state: "connecting",
+    local_stop_socket_close_code: 1006,
+    local_stop_socket_close_was_clean: false,
+  };
+  const failingCapture = () => {
+    throw new Error("enqueue unavailable");
+  };
+
+  it("passes the first stop to normal terminal capture", () => {
+    const { reporter } = setup();
+    const error = localStop();
+    reporter.recordLocalStop(error);
+    reporter.recordLocalStop(new LocalConnectionLostError("setup_timeout"));
+    const capture = jest.fn();
+    reporter.captureTerminal(capture, { outcome: "aborted" });
+    expect(capture).toHaveBeenCalledWith({
+      outcome: "aborted",
+      localConnectionLostError: error,
+    });
+  });
+
+  it("retains the local finish reason and cause after a failed terminal enqueue", () => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(localStop());
+    reporter.captureCost(jest.fn(), {});
+    reporter.captureTerminal(failingCapture, {
+      outcome: "aborted",
+      finishReason: "local-connection-lost",
+      abortSource: "unknown",
+    });
+    reporter.finalize({ canceled: false });
+    reporter.finalize({ canceled: false });
+    expect(events()).toHaveLength(1);
+    expect(events()[0]).toMatchObject({
+      event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_failed", "hackerai-agent_run"),
+      properties: {
+        outcome: "aborted",
+        finish_reason: "local-connection-lost",
+        abort_source: "unknown",
+        ...localFields,
+      },
+    });
+  });
+
+  it("reports a pre-stream local stop once with its cause, without copying it to cost", () => {
+    const { reporter, events } = setup();
+    reporter.setStage("preparation");
+    const error = localStop();
+    reporter.recordLocalStop(error);
+    reporter.fail(error, "canceled");
+    reporter.finalize({ canceled: false, triggerCostDollars: 0.01 });
+    expect(events().map((event) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    expect(events()[0].properties).toMatchObject({
+      outcome: "aborted",
+      failure_stage: "preparation",
+      failure_kind: "canceled",
+      finish_reason: "local-connection-lost",
+      abort_source: "unknown",
+      ...localFields,
+    });
+    expect(events()[1].properties.known_trigger_cost_dollars).toBe(0.01);
+    expect(
+      Object.keys(events()[1].properties).filter((key) =>
+        key.startsWith("local_stop_"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not attach a stop observed after the terminal outcome", () => {
+    const { reporter, events } = setup();
+    reporter.captureTerminal(failingCapture, {
+      outcome: "success",
+      finishReason: "stop",
+    });
+    reporter.recordLocalStop(localStop());
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "success",
+      finish_reason: "stop",
+    });
+    expect(events()[0].properties).not.toHaveProperty("local_stop_reason");
+  });
+
+  it("does not attach a stop observed during an earlier failure's cleanup", () => {
+    const { reporter, events } = setup();
+    reporter.fail(new Error("PRIVATE original failure"));
+    reporter.recordLocalStop(localStop());
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      finish_reason: "unknown",
+    });
+    expect(JSON.stringify(events())).not.toMatch(/local_stop_|PRIVATE/);
+  });
+
+  it("keeps a later authoritative error unrelabeled while retaining the first-abort cause", () => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(localStop());
+    reporter.fail(new Error("PRIVATE later persistence failure"));
+    reporter.finalize({ canceled: false });
+    expect(events()[0].properties).toMatchObject({
+      outcome: "error",
+      failure_kind: "error",
+      finish_reason: "unknown",
+      ...localFields,
+    });
+    expect(events()[0].properties).not.toHaveProperty("abort_source");
+    expect(JSON.stringify(events())).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    ["generic error", new Error("PRIVATE")],
+    ["forged prototype", Object.create(LocalConnectionLostError.prototype)],
+    ["plain object", { local_stop_reason: "selected_host_left" }],
+  ])("ignores a %s as the first abort reason", (_name, reason) => {
+    const { reporter, events } = setup();
+    reporter.recordLocalStop(reason);
+    reporter.fail(reason, "canceled");
+    reporter.finalize({ canceled: true });
+    expect(events()[0].properties).toMatchObject({
+      finish_reason: "unknown",
+      abort_source: "request_cancel",
+    });
+    expect(JSON.stringify(events())).not.toMatch(/local_stop_|PRIVATE/);
   });
 });
 
