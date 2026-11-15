@@ -1,4 +1,8 @@
 import { fetchWithErrorHandlers } from "@/lib/utils";
+import {
+  beginAgentStartDiagnostic,
+  type AgentStartDiagnostic,
+} from "@/lib/analytics/agent-start-diagnostics";
 import { AGENT_UI_STREAM_ID } from "@/trigger/stream-ids";
 import {
   AGENT_API_ENDPOINT,
@@ -789,11 +793,22 @@ export const fetchAgentLongStream = async (
       startAbort.abort(error);
     }, AGENT_START_TIMEOUT_MS);
   });
+  let startDiagnostic: AgentStartDiagnostic | undefined;
   const request = (async (): Promise<AgentStartResult> => {
-    const response = await fetchWithErrorHandlers(AGENT_API_ENDPOINT, {
-      ...init,
-      signal: startAbort.signal,
-    });
+    const startInit: RequestInit = { ...init, signal: startAbort.signal };
+    // Only an actual POST is a start attempt. Measure the copied body fetch
+    // receives, never a re-read accessor.
+    if (
+      typeof startInit.method === "string" &&
+      startInit.method.toUpperCase() === "POST"
+    ) {
+      startDiagnostic = beginAgentStartDiagnostic(startInit.body);
+    }
+    const response = await fetchWithErrorHandlers(
+      AGENT_API_ENDPOINT,
+      startInit,
+      { onHttpErrorResponse: startDiagnostic?.onHttpErrorResponse },
+    );
     return response.ok
       ? { response, handle: (await response.json()) as RunHandle }
       : { response };
@@ -826,6 +841,7 @@ export const fetchAgentLongStream = async (
     });
   } finally {
     clearTimeout(startTimeout);
+    startDiagnostic?.dispose();
     if (chatId && pendingAgentStarts.get(chatId) === start) {
       pendingAgentStarts.delete(chatId);
     }

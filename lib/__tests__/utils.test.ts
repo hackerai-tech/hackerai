@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, jest } from "@jest/globals";
 import { cn, convertToUIMessages, fetchWithErrorHandlers } from "../utils";
-import type { MessageRecord } from "../utils";
+import type { HttpErrorResponseMetadata, MessageRecord } from "../utils";
 import type { Id } from "@/convex/_generated/dataModel";
 
 const originalFetch = globalThis.fetch;
@@ -67,6 +67,74 @@ describe("utils", () => {
         cause: "The chat no longer exists",
         metadata: { chatId: "chat-1" },
       });
+    });
+
+    it("lets an error-response observer read metadata before the unchanged error parser", async () => {
+      const order: string[] = [];
+      const headers = { get: jest.fn(() => null) };
+      const clone = jest.fn(() => {
+        order.push("parse");
+        return {
+          json: async () => ({ code: "bad_request:api", cause: "Too large" }),
+        } as Response;
+      });
+      const text = jest.fn(async () => "");
+      setFetchResponse({ ok: false, status: 413, headers, clone, text } as any);
+      const onHttpErrorResponse = jest.fn(
+        (response: HttpErrorResponseMetadata) => {
+          order.push(`observe:${response.status}`);
+          response.headers.get("x-vercel-id");
+        },
+      );
+
+      await expect(
+        fetchWithErrorHandlers("/api/agent", undefined, {
+          onHttpErrorResponse,
+        }),
+      ).rejects.toMatchObject({ cause: "Too large", statusCode: 413 });
+      expect(order).toEqual(["observe:413", "parse"]);
+      expect(onHttpErrorResponse).toHaveBeenCalledTimes(1);
+      expect(clone).toHaveBeenCalledTimes(1);
+      expect(text).not.toHaveBeenCalled();
+    });
+
+    it("keeps the original error when the observer throws", async () => {
+      setFetchResponse({
+        ok: false,
+        status: 413,
+        clone: () =>
+          ({
+            json: async () => {
+              throw new SyntaxError("Not JSON");
+            },
+          }) as Response,
+        text: async () => "Request Entity Too Large",
+      });
+
+      const error = await fetchWithErrorHandlers("/api/agent", undefined, {
+        onHttpErrorResponse: () => {
+          throw new Error("diagnostic failure");
+        },
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        type: "bad_request",
+        surface: "api",
+        cause: "Request Entity Too Large",
+        statusCode: 413,
+      });
+    });
+
+    it("does not observe successful responses", async () => {
+      const success = { ok: true, status: 200 } as Response;
+      setFetchResponse(success);
+      const onHttpErrorResponse = jest.fn();
+
+      await expect(
+        fetchWithErrorHandlers("/api/agent", undefined, {
+          onHttpErrorResponse,
+        }),
+      ).resolves.toBe(success);
+      expect(onHttpErrorResponse).not.toHaveBeenCalled();
     });
   });
 

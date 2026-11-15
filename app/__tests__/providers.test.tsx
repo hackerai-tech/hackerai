@@ -666,6 +666,120 @@ describe("PostHogProvider", () => {
     view.unmount();
   });
 
+  it("exports only the committed owner's strict Agent start 413 diagnostic after SDK enrichment", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+    const view = render(
+      <PostHogProvider analyticsAllowed>child</PostHogProvider>,
+    );
+    await waitFor(() => expect(posthog.init).toHaveBeenCalledTimes(1));
+    const { before_send: beforeSend } = posthog.init.mock.calls[0][1] as {
+      before_send: (event: unknown) => Record<string, unknown> | null;
+    };
+
+    const eventUuid = "0193a5b2-7c41-7a10-8f00-1234567890ab";
+    const retained = {
+      token: "phc_test",
+      distinct_id: "user-123",
+      $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+      $window_id: "0193a5b2-7c41-7a10-8f00-cccccccccccc",
+      $lib: "web",
+      $lib_version: "1.447.5",
+      $is_identified: true,
+      agent_start_http413_diagnostic_version: 1,
+      http_status: 413,
+      request_body_state: "measured",
+      request_body_utf8_bytes: 4_718_592,
+      app_rejection_marker_state: "absent",
+      vercel_error_state: "known",
+      platform_request_id_state: "valid",
+      platform_request_id: "iad1::8x2kq-1794094000000-0123456789ab",
+      build_state: "measured",
+      hackerai_frontend_build_commit: "a".repeat(40),
+      attempt_denominator_kind: "unmeasured",
+    };
+    const accessor = jest.fn(() => "private");
+    const enriched = (properties: Record<string, unknown>) => ({
+      uuid: eventUuid,
+      event: "agent_start_http413_diagnostic",
+      properties: Object.defineProperties(
+        {
+          ...properties,
+          $current_url: "https://hackerai.co/c/private?code=private",
+          $pathname: "/c/private",
+          $referrer: "https://private.example/",
+          $set: { email: "private" },
+          subscription: "private",
+          body: '{"messages":[{"text":"private prompt"}]}',
+          error: "private",
+          response_url: "https://private.vercel.app/api/agent",
+          // Forged caller identity; a browser has no native runtime.
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+        },
+        { registered_content: { get: accessor, enumerable: true } },
+      ),
+      timestamp: new Date(1_794_094_000_000),
+      $set_once: { $initial_referrer: "private" },
+    });
+
+    const sanitized = beforeSend(enriched(retained));
+    expect(sanitized).toEqual({
+      uuid: eventUuid,
+      event: "agent_start_http413_diagnostic",
+      properties: retained,
+      timestamp: new Date(1_794_094_000_000),
+    });
+    expect(JSON.stringify(sanitized)).not.toMatch(/private|native_/);
+    expect(accessor).not.toHaveBeenCalled();
+    // Queued under another owner, or failing the closed schema.
+    expect(
+      beforeSend(enriched({ ...retained, distinct_id: "user-other" })),
+    ).toBeNull();
+    expect(beforeSend(enriched({ ...retained, http_status: 403 }))).toBeNull();
+
+    // The private-page gate still runs before the event-specific projection.
+    try {
+      expect(
+        beforeSend({
+          ...enriched(retained),
+          properties: {
+            ...retained,
+            $current_url: "https://hackerai.co/abuse/report",
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+
+    // Retained callbacks after consent withdrawal or an owner switch, before
+    // the global analytics identity resets.
+    view.rerender(
+      <PostHogProvider analyticsAllowed={false}>child</PostHogProvider>,
+    );
+    expect(beforeSend(enriched(retained))).toBeNull();
+    view.rerender(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    mockUseAuth.mockReturnValue({ user: { id: "user-b" } });
+    view.rerender(<PostHogProvider analyticsAllowed>child</PostHogProvider>);
+    expect(beforeSend(enriched(retained))).toBeNull();
+    view.unmount();
+  });
+
   it.each([
     ["withdraws consent", false, { id: "user-123" }],
     ["switches account", true, { id: "user-b" }],
@@ -705,8 +819,24 @@ describe("PostHogProvider", () => {
           attempt_denominator_kind: "unmeasured",
         },
       });
+      const agentStartEvent = () => ({
+        event: "agent_start_http413_diagnostic",
+        properties: {
+          token: "phc_test",
+          distinct_id: "user-123",
+          agent_start_http413_diagnostic_version: 1,
+          http_status: 413,
+          request_body_state: "absent",
+          app_rejection_marker_state: "absent",
+          vercel_error_state: "absent",
+          platform_request_id_state: "absent",
+          build_state: "unavailable",
+          attempt_denominator_kind: "unmeasured",
+        },
+      });
       const retained: { beforeSend?: (event: unknown) => unknown } = {};
       const layoutResults: unknown[] = [];
+      const agentStartResults: unknown[] = [];
       // A parent's layout effect runs after the child provider's layout effects
       // in the same commit and before any passive effect.
       function RetainedBeforeSendCaller({
@@ -717,6 +847,7 @@ describe("PostHogProvider", () => {
         useLayoutEffect(() => {
           if (retained.beforeSend) {
             layoutResults.push(retained.beforeSend(contextEvent()));
+            agentStartResults.push(retained.beforeSend(agentStartEvent()));
           }
         });
         return <>{children}</>;
@@ -743,6 +874,9 @@ describe("PostHogProvider", () => {
       expect(layoutResults).toEqual([
         expect.objectContaining({ event: "server_action_client_context" }),
       ]);
+      expect(agentStartResults).toEqual([
+        expect.objectContaining({ event: "agent_start_http413_diagnostic" }),
+      ]);
 
       mockUseAuth.mockReturnValue({ user: nextUser });
       view.rerender(
@@ -754,6 +888,8 @@ describe("PostHogProvider", () => {
       );
       expect(layoutResults).toHaveLength(2);
       expect(layoutResults[1]).toBeNull();
+      expect(agentStartResults).toHaveLength(2);
+      expect(agentStartResults[1]).toBeNull();
       // Ordinary events from the retained callback are unchanged.
       expect(
         retained.beforeSend({
@@ -1580,6 +1716,48 @@ describe("Desktop runtime identity", () => {
       hackerai_exception_category: "unknown",
     });
     expect(JSON.stringify(exception)).not.toContain("PRIVATE");
+  });
+
+  it("adds only the fresh measured identity to the strict Agent start 413 diagnostic", async () => {
+    jest.mocked(getPermittedAnalyticsUserId).mockReturnValue("user-123");
+    jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue("user-123");
+    try {
+      const { beforeSend, view } = await renderDesktop();
+      const retained = {
+        token: "phc_test",
+        distinct_id: "user-123",
+        $session_id: "0193a5b2-7c41-7a10-8f00-aaaaaaaaaaaa",
+        $lib: "web",
+        agent_start_http413_diagnostic_version: 1,
+        http_status: 413,
+        request_body_state: "unmeasured_unsupported",
+        app_rejection_marker_state: "known",
+        vercel_error_state: "absent",
+        platform_request_id_state: "invalid",
+        build_state: "measured",
+        hackerai_frontend_build_commit: "a".repeat(40),
+        attempt_denominator_kind: "unmeasured",
+      };
+      const sent = beforeSend({
+        event: "agent_start_http413_diagnostic",
+        properties: {
+          ...retained,
+          $current_url: "https://hackerai.co/c/PRIVATE",
+          $set: { email: "PRIVATE" },
+          body: "PRIVATE",
+          // Forged caller or SDK identity is replaced by measured values.
+          native_app_version: "0.0.99",
+          native_platform: "windows",
+          native_os_version: "PRIVATE",
+        },
+      });
+      expect(sent?.properties).toEqual({ ...retained, ...identity });
+      expect(JSON.stringify(sent)).not.toMatch(/PRIVATE|0\.0\.99|windows/);
+      view.unmount();
+    } finally {
+      jest.mocked(getPermittedAnalyticsUserId).mockReturnValue(null);
+      jest.mocked(getIdentifiedAnalyticsUserId).mockReturnValue(null);
+    }
   });
 
   it("keeps identity through the strict ACK projections and preserves a valid send receipt", async () => {
