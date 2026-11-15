@@ -1459,10 +1459,13 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     // The send error's unfolded IO kind and typed TLS presence, on its own
     // channel so the cause receipt's buckets are frozen.
     on_authorization_transport_diagnostic: Option<serde_json::Value>,
+    // An unmapped first IO error's remaining kind and OS code family, on its
+    // own channel so the transport detail's shape and buckets are frozen.
+    on_authorization_io_diagnostic: Option<serde_json::Value>,
 ) -> Result<(), String> {
     use authorization_response_diagnostics::{ResponseMitigationReceipt, ResponseRejectionReceipt};
     use authorization_send_diagnostics::{
-        SendFailureCause, SendFailureReceipt, SendTransportDetail,
+        SendFailureCause, SendFailureReceipt, SendIoSupplement, SendTransportDetail,
     };
     let webview = || AsRef::<tauri::Webview<R>>::as_ref(&window).clone();
     let response_channel =
@@ -1490,8 +1493,12 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
     let transport_channel =
         authorization_diagnostic_channel_id(on_authorization_transport_diagnostic)
             .map(|id| id.channel_on::<R, SendTransportDetail>(webview()));
-    let any_send_channel =
-        receipt_channel.is_some() || cause_channel.is_some() || transport_channel.is_some();
+    let io_channel = authorization_diagnostic_channel_id(on_authorization_io_diagnostic)
+        .map(|id| id.channel_on::<R, SendIoSupplement>(webview()));
+    let any_send_channel = receipt_channel.is_some()
+        || cause_channel.is_some()
+        || transport_channel.is_some()
+        || io_channel.is_some();
     let send_failure_observer = any_send_channel.then(|| {
         move |receipt: SendFailureReceipt, cause: SendFailureCause, detail: SendTransportDetail| {
             if let Some(channel) = &receipt_channel {
@@ -1499,6 +1506,9 @@ async fn execute_authorized_stream_command<R: tauri::Runtime>(
             }
             if let Some(channel) = &cause_channel {
                 let _ = channel.send(cause);
+            }
+            if let (Some(channel), Some(supplement)) = (&io_channel, detail.io_supplement()) {
+                let _ = channel.send(supplement);
             }
             if let Some(channel) = &transport_channel {
                 let _ = channel.send(detail);
@@ -2339,12 +2349,46 @@ mod tests {
             .map(|_| ())
     }
 
+    // The published ABI with the transport argument has no IO supplement
+    // argument.
+    #[tauri::command(rename = "execute_authorized_stream_command")]
+    async fn transport_authorized_command_fixture<R: tauri::Runtime>(
+        window: tauri::WebviewWindow<R>,
+        authorization_id: String,
+        message: serde_json::Value,
+        on_event: tauri::ipc::Channel<StreamEvent>,
+        on_authorization_diagnostic: Option<serde_json::Value>,
+        on_authorization_cause_diagnostic: Option<serde_json::Value>,
+        on_authorization_response_diagnostic: Option<serde_json::Value>,
+        on_authorization_mitigation_diagnostic: Option<serde_json::Value>,
+        on_authorization_transport_diagnostic: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let _ = (
+            on_event,
+            on_authorization_diagnostic,
+            on_authorization_cause_diagnostic,
+            on_authorization_response_diagnostic,
+            on_authorization_mitigation_diagnostic,
+            on_authorization_transport_diagnostic,
+        );
+        redeem_authorized_message(&authorization_id, message, &window)
+            .await
+            .map(|_| ())
+    }
+
     #[test]
     fn authorization_diagnostics_optional_arguments_keep_original_command_errors() {
         use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
         // The compiled ACL admits the trusted IPC origin, while the loaded page
         // is untrusted for authorization: no POST can be attempted.
-        for abi in ["v1", "cause", "response", "mitigation", "current"] {
+        for abi in [
+            "v1",
+            "cause",
+            "response",
+            "mitigation",
+            "transport",
+            "current",
+        ] {
             let builder = mock_builder().manage(StreamCommandState::default());
             let builder = match abi {
                 "v1" => builder
@@ -2357,6 +2401,9 @@ mod tests {
                 "mitigation" => builder.invoke_handler(tauri::generate_handler![
                     mitigation_authorized_command_fixture
                 ]),
+                "transport" => builder.invoke_handler(tauri::generate_handler![
+                    transport_authorized_command_fixture
+                ]),
                 _ => builder
                     .invoke_handler(tauri::generate_handler![execute_authorized_stream_command]),
             };
@@ -2367,9 +2414,9 @@ mod tests {
                 .build()
                 .unwrap();
             type Optional = Option<serde_json::Value>;
-            type Optionals = (Optional, Optional, Optional, Optional, Optional);
+            type Optionals = (Optional, Optional, Optional, Optional, Optional, Optional);
             let invoke =
-                |id: &str, (diagnostic, cause, response, mitigation, transport): Optionals| {
+                |id: &str, (diagnostic, cause, response, mitigation, transport, io): Optionals| {
                     let mut body = serde_json::json!({
                         "authorizationId": id,
                         "message": { "type": "command", "commandId": "synthetic", "command": "true" },
@@ -2389,6 +2436,9 @@ mod tests {
                     }
                     if let Some(value) = transport {
                         body["onAuthorizationTransportDiagnostic"] = value;
+                    }
+                    if let Some(value) = io {
+                        body["onAuthorizationIoDiagnostic"] = value;
                     }
                     get_ipc_response(
                         &window,
@@ -2412,37 +2462,57 @@ mod tests {
                 Some(serde_json::json!("__CHANNEL__:2")),
             ];
             // Each optional channel alone, the published send-and-cause pair,
-            // three- and four-channel sets, then all five together as current
-            // frontends send them.
+            // three-, four- and five-channel sets, then all six together as
+            // current frontends send them.
             let channel = |id: u8| Some(serde_json::json!(format!("__CHANNEL__:{id}")));
             let variants: Vec<_> = optional
                 .iter()
-                .map(|value| (value.clone(), None, None, None, None))
+                .map(|value| (value.clone(), None, None, None, None, None))
                 .chain(
                     optional
                         .iter()
-                        .map(|value| (None, value.clone(), None, None, None)),
+                        .map(|value| (None, value.clone(), None, None, None, None)),
                 )
                 .chain(
                     optional
                         .iter()
-                        .map(|value| (None, None, value.clone(), None, None)),
+                        .map(|value| (None, None, value.clone(), None, None, None)),
                 )
                 .chain(
                     optional
                         .iter()
-                        .map(|value| (None, None, None, value.clone(), None)),
+                        .map(|value| (None, None, None, value.clone(), None, None)),
                 )
                 .chain(
                     optional
                         .iter()
-                        .map(|value| (None, None, None, None, value.clone())),
+                        .map(|value| (None, None, None, None, value.clone(), None)),
+                )
+                .chain(
+                    optional
+                        .iter()
+                        .map(|value| (None, None, None, None, None, value.clone())),
                 )
                 .chain([
-                    (channel(2), channel(3), None, None, None),
-                    (channel(2), channel(3), channel(4), None, None),
-                    (channel(2), channel(3), channel(4), channel(5), None),
-                    (channel(2), channel(3), channel(4), channel(5), channel(6)),
+                    (channel(2), channel(3), None, None, None, None),
+                    (channel(2), channel(3), channel(4), None, None, None),
+                    (channel(2), channel(3), channel(4), channel(5), None, None),
+                    (
+                        channel(2),
+                        channel(3),
+                        channel(4),
+                        channel(5),
+                        channel(6),
+                        None,
+                    ),
+                    (
+                        channel(2),
+                        channel(3),
+                        channel(4),
+                        channel(5),
+                        channel(6),
+                        channel(7),
+                    ),
                 ])
                 .collect();
             for variant in variants.clone() {

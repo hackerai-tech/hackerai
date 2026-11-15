@@ -20,6 +20,7 @@ import { sanitizeDesktopAckEvent } from "@/lib/analytics/desktop-ack-privacy";
 import {
   NATIVE_AUTHORIZATION_CAUSE_PROPERTIES,
   NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES,
+  NATIVE_AUTHORIZATION_IO_PROPERTIES,
   NATIVE_AUTHORIZATION_MITIGATION_PROPERTIES,
   NATIVE_AUTHORIZATION_RESPONSE_PROPERTIES,
   NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES,
@@ -7210,6 +7211,8 @@ describe("native authorization send receipt", () => {
       ])
         expect(calls[0]).toHaveProperty(key);
       expect(calls[0]).not.toHaveProperty("onAuthorizationTransportDiagnostic");
+      // The IO supplement only ever refines the transport detail.
+      expect(calls[0]).not.toHaveProperty("onAuthorizationIoDiagnostic");
       expect(sequencedFrames(replies[0])).toEqual([
         expect.objectContaining({ type: "error", message: unavailable }),
       ]);
@@ -7226,6 +7229,379 @@ describe("native authorization send receipt", () => {
       const { calls } = await run(() => reject(unavailable));
       expect(calls[0]).not.toHaveProperty("onAuthorizationDiagnostic");
       expect(calls[0]).not.toHaveProperty("onAuthorizationTransportDiagnostic");
+      expect(calls[0]).not.toHaveProperty("onAuthorizationIoDiagnostic");
+    });
+  });
+
+  describe("unmapped IO supplement", () => {
+    // A Windows lookup failure: the frozen cause folds it into "other", the
+    // frozen detail into "unmapped", and only the supplement names its family.
+    const windowsReceipt = { ...receipt, platform: "windows" };
+    const cause = {
+      version: 1,
+      ioKind: "other",
+      sourceDepth: 3,
+      sourceChainTruncated: false,
+    };
+    const transport = {
+      version: 1,
+      ioKindDetail: "unmapped",
+      nativeTlsSource: false,
+      sourceDepth: 3,
+      sourceChainTruncated: false,
+    };
+    const io = {
+      version: 1,
+      ioKind: "unknown",
+      osFamily: "winsock_host_not_found",
+      sourceDepth: 3,
+    };
+    const ioGroup = {
+      native_authorization_io_version: 1,
+      native_authorization_io_kind: "unknown",
+      native_authorization_io_os_family: "winsock_host_not_found",
+      native_authorization_io_source_depth: 3,
+    };
+    const ioKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter((key) =>
+        NATIVE_AUTHORIZATION_IO_PROPERTIES.has(key),
+      );
+    const legacyKeys = (properties: Record<string, unknown> = {}) =>
+      Object.keys(properties).filter(
+        (key) =>
+          NATIVE_AUTHORIZATION_DIAGNOSTIC_PROPERTIES.has(key) ||
+          NATIVE_AUTHORIZATION_CAUSE_PROPERTIES.has(key) ||
+          NATIVE_AUTHORIZATION_TRANSPORT_PROPERTIES.has(key),
+      );
+    const channels = (call: NativeCall) => ({
+      receipt: call.onAuthorizationDiagnostic as MockChannel,
+      cause: call.onAuthorizationCauseDiagnostic as MockChannel,
+      transport: call.onAuthorizationTransportDiagnostic as MockChannel,
+      io: call.onAuthorizationIoDiagnostic as MockChannel,
+    });
+    /** Delivers the frozen receipts as a current native app sends them. */
+    const sendLegacy = (
+      call: NativeCall,
+      overrides: {
+        receipt?: unknown;
+        cause?: unknown;
+        transport?: unknown;
+      } = {},
+    ) => {
+      const { receipt: v1, cause: v2, transport: v3 } = channels(call);
+      v1.onmessage!(overrides.receipt ?? windowsReceipt);
+      v2.onmessage!(overrides.cause ?? cause);
+      v3.onmessage!(overrides.transport ?? transport);
+    };
+
+    it("joins one supplement from its own one-shot channel beside the unchanged groups", async () => {
+      const { calls, replies } = await run(async (call) => {
+        const { io: v4 } = channels(call);
+        v4.onmessage!(io);
+        // A duplicate cannot replace the first callback attempt.
+        v4.onmessage!({ ...io, osFamily: "winsock_try_again" });
+        sendLegacy(call);
+        return Promise.reject(unavailable);
+      });
+
+      expect(calls).toHaveLength(1);
+      const {
+        receipt: v1,
+        cause: v2,
+        transport: v3,
+        io: v4,
+      } = channels(calls[0]);
+      expect(v4).toBeDefined();
+      for (const other of [calls[0].onEvent, v1, v2, v3])
+        expect(v4).not.toBe(other);
+      expect(Object.keys(calls[0].message as object)).not.toContain(
+        "onAuthorizationIoDiagnostic",
+      );
+      // The product error is the identical single terminal frame.
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(finals()).toHaveLength(1);
+      const final = finals()[0];
+      expect(final.properties).toMatchObject({
+        terminalType: "error",
+        native_platform: "windows",
+        native_authorization_cause_io_kind: "other",
+        native_authorization_transport_io_kind_detail: "unmapped",
+        ...ioGroup,
+      });
+      const started = captures().find(
+        (event) => event.event === "desktop_ack_command_started",
+      );
+      expect(ioKeys(started?.properties)).toEqual([]);
+      const enriched = sanitizeDesktopAckEvent({
+        ...final,
+        properties: { ...final.properties, $current_url: "PRIVATE" },
+      });
+      expect(enriched.properties).toMatchObject(ioGroup);
+      expect(ioKeys(enriched.properties)).toHaveLength(4);
+      // The frozen groups are unchanged beside it.
+      expect(legacyKeys(enriched.properties)).toHaveLength(8 + 4 + 5);
+      const serialized = JSON.stringify([captures(), enriched]);
+      expect(serialized).not.toContain("PRIVATE");
+      expect(serialized).not.toContain(authorizationId);
+      expect(serialized).not.toContain(unavailable);
+    });
+
+    it("keeps every frozen group unchanged when an older native app sends no supplement", async () => {
+      const { calls } = await run((call) => {
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      expect(calls[0]).toHaveProperty("onAuthorizationIoDiagnostic");
+      expect(legacyKeys(finals()[0].properties)).toHaveLength(8 + 4 + 5);
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it.each<[string, (call: NativeCall) => void]>([
+      ["no v1 receipt", (call) => channels(call).io.onmessage!(io)],
+      [
+        "no cause or transport detail",
+        (call) => {
+          channels(call).receipt.onmessage!(windowsReceipt);
+          channels(call).io.onmessage!(io);
+        },
+      ],
+      [
+        "a mapped transport kind",
+        (call) => {
+          sendLegacy(call, {
+            transport: { ...transport, ioKindDetail: "connection_refused" },
+          });
+          channels(call).io.onmessage!(io);
+        },
+      ],
+      [
+        "a deeper IO error than the cause's first one",
+        (call) => {
+          sendLegacy(call, { transport: { ...transport, sourceDepth: 5 } });
+          channels(call).io.onmessage!({ ...io, sourceDepth: 4 });
+        },
+      ],
+      [
+        "a Winsock family from a non-Windows receipt",
+        (call) => {
+          sendLegacy(call, { receipt });
+          channels(call).io.onmessage!(io);
+        },
+      ],
+    ])("reports no supplement with %s", async (_case, deliver) => {
+      await run((call) => {
+        deliver(call);
+        return reject(unavailable);
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "error" });
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
+      expect(JSON.stringify(captures())).not.toContain("winsock");
+    });
+
+    it.each<[string, () => unknown]>([
+      ["an extra private field", () => ({ ...io, message: "PRIVATE" })],
+      ["a raw OS code field", () => ({ ...io, rawOsError: 11001 })],
+      ["a raw OS code as the family", () => ({ ...io, osFamily: 11001 })],
+      ["a missing field", () => ({ ...io, osFamily: undefined })],
+      ["another version", () => ({ ...io, version: 2 })],
+      ["a private kind", () => ({ ...io, ioKind: "PRIVATE" })],
+      ["std's unstable kind name", () => ({ ...io, ioKind: "uncategorized" })],
+      ["an unbounded depth", () => ({ ...io, sourceDepth: 9 })],
+      ["no exposed depth", () => ({ ...io, sourceDepth: 0 })],
+      ["a transport detail on the IO channel", () => transport],
+      ["a string", () => "PRIVATE"],
+      [
+        "a class instance",
+        () =>
+          Object.assign(Object.create({ message: "PRIVATE" }) as object, io),
+      ],
+      [
+        "a throwing getter",
+        () =>
+          Object.defineProperty({ ...io }, "osFamily", {
+            enumerable: true,
+            get() {
+              throw new Error("PRIVATE");
+            },
+          }),
+      ],
+      [
+        "a throwing proxy",
+        () => {
+          const fail = () => {
+            throw new Error("PRIVATE");
+          };
+          return new Proxy(
+            {},
+            { getPrototypeOf: fail, ownKeys: fail, get: fail },
+          );
+        },
+      ],
+    ])(
+      "drops only the supplement for %s and keeps the frozen groups",
+      async (_case, value) => {
+        const { replies } = await run((call) => {
+          sendLegacy(call);
+          channels(call).io.onmessage!(value());
+          // The malformed first attempt closed the IO latch.
+          channels(call).io.onmessage!(io);
+          return reject(unavailable);
+        });
+        expect(sequencedFrames(replies[0])).toEqual([
+          expect.objectContaining({ type: "error", message: unavailable }),
+        ]);
+        expect(legacyKeys(finals()[0].properties)).toHaveLength(8 + 4 + 5);
+        expect(ioKeys(finals()[0].properties)).toEqual([]);
+        const serialized = JSON.stringify(captures());
+        expect(serialized).not.toContain("PRIVATE");
+        expect(serialized).not.toContain("11001");
+      },
+    );
+
+    it("adds no supplement to a successful command", async () => {
+      await run(async (call) => {
+        sendLegacy(call);
+        channels(call).io.onmessage!(io);
+        (call.onEvent as MockChannel).onmessage!({ type: "exit", exitCode: 0 });
+      });
+      expect(finals()[0].properties).toMatchObject({ terminalType: "exit" });
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a supplement after settlement and releases its callback", async () => {
+      let call!: NativeCall;
+      await run((native) => {
+        call = native;
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      const { io: v4 } = channels(call);
+      expect(v4.cleanupCallback).toHaveBeenCalledTimes(1);
+      v4.onmessage!(io);
+      expect(finals()).toHaveLength(1);
+      expect(legacyKeys(finals()[0].properties)).toHaveLength(8 + 4 + 5);
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("drops a supplement observed under another analytics owner", async () => {
+      const identity = jest.mocked(getIdentifiedAnalyticsUserId);
+      try {
+        await run((call) => {
+          sendLegacy(call);
+          identity.mockReturnValue("another-user");
+          channels(call).io.onmessage!(io);
+          identity.mockReturnValue("user-456");
+          channels(call).io.onmessage!(io);
+          return reject(unavailable);
+        });
+        expect(finals()).toHaveLength(1);
+        expect(legacyKeys(finals()[0].properties)).toHaveLength(8 + 4 + 5);
+        expect(ioKeys(finals()[0].properties)).toEqual([]);
+      } finally {
+        identity.mockReturnValue("user-456");
+      }
+    });
+
+    it("drops a supplement that arrives after the connection is stopped", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          sendLegacy(call);
+          await pending;
+          channels(call).io.onmessage!(io);
+          return reject(unavailable);
+        },
+        {
+          beforeAck: async (bridge) => {
+            await bridge.stop();
+            release();
+          },
+        },
+      );
+      expect(finals()).toHaveLength(1);
+      expect(finals()[0].properties).toMatchObject({
+        outcome: "incomplete",
+        reason: "stopped",
+      });
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
+    });
+
+    it("keeps interleaved invocations' supplements separate", async () => {
+      let arrived = 0;
+      let release!: () => void;
+      const all = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await run(
+        async (call) => {
+          const commandId = (call.message as { commandId: string }).commandId;
+          if (commandId === "host-not-found") channels(call).io.onmessage!(io);
+          if (++arrived === 3) release();
+          await all;
+          sendLegacy(call);
+          if (commandId === "try-again")
+            channels(call).io.onmessage!({
+              ...io,
+              ioKind: "not_found",
+              osFamily: "winsock_try_again",
+            });
+          return reject(unavailable);
+        },
+        { commandIds: ["host-not-found", "try-again", "legacy-only"] },
+      );
+      const byCommand = Object.fromEntries(
+        finals().map((event) => [
+          event.properties!.commandId,
+          event.properties,
+        ]),
+      );
+      expect(byCommand["host-not-found"]).toMatchObject(ioGroup);
+      expect(byCommand["try-again"]).toMatchObject({
+        native_authorization_io_kind: "not_found",
+        native_authorization_io_os_family: "winsock_try_again",
+      });
+      expect(legacyKeys(byCommand["legacy-only"])).toHaveLength(8 + 4 + 5);
+      expect(ioKeys(byCommand["legacy-only"])).toEqual([]);
+    });
+
+    it("keeps every other channel when only the IO channel cannot be created", async () => {
+      const { Channel } = await import("@tauri-apps/api/core");
+      const create = jest.mocked(Channel).getMockImplementation()!;
+      jest
+        .mocked(Channel)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(create)
+        .mockImplementationOnce(() => {
+          throw new Error("channel unavailable");
+        });
+      const { calls, replies } = await run((call) => {
+        sendLegacy(call);
+        return reject(unavailable);
+      });
+      expect(calls).toHaveLength(1);
+      for (const key of [
+        "onEvent",
+        "onAuthorizationDiagnostic",
+        "onAuthorizationCauseDiagnostic",
+        "onAuthorizationResponseDiagnostic",
+        "onAuthorizationMitigationDiagnostic",
+        "onAuthorizationTransportDiagnostic",
+      ])
+        expect(calls[0]).toHaveProperty(key);
+      expect(calls[0]).not.toHaveProperty("onAuthorizationIoDiagnostic");
+      expect(sequencedFrames(replies[0])).toEqual([
+        expect.objectContaining({ type: "error", message: unavailable }),
+      ]);
+      expect(legacyKeys(finals()[0].properties)).toHaveLength(8 + 4 + 5);
+      expect(ioKeys(finals()[0].properties)).toEqual([]);
     });
   });
 
@@ -7884,10 +8260,10 @@ describe("native authorization send receipt", () => {
       const { Channel } = await import("@tauri-apps/api/core");
       const { calls } = await run(native, options);
       // Only a possible authorized acknowledged invocation constructs the
-      // optional receipt, cause, response, mitigation and transport channels
-      // besides the output one.
+      // optional receipt, cause, response, mitigation, transport and IO
+      // channels besides the output one.
       expect(jest.mocked(Channel)).toHaveBeenCalledTimes(
-        options?.version || options?.acknowledged === false ? 1 : 6,
+        options?.version || options?.acknowledged === false ? 1 : 7,
       );
       const optional = [
         "onAuthorizationDiagnostic",
@@ -7895,6 +8271,7 @@ describe("native authorization send receipt", () => {
         "onAuthorizationResponseDiagnostic",
         "onAuthorizationMitigationDiagnostic",
         "onAuthorizationTransportDiagnostic",
+        "onAuthorizationIoDiagnostic",
       ];
       const legacy = calls.filter(
         (call) => call.cmd === "execute_stream_command",
