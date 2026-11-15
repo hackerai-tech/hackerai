@@ -1,10 +1,11 @@
 import type { UIMessage } from "ai";
 import { getNoteRecallCandidates } from "@/lib/db/actions";
-import {
-  getPostHogBooleanFlagDecisionForUser,
-  phLogger,
-} from "@/lib/posthog/server";
+import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { safeCountTokens } from "@/lib/token-utils";
+import {
+  NOTES_RELEVANT_RECALL_FLAG,
+  recordRelevantRecallResult,
+} from "./analytics";
 import {
   extractTaskTargets,
   fitTextToTokens,
@@ -13,7 +14,10 @@ import {
   taskMentionsLabel,
 } from "./policy";
 
-export const NOTES_RELEVANT_RECALL_FLAG = "notes_relevant_recall_v1";
+export {
+  NOTES_RELEVANT_RECALL_FLAG,
+  recordRelevantRecallExposure,
+} from "./analytics";
 export const RECALL_MAX_NOTES = 6;
 /** One shared budget for the whole serialized block, framing included. */
 export const RECALL_TOKEN_BUDGET = 1_500;
@@ -174,11 +178,15 @@ const neutralize = (text: string) =>
 
 const isoDate = (value: number) => new Date(value).toISOString().slice(0, 10);
 
+/** Shown as "observation date unknown"; a recheck-due note can be both. */
+const isObservationDateUnknown = (note: RecallCandidate) =>
+  note.observed_at === undefined && Boolean(note.recheck);
+
 const describeObservation = (note: RecallCandidate) => {
   const parts = [
     note.observed_at !== undefined
       ? `observed ${isoDate(note.observed_at)}`
-      : note.recheck
+      : isObservationDateUnknown(note)
         ? "observation date unknown"
         : undefined,
     note.recheck === "recheck_due" ? "recheck due" : undefined,
@@ -200,6 +208,9 @@ export type RelevantNotesSection = {
   targetedCount: number;
   tokenCount: number;
   candidateCount: number;
+  /** Staleness of the serialized notes only, never of dropped ones. */
+  recheckDueCount: number;
+  observationDateUnknownCount: number;
 };
 
 /** Serializes within the shared exact-token budget, dropping notes that do not fit. */
@@ -213,20 +224,23 @@ export function serializeRecalledNotes(
     targetedCount: 0,
     tokenCount: 0,
     candidateCount,
+    recheckDueCount: 0,
+    observationDateUnknownCount: 0,
   };
   if (selected.length === 0) return empty;
   const framingTokens = safeCountTokens(FRAMING_HEAD + FRAMING_TAIL);
   const perNote = Math.floor(
     (RECALL_TOKEN_BUDGET - framingTokens) / selected.length,
   );
-  const entries: { line: string; targeted: boolean }[] = [];
+  const entries: (ScoredCandidate & { line: string })[] = [];
   // Token-bound titles and tags so long or non-Latin metadata cannot crowd
   // out every preview.
   const fit = (text: string, tokens: number) => {
     const fitted = fitTextToTokens(text, tokens, safeCountTokens);
     return fitted.truncated ? `${fitted.text.trimEnd()}…` : fitted.text;
   };
-  for (const { candidate, tier } of selected) {
+  for (const entry of selected) {
+    const { candidate } = entry;
     const title = fit(
       neutralize(candidate.title).slice(0, TITLE_CHARS),
       TITLE_TOKENS,
@@ -253,22 +267,24 @@ export function serializeRecalledNotes(
       fitted.truncated || candidate.excerpt_truncated
         ? `${fitted.text.trimEnd()}…`
         : fitted.text;
-    entries.push({
-      line: `${header}${preview}\n`,
-      targeted: tier === "target",
-    });
+    entries.push({ ...entry, line: `${header}${preview}\n` });
   }
   // Exact final check: BPE counts are not strictly additive across lines.
   while (entries.length > 0) {
     const section = `${FRAMING_HEAD}${entries.map((entry) => entry.line).join("")}${FRAMING_TAIL}`;
     const tokenCount = safeCountTokens(section);
     if (tokenCount <= RECALL_TOKEN_BUDGET) {
+      const count = (keep: (candidate: RecallCandidate) => boolean) =>
+        entries.filter((entry) => keep(entry.candidate)).length;
       return {
         section,
         noteCount: entries.length,
-        targetedCount: entries.filter((entry) => entry.targeted).length,
+        targetedCount: entries.filter((entry) => entry.tier === "target")
+          .length,
         tokenCount,
         candidateCount,
+        recheckDueCount: count((note) => note.recheck === "recheck_due"),
+        observationDateUnknownCount: count(isObservationDateUnknown),
       };
     }
     entries.pop();
@@ -310,6 +326,8 @@ export function searchTextFor(taskText: string): string {
 /**
  * Builds the relevant-notes block once for a task. Throws when the lookup
  * fails or exceeds its deadline so callers can keep previously sent context.
+ * Records exactly one result event per call; a lookup that settles after the
+ * deadline records nothing more.
  */
 export async function buildRelevantNotesSection({
   userId,
@@ -318,7 +336,10 @@ export async function buildRelevantNotesSection({
   userId: string;
   scope: RelevantRecallScope;
 }): Promise<RelevantNotesSection> {
+  const startedAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let result: RelevantNotesSection;
   try {
     const candidates = await Promise.race([
       getNoteRecallCandidates({
@@ -328,33 +349,26 @@ export async function buildRelevantNotesSection({
         searchText: searchTextFor(scope.taskText) || undefined,
       }),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error("Notes recall timed out")),
-          RECALL_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error("Notes recall timed out"));
+        }, RECALL_TIMEOUT_MS);
       }),
     ]);
-    return serializeRecalledNotes(
+    result = serializeRecalledNotes(
       selectRecallCandidates(candidates, scope.taskText),
       candidates.length,
     );
+  } catch (error) {
+    recordRelevantRecallResult(
+      userId,
+      startedAt,
+      timedOut ? "timeout" : "error",
+    );
+    throw error;
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** Exposure means a non-empty block actually reached the model: counts only. */
-export function recordRelevantRecallExposure(
-  userId: string,
-  result: RelevantNotesSection,
-): void {
-  if (!result.section) return;
-  phLogger.event("notes_recall_exposed", {
-    userId,
-    feature_flag: NOTES_RELEVANT_RECALL_FLAG,
-    note_count: result.noteCount,
-    targeted_note_count: result.targetedCount,
-    candidate_count: result.candidateCount,
-    token_count: result.tokenCount,
-  });
+  recordRelevantRecallResult(userId, startedAt, result);
+  return result;
 }

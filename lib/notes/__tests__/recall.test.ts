@@ -112,6 +112,43 @@ describe("relevant notes serialization", () => {
     expect(section).toContain("observed 2026-10-01, recheck due");
     expect(section).not.toContain("2026-01-01");
   });
+
+  it("counts staleness only for notes that fit, not for dropped ones", () => {
+    // A header longer than the per-note share drops the note entirely.
+    const oversized = Array.from({ length: 400 }, (_, i) =>
+      String.fromCharCode(0x4e00 + i * 7),
+    ).join("");
+    const entry = (overrides: Record<string, unknown>) => ({
+      candidate: candidate(overrides),
+      tier: "target" as const,
+      score: 0,
+    });
+    const result = recall.serializeRecalledNotes([
+      entry({
+        note_id: "due",
+        observed_at: Date.UTC(2026, 0, 1),
+        recheck: "recheck_due",
+      }),
+      entry({ note_id: "undated", recheck: "observation_date_unknown" }),
+      entry({ note_id: "fresh", observed_at: Date.UTC(2026, 9, 1) }),
+      entry({
+        note_id: "dropped-due",
+        target: oversized,
+        recheck: "recheck_due",
+      }),
+      entry({
+        note_id: "dropped-undated",
+        target: oversized,
+        recheck: "observation_date_unknown",
+      }),
+    ]);
+    expect(result.section).not.toContain("dropped");
+    expect(result).toMatchObject({
+      noteCount: 3,
+      recheckDueCount: 1,
+      observationDateUnknownCount: 1,
+    });
+  });
 });
 
 describe("relevant recall selection", () => {
@@ -152,17 +189,140 @@ describe("relevant recall selection", () => {
 describe("recall lookup", () => {
   afterEach(() => {
     jest.useRealTimers();
+    mockEvent.mockReset();
   });
+
+  const build = (taskText = task) =>
+    recall.buildRelevantNotesSection({ userId: "u", scope: { taskText } });
+  const resultEvents = () =>
+    mockEvent.mock.calls
+      .filter(([name]) => name === "notes_recall_result")
+      .map(([, properties]) => properties as Record<string, unknown>);
 
   it("rejects on a slow lookup so callers keep earlier context", async () => {
     jest.useFakeTimers();
-    mockCandidates.mockReturnValue(new Promise(() => {}));
-    const pending = recall.buildRelevantNotesSection({
-      userId: "u",
-      scope: { taskText: task },
-    });
-    jest.advanceTimersByTime(2_600);
+    let settleLate!: (rows: unknown[]) => void;
+    mockCandidates.mockReturnValue(
+      new Promise((resolve) => {
+        settleLate = resolve;
+      }),
+    );
+    const pending = build();
+    jest.advanceTimersByTime(2_500);
     await expect(pending).rejects.toThrow("timed out");
+    expect(resultEvents()).toEqual([
+      {
+        userId: "u",
+        feature_flag: "notes_relevant_recall_v1",
+        outcome: "timeout",
+        duration_ms: 2_500,
+      },
+    ]);
+
+    // A lookup that settles after the deadline adds nothing.
+    settleLate([candidate()]);
+    await jest.runAllTimersAsync();
+    expect(mockEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("records one result per lookup with counts of what fits", async () => {
+    jest.useFakeTimers();
+    mockCandidates.mockResolvedValue([
+      candidate({ recheck: "recheck_due" }),
+      candidate({ note_id: "beta", target: "beta.example" }),
+    ]);
+    const hit = await build();
+    // The deadline timer is cleared once the lookup settles.
+    expect(jest.getTimerCount()).toBe(0);
+    expect(resultEvents()).toEqual([
+      {
+        userId: "u",
+        feature_flag: "notes_relevant_recall_v1",
+        outcome: "hit",
+        duration_ms: 0,
+        note_count: 1,
+        targeted_note_count: 1,
+        candidate_count: 2,
+        token_count: hit.tokenCount,
+        recheck_due_count: 1,
+        observation_date_unknown_count: 1,
+      },
+    ]);
+
+    mockEvent.mockClear();
+    mockCandidates.mockResolvedValue([
+      candidate({ note_id: "beta", target: "beta.example" }),
+    ]);
+    expect((await build()).section).toBe("");
+    expect(resultEvents()).toEqual([
+      expect.objectContaining({
+        outcome: "no_match",
+        note_count: 0,
+        candidate_count: 1,
+      }),
+    ]);
+  });
+
+  it("rethrows a failed lookup unchanged and records only its outcome", async () => {
+    jest.useFakeTimers();
+    const failure = new Error("Convex down for alpha.example note n1");
+    mockCandidates.mockRejectedValue(failure);
+    await expect(build()).rejects.toBe(failure);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(resultEvents()).toEqual([
+      {
+        userId: "u",
+        feature_flag: "notes_relevant_recall_v1",
+        outcome: "error",
+        duration_ms: 0,
+      },
+    ]);
+  });
+
+  it("keeps task, target, note and error text out of every result", async () => {
+    const secretTask = "Retest https://alpha.example SECRET-TASK";
+    mockCandidates.mockResolvedValueOnce([
+      candidate({
+        note_id: "NOTE-ID",
+        title: "SECRET-TITLE",
+        excerpt: "SECRET-BODY",
+        tags: ["SECRET-TAG"],
+      }),
+    ]);
+    await build(secretTask);
+    mockCandidates.mockResolvedValueOnce([]);
+    await build(secretTask);
+    mockCandidates.mockRejectedValueOnce(new Error("SECRET-ERROR"));
+    await expect(build(secretTask)).rejects.toThrow();
+
+    const events = resultEvents();
+    expect(events.map((event) => event.outcome)).toEqual([
+      "hit",
+      "no_match",
+      "error",
+    ]);
+    for (const { userId, feature_flag, outcome, ...counts } of events) {
+      expect([userId, feature_flag]).toEqual(["u", "notes_relevant_recall_v1"]);
+      expect(["hit", "no_match", "error"]).toContain(outcome);
+      for (const value of Object.values(counts))
+        expect(Number.isInteger(value)).toBe(true);
+    }
+    expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(
+      /SECRET|alpha|NOTE-ID/,
+    );
+  });
+
+  it("never lets telemetry change the lookup's result or failure", async () => {
+    mockEvent.mockImplementation(() => {
+      throw new Error("analytics down");
+    });
+    mockCandidates.mockResolvedValueOnce([candidate()]);
+    expect((await build()).noteCount).toBe(1);
+
+    const failure = new Error("lookup failed");
+    mockCandidates.mockRejectedValueOnce(failure);
+    await expect(build()).rejects.toBe(failure);
+    expect(mockEvent).toHaveBeenCalledTimes(2);
   });
 
   it("passes only server scope and task-derived keys to the lookup", async () => {
@@ -245,12 +405,21 @@ describe("exposure", () => {
       targetedCount: 0,
       tokenCount: 0,
       candidateCount: 3,
+      recheckDueCount: 0,
+      observationDateUnknownCount: 0,
     });
     expect(mockEvent).not.toHaveBeenCalled();
 
     const result = recall.serializeRecalledNotes(
       recall.selectRecallCandidates(
-        [candidate({ title: "Secret target title" })],
+        [
+          candidate({ title: "Secret target title" }),
+          candidate({
+            note_id: "n2",
+            observed_at: 1,
+            recheck: "recheck_due",
+          }),
+        ],
         task,
       ),
     );
@@ -265,6 +434,11 @@ describe("exposure", () => {
     expect({ userId, feature_flag }).toEqual({
       userId: "u",
       feature_flag: "notes_relevant_recall_v1",
+    });
+    expect(counts).toMatchObject({
+      note_count: 2,
+      recheck_due_count: 1,
+      observation_date_unknown_count: 0,
     });
     expect(
       Object.values(counts).every((value) => typeof value === "number"),
