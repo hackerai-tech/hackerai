@@ -381,17 +381,25 @@ describe("operation readiness failure diagnostics", () => {
   it.each([
     [
       "subscription_ready",
+      "subscription_unsubscribed",
       (operation: typeof mockSubscription) =>
-        operation.ready.mockRejectedValue(new Error("PRIVATE ready reason")),
+        operation.ready.mockRejectedValue(
+          Object.assign(new Error("PRIVATE ready reason"), { code: 7 }),
+        ),
     ],
     [
       "readiness_publish",
+      "transport_closed",
+      // The relay client's plain-object rejection, wrapped by the publish queue.
       (operation: typeof mockSubscription) =>
-        operation.publish.mockRejectedValue(new Error("PRIVATE publish")),
+        operation.publish.mockRejectedValue({
+          code: 2,
+          message: "PRIVATE publish",
+        }),
     ],
   ] as const)(
     "reports one bounded %s failure on the existing relay error event",
-    async (phase, configure) => {
+    async (phase, rejectionCode, configure) => {
       const { bridge, operation, consoleError, deliver } =
         await startWithOperation(configure);
       try {
@@ -415,6 +423,7 @@ describe("operation readiness failure diagnostics", () => {
               operation_readiness_phase: phase,
               operation_readiness_kind: "command",
               operation_readiness_operation_id: commandId,
+              operation_readiness_rejection_code: rejectionCode,
               build_state: "measured",
               hackerai_frontend_build_commit: "a".repeat(40),
             },

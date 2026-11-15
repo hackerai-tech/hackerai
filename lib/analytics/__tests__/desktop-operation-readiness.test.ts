@@ -28,6 +28,7 @@ const diagnostic = {
   operation_readiness_phase: "readiness_publish",
   operation_readiness_kind: "file",
   operation_readiness_operation_id: OPERATION_ID,
+  operation_readiness_rejection_code: "timeout",
   build_state: "measured",
   hackerai_frontend_build_commit: "b".repeat(40),
 };
@@ -48,6 +49,7 @@ describe("captureDesktopOperationReadinessFailure", () => {
     phase: "readiness_publish",
     kind: "file",
     operationId: OPERATION_ID,
+    rejectionCode: "timeout",
   };
 
   it("captures the finite tuple with the measured or unavailable build", () => {
@@ -90,6 +92,8 @@ describe("captureDesktopOperationReadinessFailure", () => {
     { operationId: "cat /etc/passwd" },
     { operationId: `${OPERATION_ID}0` },
     { connectionId: "conn-123" },
+    { rejectionCode: "PRIVATE" },
+    { rejectionCode: undefined },
   ])("captures nothing for an out-of-schema %p", (override) => {
     if (override.owner) mockOwners(override.owner, override.owner);
     expect(
@@ -161,8 +165,26 @@ describe("sanitizeDesktopOperationReadinessEvent", () => {
     ).toEqual({ ...transport, ...unmeasured, build_state: "unavailable" });
   });
 
+  it("keeps an earlier v1 diagnostic without the rejection code unmeasured", () => {
+    const { operation_readiness_rejection_code: _code, ...earlier } =
+      diagnostic;
+    expect(
+      sanitizeDesktopOperationReadinessEvent(
+        event({ ...transport, ...earlier }),
+        expected,
+      )?.properties,
+    ).toEqual({ ...transport, ...earlier });
+  });
+
   it.each([
     ["version", { operation_readiness_version: 2 }],
+    ["rejection code", { operation_readiness_rejection_code: "PRIVATE" }],
+    ["numeric rejection code", { operation_readiness_rejection_code: 7 }],
+    ["null rejection code", { operation_readiness_rejection_code: null }],
+    [
+      "undefined rejection code",
+      { operation_readiness_rejection_code: undefined },
+    ],
     ["phase", { operation_readiness_phase: "execution" }],
     ["kind", { operation_readiness_kind: "terminal" }],
     ["operation ID", { operation_readiness_operation_id: "PRIVATE" }],
@@ -195,12 +217,24 @@ describe("sanitizeDesktopOperationReadinessEvent", () => {
     }
   });
 
-  it("drops an accessor, inherited or throwing proxy diagnostic without throwing", () => {
+  it("drops an accessor, inherited or throwing proxy diagnostic or rejection code without throwing", () => {
     const getter = jest.fn(() => 1);
     const accessorVersion = Object.defineProperty(
       { ...transport, ...diagnostic },
       "operation_readiness_version",
       { get: getter, enumerable: true },
+    );
+    const { operation_readiness_rejection_code: _code, ...earlier } =
+      diagnostic;
+    const accessorCode = Object.defineProperty(
+      { ...transport, ...earlier },
+      "operation_readiness_rejection_code",
+      { get: getter, enumerable: true },
+    );
+    const inheritedCode = Object.assign(
+      Object.create({ operation_readiness_rejection_code: "timeout" }),
+      transport,
+      earlier,
     );
     const inherited = Object.assign(Object.create(diagnostic), transport);
     const hostile = new Proxy(
@@ -218,6 +252,8 @@ describe("sanitizeDesktopOperationReadinessEvent", () => {
     );
     for (const candidate of [
       event(accessorVersion),
+      event(accessorCode),
+      event(inheritedCode),
       event(inherited),
       event(hostile),
       accessorBag,
