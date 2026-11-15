@@ -7,9 +7,16 @@ import {
   getComposerChangeDiagnostics,
   recordComposerChange,
 } from "../composer-change-diagnostics";
+import {
+  recordReactBoundaryCatch,
+  registerReactBoundaryScope,
+  startReactBoundaryDiagnostics,
+} from "../react-boundary-diagnostics";
 
 jest.mock("@/lib/analytics/client", () => ({
   getIdentifiedAnalyticsUserId: () => "synthetic-user",
+  getPermittedAnalyticsUserId: () => "synthetic-user",
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 describe("shouldDropExpectedFrontendException", () => {
@@ -1018,6 +1025,155 @@ describe("shouldDropExpectedFrontendException", () => {
       expect(enrichFrontendExceptionEvent(ordinary).properties).toEqual({
         count: 1,
       });
+    });
+  });
+
+  describe("React boundary nearby context", () => {
+    const PREFIX = "hackerai_react_boundary_";
+    const MESSAGE = "Cannot read properties of null (reading 'removeChild')";
+    const boundaryFields = (properties: Record<string, unknown> | undefined) =>
+      Object.fromEntries(
+        Object.entries(properties ?? {}).filter(([key]) =>
+          key.startsWith(PREFIX),
+        ),
+      );
+    const exception = (list: unknown) => ({
+      event: "$exception",
+      properties: {
+        $exception_list: list,
+        // Forged or stale fields from an earlier pass never survive.
+        hackerai_react_boundary_recent_catch_state: "PRIVATE_STALE",
+        hackerai_react_boundary_raw_message: "PRIVATE_STALE",
+      },
+    });
+    const entry = (type: unknown, value: unknown) => ({
+      type,
+      value,
+      mechanism: { handled: false, synthetic: false, type: "generic" },
+    });
+    let stop: () => void;
+    let dispose: () => void;
+
+    beforeEach(() => {
+      jest.spyOn(performance, "now").mockReturnValue(5000);
+      stop = startReactBoundaryDiagnostics();
+      dispose = registerReactBoundaryScope("chat_content");
+      recordReactBoundaryCatch("chat_content");
+    });
+
+    afterEach(() => {
+      dispose();
+      stop();
+      jest.restoreAllMocks();
+    });
+
+    it.each([MESSAGE, `TypeError: ${MESSAGE}`])(
+      "adds closed nearby context to the single exact retained TypeError (%s)",
+      (value) => {
+        const list = [entry("TypeError", value)];
+        const event = exception(list);
+        expect(shouldDropExpectedFrontendException(event)).toBe(false);
+        const enriched = enrichFrontendExceptionEvent(event, {
+          reactBoundaryDiagnosticOwner: "synthetic-user",
+        });
+        expect(boundaryFields(enriched.properties)).toEqual({
+          hackerai_react_boundary_context_version: 1,
+          hackerai_react_boundary_observer_state: "active",
+          hackerai_react_boundary_chat_content_mounted: true,
+          hackerai_react_boundary_chat_layout_mounted: false,
+          hackerai_react_boundary_unknown_scope_mounted: false,
+          hackerai_react_boundary_recent_catch_state: "observed",
+          hackerai_react_boundary_recent_scope: "chat_content",
+          hackerai_react_boundary_recent_age: "lt_50ms",
+        });
+        expect(enriched.properties.$exception_list).toBe(list);
+        expect(shouldDropExpectedFrontendException(enriched)).toBe(false);
+        expect(JSON.stringify(enriched.properties)).not.toMatch(
+          /PRIVATE|synthetic-user/,
+        );
+      },
+    );
+
+    it.each([
+      ["no committed owner", undefined],
+      ["a null committed owner", null],
+      ["another committed owner", "other-user"],
+    ])("attaches nothing with %s", (_label, owner) => {
+      const enriched = enrichFrontendExceptionEvent(
+        exception([entry("TypeError", MESSAGE)]),
+        owner === undefined ? {} : { reactBoundaryDiagnosticOwner: owner },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+    });
+
+    it("does not lend the navigator owner to the React boundary context", () => {
+      const enriched = enrichFrontendExceptionEvent(
+        exception([entry("TypeError", MESSAGE)]),
+        { navigatorDiagnosticOwner: "synthetic-user" },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+    });
+
+    it.each([
+      ["another error type", [entry("Error", MESSAGE)]],
+      [
+        "an undefined receiver",
+        [
+          entry(
+            "TypeError",
+            "Cannot read properties of undefined (reading 'removeChild')",
+          ),
+        ],
+      ],
+      [
+        "another null property",
+        [
+          entry(
+            "TypeError",
+            "Cannot read properties of null (reading 'insertBefore')",
+          ),
+        ],
+      ],
+      ["a suffixed message", [entry("TypeError", `${MESSAGE}.`)]],
+      [
+        "another prefix",
+        [entry("TypeError", `Uncaught TypeError: ${MESSAGE}`)],
+      ],
+      ["a batch", [entry("TypeError", MESSAGE), entry("TypeError", MESSAGE)]],
+      ["a serialized list", JSON.stringify([entry("TypeError", MESSAGE)])],
+      ["an object list", { 0: entry("TypeError", MESSAGE) }],
+      [
+        "an unreadable value",
+        [
+          Object.defineProperty({ type: "TypeError" }, "value", {
+            get: () => {
+              throw new Error("PRIVATE getter");
+            },
+          }),
+        ],
+      ],
+    ])("keeps %s without React boundary context", (_label, list) => {
+      const event = exception(list);
+      const dropped = shouldDropExpectedFrontendException(event);
+      const enriched = enrichFrontendExceptionEvent(event, {
+        reactBoundaryDiagnosticOwner: "synthetic-user",
+      });
+      expect(boundaryFields(enriched.properties)).toEqual({});
+      expect(enriched.properties.$exception_list).toBe(list);
+      expect(enriched.properties.hackerai_exception_category).toBe("unknown");
+      expect(shouldDropExpectedFrontendException(enriched)).toBe(dropped);
+    });
+
+    it("keeps a value-only exception without React boundary context", () => {
+      const enriched = enrichFrontendExceptionEvent(
+        {
+          event: "$exception",
+          properties: { $exception_values: [MESSAGE] },
+        },
+        { reactBoundaryDiagnosticOwner: "synthetic-user" },
+      );
+      expect(boundaryFields(enriched.properties)).toEqual({});
+      expect(enriched.properties.$exception_values).toEqual([MESSAGE]);
     });
   });
 
