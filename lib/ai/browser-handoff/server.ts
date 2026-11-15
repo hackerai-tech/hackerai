@@ -1,7 +1,13 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 
-import { CommandExitError, Sandbox, TimeoutError } from "@e2b/code-interpreter";
+import {
+  CommandExitError,
+  Sandbox,
+  TimeoutError,
+  type CommandHandle,
+  type CommandResult,
+} from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "@/lib/ai/tools/utils/e2b-cluster";
 import { browserSessionCommand } from "@/lib/ai/tools/utils/browser-session-program";
@@ -402,6 +408,25 @@ export async function getActiveBrowserSessionName(
 }
 
 /**
+ * A rejected status command: the SDK returned no process-start handle (start),
+ * or returned one whose wait then failed (wait). Acknowledgement latency is not
+ * spawn time, and neither phase identifies a provider or daemon cause.
+ */
+type StatusCommandRejection = {
+  error: unknown;
+  phase: "start" | "wait";
+  startAckMs?: number;
+};
+
+const monotonicNow = () => {
+  try {
+    return performance.now();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
  * Only a non-fresh preview passes ownedListener: the helper may then return a
  * port its daemon provably listens on without waiting behind serialized daemon
  * work, and otherwise sends this same status request.
@@ -411,20 +436,54 @@ export async function getPrivateStreamPort(
   session: BrowserSessionLocation,
   browserSessionName: string,
   ownedListener = false,
+  onRejected?: (rejection: StatusCommandRejection) => void,
 ) {
-  const result = await sandbox.commands.run(
-    browserDaemonCommand(
-      session.directory,
-      browserSessionName,
-      ownedListener
-        ? { action: "stream_status", owned_port: true }
-        : { action: "stream_status" },
-    ),
-    {
-      ...buildSandboxCommandOptions(sandbox),
-      timeoutMs: 7_000,
-    },
+  const command = browserDaemonCommand(
+    session.directory,
+    browserSessionName,
+    ownedListener
+      ? { action: "stream_status", owned_port: true }
+      : { action: "stream_status" },
   );
+  const options = { ...buildSandboxCommandOptions(sandbox), timeoutMs: 7_000 };
+  let result: CommandResult;
+  if (!onRejected) result = await sandbox.commands.run(command, options);
+  else {
+    // The SDK's foreground run is exactly this start then the same handle's
+    // wait: one request, deadline, handshake timer and signal, no new timer.
+    const report = (rejection: StatusCommandRejection) => {
+      try {
+        onRejected(rejection);
+      } catch {
+        /* Observers cannot replace the SDK rejection. */
+      }
+    };
+    const startedAt = monotonicNow();
+    let handle: CommandHandle;
+    try {
+      handle = await sandbox.commands.run(command, {
+        ...options,
+        background: true,
+      });
+    } catch (error) {
+      report({ error, phase: "start" });
+      throw error;
+    }
+    const acknowledgedAt = monotonicNow();
+    try {
+      result = await handle.wait();
+    } catch (error) {
+      report({
+        error,
+        phase: "wait",
+        ...(typeof startedAt === "number" &&
+          typeof acknowledgedAt === "number" && {
+            startAckMs: acknowledgedAt - startedAt,
+          }),
+      });
+      throw error;
+    }
+  }
   if (result.exitCode !== 0) throw new BrowserPreviewUnavailable("closed");
   let parsed: Record<string, unknown>;
   try {
@@ -724,7 +783,49 @@ export type BrowserCaptureFailureContext = FrameCaptureDiagnostic & {
   capture_close_scope?: "selected_session" | "other_session" | "all_sessions";
   capture_close_age?: (typeof BROWSER_WRAPPER_AGES)[number];
   capture_close_open_order?: "after" | "before" | "same_time" | "unavailable";
+  // Stream-status SDK rejection without an exit only: start means no process
+  // handle was returned; wait means one was, with its acknowledgement latency.
+  capture_sdk_command_diagnostic_version?: 1;
+  capture_sdk_command_phase?: "start" | "wait";
+  capture_sdk_start_ack_latency?: "lt1s" | "lt3s" | "lt6s" | "gte6s";
 };
+
+/** The whole version-1 group, or nothing when a wait latency is unusable. */
+function statusSdkPhaseContext({
+  phase,
+  startAckMs,
+}: StatusCommandRejection): Pick<
+  BrowserCaptureFailureContext,
+  | "capture_sdk_command_diagnostic_version"
+  | "capture_sdk_command_phase"
+  | "capture_sdk_start_ack_latency"
+> {
+  if (phase === "start")
+    return {
+      capture_sdk_command_diagnostic_version: 1,
+      capture_sdk_command_phase: "start",
+    };
+  if (
+    phase !== "wait" ||
+    typeof startAckMs !== "number" ||
+    !Number.isFinite(startAckMs) ||
+    startAckMs < 0
+  )
+    return {};
+  return {
+    capture_sdk_command_diagnostic_version: 1,
+    capture_sdk_command_phase: "wait",
+    capture_sdk_start_ack_latency:
+      startAckMs < 1_000
+        ? "lt1s"
+        : startAckMs < 3_000
+          ? "lt3s"
+          : startAckMs < 6_000
+            ? "lt6s"
+            : "gte6s",
+  };
+}
+
 /**
  * Capture a validated frame, requesting a separate screenshot when freshness is required.
  * The optional failure observer receives only bounded context; observer failures
@@ -741,6 +842,7 @@ export async function captureBrowserFrame(
   let stage: BrowserCaptureFailureContext["capture_stage"] = "stream_status";
   let decodeDiagnostic: FrameDecodeDiagnostic = {};
   let returnedBridgeFailure: unknown;
+  let statusRejection: StatusCommandRejection | undefined;
   try {
     const port =
       streamPort ??
@@ -749,6 +851,10 @@ export async function captureBrowserFrame(
         session,
         browserSessionName,
         !requireFresh,
+        onFailure &&
+          ((rejection) => {
+            statusRejection = rejection;
+          }),
       ));
     stage = "frame_bridge";
     const result = await sandbox.commands.run(
@@ -1284,6 +1390,19 @@ export async function captureBrowserFrame(
       } catch {
         /* Optional transport metadata cannot replace the original rejection. */
       }
+      let sdkPhase: ReturnType<typeof statusSdkPhaseContext> = {};
+      try {
+        // Only this exact SDK rejection; an exit already proves a returned handle.
+        if (
+          stage === "stream_status" &&
+          statusRejection &&
+          statusRejection.error === error &&
+          !(error instanceof CommandExitError)
+        )
+          sdkPhase = statusSdkPhaseContext(statusRejection);
+      } catch {
+        /* An unreadable phase omits the group and keeps the original rejection. */
+      }
       try {
         onFailure({
           capture_stage: stage,
@@ -1292,6 +1411,7 @@ export async function captureBrowserFrame(
           ...precondition,
           ...decodeDiagnostic,
           ...bridgeDiagnostic,
+          ...sdkPhase,
         });
       } catch {
         /* Observers cannot change capture behavior. */
