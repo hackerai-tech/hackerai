@@ -1,11 +1,12 @@
 import { v } from "convex/values";
 import {
   internalMutation,
+  internalQuery,
   mutation,
   query,
   type MutationCtx,
 } from "./lib/serviceFunctions";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import {
@@ -101,6 +102,16 @@ export const getBundleCapStatus = query({
   },
 });
 
+/** This period's pending holds, read through the bounded cap query. */
+export const listPendingBundleHolds = internalQuery({
+  args: { userId: v.string() },
+  returns: v.array(pendingHold),
+  handler: async (ctx, args) => {
+    const usage = await readBundleCapUsage(ctx, args.userId, Date.now());
+    return usage.complete ? usage.pendingHolds : [];
+  },
+});
+
 const reservedResult = v.object({
   status: v.literal("reserved"),
   reused: v.boolean(),
@@ -179,25 +190,63 @@ export const reserveBundle = internalMutation({
     const now = Date.now();
     const { periodMonth } = extraUsageBundleCapPeriod(now);
 
-    // A new row is only inserted for an attempt when it has no pending row,
-    // so its newest row is the only one that can still be pending.
-    const newestForAttempt = await ctx.db
-      .query("extra_usage_bundle_reservations")
+    // The attempt's mapping is authoritative: it also covers attempts that
+    // resumed another attempt's checkout, whatever its status or month.
+    const mapping = await ctx.db
+      .query("extra_usage_bundle_attempts")
       .withIndex("by_user_attempt", (q) =>
         q
           .eq("user_id", args.userId)
           .eq("checkout_attempt_id", args.checkoutAttemptId),
       )
-      .order("desc")
-      .first();
-    // Replaying an already-paid attempt must recover that purchase, never
-    // allocate a second checkout. A genuinely new purchase has a new attempt.
-    let live =
-      newestForAttempt && newestForAttempt.status !== "released"
-        ? newestForAttempt
-        : null;
-    if (live && live.bundle_id !== bundle.id)
+      .unique();
+    if (mapping && mapping.bundle_id !== bundle.id)
       return { status: "attempt_conflict" as const };
+    const mapped = mapping ? await ctx.db.get(mapping.reservation_id) : null;
+    let live = mapped && mapped.status !== "released" ? mapped : null;
+
+    // Reservations created before attempt mappings existed: a new row is only
+    // inserted for an attempt without a pending row, so its newest row is the
+    // only one that can still be live.
+    if (!live) {
+      const newestForAttempt = await ctx.db
+        .query("extra_usage_bundle_reservations")
+        .withIndex("by_user_attempt", (q) =>
+          q
+            .eq("user_id", args.userId)
+            .eq("checkout_attempt_id", args.checkoutAttemptId),
+        )
+        .order("desc")
+        .first();
+      // Replaying an already-paid attempt must recover that purchase, never
+      // allocate a second checkout. A genuinely new purchase has a new attempt.
+      live =
+        newestForAttempt && newestForAttempt.status !== "released"
+          ? newestForAttempt
+          : null;
+      if (live && live.bundle_id !== bundle.id)
+        return { status: "attempt_conflict" as const };
+    }
+    const mapAttempt = async (
+      reservationId: Id<"extra_usage_bundle_reservations">,
+    ) => {
+      if (!mapping) {
+        await ctx.db.insert("extra_usage_bundle_attempts", {
+          user_id: args.userId,
+          checkout_attempt_id: args.checkoutAttemptId,
+          bundle_id: bundle.id,
+          reservation_id: reservationId,
+          created_at: now,
+          updated_at: now,
+        });
+      } else if (mapping.reservation_id !== reservationId) {
+        // A released hold was replaced; follow the replacement.
+        await ctx.db.patch(mapping._id, {
+          reservation_id: reservationId,
+          updated_at: now,
+        });
+      }
+    };
     live ??= await ctx.db
       .query("extra_usage_bundle_reservations")
       .withIndex("by_user_period_status_bundle", (q) =>
@@ -223,6 +272,7 @@ export const reserveBundle = internalMutation({
           updated_at: now,
         });
       }
+      await mapAttempt(live._id);
       return fromReservation(
         live,
         { reused: true, mayCreate, createAttempts },
@@ -283,6 +333,7 @@ export const reserveBundle = internalMutation({
         updated_at: now,
       },
     );
+    await mapAttempt(reservationId);
     const inserted = (await ctx.db.get(reservationId))!;
     return fromReservation(
       inserted,

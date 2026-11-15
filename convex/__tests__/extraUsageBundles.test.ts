@@ -15,6 +15,7 @@ jest.mock("../lib/serviceFunctions", () => ({
   query: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),
+  internalQuery: jest.fn((config: any) => config),
 }));
 jest.mock("../lib/logger", () => ({
   convexLogger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -82,6 +83,9 @@ const INDEXES: Record<string, Record<string, string[]>> = {
     by_user_attempt: ["user_id", "checkout_attempt_id"],
     by_stripe_checkout_session_id: ["stripe_checkout_session_id"],
   },
+  extra_usage_bundle_attempts: {
+    by_user_attempt: ["user_id", "checkout_attempt_id"],
+  },
   extra_usage_purchases: {
     by_user_bundle_created_at: ["user_id", "bundle_id", "created_at"],
     by_stripe_checkout_session_id: ["stripe_checkout_session_id"],
@@ -95,6 +99,7 @@ const INDEXES: Record<string, Record<string, string[]>> = {
 function createDb(seed: Record<string, Row[]> = {}) {
   const tables: Record<string, Row[]> = {
     extra_usage_bundle_reservations: [],
+    extra_usage_bundle_attempts: [],
     extra_usage_purchases: [],
     extra_usage: [],
     user_customization: [],
@@ -305,9 +310,17 @@ async function createHarness(seed: Record<string, Row[]> = {}) {
     auth: {
       getUserIdentity: async () => ({ subject: USER, org_id: "org_personal" }),
     },
-    runQuery: jest.fn(async () => null),
+    // The pending-holds query runs for real; the suspension lookup finds none.
+    runQuery: jest.fn(async (reference: any, args: any) =>
+      getFunctionName(reference) === "extraUsageBundles:listPendingBundleHolds"
+        ? await (bundles.listPendingBundleHolds as any).handler({ db }, args)
+        : null,
+    ),
     runMutation,
   };
+  /** The reconcile-only action the purchase dialog calls when it opens. */
+  const reconcile = () =>
+    (actions.reconcileBundleHolds as any).handler(ctx, {});
   const buy = (bundleId: string, checkoutAttemptId: string): Promise<any> => {
     const credit = { "usage-50-v1": 50, "usage-250-v1": 250 }[bundleId] ?? 1000;
     return (actions.createPurchaseSession as any).handler(ctx, {
@@ -330,7 +343,18 @@ async function createHarness(seed: Record<string, Row[]> = {}) {
   };
   const status = () =>
     (bundles.getBundleCapStatus as any).handler({ db, auth: ctx.auth }, {});
-  return { db, tables, ctx, buy, pay, status, bundles, extraUsage, actions };
+  return {
+    db,
+    tables,
+    ctx,
+    buy,
+    pay,
+    status,
+    reconcile,
+    bundles,
+    extraUsage,
+    actions,
+  };
 }
 
 function paidCredit(sessionId: string, metadata: Record<string, string>) {
@@ -452,7 +476,10 @@ describe("monthly discounted bundle cap", () => {
       url: first.url,
       checkoutSessionId: first.checkoutSessionId,
       reservationReused: true,
+      // The client adopts this, so start and success events share one ID.
+      checkoutAttemptId: "attempt-original",
     });
+    expect(first.checkoutAttemptId).toBe("attempt-original");
     expect(reservations(tables)).toHaveLength(1);
     expect(mockSessionCreate).toHaveBeenCalledTimes(1);
     expect(
@@ -461,6 +488,35 @@ describe("monthly discounted bundle cap", () => {
     expect(await buy("usage-250-v1", "attempt-original")).toMatchObject({
       errorCode: "bundle_attempt_conflict",
     });
+    // A resuming attempt is bound to its bundle too.
+    expect(await buy("usage-250-v1", "attempt-after-reload")).toMatchObject({
+      errorCode: "bundle_attempt_conflict",
+    });
+  });
+
+  it("recovers the original paid checkout when a resuming attempt lost its response", async () => {
+    const { buy, pay, tables } = await createHarness();
+    const original = await buy("usage-1000-v1", "attempt-A");
+    // B resumes A's checkout, but B's response never reaches the client.
+    await buy("usage-1000-v1", "attempt-B");
+    await pay(original);
+    mockSessionCreate.mockClear();
+
+    const retried = await buy("usage-1000-v1", "attempt-B");
+    expect(retried).toMatchObject({
+      url: `https://hackerai.co/api/extra-usage/confirm?session_id=${original.checkoutSessionId}`,
+      checkoutSessionId: original.checkoutSessionId,
+      checkoutAttemptId: "attempt-A",
+    });
+
+    // Still recovered after the UTC month rolls over.
+    now = Date.UTC(2026, 11, 2);
+    expect(await buy("usage-1000-v1", "attempt-B")).toMatchObject({
+      checkoutSessionId: original.checkoutSessionId,
+    });
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(reservations(tables)).toHaveLength(1);
+    expect(tables.extra_usage_bundle_attempts).toHaveLength(2);
   });
 
   it("keeps a pending hold resumable at zero allowance, then restarts it once Stripe expires it", async () => {
@@ -491,12 +547,40 @@ describe("monthly discounted bundle cap", () => {
       status: "released",
       release_reason: "stripe_session_expired",
     });
+    // The earlier attempt now follows the replacement, not the released hold.
+    expect(await buy("usage-1000-v1", "attempt-new-client")).toMatchObject({
+      checkoutSessionId: restarted.checkoutSessionId,
+    });
     await pay(restarted);
     expect(await status()).toMatchObject({
       remainingDollars: 0,
       usedDollars: 2000,
       resumableBundleIds: [],
     });
+  });
+
+  it("frees an expired hold when the dialog opens without creating a checkout or granting credit", async () => {
+    const { buy, pay, status, reconcile, tables } = await createHarness();
+    await pay(await buy("usage-1000-v1", "attempt-paid"));
+    const abandoned = await buy("usage-1000-v1", "attempt-abandoned");
+    const balanceBefore = tables.extra_usage[0].balance_points;
+
+    // An open checkout stays held.
+    expect(await reconcile()).toEqual({ released: false });
+    expect((await status()).remainingDollars).toBe(0);
+
+    stripeSessions.get(abandoned.checkoutSessionId).status = "expired";
+    mockSessionCreate.mockClear();
+    expect(await reconcile()).toEqual({ released: true });
+
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(tables.extra_usage[0].balance_points).toBe(balanceBefore);
+    expect(await status()).toMatchObject({
+      remainingDollars: 1000,
+      usedDollars: 1000,
+      resumableBundleIds: [],
+    });
+    expect((await buy("usage-250-v1", "attempt-smaller")).url).toBeTruthy();
   });
 
   it("resumes an ambiguous create with the same idempotency key and identical parameters", async () => {
@@ -795,6 +879,20 @@ describe("historical and fulfilled bundle allowance", () => {
           status: "failed",
           last_error: "stripe_async_payment_failed",
         }),
+        // Stripe canceled its payment: never paid, so it frees allowance.
+        ledgerRow({
+          bundle_id: "usage-1000-v1",
+          amount_dollars: 1000,
+          status: "failed",
+          last_error: "stripe_payment_canceled",
+        }),
+        // Paid, but crediting failed: it still consumes allowance.
+        ledgerRow({
+          bundle_id: "usage-250-v1",
+          amount_dollars: 250,
+          status: "failed",
+          last_error: "Convex unavailable",
+        }),
         ledgerRow({ amount_dollars: 5000 }),
         ledgerRow({
           bundle_id: "usage-1000-v1",
@@ -829,23 +927,26 @@ describe("historical and fulfilled bundle allowance", () => {
 
     expect(await status()).toMatchObject({
       periodMonth: "2026-11",
-      usedDollars: 1500,
+      usedDollars: 1750,
       pendingDollars: 50,
-      remainingDollars: 450,
+      remainingDollars: 200,
       historyComplete: true,
       resumableBundleIds: ["usage-50-v1"],
     });
 
-    // The pre-cap open checkout is resumed instead of taking a second hold.
+    // The pre-cap open checkout is resumed instead of taking a second hold,
+    // and keeps the attempt ID recorded in its Stripe metadata.
     stripeSessions.set("cs_legacy_open", {
       id: "cs_legacy_open",
       url: "https://checkout.stripe.test/cs_legacy_open",
       status: "open",
       payment_status: "unpaid",
+      metadata: { checkoutAttemptId: "attempt-pre-cap" },
     });
     expect(await buy("usage-50-v1", "attempt-legacy")).toMatchObject({
       checkoutSessionId: "cs_legacy_open",
       reservationReused: true,
+      checkoutAttemptId: "attempt-pre-cap",
     });
     expect(mockSessionCreate).not.toHaveBeenCalled();
   });

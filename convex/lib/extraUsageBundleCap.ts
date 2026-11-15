@@ -25,6 +25,7 @@ export const BUNDLE_IDEMPOTENCY_REPLAY_WINDOW_MS = 23 * 60 * 60_000;
 export const UNPAID_LEGACY_BUNDLE_ERRORS = new Set([
   "stripe_async_payment_failed",
   "stripe_session_expired",
+  "stripe_payment_canceled",
 ]);
 
 type Reservation = Doc<"extra_usage_bundle_reservations">;

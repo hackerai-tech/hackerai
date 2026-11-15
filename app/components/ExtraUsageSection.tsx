@@ -106,6 +106,33 @@ const ExtraUsageSection = () => {
   const createPurchaseSession = useAction(
     api.extraUsageActions.createPurchaseSession,
   );
+  const reconcileBundleHolds = useAction(
+    api.extraUsageActions.reconcileBundleHolds,
+  );
+  const reconcilingHoldsRef = useRef(false);
+
+  // Opening the dialog re-reads the cap from the server. When a checkout is
+  // pending, Stripe-expired holds are released first (no new session or
+  // credit), so an abandoned checkout cannot keep cheaper bundles disabled.
+  const refreshBundleCapOnOpen = async () => {
+    if (!bundlesEnabled) return;
+    if (
+      !bundleCapStatus?.resumableBundleIds?.length ||
+      reconcilingHoldsRef.current
+    ) {
+      setCapRefresh((n) => n + 1);
+      return;
+    }
+    reconcilingHoldsRef.current = true;
+    try {
+      await reconcileBundleHolds({});
+    } catch (error) {
+      console.error("Failed to reconcile bundle checkouts:", error);
+    } finally {
+      reconcilingHoldsRef.current = false;
+      setCapRefresh((n) => n + 1);
+    }
+  };
 
   // Loading states
   const [isTogglingExtraUsage, setIsTogglingExtraUsage] = useState(false);
@@ -210,12 +237,18 @@ const ExtraUsageSection = () => {
             ? window.location.pathname
             : "/",
       });
+      // A resumed checkout keeps the attempt it was created under; adopt it
+      // so retries and start/success analytics share one correlation ID.
+      const canonicalAttemptId = result.checkoutAttemptId ?? checkoutAttemptId;
+      if (bundleId) {
+        bundleAttemptRef.current = { bundleId, attemptId: canonicalAttemptId };
+      }
 
       if (result.url) {
         captureAuthenticatedEvent(
           PAID_FUNNEL_EVENTS.addCreditCheckoutStarted,
           paidFunnelProperties({
-            checkout_attempt_id: checkoutAttemptId,
+            checkout_attempt_id: canonicalAttemptId,
             checkout_type: "extra_usage_purchase",
             surface: "extra_usage_settings",
             source: "buy_extra_usage_dialog",
@@ -238,7 +271,7 @@ const ExtraUsageSection = () => {
         ) {
           captureAuthenticatedEvent("extra_usage_bundle_cap_blocked", {
             surface: "extra_usage_settings",
-            checkout_attempt_id: checkoutAttemptId,
+            checkout_attempt_id: canonicalAttemptId,
             bundle_id: bundleId,
             amount_dollars: paidDollars,
             credit_amount_dollars: amountDollars,
@@ -401,7 +434,7 @@ const ExtraUsageSection = () => {
                   source: "current_balance_row",
                   cta_text: "Buy credit",
                 });
-                if (bundlesEnabled) setCapRefresh((n) => n + 1);
+                void refreshBundleCapOnOpen();
                 setShowBuyDialog(true);
               }}
               disabled={isPurchasing}

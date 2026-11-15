@@ -1,11 +1,26 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   BuyExtraUsageDialog,
   getApproximateWeeklyExtraUsageSpend,
   getRecommendedExtraUsagePurchaseAmount,
 } from "../BuyExtraUsageDialog";
+
+const mockCaptureEvent = jest.fn();
+jest.mock("@/lib/analytics/client", () => ({
+  captureAddCreditCtaClick: jest.fn(),
+  captureAddCreditCtaImpression: jest.fn(),
+  captureAuthenticatedEvent: (...args: unknown[]) => mockCaptureEvent(...args),
+  newCheckoutAttemptId: () => "attempt-B",
+}));
+
+// convex/react maps to the shared test double (one query result, one action
+// mock); requireActual loads that mapped module rather than an automock.
+const convexReact = jest.requireActual("convex/react") as {
+  setMockQueryResult: (next: unknown) => void;
+  useAction: () => jest.Mock<(args: Record<string, unknown>) => unknown>;
+};
 
 describe("BuyExtraUsageDialog", () => {
   it("projects a weekly burn from month-to-date extra usage", () => {
@@ -178,5 +193,84 @@ describe("BuyExtraUsageDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resume checkout" }));
 
     expect(onPurchase).toHaveBeenCalledWith(1000, "usage-1000-v1");
+  });
+});
+
+describe("ExtraUsageSection bundle checkout", () => {
+  it("reconciles holds on open and adopts the checkout's original attempt ID", async () => {
+    convexReact.setMockQueryResult({
+      extra_usage_enabled: true,
+      balanceDollars: 0,
+      policyVersion: "bundle-cap-v1",
+      periodMonth: "2026-11",
+      resetsAt: Date.now() + 86_400_000,
+      capDollars: 2000,
+      usedDollars: 1000,
+      pendingDollars: 1000,
+      remainingDollars: 0,
+      historyComplete: true,
+      resumableBundleIds: ["usage-1000-v1"],
+    });
+    const action = convexReact.useAction();
+    action.mockReset();
+    // A hash change keeps jsdom on the page instead of navigating away.
+    const checkoutUrl = `${window.location.href.split("#")[0]}#stripe-checkout`;
+    let purchaseCalls = 0;
+    action.mockImplementation(async (args) => {
+      if (!("bundleId" in args)) {
+        // Reconcile and payment-status calls take no purchase arguments.
+        return { released: false, hasPaymentMethod: false };
+      }
+      purchaseCalls++;
+      // The first answer is ambiguous; both name the original attempt A.
+      return purchaseCalls === 1
+        ? {
+            url: null,
+            error: "Checkout is taking longer than expected.",
+            errorCode: "bundle_checkout_pending",
+            retryable: true,
+            checkoutAttemptId: "attempt-A",
+          }
+        : {
+            url: checkoutUrl,
+            checkoutSessionId: "cs_original",
+            checkoutAttemptId: "attempt-A",
+            reservationReused: true,
+          };
+    });
+
+    // Loaded after the analytics mock is registered.
+    const { ExtraUsageSection } = require("../../ExtraUsageSection");
+    render(<ExtraUsageSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Buy credit" }));
+    // Opening with a pending checkout reconciles it before the cap refresh.
+    expect(action).toHaveBeenCalledWith({});
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /^\$1,000 credit Pay/ }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Resume checkout" }));
+    await waitFor(() => expect(purchaseCalls).toBe(1));
+    expect(action).toHaveBeenLastCalledWith(
+      expect.objectContaining({ checkoutAttemptId: "attempt-B" }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Resume checkout" }),
+    );
+    await waitFor(() => expect(purchaseCalls).toBe(2));
+    expect(action).toHaveBeenLastCalledWith(
+      expect.objectContaining({ checkoutAttemptId: "attempt-A" }),
+    );
+    await waitFor(() =>
+      expect(mockCaptureEvent).toHaveBeenCalledWith(
+        "add_credit_checkout_started",
+        expect.objectContaining({
+          checkout_attempt_id: "attempt-A",
+          stripe_checkout_session_id: "cs_original",
+        }),
+      ),
+    );
+    convexReact.setMockQueryResult(undefined);
   });
 });

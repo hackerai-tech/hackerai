@@ -515,6 +515,8 @@ type PurchaseSessionResult = {
   errorCode?: BundleCheckoutErrorCode;
   retryable?: boolean;
   reservationReused?: boolean;
+  /** Attempt ID the checkout was created under; clients adopt it. */
+  checkoutAttemptId?: string;
   bundleCap?: BundleCapSnapshot;
 };
 
@@ -775,7 +777,12 @@ async function createBundleCheckoutSession(
   }
 
   const resumed = reservation.status === "legacy_pending" || reservation.reused;
+  const canonicalAttemptId =
+    reservation.status === "reserved"
+      ? reservation.checkoutAttemptId
+      : undefined;
   const result = (fields: Omit<PurchaseSessionResult, "bundleCap">) => ({
+    ...(canonicalAttemptId && { checkoutAttemptId: canonicalAttemptId }),
     ...fields,
     bundleCap: reservation.cap,
     ...(resumed && { reservationReused: true }),
@@ -808,13 +815,24 @@ async function createBundleCheckoutSession(
         retryable: true,
       });
     }
+    // Pre-cap sessions have no reservation; their metadata holds the attempt.
+    const sessionAttemptId =
+      canonicalAttemptId ?? existing.metadata?.checkoutAttemptId;
+    const attemptFields = sessionAttemptId
+      ? { checkoutAttemptId: sessionAttemptId }
+      : {};
     if (existing.status === "open" && existing.url) {
-      return result({ url: existing.url, checkoutSessionId: existing.id });
+      return result({
+        ...attemptFields,
+        url: existing.url,
+        checkoutSessionId: existing.id,
+      });
     }
     if (existing.payment_status === "paid") {
       // Recover a lost success redirect or delayed webhook through the same
       // idempotent fulfillment endpoint instead of leaving paid credit pending.
       return result({
+        ...attemptFields,
         url: `${input.applicationOrigin}/api/extra-usage/confirm?session_id=${encodeURIComponent(existing.id)}`,
         checkoutSessionId: existing.id,
       });
@@ -1059,6 +1077,30 @@ async function createBundleCheckoutSession(
 // =============================================================================
 
 /**
+ * Release the signed-in user's bundle holds whose Checkout sessions Stripe
+ * confirms can no longer be paid, so an expired checkout cannot keep bundle
+ * cards disabled. Never creates a session or grants credit; open, paid and
+ * unresolved holds keep their allowance.
+ */
+export const reconcileBundleHolds = action({
+  args: {},
+  returns: v.object({ released: v.boolean() }),
+  handler: async (ctx): Promise<{ released: boolean }> => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || !extraUsageBundlesEnabled(identity.subject))
+      return { released: false };
+    const holds: PendingBundleHold[] = await ctx.runQuery(
+      internal.extraUsageBundles.listPendingBundleHolds,
+      { userId: identity.subject },
+    );
+    if (holds.length === 0) return { released: false };
+    return {
+      released: await reconcilePendingBundleHolds(ctx, identity.subject, holds),
+    };
+  },
+});
+
+/**
  * Get user's payment status (has valid payment method)
  */
 export const getPaymentStatus = action({
@@ -1143,6 +1185,7 @@ export const createPurchaseSession = action({
     ),
     retryable: v.optional(v.boolean()),
     reservationReused: v.optional(v.boolean()),
+    checkoutAttemptId: v.optional(v.string()),
     bundleCap: v.optional(bundleCapSnapshotValidator),
   }),
   handler: async (ctx, args): Promise<PurchaseSessionResult> => {

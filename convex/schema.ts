@@ -1389,6 +1389,18 @@ export default defineSchema({
     .index("by_user_attempt", ["user_id", "checkout_attempt_id"])
     .index("by_stripe_checkout_session_id", ["stripe_checkout_session_id"]),
 
+  // One row per client checkout attempt, pointing at the reservation that
+  // attempt resolved to. A retry whose earlier response was lost recovers the
+  // same (possibly paid or previous-month) checkout instead of starting another.
+  extra_usage_bundle_attempts: defineTable({
+    user_id: v.string(),
+    checkout_attempt_id: v.string(),
+    bundle_id: v.string(),
+    reservation_id: v.id("extra_usage_bundle_reservations"),
+    created_at: v.number(),
+    updated_at: v.number(),
+  }).index("by_user_attempt", ["user_id", "checkout_attempt_id"]),
+
   // Team-shared extra usage pool. Admin funds it; any member of the org draws
   // from it for overflow once the team subscription bucket is exhausted.
   // Same units as extra_usage (points; auto-reload amount in dollars).
