@@ -2,6 +2,7 @@ import { shouldDropExpectedConvexException } from "@/lib/posthog/expected-convex
 import { getComposerChangeDiagnostics } from "./composer-change-diagnostics";
 import { getRecentMessageNavigatorDiagnostics } from "./message-navigator-diagnostics";
 import { getRecentMessageTimestampDiagnostics } from "./message-time-diagnostics";
+import { getTeamHistoryWriteDiagnostics } from "./team-history-write-diagnostics";
 import {
   getUnhandledRejectionDiagnostics,
   getNearbyDispatchDiagnostics,
@@ -624,6 +625,26 @@ function nearbyDispatchGroup(
   }
 }
 
+/** The browser's History rate limit; it does not identify which writer spent the budget. */
+function isHistoryReplaceStateRateLimit(properties: Record<string, unknown>) {
+  try {
+    const list = properties.$exception_list;
+    if (!Array.isArray(list) || list.length !== 1) return false;
+    const exception = list[0];
+    const value = exception?.value;
+    return (
+      exception?.type === "DOMException" &&
+      typeof value === "string" &&
+      value.length <= 256 &&
+      value.startsWith("SecurityError: ") &&
+      /\bhistory\.replaceState\b/i.test(value) &&
+      /\bmore than 100(?!\d)/.test(value)
+    );
+  } catch {
+    return false;
+  }
+}
+
 const getExceptionListShape = (list: unknown): string => {
   if (list === undefined) return "missing";
   if (list === null) return "null";
@@ -691,6 +712,7 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
       key.startsWith("hackerai_recent_formatter_") ||
       key.startsWith("hackerai_recent_navigator_") ||
       key.startsWith("hackerai_nearby_dispatch_") ||
+      key.startsWith("hackerai_team_history_write_") ||
       key.startsWith("hackerai_exception_capture_")
     )
       delete properties[key];
@@ -720,6 +742,9 @@ export function enrichFrontendExceptionEvent<T extends PostHogEventLike>(
       ? getUnhandledRejectionDiagnostics()
       : {}),
     ...(dispatchGroup ? getNearbyDispatchDiagnostics(dispatchGroup) : {}),
+    ...(isHistoryReplaceStateRateLimit(properties)
+      ? getTeamHistoryWriteDiagnostics()
+      : {}),
     ...(buildCommit && /^[a-f0-9]{40}$/i.test(buildCommit)
       ? { hackerai_exception_build_commit: buildCommit.toLowerCase() }
       : {}),
