@@ -98,6 +98,7 @@ function renderHandlers(
   ) => Promise<void>,
   chatId = "chat-1",
   hasManuallyStoppedRef = { current: false },
+  onExplicitSend?: () => void,
 ) {
   return renderHook(
     ({ id }) =>
@@ -113,6 +114,7 @@ function renderHandlers(
         status: "ready",
         isSendingNowRef: { current: false },
         hasManuallyStoppedRef,
+        onExplicitSend,
       }),
     { initialProps: { id: chatId } },
   );
@@ -313,6 +315,23 @@ describe("useChatHandlers Send now for a queued free Ask", () => {
     });
     expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
     expect(stopped.current).toBe(false);
+  });
+
+  it("releases a pending activation queue fence on Send now", async () => {
+    const onExplicitSend = jest.fn();
+    const stopped = { current: true };
+    const { result } = renderHandlers(
+      jest.fn(async () => undefined),
+      "chat-1",
+      stopped,
+      onExplicitSend,
+    );
+
+    await act(async () => {
+      await result.current.handleSendNow("queued-1");
+    });
+
+    expect(onExplicitSend).toHaveBeenCalledTimes(1);
   });
 });
 

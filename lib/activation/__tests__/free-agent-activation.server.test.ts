@@ -831,6 +831,126 @@ describe("recording persisted Ask responses", () => {
   });
 });
 
+/**
+ * Old-chain cleanup for a deferred regeneration runs as the post-save hook,
+ * for both the primary and the provider-retry completion. It must follow a
+ * qualified durable save of the matching reply, and only that.
+ */
+describe("post-save hook (deferred regeneration cleanup)", () => {
+  const calls: string[] = [];
+  const hook = jest.fn(async () => {
+    calls.push("cleanup");
+  });
+  beforeEach(() => {
+    calls.length = 0;
+    hook.mockClear();
+    mockEval.mockImplementation(async (_script, keys, args) => {
+      calls.push("count");
+      const members = store.get(keys[0]) ?? new Set<string>();
+      if (!members.has(args[0]) && members.size < Number(args[1]))
+        members.add(args[0]);
+      store.set(keys[0], members);
+      return members.size;
+    });
+  });
+
+  it("runs after the durable save and after the count, once", async () => {
+    let acknowledge!: (ack: unknown) => void;
+    const pendingAck = new Promise<unknown>((resolve) => {
+      acknowledge = resolve;
+    });
+    const pending = record("r1", {
+      onPersistedSuccess: hook,
+      persist: saveLoop("r1", [
+        [{ id: "user-1", role: "user" }, null],
+        [{ id: "r1", role: "assistant" }, pendingAck],
+      ]),
+    });
+    await Promise.resolve();
+    expect(hook).not.toHaveBeenCalled();
+
+    acknowledge(null);
+    await expect(pending).resolves.toBe(true);
+    expect(calls).toEqual(["count", "cleanup"]);
+  });
+
+  it("runs without enrollment (flag off or unavailable) and counts nothing", async () => {
+    await expect(
+      record("r1", { enrollment: undefined, onPersistedSuccess: hook }),
+    ).resolves.toBe(true);
+    expect(calls).toEqual(["cleanup"]);
+  });
+
+  it.each<[string, Partial<Parameters<typeof record>[1]>]>([
+    [
+      "a fenced (stale_run) save of the reply",
+      {
+        persist: saveLoop("r1", [
+          [{ id: "r1", role: "assistant" }, "stale_run"],
+        ]),
+      },
+    ],
+    [
+      "a save of only the user message",
+      { persist: saveLoop("r1", [[{ id: "user-1", role: "user" }, null]]) },
+    ],
+    ["no final save", { persist: saveLoop("r1", []) }],
+    ["a cancelled or failed provider outcome", { succeeded: false }],
+    ["an empty reply", { messages: assistant("r1", "  ") }],
+    [
+      "a reasoning-only reply",
+      {
+        messages: [
+          {
+            id: "r1",
+            role: "assistant",
+            parts: [{ type: "reasoning", text: "thinking" }],
+          },
+        ] as UIMessage[],
+      },
+    ],
+    ["an automatic continuation", { isAutoContinue: true }],
+  ])("never runs for %s", async (_, overrides) => {
+    await record("r1", { onPersistedSuccess: hook, ...overrides });
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it("never runs when the save throws, and the save error propagates", async () => {
+    const saveError = new Error("convex save failed");
+    await expect(
+      record("r1", {
+        onPersistedSuccess: hook,
+        persist: () => Promise.reject(saveError),
+      }),
+    ).rejects.toBe(saveError);
+    expect(hook).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  it("a failing hook keeps the saved receipt and the count, and logs only the error type", async () => {
+    const failing = jest.fn(async () => {
+      throw new Error("REGENERATE_CHAIN_MISMATCH chat-private user-private");
+    });
+
+    await expect(record("r1", { onPersistedSuccess: failing })).resolves.toBe(
+      true,
+    );
+
+    expect(failing).toHaveBeenCalledTimes(1);
+    await expect(getFreeAgentActivationStatus(enrollment)).resolves.toEqual(
+      expect.objectContaining({ completedAskResponses: 1 }),
+    );
+    const logged = consoleWarn.mock.calls.map(([line]) => String(line));
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0])).toEqual({
+      level: "warn",
+      event: "free_ask_persisted_success_hook_failed",
+      service: "free-agent-activation",
+      error_name: "Error",
+    });
+  });
+});
+
 it("is removed by the existing account cleanup ownership matcher", () => {
   const key = freeAgentActivationStorageKey("user_123");
   expect(isUserRateLimitKey(key, "user_123")).toBe(true);

@@ -142,6 +142,8 @@ interface UseChatHandlersProps {
   ) => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
+  /** Explicit submit/Send now cancels a pending activation-gate queue fence. */
+  onExplicitSend?: () => void;
 }
 
 /** Server bound for `deferredRegenerateAssistantIds` (exact chain IDs). */
@@ -201,6 +203,7 @@ export const useChatHandlers = ({
   onAgentRunAlreadyFinished,
   onStopCallback,
   resetAutoContinueCount,
+  onExplicitSend,
   sendDisabledReason,
   pendingUserWait,
   goalState,
@@ -210,6 +213,13 @@ export const useChatHandlers = ({
   const isSubmittingReplyRef = useRef(false);
   const { setIsAutoResuming } = useDataStreamDispatch();
   const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
+  const onExplicitSendRef = useCommittedRef(onExplicitSend);
+  // An explicit submit or Send now releases a manual stop and any pending
+  // activation-gate fence, so the run it starts never re-pauses the queue.
+  const releaseExplicitSend = () => {
+    hasManuallyStoppedRef.current = false;
+    onExplicitSendRef.current?.();
+  };
   const {
     getInput,
     getUploadedFiles,
@@ -1007,7 +1017,7 @@ export const useChatHandlers = ({
     setIsAutoResuming(false);
 
     // A failed wait reply must not restart work held by an earlier Stop.
-    if (!pendingUserWait) hasManuallyStoppedRef.current = false;
+    if (!pendingUserWait) releaseExplicitSend();
     resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
@@ -1103,7 +1113,7 @@ export const useChatHandlers = ({
           currentChatIdRef.current === chatId &&
           stopGenerationRef.current === stopGeneration
         ) {
-          hasManuallyStoppedRef.current = false;
+          releaseExplicitSend();
         }
         clearSubmittedDraft();
         return true;
@@ -1200,7 +1210,7 @@ export const useChatHandlers = ({
         stopGeneration = control.stopGeneration;
         stoppedGoalForMessage = control.stoppedRun;
         // This user message deliberately replaces the stopped goal's work.
-        if (stoppedGoalForMessage) hasManuallyStoppedRef.current = false;
+        if (stoppedGoalForMessage) releaseExplicitSend();
         toast.info(
           "Goal paused for your message. Resume it from the goal panel when ready.",
         );
@@ -2070,7 +2080,7 @@ export const useChatHandlers = ({
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message || message.deliveryStatus === "sending") return;
     if (isSummarizingRef.current) {
-      hasManuallyStoppedRef.current = false;
+      releaseExplicitSend();
       setSummarySteer({ chatId, messageId, options });
       return;
     }
@@ -2082,7 +2092,7 @@ export const useChatHandlers = ({
     isSendingNowRef.current = true;
 
     // Reset manual stop flag when using Send Now
-    hasManuallyStoppedRef.current = false;
+    releaseExplicitSend();
 
     try {
       setIsAutoResuming(false);

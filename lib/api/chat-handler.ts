@@ -146,7 +146,7 @@ import { geolocation } from "@vercel/functions";
 import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { NextRequest } from "next/server";
 import {
-  deleteFreeAskRegenerateChain,
+  commitFreeAskRegenerateChain,
   getMessagesByChatId,
   getNotes,
   getUserCustomization,
@@ -155,6 +155,7 @@ import {
   saveMessage,
   updateChat,
   updateChatTitle,
+  validateFreeAskRegenerateChain,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -926,22 +927,42 @@ export const createChatHandler = () => {
 
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
-      // A potentially gated free Ask regeneration keeps the old answer until
-      // every admission and preflight check has passed and the quota deduction
-      // is tracked for refund. The backend deletes only the exact chain the
-      // client replaced, transactionally, so a refused or raced request never
-      // loses a saved answer. Regenerate history already excludes that chain.
+      // A potentially gated free Ask regeneration keeps the old answer saved
+      // through setup, generation, cancellation and persistence failures.
+      // Here, after every admission/preflight check, only verify (read-only)
+      // that the owned trailing chain is exactly the one being replaced; the
+      // old chain is deleted only after the replacement is durably saved.
+      // Regenerate history already excludes that chain.
       if (deferredRegenerateAssistantIds) {
-        await deleteFreeAskRegenerateChain({
+        await validateFreeAskRegenerateChain({
           chatId,
           userId,
           expectedAssistantIds: deferredRegenerateAssistantIds,
-          todos,
         });
         if (todos !== undefined) {
           baseTodos = getBaseTodosForRequest(todos, { regenerate });
         }
       }
+      // `supersededAssistantId` is only ever this handler's own primary
+      // attempt ID, passed after a successful provider retry.
+      const commitDeferredRegenerate = deferredRegenerateAssistantIds
+        ? (
+              replacementAssistantId: string,
+              finalTodos: Todo[],
+              supersededAssistantId?: string,
+            ) =>
+            () =>
+              commitFreeAskRegenerateChain({
+                chatId,
+                userId,
+                expectedAssistantIds: deferredRegenerateAssistantIds,
+                replacementAssistantId,
+                ...(supersededAssistantId !== undefined && {
+                  supersededAssistantId,
+                }),
+                todos: finalTodos,
+              })
+        : undefined;
 
       // Start cancellation subscriber (Redis pub/sub with fallback to polling)
       let subscriberStopped = false;
@@ -2871,6 +2892,12 @@ export const createChatHandler = () => {
                                       state.providerError == null,
                                     messages: retryMessages,
                                     responseId: retryMessageId,
+                                    onPersistedSuccess:
+                                      commitDeferredRegenerate?.(
+                                        retryMessageId,
+                                        mergedTodos,
+                                        assistantMessageId,
+                                      ),
                                     persist: async () => {
                                       let finalAssistantSaved = false;
                                       for (const msg of retryMessages) {
@@ -3421,6 +3448,10 @@ export const createChatHandler = () => {
                           state.providerError == null,
                         messages,
                         responseId: assistantMessageId,
+                        onPersistedSuccess: commitDeferredRegenerate?.(
+                          assistantMessageId,
+                          mergedTodos,
+                        ),
                         persist: async () => {
                           let finalAssistantSaved = false;
                           for (const message of messages) {

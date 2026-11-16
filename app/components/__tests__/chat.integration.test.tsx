@@ -2146,6 +2146,106 @@ describe("Chat Component Integration", () => {
       );
     });
 
+    it("fences the queue once a durable run that was active at gate entry finishes", async () => {
+      mockUseRealChatHandlers = true;
+      mockRouteParams = { id: "gated-run-chat" };
+      mockLocalConnections = [];
+      mockRestoredChat = {
+        id: "gated-run-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        active_trigger_run_id: "run-before-gate",
+      };
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+
+      // The gate activates mid-run; the run keeps going.
+      mockDesktopState = { freeAgentGateActive: true };
+      await act(async () => rerender(view()));
+      expect(mockStop).not.toHaveBeenCalled();
+      delete mockRestoredChat.active_trigger_run_id;
+      await act(async () => rerender(view()));
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      await act(async () => rerender(view()));
+
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+
+      await act(async () => {
+        await mockChatInputProps.onSendNow("queued-message-id");
+      });
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            parts: [{ type: "text", text: "continue" }],
+          }),
+          expect.objectContaining({
+            body: expect.objectContaining({
+              mode: "agent",
+              sandboxPreference: "desktop",
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("lets an explicit send during that run cancel the pending fence", async () => {
+      mockUseRealChatHandlers = true;
+      mockRouteParams = { id: "gated-steer-chat" };
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      mockRestoredChat = {
+        id: "gated-steer-chat",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+        active_trigger_run_id: "run-before-gate",
+      };
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "streaming" });
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      mockDesktopState = { freeAgentGateActive: true };
+      await act(async () => rerender(view()));
+
+      // The user explicitly submits during the authorized run; it is queued.
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Submit test message" }),
+        );
+      });
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+
+      // The run finishing must not re-pause that fresh, explicit request.
+      delete mockRestoredChat.active_trigger_run_id;
+      mockUseChat.mockReturnValue({ ...mockUseChat(), status: "ready" });
+      await act(async () => rerender(view()));
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            parts: [{ type: "text", text: "continue" }],
+          }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
+    });
+
     it("shows Goal input while browser takeover holds the run, then returns to pursuing", async () => {
       global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
         ok: true,

@@ -51,9 +51,9 @@ const loadSaveMessageWithMocks = async () => {
   }));
 
   const {
+    commitFreeAskRegenerateChain,
     deleteAllChatsForBackend,
     deleteChatForBackend,
-    deleteFreeAskRegenerateChain,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getProjectById,
@@ -65,11 +65,13 @@ const loadSaveMessageWithMocks = async () => {
     setActiveTriggerRun,
     updateChat,
     updateChatTitle,
+    validateFreeAskRegenerateChain,
   } = await import("../actions");
   return {
+    commitFreeAskRegenerateChain,
     deleteAllChatsForBackend,
     deleteChatForBackend,
-    deleteFreeAskRegenerateChain,
+    validateFreeAskRegenerateChain,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getProjectById,
@@ -89,7 +91,7 @@ const loadSaveMessageWithMocks = async () => {
   };
 };
 
-describe("deleteFreeAskRegenerateChain", () => {
+describe("deferred free Ask regeneration chain callers", () => {
   const originalServiceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   afterEach(() => {
     if (originalServiceKey === undefined)
@@ -101,15 +103,42 @@ describe("deleteFreeAskRegenerateChain", () => {
     return loadSaveMessageWithMocks();
   };
 
-  it("sends the server's own service key, the trusted user and the exact chain", async () => {
-    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
-    mockMutation.mockResolvedValueOnce(null as never);
-    const todos = [{ id: "t1", content: "Retest", status: "pending" as const }];
+  const mismatch = () =>
+    Object.assign(new Error("ConvexError"), {
+      data: { code: "REGENERATE_CHAIN_MISMATCH", message: "changed" },
+    }) as never;
+  const todos = [{ id: "t1", content: "Retest", status: "pending" as const }];
 
-    await deleteFreeAskRegenerateChain({
+  it("validates read-only with the server's own service key and the exact chain", async () => {
+    const { validateFreeAskRegenerateChain, mockQuery, mockMutation } =
+      await load();
+    mockQuery.mockResolvedValueOnce(null as never);
+
+    await validateFreeAskRegenerateChain({
       chatId: "chat-1",
       userId: "user-1",
       expectedAssistantIds: ["a1", "a2"],
+    });
+
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery.mock.calls[0][1]).toEqual({
+      serviceKey: "server-only-service-key",
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1", "a2"],
+    });
+  });
+
+  it("commits with the saved replacement, resetSummary and the final todos", async () => {
+    const { commitFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockResolvedValueOnce(null as never);
+
+    await commitFreeAskRegenerateChain({
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1", "a2"],
+      replacementAssistantId: "r1",
       todos,
     });
 
@@ -119,6 +148,7 @@ describe("deleteFreeAskRegenerateChain", () => {
       chatId: "chat-1",
       userId: "user-1",
       expectedAssistantIds: ["a1", "a2"],
+      replacementAssistantId: "r1",
       // Matches the client regenerate path so the replaced answer is not
       // kept in a conversation summary.
       resetSummary: true,
@@ -126,48 +156,81 @@ describe("deleteFreeAskRegenerateChain", () => {
     });
   });
 
-  it("omits todos when the client did not send them", async () => {
-    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
-    mockMutation.mockResolvedValueOnce(null as never);
-    await deleteFreeAskRegenerateChain({
+  it("commit forwards the server's superseded primary attempt only when given", async () => {
+    const { commitFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockResolvedValue(null as never);
+    const base = {
       chatId: "chat-1",
       userId: "user-1",
       expectedAssistantIds: ["a1"],
+      replacementAssistantId: "retry-1",
+    };
+
+    await commitFreeAskRegenerateChain({
+      ...base,
+      supersededAssistantId: "primary-1",
+    });
+    await commitFreeAskRegenerateChain(base);
+
+    expect(mockMutation.mock.calls[0][1]).toMatchObject({
+      replacementAssistantId: "retry-1",
+      supersededAssistantId: "primary-1",
+      resetSummary: true,
+    });
+    expect(mockMutation.mock.calls[1][1]).not.toHaveProperty(
+      "supersededAssistantId",
+    );
+  });
+
+  it("commit omits todos when none were given", async () => {
+    const { commitFreeAskRegenerateChain, mockMutation } = await load();
+    mockMutation.mockResolvedValueOnce(null as never);
+    await commitFreeAskRegenerateChain({
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1"],
+      replacementAssistantId: "r1",
     });
     expect(mockMutation.mock.calls[0][1]).not.toHaveProperty("todos");
   });
 
-  it("turns a changed chain into a definitive, recoverable chat refusal", async () => {
-    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
-    mockMutation.mockRejectedValueOnce(
-      Object.assign(new Error("ConvexError"), {
-        data: { code: "REGENERATE_CHAIN_MISMATCH", message: "changed" },
-      }) as never,
-    );
-
-    await expect(
-      deleteFreeAskRegenerateChain({
+  it.each(["validate", "commit"] as const)(
+    "%s turns a changed chain into a definitive, recoverable chat refusal",
+    async (phase) => {
+      const loaded = await load();
+      const args = {
         chatId: "chat-1",
         userId: "user-1",
         expectedAssistantIds: ["a1"],
-      }),
-    ).rejects.toMatchObject({
-      type: "bad_request",
-      surface: "chat",
-      metadata: { regenerate_chain_mismatch: true },
-    });
-  });
+      };
+      const call =
+        phase === "validate"
+          ? (loaded.mockQuery.mockRejectedValueOnce(mismatch()),
+            loaded.validateFreeAskRegenerateChain(args))
+          : (loaded.mockMutation.mockRejectedValueOnce(mismatch()),
+            loaded.commitFreeAskRegenerateChain({
+              ...args,
+              replacementAssistantId: "r1",
+            }));
+
+      await expect(call).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "chat",
+        metadata: { regenerate_chain_mismatch: true },
+      });
+    },
+  );
 
   it("maps an ownership refusal to forbidden, not a chain mismatch", async () => {
-    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    const { validateFreeAskRegenerateChain, mockQuery } = await load();
     jest.spyOn(console, "warn").mockImplementation(() => {});
-    mockMutation.mockRejectedValueOnce(
+    mockQuery.mockRejectedValueOnce(
       Object.assign(new Error("ConvexError"), {
         data: { code: "CHAT_UNAUTHORIZED", message: "no" },
       }) as never,
     );
 
-    const error = await deleteFreeAskRegenerateChain({
+    const error = await validateFreeAskRegenerateChain({
       chatId: "chat-1",
       userId: "user-1",
       expectedAssistantIds: ["a1"],
@@ -179,28 +242,39 @@ describe("deleteFreeAskRegenerateChain", () => {
   });
 
   it("never exposes the service key in a refusal or its logs", async () => {
-    const { deleteFreeAskRegenerateChain, mockMutation } = await load();
+    const {
+      validateFreeAskRegenerateChain,
+      commitFreeAskRegenerateChain,
+      mockQuery,
+      mockMutation,
+    } = await load();
     const logged: string[] = [];
     for (const method of ["warn", "error", "info", "log"] as const)
       jest.spyOn(console, method).mockImplementation((...args: unknown[]) => {
         logged.push(args.map(String).join(" "));
       });
-    mockMutation.mockRejectedValueOnce(
-      Object.assign(new Error("ConvexError"), {
-        data: { code: "REGENERATE_CHAIN_MISMATCH", message: "changed" },
-      }) as never,
-    );
+    mockQuery.mockRejectedValueOnce(mismatch());
+    mockQuery.mockRejectedValueOnce(new Error("upstream 500") as never);
+    mockMutation.mockRejectedValueOnce(mismatch());
     mockMutation.mockRejectedValueOnce(new Error("upstream 500") as never);
+    const args = {
+      chatId: "chat-1",
+      userId: "user-1",
+      expectedAssistantIds: ["a1"],
+    };
 
-    const errors = await Promise.all(
-      [["a1"], ["a2"]].map((expectedAssistantIds) =>
-        deleteFreeAskRegenerateChain({
-          chatId: "chat-1",
-          userId: "user-1",
-          expectedAssistantIds,
-        }).catch((caught: unknown) => caught),
-      ),
-    );
+    const errors = await Promise.all([
+      validateFreeAskRegenerateChain(args).catch((caught: unknown) => caught),
+      validateFreeAskRegenerateChain(args).catch((caught: unknown) => caught),
+      commitFreeAskRegenerateChain({
+        ...args,
+        replacementAssistantId: "r1",
+      }).catch((caught: unknown) => caught),
+      commitFreeAskRegenerateChain({
+        ...args,
+        replacementAssistantId: "r1",
+      }).catch((caught: unknown) => caught),
+    ]);
     const visible = JSON.stringify(
       errors.map((error) => ({
         message: (error as Error).message,

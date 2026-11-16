@@ -948,26 +948,74 @@ export async function deleteChatForBackend({
   }
 }
 
-/** Must match convex/messages.ts deleteRegenerateChainForBackend. */
+/** Must match convex/messages.ts regenerate chain functions. */
 const REGENERATE_CHAIN_MISMATCH_CODE = "REGENERATE_CHAIN_MISMATCH";
 
+const regenerateChainError = (error: unknown) =>
+  hasDatabaseErrorCode(getErrorData(error), REGENERATE_CHAIN_MISMATCH_CODE)
+    ? new ChatSDKError(
+        "bad_request:chat",
+        "This conversation changed before the answer could be replaced. Reload and try again.",
+        { regenerate_chain_mismatch: true },
+      )
+    : undefined;
+
 /**
- * Deletes the exact trailing assistant chain a deferred free Ask regeneration
- * replaces. Called only after admission; Convex verifies ownership, history
- * access and the expected IDs in the same transaction. A changed chain is a
- * definitive refusal the client recovers from by restoring its snapshot.
+ * Deferred free Ask regeneration, before the provider starts: confirms the
+ * owned trailing chain is exactly the one the client is replacing. Read-only;
+ * the saved answer stays in place. A changed chain is a definitive refusal
+ * the client recovers from by restoring its snapshot.
  */
-export async function deleteFreeAskRegenerateChain({
+export async function validateFreeAskRegenerateChain({
   chatId,
   userId,
   expectedAssistantIds,
+}: {
+  chatId: string;
+  userId: string;
+  expectedAssistantIds: string[];
+}): Promise<void> {
+  const operation = "messages.validateRegenerateChainForBackend";
+  try {
+    await getConvexClient().query(
+      api.messages.validateRegenerateChainForBackend,
+      { serviceKey, chatId, userId, expectedAssistantIds },
+    );
+  } catch (error) {
+    throw (
+      regenerateChainError(error) ??
+      databaseError(operation, error, { chat_id: chatId, user_id: userId })
+    );
+  }
+}
+
+/**
+ * Deferred free Ask regeneration, after the replacement reply was durably
+ * saved: deletes only the verified old chain. Convex refuses (preserving
+ * everything) unless the replacement is the newest saved answer followed by
+ * exactly the expected old chain.
+ */
+export async function commitFreeAskRegenerateChain({
+  chatId,
+  userId,
+  expectedAssistantIds,
+  replacementAssistantId,
+  supersededAssistantId,
   todos,
 }: {
   chatId: string;
   userId: string;
   expectedAssistantIds: string[];
+  replacementAssistantId: string;
+  /**
+   * Server-generated ID of this request's own primary attempt, passed only
+   * when a provider retry produced the replacement. Never client input.
+   */
+  supersededAssistantId?: string;
+  /** The run's final merged todos. */
   todos?: Todo[];
 }): Promise<void> {
+  const operation = "messages.deleteRegenerateChainForBackend";
   try {
     await getConvexClient().mutation(
       api.messages.deleteRegenerateChainForBackend,
@@ -976,6 +1024,8 @@ export async function deleteFreeAskRegenerateChain({
         chatId,
         userId,
         expectedAssistantIds,
+        replacementAssistantId,
+        ...(supersededAssistantId !== undefined && { supersededAssistantId }),
         // Same intent as the client regenerate path: the replaced answer
         // must not survive in a summary of the conversation.
         resetSummary: true,
@@ -983,19 +1033,10 @@ export async function deleteFreeAskRegenerateChain({
       },
     );
   } catch (error) {
-    if (
-      hasDatabaseErrorCode(getErrorData(error), REGENERATE_CHAIN_MISMATCH_CODE)
-    ) {
-      throw new ChatSDKError(
-        "bad_request:chat",
-        "This conversation changed before the answer could be replaced. Reload and try again.",
-        { regenerate_chain_mismatch: true },
-      );
-    }
-    throw databaseError("messages.deleteRegenerateChainForBackend", error, {
-      chat_id: chatId,
-      user_id: userId,
-    });
+    throw (
+      regenerateChainError(error) ??
+      databaseError(operation, error, { chat_id: chatId, user_id: userId })
+    );
   }
 }
 

@@ -85,10 +85,13 @@ const ADMITTED = new Error("admitted past activation gate");
 const mockGetUserCustomization = jest.fn();
 const mockGetMessagesByChatId = jest.fn();
 const mockHandleInitialChat = jest.fn();
-const mockDeleteRegenerateChain = jest.fn();
+const mockValidateRegenerateChain = jest.fn();
+const mockCommitRegenerateChain = jest.fn();
 jest.mock("@/lib/db/actions", () => ({
-  deleteFreeAskRegenerateChain: (...args: unknown[]) =>
-    mockDeleteRegenerateChain(...args),
+  validateFreeAskRegenerateChain: (...args: unknown[]) =>
+    mockValidateRegenerateChain(...args),
+  commitFreeAskRegenerateChain: (...args: unknown[]) =>
+    mockCommitRegenerateChain(...args),
   getUserCustomization: (...args: unknown[]) =>
     mockGetUserCustomization(...args),
   getMessagesByChatId: (...args: unknown[]) => mockGetMessagesByChatId(...args),
@@ -322,8 +325,11 @@ describe("deferred free Ask regeneration", () => {
       callOrder.push("quota");
       return { remaining: 9, pointsDeducted: 0 };
     });
-    mockDeleteRegenerateChain.mockImplementation(async () => {
-      callOrder.push("delete_chain");
+    mockValidateRegenerateChain.mockImplementation(async () => {
+      callOrder.push("validate_chain");
+    });
+    mockCommitRegenerateChain.mockImplementation(async () => {
+      callOrder.push("commit_chain");
     });
     mockProcessChatMessages.mockImplementation(async () => {
       callOrder.push("model_preparation");
@@ -346,23 +352,25 @@ describe("deferred free Ask regeneration", () => {
     jest.restoreAllMocks();
   });
 
-  it("deletes the exact replaced chain only after every admission and preflight check, before the provider", async () => {
+  it("validates the exact chain after every admission and preflight check, and keeps it when stream setup then fails", async () => {
     stored.set(STORAGE_KEY, 2);
 
-    await send("ask", regenerateBody);
+    const response = await send("ask", regenerateBody);
 
-    expect(mockDeleteRegenerateChain).toHaveBeenCalledWith({
+    expect(mockValidateRegenerateChain).toHaveBeenCalledWith({
       chatId: CHAT_ID,
       userId: freeIdentity.userId,
       expectedAssistantIds: ["assistant-old-1", "assistant-old-2"],
-      todos,
     });
     expect(callOrder).toEqual([
       "quota",
       "model_preparation",
-      "delete_chain",
+      "validate_chain",
       "provider_boundary",
     ]);
+    // Setup failed before any replacement was saved: the old chain stays.
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
@@ -375,7 +383,8 @@ describe("deferred free Ask regeneration", () => {
     const response = await send("ask", regenerateBody);
 
     expect(response.status).toBe(400);
-    expect(mockDeleteRegenerateChain).not.toHaveBeenCalled();
+    expect(mockValidateRegenerateChain).not.toHaveBeenCalled();
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
     expect(mockCreateCancellationSubscriber).not.toHaveBeenCalled();
   });
 
@@ -397,18 +406,19 @@ describe("deferred free Ask regeneration", () => {
           new ChatSDKError("rate_limit:chat", "Daily limit reached"),
         ),
     ],
-  ])("never deletes the old answer when %s", async (_, arrange) => {
+  ])("never touches the old answer when %s", async (_, arrange) => {
     arrange();
 
     const response = await send("ask", regenerateBody);
 
     expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(mockDeleteRegenerateChain).not.toHaveBeenCalled();
+    expect(mockValidateRegenerateChain).not.toHaveBeenCalled();
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
     expect(mockCreateCancellationSubscriber).not.toHaveBeenCalled();
   });
 
   it("refuses a raced chain without starting the provider", async () => {
-    mockDeleteRegenerateChain.mockRejectedValue(
+    mockValidateRegenerateChain.mockRejectedValue(
       new ChatSDKError("bad_request:chat", "changed", {
         regenerate_chain_mismatch: true,
       }),
@@ -421,13 +431,15 @@ describe("deferred free Ask regeneration", () => {
       metadata: { regenerate_chain_mismatch: true },
     });
     expect(mockCreateCancellationSubscriber).not.toHaveBeenCalled();
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
     expect(mockReleaseLock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the existing regenerate behavior when the marker is absent", async () => {
     await send("ask", { regenerate: true, todos });
 
-    expect(mockDeleteRegenerateChain).not.toHaveBeenCalled();
+    expect(mockValidateRegenerateChain).not.toHaveBeenCalled();
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
     expect(callOrder).toEqual([
       "quota",
       "model_preparation",
@@ -473,6 +485,7 @@ describe("deferred free Ask regeneration", () => {
       metadata: { invalid_request_field: "deferredRegenerateAssistantIds" },
     });
     expect(mockGetUserIDAndPro).not.toHaveBeenCalled();
-    expect(mockDeleteRegenerateChain).not.toHaveBeenCalled();
+    expect(mockValidateRegenerateChain).not.toHaveBeenCalled();
+    expect(mockCommitRegenerateChain).not.toHaveBeenCalled();
   });
 });

@@ -496,11 +496,15 @@ export function isFinalAssistantSaveReceipt(
 }
 
 /**
- * Runs `persist` (the save loop) and counts the response only when it returns
- * a durable receipt for the final assistant message. A rejected save
- * propagates without counting. Only a successful, non-continuation Ask reply
- * with visible text counts; retries of the same response ID count once.
- * Recording failures never affect the saved reply. Returns the receipt.
+ * Runs `persist` (the save loop) and qualifies the reply as a persisted Ask
+ * success only when `persist` returns a durable receipt for the final
+ * assistant message, the outcome succeeded, it is not a continuation, and the
+ * reply has visible text. A rejected save propagates and qualifies nothing.
+ *
+ * For a qualified success, an enrolled user's response is counted first
+ * (retries of the same ID count once), then `onPersistedSuccess` runs, with
+ * or without enrollment. Neither step can turn the saved reply into an error.
+ * Returns the receipt.
  */
 export async function persistThenRecordFreeAgentAskResponse({
   enrollment,
@@ -510,6 +514,7 @@ export async function persistThenRecordFreeAgentAskResponse({
   messages,
   responseId,
   persist,
+  onPersistedSuccess,
 }: {
   enrollment: FreeAgentActivationEnrollment | undefined;
   mode: string;
@@ -519,19 +524,35 @@ export async function persistThenRecordFreeAgentAskResponse({
   responseId: string;
   /** Resolves true only for a durable save receipt of `responseId`. */
   persist: () => Promise<boolean>;
+  /** Best-effort work that must only follow a qualified, saved reply. */
+  onPersistedSuccess?: () => Promise<void>;
 }): Promise<boolean> {
   const finalAssistantSaved = await persist();
-  if (
+  const qualified =
     finalAssistantSaved === true &&
-    enrollment &&
     mode === "ask" &&
     !isAutoContinue &&
     succeeded &&
     responseId.length > 0 &&
     responseId.length <= MAX_RESPONSE_ID_LENGTH &&
-    hasCompletedAssistantText(messages, responseId)
-  ) {
+    hasCompletedAssistantText(messages, responseId);
+  if (!qualified) return finalAssistantSaved;
+  if (enrollment) {
     await recordCompletedAskResponse(enrollment.quotaSubject, responseId);
+  }
+  if (onPersistedSuccess) {
+    try {
+      await onPersistedSuccess();
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "free_ask_persisted_success_hook_failed",
+          service: "free-agent-activation",
+          error_name: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+    }
   }
   return finalAssistantSaved;
 }

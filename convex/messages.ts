@@ -10,7 +10,7 @@ import {
   stripClientAbliterationRouting,
 } from "../lib/experiments/abliteration-history";
 import { query, mutation, internalQuery } from "./lib/serviceFunctions";
-import type { MutationCtx } from "./lib/serviceFunctions";
+import type { MutationCtx, QueryCtx } from "./lib/serviceFunctions";
 import {
   v,
   ConvexError,
@@ -1523,17 +1523,19 @@ const MAX_REGENERATE_TAIL_RECORDS = 1024;
  * the first non-hidden user message so regenerate targets the original
  * request. Do not load the rest of a long conversation for its tail.
  */
+type MessageReaderCtx = { db: GenericDatabaseReader<DataModel> };
+
 function readTrailingResponseChain(
-  ctx: MutationCtx,
+  ctx: MessageReaderCtx,
   chatId: string,
 ): Promise<Doc<"messages">[]>;
 function readTrailingResponseChain(
-  ctx: MutationCtx,
+  ctx: MessageReaderCtx,
   chatId: string,
   maxRecords: number,
 ): Promise<Doc<"messages">[] | "over_bound">;
 async function readTrailingResponseChain(
-  ctx: MutationCtx,
+  ctx: MessageReaderCtx,
   chatId: string,
   maxRecords = Number.POSITIVE_INFINITY,
 ): Promise<Doc<"messages">[] | "over_bound"> {
@@ -1564,6 +1566,8 @@ async function deleteTrailingResponseChain(
   chatId: string,
   messagesToDelete: Doc<"messages">[],
   resetSummary: boolean | undefined,
+  /** Files still referenced by a kept message; never deleted here. */
+  protectedFileIds: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   await invalidateModelHistory(ctx, chatId);
   if (resetSummary) {
@@ -1584,6 +1588,7 @@ async function deleteTrailingResponseChain(
   for (const msg of messagesToDelete) {
     if (msg.file_ids && msg.file_ids.length > 0) {
       for (const fileId of msg.file_ids) {
+        if (protectedFileIds.has(fileId)) continue;
         try {
           const file = await ctx.db.get(fileId);
           if (file) {
@@ -1702,12 +1707,112 @@ export const deleteLastAssistantMessage = mutation({
   },
 });
 
+const regenerateChainMismatch = (message: string) =>
+  new ConvexError({ code: REGENERATE_CHAIN_MISMATCH_CODE, message });
+
+const isValidRegenerateId = (id: string) =>
+  id.trim().length > 0 && id.length <= MAX_EXPECTED_REGENERATE_ID_LENGTH;
+
+/** Bounded, unique, non-empty expected old assistant IDs. */
+function expectedRegenerateIds(ids: string[]): Set<string> {
+  const expected = new Set(ids);
+  if (
+    ids.length === 0 ||
+    ids.length > MAX_EXPECTED_REGENERATE_IDS ||
+    expected.size !== ids.length ||
+    !ids.every(isValidRegenerateId)
+  ) {
+    throw regenerateChainMismatch("Invalid regeneration chain");
+  }
+  return expected;
+}
+
+/** Same ownership, deletion and history-access fences for both phases. */
+async function assertRegenerateChainAccess(
+  ctx: QueryCtx | MutationCtx,
+  chatId: string,
+  userId: string,
+): Promise<void> {
+  const chat = await loadOwnedChat(ctx, chatId, userId);
+  if (
+    chat.deletion_started_at !== undefined ||
+    (await isUserDeletionFenced(ctx.db, userId))
+  ) {
+    throw new ConvexError({
+      code: "CHAT_NOT_FOUND",
+      message: "This chat doesn't exist",
+    });
+  }
+  await assertUserCanAccessChatHistory(ctx, userId);
+}
+
 /**
- * Server-side replacement for a deferred free Ask regeneration. Runs only
- * after the web route admitted the request. In one transaction it verifies
- * chat ownership and history access, then deletes the trailing chain only if
- * its assistant IDs are exactly the ones the client replaced. A newer saved
- * answer (or any other mismatch) is left intact and the request is refused.
+ * The old chain is exactly the expected assistants, all owned by the user.
+ * `supersededId` is the same request's own earlier attempt, which may
+ * (but need not) also be present.
+ */
+function oldChainMatches(
+  chain: Doc<"messages">[],
+  expected: Set<string>,
+  userId: string,
+  supersededId?: string,
+): boolean {
+  const assistantIds = chain
+    .filter((msg) => msg.role === "assistant" && msg.id !== supersededId)
+    .map((msg) => msg.id);
+  return (
+    chain.every((msg) => msg.user_id === undefined || msg.user_id === userId) &&
+    assistantIds.length === expected.size &&
+    assistantIds.every((id) => expected.has(id))
+  );
+}
+
+/**
+ * Deferred free Ask regeneration, phase 1 (read-only). Before the provider
+ * starts, confirm the trailing chain is exactly the one the client is
+ * replacing. Nothing is deleted or changed here: the saved answer survives
+ * every setup, provider, cancellation and persistence failure.
+ */
+export const validateRegenerateChainForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    expectedAssistantIds: v.array(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const expected = expectedRegenerateIds(args.expectedAssistantIds);
+    await assertRegenerateChainAccess(ctx, args.chatId, args.userId);
+    const chain = await readTrailingResponseChain(
+      ctx,
+      args.chatId,
+      MAX_REGENERATE_TAIL_RECORDS,
+    );
+    if (chain === "over_bound") {
+      throw regenerateChainMismatch(
+        "This conversation's latest answer is too long to replace",
+      );
+    }
+    if (!oldChainMatches(chain, expected, args.userId)) {
+      throw regenerateChainMismatch(
+        "This conversation changed before the answer was replaced",
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * Deferred free Ask regeneration, phase 2 (commit). Runs only after the
+ * replacement reply was durably saved. Requires that replacement to be the
+ * newest saved assistant in this user's chat, followed by exactly the
+ * expected old chain plus, optionally, `supersededAssistantId` (the same
+ * request's own primary attempt, supplied only by the server after a
+ * successful provider retry). Deletes only that chain and its hidden
+ * continuations, never the replacement, its files, or newer/unrelated work.
+ * Any mismatch preserves everything. Repeating a completed commit is a no-op.
  */
 export const deleteRegenerateChainForBackend = mutation({
   args: {
@@ -1715,73 +1820,93 @@ export const deleteRegenerateChainForBackend = mutation({
     chatId: v.string(),
     userId: v.string(),
     expectedAssistantIds: v.array(v.string()),
+    replacementAssistantId: v.string(),
+    supersededAssistantId: v.optional(v.string()),
     resetSummary: v.optional(v.boolean()),
     todos: regenerateTodosValidator,
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    const expected = new Set(args.expectedAssistantIds);
+    const expected = expectedRegenerateIds(args.expectedAssistantIds);
     if (
-      args.expectedAssistantIds.length === 0 ||
-      args.expectedAssistantIds.length > MAX_EXPECTED_REGENERATE_IDS ||
-      expected.size !== args.expectedAssistantIds.length ||
-      args.expectedAssistantIds.some(
-        (id) =>
-          id.trim().length === 0 ||
-          id.length > MAX_EXPECTED_REGENERATE_ID_LENGTH,
-      )
+      !isValidRegenerateId(args.replacementAssistantId) ||
+      expected.has(args.replacementAssistantId)
     ) {
-      throw new ConvexError({
-        code: REGENERATE_CHAIN_MISMATCH_CODE,
-        message: "Invalid regeneration chain",
-      });
+      throw regenerateChainMismatch("Invalid replacement answer");
     }
-
-    const chat = await loadOwnedChat(ctx, args.chatId, args.userId);
+    const superseded = args.supersededAssistantId;
     if (
-      chat.deletion_started_at !== undefined ||
-      (await isUserDeletionFenced(ctx.db, args.userId))
+      superseded !== undefined &&
+      (!isValidRegenerateId(superseded) ||
+        superseded === args.replacementAssistantId ||
+        expected.has(superseded))
     ) {
-      throw new ConvexError({
-        code: "CHAT_NOT_FOUND",
-        message: "This chat doesn't exist",
-      });
+      throw regenerateChainMismatch("Invalid superseded attempt");
     }
-    await assertUserCanAccessChatHistory(ctx, args.userId);
+    await assertRegenerateChainAccess(ctx, args.chatId, args.userId);
 
-    const messagesToDelete = await readTrailingResponseChain(
+    // One extra record for the replacement at the head of the chain.
+    const chain = await readTrailingResponseChain(
       ctx,
       args.chatId,
-      MAX_REGENERATE_TAIL_RECORDS,
+      MAX_REGENERATE_TAIL_RECORDS + 1,
     );
-    if (messagesToDelete === "over_bound") {
-      throw new ConvexError({
-        code: REGENERATE_CHAIN_MISMATCH_CODE,
-        message: "This conversation's latest answer is too long to replace",
-      });
+    if (chain === "over_bound") {
+      throw regenerateChainMismatch(
+        "This conversation's latest answer is too long to replace",
+      );
     }
-    const assistantIds = messagesToDelete
-      .filter((msg) => msg.role === "assistant")
-      .map((msg) => msg.id);
+    const [replacement, ...oldChain] = chain;
     if (
-      messagesToDelete.some(
-        (msg) => msg.user_id !== undefined && msg.user_id !== args.userId,
-      ) ||
-      assistantIds.length !== expected.size ||
-      !assistantIds.every((id) => expected.has(id))
+      !replacement ||
+      replacement.role !== "assistant" ||
+      replacement.id !== args.replacementAssistantId ||
+      replacement.user_id !== args.userId
     ) {
-      throw new ConvexError({
-        code: REGENERATE_CHAIN_MISMATCH_CODE,
-        message: "This conversation changed before the answer was replaced",
-      });
+      throw regenerateChainMismatch(
+        "The replacement answer is not the latest saved answer",
+      );
     }
 
+    if (
+      !oldChain.some((msg) => msg.role === "assistant" && msg.id !== superseded)
+    ) {
+      // Already committed: the old IDs must be gone everywhere, not merely
+      // outside the trailing chain. A superseded attempt left behind without
+      // its old chain is not a state this commit produces; preserve it.
+      if (oldChain.some((msg) => msg.role === "assistant")) {
+        throw regenerateChainMismatch(
+          "This conversation changed before the answer was replaced",
+        );
+      }
+      for (const id of expected) {
+        const stillSaved = await ctx.db
+          .query("messages")
+          .withIndex("by_message_id", (q) => q.eq("id", id))
+          .first();
+        if (stillSaved) {
+          throw regenerateChainMismatch(
+            "This conversation changed before the answer was replaced",
+          );
+        }
+      }
+      return null;
+    }
+    if (!oldChainMatches(oldChain, expected, args.userId, superseded)) {
+      throw regenerateChainMismatch(
+        "This conversation changed before the answer was replaced",
+      );
+    }
+
+    // Attempts in one request can share artifact files; the replacement's
+    // files stay even when an old or superseded row also references them.
     await deleteTrailingResponseChain(
       ctx,
       args.chatId,
-      messagesToDelete,
+      oldChain,
       args.resetSummary,
+      new Set<string>(replacement.file_ids ?? []),
     );
     if (args.todos !== undefined) {
       await patchOwnedChatTodos(ctx, args.chatId, args.userId, args.todos);

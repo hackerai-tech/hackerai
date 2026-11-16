@@ -2846,9 +2846,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // The start response can arrive before the Convex subscription catches up.
   // Keep that exact local run available to Stop after the pending POST settles.
-  const cancellationTriggerRunRef = useCommittedRef(
-    agentLongRunId ?? activeTriggerRunId,
-  );
+  const activeDurableRunId = agentLongRunId ?? activeTriggerRunId;
+  const cancellationTriggerRunRef = useCommittedRef(activeDurableRunId);
+  // Gate entry during a durable run defers the queue fence until that run
+  // ends. An explicit submit or Send now cancels it.
+  const activationQueueFencePendingRef = useRef(false);
+  const releaseActivationQueueFence = useCallback(() => {
+    activationQueueFencePendingRef.current = false;
+  }, []);
 
   // Chat handlers
   const {
@@ -2895,6 +2900,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
+    onExplicitSend: releaseActivationQueueFence,
     sendDisabledReason: computerSendDisabledReason,
     pendingUserWait,
   });
@@ -2902,11 +2908,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Entering the free Agent activation gate fences automatic queue delivery,
   // so connecting a computer never releases a queued message as Agent. Set
   // once per gate entry/chat; explicit submit and Send now clear the fence.
-  // A durable run already in progress is left untouched.
+  // A durable run already in progress keeps running; its fence is applied
+  // once, when that run ends.
   useLayoutEffect(() => {
-    if (freeAgentGateActive && !cancellationTriggerRunRef.current)
-      hasManuallyStoppedRef.current = true;
+    activationQueueFencePendingRef.current = false;
+    if (!freeAgentGateActive) return;
+    if (cancellationTriggerRunRef.current)
+      activationQueueFencePendingRef.current = true;
+    else hasManuallyStoppedRef.current = true;
   }, [freeAgentGateActive, chatId, cancellationTriggerRunRef]);
+  // Runs before the queue effect below, so the fence lands in the same commit
+  // in which the run clears.
+  useLayoutEffect(() => {
+    if (!activationQueueFencePendingRef.current || activeDurableRunId) return;
+    activationQueueFencePendingRef.current = false;
+    hasManuallyStoppedRef.current = true;
+  }, [activeDurableRunId]);
 
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
