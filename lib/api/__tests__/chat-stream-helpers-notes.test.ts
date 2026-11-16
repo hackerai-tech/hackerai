@@ -469,10 +469,18 @@ describe("relevant recall injection and refresh", () => {
     parts: [{ type: "text" as const, text: "retest alpha.example invoices" }],
   };
 
+  let random: jest.SpyInstance;
+
   beforeEach(() => {
     mockGetNotes.mockReset();
     mockRecallCandidates.mockReset();
     mockEvent.mockReset();
+    // Keep every sampled routine event so recorded outcomes are deterministic.
+    random = jest.spyOn(Math, "random").mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    random.mockRestore();
   });
 
   /** Outcome of each recorded event, by event name, in order. */
@@ -495,6 +503,16 @@ describe("relevant recall injection and refresh", () => {
       "notes_recall_result:hit",
       "notes_recall_exposed:",
     ]);
+  });
+
+  it("injects the same block when routine telemetry is sampled out", async () => {
+    random.mockReturnValue(0.999);
+    mockRecallCandidates.mockResolvedValue([alpha]);
+    const result = await injectNotesIntoMessages([userMessage], recallOpts);
+    expect((result[0].parts[0] as { text: string }).text).toContain(
+      "Alpha IDOR",
+    );
+    expect(mockEvent).not.toHaveBeenCalled();
   });
 
   it("records a lookup without exposure when nothing matches", async () => {
