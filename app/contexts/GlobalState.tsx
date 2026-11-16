@@ -62,6 +62,12 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import type { FreeAgentActivationStatus } from "@/lib/activation/free-agent-activation";
+import {
+  selectFreeAgentGateSandboxPreference,
+  useFreeAgentActivationStatus,
+} from "@/app/hooks/useFreeAgentActivation";
+import { useDetectedPlatform } from "@/app/download/DownloadSection";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -94,6 +100,17 @@ interface GlobalStateType {
   chatModeAccessResolved: boolean;
   paidAgentOnlyActive: boolean;
   freeDesktopAgentOnlyActive: boolean;
+
+  // Free web Agent activation experiment (HAC-246). The gate makes the
+  // composer Agent-only after the introductory Ask replies are used.
+  freeAgentActivationStatus: FreeAgentActivationStatus | null;
+  freeAgentGateActive: boolean;
+  /**
+   * Free Ask sends must keep their draft until /api/chat admits them: the
+   * user is in the test variant, or eligible with a status not yet known.
+   */
+  freeAskAwaitsAdmission: boolean;
+  refreshFreeAgentActivation: () => void;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -758,7 +775,37 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     !isCheckingProPlan &&
     paidAgentSubscription === "free" &&
     isTauriEnvironment();
-  const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
+  // Device class comes from the OS, not viewport width: narrow desktop
+  // browser windows stay eligible while phones and tablets are excluded.
+  const detectedPlatform = useDetectedPlatform();
+  const freeAgentActivationEnabled =
+    Boolean(user) &&
+    freeSubscriptionResolved &&
+    !isCheckingProPlan &&
+    paidAgentSubscription === "free" &&
+    !organizationId &&
+    !isTauriEnvironment() &&
+    detectedPlatform !== null &&
+    detectedPlatform.platform !== "ios" &&
+    detectedPlatform.platform !== "android";
+  const {
+    status: freeAgentActivationStatus,
+    statusKnown: freeAgentActivationStatusKnown,
+    refresh: refreshFreeAgentActivation,
+  } = useFreeAgentActivationStatus({
+    userId: user?.id ?? null,
+    enabled: freeAgentActivationEnabled,
+  });
+  const freeAgentGateActive =
+    freeAgentActivationStatus?.variant === "test" &&
+    freeAgentActivationStatus.requiresAgent;
+  // An unknown status may still be gated server-side; never assume it is not.
+  const freeAskAwaitsAdmission =
+    freeAgentActivationEnabled &&
+    (!freeAgentActivationStatusKnown ||
+      freeAgentActivationStatus?.variant === "test");
+  const agentOnlyActive =
+    paidAgentOnlyActive || freeDesktopAgentOnlyActive || freeAgentGateActive;
   const accessibleChatMode: ChatMode = agentOnlyActive ? "agent" : chatMode;
   const freeDesktopSandboxPreference = useMemo(
     () =>
@@ -801,6 +848,28 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     agentOnlyActive,
     freeDesktopSandboxPreference,
     freeDesktopAgentOnlyActive,
+    sandboxPreference,
+    selectedModel,
+    setSandboxPreference,
+  ]);
+
+  // Free Agent runs only on the user's own computer: select an existing one
+  // when nothing is selected. Never sends anything; the draft stays put.
+  useEffect(() => {
+    if (!freeAgentGateActive) return;
+    const nextPreference = selectFreeAgentGateSandboxPreference(
+      sandboxPreference,
+      localConnections,
+    );
+    if (nextPreference && nextPreference !== sandboxPreference) {
+      setSandboxPreference(nextPreference, { remember: false });
+    }
+    if (selectedModel !== "auto") {
+      setSelectedModelRaw("auto");
+    }
+  }, [
+    freeAgentGateActive,
+    localConnections,
     sandboxPreference,
     selectedModel,
     setSandboxPreference,
@@ -1366,6 +1435,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     chatModeAccessResolved,
     paidAgentOnlyActive,
     freeDesktopAgentOnlyActive,
+    freeAgentActivationStatus,
+    freeAgentGateActive,
+    freeAskAwaitsAdmission,
+    refreshFreeAgentActivation,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

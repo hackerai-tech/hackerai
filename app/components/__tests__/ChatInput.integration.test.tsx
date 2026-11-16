@@ -688,6 +688,197 @@ describe("ChatInput - Integration Tests", () => {
     });
   });
 
+  describe("Free Agent activation gate", () => {
+    afterEach(() => jest.restoreAllMocks());
+    const ui = () => (
+      <TestWrapper>
+        <ChatInput
+          onSubmit={mockOnSubmit}
+          onStop={mockOnStop}
+          status="ready"
+          chatId="gate-chat"
+        />
+      </TestWrapper>
+    );
+
+    beforeEach(() => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "free",
+        isCheckingProPlan: false,
+        freeDesktopAgentOnlyActive: false,
+        freeAgentGateActive: true,
+        freeAgentActivationStatus: {
+          variant: "test",
+          completedAskResponses: 3,
+          introLimit: 3,
+          requiresAgent: true,
+        },
+        sandboxPreference: "e2b",
+        defaultLocalSandboxPreference: null,
+        localConnections: [],
+        hasLocalSandbox: false,
+      };
+    });
+
+    it("keeps the draft and blocks sending until a computer is selected", async () => {
+      const setChatMode = jest.fn();
+      mockSandboxState = { ...mockSandboxState, setChatMode };
+      const { rerender } = render(ui());
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Scan my lab host" } });
+
+      expect(
+        screen.getByRole("region", {
+          name: "You've used your 3 free Ask replies",
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+      fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+
+      // Connecting a computer selects it; nothing is sent automatically.
+      mockSandboxState = {
+        ...mockSandboxState,
+        sandboxPreference: "runner-kali",
+        localConnections: [
+          {
+            connectionId: "runner-kali",
+            name: "kali-vm",
+            isDesktop: false,
+            capabilities: { commands: true, pty: true },
+          },
+        ],
+        hasLocalSandbox: true,
+      };
+      rerender(ui());
+
+      expect(
+        screen.queryByTestId("free-agent-gate-notice"),
+      ).not.toBeInTheDocument();
+      expect(textarea).toHaveValue("Scan my lab host");
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      expect(setChatMode).not.toHaveBeenCalledWith("ask");
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled();
+      fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+    });
+
+    it("keeps setup open through the connection, then hands back the draft", async () => {
+      const { rerender } = render(ui());
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Scan my lab host" } });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Continue with Agent" }),
+      );
+      expect(
+        screen.getByRole("dialog", { name: "Continue with Agent" }),
+      ).toBeInTheDocument();
+
+      mockSandboxState = {
+        ...mockSandboxState,
+        sandboxPreference: "runner-kali",
+        localConnections: [
+          {
+            connectionId: "runner-kali",
+            name: "kali-vm",
+            isDesktop: false,
+            capabilities: { commands: true, pty: true },
+          },
+        ],
+        hasLocalSandbox: true,
+      };
+      rerender(ui());
+
+      // The tab is gone, but setup finishes on the genuine connected state.
+      expect(
+        screen.queryByTestId("free-agent-gate-notice"),
+      ).not.toBeInTheDocument();
+      const connected = screen.getByRole("dialog", {
+        name: "Your computer is connected",
+      });
+      fireEvent.click(
+        within(connected).getByRole("button", { name: "Use Agent" }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(textarea).toHaveValue("Scan my lab host");
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+    });
+
+    it("does not fall back to Ask when the gated user's computer disconnects", async () => {
+      const setChatMode = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        setChatMode,
+        sandboxPreference: "runner-kali",
+        localConnections: [
+          {
+            connectionId: "runner-kali",
+            name: "kali-vm",
+            isDesktop: false,
+            capabilities: { commands: true, pty: true },
+          },
+        ],
+        hasLocalSandbox: true,
+      };
+      const { rerender } = render(ui());
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Keep this draft" } });
+
+      mockSandboxState = {
+        ...mockSandboxState,
+        localConnections: [],
+        hasLocalSandbox: false,
+      };
+      rerender(ui());
+
+      expect(setChatMode).not.toHaveBeenCalledWith("ask");
+      expect(textarea).toHaveValue("Keep this draft");
+      expect(
+        await screen.findByText("Your computer is disconnected."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+    });
+
+    // Ungated free web Agent switches to Ask on this exact transition.
+    it("stays in Agent with the setup notice when an unselected computer goes away", async () => {
+      jest.spyOn(toast, "info").mockReturnValue(0);
+      const setChatMode = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        setChatMode,
+        hasLocalSandbox: true,
+      };
+      const { rerender } = render(ui());
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Keep this draft" } });
+
+      mockSandboxState = { ...mockSandboxState, hasLocalSandbox: false };
+      rerender(ui());
+
+      expect(setChatMode).not.toHaveBeenCalledWith("ask");
+      expect(toast.info).not.toHaveBeenCalledWith(
+        "Local sandbox disconnected. Switched to Ask mode.",
+        expect.anything(),
+      );
+      expect(textarea).toHaveValue("Keep this draft");
+      expect(screen.getByTestId("free-agent-gate-notice")).toBeInTheDocument();
+    });
+  });
+
   describe("Ask Mode Integration", () => {
     it("leaves the unrestricted file picker accept list unset", () => {
       render(

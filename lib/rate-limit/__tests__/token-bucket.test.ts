@@ -427,6 +427,21 @@ describe("token-bucket", () => {
       ).toBe(true);
       expect(isUserRateLimitKey(`free_run_lock:${userId}`, userId)).toBe(true);
       expect(
+        isUserRateLimitKey(`free_agent_activation:v1:${userId}`, userId),
+      ).toBe(true);
+      expect(
+        isUserRateLimitKey(
+          `free_agent_activation_assignment:v1:${userId}`,
+          userId,
+        ),
+      ).toBe(true);
+      expect(
+        isUserRateLimitKey(
+          `free_agent_activation_assignment:v2:${userId}`,
+          userId,
+        ),
+      ).toBe(true);
+      expect(
         isUserRateLimitKey(`team:debt_applied:org_123:${userId}`, userId),
       ).toBe(true);
     });
@@ -439,6 +454,17 @@ describe("token-bucket", () => {
       expect(isUserRateLimitKey(`usage:monthly:user_456:pro`, userId)).toBe(
         false,
       );
+      expect(
+        isUserRateLimitKey(`free_agent_activation:v1:${userId}_other`, userId),
+      ).toBe(false);
+      for (const key of [
+        `free_agent_activation_assignment:v1:${userId}_other`,
+        `free_agent_activation_assignment:v1:other_${userId}`,
+        `free_agent_activation_assignment:vx:${userId}`,
+        `free_agent_activation_assignment:${userId}`,
+      ]) {
+        expect(isUserRateLimitKey(key, userId)).toBe(false);
+      }
     });
   });
 

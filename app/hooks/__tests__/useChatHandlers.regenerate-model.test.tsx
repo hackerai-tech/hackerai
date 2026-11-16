@@ -12,8 +12,9 @@ const mockToastInfo = jest.fn();
 let mockSelectedModel: SelectedModel = "hackerai-standard";
 const originalFetch = globalThis.fetch;
 
+const mockMutation = jest.fn(async (_args?: unknown) => undefined);
 jest.mock("convex/react", () => ({
-  useMutation: () => jest.fn(async () => undefined),
+  useMutation: () => mockMutation,
 }));
 
 const mockUploadedFiles: never[] = [];
@@ -278,6 +279,43 @@ describe("useChatHandlers regenerate model", () => {
     expect(mockRegenerate).not.toHaveBeenCalled();
     expect(mockSetMessages).not.toHaveBeenCalled();
   });
+
+  it.each(["handleRegenerate", "handleRetry"] as const)(
+    "%s keeps the paid client deletion path without the deferred marker",
+    async (handler) => {
+      const regenerateAdmitted = jest.fn(async () => "admitted" as const);
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          regenerateAdmitted,
+          stop: jest.fn(),
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          isUserMessagePersisted: async () => true,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+
+      await act(async () => {
+        await result.current[handler]();
+      });
+
+      expect(regenerateAdmitted).not.toHaveBeenCalled();
+      expect(mockMutation).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: "chat-1", resetSummary: true }),
+      );
+      expect(mockRegenerate).toHaveBeenCalledWith({
+        body: expect.not.objectContaining({
+          deferredRegenerateAssistantIds: expect.anything(),
+        }),
+      });
+    },
+  );
 
   it("uses a fresh request identity for each regeneration attempt", async () => {
     const { result } = renderHook(() =>

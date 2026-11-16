@@ -33,6 +33,7 @@ import type {
   AgentToolApprovalPendingRequest,
   SubscriptionTier,
   NoteCategory,
+  Todo,
 } from "@/types";
 import type {
   UpdateVulnerabilityReportInput,
@@ -944,6 +945,98 @@ export async function deleteChatForBackend({
       chat_id: chatId,
       user_id: userId,
     });
+  }
+}
+
+/** Must match convex/messages.ts regenerate chain functions. */
+const REGENERATE_CHAIN_MISMATCH_CODE = "REGENERATE_CHAIN_MISMATCH";
+
+const regenerateChainError = (error: unknown) =>
+  hasDatabaseErrorCode(getErrorData(error), REGENERATE_CHAIN_MISMATCH_CODE)
+    ? new ChatSDKError(
+        "bad_request:chat",
+        "This conversation changed before the answer could be replaced. Reload and try again.",
+        { regenerate_chain_mismatch: true },
+      )
+    : undefined;
+
+/**
+ * Deferred free Ask regeneration, before the provider starts: confirms the
+ * owned trailing chain is exactly the one the client is replacing. Read-only;
+ * the saved answer stays in place. A changed chain is a definitive refusal
+ * the client recovers from by restoring its snapshot.
+ */
+export async function validateFreeAskRegenerateChain({
+  chatId,
+  userId,
+  expectedAssistantIds,
+}: {
+  chatId: string;
+  userId: string;
+  expectedAssistantIds: string[];
+}): Promise<void> {
+  const operation = "messages.validateRegenerateChainForBackend";
+  try {
+    await getConvexClient().query(
+      api.messages.validateRegenerateChainForBackend,
+      { serviceKey, chatId, userId, expectedAssistantIds },
+    );
+  } catch (error) {
+    throw (
+      regenerateChainError(error) ??
+      databaseError(operation, error, { chat_id: chatId, user_id: userId })
+    );
+  }
+}
+
+/**
+ * Deferred free Ask regeneration, after the replacement reply was durably
+ * saved: deletes only the verified old chain. Convex refuses (preserving
+ * everything) unless the replacement is the newest saved answer followed by
+ * exactly the expected old chain.
+ */
+export async function commitFreeAskRegenerateChain({
+  chatId,
+  userId,
+  expectedAssistantIds,
+  replacementAssistantId,
+  supersededAssistantId,
+  todos,
+}: {
+  chatId: string;
+  userId: string;
+  expectedAssistantIds: string[];
+  replacementAssistantId: string;
+  /**
+   * Server-generated ID of this request's own primary attempt, passed only
+   * when a provider retry produced the replacement. Never client input.
+   */
+  supersededAssistantId?: string;
+  /** The run's final merged todos. */
+  todos?: Todo[];
+}): Promise<void> {
+  const operation = "messages.deleteRegenerateChainForBackend";
+  try {
+    await getConvexClient().mutation(
+      api.messages.deleteRegenerateChainForBackend,
+      {
+        serviceKey,
+        chatId,
+        userId,
+        expectedAssistantIds,
+        replacementAssistantId,
+        ...(supersededAssistantId !== undefined && { supersededAssistantId }),
+        // Same intent as the client regenerate path: the replaced answer
+        // must not survive in a summary of the conversation.
+        resetSummary: true,
+        ...(todos !== undefined && { todos }),
+      },
+    );
+  } catch (error) {
+    throw (
+      regenerateChainError(error) ??
+      databaseError(operation, error, { chat_id: chatId, user_id: userId })
+    );
   }
 }
 

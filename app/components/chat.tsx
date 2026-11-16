@@ -47,6 +47,8 @@ import type { ActiveAgentUserWait } from "@/lib/chat/agent-user-wait";
 import { userInputQuestionsSchema } from "@/lib/chat/user-input-questions";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import { isFreeAgentActivationRequiredMetadata } from "@/lib/activation/free-agent-activation";
+import { FREE_AGENT_GATE_SEND_DISABLED_REASON } from "@/app/hooks/useFreeAgentActivation";
 import { useComposerInput } from "../contexts/ComposerState";
 import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
@@ -488,8 +490,11 @@ function ForkAutoSendEffect({
   messageCount,
   onSubmit,
   sendDisabledReason,
+  activationGated = false,
 }: {
   sendDisabledReason?: string;
+  /** The free Agent activation gate is active for this account. */
+  activationGated?: boolean;
   chatId: string;
   status: UseChatHelpers<ChatMessage>["status"];
   isExistingChat: boolean;
@@ -500,7 +505,21 @@ function ForkAutoSendEffect({
   const autoSendFiredRef = useRef(false);
 
   useEffect(() => {
-    if (autoSendFiredRef.current || sendDisabledReason) return;
+    if (autoSendFiredRef.current) return;
+    if (activationGated) {
+      // Connecting a computer must never run a task by itself. Consume this
+      // chat's fork intent for good; the restored draft stays editable.
+      try {
+        if (sessionStorage.getItem("autoSendChatId") === chatId) {
+          sessionStorage.removeItem("autoSendChatId");
+          autoSendFiredRef.current = true;
+        }
+      } catch {
+        // Storage may be disabled; the shared send guard still owns admission.
+      }
+      return;
+    }
+    if (sendDisabledReason) return;
     try {
       const pendingChatId = sessionStorage.getItem("autoSendChatId");
       if (pendingChatId !== chatId) return;
@@ -535,6 +554,7 @@ function ForkAutoSendEffect({
     onSubmit,
     status,
     sendDisabledReason,
+    activationGated,
   ]);
 
   return null;
@@ -606,7 +626,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
+    freeAgentActivationStatus,
+    freeAgentGateActive,
+    freeAskAwaitsAdmission,
+    refreshFreeAgentActivation,
   } = useGlobalState();
+  // Stream callbacks outlive renders; read the experiment state when they fire.
+  const freeAgentActivationRef = useCommittedRef({
+    status: freeAgentActivationStatus,
+    awaitsAdmission: freeAskAwaitsAdmission,
+    refresh: refreshFreeAgentActivation,
+  });
   const [hasOpenedComputerSidebar, setHasOpenedComputerSidebar] =
     useState(false);
   useEffect(() => {
@@ -831,7 +861,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
       : (usesCloudRecovery && cloudRecoveryAdmission.sendDisabledReason) ||
-        connectionSendDisabledReason;
+        connectionSendDisabledReason ||
+        // Gated free web users need a computer before any send path runs.
+        (freeAgentGateActive && sandboxPreference === "e2b"
+          ? FREE_AGENT_GATE_SEND_DISABLED_REASON
+          : undefined);
   const computerSendDisabledReasonRef = useCommittedRef(
     computerSendDisabledReason,
   );
@@ -1060,10 +1094,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     id: string;
     resolve: () => void;
   } | null>(null);
-  type GoalAdmission = {
+  // Goals resolve at durable run admission. Gate-eligible free Ask sends
+  // resolve once /api/chat answers HTTP OK, so a refused Ask keeps its draft.
+  type MessageAdmission = {
+    kind: "goal" | "ask";
     chatId: string;
     id: string;
+    /** Regenerations add no user message; match their agentRunRequestId. */
+    requestId?: string;
     resolve: () => void;
+    freeAgentGateRefused?: boolean;
     error?: Error;
     aborted?: boolean;
     rejected?: boolean;
@@ -1071,7 +1111,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     stopped?: boolean;
     accepted: boolean;
   };
-  const goalAdmissionRef = useRef<GoalAdmission | null>(null);
+  const messageAdmissionRef = useRef<MessageAdmission | null>(null);
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
@@ -1131,7 +1171,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           const request =
             typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
           const queuedMessageId = request?.messages?.at(-1)?.id;
-          const pendingGoal = goalAdmissionRef.current;
+          const pendingGoal = messageAdmissionRef.current;
           if (
             pendingGoal &&
             pendingGoal.chatId === request?.chatId &&
@@ -1140,7 +1180,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             pendingGoal.requestSent = true;
           let recordedRunId: string | undefined;
           const recordAdmission = (run: AgentLongRunStarted) => {
-            const pending = goalAdmissionRef.current;
+            const pending = messageAdmissionRef.current;
             if (
               pending &&
               pending.chatId === request?.chatId &&
@@ -1228,7 +1268,28 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
         const requestChatId = activeChatIdRef.current;
         const requestGeneration = agentLongRequestGenerationRef.current;
+        const pendingAsk =
+          init?.method === "POST" &&
+          messageAdmissionRef.current?.kind === "ask" &&
+          typeof init.body === "string"
+            ? (() => {
+                const pending = messageAdmissionRef.current;
+                const request = JSON.parse(init.body as string) as {
+                  chatId?: string;
+                  agentRunRequestId?: string;
+                  messages?: { id?: string }[];
+                };
+                if (!pending || pending.chatId !== request.chatId) return null;
+                const matches = pending.requestId
+                  ? pending.requestId === request.agentRunRequestId
+                  : pending.id === request.messages?.at(-1)?.id;
+                return matches ? pending : null;
+              })()
+            : null;
+        if (pendingAsk) pendingAsk.requestSent = true;
         const response = await fetchWithErrorHandlers(input, init);
+        // Ask admission is the HTTP response itself; refusals throw above.
+        pendingAsk?.resolve();
         // Ask persists its chat before returning a successful response. Expose
         // that route now so stopping the stream still leaves a reloadable task.
         if (
@@ -1492,11 +1553,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: ({ isAbort, isError, message, messages: finishedMessages }) => {
-      if (isAbort && goalAdmissionRef.current?.chatId === chatId)
-        goalAdmissionRef.current.aborted = true;
+      if (isAbort && messageAdmissionRef.current?.chatId === chatId)
+        messageAdmissionRef.current.aborted = true;
       performanceTracker.setOutcome(
         isError ? "error" : isAbort ? "aborted" : "completed",
       );
+      // A completed reply may use an introductory Ask reply, and an unknown
+      // status should recover. The count is account-wide, so refresh even if
+      // the user navigated away. A known control/excluded snapshot can be
+      // stale (the flag may change mid-session), so any free Ask refreshes.
+      const activation = freeAgentActivationRef.current;
+      if (
+        !isAbort &&
+        (activation.awaitsAdmission === true ||
+          (subscriptionRef.current === "free" &&
+            chatModeRef.current === "ask")) &&
+        !activation.status?.requiresAgent
+      ) {
+        activation.refresh?.();
+      }
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1548,13 +1623,27 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
       const structuredStreamError = deserializeChatSDKErrorFromStream(error);
       const displayError = structuredStreamError ?? error;
+      const freeAgentGateRefused =
+        displayError instanceof ChatSDKError &&
+        isFreeAgentActivationRequiredMetadata(displayError.metadata);
+      if (freeAgentGateRefused) {
+        // A stale tab sent Ask after the gate closed; fresh status shows the
+        // persistent setup notice.
+        freeAgentActivationRef.current.refresh?.();
+      }
+      const pendingAdmission = messageAdmissionRef.current;
+      const admissionPending =
+        pendingAdmission?.chatId === chatId && !pendingAdmission.accepted;
+      // A definite HTTP refusal proves the request was not admitted.
+      if (admissionPending)
+        pendingAdmission.rejected = isGoalAdmissionRefused(displayError);
       if (
-        goalAdmissionRef.current?.chatId === chatId &&
-        !goalAdmissionRef.current.accepted
+        admissionPending &&
+        // Other Ask failures keep their existing in-thread error handling.
+        (pendingAdmission.kind === "goal" || freeAgentGateRefused)
       ) {
-        goalAdmissionRef.current.rejected =
-          isGoalAdmissionRefused(displayError);
-        goalAdmissionRef.current.error =
+        pendingAdmission.freeAgentGateRefused = freeAgentGateRefused;
+        pendingAdmission.error =
           displayError instanceof ChatSDKError
             ? new Error(
                 formatTaskUiCopy(
@@ -1610,36 +1699,53 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [sendMessageUnchecked, computerSendDisabledReasonRef],
   );
-  const sendGoalMessage = useCallback(
+  const sendAdmittedMessage = useCallback(
     async (
       message: {
         text?: string;
         files?: FileUIPart[];
         metadata?: ChatMessage["metadata"];
       },
-      options?: { body?: Record<string, unknown> },
+      options?: {
+        body?: Record<string, unknown>;
+        /** Runs synchronously at admission, before the reply is read. */
+        onAdmitted?: () => void;
+      },
+      kind: MessageAdmission["kind"] = "goal",
     ) => {
       const disabledReason = computerSendDisabledReasonRef.current;
       if (disabledReason) throw new Error(disabledReason);
-      if (goalAdmissionRef.current)
-        throw new Error("A goal is already starting.");
+      if (messageAdmissionRef.current)
+        throw new Error(
+          kind === "goal"
+            ? "A goal is already starting."
+            : "A message is already sending.",
+        );
       const id = uuidv4();
       let accepted = false;
       let resolveAdmission!: () => void;
       const admitted = new Promise<void>((resolve) => {
         resolveAdmission = resolve;
       });
-      const pending: GoalAdmission = {
+      const pending: MessageAdmission = {
+        kind,
         chatId,
         id,
         accepted: false,
         resolve: () => {
+          if (accepted) return;
           accepted = true;
           pending.accepted = true;
+          try {
+            options?.onAdmitted?.();
+          } catch (error) {
+            // A callback failure must never turn an admitted send into a refusal.
+            console.error("Failed to apply admitted message:", error);
+          }
           resolveAdmission();
         },
       };
-      goalAdmissionRef.current = pending;
+      messageAdmissionRef.current = pending;
       try {
         // The SDK generates a new ID for text-form sends; use explicit parts so
         // admission can acknowledge this exact message, including attachments.
@@ -1655,10 +1761,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             ],
             metadata: message.metadata,
           },
-          options,
+          // Only the serializable body reaches the SDK and the request.
+          options ? { body: options.body } : undefined,
         );
         await Promise.race([sending, admitted]);
         if (!accepted) {
+          // Only a gate refusal keeps an Ask draft; other Ask outcomes (stop,
+          // limits, provider errors) keep their existing handling.
+          if (kind === "ask" && !pending.freeAgentGateRefused) return;
           if (pending.aborted)
             throw new DOMException("Goal submission stopped", "AbortError");
           throw (
@@ -1670,6 +1780,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // Stream setup can reject in the same turn as admission. Once the
         // exact message was admitted, a consumer error cannot undo that send.
         if (accepted) return;
+        // Pre-send Ask failures (such as a disabled computer) report directly.
+        if (kind === "ask" && !pending.freeAgentGateRefused) throw error;
         const stopped =
           pending.stopped ||
           (hasManuallyStoppedRef.current && activeChatIdRef.current === chatId);
@@ -1721,8 +1833,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           throw new GoalSubmissionUnconfirmedError(persisted, chatId);
         throw error;
       } finally {
-        if (goalAdmissionRef.current === pending)
-          goalAdmissionRef.current = null;
+        if (messageAdmissionRef.current === pending)
+          messageAdmissionRef.current = null;
       }
     },
     [
@@ -1741,6 +1853,66 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       return regenerateUnchecked(...args);
     },
     [regenerateUnchecked, computerSendDisabledReasonRef],
+  );
+  // Gate-eligible free Ask regeneration: the server deletes the old answer
+  // only after admission. `onAdmitted` runs synchronously at HTTP OK, before
+  // the SDK reads the response. Resolves "admitted", "refused" (definite HTTP
+  // refusal, nothing deleted) or "settled" (outcome unknown); rejects on a
+  // gate refusal. Other failures keep the existing in-thread handling.
+  const regenerateAdmitted = useCallback(
+    async ({
+      body,
+      onAdmitted,
+    }: {
+      body: Record<string, unknown> & { agentRunRequestId: string };
+      onAdmitted?: () => void;
+    }): Promise<"admitted" | "refused" | "settled"> => {
+      const disabledReason = computerSendDisabledReasonRef.current;
+      if (disabledReason) throw new Error(disabledReason);
+      if (messageAdmissionRef.current)
+        throw new Error("A message is already sending.");
+      const requestId = body.agentRunRequestId;
+      let resolveAdmission!: () => void;
+      const admitted = new Promise<void>((resolve) => {
+        resolveAdmission = resolve;
+      });
+      const pending: MessageAdmission = {
+        kind: "ask",
+        chatId,
+        id: requestId,
+        requestId,
+        accepted: false,
+        resolve: () => {
+          if (pending.accepted) return;
+          pending.accepted = true;
+          try {
+            onAdmitted?.();
+          } catch (error) {
+            // Cleanup must never turn an admitted request into a refused one.
+            console.error("Failed to apply admitted regeneration:", error);
+          }
+          resolveAdmission();
+        },
+      };
+      messageAdmissionRef.current = pending;
+      try {
+        // Only the serializable body reaches the SDK and the request.
+        await Promise.race([regenerate({ body }), admitted]);
+        if (pending.accepted) return "admitted";
+        if (!pending.freeAgentGateRefused)
+          return pending.rejected ? "refused" : "settled";
+        if (isChatMountedRef.current && activeChatIdRef.current === chatId)
+          clearError?.();
+        throw (
+          pending.error ??
+          new Error("Your saved answer is unchanged. Try again later.")
+        );
+      } finally {
+        if (messageAdmissionRef.current === pending)
+          messageAdmissionRef.current = null;
+      }
+    },
+    [chatId, regenerate, clearError, computerSendDisabledReasonRef],
   );
 
   const { send: sendQueuedMessage, accept: acceptQueuedMessage } =
@@ -2677,9 +2849,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // The start response can arrive before the Convex subscription catches up.
   // Keep that exact local run available to Stop after the pending POST settles.
-  const cancellationTriggerRunRef = useCommittedRef(
-    agentLongRunId ?? activeTriggerRunId,
-  );
+  const activeDurableRunId = agentLongRunId ?? activeTriggerRunId;
+  const cancellationTriggerRunRef = useCommittedRef(activeDurableRunId);
+  // Gate entry during a durable run defers the queue fence until that run
+  // ends. An explicit submit or Send now cancels it.
+  const activationQueueFencePendingRef = useRef(false);
+  const releaseActivationQueueFence = useCallback(() => {
+    activationQueueFencePendingRef.current = false;
+  }, []);
 
   // Chat handlers
   const {
@@ -2695,7 +2872,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     messages,
     sendMessage,
-    sendGoalMessage,
+    sendAdmittedMessage,
+    regenerateAdmitted,
     sendQueuedMessage:
       shouldUseAgentLong ||
       messageQueue.some((message) => message.deliveryStatus)
@@ -2720,14 +2898,35 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
-      if (goalAdmissionRef.current?.chatId === chatId)
-        goalAdmissionRef.current.stopped = true;
+      if (messageAdmissionRef.current?.chatId === chatId)
+        messageAdmissionRef.current.stopped = true;
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
+    onExplicitSend: releaseActivationQueueFence,
     sendDisabledReason: computerSendDisabledReason,
     pendingUserWait,
   });
+
+  // Entering the free Agent activation gate fences automatic queue delivery,
+  // so connecting a computer never releases a queued message as Agent. Set
+  // once per gate entry/chat; explicit submit and Send now clear the fence.
+  // A durable run already in progress keeps running; its fence is applied
+  // once, when that run ends.
+  useLayoutEffect(() => {
+    activationQueueFencePendingRef.current = false;
+    if (!freeAgentGateActive) return;
+    if (cancellationTriggerRunRef.current)
+      activationQueueFencePendingRef.current = true;
+    else hasManuallyStoppedRef.current = true;
+  }, [freeAgentGateActive, chatId, cancellationTriggerRunRef]);
+  // Runs before the queue effect below, so the fence lands in the same commit
+  // in which the run clears.
+  useLayoutEffect(() => {
+    if (!activationQueueFencePendingRef.current || activeDurableRunId) return;
+    activationQueueFencePendingRef.current = false;
+    hasManuallyStoppedRef.current = true;
+  }, [activeDurableRunId]);
 
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
@@ -2771,6 +2970,42 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         };
         if (shouldUseAgentLong) {
           void sendQueuedMessage(nextMessage.id, body);
+        } else if (
+          chatModeRef.current === "ask" &&
+          subscriptionRef.current === "free"
+        ) {
+          // Status can lag the third reply or a flag change, so the activation
+          // gate may refuse any free Ask. Retire the item only at real
+          // admission; otherwise keep it and hold automatic delivery for an
+          // explicit send.
+          let admitted = false;
+          void sendAdmittedMessage(
+            {
+              text: nextMessage.text,
+              files: nextMessage.files as FileUIPart[] | undefined,
+              metadata: { createdAt: nextMessage.timestamp },
+            },
+            {
+              body,
+              onAdmitted: () => {
+                admitted = true;
+                removeQueuedMessage(nextMessage.id);
+              },
+            },
+            "ask",
+          )
+            .catch((error: unknown) => {
+              toast.error(
+                error instanceof Error && error.message
+                  ? error.message
+                  : "Your queued message was not sent. It is still queued.",
+              );
+            })
+            .finally(() => {
+              if (!admitted) hasManuallyStoppedRef.current = true;
+              setIsProcessingQueue(false);
+            });
+          return;
         } else {
           try {
             const sending = sendMessage(
@@ -2814,6 +3049,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isProcessingQueue,
     sendQueuedMessage,
     sendMessage,
+    sendAdmittedMessage,
+    subscriptionRef,
     removeQueuedMessage,
     chatModeRef,
     todosRef,
@@ -2994,7 +3231,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         resetAutoContinueCount();
         if (!isExistingChat)
           window.history.replaceState({}, "", `/c/${chatId}`);
-        await sendGoalMessage(message, options);
+        await sendAdmittedMessage(message, options);
       }}
       settings={{
         sandboxPreference,
@@ -3033,6 +3270,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       />
       <ForkAutoSendEffect
         sendDisabledReason={computerSendDisabledReason}
+        activationGated={freeAgentGateActive === true}
         key={`fork-auto-send:${chatId}`}
         chatId={chatId}
         status={status}
@@ -3289,7 +3527,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       throw new Error(computerSendDisabledReason);
                     hasManuallyStoppedRef.current = false;
                     resetAutoContinueCount();
-                    await sendGoalMessage(
+                    await sendAdmittedMessage(
                       { text: goalResumeMessage(goal) },
                       {
                         body: {

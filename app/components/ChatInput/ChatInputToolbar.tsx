@@ -46,14 +46,30 @@ export function ChatInputToolbar({
     setSandboxPreference,
     setSelectedModel,
     subscription,
+    freeAgentActivationStatus,
+    freeAgentGateActive = false,
   } = useGlobalState();
   const { user } = useAuth();
   const showChatModeSelector = Boolean(
     user &&
     chatModeAccessResolved &&
     !paidAgentOnlyActive &&
-    !freeDesktopAgentOnlyActive,
+    !freeDesktopAgentOnlyActive &&
+    !freeAgentGateActive,
   );
+  // Only the final introductory reply changes a decision, so stay quiet before.
+  const showLastAskReplyHint = Boolean(
+    user &&
+    chatMode === "ask" &&
+    freeAgentActivationStatus?.variant === "test" &&
+    !freeAgentActivationStatus.requiresAgent &&
+    freeAgentActivationStatus.introLimit -
+      freeAgentActivationStatus.completedAskResponses ===
+      1,
+  );
+  // Without a selected computer the gate notice is the setup entry point.
+  const hideSandboxSelector =
+    freeAgentGateActive && sandboxPreference === "e2b";
   const showFreeAskComputerActivation = Boolean(
     chatModeAccessResolved &&
     user &&
@@ -113,19 +129,29 @@ export function ChatInputToolbar({
                 >
                   <AgentPermissionSelector analyticsSurface="chat_input" />
                 </div>
-                <div
-                  className="hidden min-w-16 max-w-max flex-1 md:block"
-                  data-testid="chat-input-desktop-sandbox"
-                >
-                  <SandboxSelector
-                    value={sandboxPreference}
-                    onChange={setSandboxPreference}
-                    size="toolbar"
-                  />
-                </div>
+                {hideSandboxSelector ? null : (
+                  <div
+                    className="hidden min-w-16 max-w-max flex-1 md:block"
+                    data-testid="chat-input-desktop-sandbox"
+                  >
+                    <SandboxSelector
+                      value={sandboxPreference}
+                      onChange={setSandboxPreference}
+                      size="toolbar"
+                    />
+                  </div>
+                )}
               </>
             ) : null}
             {goalControl}
+            {showLastAskReplyHint ? (
+              <span
+                className="ml-auto min-w-0 truncate text-xs text-muted-foreground"
+                data-testid="free-ask-last-reply-hint"
+              >
+                1 free Ask reply left
+              </span>
+            ) : null}
           </>
         )}
       </div>
@@ -144,7 +170,9 @@ export function ChatInputToolbar({
           {...submitStopProps}
           chatMode={chatMode}
           isPaid={subscription !== "free"}
-          useNeutralAgentStyle={freeDesktopAgentOnlyActive}
+          useNeutralAgentStyle={
+            freeDesktopAgentOnlyActive || freeAgentGateActive
+          }
           isOnline={isOnline}
         />
       </div>

@@ -11,12 +11,23 @@ export const isFreeQuotaSubjectRateLimitKey = (
     key.startsWith(`free_monthly_cost:${freeQuotaSubject}:`) ||
     key.startsWith(`free_monthly_subagent_cost:${freeQuotaSubject}:`) ||
     key === `free_usage_budget_started:v1:${freeQuotaSubject}` ||
-    key === `free_run_lock:${freeQuotaSubject}`
+    key === `free_run_lock:${freeQuotaSubject}` ||
+    key === `free_agent_activation:v1:${freeQuotaSubject}`
   );
+};
+
+/** `free_agent_activation_assignment:v<version>:<userId>`, exact owner only. */
+const isFreeAgentActivationAssignmentKey = (
+  key: string,
+  userId: string,
+): boolean => {
+  const match = /^free_agent_activation_assignment:v\d+:(.+)$/.exec(key);
+  return match?.[1] === userId;
 };
 
 export const isUserRateLimitKey = (key: string, userId: string): boolean => {
   return (
+    isFreeAgentActivationAssignmentKey(key, userId) ||
     key.startsWith(`usage:monthly:${userId}:`) ||
     key === `upgrade:carryover:${userId}` ||
     key.startsWith(`upgrade:carryover:${userId}:`) ||

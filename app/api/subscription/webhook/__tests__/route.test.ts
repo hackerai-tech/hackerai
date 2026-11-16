@@ -2299,6 +2299,187 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
+  describe("subscription_started attribution", () => {
+    const PAID_AT = 1_782_000_000;
+    const ONE_DAY = 86_400;
+
+    /** A first subscription invoice for one trusted user (Stripe mocked). */
+    function arrangeSubscriptionCreate({
+      eventId,
+      eventCreated,
+      paidAt = PAID_AT,
+      amountPaid = 2000,
+      subscriptionMetadata = {},
+    }: {
+      eventId: string;
+      eventCreated: number;
+      paidAt?: number | null;
+      amountPaid?: number;
+      subscriptionMetadata?: Record<string, string>;
+    }) {
+      const price = {
+        id: "price_pro",
+        lookup_key: "pro-monthly-plan",
+        unit_amount: 2000,
+        recurring: { interval: "month", interval_count: 1 },
+        product: { id: "prod_pro", name: "HackerAI Pro", metadata: {} },
+      };
+      mockConstructEvent.mockReturnValue({
+        id: eventId,
+        type: "invoice.paid",
+        created: eventCreated,
+        data: {
+          object: {
+            id: "in_start",
+            customer: "cus_start",
+            amount_paid: amountPaid,
+            currency: "usd",
+            billing_reason: "subscription_create",
+            parent: { subscription_details: { subscription: "sub_start" } },
+            lines: {
+              data: [
+                {
+                  ...subscriptionInvoiceLine(
+                    "sub_start",
+                    "price_pro",
+                    amountPaid,
+                    1,
+                  ),
+                  period: { start: 1_782_000_000, end: 1_784_592_000 },
+                },
+              ],
+            },
+            status_transitions: { paid_at: paidAt },
+          },
+        },
+      });
+      mockRetrieveCustomer.mockResolvedValue({
+        deleted: false,
+        id: "cus_start",
+        metadata: { workOSOrganizationId: "org_start" },
+      } as never);
+      mockListMemberships.mockResolvedValue({
+        autoPagination: jest.fn().mockResolvedValue([{ userId: "user_start" }]),
+      } as never);
+      mockRetrieveSubscription.mockResolvedValue({
+        id: "sub_start",
+        status: "active",
+        latest_invoice: "in_start",
+        metadata: subscriptionMetadata,
+        items: {
+          data: [{ quantity: 1, current_period_end: 1_785_000_000, price }],
+        },
+      } as never);
+    }
+
+    const startedEvents = () =>
+      mockPostHogEvent.mock.calls
+        .filter(([name]) => name === "subscription_started")
+        .map(([, fields]) => fields as Record<string, any>);
+
+    it("emits one trusted, stably identified start timed at payment across redeliveries", async () => {
+      const { POST } = await import("../route");
+      arrangeSubscriptionCreate({
+        eventId: "evt_start_first",
+        eventCreated: PAID_AT + ONE_DAY,
+      });
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      arrangeSubscriptionCreate({
+        eventId: "evt_start_redelivery",
+        eventCreated: PAID_AT + 2 * ONE_DAY,
+      });
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      const [first, redelivered] = startedEvents();
+      expect(startedEvents()).toHaveLength(2);
+      expect(first).toMatchObject({
+        userId: "user_start",
+        stripe_invoice_id: "in_start",
+        conversion_type: "free_to_paid",
+        resumed_from_pause: false,
+        charged_amount_dollars: 20,
+        invoice_amount_paid_dollars: 20,
+        paid_user_start_count: 1,
+        stripe_event_id: "evt_start_first",
+        invoice_paid_at: PAID_AT * 1000,
+        paid_start_timestamp_source: "paid_at",
+        paid_start_analytics_version: 2,
+      });
+      // Same invoice and user: one identity, one economic time, even though
+      // the deliveries arrived a day apart under different Stripe event IDs.
+      expect(redelivered.eventUuid).toBe(first.eventUuid);
+      expect(redelivered.stripe_event_id).toBe("evt_start_redelivery");
+      for (const event of [first, redelivered]) {
+        expect((event.eventTimestamp as Date).getTime()).toBe(PAID_AT * 1000);
+        expect(event.$set.last_subscription_started_at).toBe(
+          new Date(PAID_AT * 1000).toISOString(),
+        );
+        expect(event.$set_once.first_subscription_started_at).toBe(
+          new Date(PAID_AT * 1000).toISOString(),
+        );
+      }
+    });
+
+    it("falls back to the Stripe event time when the invoice has no paid_at", async () => {
+      const eventCreated = PAID_AT + ONE_DAY;
+      arrangeSubscriptionCreate({
+        eventId: "evt_start_no_paid_at",
+        eventCreated,
+        paidAt: null,
+      });
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      const [event] = startedEvents();
+      expect((event.eventTimestamp as Date).getTime()).toBe(
+        eventCreated * 1000,
+      );
+      expect(event).toMatchObject({
+        invoice_paid_at: null,
+        paid_start_timestamp_source: "event_created",
+      });
+    });
+
+    it("emits no paid start for a zero-dollar first invoice", async () => {
+      arrangeSubscriptionCreate({
+        eventId: "evt_start_zero",
+        eventCreated: PAID_AT,
+        amountPaid: 0,
+      });
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      expect(startedEvents()).toEqual([]);
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    });
+
+    it("classifies a pause resume as a zero-count reactivation, not a new paid start", async () => {
+      arrangeSubscriptionCreate({
+        eventId: "evt_start_resume",
+        eventCreated: PAID_AT,
+        subscriptionMetadata: { checkoutType: "pause_resume" },
+      });
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+
+      const [event] = startedEvents();
+      expect(event).toMatchObject({
+        conversion_type: "pause_resume",
+        resumed_from_pause: true,
+        paid_account_start_count: 0,
+        paid_user_start_count: 0,
+        paid_start_analytics_version: 2,
+      });
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "unitEconomics.recordPaidStartMix",
+        expect.anything(),
+      );
+    });
+  });
+
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
     const periodEnd = 1_785_000_000;
     mockResetRateLimitBucketAfterPayment.mockResolvedValueOnce({

@@ -421,4 +421,58 @@ describe("phLogger", () => {
       },
     });
   });
+
+  it("sends a valid event time as the capture timestamp, not a property", () => {
+    mockCapture.mockClear();
+    const paidAt = new Date("2026-06-21T00:00:00.000Z");
+
+    phLogger.event("subscription_started", {
+      userId: "user_123",
+      eventUuid: "b01882bb-b996-52d2-aaca-b2f4edc0fa3d",
+      eventTimestamp: paidAt,
+      stripe_invoice_id: "in_1",
+      $set: { subscription_tier: "pro" },
+    });
+
+    expect(mockCapture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "subscription_started",
+      uuid: "b01882bb-b996-52d2-aaca-b2f4edc0fa3d",
+      timestamp: paidAt,
+      properties: {
+        stripe_invoice_id: "in_1",
+        $set: { subscription_tier: "pro" },
+      },
+    });
+  });
+
+  it.each([
+    ["an invalid Date", new Date(Number.NaN)],
+    ["a non-Date value", "2026-06-21T00:00:00.000Z"],
+  ])("still captures the event, at ingestion time, given %s", (_, value) => {
+    mockCapture.mockClear();
+
+    phLogger.event("subscription_started", {
+      userId: "user_123",
+      eventTimestamp: value as unknown as Date,
+      stripe_invoice_id: "in_1",
+    });
+
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    const captured = mockCapture.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(captured).not.toHaveProperty("timestamp");
+    expect(captured.properties).toEqual({ stripe_invoice_id: "in_1" });
+  });
+
+  it("keeps existing callers without a timestamp unchanged", () => {
+    mockCapture.mockClear();
+
+    phLogger.event("invoice_paid", { userId: "user_123", amount: 20 });
+
+    expect(mockCapture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "invoice_paid",
+      properties: { amount: 20 },
+    });
+  });
 });

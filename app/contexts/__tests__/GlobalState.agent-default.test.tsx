@@ -31,6 +31,11 @@ jest.mock("@/app/hooks/useSandboxPreference", () => {
   };
 });
 
+let mockDetectedPlatform: { platform: string } | null = { platform: "macos" };
+jest.mock("@/app/download/DownloadSection", () => ({
+  useDetectedPlatform: () => mockDetectedPlatform,
+}));
+
 const { GlobalStateProvider, useGlobalState, useGlobalStateActions } =
   jest.requireActual<typeof import("../GlobalState")>("../GlobalState");
 
@@ -79,6 +84,22 @@ function GlobalStateProbe() {
       <div data-testid="sandbox-preference">{sandboxPreference}</div>
       <div data-testid="selected-model">{selectedModel}</div>
       <div data-testid="subscription">{subscription}</div>
+    </>
+  );
+}
+
+function FreeAgentGateProbe() {
+  const { chatMode, freeAgentGateActive, freeAskAwaitsAdmission, setChatMode } =
+    useGlobalState();
+
+  return (
+    <>
+      <div data-testid="gate-chat-mode">{chatMode}</div>
+      <div data-testid="free-agent-gate">{String(freeAgentGateActive)}</div>
+      <div data-testid="awaits-admission">{String(freeAskAwaitsAdmission)}</div>
+      <button type="button" onClick={() => setChatMode("ask")}>
+        Choose Ask
+      </button>
     </>
   );
 }
@@ -140,6 +161,7 @@ describe("GlobalStateProvider agent defaults", () => {
     jest.clearAllMocks();
     jest.useRealTimers();
     mockDesktopBridgeActive = false;
+    mockDetectedPlatform = { platform: "macos" };
     delete window.__TAURI_INTERNALS__;
     window.history.pushState({}, "", "/");
     window.localStorage.clear();
@@ -567,6 +589,155 @@ describe("GlobalStateProvider agent defaults", () => {
         "false",
       );
       expect(screen.getByTestId("paid-agent-only")).toHaveTextContent("true");
+    });
+  });
+
+  describe("free Agent activation gate", () => {
+    const STATUS_PATH = "/api/experiments/free-agent-activation";
+    const statusFetch = (status: unknown) =>
+      jest.fn((input) =>
+        String(input) === STATUS_PATH
+          ? Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({ status }),
+            })
+          : Promise.resolve({ ok: false }),
+      ) as unknown as typeof fetch;
+    const gatedStatus = {
+      variant: "test",
+      completedAskResponses: 3,
+      introLimit: 3,
+      requiresAgent: true,
+    };
+    const renderGate = () =>
+      render(
+        <GlobalStateProvider>
+          <FreeAgentGateProbe />
+        </GlobalStateProvider>,
+      );
+    const statusRequests = () =>
+      jest
+        .mocked(global.fetch)
+        .mock.calls.filter(([input]) => String(input) === STATUS_PATH);
+
+    beforeEach(() => {
+      window.localStorage.setItem("chat_mode", "ask");
+      mockAuthUser([], { organizationId: undefined });
+    });
+
+    it("makes a gated free web user Agent-only and ignores switching back to Ask", async () => {
+      global.fetch = statusFetch(gatedStatus);
+      renderGate();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("free-agent-gate")).toHaveTextContent("true");
+        expect(screen.getByTestId("gate-chat-mode")).toHaveTextContent("agent");
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Choose Ask" }));
+      expect(screen.getByTestId("gate-chat-mode")).toHaveTextContent("agent");
+    });
+
+    it.each([
+      [
+        "the control variant",
+        { ...gatedStatus, variant: "control", requiresAgent: false },
+        "false",
+      ],
+      [
+        "introductory replies remain",
+        { ...gatedStatus, completedAskResponses: 2, requiresAgent: false },
+        "true",
+      ],
+      ["the user is not enrolled", null, "false"],
+    ])("keeps Ask available for %s", async (_, status, awaitsAdmission) => {
+      global.fetch = statusFetch(status);
+      renderGate();
+
+      await waitFor(() =>
+        expect(screen.getByTestId("awaits-admission")).toHaveTextContent(
+          awaitsAdmission,
+        ),
+      );
+      expect(statusRequests()).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Choose Ask" }));
+      expect(screen.getByTestId("free-agent-gate")).toHaveTextContent("false");
+      expect(screen.getByTestId("gate-chat-mode")).toHaveTextContent("ask");
+    });
+
+    it("keeps Ask open but protects the draft when status cannot be loaded", async () => {
+      global.fetch = jest.fn((input) =>
+        String(input) === STATUS_PATH
+          ? Promise.reject(new TypeError("Network error"))
+          : Promise.resolve({ ok: false }),
+      ) as unknown as typeof fetch;
+      renderGate();
+
+      await waitFor(() => expect(statusRequests()).toHaveLength(1));
+      fireEvent.click(screen.getByRole("button", { name: "Choose Ask" }));
+      // No stale gate, but the server may still refuse: await its admission.
+      expect(screen.getByTestId("free-agent-gate")).toHaveTextContent("false");
+      expect(screen.getByTestId("gate-chat-mode")).toHaveTextContent("ask");
+      expect(screen.getByTestId("awaits-admission")).toHaveTextContent("true");
+    });
+
+    it("re-checks a new account instead of reusing a known answer", async () => {
+      global.fetch = statusFetch(null);
+      const { rerender } = renderGate();
+      await waitFor(() =>
+        expect(screen.getByTestId("awaits-admission")).toHaveTextContent(
+          "false",
+        ),
+      );
+
+      global.fetch = jest.fn((input) =>
+        String(input) === STATUS_PATH
+          ? new Promise(() => {})
+          : Promise.resolve({ ok: false }),
+      ) as unknown as typeof fetch;
+      mockAuthUser([], {
+        organizationId: undefined,
+        user: { id: "user_new" },
+      });
+      rerender(
+        <GlobalStateProvider>
+          <FreeAgentGateProbe />
+        </GlobalStateProvider>,
+      );
+
+      await waitFor(() => expect(statusRequests()).toHaveLength(1));
+      expect(screen.getByTestId("awaits-admission")).toHaveTextContent("true");
+    });
+
+    it.each([
+      [
+        "phones and tablets",
+        () => {
+          mockDetectedPlatform = { platform: "ios" };
+        },
+      ],
+      ["team members", () => mockAuthUser([], { organizationId: "org_team" })],
+      [
+        "native Desktop",
+        () => {
+          window.__TAURI_INTERNALS__ = {};
+        },
+      ],
+      [
+        "paid users",
+        () => mockAuthUser(["pro-plan"], { organizationId: undefined }),
+      ],
+    ])("never requests experiment status for %s", async (_, arrange) => {
+      arrange();
+      global.fetch = statusFetch(gatedStatus);
+      renderGate();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("free-agent-gate")).toHaveTextContent(
+          "false",
+        );
+      });
+      expect(statusRequests()).toHaveLength(0);
+      expect(screen.getByTestId("awaits-admission")).toHaveTextContent("false");
     });
   });
 

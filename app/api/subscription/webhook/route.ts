@@ -30,6 +30,7 @@ import {
   paidFunnelProperties,
   subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
+import { subscriptionStartedAttribution } from "@/lib/analytics/paid-funnel-server";
 import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
@@ -1520,8 +1521,19 @@ async function handleInvoicePaid(
     }
 
     for (const [index, uid] of userIds.entries()) {
+      // Stable per invoice+user identity and the actual paid time, so a
+      // delayed or redelivered webhook neither duplicates nor shifts the start.
+      const attribution = subscriptionStartedAttribution({
+        userId: uid,
+        invoiceId: invoice.id,
+        stripeEventId,
+        invoicePaidAtSeconds: invoice.status_transitions?.paid_at,
+        eventOccurredAtMs,
+      });
+      const startedAtIso = attribution.eventTimestamp.toISOString();
       phLogger.event("subscription_started", {
         userId: uid,
+        ...attribution,
         from_tier: "free",
         to_tier: tier,
         conversion_type: resumedFromPause ? "pause_resume" : "free_to_paid",
@@ -1569,10 +1581,10 @@ async function handleInvoicePaid(
         ...proMonthlyPricingExperimentProperties(pricingExperiment),
         $set: {
           subscription_tier: tier,
-          last_subscription_started_at: new Date().toISOString(),
+          last_subscription_started_at: startedAtIso,
         },
         $set_once: {
-          first_subscription_started_at: new Date().toISOString(),
+          first_subscription_started_at: startedAtIso,
           first_paid_tier: tier,
         },
       });
