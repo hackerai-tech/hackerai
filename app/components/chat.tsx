@@ -1560,11 +1560,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       );
       // A completed reply may use an introductory Ask reply, and an unknown
       // status should recover. The count is account-wide, so refresh even if
-      // the user navigated away.
+      // the user navigated away. A known control/excluded snapshot can be
+      // stale (the flag may change mid-session), so any free Ask refreshes.
       const activation = freeAgentActivationRef.current;
       if (
         !isAbort &&
-        activation.awaitsAdmission === true &&
+        (activation.awaitsAdmission === true ||
+          (subscriptionRef.current === "free" &&
+            chatModeRef.current === "ask")) &&
         !activation.status?.requiresAgent
       ) {
         activation.refresh?.();
@@ -2969,11 +2972,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           void sendQueuedMessage(nextMessage.id, body);
         } else if (
           chatModeRef.current === "ask" &&
-          freeAgentActivationRef.current.awaitsAdmission === true
+          subscriptionRef.current === "free"
         ) {
-          // Status can lag the third reply, so the activation gate may still
-          // refuse this Ask. Retire the item only at real admission; otherwise
-          // keep it and hold automatic delivery for an explicit send.
+          // Status can lag the third reply or a flag change, so the activation
+          // gate may refuse any free Ask. Retire the item only at real
+          // admission; otherwise keep it and hold automatic delivery for an
+          // explicit send.
           let admitted = false;
           void sendAdmittedMessage(
             {
@@ -3046,7 +3050,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     sendQueuedMessage,
     sendMessage,
     sendAdmittedMessage,
-    freeAgentActivationRef,
+    subscriptionRef,
     removeQueuedMessage,
     chatModeRef,
     todosRef,

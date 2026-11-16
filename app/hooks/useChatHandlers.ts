@@ -1315,14 +1315,14 @@ export const useChatHandlers = ({
         ...goalSettings,
       },
     };
-    // The activation gate can refuse a free Ask before the message is saved,
-    // including when this tab has no current status. Keep that draft until
-    // /api/chat admits it, without awaiting the stream.
+    // The activation gate can refuse any free Ask before the message is saved,
+    // and this tab's status snapshot is not authoritative (the flag can change
+    // mid-session). Keep that draft until /api/chat admits it, without
+    // awaiting the stream.
     const awaitAskAdmission =
       !goalCommand &&
       currentChatMode === "ask" &&
       subscription === "free" &&
-      freeAskAwaitsAdmission === true &&
       !!sendAdmittedMessage;
     if (awaitAskAdmission) {
       try {
@@ -2145,10 +2145,15 @@ export const useChatHandlers = ({
         selectedModel: requestSelectedModel,
       };
 
-      // The activation gate can refuse this Ask before it is saved. Retire the
-      // queued item only once /api/chat admits it; otherwise keep it and hold
-      // automatic delivery so a later status change cannot replay it.
-      if (mayRefuseFreeAsk() && sendAdmittedMessage) {
+      // The activation gate can refuse any free Ask before it is saved, whatever
+      // this tab's status snapshot says. Retire the queued item only once
+      // /api/chat admits it; otherwise keep it and hold automatic delivery so a
+      // later status change cannot replay it.
+      if (
+        chatModeRef.current === "ask" &&
+        subscriptionRef.current === "free" &&
+        sendAdmittedMessage
+      ) {
         let admitted = false;
         try {
           await sendAdmittedMessage(

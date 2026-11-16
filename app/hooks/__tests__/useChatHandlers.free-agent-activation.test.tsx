@@ -219,121 +219,145 @@ describe("useChatHandlers free Agent activation admission", () => {
     },
   );
 
-  it("keeps the immediate Ask send when the status is known not to gate", async () => {
+  // A known control/null snapshot can be stale (the flag may turn on
+  // mid-session), so it never decides whether a free Ask draft is retired.
+  it("keeps a free Ask draft until admission even when the status snapshot says no gate", async () => {
     mockAwaitsAdmission = false;
-    const sendAdmittedMessage = jest.fn(async () => undefined);
-    const { result } = renderHandlers(sendAdmittedMessage);
+    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+    const refused = jest.fn(async () => {
+      throw new Error("Continue with Agent to keep going.");
+    });
+    const refusedHandlers = renderHandlers(refused);
 
+    await act(async () => {
+      expect(await submit(refusedHandlers.result.current)).toBe(false);
+    });
+    expect(refused).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Summarize the recon notes" }),
+      expect.anything(),
+      "ask",
+    );
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+    errorToast.mockRestore();
+
+    const admitted = jest.fn(async () => undefined);
+    const { result } = renderHandlers(admitted);
     await act(async () => {
       expect(await submit(result.current)).toBe(true);
     });
-
-    expect(sendAdmittedMessage).not.toHaveBeenCalled();
-    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(admitted).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).not.toHaveBeenCalled();
     expect(mockClearInput).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("useChatHandlers Send now for a queued free Ask", () => {
-  const queuedFile = {
-    url: "https://files.test/scope.txt",
-    mediaType: "text/plain",
-    filename: "scope.txt",
-    fileId: "file-1",
-  };
+describe.each([true, false])(
+  "useChatHandlers Send now for a queued free Ask (snapshot awaits admission: %s)",
+  (awaitsAdmission) => {
+    const queuedFile = {
+      url: "https://files.test/scope.txt",
+      mediaType: "text/plain",
+      filename: "scope.txt",
+      fileId: "file-1",
+    };
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockAwaitsAdmission = true;
-    mockMessageQueue.splice(0, mockMessageQueue.length, {
-      id: "queued-1",
-      text: "Continue the scan",
-      files: [queuedFile],
-      timestamp: 1,
-    });
-  });
-
-  afterAll(() => {
-    mockMessageQueue.splice(0, mockMessageQueue.length);
-  });
-
-  it("keeps the queued text and files when the gate refuses it", async () => {
-    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
-    const sendAdmittedMessage = jest.fn(async () => {
-      throw new Error("Continue with Agent to keep going.");
-    });
-    const stopped = { current: false };
-    const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
-
-    await act(async () => {
-      await result.current.handleSendNow("queued-1");
-    });
-
-    expect(sendAdmittedMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockAwaitsAdmission = awaitsAdmission;
+      mockMessageQueue.splice(0, mockMessageQueue.length, {
+        id: "queued-1",
         text: "Continue the scan",
         files: [queuedFile],
-      }),
-      expect.objectContaining({
-        body: expect.objectContaining({ mode: "ask" }),
-        onAdmitted: expect.any(Function),
-      }),
-      "ask",
-    );
-    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
-    expect(mockSendMessage).not.toHaveBeenCalled();
-    expect(stopped.current).toBe(true);
-    expect(errorToast).toHaveBeenCalledWith(
-      "Continue with Agent to keep going.",
-    );
-    errorToast.mockRestore();
-  });
+        timestamp: 1,
+      });
+    });
 
-  it("retires the queued item only when the Ask is admitted", async () => {
-    let admit!: () => void;
-    const sendAdmittedMessage = jest.fn(
-      (_message: unknown, options?: unknown) =>
-        new Promise<void>((resolve) => {
-          admit = () => {
-            (options as { onAdmitted: () => void }).onAdmitted();
-            resolve();
-          };
+    afterAll(() => {
+      mockMessageQueue.splice(0, mockMessageQueue.length);
+    });
+
+    it("keeps the queued text and files when the gate refuses it", async () => {
+      const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+      const sendAdmittedMessage = jest.fn(async () => {
+        throw new Error("Continue with Agent to keep going.");
+      });
+      const stopped = { current: false };
+      const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
+
+      await act(async () => {
+        await result.current.handleSendNow("queued-1");
+      });
+
+      expect(sendAdmittedMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: "Continue the scan",
+          files: [queuedFile],
         }),
-    );
-    const stopped = { current: false };
-    const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
-
-    let sending!: Promise<void>;
-    await act(async () => {
-      sending = result.current.handleSendNow("queued-1");
-    });
-    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
-
-    await act(async () => {
-      admit();
-      await sending;
-    });
-    expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
-    expect(stopped.current).toBe(false);
-  });
-
-  it("releases a pending activation queue fence on Send now", async () => {
-    const onExplicitSend = jest.fn();
-    const stopped = { current: true };
-    const { result } = renderHandlers(
-      jest.fn(async () => undefined),
-      "chat-1",
-      stopped,
-      onExplicitSend,
-    );
-
-    await act(async () => {
-      await result.current.handleSendNow("queued-1");
+        expect.objectContaining({
+          body: expect.objectContaining({ mode: "ask" }),
+          onAdmitted: expect.any(Function),
+        }),
+        "ask",
+      );
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(stopped.current).toBe(true);
+      expect(errorToast).toHaveBeenCalledWith(
+        "Continue with Agent to keep going.",
+      );
+      errorToast.mockRestore();
     });
 
-    expect(onExplicitSend).toHaveBeenCalledTimes(1);
-  });
-});
+    it("retires the queued item only when the Ask is admitted", async () => {
+      let admit!: () => void;
+      const sendAdmittedMessage = jest.fn(
+        (_message: unknown, options?: unknown) =>
+          new Promise<void>((resolve) => {
+            admit = () => {
+              (options as { onAdmitted: () => void }).onAdmitted();
+              resolve();
+            };
+          }),
+      );
+      const stopped = { current: false };
+      const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
+
+      let sending!: Promise<void>;
+      await act(async () => {
+        sending = result.current.handleSendNow("queued-1");
+      });
+      expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+
+      await act(async () => {
+        admit();
+        await sending;
+      });
+      expect(mockRemoveQueuedMessage).toHaveBeenCalledTimes(1);
+      expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(stopped.current).toBe(false);
+    });
+
+    it("releases a pending activation queue fence on Send now", async () => {
+      const onExplicitSend = jest.fn();
+      const stopped = { current: true };
+      const { result } = renderHandlers(
+        jest.fn(async () => undefined),
+        "chat-1",
+        stopped,
+        onExplicitSend,
+      );
+
+      await act(async () => {
+        await result.current.handleSendNow("queued-1");
+      });
+
+      expect(onExplicitSend).toHaveBeenCalledTimes(1);
+    });
+  },
+);
 
 describe("useChatHandlers free Ask regeneration under the activation gate", () => {
   const savedTranscript = [
