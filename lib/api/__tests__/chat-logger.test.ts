@@ -1052,12 +1052,17 @@ describe("captureAgentCompletionAnalytics", () => {
       ...shared,
       usage: { model: "auto", costDollars: 0.02, modelCostDollars: 0.02 },
     });
-    expect(capture).toHaveBeenCalledTimes(2);
-    expect(capture.mock.calls.map(([event]) => event.event)).toEqual([
+    // The canonical completion event is deliberately minimal (covered by its
+    // own tests); enrichment must not add any other event.
+    const enriched = capture.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.event !== "chat_response_completed");
+    expect(capture).toHaveBeenCalledTimes(3);
+    expect(enriched.map((event) => event.event)).toEqual([
       "hackerai-agent_run",
       "hackerai-usage_cost",
     ]);
-    for (const [event] of capture.mock.calls) {
+    for (const event of enriched) {
       expect(event.properties).toMatchObject({
         trigger_run_id: "run_synthetic",
         cache_history_run_id: "settlement-synthetic",
@@ -1173,6 +1178,113 @@ describe("captureAgentCompletionAnalytics", () => {
         });
     },
   );
+
+  describe("canonical chat_response_completed (all plans)", () => {
+    const complete = (
+      overrides: Partial<Parameters<typeof captureAgentCompletionAnalytics>[0]>,
+      capture: jest.Mock = jest.fn(),
+    ) => {
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: undefined,
+        posthog: { capture } as any,
+        userId: "synthetic-user",
+        chatId: "private-chat-id",
+        endpoint: "/api/chat",
+        mode: "ask",
+        subscription: "free",
+        outcome: "success",
+        hasResponseContent: true,
+        selectedModel: "test-model",
+        configuredModelId: "test-model",
+        sandboxInfo: null,
+        chatLogger: undefined,
+        ...overrides,
+      });
+      return capture.mock.calls.map((call) => call[0]);
+    };
+    const named = (events: any[], name: string) =>
+      events.filter((event) => event.event === name);
+
+    it.each(["ask", "agent"] as const)(
+      "a free %s completion emits the canonical event and the legacy event",
+      (mode) => {
+        const events = complete({ mode });
+
+        expect(named(events, "chat_response_completed")).toEqual([
+          {
+            distinctId: "synthetic-user",
+            event: "chat_response_completed",
+            properties: {
+              completion_definition_version: 1,
+              mode,
+              subscription_tier: "free",
+              $process_person_profile: false,
+            },
+          },
+        ]);
+        expect(named(events, "free_response_completed")).toHaveLength(1);
+      },
+    );
+
+    it.each([
+      ["pro", "ask"],
+      ["pro-plus", "agent"],
+      ["ultra", "agent"],
+      ["team", "agent"],
+    ] as const)(
+      "a %s %s completion without any experiment emits only the canonical event",
+      (subscription, mode) => {
+        const events = complete({
+          subscription,
+          mode,
+          endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
+          experiment: undefined,
+        });
+
+        expect(named(events, "chat_response_completed")).toEqual([
+          expect.objectContaining({
+            properties: {
+              completion_definition_version: 1,
+              mode,
+              subscription_tier: subscription,
+              $process_person_profile: false,
+            },
+          }),
+        ]);
+        expect(named(events, "free_response_completed")).toEqual([]);
+      },
+    );
+
+    it.each([
+      ["a failed response", { outcome: "error" as const }],
+      ["an aborted response", { outcome: "aborted" as const }],
+      ["an empty response", { hasResponseContent: false }],
+      ["an automatic continuation", { isAutoContinue: true }],
+    ])("%s emits neither completion event", (_, overrides) => {
+      for (const subscription of ["free", "pro"] as const) {
+        const events = complete({ subscription, ...overrides });
+        expect(named(events, "chat_response_completed")).toEqual([]);
+        expect(named(events, "free_response_completed")).toEqual([]);
+      }
+    });
+
+    it("a throwing canonical capture neither escapes nor suppresses the legacy or other events", () => {
+      const capture = jest.fn((event: { event: string }) => {
+        if (event.event === "chat_response_completed")
+          throw new Error("posthog queue full");
+      });
+
+      const events = complete(
+        { mode: "agent", endpoint: "/api/agent-long" },
+        capture,
+      );
+
+      expect(named(events, "chat_response_completed")).toHaveLength(1);
+      expect(named(events, "free_response_completed")).toHaveLength(1);
+      expect(named(events, "hackerai-agent_run")).toHaveLength(1);
+    });
+  });
+
   it.each(["ask", "agent"] as const)(
     "uses versioned routing evidence instead of final-model mismatch for %s",
     (mode) => {
@@ -1207,8 +1319,13 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
-      for (const [event] of capture.mock.calls as any[]) {
+      const experimentEvents = (capture.mock.calls as any[])
+        .map(([event]) => event)
+        .filter((event) => event.event !== "chat_response_completed");
+      // Plus the canonical completion event, which carries no routing data.
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 3 : 2);
+      expect(experimentEvents).toHaveLength(mode === "agent" ? 2 : 1);
+      for (const event of experimentEvents) {
         expect(event.properties).toMatchObject({
           ...summary,
           legacy_fallback_served: true,
@@ -1265,7 +1382,8 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      // Experiment outcome (+ Agent run) plus the canonical completion event.
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 3 : 2);
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "abliterated_model_response_outcome",
@@ -1374,7 +1492,13 @@ describe("captureAgentCompletionAnalytics", () => {
       fallbackServed: false,
     });
 
-    expect(capture).toHaveBeenCalledTimes(2);
+    // Agent run, canonical completion and legacy free activation.
+    expect(capture).toHaveBeenCalledTimes(3);
+    expect(capture.mock.calls.map(([event]) => event.event).sort()).toEqual([
+      "chat_response_completed",
+      "free_response_completed",
+      "hackerai-agent_run",
+    ]);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
@@ -1396,7 +1520,7 @@ describe("captureAgentCompletionAnalytics", () => {
     });
   });
 
-  it("keeps paid agent runs on the existing completion event only", () => {
+  it("keeps paid agent runs on the existing run event plus the canonical completion, without the free event", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
@@ -1425,7 +1549,10 @@ describe("captureAgentCompletionAnalytics", () => {
       activeSandboxRecoveryDurationMs: 0,
     });
 
-    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture.mock.calls.map(([event]) => event.event).sort()).toEqual([
+      "chat_response_completed",
+      "hackerai-agent_run",
+    ]);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",

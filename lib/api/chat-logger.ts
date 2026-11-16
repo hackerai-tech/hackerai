@@ -1897,20 +1897,20 @@ export function captureAgentCompletionAnalytics(
       // Outcome reporting must not interrupt persistence or billing.
     }
   }
-  // A successful free response is activation evidence; metered cost alone also
-  // occurs on failed requests. Keep this separate from task-completion claims.
-  if (
-    subscription === "free" &&
-    outcome === "success" &&
-    args.hasResponseContent &&
-    !args.isAutoContinue
-  ) {
+  // A successful response with content is activation evidence; metered cost
+  // alone also occurs on failed requests. Keep this separate from
+  // task-completion claims. One rule qualifies both events below.
+  const completedResponse =
+    outcome === "success" && args.hasResponseContent && !args.isAutoContinue;
+  if (completedResponse) {
+    // Canonical for every plan and model policy, so a user who upgrades keeps
+    // counting as an activator and their paid replies stay in guardrails.
     try {
       posthog?.capture({
         distinctId: userId,
-        event: "free_response_completed",
+        event: "chat_response_completed",
         properties: {
-          activation_definition_version: 1,
+          completion_definition_version: 1,
           mode,
           subscription_tier: subscription,
           $process_person_profile: false,
@@ -1918,6 +1918,23 @@ export function captureAgentCompletionAnalytics(
       });
     } catch {
       // Analytics must never interrupt response persistence.
+    }
+    // Legacy free-only event, kept for existing readouts.
+    if (subscription === "free") {
+      try {
+        posthog?.capture({
+          distinctId: userId,
+          event: "free_response_completed",
+          properties: {
+            activation_definition_version: 1,
+            mode,
+            subscription_tier: subscription,
+            $process_person_profile: false,
+          },
+        });
+      } catch {
+        // Analytics must never interrupt response persistence.
+      }
     }
   }
 
