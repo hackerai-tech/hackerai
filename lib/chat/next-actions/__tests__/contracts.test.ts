@@ -295,6 +295,8 @@ test.each([
   "Explain it, but do not suggest follow-ups.",
   "Answer briefly and do not continue.",
   "Thanks, no more questions.",
+  "No more suggestions, please.",
+  "Explain it without follow-ups, please.",
 ])("suppresses a prediction after a clear conversational stop: %s", (text) => {
   expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
     true,
@@ -357,6 +359,8 @@ test.each([
   "Do not suggest follow-up scans that need root access.",
   "The scanner returned no more questions; explain why.",
   "Should I say do not continue?",
+  "Write a template that says no more suggestions, please.",
+  "Compare reports with and without any follow-ups, please.",
 ])("keeps an explicit continuation or technical stop request: %s", (text) => {
   expect(hasExplicitPredictionStop([{ id: "u", role: "user", text }])).toBe(
     false,

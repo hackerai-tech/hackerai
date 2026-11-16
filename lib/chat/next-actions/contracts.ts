@@ -219,11 +219,11 @@ export function parsePredictedNextAction(output: unknown): string[] {
 // A directive must be a whole clause, optionally after a comma or "and"/"but"/
 // "then"; "do not continue with ..." is an instruction about something else.
 const STOP_DIRECTIVE_CLAUSE =
-  /(?:^|,\s*|\b(?:and|but|then)\s+)(?:please\s+)?(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:continue|add (?:another|any|more) (?:questions?|suggestions?)|suggest (?:a |any )?follow[ -]?ups?))(?:\s+(?:afterwards|please))?$/i;
+  /(?:^|,\s*|\b(?:and|but|then)\s+)(?:please\s+)?(?:no more (?:suggestions|questions|follow[ -]?ups)|do not (?:continue|add (?:another|any|more) (?:questions?|suggestions?)|suggest (?:a |any )?follow[ -]?ups?))(?:,?\s+(?:afterwards|please))?$/i;
 // A coordinated phrase ("with and without follow-ups") describes a category
 // the user is asking about rather than how to answer this request.
 const WITHOUT_FOLLOW_UPS_CLAUSE =
-  /(?<!\b(?:with|and|or)\s+)\bwithout (?:any )?follow[ -]?ups?(?:\s+please)?$/i;
+  /(?<!\b(?:with|and|or)\s+)\bwithout (?:any )?follow[ -]?ups?(?:,?\s+please)?$/i;
 
 function hasStopDirectiveClause(instruction: string): boolean {
   for (const [, clause, end] of instruction.matchAll(
