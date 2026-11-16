@@ -1,7 +1,7 @@
 import type { ChatMode } from "@/types/chat";
 
 /** Bump when the catalog or its per-mode placement changes meaningfully. */
-export const CHAT_STARTERS_DEFINITION_VERSION = 1;
+export const CHAT_STARTERS_DEFINITION_VERSION = 2;
 
 export type ChatStarterId =
   | "test_target"
@@ -59,7 +59,8 @@ const CHAT_STARTERS: Record<ChatStarterId, ChatStarter> = {
 };
 
 // Ask cannot run live checks, so "Test a target" is Agent-only. Report writing
-// mostly follows testing and stays last in both modes.
+// mostly follows testing and stays last in both modes. Mobile shows the
+// featured entries with the rest in a menu; desktop shows all in this order.
 const STARTER_LAYOUT: Record<
   ChatMode,
   { featured: ChatStarterId[]; more: ChatStarterId[] }

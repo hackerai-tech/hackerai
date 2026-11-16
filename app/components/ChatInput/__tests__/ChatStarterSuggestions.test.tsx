@@ -180,6 +180,10 @@ const menuLabels = () =>
   screen
     .getAllByRole("menuitem")
     .map((item) => item.firstElementChild?.textContent);
+const insertLabels = () =>
+  screen
+    .getAllByRole("button", { name: /^Insert example:/ })
+    .map((button) => button.textContent);
 
 describe("Chat starter suggestions in the composer", () => {
   beforeEach(() => {
@@ -229,7 +233,7 @@ describe("Chat starter suggestions in the composer", () => {
     // The filled composer replaces the suggestions.
     expect(screen.queryByTestId("chat-starters")).not.toBeInTheDocument();
     expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
-      definition_version: 1,
+      definition_version: 2,
       example_id: "test_target",
       mode: "agent",
       presentation: "expanded",
@@ -243,7 +247,7 @@ describe("Chat starter suggestions in the composer", () => {
     await flushFrames();
 
     expect(mockCapture).toHaveBeenCalledWith("chat_starters_exposed", {
-      definition_version: 1,
+      definition_version: 2,
       mode: "agent",
       presentation: "expanded",
     });
@@ -284,7 +288,7 @@ describe("Chat starter suggestions in the composer", () => {
       await notifyAnalyticsReadiness(null);
       expect(exposureAttempts()).toBe(3);
       expect(mockCapture).toHaveBeenLastCalledWith("chat_starters_exposed", {
-        definition_version: 1,
+        definition_version: 2,
         mode: "agent",
         presentation: "expanded",
       });
@@ -394,44 +398,62 @@ describe("Chat starter suggestions in the composer", () => {
     expect(screen.queryByTestId("chat-starters")).not.toBeInTheDocument();
   });
 
-  it("follows the selected mode and keeps live checks out of Ask", async () => {
-    const view = renderStarters();
+  it("shows every Agent example on desktop without a More menu", async () => {
+    const { onSubmit } = renderStarters();
     await screen.findByTestId("chat-starters");
-    openMenu("More examples");
-    expect(menuLabels()).toEqual([
+
+    expect(insertLabels()).toEqual([
       "Test a target",
       "Fix a tool error",
       "Plan a test",
       "Explain results",
       "Write up findings",
     ]);
-    view.unmount();
+    expect(
+      screen.queryByRole("button", { name: "More examples" }),
+    ).not.toBeInTheDocument();
 
+    // An example that used to sit behind the menu inserts like the others.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Insert example: Write up findings" }),
+    );
+    await flushFrames();
+    expect(textarea().value).toMatch(
+      /^Turn these test notes into a clear report/,
+    );
+    expect(textarea()).toHaveFocus();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
+      definition_version: 2,
+      example_id: "write_up_findings",
+      mode: "agent",
+      presentation: "expanded",
+    });
+  });
+
+  it("keeps live checks out of Ask while showing its other examples", async () => {
     mockChatMode = "ask";
     renderStarters();
     await screen.findByTestId("chat-starters");
-    expect(
-      screen
-        .getAllByRole("button", { name: /^Insert example:/ })
-        .map((button) => button.getAttribute("aria-label")),
-    ).toEqual([
-      "Insert example: Fix a tool error",
-      "Insert example: Plan a test",
-    ]);
-    openMenu("More examples");
-    expect(menuLabels()).toEqual([
+
+    expect(insertLabels()).toEqual([
       "Fix a tool error",
       "Plan a test",
       "Explain results",
       "Write up findings",
     ]);
+    expect(
+      screen.queryByRole("button", { name: "More examples" }),
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: /Explain results/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Insert example: Explain results" }),
+    );
     await flushFrames();
     expect(textarea().value).toMatch(/^Explain these \[tool\] results/);
     expect(textarea()).toHaveFocus();
     expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
-      definition_version: 1,
+      definition_version: 2,
       example_id: "explain_results",
       mode: "ask",
       presentation: "expanded",

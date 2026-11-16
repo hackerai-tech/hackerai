@@ -242,19 +242,19 @@ describe("ChatStartersProvider", () => {
     expect(mockCapture.mock.calls).toEqual([
       [
         "chat_starters_exposed",
-        { definition_version: 1, mode: "agent", presentation: "expanded" },
+        { definition_version: 2, mode: "agent", presentation: "expanded" },
       ],
       [
         "chat_starters_exposed",
-        { definition_version: 1, mode: "ask", presentation: "expanded" },
+        { definition_version: 2, mode: "ask", presentation: "expanded" },
       ],
       [
         "chat_starters_exposed",
-        { definition_version: 1, mode: "agent", presentation: "collapsed" },
+        { definition_version: 2, mode: "agent", presentation: "collapsed" },
       ],
       [
         "chat_starters_exposed",
-        { definition_version: 1, mode: "agent", presentation: "expanded" },
+        { definition_version: 2, mode: "agent", presentation: "expanded" },
       ],
     ]);
   });

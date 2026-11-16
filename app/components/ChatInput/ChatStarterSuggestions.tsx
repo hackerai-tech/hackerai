@@ -3,8 +3,10 @@ import { useEffect, useRef, type ReactNode } from "react";
 import {
   ArrowUpLeft,
   ChevronDown,
+  FileText,
   Lightbulb,
   ListChecks,
+  ScanSearch,
   Wrench,
 } from "lucide-react";
 import {
@@ -41,8 +43,9 @@ const TargetIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-const STARTER_ICONS: Partial<
-  Record<ChatStarterId, (props: { className?: string }) => ReactNode>
+const STARTER_ICONS: Record<
+  ChatStarterId,
+  (props: { className?: string }) => ReactNode
 > = {
   test_target: TargetIcon,
   fix_tool_error: ({ className }) => (
@@ -50,6 +53,12 @@ const STARTER_ICONS: Partial<
   ),
   plan_test: ({ className }) => (
     <ListChecks aria-hidden="true" strokeWidth={1.8} className={className} />
+  ),
+  explain_results: ({ className }) => (
+    <ScanSearch aria-hidden="true" strokeWidth={1.8} className={className} />
+  ),
+  write_up_findings: ({ className }) => (
+    <FileText aria-hidden="true" strokeWidth={1.8} className={className} />
   ),
 };
 
@@ -61,7 +70,7 @@ const StarterIcon = ({
   className?: string;
 }) => {
   const Icon = STARTER_ICONS[id];
-  return Icon ? <Icon className={className} /> : null;
+  return <Icon className={className} />;
 };
 
 type ChatStarterSuggestionsProps = {
@@ -216,37 +225,38 @@ export function ChatStarterSuggestions({
     );
   }
 
+  // Desktop shows every example. With room for one row (>= 720px of composer
+  // width, sidebar included) the row spans the full width; below that the cap
+  // keeps wrapped rows balanced (Agent 3+2, Ask 2+2) instead of leaving one
+  // orphaned pill.
   return (
     <div
-      className="flex flex-wrap items-center justify-center gap-2 pt-4"
+      className="@container pt-4"
       data-testid="chat-starters"
       data-presentation="expanded"
     >
-      {featured.map((starter) => (
-        <button
-          key={starter.id}
-          type="button"
-          aria-label={`Insert example: ${starter.label}`}
-          onClick={() => onSelect(starter)}
-          className="flex h-[34px] items-center gap-[7px] rounded-full border border-border pl-[11px] pr-3.5 text-sm leading-[18px] text-foreground/85 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <StarterIcon
-            id={starter.id}
-            className="size-[15px] shrink-0 text-muted-foreground"
-          />
-          {starter.label}
-        </button>
-      ))}
-      {menu(
-        <button
-          type="button"
-          aria-label="More examples"
-          className="flex h-[34px] items-center gap-[5px] rounded-full pl-3 pr-2.5 text-sm leading-[18px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted"
-        >
-          More
-          <ChevronDown aria-hidden="true" className="size-[13px]" />
-        </button>,
-      )}
+      <div
+        className={cn(
+          "mx-auto flex flex-wrap items-center justify-center gap-2 @min-[720px]:max-w-none",
+          mode === "agent" ? "max-w-[480px]" : "max-w-[384px]",
+        )}
+      >
+        {[...featured, ...more].map((starter) => (
+          <button
+            key={starter.id}
+            type="button"
+            aria-label={`Insert example: ${starter.label}`}
+            onClick={() => onSelect(starter)}
+            className="flex h-[34px] items-center gap-[7px] rounded-full border border-border pl-[11px] pr-3.5 text-sm leading-[18px] text-foreground/85 transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <StarterIcon
+              id={starter.id}
+              className="size-[15px] shrink-0 text-muted-foreground"
+            />
+            {starter.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
