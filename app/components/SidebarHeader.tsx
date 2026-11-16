@@ -379,29 +379,30 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             </div>
           </Button>
         </div>
+
+        {showSchedules && (
+          <div className="py-1">
+            <Button
+              asChild
+              variant="ghost"
+              className={`h-auto w-full justify-start rounded-lg p-2 hover:bg-sidebar-accent/50 ${
+                pathname === "/schedules" ? "bg-sidebar-accent" : ""
+              }`}
+            >
+              <Link
+                href="/schedules"
+                onClick={isMobileOverlay ? handleCloseSidebar : undefined}
+                aria-current={pathname === "/schedules" ? "page" : undefined}
+              >
+                <CalendarClock className="size-4" />
+                <span className="text-sm font-medium">Schedules</span>
+              </Link>
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Search Dialog */}
-      {showSchedules && (
-        <div className={isMobileOverlay ? "px-2" : ""}>
-          <Button
-            asChild
-            variant="ghost"
-            className={`h-auto w-full justify-start rounded-lg p-2 hover:bg-sidebar-accent/50 ${
-              pathname === "/schedules" ? "bg-sidebar-accent" : ""
-            }`}
-          >
-            <Link
-              href="/schedules"
-              onClick={isMobileOverlay ? handleCloseSidebar : undefined}
-              aria-current={pathname === "/schedules" ? "page" : undefined}
-            >
-              <CalendarClock className="size-4" />
-              <span className="text-sm font-medium">Schedules</span>
-            </Link>
-          </Button>
-        </div>
-      )}
       <MessageSearchDialog isOpen={isSearchOpen} onClose={handleSearchClose} />
     </>
   );
