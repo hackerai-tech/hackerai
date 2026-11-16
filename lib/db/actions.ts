@@ -288,6 +288,13 @@ const getConvexRequestIdFromMessage = (message: string): string | undefined => {
   return match?.[1];
 };
 
+// Retry receipts admit only Convex's opaque request-ID prefix; the rest of the
+// message, or a marker echoed later in it, can carry application content.
+const getRetryReceiptConvexRequestId = (
+  errorMessage: string,
+): string | undefined =>
+  /^\[Request ID: ([a-f0-9]{16})\]/.exec(errorMessage.slice(0, 256))?.[1];
+
 const getObjectString = (value: unknown, key: string): string | undefined => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -1325,6 +1332,9 @@ export async function saveMessage({
             attempt: attemptIndex + 1,
             next_attempt: attemptIndex + 2,
             retry_delay_ms: retryDelayMs,
+            db_request_id: getRetryReceiptConvexRequestId(
+              stringifyError(error),
+            ),
             chat_id: chatId,
             user_id: userId,
             message_id: message.id,

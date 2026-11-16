@@ -506,6 +506,184 @@ describe("saveMessage retry acknowledgement diagnostics", () => {
   });
 });
 
+describe("saveMessage retry backend request receipts", () => {
+  const REQUEST_A = "0123456789abcdef";
+  const REQUEST_B = "fedcba9876543210";
+  const REQUEST_C = "a1b2c3d4e5f60718";
+  const convexServerError = (requestId: string) =>
+    new Error(`[Request ID: ${requestId}] Server Error`);
+  const syntheticMessage = {
+    id: "message-receipt-1",
+    role: "assistant" as const,
+    parts: [{ type: "text" as const, text: "synthetic canary body" }],
+  };
+  const retryEventsFrom = (warn: { mock: { calls: unknown[][] } }) =>
+    warn.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .filter((payload) => payload.event === "message_save_retry_scheduled");
+
+  it("attributes each retried attempt to its own backend request before recovery", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    const privateTail = "synthetic-private-tail-canary";
+    mockMutation
+      .mockRejectedValueOnce(
+        new Error(
+          `[Request ID: ${REQUEST_A}] Server Error: ${privateTail}`,
+        ) as never,
+      )
+      .mockRejectedValueOnce(convexServerError(REQUEST_B) as never)
+      .mockResolvedValueOnce(null as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(
+        saveMessage({
+          chatId: "chat-1",
+          userId: "user-1",
+          message: syntheticMessage,
+        }),
+      ).resolves.toBeNull();
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      const [firstArgs, ...retryArgs] = mockMutation.mock.calls.map(
+        ([, args]) => args,
+      );
+      expect(firstArgs).toMatchObject({
+        id: "message-receipt-1",
+        parts: syntheticMessage.parts,
+      });
+      expect(retryArgs).toEqual([firstArgs, firstArgs]);
+      const retryEvents = retryEventsFrom(warn);
+      for (const event of retryEvents) {
+        expect(JSON.stringify(event)).not.toContain(privateTail);
+        expect(JSON.stringify(event)).not.toContain("synthetic canary body");
+      }
+      expect(
+        retryEvents.map((event) => ({
+          db_operation: event.db_operation,
+          message_id: event.message_id,
+          attempt: event.attempt,
+          next_attempt: event.next_attempt,
+          db_request_id: event.db_request_id,
+        })),
+      ).toEqual([
+        {
+          db_operation: "messages.saveMessage",
+          message_id: "message-receipt-1",
+          attempt: 1,
+          next_attempt: 2,
+          db_request_id: REQUEST_A,
+        },
+        {
+          db_operation: "messages.saveMessage",
+          message_id: "message-receipt-1",
+          attempt: 2,
+          next_attempt: 3,
+          db_request_id: REQUEST_B,
+        },
+      ]);
+      const acknowledgements = info.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter(
+          (payload) => payload.event === "message_save_retry_acknowledged",
+        );
+      expect(acknowledgements).toEqual([
+        expect.objectContaining({
+          attempts: 3,
+          message_id: "message-receipt-1",
+        }),
+      ]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it("keeps the exhausted third attempt's request on the final database error", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation
+      .mockRejectedValueOnce(convexServerError(REQUEST_A) as never)
+      .mockRejectedValueOnce(convexServerError(REQUEST_B) as never)
+      .mockRejectedValueOnce(convexServerError(REQUEST_C) as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const thrown = await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: syntheticMessage,
+      }).catch((caught) => caught);
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          message_id: "message-receipt-1",
+          db_request_id: REQUEST_C,
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+      expect(
+        retryEventsFrom(warn).map((event) => [
+          event.attempt,
+          event.db_request_id,
+        ]),
+      ).toEqual([
+        [1, REQUEST_A],
+        [2, REQUEST_B],
+      ]);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it.each([
+    ["non-hex marker", "[Request ID: privatecanary] Server Error"],
+    ["overlong hex", "[Request ID: 0123456789abcdef0] Server Error"],
+    ["short hex", "[Request ID: 0123456789abcde] Server Error"],
+    [
+      "16 characters with non-hex",
+      "[Request ID: 0123456789abcdeg] Server Error",
+    ],
+    ["missing marker", "fetch failed"],
+    [
+      "marker outside the receipt prefix",
+      "fetch failed privatecanary [Request ID: 0123456789abcdef]",
+    ],
+  ])(
+    "omits the retry request ID for a %s without changing recovery",
+    async (_case, message) => {
+      const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+      mockMutation
+        .mockRejectedValueOnce(new Error(message) as never)
+        .mockRejectedValueOnce(new Error(message) as never)
+        .mockResolvedValueOnce(null as never);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await expect(
+          saveMessage({
+            chatId: "chat-1",
+            userId: "user-1",
+            message: syntheticMessage,
+          }),
+        ).resolves.toBeNull();
+        expect(mockMutation).toHaveBeenCalledTimes(3);
+        const retryEvents = retryEventsFrom(warn);
+        expect(retryEvents.map((event) => event.attempt)).toEqual([1, 2]);
+        for (const event of retryEvents) {
+          expect(event).not.toHaveProperty("db_request_id");
+          expect(JSON.stringify(event)).not.toContain("privatecanary");
+        }
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+      }
+    },
+  );
+});
+
 describe("fenceAndGetActiveAgentResourcesForUser", () => {
   it("distinguishes unavailable notes from a successful empty snapshot for strict callers", async () => {
     const { getNotes, mockQuery } = await loadSaveMessageWithMocks();
