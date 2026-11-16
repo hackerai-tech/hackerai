@@ -195,6 +195,11 @@ import {
   type RollingModelContextCheckpoint,
 } from "@/lib/chat/summarization/rolling-context";
 import {
+  buildContextBudgetProjectionDiagnostics,
+  CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
+  type ContextBudgetDecision,
+} from "@/lib/chat/summarization/context-budget-diagnostics";
+import {
   withProviderRequestSizeRecovery,
   type ProviderRequestRetryParams,
   type ProviderRequestSizeRecoveryState,
@@ -1113,6 +1118,12 @@ export async function createAgentStream(
     (ctx.agentModelContextEnabled === true || paidContextTreatment);
   let activeModelInputTokens = 0;
   let lastPreparedInputEstimate = 0;
+  // Failure diagnostics only: the compaction decision value actually compared
+  // in the current prepareStep. Reset per step so a guard never reports a
+  // previous step's or stream's decision.
+  let contextBudgetDecision: ContextBudgetDecision =
+    CONTEXT_BUDGET_DECISION_NOT_EVALUATED;
+  let contextBudgetStepIndex: number | undefined;
   let lastCompletedResponseMessages: ModelMessage[] = [];
   let summarizationThreshold = getSummarizationThresholdTokens(
     getMaxTokensForSubscription(ctx.subscription, { mode: ctx.mode }),
@@ -1616,27 +1627,30 @@ export async function createAgentStream(
           effectiveModelName,
         );
 
+    const attachedFileAnnotations = openRouterFileAnnotations;
     const prepared = addPromptCacheBreakpoints(
       addOpenRouterFileAnnotationsToLastAssistantMessage(
         messagesWithAuthorization,
-        openRouterFileAnnotations,
+        attachedFileAnnotations,
       ),
       ctx.trackedProvider.languageModel(effectiveModelName).modelId,
     );
+    let preparedMessageTokens: number | undefined;
+    let preparedSystemTokens: number | undefined;
     // A failed compaction must not send expanded history to a smaller model.
     // Preserve the transcript for retry instead of silently deleting context.
     if (
       ctx.mode === "agent" &&
       (routeAwareContext || compactionAttempts.pendingVerdict)
     ) {
-      lastPreparedInputEstimate =
-        estimateSummaryInputTokens(prepared) +
-        Math.max(
-          ctx.systemPromptTokens + runtimePromptTokens,
-          safeCountTokens(
-            JSON.stringify(requestSystemPrompt(effectiveModelName)),
-          ),
-        );
+      preparedMessageTokens = estimateSummaryInputTokens(prepared);
+      preparedSystemTokens = Math.max(
+        ctx.systemPromptTokens + runtimePromptTokens,
+        safeCountTokens(
+          JSON.stringify(requestSystemPrompt(effectiveModelName)),
+        ),
+      );
+      lastPreparedInputEstimate = preparedMessageTokens + preparedSystemTokens;
       if (compactionAttempts.pendingVerdict) {
         // Include fixed request overhead before falling back to this estimate
         // when the provider omits usage. All tools are a conservative bound
@@ -1675,6 +1689,16 @@ export async function createAgentStream(
           max_tokens: activeContextBudget,
           compaction_attempt_count: compactionAttempts.attemptCount,
           unproductive_compaction_count: compactionAttempts.unproductiveCount,
+          // Bounded, failure-only breakdown; never throws or tokenizes on
+          // healthy requests.
+          ...buildContextBudgetProjectionDiagnostics({
+            stepIndex: contextBudgetStepIndex,
+            decision: contextBudgetDecision,
+            preparedMessageTokens,
+            systemTokens: preparedSystemTokens,
+            preparedMessages: prepared,
+            attachedFileAnnotations,
+          }),
         }),
       );
       throw new AgentContextBudgetError(
@@ -2302,6 +2326,8 @@ export async function createAgentStream(
     },
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      contextBudgetDecision = CONTEXT_BUDGET_DECISION_NOT_EVALUATED;
+      contextBudgetStepIndex = undefined;
       reportMemoryActivity({ operation: "prepare_step" });
       await ctx.waitForBrowserHandoff?.(abortSignal);
       // Keep admission outside preparation recovery: an exhausted shared ledger
@@ -2343,6 +2369,7 @@ export async function createAgentStream(
           : steps.length;
       const generationStepIndex =
         generationStepOffset + localGenerationStepIndex;
+      contextBudgetStepIndex = generationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
       if (
         historyEnabled &&
@@ -2448,21 +2475,37 @@ export async function createAgentStream(
         const shouldCheckDurableSummary =
           ctx.summarizationTracker.summarizationCount === 0 &&
           steps.length === 0;
+        // Records the value only when the existing short-circuited comparison
+        // actually evaluates it; no additional estimate is computed.
+        const rollingCheckInputTokens = (): number => {
+          const inputTokens =
+            estimateSummaryInputTokens(rollingModelMessages) +
+            ctx.systemPromptTokens +
+            runtimePromptTokens;
+          contextBudgetDecision = { source: "rolling_check", inputTokens };
+          return inputTokens;
+        };
         const shouldCompactInRun =
           !shouldCheckDurableSummary &&
           (providerPromptPressure !== null ||
             state.lastStepInputTokens > summarizationThreshold ||
             (ctx.mode === "agent" &&
-              estimateSummaryInputTokens(rollingModelMessages) +
-                ctx.systemPromptTokens +
-                runtimePromptTokens >
-                summarizationThreshold));
+              rollingCheckInputTokens() > summarizationThreshold));
 
         if (
           canSummarizeAgain() &&
           (shouldCheckDurableSummary || shouldCompactInRun)
         ) {
           if (shouldCheckDurableSummary) {
+            const durablePreparedInputTokens = routeAwareContext
+              ? lastPreparedInputEstimate
+              : undefined;
+            if (durablePreparedInputTokens !== undefined) {
+              contextBudgetDecision = {
+                source: "durable_check",
+                inputTokens: durablePreparedInputTokens,
+              };
+            }
             const result = await runSummarizationStep({
               compactionPolicy,
               messages: state.finalMessages,
@@ -2483,9 +2526,7 @@ export async function createAgentStream(
                 (ctx.contextUsageOn ? runtimePromptTokens : 0),
               ctxMaxTokens: activeContextBudget,
               providerInputTokens: state.lastStepInputTokens,
-              preparedInputTokens: routeAwareContext
-                ? lastPreparedInputEstimate
-                : undefined,
+              preparedInputTokens: durablePreparedInputTokens,
               chatSystemPrompt: ctx.currentSystemPrompt,
               tools: ctx.tools,
               providerOptions: getStepProviderOptions(
