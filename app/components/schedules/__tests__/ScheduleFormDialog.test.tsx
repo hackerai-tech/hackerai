@@ -204,12 +204,12 @@ it("allows editing an unavailable saved computer without changing its execution 
     />,
   );
   expect(screen.getByLabelText("Starting folder")).toHaveValue("/tmp/original");
-  // The one remaining warning must still say skipped runs are not made up
-  // later or moved to the cloud, and must describe the control it is about.
+  // The short hint must still tell assistive technology that skipped runs are
+  // not made up later or moved to the cloud, and describe its own control.
   expect(
     screen.getByRole("combobox", { name: "Run on" }),
   ).toHaveAccessibleDescription(
-    /You can still save changes\..*aren’t made up later.*never move to the cloud/,
+    /Runs are skipped until it reconnects\..*aren’t made up later.*never move to the cloud/,
   );
   expect(screen.getAllByText(/never move to the cloud/)).toHaveLength(1);
   fireEvent.change(screen.getByLabelText("Name"), {

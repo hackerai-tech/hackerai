@@ -3,8 +3,8 @@
 Schedules run saved instructions as a **new Agent task**, in Cloud or on a selected
 computer. Local schedules bind a persistent environment identity and an absolute
 working folder. They do not inherit another task's messages or attachments.
-Saving a schedule authorizes full tool access; the form explains this and normal
-account usage/spending limits before saving.
+Saving a schedule authorizes full tool access; the form states this beside Save.
+"How schedules work" on the Schedules page covers normal usage/spending limits.
 
 ## Execution and recovery
 

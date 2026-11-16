@@ -346,7 +346,9 @@ export function ScheduleFormDialog({
                     >
                       <SelectTrigger
                         id={`${id}-run-on`}
-                        aria-describedby={`${id}-run-on-help`}
+                        aria-describedby={
+                          execution ? `${id}-run-on-help` : undefined
+                        }
                         className="h-auto min-h-11 w-full items-start gap-2 py-2.5 text-left whitespace-normal sm:min-h-9 sm:py-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:line-clamp-none [&>svg]:mt-0.5 [&>svg]:shrink-0"
                       >
                         <SelectValue>
@@ -423,33 +425,30 @@ export function ScheduleFormDialog({
                         </SelectGroup>
                       </SelectContent>
                     </Select>
-                    <p
-                      id={`${id}-run-on-help`}
-                      className={cn(
-                        "flex items-start gap-1.5 text-xs leading-relaxed",
-                        unavailable
-                          ? "text-amber-700 dark:text-amber-500"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {unavailable && (
-                        <WifiOff
-                          className="mt-0.5 size-3.5 shrink-0"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span className="min-w-0 break-words">
-                        {!execution
-                          ? `Runs in your cloud workspace while you’re away.${
-                              targets.length
-                                ? ""
-                                : " Connect a computer to run schedules on it."
-                            }`
-                          : unavailable
-                            ? "You can still save changes. Runs are skipped until it reconnects; they aren’t made up later and never move to the cloud."
-                            : "Runs only while this computer is awake and connected. Missed runs are skipped, never made up later or moved to the cloud."}
-                      </span>
-                    </p>
+                    {execution && (
+                      // Cloud needs no helper. As on the schedule row, the
+                      // full skip rule is kept for assistive technology and
+                      // "How schedules work" states it in full.
+                      <p
+                        id={`${id}-run-on-help`}
+                        title="Skipped runs aren’t made up later and never move to the cloud."
+                        className={cn(
+                          "text-xs leading-relaxed break-words",
+                          unavailable
+                            ? "text-amber-700 dark:text-amber-500"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {unavailable
+                          ? "Runs are skipped until it reconnects."
+                          : "Runs only while this computer is awake and connected."}
+                        <span className="sr-only">
+                          {" "}
+                          Skipped runs aren’t made up later and never move to
+                          the cloud.
+                        </span>
+                      </p>
+                    )}
                   </div>
                   {execution && (
                     <div className="min-w-0 space-y-2">
@@ -513,8 +512,7 @@ export function ScheduleFormDialog({
                         id={`${id}-folder-help`}
                         className="text-xs leading-relaxed wrap-anywhere text-muted-foreground"
                       >
-                        Where each task starts. Not a boundary: tools can reach
-                        anything this computer can.
+                        Access isn’t limited to this folder.
                       </p>
                     </div>
                   )}
@@ -774,42 +772,12 @@ export function ScheduleFormDialog({
             <div className="flex flex-col gap-3 min-[56.25rem]:flex-row min-[56.25rem]:items-center min-[56.25rem]:gap-8">
               <div className="flex min-w-0 flex-1 items-start gap-2 text-xs leading-relaxed text-muted-foreground sm:text-sm">
                 <Shield
-                  className="mt-0.5 size-3.5 shrink-0 max-sm:hidden sm:size-4"
+                  className="mt-0.5 size-3.5 shrink-0 sm:size-4"
                   aria-hidden="true"
                 />
-                {execution ? (
-                  <p className="min-w-0 break-words">
-                    <span className="sm:hidden">
-                      <span className="font-medium text-foreground">
-                        Saving allows unattended runs on the selected computer
-                        with full tool access beyond this folder.
-                      </span>{" "}
-                      Normal usage and spending limits apply.
-                    </span>
-                    <span className="max-sm:hidden">
-                      <span className="font-medium text-foreground">
-                        Saving lets HackerAI run these instructions unattended
-                        on{" "}
-                        <span className="wrap-anywhere max-sm:hidden">
-                          {execution.name}
-                        </span>
-                        <span className="sm:hidden">the selected computer</span>{" "}
-                        with full tool access.
-                      </span>{" "}
-                      Access isn’t limited to the starting folder. Normal usage
-                      and spending limits apply.
-                    </span>
-                  </p>
-                ) : (
-                  <p className="min-w-0">
-                    <span className="font-medium text-foreground">
-                      Saving lets HackerAI run these instructions unattended in
-                      your cloud workspace with full tool access,
-                    </span>{" "}
-                    including while you’re away. Normal usage and spending
-                    limits apply.
-                  </p>
-                )}
+                <p className="min-w-0 font-medium text-foreground">
+                  Runs unattended with full tool access.
+                </p>
               </div>
               <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end min-[56.25rem]:shrink-0">
                 <Button
