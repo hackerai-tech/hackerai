@@ -83,6 +83,12 @@ import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-san
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { FreeAgentGateNotice } from "./FreeAgentGateNotice";
+import {
+  FREE_AGENT_GATE_SEND_DISABLED_REASON,
+  useFreeAgentActivationExposure,
+} from "@/app/hooks/useFreeAgentActivation";
+import { connectionMatchesPreference } from "@/lib/sandbox/environment";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -354,6 +360,8 @@ const ChatInputContent = ({
     defaultLocalSandboxPreference,
     todos,
     sidebarOpen,
+    freeAgentActivationStatus,
+    freeAgentGateActive = false,
   } = useGlobalState();
   const { user } = useAuth();
   const input = useComposerInput();
@@ -889,7 +897,12 @@ const ChatInputContent = ({
     // Only warn when the same selected sandbox loses availability. Restoring a
     // different task or resolving plan access is not a connection lifecycle event.
     if (!freeAgentSandboxAvailable) {
-      if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
+      // The activation gate is Agent-only: never fall back to Ask there.
+      if (
+        freeDesktopAgentOnlyActive ||
+        freeAgentGateActive ||
+        sandboxPreference !== "e2b"
+      ) {
         if (wasConnected) {
           const selectedDesktop = isDesktopPreference(sandboxPreference);
           toast.info(
@@ -917,6 +930,7 @@ const ChatInputContent = ({
     }
   }, [
     freeAgentSandboxAvailable,
+    freeAgentGateActive,
     freeDesktopAgentOnlyActive,
     isFreeAgent,
     sandboxPreference,
@@ -947,6 +961,15 @@ const ChatInputContent = ({
           ? "Select a local sandbox to use Agent"
           : "Reconnect the selected local sandbox to use Agent"
       : undefined;
+  // Gated users without a selected computer keep an editable draft, but only
+  // setup can enable sending. A selected-but-offline computer uses reconnect.
+  const freeAgentGateNeedsComputer =
+    freeAgentGateActive && sandboxPreference === "e2b";
+  const freeAgentGateComputerName = freeAgentGateActive
+    ? (localConnections?.find((connection) =>
+        connectionMatchesPreference(connection, sandboxPreference),
+      )?.name ?? null)
+    : null;
   const {
     selectedNativeDesktop,
     computerConnectionPending,
@@ -1009,7 +1032,11 @@ const ChatInputContent = ({
       ? "Finish editing the queued message before sending a new request"
       : undefined) ??
     (user && !pendingUserWait
-      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      ? (freeDesktopSandboxUnavailableReason ??
+        (freeAgentGateNeedsComputer
+          ? FREE_AGENT_GATE_SEND_DISABLED_REASON
+          : undefined) ??
+        computerSendDisabledReason)
       : undefined);
 
   useEffect(() => {
@@ -1358,6 +1385,13 @@ const ChatInputContent = ({
     await handleRemoveFile(index);
   };
 
+  useFreeAgentActivationExposure({
+    userId: user?.id,
+    status: freeAgentActivationStatus,
+    visible: !isResolvingInitialState,
+    surface: "chat_input",
+  });
+
   if (isResolvingInitialState) {
     return <ChatInputLoadingState topNotice={topNotice} />;
   }
@@ -1377,6 +1411,13 @@ const ChatInputContent = ({
           className={`flex min-h-0 shrink flex-col overflow-y-auto md:bg-background [&>*]:shrink-0 ${showAgentApprovalPrompt ? "max-h-[25dvh]" : "max-h-[calc(100dvh-11rem)]"} ${hasJoinedComposerPanels && !isWaitingForReply && !hasFilePreviews ? "-mb-5 md:mb-0" : ""}`}
         >
           {topNotice}
+          {user && freeAgentGateActive && freeAgentActivationStatus && (
+            <FreeAgentGateNotice
+              status={freeAgentActivationStatus}
+              needsComputer={freeAgentGateNeedsComputer}
+              connectedComputerName={freeAgentGateComputerName}
+            />
+          )}
           {isOffline && (
             <div
               role="status"
@@ -1444,6 +1485,7 @@ const ChatInputContent = ({
               in place while the panels above it use the available height. */}
           {user &&
             isAgent &&
+            !freeAgentGateNeedsComputer &&
             !showAgentApprovalPrompt &&
             !isWaitingForReply && (
               <div

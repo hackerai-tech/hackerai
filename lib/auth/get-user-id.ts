@@ -74,6 +74,8 @@ export const getUserIDAndPro = async (
   emailVerified: boolean;
   analyticsAccountCohort?: AnalyticsAccountCohort;
   organizationId?: string;
+  /** Verified session creation time; consumers must validate the format. */
+  accountCreatedAt?: string;
   freeQuotaSubject?: string;
   freeUsageQuotaSubject?: string;
 }> => {
@@ -107,6 +109,10 @@ export const getUserIDAndPro = async (
         getSessionUserEmail(session),
       ),
       organizationId: (session as any).organizationId as string | undefined,
+      accountCreatedAt:
+        typeof session.user.createdAt === "string"
+          ? session.user.createdAt
+          : undefined,
       freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
       freeUsageQuotaSubject:
         subscription === "free"

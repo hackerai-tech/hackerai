@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import {
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -2293,7 +2294,7 @@ describe("Chat Component Integration", () => {
         </TestWrapper>,
       );
       await expect(
-        mockChatHandlerArgs.sendGoalMessage!(
+        mockChatHandlerArgs.sendAdmittedMessage!(
           { text: "Use blue" },
           { body: { goal: { action: "resume", expectedGeneration: 4 } } },
         ),
@@ -2324,7 +2325,7 @@ describe("Chat Component Integration", () => {
         );
         mockSetMessages.mockClear();
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!(
+          mockChatHandlerArgs.sendAdmittedMessage!(
             { text: "Use blue" },
             { body: { goal: { action: "resume" } } },
           ),
@@ -2357,7 +2358,7 @@ describe("Chat Component Integration", () => {
       });
       await act(async () => {
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+          mockChatHandlerArgs.sendAdmittedMessage!({ text: "Use blue" }),
         ).rejects.toThrow("The goal changed. Reload before resuming.");
       });
     });
@@ -2376,7 +2377,7 @@ describe("Chat Component Integration", () => {
         );
         mockSetMessages.mockClear();
         let settled = false;
-        const rejection = mockChatHandlerArgs.sendGoalMessage!({
+        const rejection = mockChatHandlerArgs.sendAdmittedMessage!({
           text: "Use blue",
         }).catch((error: Error) => {
           settled = true;
@@ -2394,7 +2395,7 @@ describe("Chat Component Integration", () => {
         expect(mockSetMessages).not.toHaveBeenCalled();
         expect(mockClearError).toHaveBeenCalled();
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!({ text: "Try again" }),
+          mockChatHandlerArgs.sendAdmittedMessage!({ text: "Try again" }),
         ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
         expect(mockSendMessage).toHaveBeenCalledTimes(2);
       } finally {
@@ -2419,7 +2420,7 @@ describe("Chat Component Integration", () => {
       query.mockClear();
       await act(async () => {
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!(
+          mockChatHandlerArgs.sendAdmittedMessage!(
             { text: "Use blue" },
             { body: { goal: { action: "resume" } } },
           ),
@@ -2466,7 +2467,7 @@ describe("Chat Component Integration", () => {
       });
       await act(async () => {
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+          mockChatHandlerArgs.sendAdmittedMessage!({ text: "Use blue" }),
         ).resolves.toBeUndefined();
       });
       expect(mockSendMessage).toHaveBeenCalledTimes(1);
@@ -2510,7 +2511,7 @@ describe("Chat Component Integration", () => {
         mockSetMessages.mockClear();
         await act(async () => {
           await expect(
-            mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+            mockChatHandlerArgs.sendAdmittedMessage!({ text: "Use blue" }),
           ).rejects.toBeInstanceOf(GoalSubmissionUnconfirmedError);
         });
         expect(mockSetMessages).not.toHaveBeenCalled();
@@ -2558,7 +2559,7 @@ describe("Chat Component Integration", () => {
           }
         });
         await act(async () => {
-          const sending = mockChatHandlerArgs.sendGoalMessage!({
+          const sending = mockChatHandlerArgs.sendAdmittedMessage!({
             text: "Use blue",
           });
           if (stopped)
@@ -2585,7 +2586,7 @@ describe("Chat Component Integration", () => {
       );
       let resolved = false;
       const sending = Promise.resolve(
-        mockChatHandlerArgs.sendGoalMessage!(
+        mockChatHandlerArgs.sendAdmittedMessage!(
           { text: "Use blue" },
           { body: { goal: { action: "resume", expectedGeneration: 4 } } },
         ),
@@ -2626,6 +2627,165 @@ describe("Chat Component Integration", () => {
           await sending;
         });
       }
+    });
+
+    describe("free Ask admission for the activation gate", () => {
+      const askTransport = () =>
+        mockUseChat.mock.calls.at(-1)![0] as {
+          transport: {
+            fetch: (url: string, init: RequestInit) => Promise<Response>;
+          };
+          onError: (error: Error) => void;
+        };
+      const postAsk = (payload: unknown) =>
+        askTransport().transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "queued-message-id",
+            messages: [payload],
+          }),
+        });
+      const originalFetch = global.fetch;
+      afterEach(() => {
+        global.fetch = originalFetch;
+      });
+
+      it("resolves at HTTP OK without waiting for the reply stream", async () => {
+        mockDesktopState = { chatMode: "ask", subscription: "free" };
+        global.fetch = jest.fn(async () => ({
+          ok: true,
+          status: 200,
+        })) as unknown as typeof fetch;
+        let finish!: () => void;
+        mockSendMessage.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              finish = resolve;
+            }),
+        );
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        let resolved = false;
+        const sending = mockChatHandlerArgs.sendAdmittedMessage!(
+          { text: "Explain SSRF" },
+          undefined,
+          "ask",
+        ).then(() => {
+          resolved = true;
+        });
+        const payload = (
+          mockSendMessage.mock.calls.at(-1) as unknown as [unknown]
+        )[0];
+        try {
+          await act(async () => {
+            await postAsk(payload);
+          });
+          expect(resolved).toBe(true);
+        } finally {
+          await act(async () => {
+            finish();
+            await sending;
+          });
+        }
+      });
+
+      it("rejects a gate refusal, drops the unsaved bubble and refreshes status", async () => {
+        const refreshFreeAgentActivation = jest.fn();
+        mockDesktopState = {
+          chatMode: "ask",
+          subscription: "free",
+          refreshFreeAgentActivation,
+        };
+        require("convex/react").useConvex().query.mockResolvedValueOnce(false);
+        global.fetch = jest.fn(async () => ({
+          ok: false,
+          status: 403,
+          clone: () => ({
+            json: async () => ({
+              code: "forbidden:chat",
+              cause: "Continue with Agent to keep going.",
+              metadata: { free_agent_activation_required: true },
+            }),
+          }),
+        })) as unknown as typeof fetch;
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        mockSendMessage.mockImplementationOnce(async () => {
+          const payload = mockSendMessage.mock.calls.at(-1)![0];
+          try {
+            await postAsk(payload);
+          } catch (error) {
+            askTransport().onError(error as Error);
+          }
+        });
+        mockSetMessages.mockClear();
+
+        await act(async () => {
+          await expect(
+            mockChatHandlerArgs.sendAdmittedMessage!(
+              { text: "Explain SSRF" },
+              undefined,
+              "ask",
+            ),
+          ).rejects.toThrow("Continue with Agent to keep going.");
+        });
+
+        expect(refreshFreeAgentActivation).toHaveBeenCalled();
+        expect(mockClearError).toHaveBeenCalled();
+        const update = mockSetMessages.mock.calls.at(-1)![0] as (
+          messages: { id: string }[],
+        ) => { id: string }[];
+        const payload = (
+          mockSendMessage.mock.calls.at(-1) as unknown as [{ id: string }]
+        )[0];
+        expect(update([{ id: payload.id }, { id: "saved-message" }])).toEqual([
+          { id: "saved-message" },
+        ]);
+      });
+
+      it("leaves other Ask failures on their existing in-thread handling", async () => {
+        mockDesktopState = { chatMode: "ask", subscription: "free" };
+        global.fetch = jest.fn(async () => ({
+          ok: false,
+          status: 500,
+          clone: () => ({
+            json: async () => ({ code: "bad_request:api", cause: "Boom" }),
+          }),
+        })) as unknown as typeof fetch;
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>,
+        );
+        mockSendMessage.mockImplementationOnce(async () => {
+          const payload = mockSendMessage.mock.calls.at(-1)![0];
+          try {
+            await postAsk(payload);
+          } catch (error) {
+            askTransport().onError(error as Error);
+          }
+        });
+        mockSetMessages.mockClear();
+        mockClearError.mockClear();
+
+        await act(async () => {
+          await expect(
+            mockChatHandlerArgs.sendAdmittedMessage!(
+              { text: "Explain SSRF" },
+              undefined,
+              "ask",
+            ),
+          ).resolves.toBeUndefined();
+        });
+        expect(mockSetMessages).not.toHaveBeenCalled();
+        expect(mockClearError).not.toHaveBeenCalled();
+      });
     });
 
     it("removes a queued item only when its actual Agent transport acknowledges the matching turn", async () => {
@@ -2909,7 +3069,7 @@ describe("Chat Component Integration", () => {
       });
       await act(async () => {
         await expect(
-          mockChatHandlerArgs.sendGoalMessage!({ text: "Use blue" }),
+          mockChatHandlerArgs.sendAdmittedMessage!({ text: "Use blue" }),
         ).resolves.toBeUndefined();
       });
       expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();

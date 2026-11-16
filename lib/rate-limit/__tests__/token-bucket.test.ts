@@ -427,6 +427,9 @@ describe("token-bucket", () => {
       ).toBe(true);
       expect(isUserRateLimitKey(`free_run_lock:${userId}`, userId)).toBe(true);
       expect(
+        isUserRateLimitKey(`free_agent_activation:v1:${userId}`, userId),
+      ).toBe(true);
+      expect(
         isUserRateLimitKey(`team:debt_applied:org_123:${userId}`, userId),
       ).toBe(true);
     });
@@ -439,6 +442,9 @@ describe("token-bucket", () => {
       expect(isUserRateLimitKey(`usage:monthly:user_456:pro`, userId)).toBe(
         false,
       );
+      expect(
+        isUserRateLimitKey(`free_agent_activation:v1:${userId}_other`, userId),
+      ).toBe(false);
     });
   });
 

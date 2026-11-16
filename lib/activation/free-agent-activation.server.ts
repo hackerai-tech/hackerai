@@ -1,0 +1,387 @@
+import type { UIMessage } from "ai";
+import type { PostHog } from "posthog-node";
+import PostHogClient from "@/app/posthog";
+import { ChatSDKError } from "@/lib/errors";
+import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
+import { isSubscriptionFirstCountry } from "@/lib/experiments/regional-subscription-first";
+import {
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  countryCodeFromHeaders,
+  getAnalyticsConsentDecision,
+} from "@/lib/privacy/analytics-consent";
+import { createRedisClient } from "@/lib/rate-limit/redis";
+import {
+  FREE_AGENT_ACTIVATION_DEFINITION_VERSION,
+  FREE_AGENT_ACTIVATION_KEY,
+  FREE_AGENT_ACTIVATION_REQUIRED_METADATA,
+  FREE_AGENT_ASK_INTRO_LIMIT,
+  createFreeAgentActivationStatus,
+  type FreeAgentActivationStatus,
+  type FreeAgentActivationVariant,
+} from "./free-agent-activation";
+
+/** Versioned per free-quota-subject set of persisted Ask response IDs. */
+export const FREE_AGENT_ACTIVATION_STORAGE_PREFIX = "free_agent_activation:v1:";
+export const freeAgentActivationStorageKey = (quotaSubject: string) =>
+  `${FREE_AGENT_ACTIVATION_STORAGE_PREFIX}${quotaSubject}`;
+
+/** Growth-experiment lookups must never hold a request open for long. */
+const REMOTE_TIMEOUT_MS = 750;
+export const FREE_AGENT_ACTIVATION_ASSIGNED_EVENT =
+  "free_agent_activation_assigned";
+const MAX_USER_AGENT_LENGTH = 512;
+const MAX_RESPONSE_ID_LENGTH = 128;
+
+/**
+ * Adds one response ID while fewer than the limit are stored. A repeated ID is
+ * a no-op, so retried completion counts once and storage stays constant.
+ * No TTL: introductions are lifetime, not daily.
+ */
+const RECORD_ASK_RESPONSE_SCRIPT = `
+local key = KEYS[1]
+local responseId = ARGV[1]
+local limit = tonumber(ARGV[2])
+if redis.call("SISMEMBER", key, responseId) == 1 then
+  return redis.call("SCARD", key)
+end
+local count = redis.call("SCARD", key)
+if count >= limit then
+  return count
+end
+redis.call("SADD", key, responseId)
+return count + 1
+`;
+
+export type FreeAgentActivationEnrollment = {
+  variant: FreeAgentActivationVariant;
+  quotaSubject: string;
+};
+
+/** Authenticated session fields; never request-body values. */
+export type FreeAgentActivationIdentity = {
+  userId: string;
+  subscription: string;
+  organizationId?: string;
+  accountCreatedAt?: string;
+  freeQuotaSubject?: string;
+  freeUsageQuotaSubject?: string;
+};
+
+export type FreeAgentActivationRequest = {
+  headers: Headers;
+  cookies: { get(name: string): { value: string } | undefined };
+};
+
+type FlagClient = Pick<PostHog, "getFeatureFlagResult"> &
+  Partial<Pick<PostHog, "capture">>;
+
+const STRICT_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Parse a strict ISO-8601 instant with an explicit zone; reject rollovers. */
+export function parseStrictTimestamp(value: unknown): number | undefined {
+  if (typeof value !== "string") return;
+  const match = STRICT_TIMESTAMP.exec(value);
+  if (!match) return;
+  const [, y, mo, d, h, mi, s, frac = "0", zone] = match;
+  const [year, month, day, hour, minute, second] = [y, mo, d, h, mi, s].map(
+    Number,
+  );
+  if (hour > 23 || minute > 59 || second > 59) return;
+  const local = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second,
+    Number(frac.padEnd(3, "0")),
+  );
+  const date = new Date(local);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  )
+    return;
+  if (zone === "Z") return local;
+  const offsetHours = Number(zone.slice(1, 3));
+  const offsetMinutes = Number(zone.slice(4, 6));
+  if (offsetHours > 23 || offsetMinutes > 59) return;
+  const offsetMs = (offsetHours * 60 + offsetMinutes) * 60_000;
+  return zone[0] === "+" ? local - offsetMs : local + offsetMs;
+}
+
+const NON_DESKTOP_USER_AGENT =
+  /Mobi|Android|iPhone|iPad|iPod|Tablet|Silk|Kindle|PlayBook|BlackBerry|BB10|Opera Mini|IEMobile|webOS|HackerAI-Desktop|Electron|Tauri|HeadlessChrome|bot|crawler|spider/i;
+const DESKTOP_OS = /Windows NT|Macintosh|X11|CrOS|Linux x86_64/;
+const DESKTOP_BROWSER = /(?:Chrome|Firefox|Safari|Edg)\/\d/;
+
+/**
+ * Desktop OS browser only: phones, tablets and the native app are excluded
+ * when identifiable. Narrow desktop windows remain eligible because the
+ * decision uses device class, not viewport width.
+ */
+export function isSupportedDesktopBrowserRequest(headers: Headers): boolean {
+  if (headers.get("sec-ch-ua-mobile")?.trim() === "?1") return false;
+  const userAgent = headers.get("user-agent");
+  if (!userAgent || userAgent.length > MAX_USER_AGENT_LENGTH) return false;
+  if (NON_DESKTOP_USER_AGENT.test(userAgent)) return false;
+  return DESKTOP_OS.test(userAgent) && DESKTOP_BROWSER.test(userAgent);
+}
+
+/** Same trusted fallback as the existing free limits and run lock. */
+function quotaSubjectFor(identity: FreeAgentActivationIdentity): string {
+  return (
+    identity.freeUsageQuotaSubject ??
+    identity.freeQuotaSubject ??
+    identity.userId
+  );
+}
+
+function newUsersFromPayload(payload: unknown): number | undefined {
+  let value = payload;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return;
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  return parseStrictTimestamp(
+    (value as Record<string, unknown>).new_users_from,
+  );
+}
+
+/**
+ * Server-owned enrollment. Every exclusion, an unavailable or inactive flag,
+ * or a malformed payload returns undefined: no experiment and no gate.
+ * Evaluation is assignment only; it never records exposure.
+ */
+export async function evaluateFreeAgentActivation({
+  request,
+  identity,
+  posthog = PostHogClient(),
+}: {
+  request: FreeAgentActivationRequest;
+  identity: FreeAgentActivationIdentity;
+  posthog?: FlagClient | null;
+}): Promise<FreeAgentActivationEnrollment | undefined> {
+  if (
+    !identity.userId ||
+    identity.subscription !== "free" ||
+    identity.organizationId
+  )
+    return;
+  const accountCreatedAtMs = parseStrictTimestamp(identity.accountCreatedAt);
+  if (accountCreatedAtMs === undefined) return;
+  if (!isSupportedDesktopBrowserRequest(request.headers)) return;
+  const country = countryCodeFromHeaders(request.headers);
+  // Exclude every subscription-first country so the experiments never overlap.
+  if (isSubscriptionFirstCountry(country)) return;
+  const { analyticsAllowed } = getAnalyticsConsentDecision({
+    cookieValue: request.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    countryCode: country,
+    failClosed: true,
+  });
+  if (!analyticsAllowed || !posthog) return;
+
+  let variant: FreeAgentActivationVariant;
+  try {
+    const result = await withRemoteTimeout(
+      posthog.getFeatureFlagResult(FREE_AGENT_ACTIVATION_KEY, identity.userId, {
+        sendFeatureFlagEvents: false,
+        personProperties: { subscription: "free" },
+      }),
+    );
+    if (!result || result.enabled !== true) return;
+    if (result.variant !== "control" && result.variant !== "test") return;
+    const newUsersFrom = newUsersFromPayload(result.payload);
+    if (newUsersFrom === undefined || accountCreatedAtMs < newUsersFrom) return;
+    variant = result.variant;
+  } catch {
+    // An unavailable or slow experiment must not change an account's access.
+    return;
+  }
+  captureAssignment(posthog, identity.userId, variant);
+  return { variant, quotaSubject: quotaSubjectFor(identity) };
+}
+
+/**
+ * All-assigned denominator, independent of UI rendering. Not exposure: no
+ * $feature_flag_called or $experiment_exposure. The deterministic insert ID
+ * lets repeated lookups collapse to the first assignment.
+ */
+function captureAssignment(
+  posthog: FlagClient,
+  userId: string,
+  variant: FreeAgentActivationVariant,
+) {
+  try {
+    posthog.capture?.({
+      distinctId: userId,
+      event: FREE_AGENT_ACTIVATION_ASSIGNED_EVENT,
+      properties: {
+        variant,
+        definition_version: FREE_AGENT_ACTIVATION_DEFINITION_VERSION,
+        [`$feature/${FREE_AGENT_ACTIVATION_KEY}`]: variant,
+        $insert_id: `${FREE_AGENT_ACTIVATION_KEY}:${userId}:assigned`,
+        $process_person_profile: false,
+        $geoip_disable: true,
+      },
+    });
+  } catch {
+    // Telemetry failure must not change enrollment.
+  }
+}
+
+function withRemoteTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    operation,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("free_agent_activation_remote_timeout")),
+        REMOTE_TIMEOUT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function logStorageFailure(operation: "read" | "record", error: unknown) {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "free_agent_activation_storage_unavailable",
+      service: "free-agent-activation",
+      operation,
+      error_name: error instanceof Error ? error.name : typeof error,
+      timeout:
+        error instanceof Error &&
+        error.message === "free_agent_activation_remote_timeout",
+    }),
+  );
+}
+
+/** Stored count, or undefined when storage is unavailable (not zero). */
+export async function readCompletedAskResponses(
+  quotaSubject: string,
+): Promise<number | undefined> {
+  const redis = createRedisClient();
+  if (!redis) return;
+  try {
+    const count = Number(
+      await withRemoteTimeout(
+        redis.scard(freeAgentActivationStorageKey(quotaSubject)),
+      ),
+    );
+    return Number.isFinite(count) ? count : undefined;
+  } catch (error) {
+    logStorageFailure("read", error);
+  }
+}
+
+/** Shared by the status API and Ask admission. Unavailable storage => null. */
+export async function getFreeAgentActivationStatus(
+  enrollment: FreeAgentActivationEnrollment | undefined,
+): Promise<FreeAgentActivationStatus | null> {
+  if (!enrollment) return null;
+  const completed = await readCompletedAskResponses(enrollment.quotaSubject);
+  if (completed === undefined) return null;
+  return createFreeAgentActivationStatus(enrollment.variant, completed);
+}
+
+/**
+ * Called under the free run lock, before quota consumption and provider
+ * work. Storage outages fail open; every existing gate still applies.
+ */
+export async function enforceFreeAgentActivationAskAdmission(
+  enrollment: FreeAgentActivationEnrollment | undefined,
+): Promise<void> {
+  if (enrollment?.variant !== "test") return;
+  const status = await getFreeAgentActivationStatus(enrollment);
+  if (!status?.requiresAgent) return;
+  throw new ChatSDKError(
+    "forbidden:chat",
+    "Continue in Agent mode with your computer to keep going.",
+    { [FREE_AGENT_ACTIVATION_REQUIRED_METADATA]: true },
+  );
+}
+
+async function recordCompletedAskResponse(
+  quotaSubject: string,
+  responseId: string,
+): Promise<void> {
+  const redis = createRedisClient();
+  if (!redis) return;
+  try {
+    await withRemoteTimeout(
+      redis.eval(
+        RECORD_ASK_RESPONSE_SCRIPT,
+        [freeAgentActivationStorageKey(quotaSubject)],
+        [responseId, String(FREE_AGENT_ASK_INTRO_LIMIT)],
+      ),
+    );
+  } catch (error) {
+    logStorageFailure("record", error);
+  }
+}
+
+/**
+ * True only when saveMessage acknowledged a durable write (`null`) for the
+ * final assistant reply. Fenced/no-op acknowledgements such as "stale_run",
+ * and saves of user or other assistant messages, are not receipts.
+ */
+export function isFinalAssistantSaveReceipt(
+  message: { id: string; role: string },
+  responseId: string,
+  acknowledgement: unknown,
+): boolean {
+  return (
+    message.role === "assistant" &&
+    message.id === responseId &&
+    acknowledgement === null
+  );
+}
+
+/**
+ * Runs `persist` (the save loop) and counts the response only when it returns
+ * a durable receipt for the final assistant message. A rejected save
+ * propagates without counting. Only a successful, non-continuation Ask reply
+ * with visible text counts; retries of the same response ID count once.
+ * Recording failures never affect the saved reply. Returns the receipt.
+ */
+export async function persistThenRecordFreeAgentAskResponse({
+  enrollment,
+  mode,
+  isAutoContinue,
+  succeeded,
+  messages,
+  responseId,
+  persist,
+}: {
+  enrollment: FreeAgentActivationEnrollment | undefined;
+  mode: string;
+  isAutoContinue: boolean;
+  succeeded: boolean;
+  messages: UIMessage[];
+  responseId: string;
+  /** Resolves true only for a durable save receipt of `responseId`. */
+  persist: () => Promise<boolean>;
+}): Promise<boolean> {
+  const finalAssistantSaved = await persist();
+  if (
+    finalAssistantSaved === true &&
+    enrollment &&
+    mode === "ask" &&
+    !isAutoContinue &&
+    succeeded &&
+    responseId.length > 0 &&
+    responseId.length <= MAX_RESPONSE_ID_LENGTH &&
+    hasCompletedAssistantText(messages, responseId)
+  ) {
+    await recordCompletedAskResponse(enrollment.quotaSubject, responseId);
+  }
+  return finalAssistantSaved;
+}

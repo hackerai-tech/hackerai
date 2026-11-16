@@ -30,6 +30,25 @@ it.each([
   },
 );
 
+it("returns account creation time only from the authenticated session", async () => {
+  for (const [createdAt, expected] of [
+    ["2026-11-15T09:00:00.000Z", "2026-11-15T09:00:00.000Z"],
+    [1_763_197_200_000, undefined],
+    [undefined, undefined],
+  ] as const) {
+    authkit.mockResolvedValueOnce({
+      session: {
+        user: { id: "synthetic", emailVerified: true, createdAt },
+        entitlements: [],
+      },
+    });
+    const result = await getUserIDAndPro({
+      createdAt: "2020-01-01T00:00:00.000Z",
+    } as never);
+    expect(result.accountCreatedAt).toBe(expected);
+  }
+});
+
 it("does not classify a missing authenticated user", async () => {
   authkit.mockResolvedValue({ session: null });
   await expect(getUserIDAndPro({} as never)).rejects.toMatchObject({

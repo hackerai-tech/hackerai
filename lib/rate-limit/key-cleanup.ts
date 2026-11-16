@@ -11,7 +11,8 @@ export const isFreeQuotaSubjectRateLimitKey = (
     key.startsWith(`free_monthly_cost:${freeQuotaSubject}:`) ||
     key.startsWith(`free_monthly_subagent_cost:${freeQuotaSubject}:`) ||
     key === `free_usage_budget_started:v1:${freeQuotaSubject}` ||
-    key === `free_run_lock:${freeQuotaSubject}`
+    key === `free_run_lock:${freeQuotaSubject}` ||
+    key === `free_agent_activation:v1:${freeQuotaSubject}`
   );
 };
 

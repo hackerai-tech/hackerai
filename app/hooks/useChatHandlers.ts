@@ -95,7 +95,15 @@ interface UseChatHandlersProps {
     message?: any,
     options?: { body?: any },
   ) => void | Promise<void>;
-  sendGoalMessage?: (message: any, options?: { body?: any }) => Promise<void>;
+  /**
+   * Resolves at admission rather than stream end: durable run admission for
+   * goals, HTTP OK for gate-eligible free Ask. Rejects when not admitted.
+   */
+  sendAdmittedMessage?: (
+    message: any,
+    options?: { body?: any },
+    kind?: "goal" | "ask",
+  ) => Promise<void>;
   sendQueuedMessage?: (
     id: string,
     body: Record<string, unknown>,
@@ -147,7 +155,7 @@ export const useChatHandlers = ({
   chatId,
   messages,
   sendMessage,
-  sendGoalMessage,
+  sendAdmittedMessage,
   sendQueuedMessage,
   stop,
   regenerate,
@@ -196,6 +204,7 @@ export const useChatHandlers = ({
     sidebarContent,
     openSidebar,
     closeSidebar,
+    freeAskAwaitsAdmission,
   } = useGlobalState();
   const requestSelectedModel = normalizeSelectedModelForSubscription(
     selectedModel,
@@ -1267,10 +1276,30 @@ export const useChatHandlers = ({
         ...goalSettings,
       },
     };
-    if (goalCommand) {
+    // The activation gate can refuse a free Ask before the message is saved,
+    // including when this tab has no current status. Keep that draft until
+    // /api/chat admits it, without awaiting the stream.
+    const awaitAskAdmission =
+      !goalCommand &&
+      currentChatMode === "ask" &&
+      subscription === "free" &&
+      freeAskAwaitsAdmission === true &&
+      !!sendAdmittedMessage;
+    if (awaitAskAdmission) {
+      try {
+        await sendAdmittedMessage(outgoingMessage, outgoingOptions, "ask");
+      } catch (error) {
+        toast.error(
+          error instanceof Error && error.message
+            ? error.message
+            : "Your message was not sent. Your draft is saved.",
+        );
+        return false;
+      }
+    } else if (goalCommand) {
       try {
         // The dedicated sender resolves at durable admission, not stream end.
-        await (sendGoalMessage ?? sendMessage)(
+        await (sendAdmittedMessage ?? sendMessage)(
           outgoingMessage,
           outgoingOptions,
         );

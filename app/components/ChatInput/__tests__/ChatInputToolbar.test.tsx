@@ -9,6 +9,14 @@ let mockChatModeAccessResolved = true;
 let mockPaidAgentOnlyActive = false;
 let mockFreeDesktopAgentOnlyActive = false;
 let mockHasLocalSandbox = false;
+let mockSandboxPreference = "e2b";
+let mockFreeAgentGateActive = false;
+let mockFreeAgentActivationStatus: {
+  variant: "control" | "test";
+  completedAskResponses: number;
+  introLimit: number;
+  requiresAgent: boolean;
+} | null = null;
 const mockSetSandboxPreference = jest.fn();
 
 jest.mock("@/app/components/AttachmentButton", () => ({
@@ -82,8 +90,10 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     hasLocalSandbox: mockHasLocalSandbox,
     paidAgentOnlyActive: mockPaidAgentOnlyActive,
     freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
-    sandboxPreference: "e2b",
+    sandboxPreference: mockSandboxPreference,
     setSandboxPreference: mockSetSandboxPreference,
+    freeAgentGateActive: mockFreeAgentGateActive,
+    freeAgentActivationStatus: mockFreeAgentActivationStatus,
   }),
 }));
 
@@ -121,8 +131,70 @@ describe("ChatInputToolbar", () => {
     mockPaidAgentOnlyActive = false;
     mockFreeDesktopAgentOnlyActive = false;
     mockHasLocalSandbox = false;
+    mockSandboxPreference = "e2b";
+    mockFreeAgentGateActive = false;
+    mockFreeAgentActivationStatus = null;
     mockSetSandboxPreference.mockClear();
     mockAuthUser(null);
+  });
+
+  describe("free Agent activation gate", () => {
+    const testStatus = (completedAskResponses: number) => ({
+      variant: "test" as const,
+      completedAskResponses,
+      introLimit: 3,
+      requiresAgent: completedAskResponses >= 3,
+    });
+
+    it("hints only when one introductory Ask reply is left", () => {
+      mockAuthUser({ id: "user_123" });
+      const hint = () => screen.queryByText("1 free Ask reply left");
+
+      for (const completed of [0, 1]) {
+        mockFreeAgentActivationStatus = testStatus(completed);
+        const { unmount } = render(<ChatInputToolbar {...defaultProps} />);
+        expect(hint()).not.toBeInTheDocument();
+        unmount();
+      }
+
+      mockFreeAgentActivationStatus = testStatus(2);
+      const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+      expect(hint()).toBeInTheDocument();
+
+      mockFreeAgentActivationStatus = { ...testStatus(2), variant: "control" };
+      rerender(<ChatInputToolbar {...defaultProps} />);
+      expect(hint()).not.toBeInTheDocument();
+    });
+
+    it("hides Ask and the Cloud selector until the gated user has a computer", () => {
+      mockAuthUser({ id: "user_123" });
+      mockFreeAgentGateActive = true;
+      mockFreeAgentActivationStatus = testStatus(3);
+
+      const { rerender } = render(
+        <ChatInputToolbar {...defaultProps} chatMode="agent" />,
+      );
+
+      expect(
+        screen.queryByTestId("chat-mode-selector"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+        "data-neutral-agent-style",
+        "true",
+      );
+
+      mockSandboxPreference = "runner-1";
+      rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+      expect(
+        within(screen.getByTestId("chat-input-desktop-sandbox")).getByTestId(
+          "sandbox-selector",
+        ),
+      ).toHaveAttribute("data-value", "runner-1");
+      expect(
+        screen.queryByTestId("chat-mode-selector"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it.each(["ask", "agent"] as const)(

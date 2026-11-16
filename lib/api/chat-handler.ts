@@ -17,6 +17,13 @@ import {
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import {
+  enforceFreeAgentActivationAskAdmission,
+  evaluateFreeAgentActivation,
+  isFinalAssistantSaveReceipt,
+  persistThenRecordFreeAgentAskResponse,
+  type FreeAgentActivationEnrollment,
+} from "@/lib/activation/free-agent-activation.server";
+import {
   appendProviderEmptyResponseFailure,
   getProviderOutputDiagnostics,
   hasUncertainProviderToolOutcome,
@@ -388,13 +395,14 @@ export const createChatHandler = () => {
       });
       const requestMessages = requireChatMessagesArray(messages);
 
+      const identity = await getUserIDAndPro(req);
       const {
         userId,
         subscription,
         organizationId,
         freeQuotaSubject: legacyQuotaSubject,
         freeUsageQuotaSubject,
-      } = await getUserIDAndPro(req);
+      } = identity;
       const freeQuotaSubject = freeUsageQuotaSubject ?? legacyQuotaSubject;
       paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
@@ -415,12 +423,21 @@ export const createChatHandler = () => {
       });
       usageRefundTracker.setUser(userId, subscription, organizationId);
       assertChatModeAccess({ mode, subscription });
+      let freeAgentActivation: FreeAgentActivationEnrollment | undefined;
       if (subscription === "free") {
         const lock = await acquireFreeRunConcurrencyLock(
           freeUsageSubject,
           FREE_RUN_LOCK_TTL_SECONDS,
         );
         releaseFreeRunLock = lock.release;
+        // Under the run lock and before quota or provider work, so parallel
+        // tabs cannot pass the introduction limit. This route is Ask-only.
+        freeAgentActivation = await evaluateFreeAgentActivation({
+          request: req,
+          identity,
+          posthog: (posthog ??= PostHogClient()),
+        });
+        await enforceFreeAgentActivationAskAdmission(freeAgentActivation);
       }
       const userLocation = geolocation(req);
       const { triggerRegion: executionRegion, requestRegionClass } =
@@ -2812,50 +2829,76 @@ export const createChatHandler = () => {
                                   );
 
                                   // Only save NEW assistant messages from retry (skip already-saved user messages)
-                                  for (const msg of retryMessages) {
-                                    if (msg.role !== "assistant") continue;
+                                  await persistThenRecordFreeAgentAskResponse({
+                                    enrollment: freeAgentActivation,
+                                    mode,
+                                    isAutoContinue: !!isAutoContinue,
+                                    succeeded:
+                                      outcome === "success" &&
+                                      state.streamFinishReason !== "error" &&
+                                      state.providerError == null,
+                                    messages: retryMessages,
+                                    responseId: retryMessageId,
+                                    persist: async () => {
+                                      let finalAssistantSaved = false;
+                                      for (const msg of retryMessages) {
+                                        if (msg.role !== "assistant") continue;
 
-                                    const processed =
-                                      summarizationTracker.processMessageForSave(
-                                        msg,
-                                      );
+                                        const processed =
+                                          summarizationTracker.processMessageForSave(
+                                            msg,
+                                          );
 
-                                    await observeFinish(
-                                      "save_message",
-                                      () =>
-                                        saveMessage({
-                                          chatId,
-                                          userId,
-                                          message: processed,
-                                          extraFileIds: newFileIds,
-                                          usage: state.streamUsage,
-                                          model: state.responseModel,
-                                          mode,
-                                          generationStartedAt:
-                                            fallbackStartTime,
-                                          generationTimeMs:
-                                            Date.now() - fallbackStartTime,
-                                          finishReason:
-                                            state.streamFinishReason,
-                                          userInitiatedAbort:
-                                            retryAborted &&
-                                            !(
-                                              preemptiveTimeout?.isPreemptive() ??
-                                              false
-                                            ) &&
-                                            !state.stoppedDueToBudgetExhaustion &&
-                                            !state.stoppedDueToAgentRunSpendCap &&
-                                            !state.stoppedDueToElapsedTimeout,
-                                          abliterationRouting:
-                                            abliteratedTelemetry?.getRoutingMarker(
-                                              !retryAborted &&
-                                                state.streamFinishReason ===
-                                                  "stop",
-                                            ),
-                                        }),
-                                      "provider_retry",
-                                    );
-                                  }
+                                        const acknowledgement =
+                                          await observeFinish(
+                                            "save_message",
+                                            () =>
+                                              saveMessage({
+                                                chatId,
+                                                userId,
+                                                message: processed,
+                                                extraFileIds: newFileIds,
+                                                usage: state.streamUsage,
+                                                model: state.responseModel,
+                                                mode,
+                                                generationStartedAt:
+                                                  fallbackStartTime,
+                                                generationTimeMs:
+                                                  Date.now() -
+                                                  fallbackStartTime,
+                                                finishReason:
+                                                  state.streamFinishReason,
+                                                userInitiatedAbort:
+                                                  retryAborted &&
+                                                  !(
+                                                    preemptiveTimeout?.isPreemptive() ??
+                                                    false
+                                                  ) &&
+                                                  !state.stoppedDueToBudgetExhaustion &&
+                                                  !state.stoppedDueToAgentRunSpendCap &&
+                                                  !state.stoppedDueToElapsedTimeout,
+                                                abliterationRouting:
+                                                  abliteratedTelemetry?.getRoutingMarker(
+                                                    !retryAborted &&
+                                                      state.streamFinishReason ===
+                                                        "stop",
+                                                  ),
+                                              }),
+                                            "provider_retry",
+                                          );
+                                        if (
+                                          isFinalAssistantSaveReceipt(
+                                            processed,
+                                            retryMessageId,
+                                            acknowledgement,
+                                          )
+                                        ) {
+                                          finalAssistantSaved = true;
+                                        }
+                                      }
+                                      return finalAssistantSaved;
+                                    },
+                                  });
 
                                   // Send file metadata via stream for resumable stream clients
                                   sendFileMetadataToStream(accumulatedFiles);
@@ -3336,105 +3379,138 @@ export const createChatHandler = () => {
 
                       // Save messages (either full save or just append extraFileIds)
                       stepStart = beginStep("save_messages");
-                      for (const message of messages) {
-                        let processedMessage =
-                          summarizationTracker.processMessageForSave(message);
+                      await persistThenRecordFreeAgentAskResponse({
+                        enrollment: freeAgentActivation,
+                        mode,
+                        isAutoContinue: !!isAutoContinue,
+                        succeeded:
+                          outcome === "success" &&
+                          state.streamFinishReason !== "error" &&
+                          state.providerError == null,
+                        messages,
+                        responseId: assistantMessageId,
+                        persist: async () => {
+                          let finalAssistantSaved = false;
+                          for (const message of messages) {
+                            let processedMessage =
+                              summarizationTracker.processMessageForSave(
+                                message,
+                              );
 
-                        // Skip saving messages with no parts or files
-                        // This prevents saving empty messages on error that would accumulate on retry
-                        if (
-                          (!processedMessage.parts ||
-                            processedMessage.parts.length === 0) &&
-                          newFileIds.length === 0
-                        ) {
-                          continue;
-                        }
+                            // Skip saving messages with no parts or files
+                            // This prevents saving empty messages on error that would accumulate on retry
+                            if (
+                              (!processedMessage.parts ||
+                                processedMessage.parts.length === 0) &&
+                              newFileIds.length === 0
+                            ) {
+                              continue;
+                            }
 
-                        // Use resolvedUsage which was already awaited above on abort
-                        // Falls back to state.streamUsage for non-abort cases
-                        // On explicit user stop, use updateOnly as safety net:
-                        // only patch existing messages (add files/usage), don't create new ones.
-                        // Budget/provider/system aborts must insert partial work if no row exists.
-                        try {
-                          await observeFinish(
-                            "save_message",
-                            () =>
-                              saveMessage({
-                                chatId,
-                                userId,
-                                message: processedMessage,
-                                extraFileIds: newFileIds,
-                                model: state.responseModel || configuredModelId,
-                                mode,
-                                generationStartedAt:
-                                  processedMessage.role === "assistant"
-                                    ? streamStartTime
-                                    : undefined,
-                                generationTimeMs: Date.now() - streamStartTime,
-                                finishReason: state.streamFinishReason,
-                                usage: resolvedUsage ?? state.streamUsage,
-                                abliterationRouting:
-                                  abliteratedTelemetry?.getRoutingMarker(
-                                    !isAborted &&
-                                      state.streamFinishReason === "stop",
-                                  ),
-                                userInitiatedAbort: isUserInitiatedAbort,
-                                updateOnly: shouldUseUpdateOnlyForAbortedSave({
-                                  isAborted,
-                                  isUserInitiatedAbort,
-                                })
-                                  ? true
-                                  : undefined,
-                                isHidden:
-                                  isAutoContinue &&
-                                  processedMessage.role === "user"
-                                    ? true
-                                    : undefined,
-                                wasAborted: isAborted,
-                                wasPreemptiveTimeout: isPreemptiveAbort,
-                              }),
-                            "primary",
-                          );
-                        } catch (error) {
-                          if (isPreemptiveAbort) {
-                            console.error(
-                              JSON.stringify({
-                                level: "error",
-                                event: "preemptive_timeout_message_save_failed",
-                                service: "chat-handler",
-                                timestamp: new Date().toISOString(),
-                                chat_id: chatId,
-                                user_id: userId,
-                                message_id: processedMessage.id,
-                                message_role: processedMessage.role,
-                                mode,
-                                model: state.responseModel || configuredModelId,
-                                finish_reason: state.streamFinishReason,
-                                time_since_timeout_trigger_ms: triggerTime
-                                  ? Date.now() - triggerTime
-                                  : null,
-                                stream_duration_ms:
-                                  Date.now() - streamStartTime,
-                                error_name:
-                                  error instanceof Error
-                                    ? error.name
-                                    : typeof error,
-                                error_message:
-                                  error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                                error_metadata:
-                                  error &&
-                                  typeof error === "object" &&
-                                  "metadata" in error
-                                    ? (error as { metadata?: unknown }).metadata
-                                    : undefined,
-                              }),
-                            );
+                            // Use resolvedUsage which was already awaited above on abort
+                            // Falls back to state.streamUsage for non-abort cases
+                            // On explicit user stop, use updateOnly as safety net:
+                            // only patch existing messages (add files/usage), don't create new ones.
+                            // Budget/provider/system aborts must insert partial work if no row exists.
+                            let acknowledgement: unknown;
+                            try {
+                              acknowledgement = await observeFinish(
+                                "save_message",
+                                () =>
+                                  saveMessage({
+                                    chatId,
+                                    userId,
+                                    message: processedMessage,
+                                    extraFileIds: newFileIds,
+                                    model:
+                                      state.responseModel || configuredModelId,
+                                    mode,
+                                    generationStartedAt:
+                                      processedMessage.role === "assistant"
+                                        ? streamStartTime
+                                        : undefined,
+                                    generationTimeMs:
+                                      Date.now() - streamStartTime,
+                                    finishReason: state.streamFinishReason,
+                                    usage: resolvedUsage ?? state.streamUsage,
+                                    abliterationRouting:
+                                      abliteratedTelemetry?.getRoutingMarker(
+                                        !isAborted &&
+                                          state.streamFinishReason === "stop",
+                                      ),
+                                    userInitiatedAbort: isUserInitiatedAbort,
+                                    updateOnly:
+                                      shouldUseUpdateOnlyForAbortedSave({
+                                        isAborted,
+                                        isUserInitiatedAbort,
+                                      })
+                                        ? true
+                                        : undefined,
+                                    isHidden:
+                                      isAutoContinue &&
+                                      processedMessage.role === "user"
+                                        ? true
+                                        : undefined,
+                                    wasAborted: isAborted,
+                                    wasPreemptiveTimeout: isPreemptiveAbort,
+                                  }),
+                                "primary",
+                              );
+                            } catch (error) {
+                              if (isPreemptiveAbort) {
+                                console.error(
+                                  JSON.stringify({
+                                    level: "error",
+                                    event:
+                                      "preemptive_timeout_message_save_failed",
+                                    service: "chat-handler",
+                                    timestamp: new Date().toISOString(),
+                                    chat_id: chatId,
+                                    user_id: userId,
+                                    message_id: processedMessage.id,
+                                    message_role: processedMessage.role,
+                                    mode,
+                                    model:
+                                      state.responseModel || configuredModelId,
+                                    finish_reason: state.streamFinishReason,
+                                    time_since_timeout_trigger_ms: triggerTime
+                                      ? Date.now() - triggerTime
+                                      : null,
+                                    stream_duration_ms:
+                                      Date.now() - streamStartTime,
+                                    error_name:
+                                      error instanceof Error
+                                        ? error.name
+                                        : typeof error,
+                                    error_message:
+                                      error instanceof Error
+                                        ? error.message
+                                        : String(error),
+                                    error_metadata:
+                                      error &&
+                                      typeof error === "object" &&
+                                      "metadata" in error
+                                        ? (error as { metadata?: unknown })
+                                            .metadata
+                                        : undefined,
+                                  }),
+                                );
+                              }
+                              throw error;
+                            }
+                            if (
+                              isFinalAssistantSaveReceipt(
+                                processedMessage,
+                                assistantMessageId,
+                                acknowledgement,
+                              )
+                            ) {
+                              finalAssistantSaved = true;
+                            }
                           }
-                          throw error;
-                        }
-                      }
+                          return finalAssistantSaved;
+                        },
+                      });
                       logStep("save_messages", stepStart);
 
                       // Send file metadata via stream for resumable stream clients
