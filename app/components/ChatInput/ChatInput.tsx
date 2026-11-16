@@ -76,11 +76,7 @@ import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { GoalModeButton } from "./GoalModeButton";
 import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
-import { v4 as uuidv4 } from "uuid";
-import {
-  captureAuthenticatedEvent,
-  captureQueuedAuthenticatedEvent,
-} from "@/lib/analytics/client";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
@@ -88,11 +84,11 @@ import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerCo
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useChatStarters } from "@/app/contexts/ChatStartersContext";
-import {
-  CHAT_STARTERS_DEFINITION_VERSION,
-  type ChatStarter,
-} from "@/lib/chat/starter-prompts";
+import type { ChatStarter } from "@/lib/chat/starter-prompts";
 import { ChatStarterSuggestions } from "./ChatStarterSuggestions";
+import { useChatStarterAttribution } from "@/app/hooks/useChatStarterAttribution";
+import type { StarterPersistedTurn } from "@/lib/analytics/chat-starters";
+import type { SubmitAttribution } from "@/app/hooks/useChatHandlers";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -107,7 +103,10 @@ interface ChatInputProps {
     e: React.FormEvent,
     inputOverride?: string,
     structuredReply?: boolean,
+    attribution?: SubmitAttribution,
   ) => void | boolean | Promise<void | boolean>;
+  /** Persisted state of this chat's latest turn, for starter attribution. */
+  starterPersistedTurn?: StarterPersistedTurn | null;
   onStop: () => void | boolean | Promise<void | boolean>;
   onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
@@ -311,6 +310,7 @@ const ChatInputContent = ({
   hasActiveGoalRun = false,
   pauseGoalOnSend = false,
   onSubmit,
+  starterPersistedTurn,
   onStop,
   onReconnect,
   onSendNow,
@@ -1203,6 +1203,15 @@ const ChatInputContent = ({
     messageQueue.length === 0 &&
     !editingQueuedMessageId;
 
+  const starterAttribution = useChatStarterAttribution({
+    userId: user?.id,
+    draftId,
+    chatMode: starterMode,
+    input,
+    getInput,
+    persistedTurn: starterPersistedTurn,
+  });
+
   const selectChatStarter = (starter: ChatStarter) => {
     // Read the latest composer and saved draft, not this render's snapshot,
     // so a fast edit or restored draft is never replaced.
@@ -1213,18 +1222,9 @@ const ChatInputContent = ({
       getDraftAttachmentsById(draftId).length > 0
     )
       return;
-    // Queue so a selection made before analytics is ready is not lost; each
-    // accepted selection is its own event.
-    captureQueuedAuthenticatedEvent({
-      event: "chat_starter_selected",
-      properties: {
-        definition_version: CHAT_STARTERS_DEFINITION_VERSION,
-        example_id: starter.id,
-        mode: starterMode,
-        presentation: starterPresentation,
-      },
-      dedupeKey: uuidv4(),
-    });
+    // Each accepted selection is its own event with a stable selection ID.
+    if (starterPresentation)
+      starterAttribution.recordSelection(starter, starterPresentation);
     setInput(starter.prompt);
     requestAnimationFrame(() => {
       const textarea = composerTextareaRef.current;
@@ -1321,13 +1321,25 @@ const ChatInputContent = ({
       const submittedDraftAttachments = JSON.stringify(
         getDraftAttachmentsById(draftId),
       );
+      // Only an ordinary send from an idle composer can carry a starter's
+      // attribution; queued, goal and reply submissions end it instead.
+      const starterSubmission = starterAttribution.prepareSubmission({
+        ordinary:
+          !isGoalSubmission &&
+          !isWaitingForReply &&
+          !hasActiveGoalRun &&
+          !pauseGoalOnSend &&
+          status === "ready",
+        text: submittedInput,
+      });
       try {
         isSubmittingAttachmentsRef.current =
           clearDraftOnSubmit && uploadedFiles.length > 0;
-        const accepted = await onSubmit(
-          e,
-          isGoalSubmission ? `/goal start ${input}` : undefined,
-        );
+        const goalInput = isGoalSubmission ? `/goal start ${input}` : undefined;
+        const accepted = await (starterSubmission.attribution
+          ? onSubmit(e, goalInput, false, starterSubmission.attribution)
+          : onSubmit(e, goalInput));
+        starterSubmission.settle(accepted === false ? "refused" : "accepted");
         if (isGoalSubmission)
           captureGoalComposerAction(
             accepted === false ? "submit_refused" : "submit_accepted",
@@ -1376,6 +1388,7 @@ const ChatInputContent = ({
           setInput("");
         }
       } catch (error) {
+        starterSubmission.settle("error");
         finishPredictionSubmission(false);
         isSubmittingAttachmentsRef.current = false;
         if (error instanceof GoalSubmissionUnconfirmedError) {

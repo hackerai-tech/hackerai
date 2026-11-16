@@ -75,6 +75,12 @@ const STARTER_LAYOUT: Record<
   },
 };
 
+export function getChatStarterById(id: string): ChatStarter | undefined {
+  return Object.prototype.hasOwnProperty.call(CHAT_STARTERS, id)
+    ? CHAT_STARTERS[id as ChatStarterId]
+    : undefined;
+}
+
 export function getChatStartersForMode(mode: ChatMode): {
   featured: ChatStarter[];
   more: ChatStarter[];

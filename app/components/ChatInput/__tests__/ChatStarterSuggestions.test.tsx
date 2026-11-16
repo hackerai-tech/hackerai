@@ -203,6 +203,9 @@ describe("Chat starter suggestions in the composer", () => {
     mockChatMode = "agent";
     starterFlag = true;
     window.localStorage.clear();
+    window.sessionStorage.clear();
+    // Selections are recorded only while consent permits the signed-in user.
+    setAuthenticatedAnalyticsUserId("user-1");
     mockCapture.mockReset().mockReturnValue(true);
     mockQueuedCapture.mockReset().mockReturnValue(true);
     jest.mocked(useAuth).mockReturnValue({
@@ -225,6 +228,8 @@ describe("Chat starter suggestions in the composer", () => {
   });
 
   afterEach(() => {
+    // Reset consent while the mounted composer can still read its user.
+    act(() => setAuthenticatedAnalyticsUserId(null));
     jest.mocked(useAuth).mockReset();
   });
 
@@ -249,6 +254,7 @@ describe("Chat starter suggestions in the composer", () => {
       {
         event: "chat_starter_selected",
         properties: {
+          selection_id: expect.any(String),
           definition_version: 2,
           example_id: "test_target",
           mode: "agent",
@@ -257,6 +263,10 @@ describe("Chat starter suggestions in the composer", () => {
         dedupeKey: expect.any(String),
       },
     ]);
+    // The selection ID is the event's stable dedupe key.
+    expect(selectedEvents()[0].dedupeKey).toBe(
+      selectedEvents()[0].properties?.selection_id,
+    );
     expect(JSON.stringify(mockQueuedCapture.mock.calls)).not.toContain(
       "[scope]",
     );
@@ -282,6 +292,7 @@ describe("Chat starter suggestions in the composer", () => {
     const [first, second] = selectedEvents();
     expect(selectedEvents()).toHaveLength(2);
     expect(first.properties).toEqual({
+      selection_id: expect.any(String),
       definition_version: 2,
       example_id: "fix_tool_error",
       mode: "agent",
@@ -289,6 +300,9 @@ describe("Chat starter suggestions in the composer", () => {
     });
     // Repeat selections are distinct events, not deduplicated retries.
     expect(first.dedupeKey).not.toBe(second.dedupeKey);
+    expect(first.properties?.selection_id).not.toBe(
+      second.properties?.selection_id,
+    );
     expect(JSON.stringify(selectedEvents())).not.toContain("[tool]");
   });
 
@@ -319,6 +333,8 @@ describe("Chat starter suggestions in the composer", () => {
       await flushFrames();
     };
 
+    // Start before analytics has resolved an owner.
+    setAuthenticatedAnalyticsUserId(null);
     try {
       renderStarters();
       await screen.findByTestId("chat-starters");
@@ -473,6 +489,7 @@ describe("Chat starter suggestions in the composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(selectedEvents().map(({ properties }) => properties)).toEqual([
       {
+        selection_id: expect.any(String),
         definition_version: 2,
         example_id: "write_up_findings",
         mode: "agent",
@@ -504,6 +521,7 @@ describe("Chat starter suggestions in the composer", () => {
     expect(textarea()).toHaveFocus();
     expect(selectedEvents().map(({ properties }) => properties)).toEqual([
       {
+        selection_id: expect.any(String),
         definition_version: 2,
         example_id: "explain_results",
         mode: "ask",
@@ -552,6 +570,75 @@ describe("Chat starter suggestions in the composer", () => {
     expect(
       await screen.findByRole("button", { name: "Examples" }),
     ).toBeInTheDocument();
+  });
+
+  it("attributes the sent starter message to its selection and leaves typed sends unchanged", async () => {
+    type Attribution = {
+      userMessageId: string;
+      onUserMessageSent?: (sent: {
+        chatId: string;
+        userMessageId: string;
+      }) => void;
+    };
+    const onSubmit = jest.fn(
+      (
+        _event: unknown,
+        _override?: string,
+        _structured?: boolean,
+        attribution?: Attribution,
+      ) => {
+        // The chat handler reports the transport handoff for this exact ID.
+        attribution?.onUserMessageSent?.({
+          chatId: "new-chat-id",
+          userMessageId: attribution.userMessageId,
+        });
+        return true;
+      },
+    );
+    try {
+      renderStarters({
+        onSubmit: onSubmit as unknown as jest.Mock<() => boolean | void>,
+      });
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Insert example: Explain results",
+        }),
+      );
+      await flushFrames();
+      await act(async () => {
+        fireEvent.keyDown(textarea(), { key: "Enter" });
+      });
+      const attribution = onSubmit.mock.calls[0][3];
+
+      // The next, typed submission is not attributed to the finished selection
+      // and keeps the existing two-argument call.
+      fireEvent.change(textarea(), { target: { value: "my own request" } });
+      await act(async () => {
+        fireEvent.keyDown(textarea(), { key: "Enter" });
+      });
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      expect(onSubmit.mock.calls[1]).toHaveLength(2);
+
+      expect(attribution?.userMessageId).toEqual(expect.any(String));
+      const submitted = mockQueuedCapture.mock.calls
+        .map(([queued]) => queued)
+        .filter(({ event }) => event === "chat_starter_submitted");
+      expect(submitted).toEqual([
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            selection_id: selectedEvents()[0].properties?.selection_id,
+            chat_id: "new-chat-id",
+            user_message_id: attribution?.userMessageId,
+            edited: false,
+          }),
+        }),
+      ]);
+      expect(JSON.stringify(mockQueuedCapture.mock.calls)).not.toMatch(
+        /\[tool\]|my own request/,
+      );
+    } finally {
+      window.sessionStorage.clear();
+    }
   });
 
   it("uses tappable plain rows above the composer on mobile", async () => {
