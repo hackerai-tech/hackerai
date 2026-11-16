@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import type { ComponentProps } from "react";
+import { Fragment, type ComponentProps } from "react";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BillingRecoveryPanel } from "../BillingRecoveryPanel";
@@ -613,6 +613,32 @@ describe("BillingRecoveryPanel", () => {
       await act(async () => resolvePortal("#old-account"));
       expect(window.location.hash).not.toBe("#old-account");
       expect(handoffStages()).toEqual([]);
+      expect(
+        screen.getByRole("button", { name: "Update payment" }),
+      ).toBeEnabled();
+    });
+
+    it("drops a pending action from a panel replaced for another account", async () => {
+      identifyAnalyticsOwner("user-a");
+      let resolvePortal: (url: string) => void = () => {};
+      mockPortal.mockReturnValue(
+        new Promise((resolve) => {
+          resolvePortal = resolve;
+        }),
+      );
+      // Callers key the panel by account scope, as the chat notice does.
+      const keyed = (scope: string) => (
+        <Fragment key={scope}>{compact({ scopeKey: scope })}</Fragment>
+      );
+      const view = render(keyed("user-a:"));
+      await userEvent.click(
+        screen.getByRole("button", { name: "Update payment" }),
+      );
+      view.rerender(keyed("user-b:"));
+      await act(async () => resolvePortal("#replaced-account"));
+      expect(window.location.hash).not.toBe("#replaced-account");
+      expect(handoffStages()).toEqual([]);
+      // The replacement starts idle rather than inheriting "Opening…".
       expect(
         screen.getByRole("button", { name: "Update payment" }),
       ).toBeEnabled();

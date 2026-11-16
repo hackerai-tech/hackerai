@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { v4 as uuidv4 } from "uuid";
@@ -99,12 +105,16 @@ export function BillingRecoveryPanel({
   const [message, setMessage] = useState("");
   const mounted = useRef(true);
   const currentScope = useRef(scopeKey);
-  currentScope.current = scopeKey;
   // Read at resolution time: chat work can start while a URL is loading.
   const navigationBlocked = useRef(actionDisabled);
-  navigationBlocked.current = actionDisabled;
   const emittedImpressions = useRef(new Set<string>());
-  useEffect(() => {
+  // Pending handlers must only see committed props, and a keyed replacement
+  // must invalidate this instance at commit, before pending promises resume.
+  useLayoutEffect(() => {
+    currentScope.current = scopeKey;
+    navigationBlocked.current = actionDisabled;
+  }, [scopeKey, actionDisabled]);
+  useLayoutEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;

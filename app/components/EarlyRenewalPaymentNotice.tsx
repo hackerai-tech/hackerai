@@ -67,7 +67,10 @@ export function EarlyRenewalPaymentNotice({
     enabled === true && subscription !== "team",
     { minIntervalMs: STATUS_MIN_INTERVAL_MS },
   );
-  const [, setHiddenVersion] = useState(0);
+  // Hidden in memory even when session storage is unavailable or throws.
+  const [hiddenKeys, setHiddenKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const notice =
     enabled === true && subscription !== "team"
@@ -75,7 +78,7 @@ export function EarlyRenewalPaymentNotice({
       : null;
   if (!notice || !data || !scopeKey || suppressed) return null;
   const hiddenKey = `${HIDDEN_KEY_PREFIX}${scopeKey}:${notice.invoiceId}`;
-  if (isHidden(hiddenKey)) return null;
+  if (hiddenKeys.has(hiddenKey) || isHidden(hiddenKey)) return null;
 
   return (
     <BillingRecoveryPanel
@@ -94,7 +97,7 @@ export function EarlyRenewalPaymentNotice({
         try {
           window.sessionStorage.setItem(hiddenKey, "1");
         } catch {}
-        setHiddenVersion((version) => version + 1);
+        setHiddenKeys((keys) => new Set(keys).add(hiddenKey));
       }}
     />
   );

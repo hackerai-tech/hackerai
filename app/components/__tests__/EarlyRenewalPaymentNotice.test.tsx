@@ -256,6 +256,28 @@ it("stays hidden for the tab session after the user hides it", async () => {
   ).not.toBeInTheDocument();
 });
 
+it("hides immediately even when session storage rejects writes", async () => {
+  const setItem = jest
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+  try {
+    setup();
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Hide renewal payment notice",
+      }),
+    );
+    expect(setItem).toHaveBeenCalled();
+    expect(
+      screen.queryByTestId("renewal-payment-notice"),
+    ).not.toBeInTheDocument();
+  } finally {
+    setItem.mockRestore();
+  }
+});
+
 it("records one exposure once analytics is ready, even if it rendered first", async () => {
   mockPostHog.__loaded = false;
   setAuthenticatedAnalyticsUserId("user_a");
