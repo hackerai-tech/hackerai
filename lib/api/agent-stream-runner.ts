@@ -2354,6 +2354,14 @@ export async function createAgentStream(
         const effectiveModelInfo = getEffectiveModelInfo(generationStepIndex);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
+        // Compaction checkpoints are replayed by later steps and replacement
+        // streams. Add recovery guidance to this provider request only.
+        const withRecoveryNudge = (messages: ModelMessage[]): ModelMessage[] =>
+          !loopRecovery.nudge
+            ? messages
+            : historyEnabled
+              ? historyReplay.append(messages, "recovery", loopRecovery.nudge)
+              : [...messages, { role: "user", content: loopRecovery.nudge }];
         const providerPromptPressure = getProviderPromptPressure(
           rollingModelMessages,
           {
@@ -2475,12 +2483,12 @@ export async function createAgentStream(
               state.postSummarizationContinuationActive = true;
               state.postSummarizationToolCallCount = 0;
               state.postSummarizationText = "";
-              const continuationPrompt = loopRecovery.nudge
-                ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
-                : POST_SUMMARIZATION_CONTINUATION_PROMPT;
               summarizedModelMessages = [
                 ...summarizedModelMessages,
-                { role: "user", content: continuationPrompt },
+                {
+                  role: "user",
+                  content: POST_SUMMARIZATION_CONTINUATION_PROMPT,
+                },
                 ...(parentGate.reminder
                   ? [{ role: "user" as const, content: parentGate.reminder }]
                   : []),
@@ -2508,7 +2516,7 @@ export async function createAgentStream(
                 1,
               );
               const preparedMessages = await prepareProviderMessages(
-                summarizedModelMessages,
+                withRecoveryNudge(summarizedModelMessages),
                 continuationModelInfo.modelName,
               );
               if (historyEnabled) {
@@ -2587,9 +2595,6 @@ export async function createAgentStream(
               // The helper clears its transient UI state. A later raw cursor
               // may retry while the bounded attempt budget remains.
             } else {
-              const continuationPrompt = loopRecovery.nudge
-                ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
-                : POST_SUMMARIZATION_CONTINUATION_PROMPT;
               const {
                 baseMessages: nextBaseMessages,
                 summaryMessageCount: compactedMessageCount,
@@ -2600,7 +2605,10 @@ export async function createAgentStream(
                 sourceMessages: rollingModelMessages,
                 tools: ctx.tools,
                 trailingMessages: [
-                  { role: "user", content: continuationPrompt },
+                  {
+                    role: "user",
+                    content: POST_SUMMARIZATION_CONTINUATION_PROMPT,
+                  },
                   ...(parentGate.reminder
                     ? [{ role: "user" as const, content: parentGate.reminder }]
                     : []),
@@ -2693,7 +2701,9 @@ export async function createAgentStream(
                   continuationModelInfo.modelName,
                 );
                 const preparedMessages = await prepareProviderMessages(
-                  withHandoffNotes(nextBaseMessages, compactedMessageCount),
+                  withRecoveryNudge(
+                    withHandoffNotes(nextBaseMessages, compactedMessageCount),
+                  ),
                   continuationModelInfo.modelName,
                 );
                 if (historyEnabled) {

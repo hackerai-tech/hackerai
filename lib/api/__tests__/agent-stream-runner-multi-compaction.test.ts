@@ -4754,6 +4754,9 @@ describe("createAgentStream repeated compaction", () => {
         messages: [{ role: "user", content: "old context ".repeat(4_000) }],
       });
       expect(JSON.stringify(next.messages).match(/HANDOFF:/g)).toHaveLength(1);
+      expect(JSON.stringify(next.messages)).not.toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
     },
   );
 
@@ -5055,7 +5058,7 @@ describe("createAgentStream repeated compaction", () => {
     });
 
     it.each(["durable", "rolling"])(
-      "delivers the failure notice in a %s compaction request once across replacement",
+      "delivers the failure notice in one %s compaction request, not its later or replacement requests",
       async (kind) => {
         const summary = uiMessage("summary", "Continue the compacted task.");
         mockRunSummarizationStep.mockResolvedValue({
@@ -5096,9 +5099,12 @@ describe("createAgentStream repeated compaction", () => {
         for (const id of ["a", "b", "c"])
           await stream.onStepFinish(failedCommand(id));
 
+        const raw: ModelMessage[] = [
+          { role: "user", content: "old context ".repeat(4_000) },
+        ];
         const prepared = await stream.prepareStep({
           steps: kind === "rolling" ? [{ toolResults: [] }] : [],
-          messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+          messages: raw,
         });
         expect(
           kind === "durable"
@@ -5107,6 +5113,7 @@ describe("createAgentStream repeated compaction", () => {
         ).toHaveBeenCalled();
         const text = JSON.stringify(prepared.messages);
         expect(text).toContain("Continue the compacted task.");
+        expect(text.split(FAILURE_NOTICE)).toHaveLength(2);
         expect(text).toContain(
           `${FAILURE_NOTICE} run_terminal_cmd has returned 3 failed results`,
         );
@@ -5114,8 +5121,31 @@ describe("createAgentStream repeated compaction", () => {
         stream.experimental_onStepStart({ model: { modelId: "test-model" } });
         expect(failureNudges(onAgentGuardrail)).toHaveLength(1);
 
+        // The next request replays the compacted checkpoint plus new history.
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const next = await stream.prepareStep({
+          stepNumber: 1,
+          steps: [{ toolResults: [] }],
+          messages: [
+            ...raw,
+            { role: "assistant", content: "Checked the prerequisite." },
+          ],
+        });
+        expect(JSON.stringify(next.messages)).toContain(
+          "Continue the compacted task.",
+        );
+        expect(JSON.stringify(next.messages)).not.toContain(FAILURE_NOTICE);
+
+        // A replacement starts from the saved recovery context, if any.
         stream = (await createAgentStream("test-model", context, state)) as any;
-        expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+        const replacement = await stream.prepareStep({
+          steps: [],
+          messages: stream.messages,
+        });
+        expect(JSON.stringify(replacement.messages)).not.toContain(
+          FAILURE_NOTICE,
+        );
+        expect(failureNudges(onAgentGuardrail)).toHaveLength(1);
         expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toMatch(
           /SYNTHETIC|fixture-/,
         );
