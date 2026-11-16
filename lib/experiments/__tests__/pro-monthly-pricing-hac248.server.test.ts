@@ -362,6 +362,57 @@ describe("resolveProMonthlyQuote", () => {
 
   it.each([
     [
+      "the enrollment flag check",
+      (s: ReturnType<typeof setup>) =>
+        s.posthog.getFeatureFlagResult.mockImplementation(async () => {
+          // Another request enrolls this account mid-check; this one is off.
+          s.store.set(STORAGE_KEY, storedAssignment("test"));
+          return { enabled: false } as never;
+        }),
+    ],
+    [
+      "the billing history check",
+      (s: ReturnType<typeof setup>) =>
+        s.workos.organizations.getOrganization.mockImplementation(async () => {
+          s.store.set(STORAGE_KEY, storedAssignment("test"));
+          throw new Error("WorkOS unavailable");
+        }),
+    ],
+  ])(
+    "returns the concurrently stored $49 assignment when eligibility fails during %s",
+    async (_label, arrange) => {
+      const state = setup();
+      arrange(state);
+      const quote = await state.resolve();
+      expect(quote.price).toMatchObject({
+        displayedAmountDollars: 49,
+        stripePriceId: "price_pro_49",
+      });
+      expect(quote.stripePrice.id).toBe("price_pro_49");
+      expect(quote.assignment).toEqual(JSON.parse(storedAssignment("test")));
+      expect(state.redis.set).not.toHaveBeenCalled();
+      // The winner's original enrollment event, not a new one.
+      expect(state.posthog.capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "hac248_pro_monthly_pricing_enrolled",
+          timestamp: new Date("2026-11-19T08:00:00.000Z"),
+        }),
+      );
+    },
+  );
+
+  it("still fails closed when the re-read after a failed eligibility check cannot reach storage", async () => {
+    const state = setup({ createdAt: "2026-11-17T00:00:00.000Z" });
+    state.redis.get
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("Redis down") as never);
+    await expect(state.resolve()).rejects.toBeInstanceOf(
+      ProMonthlyPriceUnavailableError,
+    );
+  });
+
+  it.each([
+    [
       "storage is unreachable",
       (s: ReturnType<typeof setup>) =>
         s.redis.get.mockRejectedValue(new Error("Redis down") as never),

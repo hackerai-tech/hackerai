@@ -386,18 +386,7 @@ export async function resolveProMonthlyQuote({
   const controlPrice = await resolveControlPrice(deps);
   const existing = await readStoredHac248Assignment(userId, deps);
   if (existing) {
-    const stripePrice = await stripePriceForAssignment(
-      deps,
-      existing,
-      controlPrice,
-    );
-    // Retries an enrollment event whose first delivery may have failed.
-    await captureEnrollment(deps, userId, existing);
-    return {
-      price: hac248QuoteForAssignment(existing),
-      assignment: existing,
-      stripePrice,
-    };
+    return quoteStoredAssignment(deps, userId, existing, controlPrice);
   }
 
   const current: ResolvedProMonthlyQuote = {
@@ -407,7 +396,14 @@ export async function resolveProMonthlyQuote({
   if (!enroll || subscription !== "free") return current;
 
   const candidate = await newEnrollmentCandidate(deps, userId, controlPrice);
-  if (!candidate) return current;
+  if (!candidate) {
+    // A concurrent request may have enrolled this account while eligibility
+    // was checked; its stored assignment wins over the current price.
+    const winner = await readStoredHac248Assignment(userId, deps);
+    return winner
+      ? quoteStoredAssignment(deps, userId, winner, controlPrice)
+      : current;
+  }
 
   let written: unknown;
   try {
@@ -430,13 +426,33 @@ export async function resolveProMonthlyQuote({
     assignment = winner;
   }
 
-  const stripePrice = await stripePriceForAssignment(
+  return quoteStoredAssignment(
     deps,
+    userId,
     assignment,
     controlPrice,
     candidate.testPrice,
   );
-  // The winner's original event; a duplicate from the other request dedupes.
+}
+
+/**
+ * Quote a stored assignment: validate its immutable Price, then (re-)send its
+ * original enrollment event with the same UUID and time. Retried deliveries
+ * can repeat raw rows, so analysis deduplicates by account or event UUID.
+ */
+async function quoteStoredAssignment(
+  deps: Hac248Deps,
+  userId: string,
+  assignment: Hac248Assignment,
+  controlPrice: Stripe.Price,
+  knownTestPrice?: Stripe.Price,
+): Promise<ResolvedProMonthlyQuote> {
+  const stripePrice = await stripePriceForAssignment(
+    deps,
+    assignment,
+    controlPrice,
+    knownTestPrice,
+  );
   await captureEnrollment(deps, userId, assignment);
   return {
     price: hac248QuoteForAssignment(assignment),
