@@ -260,7 +260,10 @@ export function ScheduleFormDialog({
         showCloseButton={false}
         // Two columns need about 868px, so they start at a 900px viewport: a
         // half-screen window keeps timing, next run and model beside the form.
-        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-auto sm:max-h-[min(92dvh,56rem)] sm:max-w-[calc(100%-2rem)] sm:rounded-lg sm:border md:max-w-2xl min-[900px]:max-w-[min(calc(100%-2rem),68rem)]"
+        // The breakpoint is written in rem (56.25rem) like sm/md/lg. Tailwind
+        // only orders breakpoints of one unit, and a px one is emitted before
+        // sm and md, which then override it (the dialog stayed at max-w-2xl).
+        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-auto sm:max-h-[min(92dvh,56rem)] sm:max-w-[calc(100%-2rem)] sm:rounded-lg sm:border md:max-w-2xl min-[56.25rem]:max-w-[min(calc(100%-2rem),68rem)]"
         onInteractOutside={(e) => {
           if (pending) e.preventDefault();
         }}
@@ -268,9 +271,9 @@ export function ScheduleFormDialog({
           if (pending) e.preventDefault();
         }}
       >
-        <DialogHeader className="min-h-14 shrink-0 flex-row items-center gap-3 border-b py-2.5 pr-14 pl-4 text-left sm:py-4 sm:pl-6 min-[900px]:pl-8">
+        <DialogHeader className="min-h-14 shrink-0 flex-row items-center gap-3 border-b py-2.5 pr-14 pl-4 text-left sm:py-4 sm:pl-6 min-[56.25rem]:pl-8">
           <div className="min-w-0 flex-1">
-            <DialogTitle className="text-lg tracking-tight min-[900px]:text-xl">
+            <DialogTitle className="text-lg tracking-tight min-[56.25rem]:text-xl">
               {editing ? "Edit schedule" : "New schedule"}
             </DialogTitle>
             {/* The same sentence is visible under Instructions. */}
@@ -288,9 +291,9 @@ export function ScheduleFormDialog({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <fieldset
               disabled={pending}
-              className="min-w-0 min-[900px]:grid min-[900px]:min-h-full min-[900px]:grid-cols-[minmax(0,1fr)_22rem]"
+              className="min-w-0 min-[56.25rem]:grid min-[56.25rem]:min-h-full min-[56.25rem]:grid-cols-[minmax(0,1fr)_22rem]"
             >
-              <div className="space-y-6 px-4 py-5 sm:px-6 min-[900px]:px-8 min-[900px]:py-6">
+              <div className="space-y-6 px-4 py-5 sm:px-6 min-[56.25rem]:px-8 min-[56.25rem]:py-6">
                 <div className="space-y-2">
                   <Label htmlFor={`${id}-name`}>Name</Label>
                   <Input
@@ -317,7 +320,7 @@ export function ScheduleFormDialog({
                     maxLength={16000}
                     rows={6}
                     aria-describedby={`${id}-prompt-help`}
-                    className="min-h-32 resize-y leading-relaxed min-[900px]:min-h-40"
+                    className="min-h-32 resize-y leading-relaxed min-[56.25rem]:min-h-40"
                     placeholder="What should HackerAI do each time? Include any context it needs."
                     required
                   />
@@ -517,7 +520,7 @@ export function ScheduleFormDialog({
                   )}
                 </div>
               </div>
-              <div className="space-y-6 border-t bg-muted/30 px-4 py-5 sm:px-6 min-[900px]:border-t-0 min-[900px]:border-l min-[900px]:py-6">
+              <div className="space-y-6 border-t bg-muted/30 px-4 py-5 sm:px-6 min-[56.25rem]:border-t-0 min-[56.25rem]:border-l min-[56.25rem]:py-6">
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <div
@@ -588,7 +591,7 @@ export function ScheduleFormDialog({
                       <Input
                         id={`${id}-at`}
                         type="datetime-local"
-                        className="h-11 min-w-0 max-w-full sm:h-9 sm:w-64 min-[900px]:w-full"
+                        className="h-11 min-w-0 max-w-full sm:h-9 sm:w-64 min-[56.25rem]:w-full"
                         value={onceAt}
                         onInput={(e) => setOnceAt(e.currentTarget.value)}
                         required
@@ -641,7 +644,7 @@ export function ScheduleFormDialog({
                           ))}
                         </div>
                       </div>
-                      <div className="grid gap-3 min-[400px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] min-[900px]:grid-cols-1">
+                      <div className="grid gap-3 min-[25rem]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)] sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)] min-[56.25rem]:grid-cols-1">
                         <div className="min-w-0 space-y-2">
                           <Label htmlFor={`${id}-time`}>Time</Label>
                           <Input
@@ -755,7 +758,7 @@ export function ScheduleFormDialog({
               </div>
             </fieldset>
           </div>
-          <div className="shrink-0 space-y-3 border-t bg-background px-4 py-3 sm:px-6 sm:py-4 min-[900px]:px-8">
+          <div className="shrink-0 space-y-3 border-t bg-background px-4 py-3 sm:px-6 sm:py-4 min-[56.25rem]:px-8">
             {error && (
               <p
                 role="alert"
@@ -768,7 +771,7 @@ export function ScheduleFormDialog({
                 <span className="min-w-0 break-words">{error}</span>
               </p>
             )}
-            <div className="flex flex-col gap-3 min-[900px]:flex-row min-[900px]:items-center min-[900px]:gap-8">
+            <div className="flex flex-col gap-3 min-[56.25rem]:flex-row min-[56.25rem]:items-center min-[56.25rem]:gap-8">
               <div className="flex min-w-0 flex-1 items-start gap-2 text-xs leading-relaxed text-muted-foreground sm:text-sm">
                 <Shield
                   className="mt-0.5 size-3.5 shrink-0 max-sm:hidden sm:size-4"
@@ -808,7 +811,7 @@ export function ScheduleFormDialog({
                   </p>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end min-[900px]:shrink-0">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end min-[56.25rem]:shrink-0">
                 <Button
                   type="button"
                   variant="outline"
