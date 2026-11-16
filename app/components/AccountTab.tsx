@@ -637,6 +637,7 @@ const AccountTab = () => {
                 status={currentCancellationStatus}
                 subscription={subscription}
                 surface="account_settings"
+                scopeKey={billingScope}
                 onCheck={checkBilling}
               />
             </div>

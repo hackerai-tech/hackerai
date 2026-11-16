@@ -42,7 +42,9 @@ jest.mock("@/lib/billing/client", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(),
+  getPermittedAnalyticsUserId: () => null,
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 jest.mock("sonner", () => ({

@@ -28,6 +28,9 @@ jest.mock("@/lib/analytics/client", () => ({
   addAuthenticatedExceptionStep: jest.fn(),
   captureAuthenticatedEvent: jest.fn(() => true),
   captureUpgradeCtaImpression: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(),
+  getPermittedAnalyticsUserId: () => null,
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 jest.mock("../UpgradeConfirmationDialog", () => ({

@@ -33,7 +33,8 @@ export async function POST(request: NextRequest) {
       (surface !== undefined &&
         surface !== "account_settings" &&
         surface !== "pricing_dialog" &&
-        surface !== "blocked_chat") ||
+        surface !== "blocked_chat" &&
+        surface !== "chat_notice") ||
       (returnPath !== undefined &&
         (typeof returnPath !== "string" ||
           returnPath.length > 400 ||

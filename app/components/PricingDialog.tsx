@@ -701,6 +701,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
                     }
                     subscription={subscription}
                     surface="pricing_dialog"
+                    scopeKey={`${user.id}:${organizationId ?? ""}`}
                     onCheck={checkBilling}
                   />
                 )}

@@ -4,7 +4,20 @@ import { toast } from "sonner";
 import { BillingRecoveryReturnNotice } from "../BillingRecoveryReturnNotice";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
+import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 
+let mockAuth: {
+  user: { id: string } | null;
+  organizationId?: string;
+  loading: boolean;
+} = { user: { id: "user_a" }, organizationId: "org_a", loading: false };
+jest.mock("@workos-inc/authkit-nextjs/components", () => ({
+  useAuth: () => mockAuth,
+}));
+jest.mock("@/lib/analytics/client", () => ({
+  captureQueuedAuthenticatedEvent: jest.fn(),
+  getPermittedAnalyticsUserId: () => mockAuth.user?.id ?? null,
+}));
 jest.mock("sonner", () => ({
   toast: {
     success: jest.fn(),
@@ -21,7 +34,17 @@ jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
 }));
 
 const statusMock = jest.mocked(getSubscriptionCancellationStatus);
+const traceMock = jest.mocked(captureQueuedAuthenticatedEvent);
+const returnedStates = () =>
+  traceMock.mock.calls.map(([call]) => call.properties?.payment_state);
 
+beforeEach(() => {
+  mockAuth = {
+    user: { id: "user_a" },
+    organizationId: "org_a",
+    loading: false,
+  };
+});
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 it("reports unavailable billing history without claiming an unresolved payment", async () => {
@@ -116,6 +139,9 @@ it("reports an unpaid retry after portal return and supports checking again", as
   expect(window.location.search).toBe("?refresh=entitlements");
   expect(window.history.state).toEqual({ route: "chat" });
   expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  // Returning from the portal is traced as unpaid, never as a payment.
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(returnedStates()).toEqual(["unpaid"]);
   // The initial entitlement refresh can finish before Stripe's payment webhook.
   window.history.replaceState({ route: "chat" }, "", "/c/test");
   const options = jest.mocked(toast.error).mock.calls[0][1] as {
@@ -137,6 +163,7 @@ it("reports an unpaid retry after portal return and supports checking again", as
   };
   paidOptions.action.onClick();
   expect(reloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
+  expect(returnedStates()).toEqual(["unpaid", "paid"]);
 });
 
 it("does not claim invoice success from an active plan alone", async () => {
@@ -210,6 +237,68 @@ it("ignores an older unpaid result after a newer recheck confirms payment", asyn
 it("does not check billing without a portal return marker", () => {
   render(<BillingRecoveryReturnNotice />);
   expect(statusMock).not.toHaveBeenCalled();
+});
+
+it("waits for the signed-in identity before checking a portal return", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  mockAuth = { user: null, loading: true };
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: true,
+    cancelAtPeriodEnd: false,
+    subscriptionStatus: "past_due",
+    renewalPaymentRequired: true,
+  });
+  const view = render(<BillingRecoveryReturnNotice />);
+  // The marker is consumed immediately so a reload cannot repeat the check.
+  expect(window.location.search).toBe("");
+  expect(statusMock).not.toHaveBeenCalled();
+  mockAuth = {
+    user: { id: "user_a" },
+    organizationId: "org_a",
+    loading: false,
+  };
+  view.rerender(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.error).toHaveBeenCalledWith(
+      "Your renewal invoice is still unpaid",
+      expect.anything(),
+    ),
+  );
+  expect(statusMock).toHaveBeenCalledTimes(1);
+});
+
+it("drops a late result after switching accounts and never reports it to the new one", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  let resolveStatus!: (
+    status: Awaited<ReturnType<typeof getSubscriptionCancellationStatus>>,
+  ) => void;
+  statusMock.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }),
+  );
+  const view = render(<BillingRecoveryReturnNotice />);
+  await waitFor(() => expect(statusMock).toHaveBeenCalledTimes(1));
+  mockAuth = {
+    user: { id: "user_b" },
+    organizationId: "org_b",
+    loading: false,
+  };
+  view.rerender(<BillingRecoveryReturnNotice />);
+  await act(async () => {
+    resolveStatus({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "active",
+      renewalInvoicePaid: true,
+    });
+  });
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+  expect(traceMock).not.toHaveBeenCalled();
+  // The other account did not return from billing, so it is not checked.
+  expect(statusMock).toHaveBeenCalledTimes(1);
 });
 
 it("still shows the return notice under React Strict Mode", async () => {

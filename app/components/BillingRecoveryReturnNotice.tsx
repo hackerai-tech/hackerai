@@ -2,16 +2,56 @@
 
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { v4 as uuidv4 } from "uuid";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
+import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import {
+  captureQueuedAuthenticatedEvent,
+  getPermittedAnalyticsUserId,
+} from "@/lib/analytics/client";
+import { paidFunnelProperties } from "@/lib/analytics/paid-funnel";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 const NOTICE_ID = "billing-recovery-return";
+// Kept in sync with BillingRecoveryPanel's handoff trace event.
+const HANDOFF_EVENT = "billing_recovery_handoff";
+
+type ReturnPaymentState =
+  | "review_required"
+  | "no_subscription"
+  | "paid"
+  | "unpaid"
+  | "active_unconfirmed"
+  | "unconfirmed"
+  | "check_failed";
+
+function returnPaymentState(
+  status: SubscriptionCancellationStatus,
+): ReturnPaymentState {
+  if (status.checkoutRequiresReview) return "review_required";
+  if (!status.hasActiveSubscription) return "no_subscription";
+  if (
+    status.renewalInvoicePaid &&
+    (status.subscriptionStatus === "active" ||
+      status.subscriptionStatus === "trialing")
+  )
+    return "paid";
+  if (status.renewalPaymentRequired) return "unpaid";
+  if (status.subscriptionStatus === "active") return "active_unconfirmed";
+  return "unconfirmed";
+}
 
 /** Checks Stripe's invoice state after returning from a payment-method flow. */
 export function BillingRecoveryReturnNotice() {
+  const { user, organizationId, loading } = useAuth();
+  const scope = !loading && user ? `${user.id}:${organizationId ?? ""}` : null;
   const latestCheck = useRef(0);
   const returnedFromPortal = useRef(false);
+  // The account that came back from billing; another account never sees it.
+  const returnScope = useRef<string | null>(null);
+
   useEffect(() => {
     const url = new URL(window.location.href);
     if (url.searchParams.get("billing-recovery-return") === "1") {
@@ -19,14 +59,44 @@ export function BillingRecoveryReturnNotice() {
       url.searchParams.delete("billing-recovery-return");
       window.history.replaceState(window.history.state, "", url.toString());
     }
-    if (!returnedFromPortal.current) return;
-    let mounted = true;
+  }, []);
+
+  useEffect(() => {
+    // Wait for the signed-in identity before reading or reporting billing.
+    if (!returnedFromPortal.current || !scope) return;
+    if (returnScope.current && returnScope.current !== scope) return;
+    returnScope.current = scope;
+    let active = true;
+    const isCurrent = (checkId: number) =>
+      active && checkId === latestCheck.current;
+    const trace = (
+      state: ReturnPaymentState,
+      status?: SubscriptionCancellationStatus,
+    ) => {
+      // Auth and analytics settle independently during account changes.
+      if (getPermittedAnalyticsUserId() !== user?.id) return;
+      captureQueuedAuthenticatedEvent({
+        event: HANDOFF_EVENT,
+        properties: paidFunnelProperties({
+          handoff_stage: "returned",
+          payment_state: state,
+          ...(status?.subscriptionStatus && {
+            subscription_status: status.subscriptionStatus,
+          }),
+          ...(status?.latestInvoiceId && {
+            stripe_invoice_id: status.latestInvoiceId,
+          }),
+        }),
+        dedupeKey: `returned:${uuidv4()}`,
+      });
+    };
 
     const checkPayment = async () => {
       const checkId = ++latestCheck.current;
       try {
         const status = await getSubscriptionCancellationStatus();
-        if (!mounted || checkId !== latestCheck.current) return;
+        if (!isCurrent(checkId)) return;
+        trace(returnPaymentState(status), status);
         if (status.checkoutRequiresReview) {
           toast.warning(
             status.billingReviewUnavailable
@@ -108,7 +178,8 @@ export function BillingRecoveryReturnNotice() {
           });
         }
       } catch {
-        if (!mounted || checkId !== latestCheck.current) return;
+        if (!isCurrent(checkId)) return;
+        trace("check_failed");
         toast.error("We couldn't verify the payment yet", {
           id: NOTICE_ID,
           description: "Check your invoice in billing or try again.",
@@ -119,9 +190,9 @@ export function BillingRecoveryReturnNotice() {
 
     void checkPayment();
     return () => {
-      mounted = false;
+      active = false;
     };
-  }, []);
+  }, [scope, user?.id]);
 
   return null;
 }

@@ -50,7 +50,10 @@ jest.mock("@/app/hooks/useBillingRecoveryStatus", () => ({
 jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
+  captureQueuedAuthenticatedEvent: jest.fn(),
   captureUpgradeCtaImpression: jest.fn(),
+  getPermittedAnalyticsUserId: () => null,
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 jest.mock("@/components/ui/dialog", () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
