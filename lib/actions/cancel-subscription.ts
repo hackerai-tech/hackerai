@@ -44,10 +44,10 @@ import {
 import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import type { SubscriptionTier } from "@/types";
 import {
-  proMonthlyPricingAttributionFromMetadata,
-  proMonthlyPricingAttributionProperties,
-  type ProMonthlyPricingAttribution,
-} from "@/lib/experiments/pro-monthly-pricing-attribution";
+  proMonthlyPricingAssignmentFromMetadata,
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentAssignment,
+} from "@/lib/experiments/pro-monthly-pricing";
 
 type CancelSubscriptionInput = {
   cancellationReason?: CancellationReasonInputLike;
@@ -70,7 +70,7 @@ type SubscriptionContext = {
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
   scheduleId?: string;
-  pricingExperiment?: ProMonthlyPricingAttribution;
+  pricingExperiment?: ProMonthlyPricingExperimentAssignment;
 };
 
 function parseCreatedAtMs(value: unknown): number | undefined {
@@ -148,7 +148,7 @@ async function getActiveSubscriptionContext(
     currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     scheduleId: subscriptionScheduleId(currentSubscription),
-    pricingExperiment: proMonthlyPricingAttributionFromMetadata(
+    pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
       currentSubscription.metadata,
       price?.lookup_key,
     ),
@@ -440,7 +440,7 @@ async function cancelWithinOperation(
       reason_details_length: cancellationReason.reasonDetails.length,
       stripe_customer_id: stripeCustomerId,
       stripe_subscription_id: subscriptionContext.id,
-      ...proMonthlyPricingAttributionProperties(
+      ...proMonthlyPricingExperimentProperties(
         subscriptionContext.pricingExperiment,
       ),
     }),
@@ -471,7 +471,7 @@ async function cancelWithinOperation(
         stripe_customer_id: stripeCustomerId,
         stripe_subscription_id: subscriptionContext.id,
         stripe_price_id: subscriptionContext.priceId,
-        ...proMonthlyPricingAttributionProperties(
+        ...proMonthlyPricingExperimentProperties(
           subscriptionContext.pricingExperiment,
         ),
         $insert_id: cancellationCompletionInsertId(

@@ -19,14 +19,10 @@ import {
   getRecentCheckoutNavigation,
   rememberCheckoutNavigation,
 } from "@/lib/billing/checkout-navigation-guard";
-import { proMonthlyPricingAttributionProperties } from "@/lib/experiments/pro-monthly-pricing-attribution";
-import type { ProMonthlyQuote } from "@/lib/experiments/pro-monthly-pricing-hac248";
-import { invalidateProMonthlyPrice } from "./useProMonthlyPrice";
-
-const PRICE_CONFIRMATION_CODES = new Set([
-  "price_changed",
-  "price_confirmation_required",
-]);
+import {
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentPresentation,
+} from "@/lib/experiments/pro-monthly-pricing";
 
 // Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
 // remain authoritative across page loads and tabs, including open-session reuse.
@@ -51,18 +47,10 @@ export const useUpgrade = () => {
       surface?: string;
       reason?: string;
       limit_type?: string;
-      /** The monthly Pro quote shown to the user; checkout must match it. */
-      pro_monthly_quote?: ProMonthlyQuote;
+      pricing_experiment?: ProMonthlyPricingExperimentPresentation;
     } = {},
   ) => {
     e?.preventDefault();
-    const proMonthlyQuote =
-      (planKey ?? "pro-monthly-plan") === "pro-monthly-plan"
-        ? analyticsContext.pro_monthly_quote
-        : undefined;
-    const pricingProperties = proMonthlyPricingAttributionProperties(
-      analyticsContext.pro_monthly_quote?.assignment,
-    );
 
     // Prevent duplicate submits
     if (upgradeInFlight) {
@@ -94,7 +82,9 @@ export const useUpgrade = () => {
             limit_type: analyticsContext.limit_type,
             suppression_reason: "recent_navigation",
             guard_window_ms: CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
-            ...pricingProperties,
+            ...proMonthlyPricingExperimentProperties(
+              analyticsContext.pricing_experiment,
+            ),
           },
         );
         toast.info("Checkout is already opening", {
@@ -126,7 +116,6 @@ export const useUpgrade = () => {
         reason?: string;
         limitType?: string;
         fromTier?: string;
-        displayedPrice?: ProMonthlyQuote["price"];
       } = {
         plan: selectedPlan,
         checkoutAttemptId,
@@ -135,7 +124,6 @@ export const useUpgrade = () => {
         reason: analyticsContext.reason,
         limitType: analyticsContext.limit_type,
         fromTier: currentSubscription ?? "free",
-        ...(proMonthlyQuote && { displayedPrice: proMonthlyQuote.price }),
       };
 
       // Add quantity for team plans
@@ -163,7 +151,9 @@ export const useUpgrade = () => {
           reason: analyticsContext.reason,
           limit_type: analyticsContext.limit_type,
           checkout_type: "new_subscription",
-          ...pricingProperties,
+          ...proMonthlyPricingExperimentProperties(
+            analyticsContext.pricing_experiment,
+          ),
         });
 
         const res = await fetch("/api/subscribe", {
@@ -197,14 +187,6 @@ export const useUpgrade = () => {
             });
             return;
           }
-          if (PRICE_CONFIRMATION_CODES.has(data?.code)) {
-            // Show the current authoritative price; the user confirms again.
-            void invalidateProMonthlyPrice();
-            toast.error(
-              data?.error || "Review your Pro price before checkout.",
-            );
-            return;
-          }
           toast.error(
             data?.error || `Something went wrong (HTTP ${res.status})`,
           );
@@ -217,7 +199,7 @@ export const useUpgrade = () => {
           return;
         }
 
-        const { error, url } = data ?? {};
+        const { error, url, pricingExperiment } = data ?? {};
 
         if (typeof url === "string" && url) {
           failureStage = "navigation_exception";
@@ -239,7 +221,9 @@ export const useUpgrade = () => {
             reason: analyticsContext.reason,
             limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
-            ...pricingProperties,
+            ...proMonthlyPricingExperimentProperties(
+              pricingExperiment ?? analyticsContext.pricing_experiment,
+            ),
             billing_interval: billingInterval,
           });
           navigationStarted = true;

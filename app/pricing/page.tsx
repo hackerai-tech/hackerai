@@ -35,9 +35,7 @@ export const metadata: Metadata = {
   },
 };
 
-// Render per request so the root layout receives the visitor's session: a
-// signed-in account must see its own Pro price, not the signed-out "From" price.
-export const dynamic = "force-dynamic";
+export const dynamic = "force-static";
 
 const externalLinkClassName =
   "inline-flex items-center gap-2 rounded-sm text-sm font-medium text-foreground underline underline-offset-4 hover:text-foreground/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
