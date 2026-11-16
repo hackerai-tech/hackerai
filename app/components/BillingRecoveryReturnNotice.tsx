@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { toast } from "sonner";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -47,6 +47,13 @@ function returnPaymentState(
 export function BillingRecoveryReturnNotice() {
   const { user, organizationId, loading } = useAuth();
   const scope = !loading && user ? `${user.id}:${organizationId ?? ""}` : null;
+  const committedScope = useRef(scope);
+  useLayoutEffect(() => {
+    committedScope.current = scope;
+    return () => {
+      committedScope.current = null;
+    };
+  }, [scope]);
   const latestCheck = useRef(0);
   const returnedFromPortal = useRef(false);
   // The account that came back from billing; another account never sees it.
@@ -68,7 +75,9 @@ export function BillingRecoveryReturnNotice() {
     returnScope.current = scope;
     let active = true;
     const isCurrent = (checkId: number) =>
-      active && checkId === latestCheck.current;
+      active &&
+      checkId === latestCheck.current &&
+      committedScope.current === scope;
     const trace = (
       state: ReturnPaymentState,
       status?: SubscriptionCancellationStatus,
