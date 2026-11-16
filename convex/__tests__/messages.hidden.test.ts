@@ -117,8 +117,19 @@ describe("saveMessage — is_hidden handling", () => {
       user_id: USER_ID,
       canceled_at: undefined,
     },
+    access: Record<string, any> | null = null,
   ): void {
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "chat_history_access") {
+        const lookup = jest.fn<any>().mockResolvedValue(access);
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            first: lookup,
+            unique: lookup,
+          }),
+        };
+      }
+
       if (table === "messages") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -982,6 +993,135 @@ describe("saveMessage — is_hidden handling", () => {
     });
 
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  // Legacy chats without a stable ownership row make every history page depend
+  // on the chat document. The first admitted user insert must create that row
+  // in the same transaction, and nothing else may create or rewrite it.
+  describe("stable history ownership", () => {
+    const saveArgs = (overrides: Record<string, any> = {}) => ({
+      serviceKey: SERVICE_KEY,
+      id: "msg-new-user",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "continue" }],
+      ...overrides,
+    });
+    const accessInserts = () =>
+      mockCtx.db.insert.mock.calls.filter(
+        ([table]: [string]) => table === "chat_history_access",
+      );
+
+    it.each([
+      ["visible", undefined],
+      ["hidden continuation", true],
+    ])(
+      "creates the owner's row for a %s user insert into a legacy chat",
+      async (_label, isHidden) => {
+        setupExistingMessage(null);
+        const { saveMessage } = await import("../messages");
+
+        await saveMessage.handler(mockCtx, saveArgs({ isHidden }));
+
+        expect(accessInserts()).toEqual([
+          ["chat_history_access", { chat_id: CHAT_ID, user_id: USER_ID }],
+        ]);
+        expect(mockCtx.db.insert).toHaveBeenCalledWith(
+          "messages",
+          expect.objectContaining({ id: "msg-new-user", role: "user" }),
+        );
+      },
+    );
+
+    it.each([
+      ["matching", USER_ID],
+      ["conflicting", "other-user"],
+    ])(
+      "keeps an existing %s ownership row unchanged",
+      async (_label, owner) => {
+        const access = {
+          _id: "access-doc",
+          chat_id: CHAT_ID,
+          user_id: owner,
+        };
+        setupExistingMessage(null, undefined, access);
+        const { saveMessage } = await import("../messages");
+
+        await saveMessage.handler(mockCtx, saveArgs());
+
+        expect(accessInserts()).toEqual([]);
+        expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
+          "access-doc",
+          expect.anything(),
+        );
+        expect(mockCtx.db.delete).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not create a row from assistant inserts", async () => {
+      setupExistingMessage(null);
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(
+        mockCtx,
+        saveArgs({ role: "assistant", id: "msg-new-assistant" }),
+      );
+
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "messages",
+        expect.objectContaining({ role: "assistant" }),
+      );
+      expect(accessInserts()).toEqual([]);
+    });
+
+    it("does not create a row when a user message is retried", async () => {
+      setupExistingMessage(makeMessage());
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(mockCtx, saveArgs({ id: "msg-1" }));
+
+      expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    });
+
+    it("does not create a row for a chat whose deletion has started", async () => {
+      setupExistingMessage(null, {
+        _id: "chat-doc-1",
+        id: CHAT_ID,
+        user_id: USER_ID,
+        canceled_at: 1,
+        deletion_started_at: 1,
+      });
+      const { saveMessage } = await import("../messages");
+
+      await saveMessage.handler(mockCtx, saveArgs());
+
+      expect(accessInserts()).toEqual([]);
+    });
+
+    it.each([
+      ["missing", null, "CHAT_NOT_FOUND"],
+      [
+        "another user's",
+        { _id: "chat-doc-1", id: CHAT_ID, user_id: "other-user" },
+        "CHAT_UNAUTHORIZED",
+      ],
+    ])(
+      "rejects a user insert into a %s chat without creating a row",
+      async (_label, chat, code) => {
+        setupExistingMessage(null, chat);
+        const { saveMessage } = await import("../messages");
+
+        await expect(
+          saveMessage.handler(mockCtx, saveArgs()),
+        ).rejects.toMatchObject({
+          data: expect.objectContaining({
+            causeData: expect.objectContaining({ code }),
+          }),
+        });
+        expect(mockCtx.db.insert).not.toHaveBeenCalled();
+      },
+    );
   });
 });
 
