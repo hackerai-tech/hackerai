@@ -161,6 +161,8 @@ export function createServiceFetch(
             rpc_kind: type,
             ...(functionName ? { function_name: functionName } : {}),
             stage,
+            // The platform can end the request before reportFailure runs.
+            ...observation.snapshot(),
             ...(statusCode !== undefined ? { status_code: statusCode } : {}),
             transport_elapsed_ms: Math.max(0, Date.now() - startedAt),
           }),

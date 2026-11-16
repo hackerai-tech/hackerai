@@ -1,10 +1,16 @@
 import { webcrypto } from "node:crypto";
+import { channel } from "node:diagnostics_channel";
 import { makeFunctionReference } from "convex/server";
 import {
   createServiceConvexClient,
   createServiceFetch,
 } from "../service-client";
 import { verifyServiceArgs } from "../service-proof";
+import {
+  serviceTransportObserverKey,
+  serviceTransportRuntime,
+} from "../service-transport-observation";
+import { registerServiceTransportObserver } from "../service-transport-observation.node";
 
 jest.mock("convex/browser", () =>
   jest.requireActual("../../../node_modules/convex/dist/cjs/browser/index.js"),
@@ -809,6 +815,73 @@ describe("bounded RPC failure diagnostics", () => {
       expect(jest.getTimerCount()).toBe(0);
       jest.useRealTimers();
       expect(await completed.text()).toBe('{"value":"ok"}');
+    });
+
+    describe("with the registered Node transport observer", () => {
+      beforeAll(() => registerServiceTransportObserver());
+      // Restore the Node-free fallback asserted elsewhere in this file.
+      afterAll(() => {
+        delete serviceTransportRuntime[serviceTransportObserverKey];
+      });
+
+      it("records the transport progress observed at 10 seconds once, before any platform timeout", async () => {
+        const publish = (name: string, message: object) =>
+          channel(`undici:${name}`).publish(message);
+        const undiciRequest = {
+          origin: deployment,
+          path: "/api/mutation",
+          method: "POST",
+        };
+        const started = deferred<void>();
+        const headers = deferred<Response>();
+        const transport = jest.fn(() => {
+          // Node fetch publishes request creation in the caller's async
+          // context; later events are correlated by request identity.
+          publish("request:create", { request: undiciRequest });
+          started.resolve();
+          return headers.promise;
+        });
+        const result = createServiceFetch(deployment, transport)(
+          `${deployment}/api/mutation`,
+          request(),
+        );
+        await started.promise;
+        publish("client:sendHeaders", { request: undiciRequest, socket: {} });
+        publish("request:bodySent", { request: undiciRequest });
+        await jest.advanceTimersByTimeAsync(10000);
+        const warned = {
+          event: "convex_service_rpc_pending",
+          rpc_kind: "mutation",
+          function_name: "fixture:accept",
+          stage: "request",
+          node_version: process.versions.node,
+          ...(process.versions.undici
+            ? { node_bundled_undici_version: process.versions.undici }
+            : {}),
+          transport_observation: "request_body_sent",
+          transport_request_count: 1,
+          socket_prior_service_use_observed: false,
+          transport_elapsed_ms: 10000,
+        };
+        expect(pending()).toEqual([warned]);
+        // Later progress neither rewrites nor repeats the 10-second record.
+        publish("request:headers", { request: undiciRequest });
+        await jest.advanceTimersByTimeAsync(20000);
+        expect(pending()).toEqual([warned]);
+        const response = new Response("unused", { status: 201 });
+        jest.spyOn(response, "text").mockResolvedValue('{"value":"ok"}');
+        headers.resolve(response);
+        const completed = await result;
+        expect(jest.getTimerCount()).toBe(0);
+        jest.useRealTimers();
+        expect(completed.status).toBe(201);
+        expect(await completed.text()).toBe('{"value":"ok"}');
+        expect(transport).toHaveBeenCalledTimes(1);
+        expect(diagnostics()).toEqual([]);
+        expect(JSON.stringify(warning.mock.calls)).not.toMatch(
+          /PRIVATE|synthetic-credential|fixture\.convex\.cloud|\/api\//,
+        );
+      });
     });
 
     it.each(["success", "request_failure", "body_failure"])(
