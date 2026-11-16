@@ -18,9 +18,9 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  canPreviewImageInline,
   fileToBase64,
   formatFileSize,
-  isImageFile,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
 import { FileContentViewer } from "./FileContentViewer";
@@ -232,7 +232,10 @@ export const FileUploadPreview = ({
 
         // Generate base64 preview for images - this will show immediately while uploading
         if (
-          isImageFile(uploadedFile.file) &&
+          canPreviewImageInline(
+            uploadedFile.file.type,
+            uploadedFile.file.name,
+          ) &&
           isBrowserFile(uploadedFile.file)
         ) {
           const fileKey = generateFileKey(uploadedFile.file);
@@ -344,6 +347,10 @@ export const FileUploadPreview = ({
               const canEditGeneratedText = Boolean(
                 generatedText && onUpdateGeneratedTextFile,
               );
+              const showsInlineImage = canPreviewImageInline(
+                filePreview.file.type,
+                filePreview.file.name,
+              );
               const canShowGeneratedTextInField = Boolean(
                 generatedText &&
                 onShowGeneratedTextInField &&
@@ -363,14 +370,14 @@ export const FileUploadPreview = ({
                         ? "border-red-500 border-2 bg-red-50 dark:bg-red-950/20"
                         : isGeneratedPastedText
                           ? "bg-input-chat border-border/80"
-                          : isImageFile(filePreview.file)
+                          : showsInlineImage
                             ? "bg-background"
                             : "bg-primary"
                     }`}
                   >
                     <div
                       className={
-                        isImageFile(filePreview.file) &&
+                        showsInlineImage &&
                         (filePreview.preview ||
                           filePreview.loading ||
                           filePreview.error)
@@ -481,7 +488,7 @@ export const FileUploadPreview = ({
                           </div>
                         </div>
                       ) : filePreview.error ? (
-                        isImageFile(filePreview.file) ? (
+                        showsInlineImage ? (
                           <div className="h-full w-full flex items-center justify-center min-h-[100px]">
                             <div className="flex flex-col items-center gap-2 p-3">
                               <div className="rounded-full bg-red-500 p-2">

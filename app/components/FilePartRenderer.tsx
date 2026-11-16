@@ -15,6 +15,7 @@ import { ImageViewer } from "./ImageViewer";
 import { LocalFilePreviewCard } from "./LocalFilePreviewCard";
 import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
+import { canPreviewImageInline } from "@/lib/utils/file-utils";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
 import { useAttachmentDownload } from "../hooks/useAttachmentDownload";
@@ -60,10 +61,12 @@ const FilePartRendererComponent = ({
     url?: string;
   }>({});
 
+  const fileName = part.name || part.filename;
+  const showsInlineImage = canPreviewImageInline(part.mediaType, fileName);
+
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
   useEffect(() => {
-    const isImage = part.mediaType?.startsWith("image/");
-    if (!isImage) {
+    if (!showsInlineImage) {
       return;
     }
 
@@ -140,7 +143,7 @@ const FilePartRendererComponent = ({
     // Note: fileUrl is intentionally not in deps - we check it inside the effect
     // fileUrlCacheRef is a ref, so it doesn't need to be in deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part.url, part.fileId, part.mediaType, getFileUrlAction]);
+  }, [part.url, part.fileId, showsInlineImage, getFileUrlAction]);
 
   // Non-images are fetched lazily on click through the shared download owner.
   const handleNonImageFileClick = useCallback(
@@ -264,7 +267,7 @@ const FilePartRendererComponent = ({
       }
 
       // Handle image files - resolve fetchable URLs before showing a real error
-      if (part.mediaType?.startsWith("image/")) {
+      if (showsInlineImage) {
         if (!actualUrl) {
           if (part.fileId) {
             const isMultipleImages = totalFileParts > 1;
@@ -391,6 +394,7 @@ const FilePartRendererComponent = ({
     part.fileId,
     fileUrl,
     urlError,
+    showsInlineImage,
     FilePreviewCard,
   ]);
 
