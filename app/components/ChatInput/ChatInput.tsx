@@ -83,6 +83,12 @@ import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-san
 import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { useChatStarters } from "@/app/contexts/ChatStartersContext";
+import {
+  CHAT_STARTERS_DEFINITION_VERSION,
+  type ChatStarter,
+} from "@/lib/chat/starter-prompts";
+import { ChatStarterSuggestions } from "./ChatStarterSuggestions";
 
 interface ChatInputProps {
   completedPredictionTurn?: CompletedPredictionTurn | null;
@@ -358,6 +364,7 @@ const ChatInputContent = ({
   const { user } = useAuth();
   const input = useComposerInput();
   const { setInput, getInput } = useComposerActions();
+  const chatStarters = useChatStarters();
   const isOnline = useOnlineStatus();
   const isOffline = offlineProtection && !isOnline;
   const {
@@ -1155,6 +1162,68 @@ const ChatInputContent = ({
       messageQueue.length > 0,
   });
 
+  // Starters only fill an idle, empty first composer. Any draft, attachment,
+  // notice, pending work or unresolved state hides them without remounting it.
+  const starterMode = chatMode === "agent" ? "agent" : "ask";
+  const starterPresentation =
+    chatStarters?.enabled && user && chatStarters.userId === user.id
+      ? chatStarters.presentation
+      : null;
+  const showChatStarters =
+    starterPresentation !== null &&
+    isMobile !== undefined &&
+    isEmptyNewChat &&
+    !landingAppearance &&
+    chatModeAccessResolved &&
+    !isCheckingProPlan &&
+    status === "ready" &&
+    !isGenerating &&
+    input === "" &&
+    uploadedFiles.length === 0 &&
+    !isUploadingFiles &&
+    !submissionPending &&
+    !isStoppingAgent &&
+    !isOffline &&
+    !isReconnecting &&
+    !effectiveSendDisabledReason &&
+    !selectedComputerUnavailable &&
+    !computerConnectionPending &&
+    !approvalRequest &&
+    !isWaitingForReply &&
+    !questionKey &&
+    !goalMode &&
+    !showGoalSuggestion &&
+    !hasActiveGoalRun &&
+    !pauseGoalOnSend &&
+    !rateLimitWarning &&
+    messageQueue.length === 0 &&
+    !editingQueuedMessageId;
+
+  const selectChatStarter = (starter: ChatStarter) => {
+    // Read the latest composer and saved draft, not this render's snapshot,
+    // so a fast edit or restored draft is never replaced.
+    if (
+      getInput() !== "" ||
+      getUploadedFiles().length > 0 ||
+      (getDraftContentById(draftId) ?? "") !== "" ||
+      getDraftAttachmentsById(draftId).length > 0
+    )
+      return;
+    captureAuthenticatedEvent("chat_starter_selected", {
+      definition_version: CHAT_STARTERS_DEFINITION_VERSION,
+      example_id: starter.id,
+      mode: starterMode,
+      presentation: starterPresentation,
+    });
+    setInput(starter.prompt);
+    requestAnimationFrame(() => {
+      const textarea = composerTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingRef.current) return;
@@ -1254,6 +1323,8 @@ const ChatInputContent = ({
             accepted === false ? "submit_refused" : "submit_accepted",
           );
         finishPredictionSubmission(accepted !== false);
+        // Keep starters collapsed before the history list reflects this chat.
+        if (accepted !== false) chatStarters?.markFirstSubmission();
         if (accepted !== false && isGoalSubmission) setGoalMode(false);
         const unchanged =
           getInput() === submittedInput &&
@@ -1772,6 +1843,21 @@ const ChatInputContent = ({
             />
           </div>
         </div>
+
+        {showChatStarters && chatStarters && starterPresentation && (
+          <div
+            className={`min-w-0 shrink-0 ${isMobile ? "order-1" : "order-3"}`}
+          >
+            <ChatStarterSuggestions
+              key={chatStarters.userId}
+              mode={starterMode}
+              presentation={starterPresentation}
+              layout={isMobile ? "mobile" : "desktop"}
+              onSelect={selectChatStarter}
+              onExposed={chatStarters.recordExposure}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
