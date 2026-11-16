@@ -85,20 +85,23 @@ test("returns one editable reply with one provider call and its receipt", async 
   expect(options.tools).toBeUndefined();
 });
 
-test("a null prediction abstains without a second model call", async () => {
-  jest
-    .mocked(generateText)
-    .mockResolvedValueOnce(completion({ suggestion: null }));
-  const result = await generateNextActions(
-    sources,
-    new AbortController().signal,
-  );
-  expect(result.suggestions).toEqual([]);
-  expect(result.unavailable).toBe(false);
-  expect(result.reason).toBe("model_abstained");
-  expect(result.providerCalls).toBe(1);
-  expect(generateText).toHaveBeenCalledTimes(1);
-});
+// Models sometimes return the abstention as the string "null" instead of JSON null.
+test.each([null, "null", " NULL "])(
+  "a %p prediction abstains without a second model call",
+  async (suggestion) => {
+    jest.mocked(generateText).mockResolvedValueOnce(completion({ suggestion }));
+    const result = await generateNextActions(
+      sources,
+      new AbortController().signal,
+    );
+    expect(result.suggestions).toEqual([]);
+    expect(result.unavailable).toBe(false);
+    expect(result.reason).toBe("model_abstained");
+    expect(result.providerCalls).toBe(1);
+    expect(result.cost).toBe(0.001);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  },
+);
 
 test("a schema-valid draft the parser rejects is not reported as abstention", async () => {
   jest

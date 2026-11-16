@@ -3612,3 +3612,115 @@ describe("Agent recovery ordering", () => {
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("starter attribution on submit", () => {
+  const STARTER_MESSAGE_ID = "6f0b7c1e-3a59-4b8e-9d7e-2c6a1f0e4b21";
+  const submitProps = (status: "ready" | "streaming" = "ready") => ({
+    chatId: "new-chat-1",
+    messages: [] as ChatMessage[],
+    sendMessage: mockSendMessage,
+    stop: mockStop,
+    regenerate: jest.fn(),
+    setMessages: mockSetMessages,
+    isExistingChat: false,
+    status,
+    isSendingNowRef: { current: false },
+    hasManuallyStoppedRef: { current: false },
+  });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockInput = "Help me fix this nmap error";
+    mockUploadedFiles = [];
+    mockCurrentTodos = [];
+    mockSandboxPreference = "e2b";
+    mockQueueBehavior = "queue";
+    mockMessageQueue = [];
+    mockQueueMessage.mockReset();
+    mockQueueMessage.mockReturnValue("queued-1");
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+  });
+
+  it.each(["ask", "agent"])(
+    "sends the attributed ID as the %s user message and reports the handoff",
+    async (mode) => {
+      mockChatMode = mode;
+      const onUserMessageSent = jest.fn();
+      const { result } = renderHook(() => useChatHandlers(submitProps()));
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleSubmit(
+          { preventDefault: jest.fn() } as any,
+          undefined,
+          false,
+          { userMessageId: STARTER_MESSAGE_ID, onUserMessageSent },
+        );
+      });
+      expect(accepted).toBe(true);
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        {
+          id: STARTER_MESSAGE_ID,
+          role: "user",
+          parts: [{ type: "text", text: "Help me fix this nmap error" }],
+          metadata: { createdAt: expect.any(Number) },
+        },
+        { body: expect.objectContaining({ mode }) },
+      );
+      expect(onUserMessageSent).toHaveBeenCalledWith({
+        chatId: "new-chat-1",
+        userMessageId: STARTER_MESSAGE_ID,
+      });
+    },
+  );
+
+  it("keeps generated IDs for unattributed or malformed attribution", async () => {
+    mockChatMode = "ask";
+    const onUserMessageSent = jest.fn();
+    const { result } = renderHook(() => useChatHandlers(submitProps()));
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: jest.fn() } as any);
+      await result.current.handleSubmit(
+        { preventDefault: jest.fn() } as any,
+        undefined,
+        false,
+        { userMessageId: "not an id", onUserMessageSent },
+      );
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    for (const [message] of mockSendMessage.mock.calls as unknown as [
+      Record<string, unknown>,
+    ][]) {
+      // The SDK assigns its own ID to this text-form message.
+      expect(message).toEqual({
+        text: "Help me fix this nmap error",
+        files: undefined,
+        metadata: { createdAt: expect.any(Number) },
+      });
+    }
+    expect(onUserMessageSent).not.toHaveBeenCalled();
+  });
+
+  it("does not attribute a message queued behind active work", async () => {
+    mockChatMode = "agent";
+    const onUserMessageSent = jest.fn();
+    const { result } = renderHook(() =>
+      useChatHandlers(submitProps("streaming")),
+    );
+    let accepted: boolean | undefined;
+    await act(async () => {
+      accepted = await result.current.handleSubmit(
+        { preventDefault: jest.fn() } as any,
+        undefined,
+        false,
+        { userMessageId: STARTER_MESSAGE_ID, onUserMessageSent },
+      );
+    });
+    // Accepted into the queue, which keeps its own message identity.
+    expect(accepted).toBe(true);
+    expect(mockQueueMessage).toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(onUserMessageSent).not.toHaveBeenCalled();
+  });
+});

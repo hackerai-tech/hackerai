@@ -12,6 +12,7 @@ import {
   predictedNextActionSchema,
   parsePredictedNextAction,
   hasExplicitPredictionStop,
+  isNullAbstention,
   type PredictionSource,
 } from "./contracts";
 
@@ -146,11 +147,14 @@ export async function generateNextActions(
       modelId = result.response.modelId;
       providerFinishReason = finishReason(result.finishReason);
       abortSignal.throwIfAborted();
-      suggestions = parsePredictedNextAction(result.output);
+      const output = result.output;
+      suggestions = parsePredictedNextAction(output);
+      const prediction = (output as { suggestion?: unknown } | null)
+        ?.suggestion;
       reason = suggestions.length
         ? "generated"
-        : (result.output as { suggestion?: unknown } | null)?.suggestion ===
-            null
+        : prediction === null ||
+            (typeof prediction === "string" && isNullAbstention(prediction))
           ? "model_abstained"
           : "parser_rejected";
     }

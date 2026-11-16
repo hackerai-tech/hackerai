@@ -17,6 +17,7 @@ import {
   NEXT_ACTIONS_VERSION,
   NEXT_ACTIONS_VALIDATION_VERSION,
   nextActionsRequestSchema,
+  nextActionsResponseSchema,
   type NextActionsBatch,
 } from "@/lib/chat/next-actions/contracts";
 import { generateNextActions } from "@/lib/chat/next-actions/generate";
@@ -39,10 +40,18 @@ const empty = (status = 200, reason?: NextActionsDeliveryReason) =>
     },
   );
 
-const batchResponse = (batch: NextActionsBatch) =>
-  batch.validationVersion === NEXT_ACTIONS_VALIDATION_VERSION
-    ? NextResponse.json(batch, { headers: { "Cache-Control": "no-store" } })
-    : empty(200, "saved_incompatible");
+const batchResponse = (batch: NextActionsBatch) => {
+  if (batch.validationVersion !== NEXT_ACTIONS_VALIDATION_VERSION)
+    return empty(200, "saved_incompatible");
+  // Persisted batches can predate current normalization (e.g. a literal "null").
+  const parsed = nextActionsResponseSchema.safeParse(batch);
+  if (!parsed.success) return empty(200, "saved_incompatible");
+  return parsed.data.suggestions.length
+    ? NextResponse.json(parsed.data, {
+        headers: { "Cache-Control": "no-store" },
+      })
+    : empty(200, "prediction_empty");
+};
 // One generation per completed message, including failed/aborted attempts.
 // Redis holds only reservations; validated results are private chat data.
 // A fixed per-user hourly budget bounds auxiliary spend.

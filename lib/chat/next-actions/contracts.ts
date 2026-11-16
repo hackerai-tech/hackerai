@@ -21,12 +21,21 @@ export const nextActionsRequestSchema = z
       .regex(/^[\w-]+$/),
   })
   .strict();
+/** Models sometimes return the abstention as the string "null" instead of JSON null. */
+export const isNullAbstention = (text: string) =>
+  text.trim().toLowerCase() === "null";
 export const nextActionsResponseSchema = z.object({
   batchId: z.string(),
   messageId: z.string(),
   mode: z.enum(["ask", "agent"]),
   validationVersion: z.number().int().optional(),
-  suggestions: z.array(z.string().trim().min(1).max(240)).max(3),
+  // Batches saved before this normalization can still contain "null".
+  suggestions: z
+    .array(z.string().trim().min(1).max(240))
+    .max(3)
+    .transform((suggestions) =>
+      suggestions.filter((text) => !isNullAbstention(text)),
+    ),
 });
 export type NextActionsBatch = z.infer<typeof nextActionsResponseSchema>;
 export const emptyNextActionsResponseSchema = z.object({
@@ -186,7 +195,11 @@ export function parsePredictedNextAction(output: unknown): string[] {
   const parsed = predictedNextActionSchema.safeParse(output);
   if (!parsed.success || parsed.data.suggestion === null) return [];
   const text = parsed.data.suggestion.trim();
-  if (!text || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text))
+  if (
+    !text ||
+    isNullAbstention(text) ||
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(text)
+  )
     return [];
   // Composer commands have their own explicit entry flow; a prediction cannot select one.
   if (/^\/|(?:^|\s)\/goal(?=\s|$)/i.test(text)) return [];
