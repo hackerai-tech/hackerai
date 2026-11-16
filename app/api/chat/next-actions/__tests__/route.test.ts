@@ -415,6 +415,43 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
+test.each([
+  { stored: ["null"], delivered: [] },
+  { stored: [" NULL "], delivered: [] },
+  {
+    stored: ["Null", "Why is the token null?"],
+    delivered: ["Why is the token null?"],
+  },
+])(
+  "restoring a saved literal null abstention never delivers it: $stored",
+  async ({ stored, delivered }) => {
+    chat.last_run_finished_at = Date.now() - 86_400_000;
+    saved = {
+      consumed: false,
+      batch: {
+        batchId: "saved-null",
+        validationVersion: 6,
+        messageId: "answer",
+        mode: "ask",
+        suggestions: stored,
+      },
+    };
+    const result = await POST(
+      request({ chatId, messageId: "answer", restoreOnly: true } as never),
+    );
+    const body = await result.json();
+    expect(body.suggestions).toEqual(delivered);
+    if (!delivered.length)
+      expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+        "prediction_empty",
+      );
+    else expect(body).toMatchObject({ batchId: "saved-null", mode: "ask" });
+    expect(generateNextActions).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+  },
+);
+
 test.each([undefined, 3, 4])(
   "does not restore legacy prediction version %s or make a model call",
   async (validationVersion) => {
