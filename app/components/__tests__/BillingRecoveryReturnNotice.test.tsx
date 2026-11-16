@@ -106,48 +106,51 @@ it("does not claim payment restored access for a canceled subscription", async (
   expect(toast.success).not.toHaveBeenCalled();
 });
 
-it("reports an unpaid retry after portal return and supports checking again", async () => {
+it("reports an unpaid renewal after portal return without claiming payment", async () => {
   window.history.replaceState(
     { route: "chat" },
     "",
     "/c/test?billing-recovery-return=1&refresh=entitlements",
   );
-  statusMock
-    .mockResolvedValueOnce({
-      hasActiveSubscription: true,
-      cancelAtPeriodEnd: false,
-      subscriptionStatus: "past_due",
-      renewalPaymentRequired: true,
-      renewalPaymentFailure: "insufficient_funds",
-    })
-    .mockResolvedValueOnce({
-      hasActiveSubscription: true,
-      cancelAtPeriodEnd: false,
-      subscriptionStatus: "active",
-      renewalInvoicePaid: true,
-    });
+  statusMock.mockResolvedValueOnce({
+    hasActiveSubscription: true,
+    cancelAtPeriodEnd: false,
+    subscriptionStatus: "past_due",
+    renewalPaymentRequired: true,
+    renewalPaymentFailure: "insufficient_funds",
+  });
   render(<BillingRecoveryReturnNotice />);
   await waitFor(() =>
     expect(toast.error).toHaveBeenCalledWith(
       "Your renewal invoice is still unpaid",
       expect.objectContaining({
-        description: expect.stringContaining("insufficient funds"),
+        description: "The latest payment was declined for insufficient funds.",
+        closeButton: true,
         action: expect.objectContaining({ label: "Resolve payment" }),
       }),
     ),
   );
+  // One closable, finite toast: it must not keep covering the composer.
+  const options = jest.mocked(toast.error).mock.calls[0][1];
+  expect(options).not.toHaveProperty("cancel");
+  expect(options).not.toHaveProperty("duration");
   expect(window.location.search).toBe("?refresh=entitlements");
   expect(window.history.state).toEqual({ route: "chat" });
   expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
   // Returning from the portal is traced as unpaid, never as a payment.
   expect(toast.success).not.toHaveBeenCalled();
   expect(returnedStates()).toEqual(["unpaid"]);
-  // The initial entitlement refresh can finish before Stripe's payment webhook.
-  window.history.replaceState({ route: "chat" }, "", "/c/test");
-  const options = jest.mocked(toast.error).mock.calls[0][1] as {
-    cancel: { onClick: () => void };
-  };
-  options.cancel.onClick();
+});
+
+it("offers an access refresh only after Stripe confirms the renewal is paid", async () => {
+  window.history.replaceState(null, "", "/c/test?billing-recovery-return=1");
+  statusMock.mockResolvedValueOnce({
+    hasActiveSubscription: true,
+    cancelAtPeriodEnd: false,
+    subscriptionStatus: "active",
+    renewalInvoicePaid: true,
+  });
+  render(<BillingRecoveryReturnNotice />);
   await waitFor(() =>
     expect(toast.success).toHaveBeenCalledWith(
       "Your renewal invoice is paid. Refresh to update your access.",
@@ -163,7 +166,8 @@ it("reports an unpaid retry after portal return and supports checking again", as
   };
   paidOptions.action.onClick();
   expect(reloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
-  expect(returnedStates()).toEqual(["unpaid", "paid"]);
+  expect(toast.error).not.toHaveBeenCalled();
+  expect(returnedStates()).toEqual(["paid"]);
 });
 
 it("does not claim invoice success from an active plan alone", async () => {

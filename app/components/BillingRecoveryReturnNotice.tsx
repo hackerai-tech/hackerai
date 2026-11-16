@@ -142,17 +142,15 @@ export function BillingRecoveryReturnNotice() {
                 : status.renewalPaymentFailure === "declined"
                   ? "The latest payment was declined."
                   : "A successful payment has not been confirmed yet.";
+          // One action and a short reason keep the text readable at narrow
+          // widths; a finite, closable toast never covers Send for long.
           toast.error("Your renewal invoice is still unpaid", {
             id: NOTICE_ID,
-            description: `${detail} Open billing to pay the invoice, complete verification, or update your card.`,
-            duration: Infinity,
+            description: detail,
+            closeButton: true,
             action: {
               label: "Resolve payment",
               onClick: () => openSettingsDialog("Account"),
-            },
-            cancel: {
-              label: "Check again",
-              onClick: () => void checkPayment(),
             },
           });
         } else if (status.subscriptionStatus === "active") {
