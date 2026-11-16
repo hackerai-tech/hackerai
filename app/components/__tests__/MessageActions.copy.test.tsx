@@ -93,6 +93,36 @@ describe("MessageActions copy failure feedback", () => {
     );
   });
 
+  it("keeps the retry notice when Try again also fails", async () => {
+    jest.useFakeTimers();
+    try {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const writeText = mockClipboard(async () => {
+        throw new Error("Document is not focused");
+      });
+      renderActions();
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText("Could not copy message")).toBeVisible();
+
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      // Past Sonner's 200ms action-removal delay, well before its 4s auto-close.
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(writeText).toHaveBeenCalledTimes(2);
+      expect(visibleToasts()).toHaveLength(1);
+      expect(visibleToasts()[0]).toHaveAttribute("data-removed", "false");
+      expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("keeps each message's failure notice independent", async () => {
     jest.spyOn(console, "error").mockImplementation(() => {});
     const writeText = mockClipboard(async () => {

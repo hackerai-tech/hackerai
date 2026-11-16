@@ -173,7 +173,14 @@ export const MessageActions = ({
       copyFailureShownRef.current = true;
       toast.error("Could not copy message", {
         id: copyFailedToastId,
-        action: { label: "Try again", onClick: () => void handleCopy() },
+        action: {
+          label: "Try again",
+          onClick: (event) => {
+            // Keep the notice until the retry settles; success dismisses it.
+            event.preventDefault();
+            void handleCopy();
+          },
+        },
       });
       return;
     }
