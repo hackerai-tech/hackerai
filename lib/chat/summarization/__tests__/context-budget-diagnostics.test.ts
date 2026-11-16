@@ -1,6 +1,9 @@
 import type { ModelMessage } from "ai";
 import {
   buildContextBudgetProjectionDiagnostics,
+  CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS,
+  CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_CONTENT_PARTS,
+  CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_URL_CHARS,
   CONTEXT_BUDGET_DECISION_NOT_EVALUATED,
   CONTEXT_BUDGET_DIAGNOSTIC_MAX_CHARS,
 } from "../context-budget-diagnostics";
@@ -72,6 +75,11 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
       context_budget_without_file_annotations_status: "measured",
       context_budget_without_file_annotations_message_tokens: 77,
       context_budget_file_annotation_count: 2,
+      // Text-only and content-less files are a measured zero, not absence.
+      context_budget_annotation_image_diagnostic_version: 1,
+      context_budget_annotation_image_status: "measured",
+      context_budget_annotation_image_part_count: 0,
+      context_budget_annotation_image_url_chars: 0,
     });
     expect(countTokens).toHaveBeenCalledTimes(1);
     const projection = JSON.parse(countTokens.mock.calls[0][0]);
@@ -147,6 +155,14 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
         result.context_budget_without_file_annotations_message_tokens,
       ).toBe(900);
       expect(result).not.toHaveProperty("context_budget_file_annotation_count");
+      // Absence (including a stale history array) is never a measured zero.
+      expect(result.context_budget_annotation_image_status).toBe("not_present");
+      expect(result).not.toHaveProperty(
+        "context_budget_annotation_image_part_count",
+      );
+      expect(result).not.toHaveProperty(
+        "context_budget_annotation_image_url_chars",
+      );
     },
   );
 
@@ -236,6 +252,8 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
       context_budget_projection_diagnostic_version: 1,
       context_budget_decision_source: "not_evaluated",
       context_budget_without_file_annotations_status: "not_present",
+      context_budget_annotation_image_diagnostic_version: 1,
+      context_budget_annotation_image_status: "not_present",
     });
 
     const invalidDecision = buildContextBudgetProjectionDiagnostics({
@@ -249,5 +267,205 @@ describe("buildContextBudgetProjectionDiagnostics", () => {
     expect(invalidDecision).not.toHaveProperty(
       "context_budget_decision_input_tokens",
     );
+  });
+});
+
+describe("annotation image composition diagnostics", () => {
+  const IMAGE_CANARY = "PRIVATE_IMAGE_CANARY";
+  const textPart = { type: "text", text: ANNOTATION_CANARY };
+  const imagePart = (url: string) => ({
+    type: "image_url",
+    image_url: { url },
+  });
+  const file = (content?: unknown) => ({
+    type: "file",
+    file: { hash: "synthetic-hash", name: `${ANNOTATION_CANARY}.pdf`, content },
+  });
+  const run = (attached: unknown[]) => {
+    const countTokens = jest.fn(() => 77);
+    const result = buildContextBudgetProjectionDiagnostics({
+      ...base,
+      preparedMessages: preparedWith(attached),
+      attachedFileAnnotations: attached,
+      countTokens,
+    });
+    return { result, countTokens };
+  };
+  const expectNoImageCounts = (result: object) => {
+    expect(result).not.toHaveProperty(
+      "context_budget_annotation_image_part_count",
+    );
+    expect(result).not.toHaveProperty(
+      "context_budget_annotation_image_url_chars",
+    );
+  };
+
+  it("aggregates image URL parts across files without reading text or URLs", () => {
+    const attached = [
+      file([textPart, imagePart(`data:image/png;base64,${IMAGE_CANARY}`)]),
+      file([imagePart("https://img.example/\u{1F600}"), textPart]),
+      file([textPart]),
+      file(),
+    ];
+    const prepared = preparedWith(attached);
+    const snapshot = JSON.parse(JSON.stringify(prepared));
+    const countTokens = jest.fn(() => 77);
+
+    const result = buildContextBudgetProjectionDiagnostics({
+      ...base,
+      preparedMessages: prepared,
+      attachedFileAnnotations: attached,
+      countTokens,
+    });
+
+    expect(result).toMatchObject({
+      context_budget_annotation_image_diagnostic_version: 1,
+      context_budget_annotation_image_status: "measured",
+      context_budget_annotation_image_part_count: 2,
+      // 42 + 22 UTF-16 code units; the emoji is two units (four UTF-8 bytes).
+      context_budget_annotation_image_url_chars: 64,
+      // The existing group is unchanged and tokenizes exactly once.
+      context_budget_without_file_annotations_status: "measured",
+      context_budget_without_file_annotations_message_tokens: 77,
+      context_budget_file_annotation_count: 4,
+    });
+    expect(countTokens).toHaveBeenCalledTimes(1);
+    expect(prepared).toEqual(snapshot);
+    expect(
+      (prepared[3].providerOptions?.openrouter as { annotations?: unknown })
+        .annotations,
+    ).toBe(attached);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(IMAGE_CANARY);
+    expect(serialized).not.toContain(ANNOTATION_CANARY);
+    expect(serialized).not.toContain("img.example");
+  });
+
+  describe("shared batch bounds", () => {
+    const halfUrl = "x".repeat(
+      CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_URL_CHARS / 2,
+    );
+    const partsPerFile =
+      CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_CONTENT_PARTS /
+      CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS;
+    // Every file is far below each limit; only the whole batch reaches them,
+    // with the first image already counted before any later overflow.
+    const atSharedLimits = ({
+      extraAnnotation = false,
+      extraPart = false,
+      extraChar = false,
+    } = {}) => {
+      const batch = Array.from(
+        { length: CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_ANNOTATIONS },
+        () => {
+          const content: unknown[] = Array(partsPerFile).fill(textPart);
+          return file(content) as { file: { content: unknown[] } };
+        },
+      );
+      const last = batch[batch.length - 1].file.content;
+      batch[0].file.content[0] = imagePart(halfUrl);
+      last[0] = imagePart(extraChar ? `${halfUrl}x` : halfUrl);
+      if (extraPart) last.push(textPart);
+      if (extraAnnotation) batch.push(file([]) as never);
+      return batch;
+    };
+
+    it("measures a batch exactly at every shared limit", () => {
+      const { result } = run(atSharedLimits());
+      expect(result).toMatchObject({
+        context_budget_annotation_image_status: "measured",
+        context_budget_annotation_image_part_count: 2,
+        context_budget_annotation_image_url_chars:
+          CONTEXT_BUDGET_ANNOTATION_IMAGE_MAX_URL_CHARS,
+      });
+    });
+
+    it.each([
+      ["annotation count", { extraAnnotation: true }],
+      ["total content parts", { extraPart: true }],
+      ["total image URL characters", { extraChar: true }],
+    ])(
+      "reports size_cap without partial counts when the batch exceeds the %s",
+      (_case, overflow) => {
+        const { result, countTokens } = run(atSharedLimits(overflow));
+        expect(result.context_budget_annotation_image_status).toBe("size_cap");
+        expectNoImageCounts(result);
+        expect(result.context_budget_without_file_annotations_status).toBe(
+          "measured",
+        );
+        expect(countTokens).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
+  const throwingGetter = (target: object, key: string) =>
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      get() {
+        throw new Error(ANNOTATION_CANARY);
+      },
+    });
+
+  it.each([
+    ["a non-object annotation", () => null],
+    [
+      "a non-file annotation",
+      () => ({ type: "url_citation", url_citation: { url: IMAGE_CANARY } }),
+    ],
+    ["a file annotation without file metadata", () => ({ type: "file" })],
+    ["non-array content", () => file(IMAGE_CANARY)],
+    ["a null content part", () => file([null])],
+    [
+      "an unknown content part type",
+      () =>
+        file([{ type: "input_audio", input_audio: { data: IMAGE_CANARY } }]),
+    ],
+    [
+      "an image part without a string URL",
+      () => file([{ type: "image_url", image_url: { url: 42 } }]),
+    ],
+    [
+      "a throwing content getter",
+      () => {
+        const annotation = file();
+        throwingGetter(annotation.file, "content");
+        return annotation;
+      },
+    ],
+    ["a throwing part type getter", () => file([throwingGetter({}, "type")])],
+  ])(
+    "reports unavailable instead of a misleading count for %s",
+    (_case, malformed) => {
+      // A valid image is counted first, so a partial result would be non-zero.
+      const attached = [file([imagePart(IMAGE_CANARY)]), malformed()];
+      const { result, countTokens } = run(attached);
+      expect(result.context_budget_annotation_image_status).toBe("unavailable");
+      expectNoImageCounts(result);
+      // The independent existing group is still reported in full.
+      expect(result).toMatchObject({
+        context_budget_without_file_annotations_status: "measured",
+        context_budget_without_file_annotations_message_tokens: 77,
+        context_budget_file_annotation_count: 2,
+      });
+      expect(countTokens).toHaveBeenCalledTimes(1);
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain(IMAGE_CANARY);
+      expect(serialized).not.toContain(ANNOTATION_CANARY);
+    },
+  );
+
+  it("reports unavailable when resolving the attached target throws", () => {
+    const attached = [file([imagePart(IMAGE_CANARY)])];
+    const prepared = preparedWith(attached);
+    throwingGetter(prepared[3], "providerOptions");
+    const result = buildContextBudgetProjectionDiagnostics({
+      ...base,
+      preparedMessages: prepared,
+      attachedFileAnnotations: attached,
+      countTokens: () => 1,
+    });
+    expect(result.context_budget_annotation_image_status).toBe("unavailable");
+    expectNoImageCounts(result);
+    expect(JSON.stringify(result)).not.toContain(ANNOTATION_CANARY);
   });
 });
