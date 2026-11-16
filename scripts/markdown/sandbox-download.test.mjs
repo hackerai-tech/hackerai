@@ -7,6 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const requireFromRoot = createRequire(join(root, "package.json"));
+// Reuse the DOM parser supplied by the installed Jest browser environment.
+const { JSDOM } = createRequire(
+  requireFromRoot.resolve("jest-environment-jsdom/package.json"),
+)("jsdom");
 // tsx already depends on esbuild; reuse it rather than adding a dependency.
 const esbuild = createRequire(requireFromRoot.resolve("tsx/package.json"))(
   "esbuild",
@@ -274,20 +278,22 @@ test("each Markdown block gets its own direction and code stays LTR", () => {
   assert.deepEqual(bidiControls, []);
 });
 
-const paragraphs = (html) =>
-  [...html.matchAll(/<p\b([^>]*)>([\s\S]*?)<\/p>/g)].map(
-    ([, attributeText, inner]) => ({
-      dir: attributes(attributeText).dir,
-      inner,
-      text: inner.replace(/<[^>]+>/g, ""),
-      isolates: [...inner.matchAll(/<bdi\b([^>]*)>([^<]*)<\/bdi>/g)].map(
-        ([, isolateAttributes, path]) => [
-          attributes(isolateAttributes).dir,
-          path,
-        ],
-      ),
-    }),
-  );
+const paragraphs = (html) => {
+  const dom = new JSDOM(html);
+  try {
+    return [...dom.window.document.querySelectorAll("p")].map((paragraph) => ({
+      dir: paragraph.getAttribute("dir") ?? undefined,
+      inner: paragraph.innerHTML,
+      text: paragraph.textContent,
+      isolates: [...paragraph.querySelectorAll("bdi")].map((isolate) => [
+        isolate.getAttribute("dir"),
+        isolate.textContent,
+      ]),
+    }));
+  } finally {
+    dom.window.close();
+  }
+};
 
 // In right-to-left prose a bare path's leading slash otherwise renders at the
 // far end of the path (observed in the app as `var/log/…json/`).
