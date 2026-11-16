@@ -18,6 +18,7 @@ import {
   readNativeAuthorizationIo,
   readNativeAuthorizationMitigation,
   readNativeAuthorizationResponse,
+  readNativeAuthorizationResponseRead,
   readNativeAuthorizationTransport,
   type NativeAuthorizationCauseDiagnostic,
   type NativeAuthorizationConnectorDiagnostic,
@@ -25,6 +26,7 @@ import {
   type NativeAuthorizationIoDiagnostic,
   type NativeAuthorizationMitigationDiagnostic,
   type NativeAuthorizationResponseDiagnostic,
+  type NativeAuthorizationResponseReadDiagnostic,
   type NativeAuthorizationTransportDiagnostic,
 } from "./native-authorization-diagnostics";
 import {
@@ -57,6 +59,9 @@ type DesktopAckSettlement = Readonly<AcknowledgedCommandSettlement> & {
   nativeAuthorizationResponse?: NativeAuthorizationResponseDiagnostic;
   /** Same response's mitigation marker; only joined to a valid response. */
   nativeAuthorizationMitigation?: NativeAuthorizationMitigationDiagnostic;
+  /** Same response's failed JSON read; only joined to a valid `json_error`
+   * response. */
+  nativeAuthorizationResponseRead?: NativeAuthorizationResponseReadDiagnostic;
   /** Same invocation's first terminal error source; only for a terminal error. */
   terminalError?: DesktopTerminalErrorDiagnostic;
 };
@@ -315,6 +320,11 @@ export class DesktopAckTelemetry {
             result.nativeAuthorizationMitigation,
           )
         : null;
+      const nativeAuthorizationResponseRead =
+        readNativeAuthorizationResponseRead(
+          result.nativeAuthorizationResponseRead,
+          nativeAuthorizationResponse,
+        );
       const terminalError =
         result.terminalType === "error"
           ? readDesktopTerminalErrorDiagnostic(result.terminalError)
@@ -359,6 +369,7 @@ export class DesktopAckTelemetry {
           ...nativeAuthorizationConnector,
           ...nativeAuthorizationResponse,
           ...nativeAuthorizationMitigation,
+          ...nativeAuthorizationResponseRead,
           ...terminalError,
         },
         dedupeKey,

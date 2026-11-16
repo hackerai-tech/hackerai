@@ -14,10 +14,16 @@
 //! closed class of the same response's `x-vercel-mitigated` header. The value
 //! is compared against exact literals and never copied; a matching literal is
 //! an observed marker, not an authenticated provider decision.
+//!
+//! A separate read snapshot, only for its own observer, holds a closed kind of
+//! the existing JSON read's error and the extent of one bounded typed walk of
+//! that error's sources. The kind needs positive typed evidence; it never
+//! formats the error or holds its text, the body, a position or a type name.
 
+use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::authorization_send_diagnostics::OriginClass;
+use crate::authorization_send_diagnostics::{OriginClass, MAX_SOURCE_LINKS};
 
 /// The original fixed public errors, unchanged.
 const NOT_AUTHORIZED: &str = "Desktop operation was not authorized";
@@ -111,6 +117,95 @@ pub struct ResponseMitigationReceipt {
     mitigation: Mitigation,
 }
 
+/// Why the existing JSON read of a 2xx body failed, from typed evidence only.
+/// A class of the reported error, not the customer's physical cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseReadKind {
+    /// reqwest's public `is_timeout` on the original error.
+    Timeout,
+    /// A nested `reqwest::Error` whose `is_body` is true: body collection
+    /// failed. The outer error's `is_decode` covers both stages and is unused.
+    BodyRead,
+    SerdeEof,
+    SerdeSyntax,
+    SerdeData,
+    SerdeIo,
+    /// No typed witness within the walked links, which is not a cause.
+    Unclassified,
+}
+
+/// Sent on its own optional channel so the response receipts' shapes are
+/// frozen. `source_depth` counts the walked sources, excluding the error
+/// itself; it is neither the witness's nor the physical depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseReadSnapshot {
+    version: u8,
+    kind: ResponseReadKind,
+    source_depth: u8,
+    /// Another link existed beyond the last one walked.
+    source_chain_truncated: bool,
+}
+
+fn serde_kind(error: &serde_json::Error) -> ResponseReadKind {
+    use serde_json::error::Category;
+    match error.classify() {
+        Category::Eof => ResponseReadKind::SerdeEof,
+        Category::Syntax => ResponseReadKind::SerdeSyntax,
+        Category::Data => ResponseReadKind::SerdeData,
+        Category::Io => ResponseReadKind::SerdeIo,
+    }
+}
+
+/// Walks at most `MAX_SOURCE_LINKS` sources of `error` (not `error` itself),
+/// keeping the nearest typed witness: a `serde_json::Error`'s category or a
+/// nested reqwest body error. Only `source`, `downcast_ref`, `classify` and
+/// `is_body` are called: never `Display`, `Debug` or any other accessor. A
+/// `timeout` comes first, but like any kind it needs at least one walked link.
+fn read_snapshot(error: &(dyn Error + 'static), timeout: bool) -> ResponseReadSnapshot {
+    let mut witness = None;
+    let mut source_depth = 0;
+    let mut source_chain_truncated = false;
+    let mut source = error.source();
+    while let Some(link) = source {
+        if source_depth == MAX_SOURCE_LINKS {
+            source_chain_truncated = true;
+            break;
+        }
+        source_depth += 1;
+        if witness.is_none() {
+            if let Some(parser) = link.downcast_ref::<serde_json::Error>() {
+                witness = Some(serde_kind(parser));
+            } else if link
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_body)
+            {
+                witness = Some(ResponseReadKind::BodyRead);
+            }
+        }
+        source = link.source();
+    }
+    let kind = match (source_depth, timeout, witness) {
+        (0, _, _) => ResponseReadKind::Unclassified,
+        (_, true, _) => ResponseReadKind::Timeout,
+        (_, false, witness) => witness.unwrap_or(ResponseReadKind::Unclassified),
+    };
+    ResponseReadSnapshot {
+        version: 1,
+        kind,
+        source_depth,
+        source_chain_truncated,
+    }
+}
+
+/// Only for the original error of the existing JSON read. reqwest's public
+/// `is_timeout` walks reqwest's own sources separately from, and is not
+/// bounded by, `read_snapshot`'s walk.
+fn json_read_snapshot(error: &reqwest::Error) -> ResponseReadSnapshot {
+    read_snapshot(error, error.is_timeout())
+}
+
 fn read_mitigation(headers: &reqwest::header::HeaderMap) -> Mitigation {
     let mut values = headers.get_all(MITIGATION_HEADER).iter();
     let Some(value) = values.next() else {
@@ -191,17 +286,21 @@ fn read_request_id(headers: &reqwest::header::HeaderMap) -> (RequestIdShape, Opt
 /// result. A non-2xx response's body is never read.
 ///
 /// Only a rejection is reported, once, with both receipts, before its error is
-/// returned; an approved response has none. The observer cannot retry, delay beyond
-/// its own call or change the result. Panic containment applies to unwinding
-/// builds only; release builds abort, so the production observer must not
-/// panic (it ignores channel send failures).
-pub async fn observed_approval<F>(
+/// returned; an approved response has none. Only a failed JSON read is
+/// reported to `read_observer`, once, after them; its error is inspected only
+/// when that observer exists, and only while borrowed. Neither observer can
+/// retry, delay beyond its own call or change the result. Panic containment
+/// applies to unwinding builds only; release builds abort, so production
+/// observers must not panic (they ignore channel send failures).
+pub async fn observed_approval<F, G>(
     response: reqwest::Response,
     origin_class: OriginClass,
     observer: Option<F>,
+    read_observer: Option<G>,
 ) -> Result<(), String>
 where
     F: FnOnce(ResponseRejectionReceipt, ResponseMitigationReceipt),
+    G: FnOnce(ResponseReadSnapshot),
 {
     let status = response.status();
     // Read before the body consumes the response, and only for an observer.
@@ -211,11 +310,17 @@ where
             read_mitigation(response.headers()),
         )
     });
+    let mut read = None;
     let (approval, error) = if !status.is_success() {
         (Approval::NotChecked, NOT_AUTHORIZED)
     } else {
         match response.json::<serde_json::Value>().await {
-            Err(_) => (Approval::JsonError, INVALID_RESPONSE),
+            Err(read_error) => {
+                if read_observer.is_some() {
+                    read = Some(json_read_snapshot(&read_error));
+                }
+                (Approval::JsonError, INVALID_RESPONSE)
+            }
             Ok(body) => match body.get("approved") {
                 Some(serde_json::Value::Bool(true)) => return Ok(()),
                 Some(serde_json::Value::Bool(false)) => (Approval::ApprovedFalse, NOT_AUTHORIZED),
@@ -245,6 +350,9 @@ where
             };
             let _ = catch_unwind(AssertUnwindSafe(|| observer(receipt, mitigation)));
         }
+    }
+    if let (Some(read_observer), Some(snapshot)) = (read_observer, read) {
+        let _ = catch_unwind(AssertUnwindSafe(|| read_observer(snapshot)));
     }
     Err(error.to_string())
 }
@@ -316,8 +424,14 @@ mod tests {
 
     /// The native request's client: one POST, no redirects, the 8s budget.
     async fn answered(url: &str) -> reqwest::Response {
+        answered_within(url, Duration::from_secs(8)).await
+    }
+
+    /// The same client with a shorter total budget, only so a held body's
+    /// timeout is observed quickly; production keeps 8s.
+    async fn answered_within(url: &str, budget: Duration) -> reqwest::Response {
         reqwest::Client::builder()
-            .timeout(Duration::from_secs(8))
+            .timeout(budget)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
@@ -343,23 +457,58 @@ mod tests {
         })
     }
 
-    /// Runs the check once with a recorder, bounded well below the client's
-    /// 8s budget so a body read on a held connection fails the test.
-    async fn check_observed(
+    const NO_READ: Option<fn(ResponseReadSnapshot)> = None;
+
+    /// Runs the check once with both recorders, bounded well below the
+    /// client's 8s budget so a body read on a held connection fails the test.
+    async fn check_read(
         response: Vec<u8>,
         hold: bool,
-    ) -> (Result<(), String>, Vec<Observation>, usize) {
+        budget: Duration,
+    ) -> (
+        Result<(), String>,
+        Vec<Observation>,
+        Vec<ResponseReadSnapshot>,
+        usize,
+    ) {
         let (url, posts) = serve(response, hold).await;
         let (receipts, observer) = recorder();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let recorded = reads.clone();
+        let read_observer =
+            move |snapshot: ResponseReadSnapshot| recorded.lock().unwrap().push(snapshot);
         let result = tokio::time::timeout(Duration::from_secs(3), async {
-            observed_approval(answered(&url).await, OriginClass::Localhost, Some(observer)).await
+            observed_approval(
+                answered_within(&url, budget).await,
+                OriginClass::Localhost,
+                Some(observer),
+                Some(read_observer),
+            )
+            .await
         })
         .await
         .expect("the approval check never waits for an unread body");
         // Give an unexpected retry or redirect time to arrive before counting.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let receipts = receipts.lock().unwrap().clone();
-        (result, receipts, posts.load(Ordering::SeqCst))
+        let reads = reads.lock().unwrap().clone();
+        (result, receipts, reads, posts.load(Ordering::SeqCst))
+    }
+
+    /// Every case also requests a read snapshot: only a failed JSON read, and
+    /// never an approval, unread non-2xx or decoded rejection, reports one.
+    async fn check_observed(
+        response: Vec<u8>,
+        hold: bool,
+    ) -> (Result<(), String>, Vec<Observation>, usize) {
+        let (result, receipts, reads, posts) =
+            check_read(response, hold, Duration::from_secs(8)).await;
+        let json_errors = receipts
+            .iter()
+            .filter(|(receipt, _)| receipt.approval == Approval::JsonError)
+            .count();
+        assert_eq!(reads.len(), json_errors, "{receipts:?}");
+        (result, receipts, posts)
     }
 
     async fn check(
@@ -441,29 +590,324 @@ mod tests {
         assert_eq!(receipts[0].request_id, None);
     }
 
+    /// A 200 whose declared body is only partly sent before the server closes
+    /// (`hold` false) or keeps the connection open (`hold` true).
+    fn truncated_ok() -> Vec<u8> {
+        format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n{{\"approved\":true,\"{PRIVATE}\":1").into_bytes()
+    }
+
     #[tokio::test]
     async fn unreadable_or_undecodable_success_bodies_keep_the_original_error() {
         // A truncated body is a read failure, not malformed JSON; both share
-        // the one closed class and the original error.
-        let truncated = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: 4096\r\n\r\n{\"approved\":true";
-        for response in [
-            json("200 OK", &[], &format!("not json {PRIVATE}")),
-            json("200 OK", &[], ""),
-            http("200 OK", &["content-type: text/html"], "<html>"),
-            truncated.to_vec(),
+        // the one closed approval class and the original error, and only the
+        // separate read snapshot tells them apart from typed evidence.
+        let eight = Duration::from_secs(8);
+        for (response, hold, budget, kind) in [
+            // Complete HTTP bodies the parser rejects.
+            (
+                json("200 OK", &[], r#"{"approved":true"#),
+                false,
+                eight,
+                ResponseReadKind::SerdeEof,
+            ),
+            (
+                json("200 OK", &[], ""),
+                false,
+                eight,
+                ResponseReadKind::SerdeEof,
+            ),
+            (
+                json("200 OK", &[], &format!("not json {PRIVATE}")),
+                false,
+                eight,
+                ResponseReadKind::SerdeSyntax,
+            ),
+            (
+                http("200 OK", &["content-type: text/html"], "<html>"),
+                false,
+                eight,
+                ResponseReadKind::SerdeSyntax,
+            ),
+            // The same incomplete JSON, but the HTTP body itself ends early.
+            (truncated_ok(), false, eight, ResponseReadKind::BodyRead),
+            // A held body reaches the client's total deadline.
+            (
+                truncated_ok(),
+                true,
+                Duration::from_millis(300),
+                ResponseReadKind::Timeout,
+            ),
         ] {
-            let (result, receipts, posts) = check(response, false).await;
-            assert_eq!(result, Err(INVALID_RESPONSE.to_string()));
-            assert_eq!(posts, 1);
-            assert_eq!(receipts.len(), 1);
+            let (result, observed, reads, posts) = check_read(response, hold, budget).await;
+            println!("observed read snapshot: {reads:?}");
+            assert_eq!(result, Err(INVALID_RESPONSE.to_string()), "{kind:?}");
+            assert_eq!(posts, 1, "{kind:?}");
+            assert_eq!(observed.len(), 1, "{kind:?}");
+            let receipt = &observed[0].0;
             assert_eq!(
-                (receipts[0].http_status, receipts[0].approval),
+                (receipt.http_status, receipt.approval),
                 (200, Approval::JsonError)
             );
-            assert!(!serde_json::to_string(&receipts[0])
-                .unwrap()
-                .contains(PRIVATE));
+            assert_eq!(reads.len(), 1, "{kind:?}");
+            let read = reads[0];
+            assert_eq!(read.kind, kind);
+            assert!(
+                (1..=MAX_SOURCE_LINKS).contains(&read.source_depth),
+                "{read:?}"
+            );
+            assert!(!read.source_chain_truncated, "{read:?}");
+            if matches!(
+                kind,
+                ResponseReadKind::SerdeEof | ResponseReadKind::SerdeSyntax
+            ) {
+                // reqwest's decode error directly wraps the parser's error.
+                assert_eq!(read.source_depth, 1);
+            }
+            for serialized in [
+                serde_json::to_string(receipt).unwrap(),
+                serde_json::to_string(&read).unwrap(),
+            ] {
+                assert!(!serialized.contains(PRIVATE));
+                assert!(!serialized.contains("127.0.0.1"));
+                assert!(!serialized.contains("synthetic"));
+            }
+
+            // A fresh request afterwards is approved normally, with no snapshot.
+            let (result, observed, reads, posts) =
+                check_read(json("200 OK", &[], r#"{"approved":true}"#), false, eight).await;
+            assert_eq!(result, Ok(()));
+            assert!(observed.is_empty() && reads.is_empty());
+            assert_eq!(posts, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn the_read_snapshot_serializes_only_its_closed_schema() {
+        let (_, _, reads, _) = check_read(
+            json("200 OK", &[], &format!(r#"{{"{PRIVATE}":"#)),
+            false,
+            Duration::from_secs(8),
+        )
+        .await;
+        assert_eq!(
+            serde_json::to_value(reads[0]).unwrap(),
+            serde_json::json!({
+                "version": 1,
+                "kind": "serde_eof",
+                "sourceDepth": 1,
+                "sourceChainTruncated": false,
+            })
+        );
+        for (kind, wire) in [
+            (ResponseReadKind::Timeout, "timeout"),
+            (ResponseReadKind::BodyRead, "body_read"),
+            (ResponseReadKind::SerdeEof, "serde_eof"),
+            (ResponseReadKind::SerdeSyntax, "serde_syntax"),
+            (ResponseReadKind::SerdeData, "serde_data"),
+            (ResponseReadKind::SerdeIo, "serde_io"),
+            (ResponseReadKind::Unclassified, "unclassified"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), wire);
+        }
+    }
+
+    /// An opaque link whose formatting fails the test: the walk only ever
+    /// borrows sources and downcasts them.
+    struct Opaque(Option<Box<dyn Error>>);
+
+    impl std::fmt::Display for Opaque {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("an error was formatted")
+        }
+    }
+
+    impl std::fmt::Debug for Opaque {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("an error was formatted")
+        }
+    }
+
+    impl Error for Opaque {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.0.as_deref()
+        }
+    }
+
+    /// A root whose sources are `links` opaque links, then `tail`.
+    fn wrapped(links: usize, tail: Option<Box<dyn Error>>) -> Opaque {
+        let mut next = tail;
+        for _ in 0..links {
+            next = Some(Box::new(Opaque(next)));
+        }
+        Opaque(next)
+    }
+
+    /// Every link is its own source; it is also never formatted.
+    struct Cycle;
+
+    impl std::fmt::Display for Cycle {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("an error was formatted")
+        }
+    }
+
+    impl std::fmt::Debug for Cycle {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("an error was formatted")
+        }
+    }
+
+    impl Error for Cycle {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(self)
+        }
+    }
+
+    struct FailingReader;
+
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::ConnectionReset.into())
+        }
+    }
+
+    fn snapshot(kind: ResponseReadKind, depth: u8, truncated: bool) -> ResponseReadSnapshot {
+        ResponseReadSnapshot {
+            version: 1,
+            kind,
+            source_depth: depth,
+            source_chain_truncated: truncated,
+        }
+    }
+
+    fn parser_error(category: serde_json::error::Category) -> Box<dyn Error> {
+        use serde_json::error::Category;
+        let error = match category {
+            Category::Eof => serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err(),
+            Category::Syntax => serde_json::from_slice::<serde_json::Value>(b"x").unwrap_err(),
+            Category::Data => serde_json::from_slice::<bool>(b"1").unwrap_err(),
+            Category::Io => {
+                serde_json::from_reader::<_, serde_json::Value>(FailingReader).unwrap_err()
+            }
+        };
+        assert_eq!(error.classify(), category);
+        Box::new(error)
+    }
+
+    /// The bounded typed walk alone, on synthetic chains. reqwest's unbounded
+    /// `is_timeout` is never called on them; `timeout` is supplied directly.
+    /// Data and IO parser categories are classified here only as typed
+    /// errors; they are not claimed as outcomes of the native `Value` read.
+    #[test]
+    fn the_typed_walk_is_bounded_and_needs_positive_evidence() {
+        use serde_json::error::Category;
+        use ResponseReadKind::*;
+        for (category, kind) in [
+            (Category::Eof, SerdeEof),
+            (Category::Syntax, SerdeSyntax),
+            (Category::Data, SerdeData),
+            (Category::Io, SerdeIo),
+        ] {
+            let chain = wrapped(0, Some(parser_error(category)));
+            assert_eq!(read_snapshot(&chain, false), snapshot(kind, 1, false));
+            // The nearest witness at the last walked link is still classified.
+            let chain = wrapped(7, Some(parser_error(category)));
+            assert_eq!(read_snapshot(&chain, false), snapshot(kind, 8, false));
+            // One link further, it is beyond the budget and never guessed.
+            let chain = wrapped(8, Some(parser_error(category)));
+            assert_eq!(
+                read_snapshot(&chain, false),
+                snapshot(Unclassified, 8, true)
+            );
+            // A timeout comes first, whatever the walk witnessed.
+            let chain = wrapped(2, Some(parser_error(category)));
+            assert_eq!(read_snapshot(&chain, true), snapshot(Timeout, 3, false));
+        }
+        // No witness is not a body failure, however deep the chain.
+        assert_eq!(
+            read_snapshot(&wrapped(0, None), false),
+            snapshot(Unclassified, 0, false)
+        );
+        assert_eq!(
+            read_snapshot(&wrapped(3, None), false),
+            snapshot(Unclassified, 3, false)
+        );
+        assert_eq!(
+            read_snapshot(&wrapped(8, None), false),
+            snapshot(Unclassified, 8, false)
+        );
+        assert_eq!(
+            read_snapshot(&wrapped(9, None), false),
+            snapshot(Unclassified, 8, true)
+        );
+        // A positive kind needs a walked link, even with a timeout.
+        assert_eq!(
+            read_snapshot(&wrapped(0, None), true),
+            snapshot(Unclassified, 0, false)
+        );
+        // A cycle ends at the budget.
+        assert_eq!(
+            read_snapshot(&Cycle, false),
+            snapshot(Unclassified, 8, true)
+        );
+        assert_eq!(read_snapshot(&Cycle, true), snapshot(Timeout, 8, true));
+        let cyclic_tail = wrapped(3, Some(Box::new(Cycle)));
+        assert_eq!(
+            read_snapshot(&cyclic_tail, false),
+            snapshot(Unclassified, 8, true)
+        );
+        // The exact closed wire of a truncated walk.
+        assert_eq!(
+            serde_json::to_value(read_snapshot(&Cycle, false)).unwrap(),
+            serde_json::json!({
+                "version": 1,
+                "kind": "unclassified",
+                "sourceDepth": 8,
+                "sourceChainTruncated": true,
+            })
+        );
+    }
+
+    /// The original error of a direct JSON read of an actual loopback response.
+    async fn json_read_error(response: Vec<u8>, hold: bool, budget: Duration) -> reqwest::Error {
+        let (url, _) = serve(response, hold).await;
+        answered_within(&url, budget)
+            .await
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn actual_reqwest_witnesses_are_found_behind_opaque_wrappers() {
+        let eight = Duration::from_secs(8);
+        // The outer decode predicate covers both stages, so it is unused.
+        let body = json_read_error(truncated_ok(), false, eight).await;
+        let parser = json_read_error(json("200 OK", &[], "{"), false, eight).await;
+        assert!(body.is_decode() && parser.is_decode());
+        assert!(!body.is_timeout() && !parser.is_timeout());
+        let body_depth = json_read_snapshot(&body).source_depth;
+        // Behind two opaque links, a nested body error is the nearest witness
+        // even though deeper transport links follow it.
+        let chain = wrapped(2, Some(Box::new(body)));
+        let behind = read_snapshot(&chain, false);
+        assert_eq!(behind.kind, ResponseReadKind::BodyRead);
+        assert_eq!(
+            behind.source_depth,
+            (body_depth + 3).min(MAX_SOURCE_LINKS),
+            "{behind:?}"
+        );
+        let chain = wrapped(1, Some(Box::new(parser)));
+        assert_eq!(
+            read_snapshot(&chain, false),
+            snapshot(ResponseReadKind::SerdeEof, 3, false)
+        );
+        // A held body's genuine timeout error also carries a nested body
+        // witness: only reqwest's trusted predicate puts the timeout first.
+        let held = json_read_error(truncated_ok(), true, Duration::from_millis(300)).await;
+        assert!(held.is_timeout());
+        assert_eq!(json_read_snapshot(&held).kind, ResponseReadKind::Timeout);
+        assert_eq!(read_snapshot(&held, false).kind, ResponseReadKind::BodyRead);
     }
 
     #[tokio::test]
@@ -688,6 +1132,7 @@ mod tests {
                     panic!("observer failure")
                 },
             ),
+            NO_READ,
         )
         .await;
         assert_eq!(panicking, Err(NOT_AUTHORIZED.to_string()));
@@ -704,6 +1149,7 @@ mod tests {
                 let _ = sender.send(receipt);
                 let _ = mitigation_sender.send(mitigation);
             }),
+            NO_READ,
         )
         .await;
         assert_eq!(closed, Err(NOT_AUTHORIZED.to_string()));
@@ -712,13 +1158,14 @@ mod tests {
             answered(&url).await,
             OriginClass::Localhost,
             None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
+            NO_READ,
         )
         .await;
         assert_eq!(direct, Err(NOT_AUTHORIZED.to_string()));
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(posts.load(Ordering::SeqCst), 3);
 
-        // Without an observer, every class keeps its original result.
+        // Without observers, every class keeps its original result.
         for (response, expected) in [
             (json("200 OK", &[], r#"{"approved":true}"#), Ok(())),
             (json("200 OK", &[], "{"), Err(INVALID_RESPONSE.to_string())),
@@ -732,10 +1179,55 @@ mod tests {
                 answered(&url).await,
                 OriginClass::Localhost,
                 None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
+                NO_READ,
             )
             .await;
             assert_eq!(result, expected);
         }
+
+        // A failing read observer, alone or beside the response observer,
+        // keeps the original JSON error and its single POST.
+        let (url, posts) = serve(json("200 OK", &[], "{"), false).await;
+        let (receipts, observer) = recorder();
+        let panicking_read = observed_approval(
+            answered(&url).await,
+            OriginClass::Localhost,
+            Some(observer),
+            Some(|_: ResponseReadSnapshot| panic!("read observer failure")),
+        )
+        .await;
+        assert_eq!(panicking_read, Err(INVALID_RESPONSE.to_string()));
+        assert_eq!(receipts.lock().unwrap()[0].0.approval, Approval::JsonError);
+        let (read_sender, read_receiver) = std::sync::mpsc::channel();
+        drop(read_receiver);
+        let closed_read = observed_approval(
+            answered(&url).await,
+            OriginClass::Localhost,
+            None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
+            Some(move |snapshot| {
+                let _ = read_sender.send(snapshot);
+            }),
+        )
+        .await;
+        assert_eq!(closed_read, Err(INVALID_RESPONSE.to_string()));
+        // The read observer alone still receives its snapshot.
+        let (read_sender, read_receiver) = std::sync::mpsc::channel();
+        let read_only = observed_approval(
+            answered(&url).await,
+            OriginClass::Localhost,
+            None::<fn(ResponseRejectionReceipt, ResponseMitigationReceipt)>,
+            Some(move |snapshot| {
+                let _ = read_sender.send(snapshot);
+            }),
+        )
+        .await;
+        assert_eq!(read_only, Err(INVALID_RESPONSE.to_string()));
+        assert_eq!(
+            read_receiver.try_iter().collect::<Vec<_>>(),
+            vec![snapshot(ResponseReadKind::SerdeEof, 1, false)]
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(posts.load(Ordering::SeqCst), 3);
     }
 
     #[test]
