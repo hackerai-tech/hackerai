@@ -38,6 +38,17 @@ jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 const ensure = jest.mocked(ensureSandboxConnection);
 const read = jest.mocked(readCloudWorkspaceState);
 const available = jest.mocked(assertCloudWorkspaceAvailable);
+const network = jest.mocked(ensureCloudNetwork);
+const failedEvents = () =>
+  jest
+    .mocked(phLogger.event)
+    .mock.calls.filter(([name]) => name === "cloud_sandbox_acquisition_failed")
+    .map(([, fields]) => fields as Record<string, unknown>);
+/** Reject only the post-connect recheck, never the pre-connect admission. */
+const rejectPostConnectAvailability = (error: unknown, sandboxId = "new-e2b") =>
+  available.mockImplementation(async (_userId, id) => {
+    if (id === sandboxId) throw error;
+  });
 const recovered = {
   version: 1 as const,
   phase: "e2b" as const,
@@ -168,6 +179,7 @@ describe("E2B cloud acquisition", () => {
         fallback_used: false,
       }),
     );
+    expect(failedEvents()).toEqual([]);
   });
 
   it("does not publish a workspace whose network policy could not be applied", async () => {
@@ -458,6 +470,205 @@ describe("E2B cloud acquisition", () => {
     expect(
       JSON.stringify(jest.mocked(phLogger.event).mock.calls),
     ).not.toContain("PRIVATE_PROVIDER_DETAIL");
+    // Failed before verification began: no verification boundary is claimed.
+    expect(failedEvents()[0]).not.toHaveProperty(
+      "workspace_verification_phase",
+    );
+    expect(failedEvents()[0]).not.toHaveProperty(
+      "workspace_verification_diagnostic_version",
+    );
+  });
+
+  it("labels a workspace_verification stage callback failure without running later checks", async () => {
+    const original = new TypeError("PRIVATE_CALLBACK_DETAIL");
+    const reportStage = jest.fn((stage: string) => {
+      if (stage === "workspace_verification") throw original;
+    });
+    const publish = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: publish,
+        reportStage,
+      }),
+    ).rejects.toBe(original);
+    expect(reportStage.mock.calls[0]).toEqual(["workspace_lookup"]);
+    expect(available).toHaveBeenCalledTimes(1);
+    expect(available).not.toHaveBeenCalledWith("user-1", "new-e2b");
+    expect(network).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        acquisition_last_reported_stage: "workspace_verification",
+        workspace_verification_diagnostic_version: 1,
+        workspace_verification_phase: "stage_report",
+        cloud_sandbox_acquisition_failed_event_version: 7,
+      }),
+    ]);
+    expect(JSON.stringify(failedEvents())).not.toContain(
+      "PRIVATE_CALLBACK_DETAIL",
+    );
+  });
+
+  it("labels the post-connect availability rejection, not the network check", async () => {
+    const original = new TypeError("PRIVATE_AVAILABILITY_DETAIL");
+    rejectPostConnectAvailability(original);
+    const publish = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox: publish }),
+    ).rejects.toBe(original);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(available.mock.calls).toEqual([
+      ["user-1", undefined],
+      ["user-1", "new-e2b"],
+    ]);
+    expect(network).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        error_name: "TypeError",
+        workspace_verification_diagnostic_version: 1,
+        workspace_verification_phase: "availability_check",
+      }),
+    ]);
+    expect(JSON.stringify(failedEvents())).not.toContain(
+      "PRIVATE_AVAILABILITY_DETAIL",
+    );
+  });
+
+  it("labels a network rejection after availability succeeds with no repeated operations", async () => {
+    const original = new TypeError("PRIVATE_NETWORK_DETAIL");
+    network.mockRejectedValueOnce(original);
+    const publish = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox: publish }),
+    ).rejects.toBe(original);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(available).toHaveBeenCalledTimes(2);
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalled();
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        error_name: "TypeError",
+        workspace_verification_diagnostic_version: 1,
+        workspace_verification_phase: "network_check",
+      }),
+    ]);
+    expect(JSON.stringify(failedEvents())).not.toContain(
+      "PRIVATE_NETWORK_DETAIL",
+    );
+  });
+
+  it("labels an abort that lands after the network check as post_checks", async () => {
+    const controller = new AbortController();
+    const reason = Object.freeze({ private: "PRIVATE_LATE_ABORT" });
+    network.mockImplementationOnce(async () => {
+      controller.abort(reason);
+    });
+    const publish = jest.fn();
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: publish,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(publish).not.toHaveBeenCalled();
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        acquisition_signal_aborted: true,
+        acquisition_error_is_signal_reason: true,
+        workspace_verification_phase: "post_checks",
+      }),
+    ]);
+  });
+
+  it("labels a publication failure as post_checks and keeps the original exception", async () => {
+    const original = new TypeError("PRIVATE_PUBLISH_DETAIL");
+    const publish = jest.fn(() => {
+      throw original;
+    });
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox: publish }),
+    ).rejects.toBe(original);
+    expect(network).toHaveBeenCalledTimes(1);
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        workspace_verification_diagnostic_version: 1,
+        workspace_verification_phase: "post_checks",
+      }),
+    ]);
+  });
+
+  it("captures the verification phase before failure cleanup aborts the signal", async () => {
+    const controller = new AbortController();
+    const original = new TypeError("PRIVATE_CLEANUP_DETAIL");
+    network.mockRejectedValueOnce(original);
+    const onFailure = jest.fn(() => controller.abort(original));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox: jest.fn(),
+        signal: controller.signal,
+        context: { onFailure },
+      }),
+    ).rejects.toBe(original);
+    expect(controller.signal.aborted).toBe(true);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(failedEvents()).toEqual([
+      expect.objectContaining({
+        acquisition_signal_aborted: false,
+        acquisition_error_is_signal_reason: false,
+        acquisition_last_reported_stage: "workspace_verification",
+        workspace_verification_phase: "network_check",
+      }),
+    ]);
+    expect(JSON.stringify(failedEvents())).not.toContain(
+      "PRIVATE_CLEANUP_DETAIL",
+    );
+  });
+
+  it("keeps each overlapping acquisition's verification phase separate", async () => {
+    let releaseNetwork!: () => void;
+    const networkFailure = new TypeError("first");
+    const availabilityFailure = new TypeError("second");
+    ensure
+      .mockResolvedValueOnce({ sandbox: { sandboxId: "first-e2b" } as Sandbox })
+      .mockResolvedValueOnce({
+        sandbox: { sandboxId: "second-e2b" } as Sandbox,
+      });
+    rejectPostConnectAvailability(availabilityFailure, "second-e2b");
+    let networkEntered!: () => void;
+    const firstInNetwork = new Promise<void>((resolve) => {
+      networkEntered = resolve;
+    });
+    network.mockImplementationOnce(async () => {
+      networkEntered();
+      await new Promise<void>((resolve) => {
+        releaseNetwork = resolve;
+      });
+      throw networkFailure;
+    });
+    const first = ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox: jest.fn(),
+    }).catch((error) => error);
+    await firstInNetwork;
+    // The second acquisition advances further in source order while the
+    // first is still parked in the network check.
+    await expect(
+      ensureCloudSandboxConnection({ userId: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toBe(availabilityFailure);
+    releaseNetwork();
+    expect(await first).toBe(networkFailure);
+    const [second, firstEvent] = failedEvents();
+    expect(second).toMatchObject({
+      workspace_verification_phase: "availability_check",
+    });
+    expect(firstEvent).toMatchObject({
+      workspace_verification_phase: "network_check",
+    });
+    expect(firstEvent.acquisition_id).not.toBe(second.acquisition_id);
   });
 
   it("distinguishes an unrelated rejection while the caller signal is already aborted", async () => {
