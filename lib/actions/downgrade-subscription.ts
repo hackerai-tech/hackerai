@@ -20,7 +20,7 @@ import {
 } from "@/lib/billing/retention-offers";
 import { scheduleDowngradeAtPeriodEnd } from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { proMonthlyPricingExperimentProperties } from "@/lib/experiments/pro-monthly-pricing";
+import { proMonthlyPricingAttributionProperties } from "@/lib/experiments/pro-monthly-pricing-attribution";
 import { phLogger } from "@/lib/posthog/server";
 
 type DowngradeSubscriptionInput = {
@@ -204,7 +204,7 @@ export default async function downgradeSubscriptionAction(
     stripe_subscription_schedule_id: scheduled.scheduleId,
     stripe_price_id: subscription.priceId,
     target_stripe_price_id: downgradeTarget.priceId,
-    ...proMonthlyPricingExperimentProperties(subscription.pricingExperiment),
+    ...proMonthlyPricingAttributionProperties(subscription.pricingExperiment),
   });
 
   phLogger.event(PAID_FUNNEL_EVENTS.retentionOfferAccepted, {

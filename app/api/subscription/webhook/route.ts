@@ -56,9 +56,9 @@ import {
   subscriptionPauseFromMetadata,
 } from "@/lib/billing/retention-offers";
 import {
-  proMonthlyPricingAssignmentFromMetadata,
-  proMonthlyPricingExperimentProperties,
-} from "@/lib/experiments/pro-monthly-pricing";
+  proMonthlyPricingAttributionFromMetadata,
+  proMonthlyPricingAttributionProperties,
+} from "@/lib/experiments/pro-monthly-pricing-attribution";
 import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
@@ -809,7 +809,7 @@ function emitInvoicePaidRevenueAnalytics({
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
 
-  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+  const pricingExperiment = proMonthlyPricingAttributionFromMetadata(
     subscription.metadata,
     invoicePrice.lookup_key,
   );
@@ -856,7 +856,7 @@ function emitInvoicePaidRevenueAnalytics({
         stripe_invoice_id: invoice.id,
         stripe_price_id: invoicePrice.id,
         charged_amount_dollars: amountPaidDollars,
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        ...proMonthlyPricingAttributionProperties(pricingExperiment),
         $insert_id: `${PAID_FUNNEL_EVENTS.invoicePaid}:${stripeEventId}:${uid}`,
         $set: {
           subscription_tier: tier,
@@ -1471,7 +1471,7 @@ async function handleInvoicePaid(
     const attributedRevenueDollars =
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
     const billingInterval = priceBillingInterval(invoicePrice);
-    const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+    const pricingExperiment = proMonthlyPricingAttributionFromMetadata(
       subscription.metadata,
       invoicePrice.lookup_key,
     );
@@ -1566,7 +1566,7 @@ async function handleInvoicePaid(
         stripe_checkout_session_id: checkoutSessionId,
         stripe_price_id: invoicePrice.id,
         charged_amount_dollars: invoiceAmountPaidDollars,
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        ...proMonthlyPricingAttributionProperties(pricingExperiment),
         $set: {
           subscription_tier: tier,
           last_subscription_started_at: new Date().toISOString(),
@@ -2000,7 +2000,7 @@ async function handleSubscriptionRefund(
   const refundedTier = price?.lookup_key
     ? (planLookupKeyToTier(price.lookup_key) ?? resolved.tier)
     : resolved.tier;
-  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+  const pricingExperiment = proMonthlyPricingAttributionFromMetadata(
     resolved.subscription.metadata,
     price?.lookup_key,
   );
@@ -2086,7 +2086,7 @@ async function handleSubscriptionRefund(
         stripe_charge_id: chargeId,
         stripe_refund_id: refund.id,
         stripe_price_id: price?.id,
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        ...proMonthlyPricingAttributionProperties(pricingExperiment),
         $insert_id: `${PAID_FUNNEL_EVENTS.subscriptionRefunded}:${refund.id}:${userId}`,
       }),
     );
@@ -2165,11 +2165,11 @@ async function handleCheckoutSessionCompleted(
   const price = resolved.subscription.items?.data[0]?.price;
   const existingMetadata = resolved.subscription.metadata ?? {};
   const pricingExperiment =
-    proMonthlyPricingAssignmentFromMetadata(
+    proMonthlyPricingAttributionFromMetadata(
       existingMetadata,
       price?.lookup_key,
     ) ??
-    proMonthlyPricingAssignmentFromMetadata(
+    proMonthlyPricingAttributionFromMetadata(
       session.metadata,
       price?.lookup_key,
     );
@@ -2222,7 +2222,7 @@ async function handleCheckoutSessionCompleted(
         stripe_price_id: price?.id,
         charged_amount_dollars: centsToDollars(session.amount_total),
         payment_status: session.payment_status,
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        ...proMonthlyPricingAttributionProperties(pricingExperiment),
         $insert_id: `${PAID_FUNNEL_EVENTS.checkoutSucceeded}:${session.id}`,
         $set: {
           last_checkout_succeeded_at: new Date().toISOString(),
@@ -2448,7 +2448,7 @@ async function recordCancellationCompleted(args: {
     ? args.subscription.canceled_at * 1000
     : undefined;
   const completedAt = canceledAt ?? args.eventOccurredAtMs;
-  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+  const pricingExperiment = proMonthlyPricingAttributionFromMetadata(
     args.subscription.metadata,
     args.price?.lookup_key,
   );
@@ -2522,7 +2522,7 @@ async function recordCancellationCompleted(args: {
         stripe_customer_id: args.customerId,
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        ...proMonthlyPricingAttributionProperties(pricingExperiment),
         $insert_id: cancellationCompletionInsertId(
           args.subscription.id,
           cancellationReasonId,

@@ -21,10 +21,9 @@ import {
   type RegionalSubscriptionAssignment,
 } from "@/lib/experiments/regional-subscription-first";
 import {
-  PRO_MONTHLY_PRICE_LOOKUP_KEY,
-  type ProMonthlyPricePresentation,
-} from "@/lib/pricing/pro-monthly";
-import { PRICING } from "@/lib/pricing/config";
+  useProMonthlyPrice,
+  useProMonthlyPriceExposure,
+} from "@/app/hooks/useProMonthlyPrice";
 
 function SubscriptionOffer({
   assignment,
@@ -32,49 +31,12 @@ function SubscriptionOffer({
   assignment: RegionalSubscriptionAssignment;
 }) {
   const { handleUpgrade, upgradeLoading } = useUpgrade();
-  const [price, setPrice] = useState<ProMonthlyPricePresentation>();
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    let active = true;
-    void fetch("/api/pricing/pro-monthly-experiment", {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Price unavailable");
-        const value = await response.json();
-        if (
-          value.priceLookupKey !== PRO_MONTHLY_PRICE_LOOKUP_KEY ||
-          value.displayedAmountDollars !== PRICING.pro.monthly ||
-          value.currency !== "usd" ||
-          value.billingInterval !== "month" ||
-          typeof value.stripePriceId !== "string" ||
-          !value.stripePriceId
-        )
-          throw new Error("Invalid price");
-        if (active)
-          setPrice({
-            priceLookupKey: PRO_MONTHLY_PRICE_LOOKUP_KEY,
-            displayedAmountDollars: PRICING.pro.monthly,
-            currency: "usd",
-            billingInterval: "month",
-            stripePriceId: value.stripePriceId,
-          });
-      })
-      .catch(() => {
-        if (active) setFailed(true);
-      })
-      .finally(() => clearTimeout(timeout));
-    return () => {
-      active = false;
-      clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [attempt]);
+  const proMonthlyPrice = useProMonthlyPrice(true);
+  const quote =
+    proMonthlyPrice.status === "ready" ? proMonthlyPrice.quote : undefined;
+  const price = quote?.price;
+  const failed = proMonthlyPrice.status === "error";
+  useProMonthlyPriceExposure(quote, "composer", true);
 
   useEffect(() => {
     if (!price) return;
@@ -141,14 +103,7 @@ function SubscriptionOffer({
         </div>
         <div className="flex flex-wrap gap-2">
           {failed ? (
-            <Button
-              onClick={() => {
-                setFailed(false);
-                setAttempt((value) => value + 1);
-              }}
-            >
-              Retry pricing
-            </Button>
+            <Button onClick={proMonthlyPrice.retry}>Retry pricing</Button>
           ) : (
             <Button
               disabled={!price || upgradeLoading}
@@ -162,6 +117,7 @@ function SubscriptionOffer({
                     source: "regional_subscription_first",
                     surface: "composer",
                     reason: "subscription_required",
+                    pro_monthly_quote: quote,
                   },
                 )
               }

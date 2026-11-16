@@ -10,6 +10,11 @@ import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import { useBillingRecoveryStatus } from "../hooks/useBillingRecoveryStatus";
+import {
+  proMonthlyPriceDisplay,
+  useProMonthlyPrice,
+  useProMonthlyPriceExposure,
+} from "../hooks/useProMonthlyPrice";
 import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { navigateToAuth } from "../hooks/useTauri";
@@ -52,6 +57,11 @@ interface PlanCardProps {
   badgeClassName?: string;
   footerNote?: string;
   featureHeader?: string | null;
+  /** "From" when the account price is not known yet. */
+  pricePrefix?: string;
+  /** Holds the price's space while the account price resolves. */
+  priceLoading?: boolean;
+  priceStatus?: string;
 }
 
 type PricingIntentCopy = {
@@ -143,6 +153,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
   badgeClassName = "",
   footerNote,
   featureHeader,
+  pricePrefix,
+  priceLoading = false,
+  priceStatus,
 }) => {
   return (
     <div
@@ -162,10 +175,27 @@ const PlanCard: React.FC<PlanCardProps> = ({
               ) : null}
             </div>
           </div>
-          <div className="flex items-end gap-1.5">
+          <div className="flex items-end gap-1.5" aria-busy={priceLoading}>
+            {pricePrefix ? (
+              <span className="mb-1 text-sm text-muted-foreground">
+                {pricePrefix}
+              </span>
+            ) : null}
             <div className="flex text-foreground">
               <div className="text-2xl text-muted-foreground">$</div>
-              <div className="text-5xl">{price}</div>
+              {priceLoading ? (
+                <div className="text-5xl">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block animate-pulse rounded-md bg-muted text-transparent"
+                  >
+                    00
+                  </span>
+                  <span className="sr-only">Loading price</span>
+                </div>
+              ) : (
+                <div className="text-5xl">{price}</div>
+              )}
             </div>
             <div className="flex items-baseline gap-1.5">
               <div className="mt-auto mb-0.5 flex h-full flex-col items-start">
@@ -176,6 +206,11 @@ const PlanCard: React.FC<PlanCardProps> = ({
               </div>
             </div>
           </div>
+          {priceStatus ? (
+            <p role="status" className="-mt-3 text-xs text-muted-foreground">
+              {priceStatus}
+            </p>
+          ) : null}
         </div>
         <p className="text-foreground text-base mt-4 font-medium">
           {description}
@@ -273,6 +308,15 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     return status;
   };
   const [isYearly, setIsYearly] = React.useState(false);
+  const proMonthlyPrice = useProMonthlyPrice(isOpen && Boolean(user));
+  const proMonthlyQuote =
+    proMonthlyPrice.status === "ready" ? proMonthlyPrice.quote : undefined;
+  const proMonthlyDisplay = proMonthlyPriceDisplay(proMonthlyPrice);
+  useProMonthlyPriceExposure(
+    proMonthlyQuote,
+    "pricing_dialog",
+    isOpen && !isYearly,
+  );
   const capturedPricingCtaImpressionRef = React.useRef(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
@@ -339,6 +383,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           surface: "pricing_dialog",
           reason: context?.reason,
           limit_type: context?.limitType,
+          pro_monthly_quote: proMonthlyQuote,
         });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
@@ -450,16 +495,27 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
         variant: "secondary" as const,
       };
     } else if (user) {
+      // Monthly Pro checkout waits for the account's authoritative price.
+      if (!isYearly && proMonthlyPrice.status === "error") {
+        return {
+          text: "Retry pricing",
+          disabled: false,
+          className: "",
+          variant: "secondary" as const,
+          onClick: proMonthlyPrice.retry,
+        };
+      }
       return {
         text: pricingIntentCopy?.proButtonText ?? "Get Pro",
-        disabled: upgradeLoading || billingBlocked,
+        disabled:
+          upgradeLoading || billingBlocked || (!isYearly && !proMonthlyQuote),
         className: "",
         variant: "default" as const,
         onClick: () =>
           handleUpgradeClick(
             isYearly ? "pro-yearly-plan" : "pro-monthly-plan",
             "Pro",
-            isYearly ? PRICING.pro.yearly : PRICING.pro.monthly,
+            isYearly ? PRICING.pro.yearly : proMonthlyDisplay.price,
           ),
         loading: upgradeLoading,
       };
@@ -736,7 +792,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
               <PlanCard
                 planName="Pro"
-                price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
+                price={isYearly ? PRICING.pro.yearly : proMonthlyDisplay.price}
+                pricePrefix={isYearly ? undefined : proMonthlyDisplay.prefix}
+                priceLoading={!isYearly && Boolean(proMonthlyDisplay.loading)}
+                priceStatus={isYearly ? undefined : proMonthlyDisplay.status}
                 description={
                   pricingIntentCopy?.proDescription ??
                   "For everyday productivity"
