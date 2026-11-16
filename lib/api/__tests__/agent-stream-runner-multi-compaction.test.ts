@@ -1667,6 +1667,9 @@ describe("createAgentStream repeated compaction", () => {
 
   describe("context budget projection diagnostics", () => {
     const ANNOTATION_CANARY = "PRIVATE_ANNOTATION_CANARY";
+    const IMAGE_CANARY = "PRIVATE_IMAGE_URL_CANARY";
+    // 22 + 24 UTF-16 code units.
+    const IMAGE_URL = `data:image/png;base64,${IMAGE_CANARY}`;
     const GUARD_MESSAGE =
       "Conversation could not be compacted to fit the selected model. Please retry.";
     const threshold = getSummarizationThresholdTokens(MAX_TOKENS_PAID);
@@ -1735,6 +1738,7 @@ describe("createAgentStream repeated compaction", () => {
                       type: "text",
                       text: `${ANNOTATION_CANARY}${" word".repeat(MAX_TOKENS_PAID + 10_000)}`,
                     },
+                    { type: "image_url", image_url: { url: IMAGE_URL } },
                   ],
                 },
               },
@@ -1783,6 +1787,10 @@ describe("createAgentStream repeated compaction", () => {
         context_budget_decision_source: "rolling_check",
         context_budget_without_file_annotations_status: "measured",
         context_budget_file_annotation_count: 1,
+        context_budget_annotation_image_diagnostic_version: 1,
+        context_budget_annotation_image_status: "measured",
+        context_budget_annotation_image_part_count: 1,
+        context_budget_annotation_image_url_chars: 46,
       });
       // The existing decision measured a request below the threshold, while
       // the guard measured the same step's prepared request above the budget.
@@ -1801,6 +1809,7 @@ describe("createAgentStream repeated compaction", () => {
           warning.context_budget_system_tokens,
       ).toBeLessThan(threshold);
       expect(JSON.stringify(warn.mock.calls)).not.toContain(ANNOTATION_CANARY);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(IMAGE_CANARY);
     });
 
     it("never reports a previous step's decision or measures healthy steps", async () => {
@@ -1868,9 +1877,16 @@ describe("createAgentStream repeated compaction", () => {
         context_budget_without_file_annotations_status: "not_present",
         context_budget_without_file_annotations_message_tokens:
           warning.context_budget_prepared_message_tokens,
+        context_budget_annotation_image_status: "not_present",
       });
       expect(warning).not.toHaveProperty(
         "context_budget_file_annotation_count",
+      );
+      expect(warning).not.toHaveProperty(
+        "context_budget_annotation_image_part_count",
+      );
+      expect(warning).not.toHaveProperty(
+        "context_budget_annotation_image_url_chars",
       );
     });
   });
