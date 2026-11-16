@@ -34,6 +34,10 @@ jest.mock("next/server", () => {
 import { ConvexError } from "convex/values";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
 import { ChatSDKError } from "@/lib/errors";
+import {
+  selectedComputerOfflineError,
+  type SelectedComputerLookup,
+} from "@/lib/sandbox/selected-computer-diagnostics";
 
 describe("handleAgentRouteError", () => {
   const originalConsoleError = console.error;
@@ -518,6 +522,159 @@ describe("typed Agent service-unavailable receipts", () => {
       }),
     ).toBe(original);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("selected-computer lookup on the typed503 receipt", () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  const lookup: SelectedComputerLookup = {
+    requestedKind: "desktop_environment",
+    resolvedKind: "desktop_alias",
+    registryMatch: true,
+    quarantinedMatch: false,
+    staleMatch: true,
+    otherAvailable: false,
+    presence: "reliable",
+  };
+  const requestId = "bom1::rqd9k-1794820167388-2a61d2a33bf5";
+  const offlineCause =
+    "The selected computer is disconnected. Reconnect that computer to continue this task.";
+
+  const respond = (
+    error: unknown,
+    endpoint: string,
+    action: Parameters<typeof handleAgentRouteError>[0]["action"],
+  ) => {
+    const original = (error as ChatSDKError).toResponse();
+    jest.spyOn(error as ChatSDKError, "toResponse").mockReturnValue(original);
+    const response = handleAgentRouteError({
+      error,
+      endpoint: endpoint as any,
+      action,
+      fallbackMessage: "PRIVATE_FALLBACK",
+      context: {
+        requestId,
+        stage: "prepare_desktop_attachments",
+        userId: "PRIVATE_USER",
+        chatId: "PRIVATE_CHAT",
+      },
+    });
+    expect(response).toBe(original);
+    return response;
+  };
+
+  test.each([
+    ["/api/agent", "start"],
+    ["/api/agent-long", "status"],
+  ] as const)(
+    "adds the exact failure's server tuple on %s %s without exposing it",
+    async (endpoint, action) => {
+      const error = selectedComputerOfflineError(lookup, "acquisition");
+      const response = respond(error, endpoint, action);
+      expect(response.status).toBe(503);
+      // The client response stays the existing wire error with no tuple.
+      expect(await response.json()).toEqual({
+        code: "offline:sandbox",
+        message: offlineCause,
+        cause: offlineCause,
+      });
+      expect(error.metadata).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0])).toEqual({
+        timestamp: expect.any(String),
+        level: "warn",
+        event: "agent_route_service_unavailable",
+        service: "hackerai-web",
+        agent_route_error_diagnostic_version: 1,
+        http_status: 503,
+        endpoint,
+        action,
+        stage: "prepare_desktop_attachments",
+        error_code: "offline:sandbox",
+        request_id_kind: "vercel",
+        request_id: requestId,
+        selected_computer_diagnostic_version: 1,
+        selected_computer_failure_phase: "acquisition",
+        selected_computer_requested_kind: "desktop_environment",
+        selected_computer_resolved_kind: "desktop_alias",
+        selected_computer_registry_match: true,
+        selected_computer_quarantined_match: false,
+        selected_computer_stale_match: true,
+        selected_computer_other_available: false,
+        selected_computer_presence: "reliable",
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    },
+  );
+
+  test("reports an unavailable lookup as null facts rather than absence", () => {
+    respond(
+      selectedComputerOfflineError(undefined, "prompt_context"),
+      "/api/agent",
+      "start",
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(warn.mock.calls[0][0])).toMatchObject({
+      selected_computer_diagnostic_version: 1,
+      selected_computer_failure_phase: "prompt_context",
+      selected_computer_requested_kind: "unavailable",
+      selected_computer_resolved_kind: "unavailable",
+      selected_computer_registry_match: null,
+      selected_computer_quarantined_match: null,
+      selected_computer_stale_match: null,
+      selected_computer_other_available: null,
+      selected_computer_presence: "unavailable",
+    });
+  });
+
+  test("does not admit copied, client-supplied or wrapped tuples", () => {
+    const real = selectedComputerOfflineError(lookup, "acquisition");
+    const tuple = {
+      selected_computer_diagnostic_version: 1,
+      selected_computer_presence: "PRIVATE_SPOOF",
+    };
+    const copied = Object.assign(
+      new ChatSDKError("offline:sandbox", offlineCause, tuple),
+      tuple,
+    );
+    const wrapped = new Proxy(real, {});
+    for (const error of [copied, wrapped]) {
+      warn.mockClear();
+      expect(respond(error, "/api/agent", "start").status).toBe(503);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const fields = JSON.parse(warn.mock.calls[0][0]);
+      expect(
+        Object.keys(fields).filter((key) =>
+          key.startsWith("selected_computer"),
+        ),
+      ).toEqual([]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+    }
+  });
+
+  test.each([
+    ["/api/agent", "resume"],
+    ["/api/chat", "start"],
+  ] as const)("keeps %s %s outside the measured gate", (endpoint, action) => {
+    const error = selectedComputerOfflineError(lookup, "acquisition");
+    expect(respond(error, endpoint, action).status).toBe(503);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("returns the original response when the diagnostic sink throws", () => {
+    warn.mockImplementation(() => {
+      throw new Error("sink unavailable");
+    });
+    const error = selectedComputerOfflineError(lookup, "acquisition");
+    expect(respond(error, "/api/agent", "start").status).toBe(503);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 
