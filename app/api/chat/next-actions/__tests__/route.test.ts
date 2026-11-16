@@ -130,6 +130,7 @@ beforeEach(() => {
     unknownProviderCalls: 0,
     modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
     unavailable: false,
+    reason: "generated",
   });
 });
 
@@ -236,6 +237,7 @@ test("provider failure and a new run during generation suppress predictions", as
       unknownProviderCalls: 0,
       modelIds: [],
       unavailable: false,
+      reason: "generated",
     };
   });
   expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -315,6 +317,7 @@ test.each([
         unknownProviderCalls: 0,
         modelIds: [],
         unavailable: false,
+        reason: "generated",
       };
     });
     expect((await (await POST(request())).json()).suggestions).toEqual([]);
@@ -400,7 +403,7 @@ test("restores an older saved batch without model work or a second enrollment ev
   chat.last_run_finished_at = Date.now() - 86_400_000;
   const batch = {
     batchId: "saved",
-    validationVersion: 6,
+    validationVersion: 7,
     messageId: "answer",
     mode: "ask",
     suggestions: ["Explain the missing impact evidence."],
@@ -415,7 +418,8 @@ test("restores an older saved batch without model work or a second enrollment ev
   expect(capture).not.toHaveBeenCalled();
 });
 
-test.each([undefined, 3, 4])(
+// 6 predates delivered wait replies counting as the latest stop or resume.
+test.each([undefined, 3, 4, 6])(
   "does not restore legacy prediction version %s or make a model call",
   async (validationVersion) => {
     saved = {
@@ -454,7 +458,7 @@ test("saves the prediction version alongside new drafts", async () => {
   expect(mutation).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({
-      batch: expect.objectContaining({ validationVersion: 6 }),
+      batch: expect.objectContaining({ validationVersion: 7 }),
     }),
   );
 });
@@ -473,6 +477,8 @@ test("emits partial known spend and unknown-call coverage on unavailable generat
     unknownProviderCalls: 1,
     knownCost: 0.0001,
     cost: undefined,
+    reason: "provider_api_error",
+    httpStatus: 503,
   });
   expect(await (await POST(request())).json()).toEqual({ suggestions: [] });
   expect(capture).toHaveBeenCalledWith(
@@ -486,10 +492,69 @@ test("emits partial known spend and unknown-call coverage on unavailable generat
         provider_calls: 2,
         priced_provider_calls: 1,
         unknown_provider_calls: 1,
+        generation_diagnostic_version: 1,
+        generation_reason: "provider_api_error",
+        provider_http_status: 503,
       }),
     }),
   );
   expect(mutation).not.toHaveBeenCalled();
+});
+
+test("adds closed generation diagnostics to the existing generated event only", async () => {
+  jest.mocked(generateNextActions).mockResolvedValueOnce({
+    suggestions: [],
+    unavailable: false,
+    reason: "model_abstained",
+    finishReason: "stop",
+    inputTokens: 100,
+    outputTokens: 5,
+    reasoningTokens: 0,
+    modelId: "deepseek/deepseek-v4.1-flash-1017",
+    modelIds: ["deepseek/deepseek-v4.1-flash-1017"],
+    providerCalls: 1,
+    pricedProviderCalls: 1,
+    unknownProviderCalls: 0,
+    knownCost: 0.0001,
+    cost: 0.0001,
+  });
+  const result = await POST(request());
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "prediction_empty",
+  );
+  expect(capture.mock.calls.map(([entry]) => entry.event)).toEqual([
+    "contextual_next_actions_eligible",
+    "contextual_next_actions_generated",
+  ]);
+  const generated = capture.mock.calls[1][0].properties;
+  expect(generated).toMatchObject({
+    outcome: "empty",
+    generation_diagnostic_version: 1,
+    generation_reason: "model_abstained",
+    provider_finish_reason: "stop",
+  });
+  expect(generated).not.toHaveProperty("provider_http_status");
+});
+
+test("an unexpected generation throw has a closed internal category without its message", async () => {
+  jest
+    .mocked(generateNextActions)
+    .mockRejectedValueOnce(new Error("PRIVATE_INTERNAL_DETAIL"));
+  const result = await POST(request());
+  expect(result.headers.get("X-HackerAI-Next-Actions-Reason")).toBe(
+    "provider_unavailable",
+  );
+  expect(capture).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "contextual_next_actions_generated",
+      properties: expect.objectContaining({
+        outcome: "unavailable",
+        generation_diagnostic_version: 1,
+        generation_reason: "internal_error",
+      }),
+    }),
+  );
+  expect(JSON.stringify(capture.mock.calls)).not.toContain("PRIVATE");
 });
 
 test.each(["consumed", "absent", "control", "disabled"])(
@@ -565,7 +630,7 @@ test.each([0, 50000])(
         batchId: "old",
         messageId: "answer",
         mode: "agent",
-        validationVersion: 6,
+        validationVersion: 7,
         suggestions: ["alpha"],
       },
     };

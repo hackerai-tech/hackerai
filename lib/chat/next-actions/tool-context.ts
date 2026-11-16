@@ -13,13 +13,8 @@ export function predictionToolEvents(parts: unknown[]): ToolEvent[] {
   for (const [order, value] of parts.entries()) {
     const part = record(value);
     if (!part) continue;
-    const name =
-      part.type === "dynamic-tool"
-        ? part.toolName
-        : typeof part.type === "string" && part.type.startsWith("tool-")
-          ? part.type.slice(5)
-          : undefined;
-    if (typeof name !== "string" || !/^[\w.:-]{1,128}$/.test(name)) continue;
+    const name = toolName(part);
+    if (!name) continue;
     const state =
       typeof part.state === "string" && STATES.has(part.state)
         ? part.state
@@ -41,18 +36,16 @@ export function predictionToolEvents(parts: unknown[]): ToolEvent[] {
             event.questions = bounded(questions.join("\n"), 200);
         }
       }
-      if (state === "output-available") {
-        if (output?.success === false && output.wait_outcome === "timed_out")
-          event.waitOutcome = "timed_out";
-        if (
-          output?.success === true &&
-          output.wait_outcome === "message_arrived" &&
-          typeof output.reply === "string" &&
-          output.reply.trim()
-        ) {
-          event.waitOutcome = "message_arrived";
-          event.reply = bounded(output.reply, 240);
-        }
+      if (
+        state === "output-available" &&
+        output?.success === false &&
+        output.wait_outcome === "timed_out"
+      )
+        event.waitOutcome = "timed_out";
+      const reply = deliveredWaitReply(part);
+      if (reply !== undefined) {
+        event.waitOutcome = "message_arrived";
+        event.reply = bounded(reply, 240);
       }
       waits.push({ text: JSON.stringify(event), order, wait: event });
     } else others.push({ text: JSON.stringify(event), order });
@@ -71,6 +64,45 @@ const STATES = new Set([
   "output-error",
   "output-denied",
 ]);
+
+function toolName(part: Record<string, unknown>): string | undefined {
+  const name =
+    part.type === "dynamic-tool"
+      ? part.toolName
+      : typeof part.type === "string" && part.type.startsWith("tool-")
+        ? part.type.slice(5)
+        : undefined;
+  return typeof name === "string" && /^[\w.:-]{1,128}$/.test(name)
+    ? name
+    : undefined;
+}
+
+/** Text the user actually sent through a successful wait. Validation failures,
+ * denials, timeouts and empty replies are not delivered user input. */
+function deliveredWaitReply(part: Record<string, unknown>): string | undefined {
+  if (toolName(part) !== "wait_for_user" || part.state !== "output-available")
+    return undefined;
+  const output = record(part.output);
+  return output?.success === true &&
+    output.wait_outcome === "message_arrived" &&
+    typeof output.reply === "string" &&
+    output.reply.trim()
+    ? output.reply
+    : undefined;
+}
+
+/** The turn's latest delivered reply, in original part order, for the stop
+ * precheck only. It references typed tool output, never rendered prose; callers
+ * must not retain or forward it. */
+export function latestDeliveredWaitReply(parts: unknown[]): string | undefined {
+  let latest: string | undefined;
+  for (const value of parts) {
+    const part = record(value);
+    const reply = part && deliveredWaitReply(part);
+    if (reply !== undefined) latest = reply;
+  }
+  return latest;
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
