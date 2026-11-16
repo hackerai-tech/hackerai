@@ -4754,8 +4754,451 @@ describe("createAgentStream repeated compaction", () => {
         messages: [{ role: "user", content: "old context ".repeat(4_000) }],
       });
       expect(JSON.stringify(next.messages).match(/HANDOFF:/g)).toHaveLength(1);
+      expect(JSON.stringify(next.messages)).not.toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
     },
   );
+
+  describe("varied tool failure recovery", () => {
+    const FAILURE_NOTICE = "[REPEATED TOOL FAILURES]";
+    const failureContext = (overrides: Record<string, unknown> = {}) =>
+      createTestStreamContext({
+        tools: {
+          run_terminal_cmd: {},
+          file: {},
+          interact_terminal_session: {},
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+        ...overrides,
+      }) as any;
+    const newState = () =>
+      initAgentStreamState([uiMessage("initial", "Inspect the fixture")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+    const step = (
+      id: string,
+      toolName: string,
+      input: Record<string, unknown>,
+      output?: unknown,
+    ) => ({
+      response: { modelId: "test-model" },
+      toolCalls: [{ toolCallId: id, toolName, input }],
+      toolResults: output === undefined ? [] : [{ toolCallId: id, output }],
+    });
+    const command = (id: string, result?: Record<string, unknown>) =>
+      step(
+        id,
+        "run_terminal_cmd",
+        { command: `synthetic-probe --target /tmp/fixture-${id}` },
+        result && { result },
+      );
+    const failedCommand = (id: string) =>
+      command(id, {
+        status: "failed",
+        processStarted: true,
+        exitCode: 2,
+        output: `SYNTHETIC_OUTPUT_${id}`,
+        error: `SYNTHETIC_ERROR_${id}`,
+      });
+    const requestText = async (stream: any) =>
+      JSON.stringify(
+        (
+          await stream.prepareStep({
+            steps: [],
+            messages: [{ role: "user", content: "Continue" }],
+          })
+        ).messages,
+      );
+    const failureNudges = (onAgentGuardrail: jest.Mock) =>
+      onAgentGuardrail.mock.calls.filter(
+        ([event]) =>
+          event.reason === "repeated_tool_failure" && event.action === "nudge",
+      );
+
+    it("guides varied failed commands at actual requests without stopping diagnostics", async () => {
+      const onAgentGuardrail = jest.fn();
+      const state = newState();
+      const context = failureContext({ onAgentGuardrail });
+      let stream = (await createAgentStream(
+        "test-model",
+        context,
+        state,
+      )) as any;
+      const steps: any[] = [];
+      const finish = async (next: unknown) => {
+        steps.push(next);
+        await stream.onStepFinish(next);
+      };
+
+      await finish(failedCommand("a"));
+      await finish(failedCommand("b"));
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+      await finish(failedCommand("c"));
+      const prepared = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      const text = JSON.stringify(prepared.messages);
+      expect(text).toContain(
+        `${FAILURE_NOTICE} run_terminal_cmd has returned 3 failed results`,
+      );
+      expect(text).not.toMatch(/SYNTHETIC|fixture-/);
+      // Every tool, including the terminal, stays available for diagnosis.
+      expect(prepared.activeTools).toBeUndefined();
+      expect(await stream.stopWhen.at(-1)({ steps })).toBe(false);
+      expect(await stream.stopWhen.at(-2)({ steps })).toBe(false);
+      expect(failureNudges(onAgentGuardrail)).toHaveLength(0);
+
+      // A canceled request never reached the model; its replacement still does.
+      context.abortController.abort();
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(failureNudges(onAgentGuardrail)).toHaveLength(0);
+      context.abortController = new AbortController();
+      stream = (await createAgentStream("test-model", context, state)) as any;
+      expect(await requestText(stream)).toContain(FAILURE_NOTICE);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(onAgentGuardrail).toHaveBeenLastCalledWith({
+        reason: "repeated_tool_failure",
+        action: "nudge",
+        tool_names: ["run_terminal_cmd"],
+        repeat_count: 3,
+        step_count: 3,
+        configured_max_steps: 500,
+      });
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+
+      for (const id of ["d", "e", "f"]) await finish(failedCommand(id));
+      expect(await requestText(stream)).toContain(
+        "run_terminal_cmd has returned 6 failed results",
+      );
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      for (const id of ["g", "h", "i"]) await finish(failedCommand(id));
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+
+      expect(failureNudges(onAgentGuardrail)).toHaveLength(2);
+      expect(await stream.stopWhen.at(-1)({ steps })).toBe(false);
+      expect(state.stoppedDueToDoomLoop).toBe(false);
+      expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toMatch(
+        /SYNTHETIC|fixture-/,
+      );
+    });
+
+    it.each([
+      [
+        "a successful command",
+        command("ok", {
+          status: "completed",
+          processStarted: true,
+          exitCode: 0,
+          output: "ok",
+        }),
+      ],
+      [
+        "a landed file write",
+        step(
+          "write",
+          "file",
+          { action: "write", path: "/tmp/fixture/notes.txt", text: "x" },
+          "File written: /tmp/fixture/notes.txt",
+        ),
+      ],
+      ["a missing result", command("gap")],
+      [
+        "a permission denial",
+        command("denied", {
+          output: "",
+          exitCode: 1,
+          error: "Denied in synthetic fixture",
+          approvalDenied: true,
+        }),
+      ],
+      [
+        "a cancellation",
+        command("canceled", {
+          output: "",
+          exitCode: 130,
+          error: "Command execution aborted by user",
+        }),
+      ],
+      [
+        "an unknown command outcome",
+        command("unknown", {
+          status: "failed",
+          exitCode: null,
+          executionOutcome: "unknown",
+          output: "",
+          error: "Local command outcome is unknown",
+        }),
+      ],
+      [
+        "an unchanged poll",
+        step(
+          "poll",
+          "interact_terminal_session",
+          { action: "wait", session: "fixture" },
+          { result: { output: "still running", exitCode: 1 } },
+        ),
+      ],
+      [
+        "an unrecognized file result",
+        step("empty", "file", { action: "write", path: "/tmp/fixture" }, {}),
+      ],
+    ])("restarts the failure streak after %s", async (_name, between) => {
+      const state = newState();
+      const stream = (await createAgentStream(
+        "test-model",
+        failureContext(),
+        state,
+      )) as any;
+      for (const next of [
+        failedCommand("a"),
+        failedCommand("b"),
+        between,
+        failedCommand("c"),
+        failedCommand("d"),
+      ])
+        await stream.onStepFinish(next);
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+      await stream.onStepFinish(failedCommand("e"));
+      expect(await requestText(stream)).toContain(
+        "run_terminal_cmd has returned 3 failed results",
+      );
+    });
+
+    it("guides varied failed PTY launches, restarts after a successful one and never arms on polls", async () => {
+      // An interactive PTY that finishes during launch reports `exited` only.
+      const ptyLaunch = (id: string, exitCode: number) =>
+        step(
+          id,
+          "run_terminal_cmd",
+          {
+            command: `synthetic-repl --script /tmp/fixture-${id}`,
+            interactive: true,
+          },
+          {
+            result: {
+              pid: 4_000,
+              output: `SYNTHETIC_OUTPUT_${id}`,
+              sessionSnapshot: `SYNTHETIC_SNAPSHOT_${id}`,
+              exited: { exitCode },
+            },
+          },
+        );
+      const poll = (id: string) =>
+        step(
+          id,
+          "interact_terminal_session",
+          { action: "wait", session: "fixture" },
+          { result: { output: "unchanged", exitCode: 1 } },
+        );
+      const requestAfter = async (steps: unknown[]) => {
+        const stream = (await createAgentStream(
+          "test-model",
+          failureContext(),
+          newState(),
+        )) as any;
+        for (const next of steps) await stream.onStepFinish(next);
+        return requestText(stream);
+      };
+
+      const failed = await requestAfter(
+        ["a", "b", "c"].map((id) => ptyLaunch(id, 2)),
+      );
+      expect(failed).toContain(
+        `${FAILURE_NOTICE} run_terminal_cmd has returned 3 failed results`,
+      );
+      expect(failed).not.toMatch(/SYNTHETIC|fixture-/);
+      expect(
+        await requestAfter([
+          ptyLaunch("a", 2),
+          ptyLaunch("b", 2),
+          ptyLaunch("ok", 0),
+          ptyLaunch("c", 2),
+          ptyLaunch("d", 2),
+        ]),
+      ).not.toContain(FAILURE_NOTICE);
+      expect(
+        await requestAfter(["p1", "p2", "p3", "p4"].map(poll)),
+      ).not.toContain(FAILURE_NOTICE);
+    });
+
+    it("keeps counting across a successful read of another tool, whatever its text", async () => {
+      const state = newState();
+      const stream = (await createAgentStream(
+        "test-model",
+        failureContext(),
+        state,
+      )) as any;
+      for (const next of [
+        failedCommand("a"),
+        failedCommand("b"),
+        step(
+          "read",
+          "file",
+          { action: "read", path: "/tmp/fixture/build.log" },
+          {
+            content: "Text file: build.log\n     1|Error: build failed",
+            originalContent: "Error: build failed",
+          },
+        ),
+      ])
+        await stream.onStepFinish(next);
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+      await stream.onStepFinish(failedCommand("c"));
+      expect(await requestText(stream)).toContain(
+        "run_terminal_cmd has returned 3 failed results",
+      );
+    });
+
+    it.each(["durable", "rolling"])(
+      "delivers the failure notice in one %s compaction request, not its later or replacement requests",
+      async (kind) => {
+        const summary = uiMessage("summary", "Continue the compacted task.");
+        mockRunSummarizationStep.mockResolvedValue({
+          summarizationAttempted: true,
+          needsSummarization: true,
+          summarizedMessages: [summary],
+        });
+        mockCompactModelMessagesInRun.mockResolvedValue({
+          summaryMessage: summary,
+          summaryText: "Continue the compacted task.",
+          runtimeContextTokens: 0,
+          summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+        });
+        if (kind === "rolling")
+          mockGetProviderPromptPressure.mockReturnValue({
+            reason: "serialized_message_bytes",
+            reasons: [],
+          });
+        const onAgentGuardrail = jest.fn();
+        const context = failureContext({
+          onAgentGuardrail,
+          summarizationTracker: {
+            hasSummarized: kind === "rolling",
+            summarizationCount: kind === "rolling" ? 1 : 0,
+            recordSummarization() {
+              this.hasSummarized = true;
+              this.summarizationCount++;
+            },
+            recordSummarizationUsage: jest.fn(),
+          },
+        });
+        const state = newState();
+        let stream = (await createAgentStream(
+          "test-model",
+          context,
+          state,
+        )) as any;
+        for (const id of ["a", "b", "c"])
+          await stream.onStepFinish(failedCommand(id));
+
+        const raw: ModelMessage[] = [
+          { role: "user", content: "old context ".repeat(4_000) },
+        ];
+        const prepared = await stream.prepareStep({
+          steps: kind === "rolling" ? [{ toolResults: [] }] : [],
+          messages: raw,
+        });
+        expect(
+          kind === "durable"
+            ? mockRunSummarizationStep
+            : mockCompactModelMessagesInRun,
+        ).toHaveBeenCalled();
+        const text = JSON.stringify(prepared.messages);
+        expect(text).toContain("Continue the compacted task.");
+        expect(text.split(FAILURE_NOTICE)).toHaveLength(2);
+        expect(text).toContain(
+          `${FAILURE_NOTICE} run_terminal_cmd has returned 3 failed results`,
+        );
+        expect(text).not.toMatch(/SYNTHETIC|fixture-/);
+        stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+        expect(failureNudges(onAgentGuardrail)).toHaveLength(1);
+
+        // The next request replays the compacted checkpoint plus new history.
+        mockGetProviderPromptPressure.mockReturnValue(null);
+        const next = await stream.prepareStep({
+          stepNumber: 1,
+          steps: [{ toolResults: [] }],
+          messages: [
+            ...raw,
+            { role: "assistant", content: "Checked the prerequisite." },
+          ],
+        });
+        expect(JSON.stringify(next.messages)).toContain(
+          "Continue the compacted task.",
+        );
+        expect(JSON.stringify(next.messages)).not.toContain(FAILURE_NOTICE);
+
+        // A replacement starts from the saved recovery context, if any.
+        stream = (await createAgentStream("test-model", context, state)) as any;
+        const replacement = await stream.prepareStep({
+          steps: [],
+          messages: stream.messages,
+        });
+        expect(JSON.stringify(replacement.messages)).not.toContain(
+          FAILURE_NOTICE,
+        );
+        expect(failureNudges(onAgentGuardrail)).toHaveLength(1);
+        expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toMatch(
+          /SYNTHETIC|fixture-/,
+        );
+      },
+    );
+
+    it("leaves exact repeated failures to the result-cycle recovery and halt", async () => {
+      const state = newState();
+      const stream = (await createAgentStream(
+        "test-model",
+        failureContext(),
+        state,
+      )) as any;
+      const steps: any[] = [];
+      const repeated = (id: string) =>
+        step(
+          id,
+          "run_terminal_cmd",
+          { command: "synthetic-probe" },
+          { result: { status: "failed", exitCode: 2, output: "same" } },
+        );
+      for (const id of ["a", "b", "c"]) {
+        steps.push(repeated(id));
+        await stream.onStepFinish(steps.at(-1));
+      }
+      const text = await requestText(stream);
+      expect(text).toContain("[REPEATED TOOL RESULTS]");
+      expect(text).not.toContain(FAILURE_NOTICE);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      for (const id of ["d", "e"]) {
+        steps.push(repeated(id));
+        await stream.onStepFinish(steps.at(-1));
+      }
+      expect(await stream.stopWhen.at(-1)({ steps })).toBe(true);
+      expect(state.stoppedDueToDoomLoop).toBe(true);
+    });
+
+    it("leaves Ask requests unchanged", async () => {
+      const onAgentGuardrail = jest.fn();
+      const stream = (await createAgentStream(
+        "test-model",
+        failureContext({ mode: "ask", onAgentGuardrail }),
+        newState(),
+      )) as any;
+      for (const id of ["a", "b", "c"])
+        await stream.onStepFinish(failedCommand(id));
+      expect(await requestText(stream)).not.toContain(FAILURE_NOTICE);
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
+        "repeated_tool_failure",
+      );
+    });
+  });
 
   it.each(["ask", "agent"] as const)(
     "halts a repeated response in %s without logging its text",
