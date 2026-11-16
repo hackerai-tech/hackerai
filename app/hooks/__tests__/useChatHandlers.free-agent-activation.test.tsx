@@ -42,6 +42,8 @@ let mockInput = "";
 let mockUploadedFiles: unknown[] = [];
 // GlobalState sets this for the test variant and for an unknown status.
 let mockAwaitsAdmission = true;
+let mockMessageQueue: unknown[] = [];
+const mockRemoveQueuedMessage = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -56,8 +58,8 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     isUploadingFiles: false,
     subscription: "free",
     queueMessage: jest.fn(),
-    messageQueue: [],
-    removeQueuedMessage: jest.fn(),
+    messageQueue: mockMessageQueue,
+    removeQueuedMessage: mockRemoveQueuedMessage,
     queueBehavior: "queue",
     sandboxPreference: "e2b",
     agentPermissionMode: "ask_approval",
@@ -95,6 +97,7 @@ function renderHandlers(
     kind?: "goal" | "ask",
   ) => Promise<void>,
   chatId = "chat-1",
+  hasManuallyStoppedRef = { current: false },
 ) {
   return renderHook(
     ({ id }) =>
@@ -109,7 +112,7 @@ function renderHandlers(
         isExistingChat: true,
         status: "ready",
         isSendingNowRef: { current: false },
-        hasManuallyStoppedRef: { current: false },
+        hasManuallyStoppedRef,
       }),
     { initialProps: { id: chatId } },
   );
@@ -226,6 +229,90 @@ describe("useChatHandlers free Agent activation admission", () => {
     expect(sendAdmittedMessage).not.toHaveBeenCalled();
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
     expect(mockClearInput).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useChatHandlers Send now for a queued free Ask", () => {
+  const queuedFile = {
+    url: "https://files.test/scope.txt",
+    mediaType: "text/plain",
+    filename: "scope.txt",
+    fileId: "file-1",
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAwaitsAdmission = true;
+    mockMessageQueue.splice(0, mockMessageQueue.length, {
+      id: "queued-1",
+      text: "Continue the scan",
+      files: [queuedFile],
+      timestamp: 1,
+    });
+  });
+
+  afterAll(() => {
+    mockMessageQueue.splice(0, mockMessageQueue.length);
+  });
+
+  it("keeps the queued text and files when the gate refuses it", async () => {
+    const errorToast = jest.spyOn(toast, "error").mockReturnValue(0);
+    const sendAdmittedMessage = jest.fn(async () => {
+      throw new Error("Continue with Agent to keep going.");
+    });
+    const stopped = { current: false };
+    const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
+
+    await act(async () => {
+      await result.current.handleSendNow("queued-1");
+    });
+
+    expect(sendAdmittedMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Continue the scan",
+        files: [queuedFile],
+      }),
+      expect.objectContaining({
+        body: expect.objectContaining({ mode: "ask" }),
+        onAdmitted: expect.any(Function),
+      }),
+      "ask",
+    );
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(stopped.current).toBe(true);
+    expect(errorToast).toHaveBeenCalledWith(
+      "Continue with Agent to keep going.",
+    );
+    errorToast.mockRestore();
+  });
+
+  it("retires the queued item only when the Ask is admitted", async () => {
+    let admit!: () => void;
+    const sendAdmittedMessage = jest.fn(
+      (_message: unknown, options?: unknown) =>
+        new Promise<void>((resolve) => {
+          admit = () => {
+            (options as { onAdmitted: () => void }).onAdmitted();
+            resolve();
+          };
+        }),
+    );
+    const stopped = { current: false };
+    const { result } = renderHandlers(sendAdmittedMessage, "chat-1", stopped);
+
+    let sending!: Promise<void>;
+    await act(async () => {
+      sending = result.current.handleSendNow("queued-1");
+    });
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      admit();
+      await sending;
+    });
+    expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+    expect(stopped.current).toBe(false);
   });
 });
 

@@ -101,7 +101,11 @@ interface UseChatHandlersProps {
    */
   sendAdmittedMessage?: (
     message: any,
-    options?: { body?: any },
+    options?: {
+      body?: any;
+      /** Runs synchronously at admission, before the reply is read. */
+      onAdmitted?: () => void;
+    },
     kind?: "goal" | "ask",
   ) => Promise<void>;
   /**
@@ -2108,9 +2112,6 @@ export const useChatHandlers = ({
         return;
       }
 
-      // Keep the queued message available if stopping fails.
-      removeQueuedMessage(messageId);
-
       // Send the queued message immediately
       const validFiles = message.files || [];
       const messagePayload: any = {};
@@ -2126,17 +2127,47 @@ export const useChatHandlers = ({
       }
 
       messagePayload.metadata = { createdAt: message.timestamp };
+      const body = {
+        mode: chatModeRef.current,
+        todos,
+        sandboxPreference,
+        agentPermissionMode: agentPermissionModeRef.current,
+        selectedModel: requestSelectedModel,
+      };
+
+      // The activation gate can refuse this Ask before it is saved. Retire the
+      // queued item only once /api/chat admits it; otherwise keep it and hold
+      // automatic delivery so a later status change cannot replay it.
+      if (mayRefuseFreeAsk() && sendAdmittedMessage) {
+        let admitted = false;
+        try {
+          await sendAdmittedMessage(
+            messagePayload,
+            {
+              body,
+              onAdmitted: () => {
+                admitted = true;
+                removeQueuedMessage(messageId);
+              },
+            },
+            "ask",
+          );
+        } catch (error) {
+          toast.error(
+            error instanceof Error && error.message
+              ? error.message
+              : "Your queued message was not sent. It is still queued.",
+          );
+        }
+        if (!admitted) hasManuallyStoppedRef.current = true;
+        return;
+      }
+
+      // Keep the queued message available if stopping fails.
+      removeQueuedMessage(messageId);
 
       runChatAction("send queued message", () =>
-        sendMessage(messagePayload, {
-          body: {
-            mode: chatModeRef.current,
-            todos,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: requestSelectedModel,
-          },
-        }),
+        sendMessage(messagePayload, { body }),
       );
     } catch (error) {
       console.error("Failed to send queued message:", error);

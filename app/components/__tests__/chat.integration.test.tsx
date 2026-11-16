@@ -471,6 +471,20 @@ const DisconnectedQueueHarness = () => {
   );
 };
 
+// Queues an Ask follow-up; the test controls mode/status via mockDesktopState.
+const AskQueueHarness = () => {
+  const { setSandboxPreference, queueMessage, messageQueue } = useGlobalState();
+  useEffect(() => {
+    setSandboxPreference("desktop");
+  }, [setSandboxPreference]);
+  return (
+    <>
+      <button onClick={() => queueMessage("continue")}>Queue continue</button>
+      <output data-testid="pending-queue">{messageQueue.length}</output>
+    </>
+  );
+};
+
 const QueueEditingHarness = ({
   mode = "agent",
 }: {
@@ -2789,6 +2803,225 @@ describe("Chat Component Integration", () => {
             await sending;
           });
         }
+      });
+
+      it.each([false, true])(
+        "runs onAdmitted before the SDK reads the reply and never serializes it (callback throws: %s)",
+        async (callbackThrows) => {
+          const log = jest.spyOn(console, "error").mockImplementation(() => {});
+          mockDesktopState = { chatMode: "ask", subscription: "free" };
+          global.fetch = jest.fn(async () => ({
+            ok: true,
+            status: 200,
+          })) as unknown as typeof fetch;
+          const onAdmitted = jest.fn(() => {
+            if (callbackThrows) throw new Error("cleanup failed");
+          });
+          let admittedBeforeRead: boolean | undefined;
+          let finish!: () => void;
+          mockSendMessage.mockImplementationOnce(async (...args: unknown[]) => {
+            await postAsk(args[0]);
+            admittedBeforeRead = onAdmitted.mock.calls.length === 1;
+            await new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          });
+          render(
+            <TestWrapper>
+              <Chat autoResume={false} />
+            </TestWrapper>,
+          );
+          const body = { mode: "ask" };
+          let sending!: Promise<void>;
+          try {
+            await act(async () => {
+              sending = mockChatHandlerArgs.sendAdmittedMessage!(
+                { text: "Explain SSRF" },
+                { body, onAdmitted },
+                "ask",
+              );
+              await sending;
+            });
+            expect(admittedBeforeRead).toBe(true);
+            expect(
+              (mockSendMessage.mock.calls.at(-1) as unknown as unknown[])[1],
+            ).toEqual({ body });
+          } finally {
+            await act(async () => {
+              finish?.();
+              await sending;
+            });
+            log.mockRestore();
+          }
+        },
+      );
+
+      describe("queued Ask while the activation status may lag", () => {
+        const askQueueView = () => (
+          <TestWrapper>
+            <AskQueueHarness />
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const apiChatFetch = (response: Record<string, unknown>) =>
+          jest.fn(async (url: unknown) =>
+            String(url) === "/api/chat"
+              ? response
+              : { ok: true, status: 200, json: async () => ({}) },
+          ) as unknown as typeof fetch;
+        const gateRefusal = {
+          ok: false,
+          status: 403,
+          clone: () => ({
+            json: async () => ({
+              code: "forbidden:chat",
+              cause: "Continue with Agent to keep going.",
+              metadata: { free_agent_activation_required: true },
+            }),
+          }),
+        };
+        const sendThroughTransport = () =>
+          mockSendMessage.mockImplementationOnce(async (...args: unknown[]) => {
+            try {
+              await postAsk(args[0]);
+            } catch (error) {
+              askTransport().onError(error as Error);
+            }
+          });
+
+        it("keeps a gate-refused queued Ask, never auto-sends it after setup, and sends it on Send now", async () => {
+          mockUseRealChatHandlers = true;
+          mockLocalConnections = [];
+          const refreshFreeAgentActivation = jest.fn();
+          // The third reply finished, but status still reports two.
+          mockDesktopState = {
+            chatMode: "ask",
+            subscription: "free",
+            freeAskAwaitsAdmission: true,
+            refreshFreeAgentActivation,
+          };
+          require("convex/react")
+            .useConvex()
+            .query.mockResolvedValueOnce(false);
+          global.fetch = apiChatFetch(gateRefusal);
+          sendThroughTransport();
+          const { rerender } = render(askQueueView());
+          mockSetMessages.mockClear();
+
+          fireEvent.click(
+            screen.getByRole("button", { name: "Queue continue" }),
+          );
+          await waitFor(() => expect(mockClearError).toHaveBeenCalled());
+
+          expect(mockSendMessage).toHaveBeenCalledTimes(1);
+          expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+          expect(refreshFreeAgentActivation).toHaveBeenCalled();
+          // The confirmed-unsaved optimistic bubble is removed, not left failed.
+          const payload = (
+            mockSendMessage.mock.calls[0] as unknown as [{ id: string }]
+          )[0];
+          const update = mockSetMessages.mock.calls.at(-1)![0] as (
+            messages: { id: string }[],
+          ) => { id: string }[];
+          expect(update([{ id: payload.id }, { id: "saved" }])).toEqual([
+            { id: "saved" },
+          ]);
+
+          // Status catches up and the user connects a computer.
+          mockDesktopState = {
+            chatMode: "agent",
+            subscription: "free",
+            freeAgentGateActive: true,
+            freeAskAwaitsAdmission: true,
+          };
+          await act(async () => rerender(askQueueView()));
+          mockLocalConnections = [
+            {
+              connectionId: "desktop-row",
+              isDesktop: true,
+              lastSeen: Date.now(),
+            },
+          ];
+          await act(async () => rerender(askQueueView()));
+          expect(mockSendMessage).toHaveBeenCalledTimes(1);
+          expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+
+          await act(async () => {
+            await mockChatInputProps.onSendNow("queued-message-id");
+          });
+          await waitFor(() =>
+            expect(mockSendMessage).toHaveBeenLastCalledWith(
+              expect.objectContaining({
+                parts: [{ type: "text", text: "continue" }],
+              }),
+              expect.objectContaining({
+                body: expect.objectContaining({
+                  mode: "agent",
+                  sandboxPreference: "desktop",
+                }),
+              }),
+            ),
+          );
+        });
+
+        it("retires an admitted queued Ask only at admission, not at stream end", async () => {
+          mockDesktopState = {
+            chatMode: "ask",
+            subscription: "free",
+            freeAskAwaitsAdmission: true,
+          };
+          global.fetch = apiChatFetch({ ok: true, status: 200 });
+          let queueBeforeAdmission: string | null = null;
+          let finish: (() => void) | undefined;
+          mockSendMessage.mockImplementationOnce(async (...args: unknown[]) => {
+            queueBeforeAdmission =
+              screen.getByTestId("pending-queue").textContent;
+            await postAsk(args[0]);
+            await new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          });
+          render(askQueueView());
+
+          fireEvent.click(
+            screen.getByRole("button", { name: "Queue continue" }),
+          );
+          await waitFor(() =>
+            expect(screen.getByTestId("pending-queue")).toHaveTextContent("0"),
+          );
+
+          expect(queueBeforeAdmission).toBe("1");
+          // The reply stream is still open when the item is retired.
+          expect(finish).toBeDefined();
+          await act(async () => finish?.());
+        });
+
+        it("keeps a queued Ask and holds automatic delivery after an uncertain failure", async () => {
+          mockDesktopState = {
+            chatMode: "ask",
+            subscription: "free",
+            freeAskAwaitsAdmission: true,
+          };
+          global.fetch = apiChatFetch({
+            ok: false,
+            status: 500,
+            clone: () => ({
+              json: async () => ({ code: "bad_request:api", cause: "Boom" }),
+            }),
+          });
+          sendThroughTransport();
+          const { rerender } = render(askQueueView());
+
+          fireEvent.click(
+            screen.getByRole("button", { name: "Queue continue" }),
+          );
+          await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+          await act(async () => rerender(askQueueView()));
+          await act(async () => rerender(askQueueView()));
+
+          expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+          expect(mockSendMessage).toHaveBeenCalledTimes(1);
+        });
       });
 
       it("rejects a gate refusal, drops the unsaved bubble and refreshes status", async () => {

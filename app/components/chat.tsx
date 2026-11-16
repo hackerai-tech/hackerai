@@ -1703,7 +1703,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         files?: FileUIPart[];
         metadata?: ChatMessage["metadata"];
       },
-      options?: { body?: Record<string, unknown> },
+      options?: {
+        body?: Record<string, unknown>;
+        /** Runs synchronously at admission, before the reply is read. */
+        onAdmitted?: () => void;
+      },
       kind: MessageAdmission["kind"] = "goal",
     ) => {
       const disabledReason = computerSendDisabledReasonRef.current;
@@ -1726,8 +1730,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         id,
         accepted: false,
         resolve: () => {
+          if (accepted) return;
           accepted = true;
           pending.accepted = true;
+          try {
+            options?.onAdmitted?.();
+          } catch (error) {
+            // A callback failure must never turn an admitted send into a refusal.
+            console.error("Failed to apply admitted message:", error);
+          }
           resolveAdmission();
         },
       };
@@ -1747,7 +1758,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             ],
             metadata: message.metadata,
           },
-          options,
+          // Only the serializable body reaches the SDK and the request.
+          options ? { body: options.body } : undefined,
         );
         await Promise.race([sending, admitted]);
         if (!accepted) {
@@ -2938,6 +2950,41 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         };
         if (shouldUseAgentLong) {
           void sendQueuedMessage(nextMessage.id, body);
+        } else if (
+          chatModeRef.current === "ask" &&
+          freeAgentActivationRef.current.awaitsAdmission === true
+        ) {
+          // Status can lag the third reply, so the activation gate may still
+          // refuse this Ask. Retire the item only at real admission; otherwise
+          // keep it and hold automatic delivery for an explicit send.
+          let admitted = false;
+          void sendAdmittedMessage(
+            {
+              text: nextMessage.text,
+              files: nextMessage.files as FileUIPart[] | undefined,
+              metadata: { createdAt: nextMessage.timestamp },
+            },
+            {
+              body,
+              onAdmitted: () => {
+                admitted = true;
+                removeQueuedMessage(nextMessage.id);
+              },
+            },
+            "ask",
+          )
+            .catch((error: unknown) => {
+              toast.error(
+                error instanceof Error && error.message
+                  ? error.message
+                  : "Your queued message was not sent. It is still queued.",
+              );
+            })
+            .finally(() => {
+              if (!admitted) hasManuallyStoppedRef.current = true;
+              setIsProcessingQueue(false);
+            });
+          return;
         } else {
           try {
             const sending = sendMessage(
@@ -2981,6 +3028,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isProcessingQueue,
     sendQueuedMessage,
     sendMessage,
+    sendAdmittedMessage,
+    freeAgentActivationRef,
     removeQueuedMessage,
     chatModeRef,
     todosRef,
