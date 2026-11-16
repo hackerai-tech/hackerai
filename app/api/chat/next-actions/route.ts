@@ -236,6 +236,8 @@ export async function POST(req: NextRequest) {
           batch_id: batchId,
           outcome: "unavailable",
           latency_ms: Date.now() - started,
+          generation_diagnostic_version: 1,
+          generation_reason: "internal_error",
         },
       });
       return empty(200, "provider_unavailable");
@@ -254,6 +256,15 @@ export async function POST(req: NextRequest) {
             : "empty",
         suggestion_count: result.suggestions.length,
         latency_ms: Date.now() - started,
+        // Closed categories and validated provider metadata only.
+        generation_diagnostic_version: 1,
+        generation_reason: result.reason,
+        ...(result.finishReason && {
+          provider_finish_reason: result.finishReason,
+        }),
+        ...(result.httpStatus !== undefined && {
+          provider_http_status: result.httpStatus,
+        }),
         input_tokens: result.inputTokens,
         output_tokens: result.outputTokens,
         model: result.modelId,
