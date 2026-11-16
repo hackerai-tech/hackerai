@@ -1,34 +1,49 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import { stripe } from "@/app/api/stripe";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { resolveProMonthlyQuote } from "@/lib/experiments/pro-monthly-pricing-hac248.server";
+import {
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+  isCurrentProMonthlyPrice,
+  proMonthlyPricePresentation,
+} from "@/lib/pricing/pro-monthly";
 
 export const dynamic = "force-dynamic";
 
-const NO_STORE = { "Cache-Control": "private, no-store, max-age=0" };
-
-/**
- * The account's authoritative monthly Pro quote. Only an explicit pricing
- * surface calls this, so it may enroll an eligible new account.
- */
+// Keep the established pricing endpoint for the existing UI callers.
 export async function GET(req: NextRequest) {
-  const { userId, subscription } = await getUserIDAndPro(req);
+  await getUserIDAndPro(req);
 
   try {
-    const { price, assignment } = await resolveProMonthlyQuote({
-      userId,
-      subscription,
-      enroll: true,
+    const prices = await stripe.prices.list({
+      active: true,
+      lookup_keys: [PRO_MONTHLY_PRICE_LOOKUP_KEY],
     });
-    return NextResponse.json(
-      { ...price, ...(assignment && { assignment }) },
-      { headers: NO_STORE },
+    const price = prices.data.find(
+      (candidate) => candidate.lookup_key === PRO_MONTHLY_PRICE_LOOKUP_KEY,
     );
+
+    if (!price || !isCurrentProMonthlyPrice(price)) {
+      return NextResponse.json(
+        { error: "Pro monthly price is unavailable" },
+        {
+          status: 503,
+          headers: { "Cache-Control": "private, no-store, max-age=0" },
+        },
+      );
+    }
+
+    return NextResponse.json(proMonthlyPricePresentation(price), {
+      headers: { "Cache-Control": "private, no-store, max-age=0" },
+    });
   } catch {
     return NextResponse.json(
       { error: "Pro monthly price is unavailable" },
-      { status: 503, headers: NO_STORE },
+      {
+        status: 503,
+        headers: { "Cache-Control": "private, no-store, max-age=0" },
+      },
     );
   }
 }

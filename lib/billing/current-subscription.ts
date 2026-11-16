@@ -5,9 +5,9 @@ import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import { priceBillingInterval } from "@/lib/billing/subscription-mrr";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 import {
-  proMonthlyPricingAttributionFromMetadata,
-  type ProMonthlyPricingAttribution,
-} from "@/lib/experiments/pro-monthly-pricing-attribution";
+  proMonthlyPricingAssignmentFromMetadata,
+  type ProMonthlyPricingExperimentAssignment,
+} from "@/lib/experiments/pro-monthly-pricing";
 import type { SubscriptionTier } from "@/types";
 import {
   GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
@@ -43,7 +43,7 @@ export type CurrentSubscriptionContext = {
   metadata: Stripe.Metadata;
   defaultPaymentMethodId?: string;
   latestInvoiceId?: string;
-  pricingExperiment?: ProMonthlyPricingAttribution;
+  pricingExperiment?: ProMonthlyPricingExperimentAssignment;
   subscription: Stripe.Subscription;
 };
 
@@ -125,7 +125,7 @@ export function toCurrentSubscriptionContext(
     defaultPaymentMethodId:
       stripeObjectId(subscription.default_payment_method) ?? undefined,
     latestInvoiceId: stripeObjectId(subscription.latest_invoice) ?? undefined,
-    pricingExperiment: proMonthlyPricingAttributionFromMetadata(
+    pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
       subscription.metadata,
       price?.lookup_key,
     ),

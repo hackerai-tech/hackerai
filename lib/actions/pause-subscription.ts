@@ -26,7 +26,7 @@ import {
 } from "@/lib/billing/retention-offers";
 import { releaseSubscriptionSchedule } from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { proMonthlyPricingAttributionProperties } from "@/lib/experiments/pro-monthly-pricing-attribution";
+import { proMonthlyPricingExperimentProperties } from "@/lib/experiments/pro-monthly-pricing";
 import { phLogger } from "@/lib/posthog/server";
 
 type PauseSubscriptionInput = {
@@ -249,7 +249,7 @@ export default async function pauseSubscriptionAction(
     stripe_subscription_id: subscription.id,
     stripe_price_id: subscription.priceId,
     cancel_at_period_end: updatedSubscription.cancel_at_period_end,
-    ...proMonthlyPricingAttributionProperties(subscription.pricingExperiment),
+    ...proMonthlyPricingExperimentProperties(subscription.pricingExperiment),
   });
 
   phLogger.event(PAID_FUNNEL_EVENTS.retentionOfferAccepted, {

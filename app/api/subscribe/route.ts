@@ -37,19 +37,7 @@ import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 import {
   PRO_MONTHLY_PRICE_LOOKUP_KEY,
   isCurrentProMonthlyPrice,
-  parseProMonthlyPricePresentation,
 } from "@/lib/pricing/pro-monthly";
-import {
-  ProMonthlyPriceUnavailableError,
-  readStoredHac248Assignment,
-  resolveProMonthlyQuote,
-  type ResolvedProMonthlyQuote,
-} from "@/lib/experiments/pro-monthly-pricing-hac248.server";
-import {
-  hac248Metadata,
-  type Hac248Assignment,
-} from "@/lib/experiments/pro-monthly-pricing-hac248";
-import { proMonthlyPricingAttributionProperties } from "@/lib/experiments/pro-monthly-pricing-attribution";
 import {
   PRO_YEARLY_PRICE_LOOKUP_KEY,
   isCurrentProYearlyPrice,
@@ -394,88 +382,7 @@ const handleSubscribe = async (req: NextRequest) => {
             | "team-monthly-plan"
             | "team-yearly-plan")
         : "pro-monthly-plan";
-
-    // A new monthly Pro purchase is charged the account's server-resolved
-    // quote. Resolve and confirm it before creating any billing objects.
-    let proMonthlyQuote: ResolvedProMonthlyQuote | undefined;
-    let pricingAssignment: Hac248Assignment | undefined;
-    if (
-      subscription === "free" &&
-      subscriptionLevel === PRO_MONTHLY_PRICE_LOOKUP_KEY
-    ) {
-      try {
-        proMonthlyQuote = await resolveProMonthlyQuote({
-          userId,
-          subscription,
-          enroll: true,
-        });
-      } catch (error) {
-        if (!(error instanceof ProMonthlyPriceUnavailableError)) throw error;
-        logger.error("Pro monthly quote is unavailable", undefined, {
-          event: "billing.pro_monthly_quote_unavailable",
-          request_id: requestId,
-          service: "hackerai-web",
-          environment: getEnvironment(),
-          route: "/api/subscribe",
-          reason: error.reason,
-        });
-        return json(
-          { error: "Pro monthly price is unavailable" },
-          { status: 503 },
-        );
-      }
-      pricingAssignment = proMonthlyQuote.assignment;
-      const displayedPrice = parseProMonthlyPricePresentation(
-        body?.displayedPrice,
-      );
-      if (pricingAssignment && !displayedPrice) {
-        return json(
-          {
-            error: "Confirm your Pro price before checkout.",
-            code: "price_confirmation_required",
-          },
-          { status: 409 },
-        );
-      }
-      if (
-        displayedPrice &&
-        (displayedPrice.priceLookupKey !==
-          proMonthlyQuote.price.priceLookupKey ||
-          displayedPrice.displayedAmountDollars !==
-            proMonthlyQuote.price.displayedAmountDollars ||
-          displayedPrice.stripePriceId !== proMonthlyQuote.price.stripePriceId)
-      ) {
-        return json(
-          {
-            error: "Your Pro price was updated. Review it before checkout.",
-            code: "price_changed",
-          },
-          { status: 409 },
-        );
-      }
-    } else if (subscription === "free") {
-      // Keep an existing assignment visible on other plans; never enroll here.
-      try {
-        pricingAssignment = await readStoredHac248Assignment(userId);
-      } catch (error) {
-        logger.warn("Pricing assignment unavailable for checkout attribution", {
-          event: "billing.pricing_assignment_unavailable",
-          request_id: requestId,
-          service: "hackerai-web",
-          environment: getEnvironment(),
-          route: "/api/subscribe",
-          reason:
-            error instanceof ProMonthlyPriceUnavailableError
-              ? error.reason
-              : "unknown",
-        });
-      }
-    }
-    const resolvedPriceLookupKey =
-      proMonthlyQuote?.price.priceLookupKey ?? subscriptionLevel;
-    const pricingAssignmentMetadata = pricingAssignment
-      ? hac248Metadata(pricingAssignment)
-      : {};
+    const resolvedPriceLookupKey = subscriptionLevel;
 
     // Quantity is only used for team plans, defaults to 1 for individual plans
     const quantity =
@@ -540,49 +447,44 @@ const handleSubscribe = async (req: NextRequest) => {
     // Retrieve price ID from Stripe
     // The client selects only a logical plan. Stripe resolves that allowlisted
     // lookup key; Pro Prices are checked against the displayed public amounts.
-    let resolvedPrice: Stripe.Price | undefined = proMonthlyQuote?.stripePrice;
+    let price;
 
-    if (!resolvedPrice) {
-      let price;
-      try {
-        price = await stripe.prices.list({
-          lookup_keys: [resolvedPriceLookupKey],
-        });
+    try {
+      price = await stripe.prices.list({
+        lookup_keys: [resolvedPriceLookupKey],
+      });
 
-        // Check if price data exists and has at least one item
-        if (!price.data || price.data.length === 0) {
-          console.error(
-            `No price found for lookup key: ${resolvedPriceLookupKey}. This is likely because the products and prices have not been created yet.`,
-          );
-          return json(
-            {
-              error: "Subscription plan not found",
-              details: `No price found for plan: ${subscriptionLevel}`,
-            },
-            { status: 404 },
-          );
-        }
-      } catch (error) {
+      // Check if price data exists and has at least one item
+      if (!price.data || price.data.length === 0) {
         console.error(
-          `Error retrieving price from Stripe for lookup key: ${resolvedPriceLookupKey}.`,
-          error,
+          `No price found for lookup key: ${resolvedPriceLookupKey}. This is likely because the products and prices have not been created yet.`,
         );
         return json(
-          { error: "Error retrieving price from Stripe" },
-          { status: 500 },
+          {
+            error: "Subscription plan not found",
+            details: `No price found for plan: ${subscriptionLevel}`,
+          },
+          { status: 404 },
         );
       }
-
-      resolvedPrice = price.data.find(
-        (candidate) => candidate.lookup_key === resolvedPriceLookupKey,
+    } catch (error) {
+      console.error(
+        `Error retrieving price from Stripe for lookup key: ${resolvedPriceLookupKey}.`,
+        error,
+      );
+      return json(
+        { error: "Error retrieving price from Stripe" },
+        { status: 500 },
       );
     }
-    if (!resolvedPrice) {
+
+    const selectedPrice = price.data.find(
+      (candidate) => candidate.lookup_key === resolvedPriceLookupKey,
+    );
+    if (!selectedPrice) {
       return json({ error: "Subscription plan not found" }, { status: 404 });
     }
-    const selectedPrice = resolvedPrice;
     if (
-      !proMonthlyQuote &&
       resolvedPriceLookupKey === PRO_MONTHLY_PRICE_LOOKUP_KEY &&
       !isCurrentProMonthlyPrice(selectedPrice)
     ) {
@@ -779,19 +681,15 @@ const handleSubscribe = async (req: NextRequest) => {
       }
     }
 
-    // An open session cannot gain subscription metadata, so an assigned
-    // account always gets a fresh session carrying its pricing attribution.
-    let session = pricingAssignment
-      ? undefined
-      : await findReusableCheckoutSession({
-          customerId: customer.id,
-          organizationId: organization.id,
-          requestedPlan: subscriptionLevel,
-          resolvedPriceLookupKey,
-          quantity,
-          successUrl: successUrl.toString(),
-          cancelUrl: cancelUrl.toString(),
-        });
+    let session = await findReusableCheckoutSession({
+      customerId: customer.id,
+      organizationId: organization.id,
+      requestedPlan: subscriptionLevel,
+      resolvedPriceLookupKey,
+      quantity,
+      successUrl: successUrl.toString(),
+      cancelUrl: cancelUrl.toString(),
+    });
     const reusedCheckoutSession = Boolean(session);
 
     if (!session) {
@@ -819,7 +717,6 @@ const handleSubscribe = async (req: NextRequest) => {
           ...(checkoutReason && { checkoutReason }),
           ...(checkoutLimitType && { checkoutLimitType }),
           checkoutType: "new_subscription",
-          ...pricingAssignmentMetadata,
         },
         subscription_data: {
           metadata: {
@@ -834,7 +731,6 @@ const handleSubscribe = async (req: NextRequest) => {
             ...(checkoutReason && { checkoutReason }),
             ...(checkoutLimitType && { checkoutLimitType }),
             checkoutType: "new_subscription",
-            ...pricingAssignmentMetadata,
           },
         },
         custom_text: {
@@ -985,7 +881,6 @@ const handleSubscribe = async (req: NextRequest) => {
         stripe_checkout_session_id: session.id,
         stripe_checkout_session_reused: reusedCheckoutSession,
         stripe_price_id: selectedPrice.id,
-        ...proMonthlyPricingAttributionProperties(pricingAssignment),
         $session_id: posthogSessionId ?? undefined,
         $insert_id: checkoutStartedInsertId(checkoutAttemptId),
         $set: {

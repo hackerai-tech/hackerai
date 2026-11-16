@@ -45,39 +45,6 @@ describe("grandfathered Pro monthly Price", () => {
   });
 });
 
-it("keeps a $49 subscription on Pro and carries its HAC-248 attribution", () => {
-  const price = {
-    id: "price_pro_49",
-    lookup_key: "pro-monthly-plan-49-hac248",
-    unit_amount: 4900,
-    currency: "usd",
-    recurring: { interval: "month", interval_count: 1 },
-  } as Stripe.Price;
-  const context = toCurrentSubscriptionContext({
-    id: "sub_49",
-    status: "active",
-    cancel_at_period_end: false,
-    metadata: {
-      pricingExperimentKey: "hac248-pro-monthly-49-pricing",
-      pricingExperimentVariant: "test",
-      pricingExperimentPriceLookupKey: "pro-monthly-plan-49-hac248",
-      pricingExperimentPriceId: "price_pro_49",
-      pricingExperimentAssignedAt: "2026-11-20T10:00:00.000Z",
-    },
-    items: { data: [{ id: "si_49", price, quantity: 1 }] },
-  } as unknown as Stripe.Subscription);
-  expect(context).toMatchObject({
-    tier: "pro",
-    billingInterval: "month",
-    unitAmountDollars: 49,
-    pricingExperiment: {
-      key: "hac248-pro-monthly-49-pricing",
-      variant: "test",
-      displayedAmountDollars: 49,
-    },
-  });
-});
-
 it("preserves the existing $252 annual plan after its lookup key is transferred", () => {
   const price = {
     id: GRANDFATHERED_PRO_YEARLY_PRICE_ID,
