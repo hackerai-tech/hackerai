@@ -1,4 +1,4 @@
-import { schemaTask } from "@trigger.dev/sdk";
+import { logger as triggerLogger, schemaTask } from "@trigger.dev/sdk";
 import { createServiceConvexClient } from "@/lib/db/service-client";
 import { generateText, Output } from "ai";
 import { z } from "zod";
@@ -25,8 +25,12 @@ import {
   type ResearchBasis,
   type ResearchCohortReport,
   type ResearchCoverage,
+  type ResearchPromptSecretCategory,
 } from "@/lib/research/user-research";
-import { readResearchStructuredOutput } from "@/lib/research/structured-output-diagnostics";
+import {
+  readResearchStructuredOutput,
+  type ResearchStructuredOutputOperation,
+} from "@/lib/research/structured-output-diagnostics";
 
 const MAX_MESSAGES_PER_CHAT = 80;
 
@@ -90,6 +94,18 @@ const usageForStorage = (usage: {
     ...(costDollars ? { costDollars } : {}),
   };
 };
+
+// Failure-only warning with closed fields. Trigger attaches run and attempt
+// identity natively; never add the prompt, ctx, or the guard error here.
+const warnUnsafeResearchPrompt =
+  (operation: ResearchStructuredOutputOperation) =>
+  (category: ResearchPromptSecretCategory) => {
+    triggerLogger.warn("[user-research] prompt privacy guard rejected", {
+      diagnostic_version: 1,
+      operation,
+      category,
+    });
+  };
 
 export const analyzeUserResearchProfile = schemaTask({
   id: "analyze-user-research-profile",
@@ -176,7 +192,7 @@ export const analyzeUserResearchProfile = schemaTask({
       },
       chats: evidence,
     });
-    assertResearchPromptIsSafe(prompt);
+    assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("profile"));
     const result = await generateText({
       model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
       output: Output.object({ schema: researchUserProfileSchema }),
@@ -388,7 +404,7 @@ export const pmUserResearch = schemaTask({
           : {}),
         profiles: profilesWithBasis,
       });
-      assertResearchPromptIsSafe(prompt);
+      assertResearchPromptIsSafe(prompt, warnUnsafeResearchPrompt("synthesis"));
       const result = await generateText({
         model: myProvider.languageModel(USER_RESEARCH_MODEL_KEY),
         output: Output.object({ schema: cohortSynthesisSchema }),

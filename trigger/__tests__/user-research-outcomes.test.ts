@@ -4,6 +4,7 @@ jest.mock("@trigger.dev/sdk", () => ({
     ...(config as object),
     batchTriggerAndWait: jest.fn(),
   }),
+  logger: { warn: jest.fn() },
 }));
 jest.mock("ai", () => ({
   ...jest.requireActual("ai"),
@@ -17,6 +18,7 @@ jest.mock("@/lib/ai/providers", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: jest.fn(), flush: jest.fn() },
 }));
+import { logger as triggerLogger } from "@trigger.dev/sdk";
 import { generateText, NoOutputGeneratedError, Output } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { mockMutation, mockQuery } from "@/__mocks__/convex/browser";
@@ -214,6 +216,7 @@ it("separates analyzed, skipped, and failed profiles in the persisted report and
   expect(pmUserResearchResultSchema.safeParse(legacy).success).toBe(true);
   expect(phLogger.event).not.toHaveBeenCalled();
   expect(phLogger.flush).not.toHaveBeenCalled();
+  expect(triggerLogger.warn).not.toHaveBeenCalled();
 });
 
 it("still fails synthesis when every profile was skipped", async () => {
@@ -321,4 +324,124 @@ it("reports a synthesis with no structured output and keeps the run failed", asy
       error: "Analysis failed before a privacy-safe cohort report was produced",
     }),
   );
+});
+
+describe("prompt privacy guard diagnostics", () => {
+  const canary = "syntheticPrivateCanary7f3a";
+  const guardError = new Error(
+    "Research prompt contains unredacted secret material",
+  );
+  // Chat metadata is serialized without text sanitization, so it reaches the
+  // real guard through the real prompt builder without altering the sanitizer.
+  const mockUnsafeProfileEvidence = () =>
+    mockQuery
+      .mockResolvedValueOnce([
+        {
+          chatId: "chat-1",
+          updatedAt: 1,
+          mode: "agent",
+          selectedModel: `Bearer ${canary}`,
+          truncated: false,
+        },
+      ])
+      .mockResolvedValueOnce({
+        messages: [{ role: "user", text: "Synthetic question about a lab" }],
+        truncated: false,
+      });
+  const expectNoPrivateContentInWarnings = () => {
+    const serialized = JSON.stringify(
+      (triggerLogger.warn as jest.Mock).mock.calls,
+    );
+    for (const value of [
+      canary,
+      "Bearer ",
+      "eyJ",
+      workerPayload.question,
+      workerPayload.analysisId,
+      "Synthetic question",
+      "user-1",
+      "U01",
+      "Test sample",
+      guardError.message,
+      "stack",
+      "chat-1",
+    ]) {
+      expect(serialized).not.toContain(value);
+    }
+  };
+
+  it("rejects an unsafe profile prompt before any model call with a closed warning", async () => {
+    mockUnsafeProfileEvidence();
+
+    await expect(child.run(workerPayload, taskOptions)).rejects.toThrow(
+      guardError,
+    );
+    expect(myProvider.languageModel).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect((triggerLogger.warn as jest.Mock).mock.calls).toEqual([
+      [
+        "[user-research] prompt privacy guard rejected",
+        { diagnostic_version: 1, operation: "profile", category: "bearer" },
+      ],
+    ]);
+    expectNoPrivateContentInWarnings();
+  });
+
+  it("keeps the profile guard error when the warning itself fails", async () => {
+    mockUnsafeProfileEvidence();
+    (triggerLogger.warn as jest.Mock).mockImplementationOnce(() => {
+      throw new Error("log transport failed");
+    });
+
+    await expect(child.run(workerPayload, taskOptions)).rejects.toThrow(
+      guardError,
+    );
+    expect(triggerLogger.warn).toHaveBeenCalledTimes(1);
+    expect(generateText).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsafe synthesis prompt before any model call and fails the run", async () => {
+    child.batchTriggerAndWait.mockResolvedValue({
+      runs: [{ ok: true, output: { status: "completed" } }],
+    });
+    // Stored profiles are compacted into the cohort prompt without re-running
+    // the text sanitizer, so a synthetic token here reaches the real guard.
+    mockQuery.mockResolvedValue([
+      {
+        pseudonym: "U01",
+        profile: { ...profile, summary: `eyJ${canary}.payload.signature` },
+        coverage: {
+          chatsReviewed: 1,
+          messagesReviewed: 2,
+          askChats: 1,
+          agentChats: 0,
+        },
+      },
+    ]);
+
+    await expect(parent.run(parentPayload, taskOptions)).rejects.toThrow(
+      "User research analysis failed",
+    );
+    expect(myProvider.languageModel).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+    expect((triggerLogger.warn as jest.Mock).mock.calls).toEqual([
+      [
+        "[user-research] prompt privacy guard rejected",
+        { diagnostic_version: 1, operation: "synthesis", category: "jwt" },
+      ],
+    ]);
+    expectNoPrivateContentInWarnings();
+    const mutationArgs = mockMutation.mock.calls.map(([, args]) => args);
+    expect(mutationArgs).not.toContainEqual(
+      expect.objectContaining({ report: expect.anything() }),
+    );
+    expect(mutationArgs.at(-1)).toEqual(
+      expect.objectContaining({
+        error:
+          "Analysis failed before a privacy-safe cohort report was produced",
+      }),
+    );
+  });
 });
