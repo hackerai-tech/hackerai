@@ -17,10 +17,32 @@ jest.mock("@/lib/analytics/client", () => ({
     event: string,
     properties: Record<string, unknown>,
   ) => mockCapture(event, properties),
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 const { ChatStartersProvider, useChatStarters } =
   require("../ChatStartersContext") as typeof import("../ChatStartersContext");
+const { ChatStarterSuggestions } =
+  require("@/app/components/ChatInput/ChatStarterSuggestions") as typeof import("@/app/components/ChatInput/ChatStarterSuggestions");
+
+/** The real suggestions wired to the provider as ChatInput wires them. */
+const ExposedSuggestions = () => {
+  const starters = useChatStarters();
+  if (!starters) return null;
+  return (
+    <ChatStarterSuggestions
+      mode="agent"
+      presentation="expanded"
+      layout="desktop"
+      onSelect={() => {}}
+      onExposed={starters.recordExposure}
+    />
+  );
+};
+const flushFrames = () =>
+  act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
 
 type Starters = NonNullable<ReturnType<typeof useChatStarters>>;
 let latest: ReturnType<typeof useChatStarters> = null;
@@ -270,5 +292,41 @@ describe("ChatStartersProvider", () => {
     });
 
     expect(mockCapture).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes mounted suggestions only after a covering overlay closes", async () => {
+    const view = (exposureBlocked: boolean) => (
+      <ChatStartersProvider
+        userId="user-a"
+        chats={RESOLVED_EMPTY_CHATS}
+        projects={EMPTY_PROJECTS}
+        exposureBlocked={exposureBlocked}
+      >
+        <ExposedSuggestions />
+      </ChatStartersProvider>
+    );
+    const { rerender } = render(view(true));
+    await settle();
+    await flushFrames();
+
+    // Rendered behind the overlay, but not counted as seen.
+    expect(screen.getByTestId("chat-starters")).toBeInTheDocument();
+    expect(mockCapture).not.toHaveBeenCalled();
+
+    // Closing the overlay retries from the still-mounted suggestions.
+    rerender(view(false));
+    await flushFrames();
+    expect(mockCapture.mock.calls).toEqual([
+      [
+        "chat_starters_exposed",
+        { definition_version: 2, mode: "agent", presentation: "expanded" },
+      ],
+    ]);
+
+    rerender(view(true));
+    await flushFrames();
+    rerender(view(false));
+    await flushFrames();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 });

@@ -66,11 +66,17 @@ export function ChatStartersProvider({
   userId,
   chats,
   projects,
+  exposureBlocked = false,
   children,
 }: {
   userId: string | null | undefined;
   chats: ChatHistoryList;
   projects: ProjectHistoryList;
+  /**
+   * True while a layout overlay covers the composer. Suggestions stay mounted,
+   * but exposure waits until they are actually visible again.
+   */
+  exposureBlocked?: boolean;
   children: ReactNode;
 }) {
   const [flag, setFlag] = useState<{ userId: string; enabled: boolean }>();
@@ -115,9 +121,10 @@ export function ChatStartersProvider({
   }, [userId]);
 
   const exposedRef = useRef(new Set<string>());
+  // A new callback after unblocking lets the mounted suggestions retry.
   const recordExposure = useCallback(
     (mode: ChatMode, shown: ChatStarterPresentation) => {
-      if (!userId) return;
+      if (!userId || exposureBlocked) return;
       const key = `${userId}:${mode}:${shown}`;
       if (exposedRef.current.has(key)) return;
       if (
@@ -129,7 +136,7 @@ export function ChatStartersProvider({
       )
         exposedRef.current.add(key);
     },
-    [userId],
+    [userId, exposureBlocked],
   );
 
   const enabled = !!userId && flag?.userId === userId && flag.enabled;

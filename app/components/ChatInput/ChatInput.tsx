@@ -76,7 +76,11 @@ import { GoalTargetIcon } from "@/components/icons/goal-target";
 import { GoalModeButton } from "./GoalModeButton";
 import { getGoalSuggestionDraft } from "./goal-suggestion";
 import { Button } from "@/components/ui/button";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { v4 as uuidv4 } from "uuid";
+import {
+  captureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent,
+} from "@/lib/analytics/client";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
@@ -1209,11 +1213,17 @@ const ChatInputContent = ({
       getDraftAttachmentsById(draftId).length > 0
     )
       return;
-    captureAuthenticatedEvent("chat_starter_selected", {
-      definition_version: CHAT_STARTERS_DEFINITION_VERSION,
-      example_id: starter.id,
-      mode: starterMode,
-      presentation: starterPresentation,
+    // Queue so a selection made before analytics is ready is not lost; each
+    // accepted selection is its own event.
+    captureQueuedAuthenticatedEvent({
+      event: "chat_starter_selected",
+      properties: {
+        definition_version: CHAT_STARTERS_DEFINITION_VERSION,
+        example_id: starter.id,
+        mode: starterMode,
+        presentation: starterPresentation,
+      },
+      dedupeKey: uuidv4(),
     });
     setInput(starter.prompt);
     requestAnimationFrame(() => {

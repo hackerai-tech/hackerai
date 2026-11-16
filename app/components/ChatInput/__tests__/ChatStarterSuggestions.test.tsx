@@ -25,6 +25,12 @@ import type { ChatMode } from "@/types/chat";
 
 const mockCapture =
   jest.fn<(event: string, properties: Record<string, unknown>) => boolean>();
+type QueuedEvent = {
+  event: string;
+  properties?: Record<string, unknown>;
+  dedupeKey: string;
+};
+const mockQueuedCapture = jest.fn<(event: QueuedEvent) => boolean>();
 jest.mock("@/lib/analytics/client", () => ({
   ...jest.requireActual<typeof import("@/lib/analytics/client")>(
     "@/lib/analytics/client",
@@ -33,7 +39,13 @@ jest.mock("@/lib/analytics/client", () => ({
     event: string,
     properties: Record<string, unknown>,
   ) => mockCapture(event, properties),
+  captureQueuedAuthenticatedEvent: (event: QueuedEvent) =>
+    mockQueuedCapture(event),
 }));
+const selectedEvents = () =>
+  mockQueuedCapture.mock.calls
+    .map(([queued]) => queued)
+    .filter(({ event }) => event === "chat_starter_selected");
 
 let mockIsMobile = false;
 jest.mock("@/hooks/use-mobile", () => ({
@@ -192,6 +204,7 @@ describe("Chat starter suggestions in the composer", () => {
     starterFlag = true;
     window.localStorage.clear();
     mockCapture.mockReset().mockReturnValue(true);
+    mockQueuedCapture.mockReset().mockReturnValue(true);
     jest.mocked(useAuth).mockReturnValue({
       user: { id: "user-1", firstName: "Alex" },
       entitlements: [],
@@ -232,13 +245,51 @@ describe("Chat starter suggestions in the composer", () => {
     expect(mockSetChatMode).not.toHaveBeenCalled();
     // The filled composer replaces the suggestions.
     expect(screen.queryByTestId("chat-starters")).not.toBeInTheDocument();
-    expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
+    expect(selectedEvents()).toEqual([
+      {
+        event: "chat_starter_selected",
+        properties: {
+          definition_version: 2,
+          example_id: "test_target",
+          mode: "agent",
+          presentation: "expanded",
+        },
+        dedupeKey: expect.any(String),
+      },
+    ]);
+    expect(JSON.stringify(mockQueuedCapture.mock.calls)).not.toContain(
+      "[scope]",
+    );
+  });
+
+  it("queues every accepted selection while analytics is not ready yet", async () => {
+    // The immediate SDK path is unavailable; selections must still be queued.
+    mockCapture.mockReturnValue(false);
+    renderStarters();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "Insert example: Fix a tool error",
+        }),
+      );
+      await flushFrames();
+      expect(textarea().value).toMatch(/^Help me fix this \[tool\] error/);
+      expect(textarea()).toHaveFocus();
+      fireEvent.change(textarea(), { target: { value: "" } });
+    }
+
+    const [first, second] = selectedEvents();
+    expect(selectedEvents()).toHaveLength(2);
+    expect(first.properties).toEqual({
       definition_version: 2,
-      example_id: "test_target",
+      example_id: "fix_tool_error",
       mode: "agent",
       presentation: "expanded",
     });
-    expect(JSON.stringify(mockCapture.mock.calls)).not.toContain("[scope]");
+    // Repeat selections are distinct events, not deduplicated retries.
+    expect(first.dedupeKey).not.toBe(second.dedupeKey);
+    expect(JSON.stringify(selectedEvents())).not.toContain("[tool]");
   });
 
   it("records an exposure only after the suggestions render", async () => {
@@ -314,10 +365,7 @@ describe("Chat starter suggestions in the composer", () => {
     await flushFrames();
 
     expect(textarea()).toHaveValue("my own request");
-    expect(mockCapture).not.toHaveBeenCalledWith(
-      "chat_starter_selected",
-      expect.anything(),
-    );
+    expect(selectedEvents()).toEqual([]);
   });
 
   it("never overwrites a saved draft for the same new chat", async () => {
@@ -423,12 +471,14 @@ describe("Chat starter suggestions in the composer", () => {
     );
     expect(textarea()).toHaveFocus();
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
-      definition_version: 2,
-      example_id: "write_up_findings",
-      mode: "agent",
-      presentation: "expanded",
-    });
+    expect(selectedEvents().map(({ properties }) => properties)).toEqual([
+      {
+        definition_version: 2,
+        example_id: "write_up_findings",
+        mode: "agent",
+        presentation: "expanded",
+      },
+    ]);
   });
 
   it("keeps live checks out of Ask while showing its other examples", async () => {
@@ -452,12 +502,14 @@ describe("Chat starter suggestions in the composer", () => {
     await flushFrames();
     expect(textarea().value).toMatch(/^Explain these \[tool\] results/);
     expect(textarea()).toHaveFocus();
-    expect(mockCapture).toHaveBeenCalledWith("chat_starter_selected", {
-      definition_version: 2,
-      example_id: "explain_results",
-      mode: "ask",
-      presentation: "expanded",
-    });
+    expect(selectedEvents().map(({ properties }) => properties)).toEqual([
+      {
+        definition_version: 2,
+        example_id: "explain_results",
+        mode: "ask",
+        presentation: "expanded",
+      },
+    ]);
   });
 
   it("shows only a collapsed Examples menu to returning users", async () => {

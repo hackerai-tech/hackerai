@@ -231,6 +231,7 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
           userId={user?.id}
           chats={chatListData}
           projects={projectListData}
+          exposureBlocked={taskSidebarOverlayOpen || settingsDialogOpen}
         >
           {children}
         </ChatStartersProvider>
