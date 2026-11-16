@@ -152,11 +152,34 @@ export interface DeductBalanceResult {
   poolDisabled?: boolean;
 }
 
+/** Closed, code-selected labels for the existing receipt verification branches. */
+type ReceiptVerificationReason =
+  | "verified_completed"
+  | "receipt_absent"
+  | "receipt_identity_mismatch"
+  | "receipt_not_completed"
+  | "receipt_result_missing"
+  | "applied_debit_count_mismatch"
+  | "debit_snapshot_missing"
+  | "debit_delta_mismatch"
+  | "debit_result_not_successful"
+  | "denied_result_has_applied_debit"
+  // The local deadline fired; this does not prove an upstream failure.
+  | "read_deadline"
+  | "read_error"
+  | "verification_error";
+
+/** Private to one deduction catch; never sent to Convex or returned. */
+interface ReceiptVerificationObservation {
+  reason?: ReceiptVerificationReason;
+}
+
 /** Report caller reconciliation, never receipt contents or a second exception. */
 function logDeductionReconciliation(
   scope: "personal" | "team",
   settlementOperationId: string,
   verifiedResultSuccess: boolean | undefined,
+  receiptVerificationReason: ReceiptVerificationReason | undefined,
 ) {
   try {
     // Shape cannot establish provenance. Fingerprint bounded UUID operation
@@ -186,6 +209,10 @@ function logDeductionReconciliation(
       ...(verifiedResultSuccess !== undefined && {
         verified_result_success: verifiedResultSuccess,
       }),
+      ...(receiptVerificationReason !== undefined && {
+        receipt_verification_diagnostic_version: 1,
+        receipt_verification_reason: receiptVerificationReason,
+      }),
     });
   } catch {
     // Optional telemetry must not change the financial result or trigger replay.
@@ -193,26 +220,34 @@ function logDeductionReconciliation(
 }
 
 /** Read once after a lost acknowledgement. Never resume or replay a wallet action. */
-async function reconcileCompletedDeduction({
-  userId,
-  organizationId,
-  pointsUsed,
-  usageSettlementId,
-  settlementOperationId,
-}: {
-  userId: string;
-  organizationId?: string;
-  pointsUsed: number;
-  usageSettlementId?: string;
-  settlementOperationId: string;
-}): Promise<DeductBalanceResult | undefined> {
+async function reconcileCompletedDeduction(
+  {
+    userId,
+    organizationId,
+    pointsUsed,
+    usageSettlementId,
+    settlementOperationId,
+  }: {
+    userId: string;
+    organizationId?: string;
+    pointsUsed: number;
+    usageSettlementId?: string;
+    settlementOperationId: string;
+  },
+  observation: ReceiptVerificationObservation,
+): Promise<DeductBalanceResult | undefined> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let deadlineFired = false;
+  let receiptReturned = false;
   try {
     // The race also bounds a transport that does not honor cancellation. The
     // scoped client cannot change the singleton's options or retry an action.
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        // Before abort(): an abort-aware read may reject inside abort() and
+        // win the race, but this local deadline is still the cause.
+        deadlineFired = true;
         controller.abort();
         reject(new Error("Settlement receipt read deadline exceeded"));
       }, 1500);
@@ -231,17 +266,31 @@ async function reconcileCompletedDeduction({
       ),
       deadline,
     ]);
+    receiptReturned = true;
+    // Same guards in the same short-circuit order; each failure only selects
+    // its diagnostic label before the unchanged UNKNOWN return.
+    if (!receipt) {
+      observation.reason = "receipt_absent";
+      return;
+    }
     if (
-      !receipt ||
       receipt.operation_id !== settlementOperationId ||
       receipt.user_id !== userId ||
       receipt.organization_id !== organizationId ||
       receipt.usage_settlement_id !== usageSettlementId ||
-      receipt.amount_points !== pointsUsed ||
-      receipt.status !== "completed" ||
-      !receipt.result
-    )
+      receipt.amount_points !== pointsUsed
+    ) {
+      observation.reason = "receipt_identity_mismatch";
       return;
+    }
+    if (receipt.status !== "completed") {
+      observation.reason = "receipt_not_completed";
+      return;
+    }
+    if (!receipt.result) {
+      observation.reason = "receipt_result_missing";
+      return;
+    }
 
     // Pending + applied proves a debit, not completion of the enclosing action
     // or its reload. Only a consistent completed result may clear UNKNOWN.
@@ -250,20 +299,42 @@ async function reconcileCompletedDeduction({
     );
     if (receipt.result.success) {
       const debit = applied[0];
-      if (
-        applied.length !== 1 ||
-        debit.previous_balance_points === null ||
-        debit.new_balance_points === null ||
-        debit.previous_balance_points - debit.new_balance_points !==
-          pointsUsed ||
-        !debit.result.success
-      )
+      if (applied.length !== 1) {
+        observation.reason = "applied_debit_count_mismatch";
         return;
-    } else if (applied.length !== 0) return;
+      }
+      if (
+        debit.previous_balance_points === null ||
+        debit.new_balance_points === null
+      ) {
+        observation.reason = "debit_snapshot_missing";
+        return;
+      }
+      if (
+        debit.previous_balance_points - debit.new_balance_points !==
+        pointsUsed
+      ) {
+        observation.reason = "debit_delta_mismatch";
+        return;
+      }
+      if (!debit.result.success) {
+        observation.reason = "debit_result_not_successful";
+        return;
+      }
+    } else if (applied.length !== 0) {
+      observation.reason = "denied_result_has_applied_debit";
+      return;
+    }
+    observation.reason = "verified_completed";
     return receipt.result;
   } catch {
     // Missing, pending, failed, or timed-out reads cannot prove non-application.
     // Preserve the original failure and the caller's no-adjustment fence.
+    observation.reason = receiptReturned
+      ? "verification_error"
+      : deadlineFired
+        ? "read_deadline"
+        : "read_error";
     return;
   } finally {
     clearTimeout(timer);
@@ -456,16 +527,21 @@ export async function deductFromBalance(
       startedAt,
       error,
     });
-    const completed = await reconcileCompletedDeduction({
-      userId,
-      pointsUsed,
-      usageSettlementId,
-      settlementOperationId,
-    });
+    const receiptVerification: ReceiptVerificationObservation = {};
+    const completed = await reconcileCompletedDeduction(
+      {
+        userId,
+        pointsUsed,
+        usageSettlementId,
+        settlementOperationId,
+      },
+      receiptVerification,
+    );
     logDeductionReconciliation(
       "personal",
       settlementOperationId,
       completed?.success,
+      receiptVerification.reason,
     );
     if (completed) return completed;
     // Do NOT report as insufficientFunds — this was a service error, not an
@@ -608,17 +684,22 @@ export async function deductFromTeamBalance(
       startedAt,
       error,
     });
-    const completed = await reconcileCompletedDeduction({
-      userId,
-      organizationId,
-      pointsUsed,
-      usageSettlementId,
-      settlementOperationId,
-    });
+    const receiptVerification: ReceiptVerificationObservation = {};
+    const completed = await reconcileCompletedDeduction(
+      {
+        userId,
+        organizationId,
+        pointsUsed,
+        usageSettlementId,
+        settlementOperationId,
+      },
+      receiptVerification,
+    );
     logDeductionReconciliation(
       "team",
       settlementOperationId,
       completed?.success,
+      receiptVerification.reason,
     );
     if (completed) return completed;
     return {
