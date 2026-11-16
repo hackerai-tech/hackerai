@@ -5,8 +5,16 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
+import { SWRConfig } from "swr";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
+
+// Each test starts without a cached account price.
+const freshCache = ({ children }: { children: ReactNode }) => (
+  <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
+);
+const renderFresh = (ui: ReactElement) => render(ui, { wrapper: freshCache });
 
 let mockUser: { id: string } | null = { id: "user-1" };
 let mockSubscription = "free";
@@ -72,7 +80,7 @@ describe("subscription before task presentation", () => {
   });
 
   it("shows the assigned price before allowing a task and uses the established checkout", async () => {
-    render(view());
+    renderFresh(view());
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     await screen.findByText("$29");
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
@@ -95,6 +103,78 @@ describe("subscription before task presentation", () => {
     );
   });
 
+  it("shows an assigned account's $49 quote and checks out with that quote", async () => {
+    const assigned = {
+      ...price,
+      priceLookupKey: "pro-monthly-plan-49-hac248",
+      displayedAmountDollars: 49,
+      stripePriceId: "price_49",
+      assignment: {
+        version: 1,
+        key: "hac248-pro-monthly-49-pricing",
+        variant: "test",
+        priceLookupKey: "pro-monthly-plan-49-hac248",
+        displayedAmountDollars: 49,
+        stripePriceId: "price_49",
+        assignedAt: "2026-11-20T10:00:00.000Z",
+      },
+    };
+    mockFetch.mockImplementation((url: string) =>
+      Promise.resolve(
+        response(
+          url.includes("pro-monthly")
+            ? assigned
+            : { assignment: { variant: "test", country: "IN" } },
+        ),
+      ),
+    );
+    renderFresh(view());
+    await screen.findByText("$49");
+    expect(screen.queryByText("$29")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Subscribe to Pro" }));
+    expect(mockUpgrade).toHaveBeenCalledWith(
+      "pro-monthly-plan",
+      undefined,
+      undefined,
+      "free",
+      expect.objectContaining({
+        pro_monthly_quote: expect.objectContaining({
+          price: expect.objectContaining({
+            displayedAmountDollars: 49,
+            stripePriceId: "price_49",
+          }),
+        }),
+      }),
+    );
+    expect(mockCapture).toHaveBeenCalledWith(
+      "hac248_pro_monthly_pricing_exposed",
+      expect.objectContaining({
+        experiment_variant: "test",
+        exposure_surface: "composer",
+      }),
+    );
+  });
+
+  it("rejects a $49 price that arrives without its assignment", async () => {
+    mockFetch.mockImplementation((url: string) =>
+      Promise.resolve(
+        response(
+          url.includes("pro-monthly")
+            ? {
+                ...price,
+                priceLookupKey: "pro-monthly-plan-49-hac248",
+                displayedAmountDollars: 49,
+              }
+            : { assignment: { variant: "test", country: "IN" } },
+        ),
+      ),
+    );
+    renderFresh(view());
+    await screen.findByText("Retry pricing");
+    expect(screen.queryByText("$49")).not.toBeInTheDocument();
+    expect(mockUpgrade).not.toHaveBeenCalled();
+  });
+
   it("preserves takeover actions while the idle composer is gated", async () => {
     const takeControl = jest.fn();
     const renderGate = (running: boolean) => (
@@ -105,7 +185,7 @@ describe("subscription before task presentation", () => {
         <button>Send task</button>
       </RegionalSubscriptionGate>
     );
-    const { rerender } = render(renderGate(false));
+    const { rerender } = renderFresh(renderGate(false));
     expect(screen.getByRole("status")).toHaveTextContent("Loading task access");
     fireEvent.click(screen.getByRole("button", { name: "Take control" }));
     expect(takeControl).toHaveBeenCalledTimes(1);
@@ -123,7 +203,7 @@ describe("subscription before task presentation", () => {
   });
 
   it("keeps plan comparison in the subscription-required flow", async () => {
-    render(view());
+    renderFresh(view());
     await screen.findByText("$29");
     fireEvent.click(screen.getByRole("button", { name: "Compare plans" }));
     expect(redirectToPricing).toHaveBeenCalledWith(
@@ -155,7 +235,7 @@ describe("subscription before task presentation", () => {
           ),
         ),
       );
-      render(view());
+      renderFresh(view());
       await screen.findByText("Retry pricing");
       expect(
         screen.queryByRole("button", { name: "Subscribe to Pro" }),
@@ -178,7 +258,7 @@ describe("subscription before task presentation", () => {
             }),
           ),
     );
-    render(view());
+    renderFresh(view());
     const checkout = await screen.findByRole("button", {
       name: "Subscribe to Pro",
     });
@@ -191,7 +271,7 @@ describe("subscription before task presentation", () => {
   });
 
   it("prevents more checkout and comparison actions while checkout is opening", async () => {
-    const { rerender } = render(view());
+    const { rerender } = renderFresh(view());
     await screen.findByText("$29");
     mockUpgradeLoading = true;
     rerender(view());
@@ -212,7 +292,7 @@ describe("subscription before task presentation", () => {
           resolveOldAccount = resolve;
         }),
     );
-    const { rerender } = render(view());
+    const { rerender } = renderFresh(view());
     mockUser = { id: "user-2" };
     mockFetch.mockResolvedValue(response({ assignment: null }));
     rerender(view());
@@ -247,7 +327,7 @@ describe("subscription before task presentation", () => {
               }),
             ),
       );
-      render(view());
+      renderFresh(view());
       await act(async () => {});
       expect(
         screen.getByRole("button", { name: "Subscribe to Pro" }),
@@ -274,7 +354,7 @@ describe("subscription before task presentation", () => {
     mockFetch.mockResolvedValue(
       response({ assignment: { variant: "control", country: "PK" } }),
     );
-    render(view());
+    renderFresh(view());
     await screen.findByText("Send task");
     expect(mockCapture).toHaveBeenCalledWith(
       "regional_subscription_first_exposed",
@@ -286,14 +366,14 @@ describe("subscription before task presentation", () => {
     "does not gate %s accounts",
     (subscription) => {
       mockSubscription = subscription;
-      render(view());
+      renderFresh(view());
       expect(screen.getByText("Send task")).toBeVisible();
       expect(mockFetch).not.toHaveBeenCalled();
     },
   );
 
   it("removes the paywall immediately when subscription state becomes paid", async () => {
-    const { rerender } = render(view());
+    const { rerender } = renderFresh(view());
     await screen.findByText("$29");
     mockSubscription = "pro";
     rerender(view());
@@ -302,14 +382,14 @@ describe("subscription before task presentation", () => {
   });
 
   it("keeps active task controls available", () => {
-    render(view(true));
+    renderFresh(view(true));
     expect(screen.getByText("Send task")).toBeVisible();
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("falls back to normal access on assignment failure", async () => {
     mockFetch.mockRejectedValue(new Error("offline"));
-    render(view());
+    renderFresh(view());
     await screen.findByText("Send task");
     expect(mockCapture).not.toHaveBeenCalled();
   });
@@ -322,7 +402,7 @@ describe("subscription before task presentation", () => {
           : response({ assignment: { variant: "test", country: "BD" } }),
       ),
     );
-    render(view());
+    renderFresh(view());
     await screen.findByText("Retry pricing");
     expect(screen.queryByText("$25")).not.toBeInTheDocument();
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
@@ -332,7 +412,7 @@ describe("subscription before task presentation", () => {
   });
 
   it("rechecks rollback on focus", async () => {
-    render(view());
+    renderFresh(view());
     await screen.findByText("$29");
     mockFetch.mockResolvedValue(response({ assignment: null }));
     act(() => window.dispatchEvent(new Event("focus")));
