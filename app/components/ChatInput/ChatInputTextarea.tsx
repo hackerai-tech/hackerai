@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef } from "react";
+import { ComposerSkillSelections, useComposerSkills } from "./ComposerSkills";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -72,6 +73,7 @@ export function ChatInputTextarea({
   onPointerDown,
   onBlur,
 }: ChatInputTextareaProps) {
+  const skills = useComposerSkills();
   const predictionDescriptionId = useId();
   const hasAnswerInput = !!answerInput;
   const composerInput = useComposerInput();
@@ -275,94 +277,113 @@ export function ChatInputTextarea({
   ]);
 
   return (
-    <div className="overflow-y-auto pl-4 pr-2">
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)]">
-        <TextareaAutosize
-          ref={textareaRef}
-          maxLength={
-            isReplyingToAgent ? MAX_AGENT_USER_REPLY_LENGTH : undefined
-          }
-          value={input}
-          onChange={(e) => {
-            // Record before setInput: React can throw synchronously in the setter.
-            recordComposerChange(e.nativeEvent);
-            if (e.target.value !== "") onPredictionTyping?.();
-            if (answerInput) answerInput.onChange(e.target.value);
-            else setInput(e.target.value);
-          }}
-          aria-label={defaultPlaceholder}
-          aria-describedby={
-            describedBy ??
-            (activePrediction ? predictionDescriptionId : undefined)
-          }
-          placeholder={activePrediction ?? defaultPlaceholder}
-          className={`col-start-1 row-start-1 flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "placeholder:opacity-0 ph-no-capture ph-mask" : ""}`}
-          minRows={minRows}
-          onFocus={onFocus}
-          onPointerDown={onPointerDown}
-          onBlur={onBlur}
-          disabled={disabled}
-          data-testid="chat-input"
-          onKeyDown={(e) => {
-            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
-              return;
-            if (
-              activePrediction &&
-              getInput() === "" &&
-              !e.nativeEvent.isComposing &&
-              e.nativeEvent.keyCode !== 229 &&
-              !e.shiftKey &&
-              !e.altKey &&
-              !e.ctrlKey &&
-              !e.metaKey
-            ) {
-              if (e.key === "Tab" && acceptPrediction()) {
-                e.preventDefault();
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                onDismissPrediction?.();
-                return;
-              }
+    <>
+      <ComposerSkillSelections />
+      <div className="overflow-y-auto pl-4 pr-2">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)]">
+          <TextareaAutosize
+            ref={textareaRef}
+            maxLength={
+              isReplyingToAgent ? MAX_AGENT_USER_REPLY_LENGTH : undefined
             }
-            onCommandKeyDown?.(e);
-            if (e.defaultPrevented) return;
-            if (
-              e.key === "Enter" &&
-              !e.shiftKey &&
-              !e.nativeEvent.isComposing &&
-              e.nativeEvent.keyCode !== 229
-            ) {
-              e.preventDefault();
-              onEnterSubmit(e);
+            value={input}
+            onChange={(e) => {
+              // Record before setInput: React can throw synchronously in the setter.
+              recordComposerChange(e.nativeEvent);
+              if (e.target.value !== "") onPredictionTyping?.();
+              if (answerInput) answerInput.onChange(e.target.value);
+              else {
+                setInput(e.target.value);
+                skills?.inspect(e.currentTarget);
+              }
+            }}
+            onSelect={(e) => {
+              if (!hasAnswerInput && !isReplyingToAgent)
+                skills?.inspect(e.currentTarget);
+            }}
+            aria-autocomplete={
+              skills && !hasAnswerInput && !isReplyingToAgent
+                ? "list"
+                : undefined
             }
-          }}
-        />
+            aria-controls={skills?.open ? skills.listId : undefined}
+            aria-activedescendant={skills?.activeId}
+            aria-label={defaultPlaceholder}
+            aria-describedby={
+              describedBy ??
+              (activePrediction ? predictionDescriptionId : undefined)
+            }
+            placeholder={activePrediction ?? defaultPlaceholder}
+            className={`col-start-1 row-start-1 flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${activePrediction ? "placeholder:opacity-0 ph-no-capture ph-mask" : ""}`}
+            minRows={minRows}
+            onFocus={onFocus}
+            onPointerDown={onPointerDown}
+            onBlur={onBlur}
+            disabled={disabled}
+            data-testid="chat-input"
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
+                return;
+              if (
+                activePrediction &&
+                getInput() === "" &&
+                !e.nativeEvent.isComposing &&
+                e.nativeEvent.keyCode !== 229 &&
+                !e.shiftKey &&
+                !e.altKey &&
+                !e.ctrlKey &&
+                !e.metaKey
+              ) {
+                if (e.key === "Tab" && acceptPrediction()) {
+                  e.preventDefault();
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  onDismissPrediction?.();
+                  return;
+                }
+              }
+              if (!hasAnswerInput && !isReplyingToAgent && skills?.keyDown(e))
+                return;
+              onCommandKeyDown?.(e);
+              if (e.defaultPrevented) return;
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.nativeEvent.keyCode !== 229
+              ) {
+                e.preventDefault();
+                onEnterSubmit(e);
+              }
+            }}
+          />
+          {activePrediction && (
+            // The T3-style inline key (MIT; third_party/t3code/LICENSE) shares
+            // the grid row so wrapped suggestions reserve room above the toolbar.
+            <div
+              ref={predictionRef}
+              aria-hidden="true"
+              className="pointer-events-none col-start-1 row-start-1 min-w-0 whitespace-pre-wrap break-words pt-[1px] text-base text-muted-foreground ph-no-capture ph-mask"
+            >
+              {activePrediction}
+              <kbd className="ml-2 inline-flex h-5 select-none items-center whitespace-nowrap rounded border border-b-2 border-border px-1 align-[1px] font-sans text-[11px] font-medium leading-none text-muted-foreground">
+                ⇥ Tab
+              </kbd>
+            </div>
+          )}
+        </div>
         {activePrediction && (
-          // The T3-style inline key (MIT; third_party/t3code/LICENSE) shares
-          // the grid row so wrapped suggestions reserve room above the toolbar.
-          <div
-            ref={predictionRef}
-            aria-hidden="true"
-            className="pointer-events-none col-start-1 row-start-1 min-w-0 whitespace-pre-wrap break-words pt-[1px] text-base text-muted-foreground ph-no-capture ph-mask"
+          <span
+            id={predictionDescriptionId}
+            className="sr-only ph-no-capture ph-mask"
           >
-            {activePrediction}
-            <kbd className="ml-2 inline-flex h-5 select-none items-center whitespace-nowrap rounded border border-b-2 border-border px-1 align-[1px] font-sans text-[11px] font-medium leading-none text-muted-foreground">
-              ⇥ Tab
-            </kbd>
-          </div>
+            Suggested next message: {activePrediction}. Press Tab to add it to
+            the composer, or Escape to dismiss. Review and send when ready.
+          </span>
         )}
       </div>
-      {activePrediction && (
-        <span
-          id={predictionDescriptionId}
-          className="sr-only ph-no-capture ph-mask"
-        >
-          Suggested next message: {activePrediction}. Press Tab to add it to the
-          composer, or Escape to dismiss. Review and send when ready.
-        </span>
-      )}
-    </div>
+    </>
   );
 }
