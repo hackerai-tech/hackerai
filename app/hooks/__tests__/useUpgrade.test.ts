@@ -25,6 +25,30 @@ jest.mock("@/lib/analytics/client", () => ({
   newCheckoutAttemptId: jest.fn(),
 }));
 
+const mockInvalidateProMonthlyPrice = jest.fn();
+jest.mock("../useProMonthlyPrice", () => ({
+  invalidateProMonthlyPrice: () => mockInvalidateProMonthlyPrice(),
+}));
+
+const assignedQuote = {
+  price: {
+    priceLookupKey: "pro-monthly-plan-49-hac248" as const,
+    displayedAmountDollars: 49 as const,
+    currency: "usd" as const,
+    billingInterval: "month" as const,
+    stripePriceId: "price_pro_49",
+  },
+  assignment: {
+    version: 1 as const,
+    key: "hac248-pro-monthly-49-pricing" as const,
+    variant: "test" as const,
+    priceLookupKey: "pro-monthly-plan-49-hac248" as const,
+    displayedAmountDollars: 49 as const,
+    stripePriceId: "price_pro_49",
+    assignedAt: "2026-11-20T10:00:00.000Z",
+  },
+};
+
 const mockUseAuth = useAuth as jest.MockedFunction<typeof useAuth>;
 const mockNewCheckoutAttemptId = newCheckoutAttemptId as jest.MockedFunction<
   typeof newCheckoutAttemptId
@@ -414,23 +438,74 @@ describe("useUpgrade checkout attempts", () => {
     },
   );
 
-  it("keeps the submit lock held once checkout navigation starts", async () => {
+  it("does not send a monthly quote as the price of another plan", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        response({ ok: true, status: 200, body: { error: "cancelled" } }),
+      );
+    mockNewCheckoutAttemptId.mockReturnValue("ca_yearly_123");
+    const { result } = renderHook(() => useUpgrade());
+    await act(async () => {
+      await result.current.handleUpgrade(
+        "pro-yearly-plan",
+        undefined,
+        undefined,
+        "free",
+        { pro_monthly_quote: assignedQuote },
+      );
+    });
+    const body = JSON.parse(
+      String((global.fetch as jest.Mock).mock.calls[0][1].body),
+    );
+    expect(body).not.toHaveProperty("displayedPrice");
+    // The account's assignment stays visible on the other plan's funnel.
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_intent_clicked",
+      expect.objectContaining({ experiment_variant: "test" }),
+    );
+  });
+
+  it.each(["price_changed", "price_confirmation_required"])(
+    "refreshes the shown price and allows a new attempt after %s",
+    async (code) => {
+      global.fetch = jest.fn().mockResolvedValue(
+        response({
+          ok: false,
+          status: 409,
+          body: {
+            code,
+            error: "Your Pro price was updated. Review it before checkout.",
+          },
+        }),
+      );
+      mockNewCheckoutAttemptId.mockReturnValue("ca_price_409");
+      const { result } = renderHook(() => useUpgrade());
+      await act(async () => {
+        await result.current.handleUpgrade(
+          "pro-monthly-plan",
+          undefined,
+          undefined,
+          "free",
+          { pro_monthly_quote: assignedQuote },
+        );
+      });
+      expect(mockInvalidateProMonthlyPrice).toHaveBeenCalledTimes(1);
+      expect(mockToastError).toHaveBeenCalledWith(
+        "Your Pro price was updated. Review it before checkout.",
+      );
+      expect(result.current.upgradeLoading).toBe(false);
+      expect(window.location.hash).not.toBe("#checkout");
+    },
+  );
+
+  // Keep last: a started navigation intentionally holds the module-level lock.
+  it("keeps the submit lock held once checkout navigation starts and sends the shown quote", async () => {
     global.fetch = jest.fn().mockResolvedValue(
       response({
         ok: true,
         status: 200,
-        body: {
-          url: `${window.location.origin}/#checkout`,
-          pricingExperiment: {
-            key: "hac46-pro-monthly-29-pricing",
-            variant: "test",
-            priceLookupKey: "pro-monthly-plan-29-experiment",
-            displayedAmountDollars: 29,
-            currency: "usd",
-            billingInterval: "month",
-            stripePriceId: "price_pro_29",
-          },
-        },
+        body: { url: `${window.location.origin}/#checkout` },
       }),
     );
     mockNewCheckoutAttemptId.mockReturnValue("ca_redirect_123");
@@ -442,17 +517,7 @@ describe("useUpgrade checkout attempts", () => {
         undefined,
         undefined,
         "free",
-        {
-          pricing_experiment: {
-            key: "hac46-pro-monthly-29-pricing",
-            variant: "test",
-            priceLookupKey: "pro-monthly-plan-29-experiment",
-            displayedAmountDollars: 29,
-            currency: "usd",
-            billingInterval: "month",
-            stripePriceId: "price_pro_29",
-          },
-        },
+        { pro_monthly_quote: assignedQuote },
       );
     });
     await act(async () => {
@@ -463,13 +528,18 @@ describe("useUpgrade checkout attempts", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
     expect(result.current.upgradeLoading).toBe(true);
-    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
-      "checkout_intent_clicked",
-      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
+    const body = JSON.parse(
+      String((global.fetch as jest.Mock).mock.calls[0][1].body),
     );
-    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
-      "checkout_redirected",
-      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
-    );
+    expect(body.displayedPrice).toEqual(assignedQuote.price);
+    for (const event of ["checkout_intent_clicked", "checkout_redirected"]) {
+      expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+        event,
+        expect.objectContaining({
+          experiment_variant: "test",
+          pricing_experiment_amount_dollars: 49,
+        }),
+      );
+    }
   });
 });

@@ -3,8 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Check } from "lucide-react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 import BillingFrequencySelector from "@/app/components/BillingFrequencySelector";
+import {
+  proMonthlyPriceDisplay,
+  useProMonthlyPrice,
+  useProMonthlyPriceExposure,
+} from "@/app/hooks/useProMonthlyPrice";
 import { cn } from "@/lib/utils";
 import {
   PLAN_HEADERS,
@@ -52,10 +58,22 @@ const plans = [
 
 const RECOMMENDED_PLAN = "pro-plus";
 
-function billingDetail(plan: PaidPlanKey, frequency: BillingFrequency) {
-  return frequency === "yearly"
-    ? `$${PRICING[plan].yearly * 12} billed yearly · $${PRICING[plan].monthly}/month if billed monthly`
-    : `Billed monthly · $${PRICING[plan].yearly}/month if billed yearly`;
+/**
+ * `monthlyAmount` overrides the public monthly price; `null` means the
+ * account's monthly price is not confirmed, so no monthly amount is promised.
+ */
+function billingDetail(
+  plan: PaidPlanKey,
+  frequency: BillingFrequency,
+  monthlyAmount: number | null = PRICING[plan].monthly,
+) {
+  if (frequency === "yearly") {
+    const yearly = `$${PRICING[plan].yearly * 12} billed yearly`;
+    return monthlyAmount === null
+      ? yearly
+      : `${yearly} · $${monthlyAmount}/month if billed monthly`;
+  }
+  return `Billed monthly · $${PRICING[plan].yearly}/month if billed yearly`;
 }
 
 const ctaClassName =
@@ -63,6 +81,15 @@ const ctaClassName =
 
 export function PricingPlans() {
   const [frequency, setFrequency] = useState<BillingFrequency>("monthly");
+  const { user } = useAuth();
+  const proMonthlyPrice = useProMonthlyPrice(Boolean(user));
+  const proMonthly = proMonthlyPriceDisplay(proMonthlyPrice);
+  const proMonthlyConfirmed = proMonthlyPrice.status === "ready";
+  useProMonthlyPriceExposure(
+    proMonthlyConfirmed ? proMonthlyPrice.quote : undefined,
+    "public_pricing",
+    frequency === "monthly",
+  );
 
   return (
     <>
@@ -86,7 +113,14 @@ export function PricingPlans() {
       <div className="mt-7 grid gap-px overflow-hidden rounded-2xl border border-border bg-border md:grid-cols-2 xl:grid-cols-4">
         {plans.map((plan) => {
           const recommended = plan.key === RECOMMENDED_PLAN;
-          const price = plan.key === "free" ? 0 : PRICING[plan.key][frequency];
+          const accountPriced = plan.key === "pro" && frequency === "monthly";
+          const price =
+            plan.key === "free"
+              ? 0
+              : accountPriced
+                ? proMonthly.price
+                : PRICING[plan.key][frequency];
+          const priceLoading = accountPriced && Boolean(proMonthly.loading);
 
           return (
             <article
@@ -112,18 +146,59 @@ export function PricingPlans() {
                   </p>
                 </div>
                 <div className="mt-4 sm:mt-0 sm:shrink-0 sm:text-right md:mt-8 md:text-left">
-                  <div className="flex items-baseline gap-1 sm:justify-end md:justify-start">
+                  <div
+                    className="flex items-baseline gap-1 sm:justify-end md:justify-start"
+                    aria-busy={priceLoading}
+                  >
+                    {accountPriced && proMonthly.prefix ? (
+                      <span className="text-sm text-muted-foreground">
+                        {proMonthly.prefix}
+                      </span>
+                    ) : null}
                     <span className="text-4xl font-semibold tracking-tight">
-                      ${price}
+                      {priceLoading ? (
+                        <>
+                          <span
+                            aria-hidden="true"
+                            className="inline-block animate-pulse rounded-md bg-muted text-transparent"
+                          >
+                            $00
+                          </span>
+                          <span className="sr-only">Loading price</span>
+                        </>
+                      ) : (
+                        `$${price}`
+                      )}
                     </span>
                     <span className="text-xs text-muted-foreground">
                       /month
                     </span>
                   </div>
                   <p className="mt-1 max-w-[230px] text-xs leading-5 text-muted-foreground">
-                    {plan.key === "free"
-                      ? "Free usage and availability vary by location."
-                      : billingDetail(plan.key, frequency)}
+                    {plan.key === "free" ? (
+                      "Free usage and availability vary by location."
+                    ) : accountPriced && proMonthly.status ? (
+                      <span role="status">
+                        {proMonthly.status}{" "}
+                        <button
+                          type="button"
+                          onClick={proMonthlyPrice.retry}
+                          className="rounded-sm text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          Retry
+                        </button>
+                      </span>
+                    ) : (
+                      billingDetail(
+                        plan.key,
+                        frequency,
+                        plan.key === "pro"
+                          ? proMonthlyConfirmed
+                            ? proMonthly.price
+                            : null
+                          : undefined,
+                      )
+                    )}
                   </p>
                 </div>
               </div>

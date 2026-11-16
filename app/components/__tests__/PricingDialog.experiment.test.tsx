@@ -47,6 +47,53 @@ jest.mock("@/app/hooks/useBillingRecoveryStatus", () => ({
   useBillingRecoveryStatus: () => mockBilling,
 }));
 
+const mockControlQuote = {
+  price: {
+    priceLookupKey: "pro-monthly-plan",
+    displayedAmountDollars: 29,
+    currency: "usd",
+    billingInterval: "month",
+    stripePriceId: "price_pro_29",
+  },
+};
+const mockAssignedQuote = {
+  price: {
+    priceLookupKey: "pro-monthly-plan-49-hac248",
+    displayedAmountDollars: 49,
+    currency: "usd",
+    billingInterval: "month",
+    stripePriceId: "price_pro_49",
+  },
+  assignment: {
+    version: 1,
+    key: "hac248-pro-monthly-49-pricing",
+    variant: "test",
+    priceLookupKey: "pro-monthly-plan-49-hac248",
+    displayedAmountDollars: 49,
+    stripePriceId: "price_pro_49",
+    assignedAt: "2026-11-20T10:00:00.000Z",
+  },
+};
+let mockProMonthlyState: Record<string, unknown> = {
+  status: "ready",
+  quote: mockControlQuote,
+};
+const mockRetryPrice = jest.fn();
+const mockPriceEnabled: boolean[] = [];
+jest.mock("@/app/hooks/useProMonthlyPrice", () => {
+  const actual = jest.requireActual(
+    "@/app/hooks/useProMonthlyPrice",
+  ) as typeof import("@/app/hooks/useProMonthlyPrice");
+  return {
+    ...actual,
+    useProMonthlyPrice: (enabled: boolean) => {
+      mockPriceEnabled.push(enabled);
+      return { ...mockProMonthlyState, retry: mockRetryPrice };
+    },
+    useProMonthlyPriceExposure: jest.fn(),
+  };
+});
+
 jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
@@ -102,6 +149,8 @@ describe("PricingDialog prices and billing status", () => {
     mockBillingReviewRequired = false;
     mockAuthLoading = false;
     mockSubscription = "free";
+    mockProMonthlyState = { status: "ready", quote: mockControlQuote };
+    mockPriceEnabled.length = 0;
     mockBilling = {
       data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
       isLoading: false,
@@ -231,19 +280,59 @@ describe("PricingDialog prices and billing status", () => {
     jest.useRealTimers();
   });
 
-  it("shows $29 immediately without fetching a presentation price", async () => {
+  it("shows the account's resolved monthly price and checks out with that quote", async () => {
+    mockProMonthlyState = { status: "ready", quote: mockAssignedQuote };
     render(<PricingDialog isOpen onClose={jest.fn()} />);
-    expect(screen.getByText("29")).toBeVisible();
-    expect(screen.queryByText("…")).not.toBeInTheDocument();
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.getByText("49")).toBeVisible();
+    expect(screen.queryByText("29")).not.toBeInTheDocument();
+    expect(screen.queryByText("From")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Get Pro" }));
     expect(mockHandleUpgrade).toHaveBeenCalledWith(
       "pro-monthly-plan",
       undefined,
       undefined,
       "free",
-      expect.objectContaining({ surface: "pricing_dialog" }),
+      expect.objectContaining({
+        surface: "pricing_dialog",
+        pro_monthly_quote: mockAssignedQuote,
+      }),
     );
+  });
+
+  it("promises no monthly amount and blocks monthly checkout while the price resolves", async () => {
+    mockProMonthlyState = { status: "loading" };
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.queryByText("29")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading price")).toBeInTheDocument();
+    const proButton = screen.getByRole("button", { name: "Get Pro" });
+    expect(proButton).toBeDisabled();
+    await userEvent.click(proButton);
+    expect(mockHandleUpgrade).not.toHaveBeenCalled();
+    // Annual Pro and other plans do not wait for the monthly price.
+    expect(screen.getByRole("button", { name: "Get Pro+" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Yearly" }));
+    expect(screen.getByRole("button", { name: "Get Pro" })).toBeEnabled();
+  });
+
+  it("offers a price retry instead of monthly checkout when the price fails", async () => {
+    mockProMonthlyState = { status: "error" };
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.getByText("From")).toBeVisible();
+    expect(screen.getByText("Couldn’t confirm your price.")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Get Pro" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry pricing" }),
+    );
+    expect(mockRetryPrice).toHaveBeenCalledTimes(1);
+    expect(mockHandleUpgrade).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve an account price while the dialog is closed", () => {
+    render(<PricingDialog isOpen={false} onClose={jest.fn()} />);
+    expect(mockPriceEnabled.length).toBeGreaterThan(0);
+    expect(mockPriceEnabled.every((enabled) => !enabled)).toBe(true);
   });
 
   it("shows the yearly price immediately and selects annual checkout", async () => {

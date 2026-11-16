@@ -27,6 +27,35 @@ const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogFlush = jest.fn();
 const mockResponseCookieDelete = jest.fn();
+const mockRetrievePrice = jest.fn();
+const mockRedisStore = new Map<string, string>();
+const mockRedisGet = jest.fn(
+  async (key: string) => mockRedisStore.get(key) ?? null,
+);
+const mockRedisSet = jest.fn(
+  async (key: string, value: string, _options: unknown) => {
+    if (mockRedisStore.has(key)) return null;
+    mockRedisStore.set(key, value);
+    return "OK";
+  },
+);
+const mockGetFeatureFlagResult = jest.fn(
+  async (..._args: unknown[]) => undefined as unknown,
+);
+const mockPostHogCapture = jest.fn();
+
+jest.mock("@/lib/rate-limit/redis", () => ({
+  createRedisClient: () => ({ get: mockRedisGet, set: mockRedisSet }),
+}));
+
+jest.mock("@/app/posthog", () => ({
+  __esModule: true,
+  default: () => ({
+    getFeatureFlagResult: mockGetFeatureFlagResult,
+    capture: mockPostHogCapture,
+    flush: async () => {},
+  }),
+}));
 
 jest.mock("next/server", () => {
   return {
@@ -69,6 +98,7 @@ jest.mock("@/app/api/stripe", () => ({
     invoicePayments: { list: mockListInvoicePayments },
     prices: {
       list: mockListPrices,
+      retrieve: mockRetrievePrice,
     },
     customers: {
       list: mockListCustomers,
@@ -131,6 +161,8 @@ describe("POST /api/subscribe", () => {
     process.env.CONVEX_SERVICE_ROLE_KEY = "service_key";
     delete process.env.REFERRAL_PROGRAM_ENABLED;
 
+    mockRedisStore.clear();
+    mockGetFeatureFlagResult.mockResolvedValue(undefined);
     mockConvexMutation.mockResolvedValue(null);
     mockConvexQuery.mockResolvedValue(null);
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
@@ -1211,5 +1243,219 @@ describe("POST /api/subscribe", () => {
     expect(mockConvexMutation.mock.invocationCallOrder[binding]).toBeLessThan(
       mockCreateCheckoutSession.mock.invocationCallOrder[0],
     );
+  });
+
+  describe("HAC-248 account price", () => {
+    const STORAGE_KEY = "hac248:pro-monthly:user_123";
+    const recurring = {
+      interval: "month",
+      interval_count: 1,
+      usage_type: "licensed",
+    };
+    const price29 = {
+      id: "price_pro_29",
+      lookup_key: "pro-monthly-plan",
+      active: true,
+      billing_scheme: "per_unit",
+      type: "recurring",
+      recurring,
+      unit_amount: 2900,
+      currency: "usd",
+      product: "prod_pro",
+    };
+    const price49 = {
+      ...price29,
+      id: "price_pro_49",
+      lookup_key: "pro-monthly-plan-49-hac248",
+      unit_amount: 4900,
+    };
+    const quote = (price: typeof price29) => ({
+      priceLookupKey: price.lookup_key,
+      displayedAmountDollars: price.unit_amount / 100,
+      currency: "usd",
+      billingInterval: "month",
+      stripePriceId: price.id,
+    });
+    const storeAssignment = (variant: "control" | "test") =>
+      mockRedisStore.set(
+        STORAGE_KEY,
+        JSON.stringify({
+          version: 1,
+          key: "hac248-pro-monthly-49-pricing",
+          variant,
+          priceLookupKey:
+            variant === "test" ? price49.lookup_key : "pro-monthly-plan",
+          displayedAmountDollars: variant === "test" ? 49 : 29,
+          stripePriceId: variant === "test" ? price49.id : price29.id,
+          assignedAt: "2026-11-19T08:00:00.000Z",
+        }),
+      );
+
+    beforeEach(() => {
+      mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+      mockCreateOrganization.mockResolvedValue({ id: "org_new" } as never);
+      mockCreateCustomer.mockResolvedValue({
+        id: "cus_new",
+        metadata: {},
+      } as never);
+      mockListCustomers.mockResolvedValue({
+        data: [],
+        has_more: false,
+      } as never);
+      mockListPrices.mockImplementation(
+        async ({ lookup_keys }: { lookup_keys: string[] }) =>
+          ({
+            data: [
+              lookup_keys[0] === "pro-monthly-plan"
+                ? price29
+                : lookup_keys[0] === price49.lookup_key
+                  ? price49
+                  : {
+                      ...price29,
+                      id: "price_other",
+                      lookup_key: lookup_keys[0],
+                      unit_amount: 6000,
+                    },
+            ],
+          }) as never,
+      );
+      mockRetrievePrice.mockImplementation(async (id: string) =>
+        id === price49.id ? price49 : price29,
+      );
+    });
+
+    it("charges an assigned account its confirmed $49 Price and records the assignment", async () => {
+      storeAssignment("test");
+      const { POST } = await import("../route");
+      const response = await POST(
+        makeRequest({
+          plan: "pro-monthly-plan",
+          displayedPrice: quote(price49),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const attribution = {
+        pricingExperimentKey: "hac248-pro-monthly-49-pricing",
+        pricingExperimentVariant: "test",
+        pricingExperimentPriceId: "price_pro_49",
+      };
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [{ price: "price_pro_49", quantity: 1 }],
+          metadata: expect.objectContaining({
+            resolvedPriceLookupKey: "pro-monthly-plan-49-hac248",
+            ...attribution,
+          }),
+          subscription_data: {
+            metadata: expect.objectContaining(attribution),
+          },
+        }),
+      );
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        "checkout_started",
+        expect.objectContaining({
+          charged_amount_dollars: 49,
+          stripe_price_id: "price_pro_49",
+          experiment_variant: "test",
+        }),
+      );
+      expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["price_confirmation_required", undefined],
+      ["price_changed", quote(price29)],
+    ])(
+      "returns %s without creating billing objects when the shown price is not the assigned one",
+      async (code, displayedPrice) => {
+        storeAssignment("test");
+        const { POST } = await import("../route");
+        const response = await POST(
+          makeRequest({ plan: "pro-monthly-plan", displayedPrice }),
+        );
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code });
+        expect(mockCreateOrganization).not.toHaveBeenCalled();
+        expect(mockCreateCustomer).not.toHaveBeenCalled();
+        expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it("ignores a spoofed $49 plan from an unassigned account and charges $29", async () => {
+      const { POST } = await import("../route");
+      const response = await POST(
+        makeRequest({ plan: "pro-monthly-plan-49-hac248" }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [{ price: "price_pro_29", quantity: 1 }],
+        }),
+      );
+      const metadata = (
+        mockCreateCheckoutSession.mock.calls[0][0] as {
+          metadata: Record<string, string>;
+        }
+      ).metadata;
+      expect(metadata).not.toHaveProperty("pricingExperimentKey");
+    });
+
+    it("enrolls an eligible new account at checkout and asks an old client to confirm the price first", async () => {
+      mockGetFeatureFlagResult.mockResolvedValue({
+        enabled: true,
+        variant: "test",
+        payload: { version: 1, enrollmentStartAt: "2026-06-01T00:00:00.000Z" },
+      });
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: "price_confirmation_required",
+      });
+      expect(JSON.parse(mockRedisStore.get(STORAGE_KEY)!)).toMatchObject({
+        variant: "test",
+        stripePriceId: "price_pro_49",
+      });
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        STORAGE_KEY,
+        expect.any(String),
+        {
+          nx: true,
+        },
+      );
+      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps an existing assignment on another plan's checkout without enrolling", async () => {
+      storeAssignment("control");
+      const { POST } = await import("../route");
+      const response = await POST(
+        makeRequest({ plan: "pro-plus-monthly-plan" }),
+      );
+      expect(response.status).toBe(200);
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [{ price: "price_other", quantity: 1 }],
+          subscription_data: {
+            metadata: expect.objectContaining({
+              requestedPlan: "pro-plus-monthly-plan",
+              pricingExperimentKey: "hac248-pro-monthly-49-pricing",
+              pricingExperimentVariant: "control",
+            }),
+          },
+        }),
+      );
+      expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it("fails closed for monthly Pro when the assignment cannot be read", async () => {
+      mockRedisGet.mockRejectedValueOnce(new Error("Redis down") as never);
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+      expect(response.status).toBe(503);
+      expect(mockCreateOrganization).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    });
   });
 });
