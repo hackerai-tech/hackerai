@@ -2580,11 +2580,30 @@ async function markRetentionPauseEffective(
   }
 }
 
+/**
+ * Last boundary entered by handleSubscriptionDeleted, for failure diagnostics
+ * only. It does not mean that step's write committed or that it caused the
+ * failure. The one synchronous step separates the handler's own missing-invoice
+ * throw from the preceding referral update, which swallows its own errors.
+ */
+type SubscriptionDeletedStep =
+  | "void_unpaid_canceled_renewal_invoice"
+  | "resolve_subscription"
+  | "resolve_user_ids_from_customer"
+  | "record_cancellation_completed"
+  | "mark_retention_pause_effective"
+  | "set_referral_codes_paid_eligibility"
+  | "require_payment_failed_invoice_id"
+  | "retrieve_invoice_for_failure_analytics"
+  | "record_involuntary_churn_event"
+  | "emit_billing_payment_failed";
+
 /** Handle customer.subscription.deleted — emit churn analytics for the lapsed paid users. */
 async function handleSubscriptionDeleted(
   subscription: Stripe.Subscription,
   stripeEventId: string,
   eventOccurredAtMs: number,
+  diagnostic: { subscriptionDeletedStep?: SubscriptionDeletedStep },
 ): Promise<void> {
   const customerId =
     typeof subscription.customer === "string"
@@ -2599,6 +2618,7 @@ async function handleSubscriptionDeleted(
       subscription.cancellation_details?.reason ?? "",
     )
   ) {
+    diagnostic.subscriptionDeletedStep = "void_unpaid_canceled_renewal_invoice";
     const renewalResult = await voidUnpaidCanceledRenewalInvoice(
       stripe,
       subscription,
@@ -2617,6 +2637,7 @@ async function handleSubscriptionDeleted(
   let tier: SubscriptionTier | null = null;
 
   if (!lookupKey) {
+    diagnostic.subscriptionDeletedStep = "resolve_subscription";
     const resolved = await resolveSubscription(subscription.id);
     if (!resolved) {
       console.info(
@@ -2644,6 +2665,7 @@ async function handleSubscriptionDeleted(
     }
   }
 
+  diagnostic.subscriptionDeletedStep = "resolve_user_ids_from_customer";
   const { userIds, orgId, reason } =
     await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
@@ -2669,6 +2691,7 @@ async function handleSubscriptionDeleted(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
 
+  diagnostic.subscriptionDeletedStep = "record_cancellation_completed";
   await recordCancellationCompleted({
     subscription,
     customerId,
@@ -2679,6 +2702,7 @@ async function handleSubscriptionDeleted(
     completionType: "deleted",
     eventOccurredAtMs,
   });
+  diagnostic.subscriptionDeletedStep = "mark_retention_pause_effective";
   await markRetentionPauseEffective(subscription, eventOccurredAtMs);
   const pauseProperties = retentionPauseProperties(subscription);
 
@@ -2700,6 +2724,7 @@ async function handleSubscriptionDeleted(
     });
   }
 
+  diagnostic.subscriptionDeletedStep = "set_referral_codes_paid_eligibility";
   await setReferralCodesPaidEligibility({
     userIds,
     active: false,
@@ -2707,12 +2732,14 @@ async function handleSubscriptionDeleted(
 
   if (cancellationReason !== "payment_failed") return;
 
+  diagnostic.subscriptionDeletedStep = "require_payment_failed_invoice_id";
   const latestInvoiceId = stripeObjectId(subscription.latest_invoice);
   if (!latestInvoiceId) {
     throw new Error(
       `Payment-failed subscription ${subscription.id} is missing its latest invoice`,
     );
   }
+  diagnostic.subscriptionDeletedStep = "retrieve_invoice_for_failure_analytics";
   const failureContext =
     await retrieveInvoiceForFailureAnalytics(latestInvoiceId);
   if (!failureContext) {
@@ -2728,6 +2755,7 @@ async function handleSubscriptionDeleted(
     paymentIntent: failureContext.paymentIntent,
   });
 
+  diagnostic.subscriptionDeletedStep = "record_involuntary_churn_event";
   await recordInvoluntaryChurnEvent({
     stripeEventId,
     stripeEventType: "customer.subscription.deleted",
@@ -2742,6 +2770,7 @@ async function handleSubscriptionDeleted(
     failureProperties,
   });
 
+  diagnostic.subscriptionDeletedStep = "emit_billing_payment_failed";
   await emitBillingPaymentFailed({
     stripeEventId,
     stripeEventType: "customer.subscription.deleted",
@@ -2775,7 +2804,7 @@ async function handleSubscriptionDeleted(
  */
 async function handleSubscriptionWebhook(
   req: NextRequest,
-  diagnostic: { phase: SubscriptionWebhookPhase },
+  diagnostic: SubscriptionWebhookDiagnostic,
 ) {
   const body = await req.text();
   const signature = req.headers.get("stripe-signature");
@@ -2957,6 +2986,7 @@ async function handleSubscriptionWebhook(
         event.data.object as Stripe.Subscription,
         event.id,
         stripeEventOccurredAtMs(event),
+        diagnostic,
       );
       break;
     }
@@ -3037,6 +3067,12 @@ type SubscriptionWebhookPhase =
   | "mark_processed"
   | "respond";
 
+/** Request-local failure location; never shared between deliveries. */
+type SubscriptionWebhookDiagnostic = {
+  phase: SubscriptionWebhookPhase;
+  subscriptionDeletedStep?: SubscriptionDeletedStep;
+};
+
 /** Drain failure context without creating a second error during request teardown. */
 async function flushWebhookFailureContext() {
   try {
@@ -3048,9 +3084,7 @@ async function flushWebhookFailureContext() {
 
 /** Add only the last entered phase; Next retains the original error report. */
 export async function POST(req: NextRequest) {
-  const diagnostic: { phase: SubscriptionWebhookPhase } = {
-    phase: "read_body",
-  };
+  const diagnostic: SubscriptionWebhookDiagnostic = { phase: "read_body" };
   try {
     return await handleSubscriptionWebhook(req, diagnostic);
   } catch (error) {
@@ -3060,6 +3094,10 @@ export async function POST(req: NextRequest) {
       phLogger.warn("subscription_webhook_failure_context", {
         diagnostic_version: 1,
         webhook_phase: diagnostic.phase,
+        ...(diagnostic.phase === "subscription_deleted" &&
+        diagnostic.subscriptionDeletedStep
+          ? { subscription_deleted_step: diagnostic.subscriptionDeletedStep }
+          : {}),
         ...(requestId &&
         /^(?:[a-z0-9-]{1,32}::){0,2}[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
           requestId,
