@@ -1,6 +1,7 @@
 import {
   assertChatHistoryOwner,
   createChatHistoryAccess,
+  ensureChatHistoryAccess,
 } from "./lib/chatHistoryAccess";
 import { defaultGoalCriterion, validGoalStart } from "../lib/goals/contracts";
 import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
@@ -1001,6 +1002,18 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+
+      // Give an admitted legacy chat stable history ownership so its history
+      // pages stop depending on chat status writes. Deleting chats are skipped;
+      // their final batch removes the record together with the chat.
+      if (
+        args.role === "user" &&
+        chatForInsert &&
+        chatForInsert.deletion_started_at === undefined
+      ) {
+        failureStage = "ensure_chat_history_access";
+        await ensureChatHistoryAccess(ctx, chatForInsert);
+      }
 
       // Move the chat to the top of the sidebar as soon as the user submits a
       // visible message. Existing-message retries return above, so they do not
