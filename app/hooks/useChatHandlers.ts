@@ -1,5 +1,5 @@
 import { parseGoalCommand, goalResumeMessage } from "@/lib/goals/commands";
-import { useRef, RefObject, useEffect, useState } from "react";
+import { useRef, RefObject, useEffect, useLayoutEffect, useState } from "react";
 
 import { useMutation } from "convex/react";
 import { getConvexSize, type Value } from "convex/values";
@@ -215,16 +215,15 @@ export const useChatHandlers = ({
   );
   // MessageItem intentionally ignores callback identity in its memo comparator,
   // so a rendered Regenerate button can retain an older handler closure.
-  const requestSelectedModelRef = useLatestRef(requestSelectedModel);
-
-  // Avoid stale closure on chatMode: on mobile, a tap on Regenerate can fire
-  // before React commits the new chatMode after a mode toggle, sending the
-  // previous mode in the request body. Reading from a ref always gets the
-  // latest value at the moment of the click.
-  const chatModeRef = useLatestRef(chatMode);
-  const sandboxPreferenceRef = useLatestRef(sandboxPreference);
-  const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
-  const agentPermissionModeRef = useLatestRef(agentPermissionMode);
+  // Request settings come from refs rather than handler closures, and the refs
+  // update during the commit that applies a settings change. An action started
+  // by an older callback or right after that commit reads the latest committed
+  // values.
+  const requestSelectedModelRef = useCommittedRef(requestSelectedModel);
+  const chatModeRef = useCommittedRef(chatMode);
+  const sandboxPreferenceRef = useCommittedRef(sandboxPreference);
+  const desktopEnvironmentIdRef = useCommittedRef(desktopEnvironmentId);
+  const agentPermissionModeRef = useCommittedRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
   const goalGenerationRef = useLatestRef(goalGeneration);
   const goalStateRef = useLatestRef(goalState);
@@ -232,20 +231,24 @@ export const useChatHandlers = ({
   const retryPendingRef = useRef(false);
   const currentChatIdRef = useLatestRef(chatId);
   // Ends with each chat visit, so returning to a chat cannot revive an action
-  // that started during an earlier visit.
+  // that started during an earlier visit. Ownership changes during the commit,
+  // before any awaited work or later layout callback can observe the old chat.
   const chatVisitRef = useRef(0);
-  useEffect(() => {
+  const stopGenerationRef = useRef(0);
+  useLayoutEffect(() => {
     currentChatIdRef.current = chatId;
     return () => {
       // Pending reply requests may resolve after this chat unmounts.
       currentChatIdRef.current = "";
       chatVisitRef.current += 1;
+      // Leaving the chat also fences pending Stop and edit work, before an
+      // action in the next chat can record the generation.
+      stopGenerationRef.current += 1;
     };
   }, [chatId, currentChatIdRef]);
   const todosRef = useLatestRef(todos);
   const statusRef = useLatestRef(status);
   const isSummarizingRef = useCommittedRef(isSummarizing);
-  const stopGenerationRef = useRef(0);
   const stopCompactorRef = useRef<StopCompactor | undefined>(undefined);
   const stopCompactorLoadingRef = useRef(false);
   useEffect(() => {
@@ -278,9 +281,6 @@ export const useChatHandlers = ({
 
   useEffect(() => {
     setSummarySteer(null);
-    return () => {
-      stopGenerationRef.current += 1;
-    };
   }, [chatId]);
 
   const isSendableUploadedFile = (
@@ -1465,11 +1465,13 @@ export const useChatHandlers = ({
       mode: chatModeRef.current,
       selectedModel: requestSelectedModelRef.current,
       sandboxPreference: sandboxPreferenceRef.current,
+      desktopEnvironmentId: desktopEnvironmentIdRef.current,
       agentPermissionMode: agentPermissionModeRef.current,
       ownsChat: () =>
         currentChatIdRef.current === chatId && chatVisitRef.current === visit,
     };
   };
+  type ReplacementAction = ReturnType<typeof captureReplacementAction>;
 
   const handleRegenerate = async () => {
     if (sendDisabledReasonRef.current) return;
@@ -1564,7 +1566,7 @@ export const useChatHandlers = ({
         getAutoContinueChainAssistantIds(messages).length > 0
       ) {
         try {
-          await continueSavedTask(options);
+          await continueSavedTask(options, action);
         } catch {
           toast.error(
             "Could not resume. Your saved progress is still available.",
@@ -1862,18 +1864,28 @@ export const useChatHandlers = ({
     );
   };
 
-  const continueSavedTask = async (options: RetryOptions = {}) => {
+  /**
+   * Resumes saved work. A Retry passes the action it captured so recovery
+   * keeps that action's settings and chat visit; Continue uses the settings
+   * current when the request is sent.
+   */
+  const continueSavedTask = async (
+    options: RetryOptions = {},
+    retryAction?: ReplacementAction,
+  ) => {
     if (sendDisabledReasonRef.current || recoveryPendingRef.current) return;
     if (statusRef.current === "streaming" || statusRef.current === "submitted")
       return;
     recoveryPendingRef.current = true;
     const requestGeneration = getAgentRunRequestGeneration?.();
     const isCurrentRequest = () =>
-      currentChatIdRef.current === chatId &&
+      (retryAction
+        ? retryAction.ownsChat()
+        : currentChatIdRef.current === chatId) &&
       getAgentRunRequestGeneration?.() === requestGeneration;
     let partialSaveRejected = false;
     try {
-      if (isAgentMode(chatModeRef.current)) {
+      if (isAgentMode(retryAction?.mode ?? chatModeRef.current)) {
         // An interrupted browser connection does not mean the worker stopped.
         await getPendingAgentLongRunStart(chatId);
         if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
@@ -1903,6 +1915,7 @@ export const useChatHandlers = ({
       hasManuallyStoppedRef.current = false;
       setIsAutoResuming(false);
       resetAutoContinueCount?.();
+      const settings = retryAction ?? captureReplacementAction();
       await sendMessage(
         {
           text: partialSaveRejected
@@ -1912,14 +1925,13 @@ export const useChatHandlers = ({
         },
         {
           body: {
-            mode: chatModeRef.current,
+            mode: settings.mode,
             isAutoContinue: true,
             todos: todosRef.current,
-            sandboxPreference: sandboxPreferenceRef.current,
-            desktopEnvironmentId: desktopEnvironmentIdRef.current,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel:
-              options.selectedModel ?? requestSelectedModelRef.current,
+            sandboxPreference: settings.sandboxPreference,
+            desktopEnvironmentId: settings.desktopEnvironmentId,
+            agentPermissionMode: settings.agentPermissionMode,
+            selectedModel: options.selectedModel ?? settings.selectedModel,
             ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
         },
