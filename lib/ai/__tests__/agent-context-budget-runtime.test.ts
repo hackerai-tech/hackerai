@@ -364,6 +364,47 @@ describe("paid 480K context through the shared Agent runner", () => {
     );
   });
 
+  it("counts tool schemas in the final send guard near the 468K route edge", async () => {
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: true,
+      needsSummarization: false,
+    });
+    const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
+    // ~20K tokens of schema that is sent with every request.
+    const tools = {
+      run_terminal_cmd: {
+        description: " field".repeat(20_000),
+        inputSchema: jsonSchema({
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        }),
+      },
+    };
+    // Messages plus system stay below 468K on their own.
+    const messages = [{ role: "user", content: " ordinary".repeat(458_000) }];
+    const fits = await start(
+      createContext({ paidAgentContext: assignment("test"), tools }),
+      newState(),
+    );
+    await expect(
+      fits.prepareStep({ steps: [], stepNumber: 0, messages }),
+    ).resolves.toBeDefined();
+
+    mockFallbackSlugs.mockReturnValue([...FULL_ROUTE, "x-ai/grok-4.6"]);
+    const state = newState();
+    const overflow = await start(
+      createContext({ paidAgentContext: assignment("test"), tools }),
+      state,
+    );
+    expect(state.ctxUsage.maxTokens).toBe(468_000);
+    await expect(
+      overflow.prepareStep({ steps: [], stepNumber: 0, messages }),
+    ).rejects.toThrow(
+      "Conversation could not be compacted to fit the selected model",
+    );
+  });
+
   it.each([
     [
       "explicit Pro",

@@ -1637,17 +1637,24 @@ export async function createAgentStream(
       }
       lastCompletedResponseMessages = [];
     }
+    // Tool schemas are sent with every request, so the final send guard counts
+    // them (memoized; all tools bound steps that activate only a subset).
+    const toolSchemaTokens =
+      enforceContextBudget && routeAwareContext
+        ? await getToolSchemaInputEstimate()
+        : 0;
     if (
       enforceContextBudget &&
       routeAwareContext &&
-      lastPreparedInputEstimate > activeContextBudget
+      lastPreparedInputEstimate + toolSchemaTokens > activeContextBudget
     ) {
       console.warn(
         JSON.stringify({
           event: "agent_context_budget_exceeded",
           chat_id: ctx.chatId,
           model: effectiveModelName,
-          estimated_input_tokens: lastPreparedInputEstimate,
+          estimated_input_tokens: lastPreparedInputEstimate + toolSchemaTokens,
+          tool_schema_tokens: toolSchemaTokens,
           previous_provider_input_tokens: state.lastStepInputTokens,
           max_tokens: activeContextBudget,
           compaction_attempt_count: compactionAttempts.attemptCount,
