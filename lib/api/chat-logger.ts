@@ -18,10 +18,6 @@ import {
   FREE_ASK_MODEL_OUTCOME_EVENT,
 } from "@/lib/experiments/free-ask-deepseek-1017";
 import { parseCloudAcquisitionStage } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
-import {
-  regionalFreeLimitsProperties,
-  type RegionalFreeLimitsPolicy,
-} from "@/lib/rate-limit/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -2088,7 +2084,6 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
-  regionalFreeLimits,
   triggerRunId,
   usageSettlementId,
   usageLog,
@@ -2127,7 +2122,6 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
-  regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
   /** Present for every tier, including Free and allowance rescue. */
   usageSettlementId?: string;
@@ -2258,7 +2252,6 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...regionalFreeLimitsProperties(regionalFreeLimits),
       ...paidAgentContextAnalyticsProperties(paidAgentContext),
     },
   });

@@ -1,4 +1,3 @@
-import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   idempotencyKeys,
   logger as triggerLogger,
@@ -80,7 +79,6 @@ export type SubagentToolsRuntimeConfig = {
   permissionMode: AgentPermissionMode;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
-  regionalFreeLimits?: FreeLimitPolicy;
   triggerRegion?: TriggerRunRegion;
   approvalSessionId?: string;
   autoReviewAssignment?: AgentAutoReviewAssignment;
@@ -340,7 +338,6 @@ export const createDelegateTaskTool = (
               subagentId,
               convexUrl: getConvexUrl(),
               triggerRegion: config.triggerRegion,
-              regionalFreeLimits: config.regionalFreeLimits,
             },
             {
               idempotencyKey: key,
@@ -494,7 +491,6 @@ export const createContinueAgentTool = (
             subagentId: row.subagent_id,
             convexUrl: getConvexUrl(),
             triggerRegion: config.triggerRegion,
-            regionalFreeLimits: config.regionalFreeLimits,
           },
           {
             idempotencyKey: key,

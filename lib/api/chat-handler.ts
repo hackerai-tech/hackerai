@@ -16,8 +16,6 @@ import {
 } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
-import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import {
   appendProviderEmptyResponseFailure,
   getProviderOutputDiagnostics,
@@ -545,15 +543,9 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
-      const regionalFreeLimits = getRegionalFreeLimits({
-        userId,
-        subscription,
-        country: regionalFreeCountryFromRequest(req),
-      });
-      const freeLimits = regionalFreeLimits;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -568,7 +560,6 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               freeQuotaSubject,
-              freeLimits,
             )
           : null;
 
@@ -754,7 +745,6 @@ export const createChatHandler = () => {
             selectedModel,
             organizationId,
             freeQuotaSubject,
-            freeLimits,
           ));
       } catch (error) {
         if (!(error instanceof ChatSDKError)) {
@@ -1617,7 +1607,6 @@ export const createChatHandler = () => {
                         usageTracker.measurementProperties(selectedModel),
                       usageSettlementId: usageTracker.usageSettlementId,
                       usageLog,
-                      regionalFreeLimits,
                       posthog,
                       userId,
                       subscription,

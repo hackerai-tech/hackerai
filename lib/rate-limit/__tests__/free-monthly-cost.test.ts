@@ -6,7 +6,6 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
-import { getRegionalFreeLimits } from "../regional-free-limits";
 
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
@@ -58,25 +57,7 @@ describe("free monthly cost limit", () => {
     expect(snapshot.monthlyRemainingAtStart).toBe(1250);
     expect(snapshot.extraUsageBalanceAtStart).toBe(0);
     expect(snapshot.extraUsageAutoReload).toBe(false);
-  });
-
-  it("enforces the permanent regional cap against existing spend without clearing it", async () => {
-    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
-    mockGet.mockResolvedValue(1000);
-    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
-    await expect(
-      checkFreeMonthlyCostLimit(
-        "quota",
-        getRegionalFreeLimits({
-          userId: "quota",
-          subscription: "free",
-          country: "NG",
-        }),
-      ),
-    ).rejects.toMatchObject({ type: "rate_limit" });
-    const control = await checkFreeMonthlyCostLimit("quota");
-    expect(control.monthlyRemainingAtStart).toBe(1500);
-    expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
+    // A preflight check must not modify recorded spend.
     expect(mockEval).not.toHaveBeenCalled();
   });
 
