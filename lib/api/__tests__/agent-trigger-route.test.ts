@@ -90,6 +90,21 @@ jest.mock("next/server", () => ({
   NextResponse: MockResponse,
 }));
 
+// Only the PostHog event transport is replaced; the admission helper is real.
+const mockPhEvent = jest.fn<any>();
+const mockPhFlush = jest.fn<any>().mockResolvedValue(undefined);
+jest.mock("@/lib/posthog/server", () => {
+  const actual = jest.requireActual<any>("@/lib/posthog/server");
+  return {
+    ...actual,
+    phLogger: {
+      ...actual.phLogger,
+      event: (...args: unknown[]) => mockPhEvent(...args),
+      flush: () => mockPhFlush(),
+    },
+  };
+});
+
 jest.mock("@trigger.dev/sdk", () => ({
   auth: { createPublicToken: mockCreatePublicToken },
   idempotencyKeys: { create: jest.fn() },
@@ -2377,5 +2392,169 @@ describe("goal reconciliation failures at Agent start", () => {
     expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
     expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
     expect(mockTriggerTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent_run_admitted at Agent start", () => {
+  const { idempotencyKeys } = require("@trigger.dev/sdk");
+  const { getChatById, getUserCustomization } = require("@/lib/db/actions");
+  const { after } = require("next/server");
+  const previousSecret = process.env.AGENT_RUN_CORRELATION_SECRET;
+  const PROMPT = "private-prompt-canary";
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockResolveWorkspaceRegion
+      .mockReset()
+      .mockImplementation(
+        async ({ preferredRegion }: { preferredRegion: string }) =>
+          preferredRegion,
+      );
+    mockReplaceActiveTriggerRun.mockReset().mockResolvedValue({
+      previousRunId: null,
+      previousApprovalSessionId: null,
+    });
+    process.env.AGENT_RUN_CORRELATION_SECRET = "test-only-correlation-secret";
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-1",
+      subscription: "pro",
+    });
+    getChatById.mockResolvedValue(null);
+    getUserCustomization.mockResolvedValue(null);
+    idempotencyKeys.create.mockImplementation(async (parts: string[]) =>
+      parts.join(":"),
+    );
+    mockTriggerTask.mockReset().mockResolvedValue({ id: "run-admitted" });
+    mockSetActiveTriggerRun.mockResolvedValue("updated");
+    mockCreatePublicToken.mockReset().mockResolvedValue("test-token");
+    mockPhEvent.mockReset();
+    mockPhFlush.mockReset().mockResolvedValue(undefined);
+    jest.mocked(after).mockReset();
+    jest.spyOn(console, "info").mockImplementation(() => {});
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (previousSecret === undefined)
+      delete process.env.AGENT_RUN_CORRELATION_SECRET;
+    else process.env.AGENT_RUN_CORRELATION_SECRET = previousSecret;
+  });
+
+  const start = (body: Record<string, unknown> = {}) =>
+    createAgentTriggerPost({ endpoint: "/api/agent" })({
+      headers: new Headers(),
+      json: async () => ({
+        chatId: "chat-1",
+        agentPermissionMode: "full_access",
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            parts: [{ type: "text", text: PROMPT }],
+          },
+        ],
+        ...body,
+      }),
+    } as any);
+
+  const admittedEvents = () =>
+    mockPhEvent.mock.calls.filter(([name]) => name === "agent_run_admitted");
+
+  it("records one privacy-safe admission for the owned run and flushes it after the response", async () => {
+    const response = await start();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ runId: "run-admitted" });
+    expect(admittedEvents()).toHaveLength(1);
+    const [, fields] = admittedEvents()[0] as [string, Record<string, unknown>];
+    expect(fields).toEqual({
+      userId: "user-1",
+      eventUuid: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      ),
+      trigger_run_id: "run-admitted",
+      subscription_tier: "pro",
+      is_auto_continue: false,
+      mode: "agent",
+      analytics_definition_version: 1,
+      $process_person_profile: false,
+      $geoip_disable: true,
+    });
+    const serialized = JSON.stringify(fields);
+    for (const secret of [PROMPT, "chat-1", "test-token"])
+      expect(serialized).not.toContain(secret);
+
+    // Delivery is registered for after the response.
+    const callbacks = jest.mocked(after).mock.calls.map(([task]) => task);
+    expect(callbacks.length).toBeGreaterThan(0);
+    await Promise.all(callbacks.map((task) => (task as () => unknown)()));
+    expect(mockPhFlush).toHaveBeenCalled();
+  });
+
+  it("reports an automatic continuation as such", async () => {
+    await start({ isAutoContinue: true });
+
+    expect(admittedEvents()).toHaveLength(1);
+    expect(admittedEvents()[0][1]).toMatchObject({ is_auto_continue: true });
+  });
+
+  it("shares one stable identity when the same run is admitted again", async () => {
+    await start();
+    await start();
+    mockTriggerTask.mockResolvedValue({ id: "run-other" });
+    await start();
+
+    const ids = admittedEvents().map(
+      ([, fields]) => (fields as { eventUuid: string }).eventUuid,
+    );
+    expect(ids).toHaveLength(3);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).not.toBe(ids[0]);
+  });
+
+  it.each<[string, () => void]>([
+    [
+      "the Trigger dispatch fails",
+      () => mockTriggerTask.mockRejectedValue(new Error("queue unavailable")),
+    ],
+    [
+      "run access tokens cannot be created",
+      () =>
+        mockCreatePublicToken.mockRejectedValue(new Error("auth unavailable")),
+    ],
+    [
+      "another run owns the chat",
+      () => mockReplaceActiveTriggerRun.mockResolvedValue("stale"),
+    ],
+    [
+      "the chat was deleted while starting",
+      () => mockReplaceActiveTriggerRun.mockResolvedValue("not_found"),
+    ],
+  ])("records nothing when %s", async (_, arrange) => {
+    arrange();
+
+    const response = await start();
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(admittedEvents()).toEqual([]);
+  });
+
+  it("keeps a successful admission when the telemetry sink throws", async () => {
+    mockPhEvent.mockImplementation(() => {
+      throw new Error("posthog unavailable");
+    });
+    jest.mocked(after).mockImplementation(() => {
+      throw new Error("outside request scope");
+    });
+
+    const response = await start();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runId: "run-admitted",
+      publicAccessToken: "test-token",
+    });
   });
 });

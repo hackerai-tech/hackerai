@@ -1,5 +1,6 @@
 import { withServiceQueryRecovery } from "@/lib/db/service-query-recovery.node";
 import { captureGoalLifecycle } from "@/lib/goals/analytics";
+import { captureAgentRunAdmitted } from "@/lib/analytics/agent-admission";
 import { api as goalApi } from "@/convex/_generated/api";
 import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
 import { goalServiceKey, reconcileGoal } from "@/lib/goals/server";
@@ -1335,6 +1336,12 @@ export const createAgentTriggerPost = ({
         });
       // The associated worker owns this generation, even if response creation fails.
       reservedGoal = undefined;
+      captureAgentRunAdmitted({
+        runId,
+        userId,
+        subscription,
+        isAutoContinue: isAutoContinue === true,
+      });
 
       console.info(`[${endpoint}] started trigger run`, {
         chatId,

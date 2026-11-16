@@ -151,8 +151,13 @@ type LogFields = Record<string, unknown> & {
 type EventFields = Record<string, unknown> & {
   userId?: string;
   eventUuid?: string;
+  /** When the event happened; omitted (ingestion time) unless a valid Date. */
+  eventTimestamp?: Date;
   $set?: Record<string, unknown>;
 };
+
+const isValidDate = (value: unknown): value is Date =>
+  value instanceof Date && Number.isFinite(value.getTime());
 
 const TELEMETRY_STRING_MAX_LENGTH = 2_000;
 
@@ -374,11 +379,12 @@ export const phLogger = {
     const client = getClient();
     if (!client) return;
     try {
-      const { userId, eventUuid, $set, ...rest } = fields;
+      const { userId, eventUuid, eventTimestamp, $set, ...rest } = fields;
       client.capture({
         distinctId: distinctIdFor(userId),
         event: name,
         ...(eventUuid && { uuid: eventUuid }),
+        ...(isValidDate(eventTimestamp) && { timestamp: eventTimestamp }),
         properties: { ...rest, ...($set && { $set }) },
       });
     } catch {
