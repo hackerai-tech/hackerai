@@ -29,6 +29,10 @@ import {
   getAgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
 import {
+  getAgentContextPolicy,
+  resolvePaidAgentContextAssignment,
+} from "@/lib/experiments/paid-agent-context";
+import {
   createAgentRunReporting,
   agentFailureSignalContext,
 } from "@/lib/analytics/agent-run-reporting";
@@ -2192,6 +2196,22 @@ export const agentLongTask = task({
         agentModelContextVariant,
         getAgentModelContextFlag(selectedModelOverride),
       );
+      // Assignment only (no exposure), once per top-level run and before
+      // history loading. Retries reuse this snapshot through streamCtx.
+      const paidAgentContext = await resolvePaidAgentContextAssignment({
+        posthog,
+        userId,
+        subscription,
+        mode,
+        selectedModelOverride,
+      });
+      runReporting.setPaidAgentContext(paidAgentContext);
+      const agentContextPolicy = getAgentContextPolicy({
+        subscription,
+        mode,
+        selectedModelOverride,
+        paidAgentContext,
+      });
 
       const [userCustomization, fetched] = await Promise.all([
         userCustomizationPromise,
@@ -2202,7 +2222,7 @@ export const agentLongTask = task({
           newMessages: [],
           regenerate,
           mode,
-          agentModelContextEnabled,
+          agentContextPolicy,
         }),
       ]);
       const { chat, fileTokens } = fetched;
@@ -4284,6 +4304,7 @@ export const agentLongTask = task({
               ctxMaxTokens,
               agentModelContextEnabled,
               agentModelContextVariant,
+              paidAgentContext,
               streamStartTime,
               triggerRunId: ctx.run.id,
               contextUsageOn,

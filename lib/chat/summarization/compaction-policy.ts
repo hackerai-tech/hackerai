@@ -19,6 +19,10 @@ import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { InvalidCompactionSummaryError } from "./startup-compaction";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
+import {
+  PAID_AGENT_CONTEXT_FLAG,
+  type PaidAgentContextVariant,
+} from "@/lib/experiments/paid-agent-context";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
 export const MODERATION_COMPACTION_FLAG_KEY =
@@ -36,6 +40,12 @@ export const INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION =
   "max_inference_context_v1";
 export const INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION =
   "pro_inference_context_v1";
+// The paid Auto/Standard 480K treatment shares the expanded summary input
+// policy, under its own labels so its cohort never mixes with Pro/Max.
+export const PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION =
+  "paid_480k_large_v2_context_v1";
+export const INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION =
+  "paid_480k_inference_context_v1";
 export const MAX_CONTEXT_SUMMARY_INPUT_TOKENS = 484_000;
 type CompactionModel =
   | typeof INFERENCE_CYBER_MODEL_KEY
@@ -53,7 +63,9 @@ export type CompactionSelection = {
     | typeof COMPACTION_POLICY_VERSION
     | typeof MODERATION_COMPACTION_POLICY_VERSION
     | typeof MAX_CONTEXT_COMPACTION_POLICY_VERSION
-    | typeof PRO_CONTEXT_COMPACTION_POLICY_VERSION;
+    | typeof PRO_CONTEXT_COMPACTION_POLICY_VERSION
+    | typeof PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
+    | typeof INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION;
   flagEnabled: boolean | null;
 };
 
@@ -122,6 +134,8 @@ export class CompactionModelPolicy {
       /** Existing shouldUncensorResponse result, never the continuation signal. */
       platformAuthorized: boolean;
       expandedAgentContext?: boolean;
+      /** Top-level run's paid_agent_context_480k_v1 variant, if assigned. */
+      paidAgentContextVariant?: PaidAgentContextVariant;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
@@ -131,9 +145,14 @@ export class CompactionModelPolicy {
   }
 
   private async evaluate(): Promise<CompactionSelection> {
-    const expandedAgentContext =
+    const paidContextTreatment =
       this.context.mode === "agent" &&
-      this.context.expandedAgentContext === true;
+      this.context.expandedAgentContext !== true &&
+      this.context.paidAgentContextVariant === "test";
+    const expandedAgentContext =
+      (this.context.mode === "agent" &&
+        this.context.expandedAgentContext === true) ||
+      paidContextTreatment;
     const configured = isAbliterationConfigured();
     const abliterationModel = expandedAgentContext
       ? ABLITERATION_LARGE_V2_MODEL_KEY
@@ -157,11 +176,13 @@ export class CompactionModelPolicy {
         fallbackModel: configured
           ? abliterationModel
           : COMPACTION_FALLBACK_MODEL,
-        policy: expandedAgentContext
-          ? this.context.selectedModel === "hackerai-pro"
-            ? INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION
-            : INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION
-          : INFERENCE_COMPACTION_POLICY_VERSION,
+        policy: paidContextTreatment
+          ? INFERENCE_PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
+          : expandedAgentContext
+            ? this.context.selectedModel === "hackerai-pro"
+              ? INFERENCE_PRO_CONTEXT_COMPACTION_POLICY_VERSION
+              : INFERENCE_MAX_CONTEXT_COMPACTION_POLICY_VERSION
+            : INFERENCE_COMPACTION_POLICY_VERSION,
         flagEnabled: true,
         ...(expandedAgentContext && { expandedAgentContext: true }),
       };
@@ -181,13 +202,15 @@ export class CompactionModelPolicy {
         : flagEnabled === true && configured
           ? abliterationModel
           : undefined,
-      policy: expandedAgentContext
-        ? this.context.selectedModel === "hackerai-pro"
-          ? PRO_CONTEXT_COMPACTION_POLICY_VERSION
-          : MAX_CONTEXT_COMPACTION_POLICY_VERSION
-        : flagEnabled === true
-          ? MODERATION_COMPACTION_POLICY_VERSION
-          : COMPACTION_POLICY_VERSION,
+      policy: paidContextTreatment
+        ? PAID_480K_CONTEXT_COMPACTION_POLICY_VERSION
+        : expandedAgentContext
+          ? this.context.selectedModel === "hackerai-pro"
+            ? PRO_CONTEXT_COMPACTION_POLICY_VERSION
+            : MAX_CONTEXT_COMPACTION_POLICY_VERSION
+          : flagEnabled === true
+            ? MODERATION_COMPACTION_POLICY_VERSION
+            : COMPACTION_POLICY_VERSION,
       flagEnabled,
       ...(expandedAgentContext && { expandedAgentContext: true }),
     };
@@ -215,6 +238,12 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
+      ...(this.context.mode === "agent" &&
+        this.context.paidAgentContextVariant && {
+          [`$feature/${PAID_AGENT_CONTEXT_FLAG}`]:
+            this.context.paidAgentContextVariant,
+          paid_agent_context_variant: this.context.paidAgentContextVariant,
+        }),
       telemetry_version: 8,
       $process_person_profile: false,
     };
