@@ -2887,6 +2887,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     pendingUserWait,
   });
 
+  // Entering the free Agent activation gate fences automatic queue delivery,
+  // so connecting a computer never releases a queued message as Agent. Set
+  // once per gate entry/chat; explicit submit and Send now clear the fence.
+  // A durable run already in progress is left untouched.
+  useLayoutEffect(() => {
+    if (freeAgentGateActive && !cancellationTriggerRunRef.current)
+      hasManuallyStoppedRef.current = true;
+  }, [freeAgentGateActive, chatId, cancellationTriggerRunRef]);
+
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (

@@ -2092,6 +2092,46 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
     });
 
+    it("keeps a queued message waiting after the activation gate until Send now, even once a computer connects", async () => {
+      mockUseRealChatHandlers = true;
+      mockLocalConnections = [];
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+
+      // The third Ask reply activates the gate while the computer is offline.
+      mockDesktopState = { freeAgentGateActive: true };
+      await act(async () => rerender(view()));
+      mockLocalConnections = [
+        { connectionId: "desktop-row", isDesktop: true, lastSeen: Date.now() },
+      ];
+      await act(async () => rerender(view()));
+
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+
+      // Only an explicit Send now releases it, after setup.
+      await act(async () => {
+        await mockChatInputProps.onSendNow("queued-message-id");
+      });
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            parts: [{ type: "text", text: "continue" }],
+          }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
+    });
+
     it("shows Goal input while browser takeover holds the run, then returns to pursuing", async () => {
       global.fetch = jest.fn<typeof fetch>().mockResolvedValue({
         ok: true,
