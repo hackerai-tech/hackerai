@@ -1,33 +1,12 @@
 "use client";
 
 import { type ReactNode } from "react";
-import useSWR from "swr";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useChatBillingRecoveryStatus } from "@/app/hooks/useBillingRecoveryStatus";
 import { Button } from "@/components/ui/button";
-import {
-  BillingRequestError,
-  getSubscriptionCancellationStatus,
-} from "@/lib/billing/client";
+import { BillingRequestError } from "@/lib/billing/client";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
-
-async function getRecoveryStatus() {
-  try {
-    return await getSubscriptionCancellationStatus();
-  } catch (error) {
-    // Free accounts commonly have no billing account. A failed lookup or a
-    // forbidden organization must not be mistaken for exhausted paid usage.
-    if (
-      error instanceof BillingRequestError &&
-      error.status === 404 &&
-      error.message === "No billing account found for this organization"
-    ) {
-      return { hasActiveSubscription: false, cancelAtPeriodEnd: false };
-    }
-    throw error;
-  }
-}
 
 /** Only mount on blocked chat: no Stripe requests on normal chat traffic. */
 export function BlockedChatBillingRecovery({
@@ -37,25 +16,20 @@ export function BlockedChatBillingRecovery({
   children: ReactNode;
   onRetry?: () => void;
 }) {
-  const { user, organizationId, loading } = useAuth();
   const { subscription } = useGlobalState();
-  const { data, error, isLoading, isValidating, mutate } = useSWR(
-    user && !loading
-      ? ["blocked-chat-billing", user.id, organizationId ?? null]
-      : null,
-    getRecoveryStatus,
-    {
-      // All visible stops share a request, scoped to the current identity.
-      dedupingInterval: 30_000,
-      focusThrottleInterval: 30_000,
-      refreshInterval: 0,
-      shouldRetryOnError: false,
-      revalidateOnFocus: true,
-      revalidateOnReconnect: true,
-    },
-  );
+  // All visible stops share a request, scoped to the current identity.
+  const {
+    data,
+    error,
+    isLoading,
+    isValidating,
+    mutate,
+    authLoading,
+    user,
+    scopeKey,
+  } = useChatBillingRecoveryStatus(true);
 
-  if (loading || isLoading || (isValidating && !data && !error)) {
+  if (authLoading || isLoading || (isValidating && !data && !error)) {
     return (
       <p role="status" className="p-3 text-sm text-muted-foreground">
         Checking billing…
@@ -112,9 +86,13 @@ export function BlockedChatBillingRecovery({
   return (
     <>
       <BillingRecoveryPanel
+        // A new account or organization starts with no in-flight action. A
+        // status refresh within one scope keeps the panel and its feedback.
+        key={scopeKey ?? "signed-out"}
         status={data}
         subscription={subscription}
         surface="blocked_chat"
+        scopeKey={scopeKey}
         onCheck={() => mutate()}
       />
       {!needsBillingRecovery && children}

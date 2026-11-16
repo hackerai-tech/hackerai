@@ -1,9 +1,10 @@
 import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
 import { rejectUnsafeRequest } from "@/lib/security/same-origin-request";
+import { phLogger } from "@/lib/posthog/server";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,8 @@ export async function POST(request: NextRequest) {
       (surface !== undefined &&
         surface !== "account_settings" &&
         surface !== "pricing_dialog" &&
-        surface !== "blocked_chat") ||
+        surface !== "blocked_chat" &&
+        surface !== "chat_notice") ||
       (returnPath !== undefined &&
         (typeof returnPath !== "string" ||
           returnPath.length > 400 ||
@@ -52,5 +54,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ url });
   } catch (error) {
     return billingRouteErrorResponse(error);
+  } finally {
+    after(() => phLogger.flush());
   }
 }

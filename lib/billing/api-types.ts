@@ -56,7 +56,7 @@ export type SubscriptionCancellationStatus = {
 
 export type BillingPortalFlow = "payment_method";
 export type BillingRecoverySurface =
-  "account_settings" | "blocked_chat" | "pricing_dialog";
+  "account_settings" | "blocked_chat" | "chat_notice" | "pricing_dialog";
 export type BillingPortalOptions = {
   surface?: BillingRecoverySurface;
   returnPath?: string;

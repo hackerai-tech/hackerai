@@ -9,13 +9,26 @@ const mockRedirectToBillingPortal = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
-const mockCaptureAuthenticatedEvent = jest.fn();
+const mockCaptureQueuedAuthenticatedEvent = jest.fn();
+/** Queued recovery events as `[event, properties]` for readable assertions. */
+const queuedEvents = () =>
+  mockCaptureQueuedAuthenticatedEvent.mock.calls.map(([call]) => {
+    const { event, properties } = call as {
+      event: string;
+      properties: Record<string, unknown>;
+    };
+    return [event, properties];
+  });
 let mockOnCancellationCompleted:
   | ((result: {
       cancelAtPeriodEnd: boolean;
       currentPeriodEnd?: number;
     }) => void)
   | undefined;
+
+jest.mock("@workos-inc/authkit-nextjs/components", () => ({
+  useAuth: () => ({ user: { id: "user_test" }, loading: false }),
+}));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -40,7 +53,10 @@ jest.mock("@/lib/billing/client", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
+  captureQueuedAuthenticatedEvent: mockCaptureQueuedAuthenticatedEvent,
+  // A consented analytics owner is already known for this signed-in user.
+  getPermittedAnalyticsUserId: () => "user_test",
+  subscribeAuthenticatedAnalytics: () => () => {},
 }));
 
 jest.mock("sonner", () => ({
@@ -208,7 +224,7 @@ describe("AccountTab", () => {
       name: "Subscription payment recovery",
     });
     expect(alert).toHaveTextContent("Your renewal payment didn’t go through");
-    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+    expect(queuedEvents()).toContainEqual([
       "recovery_prompt_impressed",
       expect.objectContaining({
         surface: "account_settings",
@@ -216,7 +232,7 @@ describe("AccountTab", () => {
         subscription_status: "past_due",
         stripe_invoice_id: "in_past_due",
       }),
-    );
+    ]);
 
     const user = userEvent.setup();
     await user.click(
@@ -229,13 +245,13 @@ describe("AccountTab", () => {
         { surface: "account_settings", returnPath: "/" },
       );
     });
-    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+    expect(queuedEvents()).toContainEqual([
       "billing_past_due_payment_update_clicked",
       expect.objectContaining({
         surface: "account_settings",
         stripe_invoice_id: "in_past_due",
       }),
-    );
+    ]);
     expect(window.location.hash).toBe("#payment-method");
   });
 
@@ -261,9 +277,8 @@ describe("AccountTab", () => {
     await waitFor(() => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(undefined);
     });
-    expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+    expect(queuedEvents().map(([event]) => event)).not.toContain(
       "billing_past_due_banner_impressed",
-      expect.anything(),
     );
   });
 

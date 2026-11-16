@@ -36,6 +36,7 @@ import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { BrowserHandoffEntry } from "./BrowserHandoffEntry";
+import { EarlyRenewalPaymentNotice } from "./EarlyRenewalPaymentNotice";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
@@ -2893,6 +2894,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     rateLimitWarning?.warningType === "agent-run-spend-cap"
       ? rateLimitWarning
       : undefined;
+  // The blocked-limit warning mounts the full billing recovery panel.
+  const isQuotaBlocked =
+    rateLimitWarning?.warningType === "token-bucket" &&
+    rateLimitWarning.remainingPercent === 0;
 
   // Get branched chat info directly from chatData (no additional query needed)
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
@@ -2923,6 +2928,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     "waiting",
     "needs_approval",
   ].includes(persistedGoal?.state ?? "");
+  // Opening billing navigates this tab away. Hold it while chat or durable
+  // Agent work is in flight, waiting for input, or awaiting approval. This
+  // only disables the billing action; Send is never disabled by it.
+  const billingNavigationBlocked =
+    status === "submitted" ||
+    status === "streaming" ||
+    (!!currentAgentRunUiId && !isAgentRunUiTerminal) ||
+    hasActiveGoalRun ||
+    pauseGoalOnSend ||
+    !!pendingUserWait ||
+    !!storedAgentApprovalRequest;
   const stopGoalRunBeforeControl = async (runId: string) => {
     // Never let a delayed goal control stop a replacement or unrelated run.
     if (activeTriggerRunId === runId) cancellationTriggerRunRef.current = runId;
@@ -3172,13 +3188,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     hasActiveGoalRun={hasActiveGoalRun}
                     pauseGoalOnSend={pauseGoalOnSend}
                     topNotice={
-                      showChatLayout ? (
-                        <BrowserHandoffEntry
-                          chatId={chatId}
-                          messages={messages}
-                          persistedMessages={serverMessages}
+                      <>
+                        {showChatLayout && (
+                          <BrowserHandoffEntry
+                            chatId={chatId}
+                            messages={messages}
+                            persistedMessages={serverMessages}
+                          />
+                        )}
+                        {/* New chats too: returning subscribers often start there. */}
+                        <EarlyRenewalPaymentNotice
+                          actionDisabled={billingNavigationBlocked}
+                          suppressed={isQuotaBlocked}
                         />
-                      ) : undefined
+                      </>
                     }
 
                     onSubmit={handleSubmit}
