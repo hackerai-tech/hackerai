@@ -12,7 +12,12 @@ import {
 import { PRICING } from "@/lib/pricing/config";
 
 export const HAC248_PRO_MONTHLY_PRICING_KEY = "hac248-pro-monthly-49-pricing";
-/** Server-side, once per account, when the durable assignment is first written. */
+/**
+ * Server-side enrollment with a stable per-account identity: one deterministic
+ * UUID and the original assignment time. Delivery is retried on later
+ * resolutions, so raw rows can repeat; cohort queries must deduplicate by
+ * account or UUID rather than assume the provider already did.
+ */
 export const HAC248_ENROLLED_EVENT = "hac248_pro_monthly_pricing_enrolled";
 /** Client-side, when an assigned monthly Pro quote is actually rendered. */
 export const HAC248_EXPOSURE_EVENT = "hac248_pro_monthly_pricing_exposed";

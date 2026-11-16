@@ -329,7 +329,8 @@ async function newEnrollmentCandidate(
 /**
  * Best-effort enrollment event. It is re-sent on every resolution of a stored
  * assignment with the same deterministic UUID and original timestamp, so a
- * failed first delivery is retried later and PostHog deduplicates repeats.
+ * failed first delivery is retried later. Cohorts deduplicate by account or
+ * event ID because raw analytics rows can repeat.
  * Telemetry failure never changes the quote.
  */
 async function captureEnrollment(
