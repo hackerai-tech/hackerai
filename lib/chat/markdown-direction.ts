@@ -2,7 +2,8 @@
  * Gives each top-level Markdown block the direction of its own prose, so an
  * Arabic or Hebrew paragraph reads right to left while English blocks in the
  * same reply stay left to right. It runs after the sanitize and harden plugins
- * and only adds a literal `dir` attribute; text is never changed.
+ * and only adds literal `dir` attributes and `<bdi>` wrappers; text values are
+ * never changed and no control characters are inserted.
  *
  * Direction is decided by words rather than characters, so one long English
  * token such as a model ID or path cannot outweigh a short Arabic sentence.
@@ -96,8 +97,9 @@ function proseText(block: HastNode): string {
   const parts: string[] = [];
   const visit = (node: HastNode): void => {
     if (node.type === "text") {
-      const value = node.value ?? "";
-      parts.push(value);
+      // A newline inside text is a Markdown soft wrap within one paragraph,
+      // not a sentence break; block boundaries below add their own.
+      parts.push((node.value ?? "").replace(/\n/g, " "));
       return;
     }
     if (node.type !== "element") return;
@@ -114,7 +116,78 @@ function proseText(block: HastNode): string {
   return parts.join("");
 }
 
-/** Rehype plugin: set `dir` on each top-level block except code fences. */
+// A bare rooted local path (`/`, `~/`, `./`, `../`) that starts the text or
+// follows whitespace or an opening bracket or quote. Requiring that boundary
+// skips slashes inside URLs, dates and words such as "and/or". Brackets,
+// quotes and Arabic punctuation end the path so they stay outside it.
+const BARE_PATH =
+  /(^|[\s([{"'«“‘])((?:~|\.{1,2})?\/[^\s<>"'()[\]{}«»“”‘’،؛؟]*)/gu;
+const PATH_TRAILING_PUNCTUATION = /[.,:;!?]+$/u;
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+// Links, code and existing isolates already keep their own direction.
+const ISOLATED_TAGS = new Set(["a", "bdi", "code", "pre"]);
+
+/**
+ * Split text so each bare path sits in `<bdi dir="ltr">`. Without it a
+ * right-to-left paragraph moves the leading slash to the other end of the
+ * path. The pieces concatenate to exactly the original text.
+ */
+function isolateBarePathsInText(text: string): HastNode[] | null {
+  let pieces: HastNode[] | null = null;
+  let cursor = 0;
+  for (const match of text.matchAll(BARE_PATH)) {
+    const path = match[2].replace(PATH_TRAILING_PUNCTUATION, "");
+    // Skip a lone slash and Arabic words written after one ("نعم /لا"):
+    // those read correctly in the surrounding right-to-left order.
+    if (!LETTER_OR_DIGIT.test(path) || RTL_LETTER.test(path)) continue;
+    const start = (match.index ?? 0) + match[1].length;
+    pieces ??= [];
+    if (start > cursor) {
+      pieces.push({ type: "text", value: text.slice(cursor, start) });
+    }
+    pieces.push({
+      type: "element",
+      tagName: "bdi",
+      properties: { dir: "ltr" },
+      children: [{ type: "text", value: path }],
+    });
+    cursor = start + path.length;
+  }
+  if (pieces && cursor < text.length) {
+    pieces.push({ type: "text", value: text.slice(cursor) });
+  }
+  return pieces;
+}
+
+function isolateBarePaths(node: HastNode): void {
+  if (!node.children) return;
+  let changed = false;
+  const children: HastNode[] = [];
+  for (const child of node.children) {
+    if (child.type === "text") {
+      const pieces = isolateBarePathsInText(child.value ?? "");
+      if (pieces) {
+        children.push(...pieces);
+        changed = true;
+        continue;
+      }
+    } else if (
+      child.type === "element" &&
+      !ISOLATED_TAGS.has(child.tagName ?? "") &&
+      !child.properties?.dir
+    ) {
+      isolateBarePaths(child);
+    }
+    children.push(child);
+  }
+  if (changed) node.children = children;
+}
+
+/**
+ * Rehype plugin: set `dir` on each top-level block except code fences, and
+ * isolate bare local paths inside right-to-left blocks.
+ */
 export function rehypeMarkdownDirection() {
   return (tree: HastNode): void => {
     for (const block of tree.children ?? []) {
@@ -122,7 +195,9 @@ export function rehypeMarkdownDirection() {
       // Keep a direction the author set explicitly in allowed raw HTML.
       if (block.properties?.dir) continue;
       const direction = detectTextDirection(proseText(block));
-      if (direction) block.properties = { ...block.properties, dir: direction };
+      if (!direction) continue;
+      block.properties = { ...block.properties, dir: direction };
+      if (direction === "rtl") isolateBarePaths(block);
     }
   };
 }

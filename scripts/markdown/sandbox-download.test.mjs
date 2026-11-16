@@ -274,6 +274,84 @@ test("each Markdown block gets its own direction and code stays LTR", () => {
   assert.deepEqual(bidiControls, []);
 });
 
+const paragraphs = (html) =>
+  [...html.matchAll(/<p\b([^>]*)>([\s\S]*?)<\/p>/g)].map(
+    ([, attributeText, inner]) => ({
+      dir: attributes(attributeText).dir,
+      inner,
+      text: inner.replace(/<[^>]+>/g, ""),
+      isolates: [...inner.matchAll(/<bdi\b([^>]*)>([^<]*)<\/bdi>/g)].map(
+        ([, isolateAttributes, path]) => [
+          attributes(isolateAttributes).dir,
+          path,
+        ],
+      ),
+    }),
+  );
+
+// In right-to-left prose a bare path's leading slash otherwise renders at the
+// far end of the path (observed in the app as `var/log/…json/`).
+test("bare local paths in RTL prose are isolated without changing the text", () => {
+  const isolated = [
+    "افتح /var/log/application/security-findings.json الآن.",
+    "راجع (~/reports/scan.txt) و ../out/report.json، ثم ./run.sh و /tmp/a.json.",
+  ];
+  const html = renderAssistantMarkdown(
+    [
+      ...isolated,
+      "Open /var/log/app.json and ~/notes.txt now.",
+      "افتح `/tmp/code.json` أو [/home/user/notes.md](/home/user/notes.md) أو https://example.com/a/b الآن.",
+      "اختر نعم /لا أو and/or هنا.",
+    ].join("\n\n"),
+  );
+  const [first, second, english, other, prose] = paragraphs(html);
+
+  // Paths are wrapped LTR; surrounding brackets and punctuation stay outside,
+  // and the rendered text is byte-identical to the source.
+  assert.equal(first.dir, "rtl", html);
+  assert.deepEqual(first.isolates, [
+    ["ltr", "/var/log/application/security-findings.json"],
+  ]);
+  assert.equal(first.text, isolated[0]);
+  assert.equal(second.dir, "rtl", html);
+  assert.deepEqual(second.isolates, [
+    ["ltr", "~/reports/scan.txt"],
+    ["ltr", "../out/report.json"],
+    ["ltr", "./run.sh"],
+    ["ltr", "/tmp/a.json"],
+  ]);
+  assert.equal(second.text, isolated[1]);
+
+  // English blocks, code, links, URLs and slash-joined words are untouched.
+  assert.equal(english.dir, "ltr", html);
+  assert.deepEqual(english.isolates, []);
+  assert.equal(other.dir, "rtl", html);
+  assert.deepEqual(other.isolates, [], other.inner);
+  assert.equal(prose.dir, "rtl", html);
+  assert.deepEqual(prose.isolates, [], prose.inner);
+});
+
+// A soft line break inside one paragraph is not a sentence boundary, so the
+// wrapped and single-line forms of the same prose must agree.
+test("soft-wrapped and single-line paragraphs and quotes get the same direction", () => {
+  const lines = ["افتح الملف الآن باستخدام هذا الأمر", "Run", "Auto"];
+  const html = renderAssistantMarkdown(
+    [
+      lines.join("\n"),
+      lines.join(" "),
+      lines.map((line) => `> ${line}`).join("\n"),
+      `> ${lines.join(" ")}`,
+    ].join("\n\n"),
+  );
+
+  assert.deepEqual(
+    tagDirections(html, "p"),
+    ["rtl", "rtl", undefined, undefined],
+    html,
+  );
+  assert.deepEqual(tagDirections(html, "blockquote"), ["rtl", "rtl"], html);
+});
+
 // A long English identifier/prose prefix must not hide the later Arabic prose
 // from direction detection merely because it is in another inline element.
 test("uses the complete prose block when Arabic follows a long English prefix", () => {
