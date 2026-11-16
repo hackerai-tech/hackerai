@@ -2,12 +2,28 @@ import { MAX_OUTPUT_TOKENS } from "./output-limits";
 import { getMaxTokensForSubscription } from "@/lib/token-limits";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
+/**
+ * Context policy for one top-level Agent run. Resolve it once at entry and use
+ * it for history loading, message preparation, provider requests, retries and
+ * compaction so those stages cannot disagree about the budget.
+ *
+ * - `baseline`: the subscription budget (276K paid, 256K before compaction).
+ * - `expanded`: permanent explicit Pro/Max policy (route half-window).
+ * - `paid_480k`: paid Auto/Standard treatment of `paid_agent_context_480k_v1`.
+ */
+export type AgentContextPolicy = "baseline" | "expanded" | "paid_480k";
+
 // Conservative operating budget, inspired by Hermes's half-window default.
 // The existing compaction reserve is applied on top of this budget. This is
 // not a promise that the independent serialized-byte guard will allow it all.
 export const MAX_AGENT_CONTEXT_TOKENS = Math.floor(
   (1_048_576 - MAX_OUTPUT_TOKENS) * 0.5,
 );
+
+// Treatment target: compaction triggers at exactly 480K after the existing 20K
+// reserve. It is capped by verified route capacity minus the output reserve and
+// deliberately does not use the half-window heuristic above.
+export const PAID_AGENT_CONTEXT_MAX_TOKENS = 500_000;
 
 // Verified against https://openrouter.ai/api/v1/models on 2026-10-18.
 // Use the smaller advertised top_provider.context_length where it differs.
@@ -32,13 +48,41 @@ const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   "x-ai/grok-4.6": 500_000,
 };
 
+/** Smallest verified capacity across a route, or undefined if any is unknown. */
+function getVerifiedRouteCapacity(
+  modelId: string,
+  fallbackModelIds: readonly string[],
+): number | undefined {
+  const capacities = [modelId, ...fallbackModelIds].map((id) =>
+    Object.hasOwn(MODEL_CONTEXT_WINDOWS, id)
+      ? MODEL_CONTEXT_WINDOWS[id]
+      : undefined,
+  );
+  if (!capacities.every((capacity) => capacity !== undefined)) return undefined;
+  return Math.min(...capacities);
+}
+
+const appliesToRun = (
+  policy: AgentContextPolicy,
+  mode: ChatMode | undefined,
+  subscription: SubscriptionTier | undefined,
+): boolean =>
+  mode === "agent" &&
+  (policy === "expanded" ||
+    (policy === "paid_480k" &&
+      subscription !== undefined &&
+      subscription !== "free"));
+
 export function getAgentContextBudget({
+  policy,
   enabled,
   mode,
   subscription,
   modelId,
   fallbackModelIds = [],
 }: {
+  policy?: AgentContextPolicy;
+  /** Shorthand for the `expanded` policy, retained for existing callers. */
   enabled?: boolean;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
@@ -46,28 +90,27 @@ export function getAgentContextBudget({
   fallbackModelIds?: readonly string[];
 }): number {
   const baseline = getMaxTokensForSubscription(subscription, { mode });
-  if (!enabled || mode !== "agent") return baseline;
-  const capacities = [modelId, ...fallbackModelIds].map((id) =>
-    Object.hasOwn(MODEL_CONTEXT_WINDOWS, id)
-      ? MODEL_CONTEXT_WINDOWS[id]
-      : undefined,
-  );
-  if (!capacities.every((capacity) => capacity !== undefined)) return baseline;
+  const resolved = policy ?? (enabled ? "expanded" : "baseline");
+  if (!appliesToRun(resolved, mode, subscription)) return baseline;
   // OpenRouter may transparently serve any route member. Budget for the
   // smallest member before sending, rather than learning about it on overflow.
-  return Math.min(
-    MAX_AGENT_CONTEXT_TOKENS,
-    Math.floor((Math.min(...capacities) - MAX_OUTPUT_TOKENS) * 0.5),
-  );
+  const capacity = getVerifiedRouteCapacity(modelId, fallbackModelIds);
+  if (capacity === undefined) return baseline;
+  const usable = capacity - MAX_OUTPUT_TOKENS;
+  return resolved === "paid_480k"
+    ? Math.min(PAID_AGENT_CONTEXT_MAX_TOKENS, usable)
+    : Math.min(MAX_AGENT_CONTEXT_TOKENS, Math.floor(usable * 0.5));
 }
 
 /** Load enough history before routing; prepareStep enforces the actual model. */
 export function getAgentHistoryBudget(
   subscription: SubscriptionTier,
   mode: ChatMode | undefined,
-  enabled = false,
+  policy: AgentContextPolicy = "baseline",
 ): number {
-  return mode === "agent" && enabled
-    ? MAX_AGENT_CONTEXT_TOKENS
-    : getMaxTokensForSubscription(subscription, { mode });
+  if (!appliesToRun(policy, mode, subscription))
+    return getMaxTokensForSubscription(subscription, { mode });
+  return policy === "paid_480k"
+    ? PAID_AGENT_CONTEXT_MAX_TOKENS
+    : MAX_AGENT_CONTEXT_TOKENS;
 }

@@ -3,6 +3,10 @@ import {
   type AgentModelContextVariant,
   type AgentModelContextFlag,
 } from "@/lib/experiments/agent-model-context";
+import {
+  paidAgentContextAnalyticsProperties,
+  type PaidAgentContextAssignment,
+} from "@/lib/experiments/paid-agent-context";
 import type { PostHog } from "posthog-node";
 import { v5 as uuidv5 } from "uuid";
 import { selectedComputerFailureDiagnostics } from "@/lib/sandbox/selected-computer-diagnostics";
@@ -136,6 +140,8 @@ export function createAgentRunReporting(context: {
   let stage: FailureStage = "setup";
   let agentModelContextFlag: AgentModelContextFlag = AGENT_MODEL_CONTEXT_FLAG;
   let agentModelContextVariant: AgentModelContextVariant | undefined;
+  // Live reference: the runner records exposure on this run-scoped snapshot.
+  let paidAgentContext: PaidAgentContextAssignment | undefined;
   let failure:
     { stage: FailureStage; kind: FailureKind; category: string } | undefined;
   let selectedComputerDiagnostics:
@@ -168,6 +174,9 @@ export function createAgentRunReporting(context: {
     ) {
       agentModelContextFlag = flag;
       agentModelContextVariant = variant;
+    },
+    setPaidAgentContext(assignment: PaidAgentContextAssignment | undefined) {
+      paidAgentContext = assignment;
     },
     setStage(next: FailureStage) {
       stage = next;
@@ -270,7 +279,7 @@ export function createAgentRunReporting(context: {
       once(
         "hackerai-agent_run",
         capture,
-        agentModelContextVariant || localStop
+        agentModelContextVariant || localStop || paidAgentContext
           ? {
               ...args,
               ...(agentModelContextVariant && {
@@ -278,6 +287,7 @@ export function createAgentRunReporting(context: {
                 agentModelContextFlag,
               }),
               ...(localStop && { localConnectionLostError: localStop }),
+              ...(paidAgentContext && { paidAgentContext }),
             }
           : args,
       );
@@ -289,7 +299,7 @@ export function createAgentRunReporting(context: {
           capture(value);
           settlementCostCaptured = true;
         },
-        args,
+        paidAgentContext ? { ...args, paidAgentContext } : args,
       );
     },
     /** Fill missing reports without changing outcomes, settlement or capture identity. */
@@ -358,6 +368,7 @@ export function createAgentRunReporting(context: {
         ...(agentModelContextVariant && {
           [`$feature/${agentModelContextFlag}`]: agentModelContextVariant,
         }),
+        ...paidAgentContextAnalyticsProperties(paidAgentContext),
         mode: "agent",
         subscription: context.subscription,
         subscription_tier: context.subscription,
