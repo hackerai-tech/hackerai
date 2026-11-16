@@ -292,6 +292,62 @@ ${"QUJD".repeat(16)}
     ).not.toThrow();
   });
 
+  it("reports only the first matched closed category and keeps the guard error", () => {
+    const cases = [
+      ["OPENAI_API_KEY=synthetic-canary", "secret_assignment"],
+      // The existing order checks assignments before bearer tokens.
+      ["Authorization: Bearer synthetic-canary", "secret_assignment"],
+      ["Bearer synthetic-canary", "bearer"],
+      ["Bearer eyJsynthetic.canary.signature", "bearer"],
+      ["eyJsynthetic.canary.signature", "jwt"],
+      ["-----BEGIN RSA PRIVATE KEY-----", "private_key_marker"],
+      [`sk-proj-${"a".repeat(48)}`, "standalone_key"],
+      [`ghp_${"b".repeat(36)}`, "standalone_key"],
+      [`AKIA${"C".repeat(16)}`, "standalone_key"],
+    ] as const;
+    const benign = "Evidence: recurring Agent workflows";
+
+    // Repeat each input so shared global-regex state from a previous match
+    // would surface as a missed secret or a wrong category.
+    for (let round = 0; round < 3; round += 1) {
+      for (const [leakedSecret, category] of cases) {
+        const onUnsafe = jest.fn();
+        expect(() =>
+          assertResearchPromptIsSafe(`Evidence: ${leakedSecret}`, onUnsafe),
+        ).toThrow(
+          new Error("Research prompt contains unredacted secret material"),
+        );
+        expect(onUnsafe.mock.calls).toEqual([[category]]);
+        expect(containsUnredactedResearchSecret(leakedSecret)).toBe(true);
+
+        const onBenign = jest.fn();
+        expect(() =>
+          assertResearchPromptIsSafe(benign, onBenign),
+        ).not.toThrow();
+        expect(onBenign).not.toHaveBeenCalled();
+        expect(containsUnredactedResearchSecret(benign)).toBe(false);
+      }
+    }
+  });
+
+  it("still rejects with the original plain error when the observer throws", () => {
+    const observerError = new Error("observer failed");
+    let thrown: unknown;
+    try {
+      assertResearchPromptIsSafe("Evidence: Bearer synthetic-canary", () => {
+        throw observerError;
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).not.toBe(observerError);
+    expect(Object.getPrototypeOf(thrown)).toBe(Error.prototype);
+    expect((thrown as Error).message).toBe(
+      "Research prompt contains unredacted secret material",
+    );
+  });
+
   it("removes standalone secrets before constructing the model prompt", () => {
     const leakedToken = `sk-svcacct-${"e".repeat(48)}`;
     const prompt = buildUserProfilePrompt({
