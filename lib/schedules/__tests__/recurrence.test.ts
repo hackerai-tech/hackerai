@@ -119,8 +119,9 @@ describe("schedule recurrence", () => {
   });
   it("writes the cadence time in the same clock format as the next run", () => {
     // A row shows both; "09:00" beside "9:00 AM" read as two different times.
+    const spaced = (text: string) => text.replace(/\s/g, " ");
     const nextRun = formatNextRun(new Date(2026, 10, 9, 9, 0).getTime());
-    expect(nextRun).toContain(formatClockTime("09:00"));
+    expect(spaced(nextRun)).toContain(spaced(formatClockTime("09:00")));
     expect(formatClockTime("18:30")).not.toBe(formatClockTime("06:30"));
   });
   it("shows the next run in the schedule's zone, not the viewer's", () => {

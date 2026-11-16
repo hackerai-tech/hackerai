@@ -1,4 +1,4 @@
-import { ConvexError } from "convex/values";
+import { ConvexError, getDocumentSize } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "./serviceFunctions";
 import { FINDING_DEDUPE_LIMIT } from "../../lib/findings/dedupe-context";
@@ -93,6 +93,28 @@ export async function findingSourceForChat(
 }
 
 /**
+ * Reads the start of an indexed range one document at a time, stopping at a
+ * row count or once the documents read reach the byte budget (the last one may
+ * cross it). Convex allows a single `.paginate()` per function, and a save
+ * needs two of these reads, so they stream instead. `exhausted` is true only
+ * when the range ended before either bound.
+ */
+async function readBounded(
+  range: AsyncIterable<Doc<"findings">>,
+  maxRows: number,
+): Promise<{ rows: Doc<"findings">[]; exhausted: boolean }> {
+  const rows: Doc<"findings">[] = [];
+  let bytes = 0;
+  for await (const row of range) {
+    rows.push(row);
+    bytes += getDocumentSize(row);
+    if (rows.length >= maxRows || bytes >= SCOPE_READ_BYTES)
+      return { rows, exhausted: false };
+  }
+  return { rows, exhausted: true };
+}
+
+/**
  * Earliest saved finding with this dedupe key that the scheduled task shares.
  * The read is bounded and limited to the task's project. `unresolved` means
  * the bound was reached with only unavailable copies (their source task is
@@ -106,29 +128,27 @@ export async function findScheduleScopeDuplicate(
   dedupeKey: string,
   except?: Id<"findings">,
 ): Promise<{ finding: Doc<"findings"> | null; unresolved: boolean }> {
-  const { page, isDone } = await ctx.db
-    .query("findings")
-    .withIndex("by_user_schedule_scope_project_dedupe", (q) =>
-      q
-        .eq("user_id", chat.user_id)
-        .eq("schedule_id", origin.scheduleId)
-        .eq("schedule_scope_key", origin.scopeKey)
-        .eq("project_id", chat.project_id)
-        .eq("dedupe_key", dedupeKey),
-    )
-    .paginate({
-      numItems: SCOPE_DUPLICATE_ROWS,
-      cursor: null,
-      maximumBytesRead: SCOPE_READ_BYTES,
-    });
+  const { rows, exhausted } = await readBounded(
+    ctx.db
+      .query("findings")
+      .withIndex("by_user_schedule_scope_project_dedupe", (q) =>
+        q
+          .eq("user_id", chat.user_id)
+          .eq("schedule_id", origin.scheduleId)
+          .eq("schedule_scope_key", origin.scopeKey)
+          .eq("project_id", chat.project_id)
+          .eq("dedupe_key", dedupeKey),
+      ),
+    SCOPE_DUPLICATE_ROWS,
+  );
   const sources = new Map<string, Doc<"chats"> | null>();
-  for (const finding of page)
+  for (const finding of rows)
     if (
       finding._id !== except &&
       (await findingSourceForChat(ctx, chat, finding, sources))
     )
       return { finding, unresolved: false };
-  return { finding: null, unresolved: !isDone };
+  return { finding: null, unresolved: !exhausted };
 }
 
 /** Newest findings the scheduled task shares, for semantic comparison. */
@@ -137,24 +157,22 @@ export async function recentScheduleScopeFindings(
   chat: Doc<"chats">,
   origin: ScheduleOrigin,
 ): Promise<Doc<"findings">[]> {
-  const { page } = await ctx.db
-    .query("findings")
-    .withIndex("by_user_schedule_scope_project_created", (q) =>
-      q
-        .eq("user_id", chat.user_id)
-        .eq("schedule_id", origin.scheduleId)
-        .eq("schedule_scope_key", origin.scopeKey)
-        .eq("project_id", chat.project_id),
-    )
-    .order("desc")
-    .paginate({
-      numItems: FINDING_DEDUPE_LIMIT,
-      cursor: null,
-      maximumBytesRead: SCOPE_READ_BYTES,
-    });
+  const { rows } = await readBounded(
+    ctx.db
+      .query("findings")
+      .withIndex("by_user_schedule_scope_project_created", (q) =>
+        q
+          .eq("user_id", chat.user_id)
+          .eq("schedule_id", origin.scheduleId)
+          .eq("schedule_scope_key", origin.scopeKey)
+          .eq("project_id", chat.project_id),
+      )
+      .order("desc"),
+    FINDING_DEDUPE_LIMIT,
+  );
   const sources = new Map<string, Doc<"chats"> | null>();
   const shared: Doc<"findings">[] = [];
-  for (const finding of page)
+  for (const finding of rows)
     if (await findingSourceForChat(ctx, chat, finding, sources))
       shared.push(finding);
   return shared;

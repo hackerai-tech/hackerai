@@ -7,11 +7,28 @@ import {
   jest,
 } from "@jest/globals";
 
-jest.mock("../lib/serviceFunctions", () => ({
-  mutation: jest.fn((config: any) => config),
-  internalMutation: jest.fn((config: any) => config),
-  query: jest.fn((config: any) => config),
-}));
+// Convex rejects a function that runs more than one paginated query. Every
+// registered handler gets its own count, which the fake database enforces.
+const mockFunctionRun = { paginated: 0, iterated: 0 };
+jest.mock("../lib/serviceFunctions", () => {
+  const registered = (config: any) => ({
+    ...config,
+    handler: async (ctx: unknown, args: unknown) => {
+      const outer = mockFunctionRun.paginated;
+      mockFunctionRun.paginated = 0;
+      try {
+        return await config.handler(ctx, args);
+      } finally {
+        mockFunctionRun.paginated = outer;
+      }
+    },
+  });
+  return {
+    mutation: registered,
+    internalMutation: registered,
+    query: registered,
+  };
+});
 jest.mock("convex/values", () => {
   const actual =
     jest.requireActual<typeof import("convex/values")>("convex/values");
@@ -112,6 +129,10 @@ function createDb(tables: Tables) {
         numItems: number;
         maximumRowsRead?: number;
       }) => {
+        if (++mockFunctionRun.paginated > 1)
+          throw new Error(
+            "This query function ran multiple paginated queries. Convex only supports a single paginated query in each query function.",
+          );
         const scanned = range();
         let index = cursor ? Number(cursor) : 0;
         const page: Row[] = [];
@@ -131,8 +152,12 @@ function createDb(tables: Tables) {
           continueCursor: String(index),
         };
       },
+      // Streams one document at a time; a caller that stops early reads no more.
       async *[Symbol.asyncIterator]() {
-        for (const row of matches()) yield row;
+        for (const row of matches()) {
+          mockFunctionRun.iterated++;
+          yield row;
+        }
       },
     };
     return api;
@@ -820,6 +845,70 @@ describe("schedule finding boundaries", () => {
     });
     expect(w.saved(canonical).schedule_observation_count).toBe(2);
     expect(w.tables.findings).toHaveLength(2);
+  });
+
+  it("bounds shared-finding reads by rows and by bytes", async () => {
+    const w = await world();
+    const scheduleId = await w.schedule();
+    const source = await w.scheduledTask(scheduleId);
+    const gone = await w.scheduledTask(scheduleId);
+    const later = await w.scheduledTask(scheduleId);
+    w.tables.chats.find(
+      (chat) => chat.id === gone.chatId,
+    )!.deletion_started_at = 1;
+    const seed = (n: number, extra: Record<string, unknown> = {}) =>
+      w.db.insert("findings", {
+        finding_id: `seed-${n}`,
+        user_id: "user-1",
+        chat_id: source.chatId,
+        title: `Seeded ${n}`,
+        target: "app.example.test",
+        description: "Seeded description.",
+        technical_analysis: "Seeded analysis.",
+        dedupe_key: `key-${n}`,
+        schedule_id: scheduleId,
+        schedule_scope_key: SCOPE,
+        created_at: n,
+        updated_at: n,
+        ...extra,
+      });
+    const candidates = async () => {
+      mockFunctionRun.iterated = 0;
+      const context =
+        await w.findings.getFindingDedupeContextForBackend.handler(w.ctx, {
+          ...w.scope(later),
+          dedupeKey: "absent",
+        });
+      return context.candidates.map((candidate) => candidate.finding_id);
+    };
+    const seeds = (from: number, to: number) =>
+      Array.from({ length: from - to + 1 }, (_, n) => `seed-${from - n}`);
+
+    for (let n = 0; n < 40; n++) await seed(n);
+    expect(await candidates()).toEqual(seeds(39, 15));
+    expect(mockFunctionRun.iterated).toBe(25);
+
+    // Large reports reach the byte budget before the row limit.
+    for (let n = 40; n < 50; n++)
+      await seed(n, { evidence: "x".repeat(300_000) });
+    expect(await candidates()).toEqual(seeds(49, 43));
+    expect(mockFunctionRun.iterated).toBe(7);
+
+    // The exact lookup stops the same way, and treats what it could not read
+    // as unknown instead of saving another copy.
+    for (let n = 50; n < 58; n++)
+      await seed(n, {
+        chat_id: gone.chatId,
+        dedupe_key: createFindingDedupeKey(report() as any),
+        evidence: "x".repeat(300_000),
+      });
+    mockFunctionRun.iterated = 0;
+    expect(await w.save(later)).toMatchObject({
+      success: false,
+      error: "temporarily_unavailable",
+    });
+    expect(mockFunctionRun.iterated).toBe(7);
+    expect(w.tables.findings).toHaveLength(58);
   });
 
   it("lets a later run read and correct the saved finding, naming its own task", async () => {

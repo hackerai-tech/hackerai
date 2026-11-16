@@ -38,9 +38,10 @@ import type { AgentSchedule, ScheduleRun } from "@/lib/schedules/types";
 // Three tiers follow the page container, so an open sidebar is accounted for:
 // a phone stack, then name + actions above three labelled facts from @xl, then
 // the table from @5xl. Shared with the column headers in SchedulesPage; the
-// fixed next-run and action lanes keep headers aligned with every row.
+// fixed next-run and action lanes keep headers aligned with every row. The
+// schedule lane is wide enough for status and a weekly cadence on one line.
 export const SCHEDULE_COLUMNS =
-  "@5xl:grid-cols-[minmax(0,1.2fr)_10rem_minmax(0,1fr)_minmax(0,1.4fr)_11rem] @5xl:gap-x-6";
+  "@5xl:grid-cols-[minmax(0,1.5fr)_10rem_minmax(0,1fr)_minmax(0,1.4fr)_11rem] @5xl:gap-x-6";
 // Bordered 44px targets on phones; quiet text actions from the middle tier up.
 const ROW_ACTION =
   "h-11 flex-1 border @xl:h-8 @xl:flex-none @xl:border-transparent";

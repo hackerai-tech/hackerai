@@ -202,10 +202,32 @@ export function nextScheduledTime(
   throw new Error("Could not calculate the next run.");
 }
 
+/**
+ * Locale formatting with the day period joined to its time by a no-break
+ * space, so a wrapping cadence line never leaves "AM" or "PM" on its own.
+ * The words around the time still wrap normally.
+ */
+function formatKeepingDayPeriod(
+  date: Date,
+  options: Intl.DateTimeFormatOptions,
+): string {
+  const parts = new Intl.DateTimeFormat([], options).formatToParts(date);
+  return parts
+    .map((part, index) =>
+      part.type === "literal" &&
+      /^\s+$/.test(part.value) &&
+      (parts[index - 1]?.type === "dayPeriod" ||
+        parts[index + 1]?.type === "dayPeriod")
+        ? " "
+        : part.value,
+    )
+    .join("");
+}
+
 /** A stored "HH:mm" time in the viewer's clock format, as next-run labels use. */
 export function formatClockTime(time: string): string {
   const [hour, minute] = time.split(":").map(Number);
-  return new Date(2000, 0, 1, hour, minute).toLocaleTimeString([], {
+  return formatKeepingDayPeriod(new Date(2000, 0, 1, hour, minute), {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -234,7 +256,7 @@ export function formatNextRun(
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function describeTiming(timing: ScheduleTiming): string {
   if (timing.type === "once")
-    return `Once · ${new Date(timing.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
+    return `Once · ${formatKeepingDayPeriod(new Date(timing.at), { dateStyle: "medium", timeStyle: "short" })}`;
   if (timing.type === "interval") {
     if (timing.minutes % 1440 === 0)
       return `Every ${timing.minutes / 1440} day${timing.minutes === 1440 ? "" : "s"}`;
