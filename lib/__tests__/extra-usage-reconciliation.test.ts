@@ -63,6 +63,30 @@ function receipt(team: boolean): Receipt {
     ],
   };
 }
+/** The exact unknown event: existing v1 fields plus one closed reason. */
+function unknownEvent(team: boolean, reason: string) {
+  return {
+    event: "extra_usage_deduction_reconciliation",
+    reconciliation_diagnostic_version: 1,
+    scope: team ? "team" : "personal",
+    settlement_operation_fingerprint: operationFingerprint,
+    reconciliation_outcome: "unknown_noreplay",
+    receipt_verification_diagnostic_version: 1,
+    receipt_verification_reason: reason,
+  };
+}
+function expectOneReconciliationEvent(fields: Record<string, unknown>) {
+  expect(phLogger.info).toHaveBeenCalledTimes(1);
+  expect(phLogger.info).toHaveBeenCalledWith(
+    "Extra usage deduction reconciliation",
+    fields,
+  );
+}
+function expectOneReadWithoutReplay() {
+  expect(mockAction).toHaveBeenCalledTimes(1);
+  expect(mockQuery).toHaveBeenCalledTimes(1);
+  expect(mockMutation).not.toHaveBeenCalled();
+}
 function deduct(team: boolean) {
   return team
     ? deductFromTeamBalance(
@@ -108,13 +132,19 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
         settlement_operation_fingerprint: operationFingerprint,
         reconciliation_outcome: "completed_receipt_verified",
         verified_result_success: true,
+        receipt_verification_diagnostic_version: 1,
+        receipt_verification_reason: "verified_completed",
       },
     );
   });
 
-  it.each(["missing", "pending-empty", "pending-applied"])(
+  it.each([
+    ["missing", "receipt_absent"],
+    ["pending-empty", "receipt_not_completed"],
+    ["pending-applied", "receipt_not_completed"],
+  ])(
     "keeps %s UNKNOWN, including an applied debit whose action has not finished",
-    async (state) => {
+    async (state, reason) => {
       const saved = receipt(team);
       saved.status = "pending";
       delete saved.result;
@@ -122,20 +152,8 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
       if (state === "pending-empty") saved.debits = [];
       mockQuery.mockResolvedValue(state === "missing" ? null : saved);
       await expect(deduct(team)).resolves.toEqual(unknown);
-      expect(mockAction).toHaveBeenCalledTimes(1);
-      expect(mockQuery).toHaveBeenCalledTimes(1);
-      expect(mockMutation).not.toHaveBeenCalled();
-      expect(phLogger.info).toHaveBeenCalledTimes(1);
-      expect(phLogger.info).toHaveBeenCalledWith(
-        "Extra usage deduction reconciliation",
-        {
-          event: "extra_usage_deduction_reconciliation",
-          reconciliation_diagnostic_version: 1,
-          scope: team ? "team" : "personal",
-          settlement_operation_fingerprint: operationFingerprint,
-          reconciliation_outcome: "unknown_noreplay",
-        },
-      );
+      expectOneReadWithoutReplay();
+      expectOneReconciliationEvent(unknownEvent(team, reason));
     },
   );
 
@@ -148,8 +166,48 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
   ])("rejects a mismatched %s fingerprint", async (key, value) => {
     mockQuery.mockResolvedValue({ ...receipt(team), [key]: value });
     await expect(deduct(team)).resolves.toEqual(unknown);
-    expect(mockAction).toHaveBeenCalledTimes(1);
-    expect(mockMutation).not.toHaveBeenCalled();
+    expectOneReadWithoutReplay();
+    // Exact fields: neither the mismatched key nor either value is reported.
+    expectOneReconciliationEvent(
+      unknownEvent(team, "receipt_identity_mismatch"),
+    );
+  });
+
+  it("reports a malformed returned receipt as a verification error, still UNKNOWN", async () => {
+    // Passes every identity/status/result guard, then breaks the existing
+    // debit traversal; the existing catch must keep the no-replay fence.
+    mockQuery.mockResolvedValue({
+      ...receipt(team),
+      debits: undefined as unknown as Receipt["debits"],
+    });
+    await expect(deduct(team)).resolves.toEqual(unknown);
+    expectOneReadWithoutReplay();
+    expect(phLogger.error).toHaveBeenCalledTimes(1);
+    expectOneReconciliationEvent(unknownEvent(team, "verification_error"));
+  });
+
+  it("labels the local deadline even when the aborted read rejects first", async () => {
+    jest.useFakeTimers();
+    // A cancellation-aware transport rejects synchronously inside abort(),
+    // so its rejection wins the existing race before the deadline's own.
+    mockQuery.mockImplementation(() => {
+      const signal = readSignals[readSignals.length - 1];
+      return new Promise<Receipt>((_, reject) => {
+        signal.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+    });
+    const pending = deduct(team);
+    await jest.advanceTimersByTimeAsync(1499);
+    expect(phLogger.info).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual(unknown);
+    expect(readSignals).toHaveLength(1);
+    expect(readSignals[0].aborted).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
+    expectOneReadWithoutReplay();
+    expectOneReconciliationEvent(unknownEvent(team, "read_deadline"));
   });
 
   it("recovers a completed denial without claiming a debit", async () => {
@@ -169,24 +227,26 @@ describe.each([false, true])("receipt reconciliation (team=%s)", (team) => {
       expect.objectContaining({
         reconciliation_outcome: "completed_receipt_verified",
         verified_result_success: false,
+        receipt_verification_diagnostic_version: 1,
+        receipt_verification_reason: "verified_completed",
       }),
     );
   });
 });
 
 it.each([
-  "no-applied-receipt",
-  "wrong-delta",
-  "duplicate-applied",
-  "denied-but-applied",
-  "null-before",
-  "null-after",
-  "debit-not-successful",
-  "missing-result",
-  "pending-with-result",
+  ["no-applied-receipt", "applied_debit_count_mismatch"],
+  ["wrong-delta", "debit_delta_mismatch"],
+  ["duplicate-applied", "applied_debit_count_mismatch"],
+  ["denied-but-applied", "denied_result_has_applied_debit"],
+  ["null-before", "debit_snapshot_missing"],
+  ["null-after", "debit_snapshot_missing"],
+  ["debit-not-successful", "debit_result_not_successful"],
+  ["missing-result", "receipt_result_missing"],
+  ["pending-with-result", "receipt_not_completed"],
 ])(
   "does not clear UNKNOWN for an inconsistent completed action: %s",
-  async (state) => {
+  async (state, reason) => {
     const saved = receipt(false);
     if (state === "no-applied-receipt") saved.debits = [];
     if (state === "wrong-delta") saved.debits[0].new_balance_points = 79;
@@ -201,10 +261,52 @@ it.each([
     if (state === "pending-with-result") saved.status = "pending";
     mockQuery.mockResolvedValue(saved);
     await expect(deduct(false)).resolves.toEqual(unknown);
-    expect(mockAction).toHaveBeenCalledTimes(1);
-    expect(mockMutation).not.toHaveBeenCalled();
+    expectOneReadWithoutReplay();
+    expectOneReconciliationEvent(unknownEvent(false, reason));
   },
 );
+
+it.each([
+  ["mismatched pending receipt without result", "receipt_identity_mismatch"],
+  ["pending receipt without result", "receipt_not_completed"],
+  ["completed receipt without result or debits", "receipt_result_missing"],
+  ["duplicate debits with a missing snapshot", "applied_debit_count_mismatch"],
+  ["missing snapshot and wrong unsuccessful debit", "debit_snapshot_missing"],
+  ["wrong delta from an unsuccessful debit", "debit_delta_mismatch"],
+])("reports the first existing guard that fails: %s", async (state, reason) => {
+  const saved = receipt(false);
+  const [debit] = saved.debits;
+  if (state === "mismatched pending receipt without result") {
+    saved.amount_points = 21;
+    saved.status = "pending";
+    delete saved.result;
+  }
+  if (state === "pending receipt without result") {
+    saved.status = "pending";
+    delete saved.result;
+    saved.debits = [];
+  }
+  if (state === "completed receipt without result or debits") {
+    delete saved.result;
+    saved.debits = [];
+  }
+  if (state === "duplicate debits with a missing snapshot") {
+    debit.previous_balance_points = null;
+    saved.debits.push({ ...debit, sequence: 1 });
+  }
+  if (state === "missing snapshot and wrong unsuccessful debit") {
+    debit.new_balance_points = null;
+    debit.result.success = false;
+  }
+  if (state === "wrong delta from an unsuccessful debit") {
+    debit.new_balance_points = 79;
+    debit.result.success = false;
+  }
+  mockQuery.mockResolvedValue(saved);
+  await expect(deduct(false)).resolves.toEqual(unknown);
+  expectOneReadWithoutReplay();
+  expectOneReconciliationEvent(unknownEvent(false, reason));
+});
 
 it("returns the completed reload result without driving a second reload", async () => {
   const saved = receipt(false);
@@ -220,40 +322,57 @@ it("returns the completed reload result without driving a second reload", async 
   expect(mockMutation).not.toHaveBeenCalled();
 });
 
-it("retains UNKNOWN if the read fails, without retrying either RPC", async () => {
-  mockQuery.mockRejectedValue(new TypeError("fetch failed"));
-  await expect(deduct(false)).resolves.toEqual(unknown);
-  expect(mockAction).toHaveBeenCalledTimes(1);
-  expect(mockQuery).toHaveBeenCalledTimes(1);
-  expect(mockMutation).not.toHaveBeenCalled();
-});
-
-it("bounds an unresponsive read, aborts its scoped client and ignores a late result", async () => {
-  jest.useFakeTimers();
-  let resolve!: (value: Receipt) => void;
-  mockQuery.mockImplementation(
+it.each([
+  [
+    "rejected",
+    () => mockQuery.mockRejectedValue(new TypeError("fetch failed")),
+  ],
+  [
+    "synchronously thrown",
     () =>
-      new Promise<Receipt>((done) => {
-        resolve = done;
+      mockQuery.mockImplementation(() => {
+        throw new TypeError("client setup failed");
       }),
-  );
-  const pending = deduct(false);
-  await jest.advanceTimersByTimeAsync(1500);
-  await expect(pending).resolves.toEqual(unknown);
-  expect(readSignals).toHaveLength(1);
-  expect(readSignals[0].aborted).toBe(true);
-  resolve(receipt(false));
-  await Promise.resolve();
-  expect(mockAction).toHaveBeenCalledTimes(1);
-  expect(mockQuery).toHaveBeenCalledTimes(1);
-  expect(mockMutation).not.toHaveBeenCalled();
-  expect(jest.getTimerCount()).toBe(0);
-  expect(phLogger.info).toHaveBeenCalledTimes(1);
-  expect(phLogger.info).toHaveBeenCalledWith(
-    "Extra usage deduction reconciliation",
-    expect.objectContaining({ reconciliation_outcome: "unknown_noreplay" }),
-  );
-});
+  ],
+])(
+  "retains UNKNOWN if the read is %s, without retrying either RPC",
+  async (_, failRead) => {
+    failRead();
+    await expect(deduct(false)).resolves.toEqual(unknown);
+    expectOneReadWithoutReplay();
+    // Exact fields: the read error's name and message are not copied.
+    expectOneReconciliationEvent(unknownEvent(false, "read_error"));
+  },
+);
+
+it.each(["resolves", "rejects"])(
+  "bounds an unresponsive read, aborts its scoped client and ignores a late read that %s",
+  async (late) => {
+    jest.useFakeTimers();
+    let resolve!: (value: Receipt) => void;
+    let reject!: (error: Error) => void;
+    mockQuery.mockImplementation(
+      () =>
+        new Promise<Receipt>((done, fail) => {
+          resolve = done;
+          reject = fail;
+        }),
+    );
+    const pending = deduct(false);
+    await jest.advanceTimersByTimeAsync(1500);
+    await expect(pending).resolves.toEqual(unknown);
+    expect(readSignals).toHaveLength(1);
+    expect(readSignals[0].aborted).toBe(true);
+    expectOneReconciliationEvent(unknownEvent(false, "read_deadline"));
+    if (late === "resolves") resolve(receipt(false));
+    else reject(new TypeError("fetch failed"));
+    await jest.advanceTimersByTimeAsync(0);
+    expectOneReadWithoutReplay();
+    expect(jest.getTimerCount()).toBe(0);
+    // The settled reason is neither revised nor emitted a second time.
+    expectOneReconciliationEvent(unknownEvent(false, "read_deadline"));
+  },
+);
 
 it("does not query receipts when the action returns normally", async () => {
   mockAction.mockResolvedValue(result);
@@ -278,9 +397,23 @@ it.each([
     await expect(deduct(team)).resolves.toEqual(
       verified ? saved.result : unknown,
     );
-    expect(mockAction).toHaveBeenCalledTimes(1);
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-    expect(mockMutation).not.toHaveBeenCalled();
+    expectOneReadWithoutReplay();
+    expect(mockQuery.mock.calls[0][1]).toEqual({
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
+      operation_id: operationId,
+      user_id: userId,
+      ...(team && { organization_id: organizationId }),
+    });
+    // The throwing logger did receive the added reason group.
+    expect(phLogger.info).toHaveBeenCalledWith(
+      "Extra usage deduction reconciliation",
+      expect.objectContaining({
+        receipt_verification_diagnostic_version: 1,
+        receipt_verification_reason: verified
+          ? "verified_completed"
+          : "receipt_absent",
+      }),
+    );
   },
 );
 
@@ -304,6 +437,8 @@ it.each([
         reconciliation_diagnostic_version: 1,
         scope: "personal",
         reconciliation_outcome: "unknown_noreplay",
+        receipt_verification_diagnostic_version: 1,
+        receipt_verification_reason: "receipt_absent",
       },
     );
   },
@@ -341,6 +476,8 @@ it("never logs sensitive-looking digits even inside a wallet-shaped caller ID", 
     scope: "personal",
     settlement_operation_fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     reconciliation_outcome: "unknown_noreplay",
+    receipt_verification_diagnostic_version: 1,
+    receipt_verification_reason: "receipt_absent",
   });
   expect(JSON.stringify(fields)).not.toContain("4111111111111111");
   expect(JSON.stringify(fields)).not.toContain(callerId);
@@ -387,6 +524,8 @@ it.each([
           settlement_operation_fingerprint:
             "e79acd97ac88086665d85a762f43d533a45195b6bac5961a993e6ed362471439",
           reconciliation_outcome: "unknown_noreplay",
+          receipt_verification_diagnostic_version: 1,
+          receipt_verification_reason: "receipt_absent",
         },
       );
       expect(mockAction).toHaveBeenCalledTimes(1);
