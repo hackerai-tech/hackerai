@@ -20,6 +20,7 @@ let mockAuth: {
   user: { id: string } | null;
   organizationId?: string;
   loading: boolean;
+  entitlements?: string[];
 } = { user: { id: "user_a" }, organizationId: "org_a", loading: false };
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: () => mockAuth,
@@ -159,6 +160,14 @@ it("starts the billing lookup once the personal plan finishes resolving", async 
 
 it.each<[string, () => void]>([
   ["team accounts", () => (mockSubscription = "team")],
+  [
+    // Access is resolved, but the team token has not reached `subscription`.
+    "a team token before the plan state catches up",
+    () => {
+      mockSubscription = "free";
+      mockAuth = { ...mockAuth, entitlements: ["team-plan"] };
+    },
+  ],
   [
     // The placeholder plan is free until entitlements reveal, e.g., a team.
     "a plan that is still resolving",

@@ -1,8 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useChatBillingRecoveryStatus } from "@/app/hooks/useBillingRecoveryStatus";
+import {
+  parseEntitlements,
+  resolveSubscriptionTier,
+} from "@/lib/auth/entitlements";
 import { getEarlyRenewalNotice } from "@/lib/billing/early-renewal-notice";
 import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
 
@@ -33,11 +38,17 @@ export function EarlyRenewalPaymentNotice({
   suppressed: boolean;
 }) {
   const { subscription, chatModeAccessResolved } = useGlobalState();
+  const { entitlements } = useAuth();
   // Team billing has its own administrators. The plan starts as "free" until
   // entitlements resolve, so wait for them before any billing lookup. Free is
   // not excluded: a past-due subscriber's entitlement can already be free.
+  // The current token is checked too: global state copies a team entitlement
+  // into `subscription` one render after it reports access as resolved.
   // The shared hook adds the signed-in user and organization scope.
-  const personal = chatModeAccessResolved && subscription !== "team";
+  const personal =
+    chatModeAccessResolved &&
+    subscription !== "team" &&
+    resolveSubscriptionTier(parseEntitlements(entitlements)) !== "team";
   const { data, mutate, scopeKey } = useChatBillingRecoveryStatus(personal, {
     minIntervalMs: STATUS_MIN_INTERVAL_MS,
   });
