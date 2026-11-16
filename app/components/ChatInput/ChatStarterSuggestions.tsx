@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { subscribeAuthenticatedAnalytics } from "@/lib/analytics/client";
 import {
   getChatStartersForMode,
   type ChatStarter,
@@ -83,10 +84,20 @@ export function ChatStarterSuggestions({
   const menuSelectionRef = useRef(false);
 
   // Record exposure only once the suggestions actually reach the screen, not
-  // for a render that a restored draft replaces before paint.
+  // for a render that a restored draft replaces before paint. If analytics was
+  // not ready yet, retry while still visible; the provider dedupes successes.
   useEffect(() => {
-    const frame = requestAnimationFrame(() => onExposed(mode, presentation));
-    return () => cancelAnimationFrame(frame);
+    const expose = () =>
+      requestAnimationFrame(() => onExposed(mode, presentation));
+    let frame = expose();
+    const unsubscribe = subscribeAuthenticatedAnalytics(() => {
+      cancelAnimationFrame(frame);
+      frame = expose();
+    });
+    return () => {
+      unsubscribe();
+      cancelAnimationFrame(frame);
+    };
   }, [mode, presentation, onExposed]);
 
   const selectFromMenu = (starter: ChatStarter) => {

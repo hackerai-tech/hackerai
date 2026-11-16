@@ -19,6 +19,7 @@ import {
 import { useEffect } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { upsertDraft } from "@/lib/utils/client-storage";
+import { setAuthenticatedAnalyticsUserId } from "@/lib/analytics/client";
 import type { UploadedFileState } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 
@@ -246,6 +247,53 @@ describe("Chat starter suggestions in the composer", () => {
       mode: "agent",
       presentation: "expanded",
     });
+  });
+
+  it("retries a lost exposure when analytics becomes ready while visible", async () => {
+    let analyticsReady = false;
+    mockCapture.mockImplementation(
+      (event) => event !== "chat_starters_exposed" || analyticsReady,
+    );
+    const exposureAttempts = () =>
+      mockCapture.mock.calls.filter(
+        ([event]) => event === "chat_starters_exposed",
+      ).length;
+    // The real readiness subscription notifies whenever the analytics user changes.
+    const notifyAnalyticsReadiness = async (userId: string | null) => {
+      act(() => setAuthenticatedAnalyticsUserId(userId));
+      await flushFrames();
+    };
+
+    try {
+      renderStarters();
+      await screen.findByTestId("chat-starters");
+      await flushFrames();
+      expect(exposureAttempts()).toBe(1);
+
+      // Hidden suggestions do not record a late exposure.
+      fireEvent.change(textarea(), { target: { value: " " } });
+      expect(screen.queryByTestId("chat-starters")).not.toBeInTheDocument();
+      await notifyAnalyticsReadiness("user-1");
+      expect(exposureAttempts()).toBe(1);
+
+      fireEvent.change(textarea(), { target: { value: "" } });
+      await flushFrames();
+      expect(exposureAttempts()).toBe(2);
+
+      analyticsReady = true;
+      await notifyAnalyticsReadiness(null);
+      expect(exposureAttempts()).toBe(3);
+      expect(mockCapture).toHaveBeenLastCalledWith("chat_starters_exposed", {
+        definition_version: 1,
+        mode: "agent",
+        presentation: "expanded",
+      });
+
+      await notifyAnalyticsReadiness("user-1");
+      expect(exposureAttempts()).toBe(3);
+    } finally {
+      act(() => setAuthenticatedAnalyticsUserId(null));
+    }
   });
 
   it("never overwrites text typed after the suggestions rendered", async () => {
