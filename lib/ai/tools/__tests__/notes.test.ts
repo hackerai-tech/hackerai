@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import { asSchema, convertToModelMessages, type UIMessage } from "ai";
 
 import type { ToolContext } from "@/types";
@@ -485,9 +492,17 @@ describe("get_note read telemetry", () => {
       return rest;
     });
 
+  let random: jest.SpiedFunction<typeof Math.random>;
+
   beforeEach(() => {
     mockGetNoteContent.mockReset();
     mockEvent.mockReset();
+    // Keep every sampled successful read so recorded reads are deterministic.
+    random = jest.spyOn(Math, "random").mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    random.mockRestore();
   });
 
   it("records each executed read, its continuation and whether more remains", async () => {
@@ -505,8 +520,18 @@ describe("get_note read telemetry", () => {
     expect(result.note.next_cursor).toBeDefined();
 
     expect(reads()).toEqual([
-      { outcome: "success", continuation: false, has_more: false },
-      { outcome: "success", continuation: true, has_more: true },
+      {
+        outcome: "success",
+        continuation: false,
+        has_more: false,
+        sample_rate: 0.05,
+      },
+      {
+        outcome: "success",
+        continuation: true,
+        has_more: true,
+        sample_rate: 0.05,
+      },
     ]);
     // Rendering the output for the model is not another read.
     modelText(tool, result);
@@ -533,10 +558,15 @@ describe("get_note read telemetry", () => {
 
     expect(mockGetNoteContent).toHaveBeenCalledTimes(3);
     expect(reads()).toEqual([
-      { outcome: "error", continuation: true },
-      { outcome: "error", continuation: true },
-      { outcome: "error", continuation: false },
-      { outcome: "success", continuation: false, has_more: false },
+      { outcome: "error", continuation: true, sample_rate: 1 },
+      { outcome: "error", continuation: true, sample_rate: 1 },
+      { outcome: "error", continuation: false, sample_rate: 1 },
+      {
+        outcome: "success",
+        continuation: false,
+        has_more: false,
+        sample_rate: 0.05,
+      },
     ]);
     expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(
       /SECRET|n2:|Restart/,
@@ -562,5 +592,28 @@ describe("get_note read telemetry", () => {
       error: "Note 'x' not found",
     });
     expect(mockEvent).toHaveBeenCalledTimes(2);
+
+    // A failing sampler is also swallowed.
+    random.mockImplementation(() => {
+      throw new Error("rng down");
+    });
+    mockGetNoteContent.mockResolvedValueOnce(page("body"));
+    expect(await runTool(tool, { note_id: "SECRET-ID" })).toEqual({
+      success: true,
+      note: page("body").note,
+    });
+  });
+
+  it("samples out successful reads but always records failed ones", async () => {
+    random.mockReturnValue(0.999);
+    const tool = createGetNote(context);
+    mockGetNoteContent.mockResolvedValueOnce(page("body"));
+    await runTool(tool, { note_id: "SECRET-ID" });
+    expect(mockEvent).not.toHaveBeenCalled();
+    mockGetNoteContent.mockRejectedValueOnce(new Error("down"));
+    await runTool(tool, { note_id: "SECRET-ID" });
+    expect(reads()).toEqual([
+      { outcome: "error", continuation: false, sample_rate: 1 },
+    ]);
   });
 });

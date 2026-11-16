@@ -9,7 +9,14 @@
  * made by the real selector. This evaluates which saved context reaches the
  * model, not the quality of the model's answer; no model or network is used.
  */
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import type { UIMessage } from "ai";
 import { getRecheckState } from "@/lib/notes/policy";
 
@@ -192,10 +199,18 @@ async function recall(
   return { injected, block, lines, recalled: [...lines.keys()].sort(), events };
 }
 
+let random: jest.SpiedFunction<typeof Math.random>;
+
 beforeEach(() => {
   mockLookup.mockReset();
   mockGetNotes.mockReset();
   mockEvent.mockReset();
+  // Keep every sampled routine event so event assertions are deterministic.
+  random = jest.spyOn(Math, "random").mockReturnValue(0);
+});
+
+afterEach(() => {
+  random.mockRestore();
 });
 
 describe("Notes recall domain evaluation (context selection only)", () => {
