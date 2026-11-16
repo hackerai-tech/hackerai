@@ -227,7 +227,7 @@ export function filterConnectionsByPresence(
   return { availableConnections, staleConnections };
 }
 
-async function queryLiveSandboxConnectionIds(
+export async function queryLiveSandboxConnectionIds(
   userId: string,
   connectionIds: string[],
   chatId?: string,
@@ -398,6 +398,17 @@ export class HybridSandboxManager implements SandboxManager {
   }
   private sandbox: SandboxInstance | null = null;
   private isLocal = false;
+  private scheduledConnectionId: string | undefined;
+  private scheduledConnectionLost = false;
+
+  pinScheduledConnection(connectionId: string) {
+    this.scheduledConnectionId = connectionId;
+  }
+
+  stopScheduledConnection() {
+    this.scheduledConnectionLost = true;
+  }
+
   private currentConnectionId: string | null = null;
   private currentConnectionName: string | null = null;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
@@ -551,6 +562,10 @@ export class HybridSandboxManager implements SandboxManager {
       );
     }
 
+    if (this.scheduledConnectionId) {
+      this.scheduledConnectionLost = true;
+      throw selectedComputerOfflineError(undefined, "acquisition");
+    }
     const previousConnection = this.sandbox.getConnectionInfo();
     const beforeReset = this.localAcquisitionGeneration;
     await this.quarantineLocalConnection(connectionId, "command_unresponsive");
@@ -943,7 +958,12 @@ export class HybridSandboxManager implements SandboxManager {
   ): Promise<{ sandbox: SandboxInstance }> {
     // Share lookup as well as the probe: concurrent health snapshots can choose
     // different connections, and must not close the first caller's sandbox.
-    const connections = await this.listConnections();
+    if (this.scheduledConnectionLost)
+      throw selectedComputerOfflineError(undefined, "acquisition");
+    const available = await this.listConnections();
+    const connections = this.scheduledConnectionId
+      ? available.filter((c) => c.connectionId === this.scheduledConnectionId)
+      : available;
 
     // Find the preferred connection
     const preferredConnection = resolveEnvironmentConnection(

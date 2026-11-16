@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState, type FC } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import useSWR from "swr";
+import { schedulesRequest } from "@/app/hooks/useSchedules";
 import { Button } from "@/components/ui/button";
 import {
   PanelLeft,
@@ -10,6 +12,7 @@ import {
   SquarePen,
   Search,
   ShieldAlert,
+  CalendarClock,
 } from "lucide-react";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
@@ -94,6 +97,12 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   const pathname = usePathname();
   const { setChatSidebarOpen, closeSidebar, subscription, isCheckingProPlan } =
     useGlobalState();
+  const { data: schedulesAccess } = useSWR<{ visible: boolean }>(
+    "/api/schedules?access=1",
+    schedulesRequest,
+    { dedupingInterval: 60_000 },
+  );
+  const showSchedules = schedulesAccess?.visible === true;
 
   // Search dialog state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -229,6 +238,31 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
                 <ShieldAlert className="w-4 h-4" />
               </Button>
             </div>
+            {showSchedules && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="sm"
+                    className={`size-9 p-0 hover:bg-sidebar-accent/50 ${
+                      pathname === "/schedules" ? "bg-sidebar-accent" : ""
+                    }`}
+                  >
+                    <Link
+                      href="/schedules"
+                      aria-label="Schedules"
+                      aria-current={
+                        pathname === "/schedules" ? "page" : undefined
+                      }
+                    >
+                      <CalendarClock className="size-[18px]" />
+                    </Link>
+                  </Button>
+                </TooltipTrigger>
+                <SidebarActionTooltip label="Schedules" side="right" />
+              </Tooltip>
+            )}
           </div>
         </div>
 
@@ -345,6 +379,27 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
             </div>
           </Button>
         </div>
+
+        {showSchedules && (
+          <div className="py-1">
+            <Button
+              asChild
+              variant="ghost"
+              className={`h-auto w-full justify-start rounded-lg p-2 hover:bg-sidebar-accent/50 ${
+                pathname === "/schedules" ? "bg-sidebar-accent" : ""
+              }`}
+            >
+              <Link
+                href="/schedules"
+                onClick={isMobileOverlay ? handleCloseSidebar : undefined}
+                aria-current={pathname === "/schedules" ? "page" : undefined}
+              >
+                <CalendarClock className="size-4" />
+                <span className="text-sm font-medium">Schedules</span>
+              </Link>
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* Search Dialog */}

@@ -29,7 +29,19 @@ export interface FindingSummary {
   created_at: number;
   project_id?: string;
   evidence_status?: import("@/lib/findings/evidence-status").FindingEvidenceStatus;
+  /** Schedule whose task saved this finding. The name is the saved snapshot. */
+  schedule?: { id: string; name: string };
 }
+
+/** One run of the schedule that reported this finding, newest first. */
+export type FindingScheduledObservation = {
+  observedAt: number;
+  /** False once that run's task is deleted. */
+  taskAvailable: boolean;
+  /** Present only while the task is available. */
+  chatId?: string;
+  messageId?: string;
+};
 
 export interface FindingDetailRecord extends FindingSummary {
   description: string;
@@ -45,9 +57,21 @@ export interface FindingDetailRecord extends FindingSummary {
   evidence_status_reason?: string;
   confidence?: "low" | "medium" | "high";
   confidence_rationale?: string;
+  /** False once the schedule is deleted; its name remains, without a link. */
+  scheduleAvailable?: boolean;
+  /** Latest runs that reported this finding; `observationCount` covers all of them. */
+  scheduledObservations?: FindingScheduledObservation[];
+  observationCount?: number;
   correction_history?: Array<{
     updated_at: number;
     message_id: string;
+    /**
+     * Task of the later schedule run that made this correction. Absent for a
+     * correction from the finding's own source task.
+     */
+    chat_id?: string;
+    /** False when that later run's task was deleted; its message cannot be linked. */
+    task_available?: false;
     reason: string;
     changed_fields: string[];
     previous_severity: string;

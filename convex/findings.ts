@@ -5,10 +5,21 @@ import {
   sameFindingDedupeVersions,
 } from "../lib/findings/dedupe-context";
 import {
-  findingRevisionValidator,
   findingFeedbackValidator,
   findingFeedbackAnswerValidator,
 } from "./findingValidators";
+import { scheduledFindingRevision } from "./scheduleValidators";
+import {
+  findingSourceForChat,
+  findScheduleScopeDuplicate,
+  recentScheduleScopeFindings,
+} from "./lib/scheduleFindings";
+import {
+  deleteScheduleObservationsForFindingBatch,
+  insertFirstScheduleObservation,
+  recordScheduleObservation,
+  scheduledFindingFields,
+} from "./lib/scheduleFindingObservations";
 import { evidenceVerificationSchema } from "../lib/ai/subagents/contracts";
 import { internal } from "./_generated/api";
 import { EVIDENCE_BASIS_FIELDS } from "../lib/findings/evidence-status";
@@ -36,10 +47,16 @@ import {
   closeFindingInputSchema,
   type FindingStatus,
 } from "../lib/findings/lifecycle";
-import type { Doc } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 
 const MAX_SEARCH_LENGTH = 200;
 const MAX_FINDING_SOURCE_CHATS = 500;
+// Facets on a schedule filter inside its index range. Bound each page's scan;
+// a page that reaches a bound ends early and the cursor continues from there.
+const SCHEDULE_FACET_SCAN = {
+  maximumRowsRead: 200,
+  maximumBytesRead: 4_000_000,
+};
 
 const findingSeverityArgValidator = v.union(
   v.literal("critical"),
@@ -323,6 +340,95 @@ const getFindingsByFacets = (
     .withIndex("by_user_and_created", (q) => q.eq("user_id", userId));
 };
 
+/** Newest first within one owner's schedule; facets narrow that range. */
+const getFindingsBySchedule = (
+  ctx: FindingReadCtx,
+  userId: string,
+  scheduleId: Id<"agent_schedules">,
+  { severity, category, status, chatId, projectId }: FindingListFilters,
+) => {
+  let findings = ctx.db
+    .query("findings")
+    .withIndex("by_user_schedule_created", (q) =>
+      q.eq("user_id", userId).eq("schedule_id", scheduleId),
+    )
+    .order("desc");
+  if (projectId)
+    findings = findings.filter((q) => q.eq(q.field("project_id"), projectId));
+  if (status)
+    findings = findings.filter((q) => q.eq(q.field("status"), status));
+  if (category)
+    findings = findings.filter((q) => q.eq(q.field("category"), category));
+  if (severity)
+    findings = findings.filter((q) => q.eq(q.field("severity"), severity));
+  if (chatId)
+    findings = findings.filter((q) => q.eq(q.field("chat_id"), chatId));
+  return findings;
+};
+
+/** Saved snapshot shown to the owner; readable after the schedule is deleted. */
+const scheduleSummary = (finding: Doc<"findings">) =>
+  finding.schedule_id
+    ? {
+        schedule: {
+          id: finding.schedule_id,
+          name: finding.schedule_name ?? "Schedule",
+        },
+      }
+    : {};
+
+/**
+ * Schedule provenance for the owner's detail view. A run or correction names
+ * its task only while that task is still the owner's and not being deleted;
+ * the schedule itself need not exist.
+ */
+async function scheduleDetail(ctx: FindingReadCtx, finding: Doc<"findings">) {
+  if (!finding.schedule_id) return {};
+  const schedule = await ctx.db.get(finding.schedule_id);
+  const observations = finding.schedule_observations ?? [];
+  const tasks = new Map<string, boolean>();
+  const taskAvailable = async (chatId: string | undefined) => {
+    if (!chatId) return false;
+    if (!tasks.has(chatId)) {
+      const chat = await getChat(ctx, chatId);
+      tasks.set(
+        chatId,
+        Boolean(
+          chat && chat.user_id === finding.user_id && !chat.deletion_started_at,
+        ),
+      );
+    }
+    return tasks.get(chatId)!;
+  };
+  const scheduledObservations = [];
+  for (const observation of [...observations].reverse()) {
+    const available = await taskAvailable(observation.chat_id);
+    scheduledObservations.push({
+      observedAt: observation.observed_at,
+      taskAvailable: available,
+      ...(available && observation.chat_id && observation.message_id
+        ? { chatId: observation.chat_id, messageId: observation.message_id }
+        : {}),
+    });
+  }
+  const corrections = [];
+  for (const { chat_id, ...revision } of finding.correction_history ?? [])
+    corrections.push(
+      chat_id === undefined
+        ? revision
+        : (await taskAvailable(chat_id))
+          ? { ...revision, chat_id }
+          : { ...revision, task_available: false as const },
+    );
+  return {
+    ...scheduleSummary(finding),
+    scheduleAvailable: schedule?.user_id === finding.user_id,
+    observationCount: finding.schedule_observation_count ?? observations.length,
+    scheduledObservations,
+    ...(finding.correction_history ? { correction_history: corrections } : {}),
+  };
+}
+
 const toFindingSummary = (finding: Doc<"findings">, chatTitle: string) => {
   const category =
     finding.category ??
@@ -404,17 +510,17 @@ const dedupeVersionValidator = v.object({
   updated_at: v.number(),
 });
 
-async function recentDedupeFindings(
-  ctx: FindingReadCtx,
-  userId: string,
-  chatId: string,
-) {
+async function recentDedupeFindings(ctx: FindingReadCtx, chat: Doc<"chats">) {
+  // A scheduled task compares against its schedule's shared findings, which
+  // include its own. Every other task compares within itself.
+  if (chat.schedule_origin)
+    return recentScheduleScopeFindings(ctx, chat, chat.schedule_origin);
   // Findings include captures, code and correction history. Bound bytes as well
   // as rows so unusually large reports cannot exhaust Convex's read budget.
   const result = await ctx.db
     .query("findings")
     .withIndex("by_user_chat_created", (q) =>
-      q.eq("user_id", userId).eq("chat_id", chatId),
+      q.eq("user_id", chat.user_id).eq("chat_id", chat.id),
     )
     .order("desc")
     .paginate({
@@ -463,9 +569,21 @@ export const getFindingDedupeContextForBackend = query({
           .eq("dedupe_key", args.dedupeKey),
       )
       .first();
-    const findings = await recentDedupeFindings(ctx, args.userId, args.chatId);
+    // An unresolved lookup reports no match here; the save itself refuses it.
+    const shared =
+      !exact && chat.schedule_origin
+        ? (
+            await findScheduleScopeDuplicate(
+              ctx,
+              chat,
+              chat.schedule_origin,
+              args.dedupeKey,
+            )
+          ).finding
+        : null;
+    const findings = await recentDedupeFindings(ctx, chat);
     return {
-      exact_duplicate_id: exact?.finding_id ?? null,
+      exact_duplicate_id: (exact ?? shared)?.finding_id ?? null,
       candidates: findings.map((finding) => ({
         finding_id: finding.finding_id,
         updated_at: finding.updated_at,
@@ -519,6 +637,12 @@ export const createFindingForBackend = mutation({
       success: v.literal(false),
       error: v.literal("comparison_stale"),
     }),
+    v.object({
+      success: v.literal(false),
+      error: v.literal("temporarily_unavailable"),
+      retryable: v.literal(true),
+      message: v.string(),
+    }),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -552,7 +676,8 @@ export const createFindingForBackend = mutation({
       : undefined;
     const input = parsed.data;
     const dedupeKey = createFindingDedupeKey(input);
-    const duplicate = await ctx.db
+    const origin = chat.schedule_origin;
+    const ownDuplicate = await ctx.db
       .query("findings")
       .withIndex("by_user_chat_dedupe", (q) =>
         q
@@ -561,19 +686,43 @@ export const createFindingForBackend = mutation({
           .eq("dedupe_key", dedupeKey),
       )
       .first();
+    const shared =
+      !ownDuplicate && origin
+        ? await findScheduleScopeDuplicate(ctx, chat, origin, dedupeKey)
+        : null;
+    if (shared?.unresolved)
+      return {
+        success: false as const,
+        error: "temporarily_unavailable" as const,
+        retryable: true as const,
+        message:
+          "Earlier copies of this finding from this schedule are still being removed or moved, so the report cannot be matched to a saved finding yet. It was not saved. Retry the same report shortly.",
+      };
+    const duplicate = ownDuplicate ?? shared?.finding;
 
     if (duplicate) {
+      // A scheduled run that reports a saved finding again is recorded on it,
+      // in this transaction. The report and its status are left as they are.
+      await recordScheduleObservation(
+        ctx,
+        chat,
+        duplicate,
+        args.messageId,
+        Date.now(),
+      );
       return {
         success: false as const,
         error: "duplicate" as const,
         duplicate_of: duplicate.finding_id,
         message:
-          "A matching finding already exists in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
+          duplicate.chat_id === args.chatId
+            ? "A matching finding already exists in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence."
+            : "A matching finding was already saved by an earlier run of this schedule, and this run is now recorded on it. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
       };
     }
 
     if (args.comparisonSnapshot) {
-      const current = await recentDedupeFindings(ctx, args.userId, args.chatId);
+      const current = await recentDedupeFindings(ctx, chat);
       // This indexed read participates in Convex OCC: a concurrent create,
       // correction or deletion invalidates the model's comparison before commit.
       if (
@@ -595,12 +744,21 @@ export const createFindingForBackend = mutation({
             message: "The duplicate comparison is invalid.",
           };
         }
+        await recordScheduleObservation(
+          ctx,
+          chat,
+          match,
+          args.messageId,
+          Date.now(),
+        );
         return {
           success: false as const,
           error: "duplicate" as const,
           duplicate_of: match.finding_id,
           message:
-            "This root cause is already reported in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
+            match.chat_id === args.chatId
+              ? "This root cause is already reported in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence."
+              : "This root cause was already reported by an earlier run of this schedule, and this run is now recorded on it. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
         };
       }
     } else if (args.semanticDuplicateId) {
@@ -676,7 +834,17 @@ export const createFindingForBackend = mutation({
       ),
       created_at: now,
       updated_at: now,
+      ...(origin
+        ? scheduledFindingFields(origin, args.chatId, args.messageId, now)
+        : {}),
     });
+    if (origin)
+      await insertFirstScheduleObservation(
+        ctx,
+        origin,
+        { finding_id: findingId, user_id: args.userId, chat_id: args.chatId },
+        now,
+      );
 
     const source = await getFindingSource(ctx, args.userId, args.chatId);
     if (source) {
@@ -692,6 +860,7 @@ export const createFindingForBackend = mutation({
         chat_title: chat.title,
         finding_count: 1,
         latest_finding_at: now,
+        ...(origin ? { schedule_id: origin.scheduleId } : {}),
       });
     }
 
@@ -721,7 +890,10 @@ export const getFinding = query({
     if (!finding || finding.user_id !== identity.subject) return null;
 
     const chat = await getChat(ctx, finding.chat_id);
-    return toFindingDetail(finding, chat?.title ?? "Deleted chat");
+    return {
+      ...toFindingDetail(finding, chat?.title ?? "Deleted chat"),
+      ...(await scheduleDetail(ctx, finding)),
+    };
   },
 });
 
@@ -734,6 +906,9 @@ export const listFindings = query({
     status: v.optional(findingStatusArgValidator),
     chatId: v.optional(v.string()),
     projectId: v.optional(v.id("projects")),
+    // Arrives from a link, so a malformed value lists nothing instead of
+    // failing argument validation. The schedule itself may be deleted.
+    scheduleId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -741,6 +916,13 @@ export const listFindings = query({
       return { page: [], isDone: true, continueCursor: "" };
     }
     await assertUserCanAccessChatHistory(ctx, identity.subject);
+
+    const scheduleId =
+      args.scheduleId === undefined
+        ? undefined
+        : ctx.db.normalizeId("agent_schedules", args.scheduleId);
+    if (scheduleId === null)
+      return { page: [], isDone: true, continueCursor: "" };
 
     if (args.projectId) {
       const project = await ctx.db.get(args.projectId);
@@ -760,6 +942,8 @@ export const listFindings = query({
     let page: Doc<"findings">[];
     let isDone: boolean;
     let continueCursor: string;
+    // A bounded scan can end a page early; the client needs these to split it.
+    let split = {};
 
     if (search) {
       const result = await ctx.db
@@ -774,6 +958,7 @@ export const listFindings = query({
           if (args.category) builder = builder.eq("category", args.category);
           if (args.severity) builder = builder.eq("severity", args.severity);
           if (args.chatId) builder = builder.eq("chat_id", args.chatId);
+          if (scheduleId) builder = builder.eq("schedule_id", scheduleId);
           return builder;
         })
         .paginate(args.paginationOpts);
@@ -781,6 +966,30 @@ export const listFindings = query({
       page = result.page;
       isDone = result.isDone;
       continueCursor = result.continueCursor;
+    } else if (scheduleId) {
+      const hasFacet = Boolean(
+        args.projectId ||
+        args.status ||
+        args.category ||
+        args.severity ||
+        args.chatId,
+      );
+      const result = await getFindingsBySchedule(
+        ctx,
+        identity.subject,
+        scheduleId,
+        args,
+      ).paginate({
+        ...args.paginationOpts,
+        ...(hasFacet ? SCHEDULE_FACET_SCAN : {}),
+      });
+      page = result.page;
+      isDone = result.isDone;
+      continueCursor = result.continueCursor;
+      split = {
+        ...(result.splitCursor ? { splitCursor: result.splitCursor } : {}),
+        ...(result.pageStatus ? { pageStatus: result.pageStatus } : {}),
+      };
     } else {
       const findingsQuery = getFindingsByFacets(ctx, identity.subject, args);
 
@@ -804,7 +1013,10 @@ export const listFindings = query({
             chat.user_id !== identity.subject)
         )
           return null;
-        return toFindingSummary(finding, chat?.title ?? "Deleted chat");
+        return {
+          ...toFindingSummary(finding, chat?.title ?? "Deleted chat"),
+          ...scheduleSummary(finding),
+        };
       }),
     );
 
@@ -812,6 +1024,7 @@ export const listFindings = query({
       page: summaries.filter((row) => row !== null),
       isDone,
       continueCursor,
+      ...split,
     };
   },
 });
@@ -940,6 +1153,12 @@ export const deleteFinding = mutation({
       findingId: finding.finding_id,
       userId: identity.subject,
     });
+    if (finding.schedule_id)
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.deleteScheduleObservationsForFinding,
+        { findingId: finding.finding_id },
+      );
 
     const source = await getFindingSource(
       ctx,
@@ -968,6 +1187,22 @@ export const deleteFinding = mutation({
   },
 });
 
+/** Removes a deleted finding's schedule run records, one bounded batch per run. */
+export const deleteScheduleObservationsForFinding = internalMutation({
+  args: { findingId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (await getFindingByPublicId(ctx, args.findingId)) return null;
+    if (await deleteScheduleObservationsForFindingBatch(ctx, args.findingId))
+      await ctx.scheduler.runAfter(
+        0,
+        internal.findings.deleteScheduleObservationsForFinding,
+        args,
+      );
+    return null;
+  },
+});
+
 const reportErrorFields = {
   success: v.literal(false),
   error: v.union(
@@ -976,6 +1211,7 @@ const reportErrorFields = {
     v.literal("conflict"),
     v.literal("duplicate"),
     v.literal("chat_not_found"),
+    v.literal("temporarily_unavailable"),
   ),
   message: v.string(),
 };
@@ -1026,7 +1262,7 @@ const reportDetailValidator = v.object({
     v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
   ),
   confidence_rationale: v.optional(v.string()),
-  correction_history: v.optional(v.array(findingRevisionValidator)),
+  correction_history: v.optional(v.array(scheduledFindingRevision)),
   correction_count: v.optional(v.number()),
   usefulness_feedback: v.optional(findingFeedbackValidator),
   counterevidence: v.optional(v.string()),
@@ -1185,15 +1421,14 @@ export const getReportForBackend = query({
     if (!chat || chat.user_id !== args.userId || chat.deletion_started_at)
       return reportNotFound();
     const finding = await getFindingByPublicId(ctx, args.findingId);
-    if (
-      !finding ||
-      finding.user_id !== args.userId ||
-      finding.chat_id !== args.chatId
-    )
-      return reportNotFound();
+    // Its own findings, or ones a scheduled task shares with earlier runs.
+    const source = finding
+      ? await findingSourceForChat(ctx, chat, finding)
+      : null;
+    if (!finding || !source) return reportNotFound();
     return {
       success: true as const,
-      report: toFindingDetail(finding, chat.title),
+      report: toFindingDetail(finding, source.title),
     };
   },
 });
@@ -1252,12 +1487,10 @@ export const updateFindingForBackend = mutation({
       };
     const update = parsed.data;
     const finding = await getFindingByPublicId(ctx, update.finding_id);
-    if (
-      !finding ||
-      finding.user_id !== args.userId ||
-      finding.chat_id !== args.chatId
-    )
+    if (!finding || !(await findingSourceForChat(ctx, chat, finding)))
       return reportNotFound();
+    // A later run of the schedule corrects the saved finding from its own task.
+    const fromLaterRun = finding.chat_id !== args.chatId;
     if (finding.updated_at !== update.expected_updated_at)
       return {
         success: false as const,
@@ -1298,7 +1531,7 @@ export const updateFindingForBackend = mutation({
       .withIndex("by_user_chat_dedupe", (q) =>
         q
           .eq("user_id", args.userId)
-          .eq("chat_id", args.chatId)
+          .eq("chat_id", finding.chat_id)
           .eq("dedupe_key", dedupeKey),
       )
       .take(2);
@@ -1307,6 +1540,29 @@ export const updateFindingForBackend = mutation({
         success: false as const,
         error: "duplicate" as const,
         message: "These changes would duplicate another finding in this chat.",
+      };
+    const shared = chat.schedule_origin
+      ? await findScheduleScopeDuplicate(
+          ctx,
+          chat,
+          chat.schedule_origin,
+          dedupeKey,
+          finding._id,
+        )
+      : null;
+    if (shared?.finding)
+      return {
+        success: false as const,
+        error: "duplicate" as const,
+        message:
+          "These changes would duplicate another finding from this schedule.",
+      };
+    if (shared?.unresolved)
+      return {
+        success: false as const,
+        error: "temporarily_unavailable" as const,
+        message:
+          "Earlier copies of a matching finding from this schedule are still being removed or moved, so these changes cannot be checked for duplicates yet. Nothing was changed. Retry shortly.",
       };
     const cvss = calculateCvss31(input.cvss_breakdown);
     const category = deriveFindingCategory({
@@ -1351,6 +1607,7 @@ export const updateFindingForBackend = mutation({
         {
           updated_at: now,
           message_id: args.messageId,
+          ...(fromLaterRun ? { chat_id: args.chatId } : {}),
           reason: update.reason,
           changed_fields: [
             ...Object.keys(update.changes),
@@ -1382,6 +1639,7 @@ export const updateFindingForBackend = mutation({
         message_id: args.messageId,
         tool_call_id: args.toolCallId,
         reason: update.reason,
+        ...(fromLaterRun ? { chat_id: args.chatId } : {}),
       },
     });
     return {

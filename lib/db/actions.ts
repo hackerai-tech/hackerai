@@ -1,3 +1,5 @@
+import type { LocalScheduleExecution } from "@/lib/schedules/recurrence";
+import type { ScheduleOrigin } from "@/lib/schedules/provenance";
 import "server-only";
 import {
   getAgentHistoryBudget,
@@ -1058,12 +1060,16 @@ export async function saveChat({
   title,
   projectId,
   sandboxType,
+  scheduledLocalExecution,
+  scheduleOrigin,
 }: {
   id: string;
   userId: string;
   title: string;
   projectId?: string;
   sandboxType?: string;
+  scheduledLocalExecution?: LocalScheduleExecution;
+  scheduleOrigin?: ScheduleOrigin;
 }) {
   const mutationArgs = {
     serviceKey,
@@ -1072,6 +1078,8 @@ export async function saveChat({
     title,
     ...(projectId ? { projectId } : {}),
     ...(sandboxType ? { sandboxType } : {}),
+    ...(scheduledLocalExecution ? { scheduledLocalExecution } : {}),
+    ...(scheduleOrigin ? { scheduleOrigin } : {}),
   };
 
   try {
@@ -1383,6 +1391,8 @@ export async function handleInitialChatAndUserMessage({
   isHidden,
   projectId,
   sandboxType,
+  scheduledLocalExecution,
+  scheduleOrigin,
   onPersistenceStep,
 }: {
   chatId: string;
@@ -1393,6 +1403,9 @@ export async function handleInitialChatAndUserMessage({
   isHidden?: boolean;
   projectId?: string;
   sandboxType?: string;
+  scheduledLocalExecution?: LocalScheduleExecution;
+  /** Only the scheduler supplies this; it is persisted when the task is created. */
+  scheduleOrigin?: ScheduleOrigin;
   onPersistenceStep?: (step: InitialChatPersistenceStep) => void;
 }) {
   const reportPersistenceStep = (step: InitialChatPersistenceStep) => {
@@ -1432,6 +1445,8 @@ export async function handleInitialChatAndUserMessage({
       title,
       projectId,
       sandboxType,
+      scheduledLocalExecution,
+      scheduleOrigin,
     });
   } else {
     // Check if user owns the chat

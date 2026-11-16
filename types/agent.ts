@@ -32,6 +32,8 @@ export interface SandboxInfo {
 }
 
 export interface SandboxManager {
+  pinScheduledConnection?(connectionId: string): void;
+  stopScheduledConnection?(): void;
   /** End this run when its local connection is lost; a successor requires a new run. */
   stopOnLocalDisconnect?(
     onLost: (error: LocalConnectionLostError) => void,

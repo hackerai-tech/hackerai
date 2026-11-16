@@ -1897,6 +1897,65 @@ describe("selected-computer failure diagnostics", () => {
   );
 });
 
+describe("scheduled local session binding", () => {
+  it("refuses a replacement session for the same environment and never acquires cloud", async () => {
+    const manager = new HybridSandboxManager(
+      "owner",
+      jest.fn(),
+      "environment:machine",
+      "service",
+      null,
+      "pro",
+    );
+    manager.pinScheduledConnection("original");
+    const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+      {
+        connectionId: "replacement",
+        environmentId: "machine",
+        name: "Lab",
+        isDesktop: false,
+      } as ConnectionInfo,
+    ]);
+    try {
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+    } finally {
+      list.mockRestore();
+    }
+  });
+  it("stays stopped after loss even if the same session is visible again", async () => {
+    const manager = new HybridSandboxManager(
+      "owner",
+      jest.fn(),
+      "environment:machine",
+      "service",
+      null,
+      "pro",
+    );
+    manager.pinScheduledConnection("original");
+    manager.stopScheduledConnection();
+    const list = jest.spyOn(manager, "listConnections").mockResolvedValue([
+      {
+        connectionId: "original",
+        environmentId: "machine",
+        name: "Lab",
+        isDesktop: false,
+      } as ConnectionInfo,
+    ]);
+    try {
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+      });
+      expect(list).not.toHaveBeenCalled();
+    } finally {
+      list.mockRestore();
+    }
+  });
+});
+
 describe("Agent connection interruption", () => {
   const priorWs = process.env.CENTRIFUGO_WS_URL;
   const priorSecret = process.env.CENTRIFUGO_TOKEN_SECRET;

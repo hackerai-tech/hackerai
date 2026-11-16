@@ -333,6 +333,24 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         latest_finding_at: 1,
       },
     ],
+    schedule_finding_observations: [
+      {
+        _id: "schedule-observation-user",
+        user_id: userId,
+        finding_id: "finding-1",
+        run_id: "run-1",
+        chat_id: "chat-1",
+        observed_at: 1,
+      },
+      {
+        _id: "schedule-observation-other",
+        user_id: otherUserId,
+        finding_id: "finding-2",
+        run_id: "run-2",
+        chat_id: "chat-other-id",
+        observed_at: 1,
+      },
+    ],
     finding_agent_retest_runs: [
       {
         _id: "agent-retest-user",
@@ -989,6 +1007,16 @@ describe("userDeletion", () => {
     ).toBeUndefined();
     expect(
       row(tables, "finding_variant_hunts", "variant-hunt-other"),
+    ).toMatchObject({ user_id: "user_other" });
+    expect(
+      row(tables, "schedule_finding_observations", "schedule-observation-user"),
+    ).toBeUndefined();
+    expect(
+      row(
+        tables,
+        "schedule_finding_observations",
+        "schedule-observation-other",
+      ),
     ).toMatchObject({ user_id: "user_other" });
     expect(
       row(tables, "local_sandbox_heartbeats", "heartbeat-other"),

@@ -74,6 +74,7 @@ import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { captureFindingEvent } from "@/lib/findings/client-telemetry";
 import { FindingFeedback } from "./FindingFeedback";
 import { FindingHistory } from "./FindingHistory";
+import { ScheduledFindingHistory } from "./ScheduledFindingHistory";
 
 const CVSS_METRICS: Array<{
   key: keyof Cvss31Breakdown;
@@ -916,6 +917,42 @@ export function FindingDetail({
                     </dd>
                   </div>
                 ) : null}
+                {surface === "findings_page" && finding.schedule ? (
+                  <div className="min-w-0">
+                    <dt className="text-[13px] text-muted-foreground">
+                      Source schedule
+                    </dt>
+                    <dd className="mt-1 text-sm text-foreground">
+                      {/* The saved name outlives the schedule; only a
+                          schedule that still exists is linked. */}
+                      {finding.scheduleAvailable ? (
+                        <Link
+                          href="/schedules"
+                          aria-label={`${finding.schedule.name} in Schedules`}
+                          className="inline-flex max-w-full min-w-0 items-center gap-1 rounded text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <span className="min-w-0 truncate">
+                            {finding.schedule.name}
+                          </span>
+                          <ArrowUpRight
+                            className="size-3.5 shrink-0 text-muted-foreground"
+                            aria-hidden="true"
+                          />
+                        </Link>
+                      ) : (
+                        <span className="break-words">
+                          {finding.schedule.name}
+                          {finding.scheduleAvailable === false ? (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · Deleted
+                            </span>
+                          ) : null}
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                ) : null}
               </dl>
 
               <section
@@ -1233,6 +1270,7 @@ export function FindingDetail({
                   />
                 )}
                 <FindingHistory finding={finding} />
+                <ScheduledFindingHistory finding={finding} />
                 <FindingFeedback
                   key={`${finding.finding_id}:${finding.updated_at}`}
                   finding={finding}

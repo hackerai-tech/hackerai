@@ -12,6 +12,8 @@ export const DELETED_USER_ID = "__deleted_user__";
 // account API checks them before removing the external identity.
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
+    "agent_schedules",
+    "schedule_runs",
     "projects",
     "chats",
     "chat_history_access",
@@ -21,6 +23,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "feedback",
     "findings",
     "finding_sources",
+    "schedule_finding_observations",
     "finding_agent_retest_runs",
     "finding_variant_hunts",
     "finding_retest_recipes",
@@ -476,6 +479,11 @@ async function cleanupUserDataForUser(
     "by_user_and_latest",
     (q) => q.eq("user_id", userId),
   );
+  const scheduleFindingObservationsBatch = await collectByIndexBatch<
+    Doc<"schedule_finding_observations">
+  >(ctx, budget, "schedule_finding_observations", "by_user_and_chat", (q) =>
+    q.eq("user_id", userId),
+  );
   const findingAgentRetestsBatch = await collectByIndexBatch<
     Doc<"finding_agent_retest_runs">
   >(ctx, budget, "finding_agent_retest_runs", "by_user_and_started", (q) =>
@@ -586,17 +594,34 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const schedulesBatch = await collectByIndexBatch<Doc<"agent_schedules">>(
+    ctx,
+    budget,
+    "agent_schedules",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const scheduleRunsBatch = await collectByIndexBatch<Doc<"schedule_runs">>(
+    ctx,
+    budget,
+    "schedule_runs",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const captchaLimitsBatch = await collectByIndexBatch<
     Doc<"captcha_daily_limits">
   >(ctx, budget, "captcha_daily_limits", "by_bucket_and_day", (q) =>
     q.eq("bucket", `user:${userId}`),
   );
   const deletionBatches = [
+    schedulesBatch,
+    scheduleRunsBatch,
     projectsBatch,
     chatsBatch,
     filesBatch,
     findingsBatch,
     findingSourcesBatch,
+    scheduleFindingObservationsBatch,
     findingAgentRetestsBatch,
     findingVariantHuntsBatch,
     findingRetestRecipesBatch,
@@ -724,9 +749,18 @@ async function cleanupUserDataForUser(
   );
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
+  await deleteDocs(ctx, stats, "agent_schedules", schedulesBatch.docs, mode);
+  await deleteDocs(ctx, stats, "schedule_runs", scheduleRunsBatch.docs, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "findings", findings, mode);
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "schedule_finding_observations",
+    scheduleFindingObservationsBatch.docs,
+    mode,
+  );
   await deleteDocs(
     ctx,
     stats,
