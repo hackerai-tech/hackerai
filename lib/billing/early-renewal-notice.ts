@@ -1,9 +1,6 @@
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
-/** Server-evaluated PostHog flag. Missing or failed evaluation means off. */
-export const EARLY_RENEWAL_NOTICE_FLAG = "early-renewal-payment-notice";
-
 export type EarlyRenewalNoticeTier = "pro" | "pro-plus" | "ultra";
 
 const PLAN_NAMES: Record<EarlyRenewalNoticeTier, string> = {

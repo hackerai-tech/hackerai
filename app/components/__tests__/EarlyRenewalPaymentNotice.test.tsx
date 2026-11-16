@@ -25,8 +25,12 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: () => mockAuth,
 }));
 let mockSubscription = "pro";
+let mockPlanResolved = true;
 jest.mock("@/app/contexts/GlobalState", () => ({
-  useGlobalState: () => ({ subscription: mockSubscription }),
+  useGlobalState: () => ({
+    subscription: mockSubscription,
+    chatModeAccessResolved: mockPlanResolved,
+  }),
 }));
 jest.mock("@/lib/billing/client", () => ({
   ...jest.requireActual("@/lib/billing/client"),
@@ -43,11 +47,10 @@ const statusMock = jest.mocked(getSubscriptionCancellationStatus);
 const portalMock = jest.mocked(redirectToBillingPortal);
 const originalFetch = global.fetch;
 const originalPostHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-let flagEnabled = true;
-const flagFetch = jest.fn(async () => ({
-  ok: true,
-  json: async () => ({ enabled: flagEnabled }),
-}));
+// Every HTTP request fails, as when feature-flag services are unreachable.
+const unavailableFetch = jest.fn(async () => {
+  throw new TypeError("Failed to fetch");
+});
 
 // Synthetic personal Pro subscriber whose automatic renewal failed.
 const failedRenewal: SubscriptionCancellationStatus = {
@@ -80,7 +83,7 @@ const impressions = () =>
 
 beforeAll(() => {
   process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
-  global.fetch = flagFetch as unknown as typeof fetch;
+  global.fetch = unavailableFetch as unknown as typeof fetch;
 });
 afterAll(() => {
   global.fetch = originalFetch;
@@ -89,8 +92,9 @@ afterAll(() => {
   else process.env.NEXT_PUBLIC_POSTHOG_KEY = originalPostHogKey;
 });
 beforeEach(() => {
-  flagEnabled = true;
+  unavailableFetch.mockClear();
   mockSubscription = "pro";
+  mockPlanResolved = true;
   mockAuth = {
     user: { id: "user_a" },
     organizationId: "org_a",
@@ -129,23 +133,57 @@ it("shows a compact Update payment notice while the subscriber can keep chatting
   );
 });
 
-it("makes no billing status request when the flag is off", async () => {
-  flagEnabled = false;
+it("shows the notice without any feature-flag request while flag services are down", async () => {
+  // A past-due subscriber's entitlement can already have dropped to free.
+  mockSubscription = "free";
   setup();
-  await waitFor(() => expect(flagFetch).toHaveBeenCalledTimes(1));
+  expect(
+    await screen.findByTestId("renewal-payment-notice"),
+  ).toBeInTheDocument();
+  expect(unavailableFetch).not.toHaveBeenCalled();
+});
+
+it("starts the billing lookup once the personal plan finishes resolving", async () => {
+  mockPlanResolved = false;
+  const view = setup();
+  expect(statusMock).not.toHaveBeenCalled();
+
+  mockPlanResolved = true;
+  view.rerender(
+    <SWRConfig value={{ provider: () => new Map() }}>{notice({})}</SWRConfig>,
+  );
+  expect(await screen.findByTestId("renewal-payment-notice")).toBeVisible();
+  expect(statusMock).toHaveBeenCalledTimes(1);
+  expect(unavailableFetch).not.toHaveBeenCalled();
+});
+
+it.each<[string, () => void]>([
+  ["team accounts", () => (mockSubscription = "team")],
+  [
+    // The placeholder plan is free until entitlements reveal, e.g., a team.
+    "a plan that is still resolving",
+    () => {
+      mockSubscription = "free";
+      mockPlanResolved = false;
+    },
+  ],
+  [
+    "signed-out visitors",
+    () =>
+      (mockAuth = { user: null, organizationId: undefined, loading: false }),
+  ],
+  [
+    "a session that is still loading",
+    () => (mockAuth = { user: { id: "user_a" }, loading: true }),
+  ],
+])("makes no billing request for %s", async (_, arrange) => {
+  arrange();
+  setup();
   await act(async () => {});
   expect(statusMock).not.toHaveBeenCalled();
   expect(
     screen.queryByTestId("renewal-payment-notice"),
   ).not.toBeInTheDocument();
-});
-
-it("does not evaluate the flag or billing for team accounts", async () => {
-  mockSubscription = "team";
-  setup();
-  await act(async () => {});
-  expect(flagFetch).not.toHaveBeenCalled();
-  expect(statusMock).not.toHaveBeenCalled();
 });
 
 it.each<[string, SubscriptionCancellationStatus]>([
