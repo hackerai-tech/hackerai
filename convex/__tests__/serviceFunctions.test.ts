@@ -18,6 +18,9 @@ import {
   query,
   mutation,
   action,
+  internalQuery,
+  internalMutation,
+  internalAction,
   serviceContext,
 } from "../lib/serviceFunctions";
 
@@ -39,10 +42,32 @@ afterAll(() => {
   process.env = original;
 });
 
-const context = (name: string, type = "mutation") => ({
+const context = (name: string, type = "mutation", componentPath = "") => ({
   meta: {
-    getFunctionMetadata: async () => ({ name, type, componentPath: "" }),
+    getFunctionMetadata: async () => ({ name, type, componentPath }),
   },
+});
+
+const unauthorized = /^Unauthorized: Invalid service request$/;
+let warn: jest.SpyInstance;
+beforeEach(() => {
+  warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+});
+afterEach(() => jest.restoreAllMocks());
+
+// Every warning line, minus the logger's own timestamp, so tests compare the
+// complete emitted payload and catch any added field.
+const warnings = () =>
+  warn.mock.calls.map(([line]) => {
+    const { timestamp, ...rest } = JSON.parse(line as string);
+    expect(new Date(timestamp).toISOString()).toBe(timestamp);
+    return rest;
+  });
+const rejection = (observation: string) => ({
+  level: "warn",
+  event: "service_proof_rejected",
+  diagnostic_version: 1,
+  public_input_observation: observation,
 });
 
 describe("service registration boundary", () => {
@@ -101,6 +126,19 @@ describe("service registration boundary", () => {
     await expect(
       registered.handler(context(researchName), allowed),
     ).resolves.toBeNull();
+    // The main key does not authorize research functions either.
+    const mainProof = await signServiceArgs(
+      { deployment, name: researchName, type: "mutation" },
+      { serviceKey: secret },
+    );
+    await expect(
+      registered.handler(context(researchName), mainProof),
+    ).rejects.toThrow(unauthorized);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(warnings()).toEqual([
+      rejection("verification_failed"),
+      rejection("verification_failed"),
+    ]);
   });
 
   it("signs internal child calls again for their own destination and arguments", async () => {
@@ -170,5 +208,189 @@ describe("service registration boundary", () => {
     await expect(
       registered.handler(context("fixture:save"), { serviceKey: secret }),
     ).rejects.toThrow("Invalid service request");
+  });
+});
+
+describe("service proof rejection observation", () => {
+  const name = "fixture:save";
+  const scope = { deployment, name, type: "mutation" as const };
+  const register = (builder: unknown = mutation) => {
+    const handler = jest.fn(async () => null);
+    const args = { serviceKey: v.any(), id: v.optional(v.string()) };
+    const returns = v.null();
+    const registered = (builder as any)({ args, returns, handler });
+    return { registered, handler, args, returns };
+  };
+  const proofAt = async (issuedAt: number) =>
+    (await signServiceArgs(scope, { serviceKey: secret, id: "id-1" }, issuedAt))
+      .serviceKey;
+
+  it.each([
+    ["query", query, "query"],
+    ["mutation", mutation, "mutation"],
+    ["action", action, "action"],
+    ["internalQuery", internalQuery, "query"],
+    ["internalMutation", internalMutation, "mutation"],
+    ["internalAction", internalAction, "action"],
+  ] as const)(
+    "%s keeps its validators and warns once at the rejected guard",
+    async (_label, builder, type) => {
+      const { registered, handler, args, returns } = register(builder);
+      expect(registered.args).toBe(args);
+      expect(registered.returns).toBe(returns);
+      await expect(
+        registered.handler(context(name, type), { serviceKey: "hmac1.bad" }),
+      ).rejects.toThrow(unauthorized);
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnings()).toEqual([rejection("proof_malformed")]);
+    },
+  );
+
+  it("emits the same observation whether or not the service key is configured", async () => {
+    const { registered, handler } = register();
+    const issued = Date.now();
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ serviceKey: 17 }, "credential_not_string"],
+      [{ serviceKey: null }, "credential_not_string"],
+      [{ serviceKey: "garbage" }, "proof_malformed"],
+      [{ serviceKey: await proofAt(issued - 120_000) }, "proof_expired"],
+      [{ serviceKey: await proofAt(issued + 120_000) }, "proof_future"],
+      [
+        { serviceKey: `hmac1.${issued}.${"0".repeat(64)}`, id: "id-1" },
+        "verification_failed",
+      ],
+    ];
+    for (const [args, expected] of cases) {
+      for (const configured of [true, false]) {
+        if (configured) process.env.CONVEX_SERVICE_ROLE_KEY = secret;
+        else delete process.env.CONVEX_SERVICE_ROLE_KEY;
+        warn.mockClear();
+        await expect(registered.handler(context(name), args)).rejects.toThrow(
+          unauthorized,
+        );
+        expect({ configured, args, warnings: warnings() }).toEqual({
+          configured,
+          args,
+          warnings: [rejection(expected)],
+        });
+      }
+    }
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not reveal whether a raw key is correct once the legacy window is closed", async () => {
+    const { registered, handler } = register();
+    const outcomes: unknown[] = [];
+    for (const window of [String(Date.now() - 1), undefined]) {
+      for (const configured of [true, false]) {
+        for (const serviceKey of [secret, "x".repeat(secret.length), "guess"]) {
+          if (window === undefined)
+            delete process.env.CONVEX_SERVICE_AUTH_LEGACY_UNTIL;
+          else process.env.CONVEX_SERVICE_AUTH_LEGACY_UNTIL = window;
+          if (configured) process.env.CONVEX_SERVICE_ROLE_KEY = secret;
+          else delete process.env.CONVEX_SERVICE_ROLE_KEY;
+          warn.mockClear();
+          const error = await registered
+            .handler(context(name), { serviceKey })
+            .then(
+              () => "accepted",
+              (e: Error) => e.message,
+            );
+          outcomes.push({ error, warnings: warnings() });
+        }
+      }
+    }
+    expect(outcomes).toHaveLength(12);
+    for (const outcome of outcomes) {
+      expect(outcome).toEqual({
+        error: "Unauthorized: Invalid service request",
+        warnings: [rejection("proof_malformed")],
+      });
+    }
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does not warn for accepted, ordinary or pre-guard paths", async () => {
+    const { registered, handler } = register();
+    const signed = await signServiceArgs(scope, {
+      serviceKey: secret,
+      id: "id-1",
+    });
+    await expect(registered.handler(context(name), signed)).resolves.toBeNull();
+    process.env.CONVEX_SERVICE_AUTH_LEGACY_UNTIL = String(Date.now() + 60_000);
+    await expect(
+      registered.handler(context(name), { serviceKey: secret }),
+    ).resolves.toBeNull();
+    await expect(registered.handler({}, { id: "id-1" })).resolves.toBeNull();
+    expect(handler).toHaveBeenCalledTimes(3);
+    await expect(
+      registered.handler(context(name, "mutation", "child"), {
+        serviceKey: "garbage",
+      }),
+    ).rejects.toThrow(/^Invalid service deployment identity$/);
+    delete process.env.CONVEX_CLOUD_URL;
+    await expect(
+      registered.handler(context(name), { serviceKey: "garbage" }),
+    ).rejects.toThrow(/^Invalid service deployment identity$/);
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["importKey", "verify"] as const)(
+    "propagates the exact %s exception without a rejection warning",
+    async (method) => {
+      const { registered, handler } = register();
+      const signed = await signServiceArgs(scope, {
+        serviceKey: secret,
+        id: "id-1",
+      });
+      const failure = new Error(`${method} failed`);
+      jest.spyOn(crypto.subtle, method).mockRejectedValueOnce(failure);
+      await expect(registered.handler(context(name), signed)).rejects.toBe(
+        failure,
+      );
+      expect(handler).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the authorization failure when the log sink throws", async () => {
+    const { registered, handler } = register();
+    warn.mockImplementation(() => {
+      throw new Error(`sink failed ${secret}`);
+    });
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    await expect(
+      registered.handler(context(name), { serviceKey: "garbage" }),
+    ).rejects.toThrow(unauthorized);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("logs no proof, key, scope or argument values", async () => {
+    const { registered } = register();
+    const issued = Date.now();
+    const forged = `hmac1.${issued}.${"c".repeat(64)}`;
+    await expect(
+      registered.handler(context(name), {
+        serviceKey: forged,
+        id: "canary-argument-value",
+      }),
+    ).rejects.toThrow(unauthorized);
+    const logged = JSON.stringify(warn.mock.calls);
+    for (const canary of [
+      secret,
+      researchSecret,
+      forged,
+      "c".repeat(64),
+      String(issued),
+      deployment,
+      name,
+      "canary-argument-value",
+    ]) {
+      expect(logged).not.toContain(canary);
+    }
+    expect(warnings()).toEqual([rejection("verification_failed")]);
   });
 });
